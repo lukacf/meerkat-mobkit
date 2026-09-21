@@ -121,6 +121,7 @@ mod tests {
             failure: BackendFailure::RateLimited,
             accounting: DecisionAccounting::Unmeasured,
             budget: BudgetParticipation::NotIssued,
+            attempts: 2,
         });
         assert_eq!(backend.code, -32000);
         let data = backend.data.as_ref().unwrap();
@@ -129,6 +130,7 @@ mod tests {
         // settled; a host caller can account for a failed call.
         assert_eq!(data["accounting"]["kind"], "unmeasured");
         assert_eq!(data["budget"]["kind"], "not_issued");
+        assert_eq!(data["attempts"], 2);
         assert!(backend.message.starts_with("backend_failure:"));
 
         let answer = decision_error_to_rpc(&DecisionError::InvalidAnswer {

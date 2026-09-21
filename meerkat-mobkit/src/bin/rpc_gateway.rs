@@ -457,9 +457,10 @@ impl Default for GatewayRuntimeOptions {
 /// Jev backend carries its own destination; the `llm` backend needs an
 /// explicit `[decision.host_route]` because no session is being served.
 fn host_decision_route_declared(config: &Config) -> bool {
-    match config.decision.backend {
+    let decision = config.decision_config();
+    match decision.backend {
         meerkat_core::DecisionBackendSelection::Jev => true,
-        meerkat_core::DecisionBackendSelection::Llm => config.decision.host_route.is_some(),
+        meerkat_core::DecisionBackendSelection::Llm => decision.host_route.is_some(),
     }
 }
 
@@ -4132,16 +4133,21 @@ actions = ["agent.view"]
         let mut config = Config::default();
         assert!(
             !host_decision_route_declared(&config),
-            "llm backend without host_route"
+            "undeclared table: llm backend without host_route"
         );
-        config.decision.host_route = Some(meerkat_core::DecisionHostRoute {
-            provider: meerkat_core::Provider::Anthropic,
-            model: "claude-sonnet-4-5".to_string(),
-            auth_binding: None,
+        config.decision = Some(meerkat_core::DecisionConfig {
+            host_route: Some(meerkat_core::DecisionHostRoute {
+                provider: meerkat_core::Provider::Anthropic,
+                model: "claude-sonnet-4-5".to_string(),
+                auth_binding: None,
+            }),
+            ..meerkat_core::DecisionConfig::default()
         });
         assert!(host_decision_route_declared(&config));
-        config.decision.host_route = None;
-        config.decision.backend = meerkat_core::DecisionBackendSelection::Jev;
+        config.decision = Some(meerkat_core::DecisionConfig {
+            backend: meerkat_core::DecisionBackendSelection::Jev,
+            ..meerkat_core::DecisionConfig::default()
+        });
         assert!(host_decision_route_declared(&config));
     }
 
