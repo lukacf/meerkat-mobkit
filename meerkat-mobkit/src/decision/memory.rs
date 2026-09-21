@@ -21,19 +21,21 @@ use serde_json::json;
 
 use crate::memory::factory_handle::AnnotatedRecord;
 
-/// Longest record body sent to the judge per candidate, in bytes. Assessment
-/// input is bounded independently of injection content; longer bodies are cut
-/// at a character boundary with a typed `truncated` flag in the state.
+/// Longest record body sent to the judge per candidate, measured as the
+/// bytes of its JSON string encoding (escapes included), because that is how
+/// the service measures state. Assessment input is bounded independently of
+/// injection content; longer bodies are cut at a character boundary with a
+/// typed `truncated` flag in the state.
 pub const MAX_ASSESSED_BODY_BYTES: usize = 2_000;
-/// Longest record title sent to the judge, in bytes.
+/// Longest record title sent to the judge, in JSON-encoded bytes.
 pub const MAX_ASSESSED_TITLE_BYTES: usize = 200;
-/// Tags sent to the judge per record, and the longest tag, in bytes.
+/// Tags sent to the judge per record, and the longest tag, in JSON-encoded bytes.
 pub const MAX_ASSESSED_TAGS: usize = 16;
 pub const MAX_ASSESSED_TAG_BYTES: usize = 64;
-/// Longest request text sent to the judge, in bytes.
+/// Longest request text sent to the judge, in JSON-encoded bytes.
 pub const MAX_ASSESSED_REQUEST_BYTES: usize = 4_000;
-/// JSON framing allowance per record (keys, quotes, index, flags) and per
-/// state envelope, used to bound the whole state at composition time.
+/// JSON framing allowance per record (keys, quotes, index, flags, separator)
+/// and per state envelope, used to bound the whole state at composition time.
 const RECORD_JSON_OVERHEAD_BYTES: usize = 160;
 const TAG_JSON_OVERHEAD_BYTES: usize = 8;
 const STATE_JSON_OVERHEAD_BYTES: usize = 64;
@@ -598,17 +600,30 @@ impl MemoryApplicabilityPolicy {
     }
 }
 
-/// Cut `text` to at most `max_bytes` on a character boundary, reporting
-/// whether anything was cut.
-fn bounded_str(text: &str, max_bytes: usize) -> (String, bool) {
-    if text.len() <= max_bytes {
-        return (text.to_string(), false);
+/// Bytes `ch` occupies inside a JSON string per serde_json's escaping: the
+/// short escapes are two bytes, other control characters six, everything
+/// else its UTF-8 length. The service measures state as compact JSON, so
+/// this is the unit the bound must be expressed in.
+fn json_encoded_len(ch: char) -> usize {
+    match ch {
+        '"' | '\\' | '\u{08}' | '\u{09}' | '\u{0A}' | '\u{0C}' | '\u{0D}' => 2,
+        c if (c as u32) < 0x20 => 6,
+        c => c.len_utf8(),
     }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+}
+
+/// Cut `text` so its JSON string encoding fits in `max_encoded_bytes`
+/// (quotes excluded), on a character boundary, reporting whether anything
+/// was cut.
+fn bounded_str(text: &str, max_encoded_bytes: usize) -> (String, bool) {
+    let mut encoded = 0usize;
+    for (offset, ch) in text.char_indices() {
+        encoded += json_encoded_len(ch);
+        if encoded > max_encoded_bytes {
+            return (text[..offset].to_string(), true);
+        }
     }
-    (text[..end].to_string(), true)
+    (text.to_string(), false)
 }
 
 #[cfg(test)]
@@ -911,15 +926,25 @@ pub(crate) mod tests {
         let config = MemoryApplicabilityConfig::default();
         let service = service_with(vec![]);
         let policy = MemoryApplicabilityPolicy::new(service, config.clone()).unwrap();
+        // Worst cases for the JSON measurement the service applies: control
+        // characters escape to six bytes, quotes and backslashes to two,
+        // multi-byte characters must be cut on a boundary.
+        let hostile_body = "\u{01}\"\\\n".repeat(1_000);
         let candidates: Vec<AnnotatedRecord> = (0..config.max_assessed_candidates)
             .map(|i| {
-                let mut candidate = record(&format!("m{i}"), &"é".repeat(400), &"ü".repeat(3_000));
-                candidate.record.tags =
-                    (0..32).map(|t| format!("{t}-{}", "ö".repeat(60))).collect();
+                let body = if i % 2 == 0 {
+                    hostile_body.clone()
+                } else {
+                    "ü".repeat(3_000)
+                };
+                let mut candidate = record(&format!("m{i}"), &"é\u{02}".repeat(400), &body);
+                candidate.record.tags = (0..32)
+                    .map(|t| format!("{t}-\"{}", "ö".repeat(60)))
+                    .collect();
                 candidate
             })
             .collect();
-        let request = policy.build_request(&"å".repeat(5_000), &candidates);
+        let request = policy.build_request(&"\u{03}å".repeat(5_000), &candidates);
         let serialized = serde_json::to_vec(request.state.as_value()).unwrap();
         assert!(
             serialized.len() <= config.max_state_bytes(),
@@ -927,8 +952,37 @@ pub(crate) mod tests {
             serialized.len(),
             config.max_state_bytes()
         );
+        assert!(
+            request.state.byte_len() <= config.max_state_bytes(),
+            "the service's own measurement must fit"
+        );
         // Multi-byte cuts land on character boundaries: the state is valid UTF-8 JSON.
         assert!(std::str::from_utf8(&serialized).is_ok());
+        // And the whole request passes the service's validation at default limits.
+        assert!(
+            meerkat_decision::ValidatedRequest::validate(request, &DecisionLimitsConfig::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn bounded_str_measures_json_encoded_bytes() {
+        // Five control characters encode to 30 bytes; a bound of 12 admits two.
+        let (cut, truncated) = bounded_str("\u{01}\u{01}\u{01}\u{01}\u{01}", 12);
+        assert!(truncated);
+        assert_eq!(cut.chars().count(), 2);
+        assert_eq!(serde_json::to_string(&cut).unwrap().len() - 2, 12);
+        // Quotes and backslashes are two bytes each.
+        let (cut, truncated) = bounded_str("\"\\\"", 4);
+        assert!(truncated);
+        assert_eq!(cut, "\"\\");
+        // Multi-byte characters are never split.
+        let (cut, truncated) = bounded_str("ééé", 5);
+        assert!(truncated);
+        assert_eq!(cut, "éé");
+        let (whole, truncated) = bounded_str("plain", 5);
+        assert!(!truncated);
+        assert_eq!(whole, "plain");
     }
 
     #[test]
