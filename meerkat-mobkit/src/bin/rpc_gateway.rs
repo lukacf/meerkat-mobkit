@@ -4081,6 +4081,19 @@ actions = ["agent.view"]
             meerkat_mobkit::ApplicabilityBaseline::InjectNothing
         );
         assert_eq!(configured.assessment_timeout_ms, Some(1500));
+        // Omitted protected tags keep the recorder's operator marker; an
+        // explicit empty list is how an operator turns protection off.
+        assert_eq!(
+            configured.protected_tags,
+            vec![meerkat_mobkit::decision::memory::OPERATOR_SAID_TAG.to_string()]
+        );
+        let unprotected = parse(json!({ "applicability": { "protected_tags": [] } }))
+            .expect("object parses")
+            .agent_memory
+            .expect("agent memory")
+            .applicability
+            .expect("applicability configured");
+        assert!(unprotected.protected_tags.is_empty());
 
         // Fail-loud matrix: unknown keys, wrong shapes, out-of-range values.
         for (agent_memory, needle) in [
@@ -11769,10 +11782,10 @@ external_addressable = true
         Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
     > = None;
     // Host decision service (see `compose_gateway_decision_service`),
-    // composed beside whichever factory the launch mode builds so it
-    // resolves auth and realm facts exactly as member builds do. Every
-    // launch mode assigns it exactly where its factory is built.
-    let mut gateway_decision_service: Option<Arc<meerkat_decision::DecisionService>>;
+    // composed once per launch mode beside the first factory that mode
+    // builds, so it resolves auth and realm facts exactly as member builds
+    // do.
+    let gateway_decision_service: Option<Arc<meerkat_decision::DecisionService>>;
     let (
         mob_spec,
         _temp_dir,
@@ -12514,12 +12527,10 @@ external_addressable = true
                 if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
                     factory = factory.user_config_root(root.clone());
                 }
-                gateway_decision_service = compose_gateway_decision_service(
-                    &factory,
-                    &gateway_agent_config(&gateway_options),
-                )
-                .await
-                .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
+                // The host decision service was composed beside this launch
+                // mode's first factory above; this factory differs only in its
+                // session store, which the host route never reads, so it is
+                // not composed a second time.
                 let mut inner_builder =
                     FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
                 inner_builder.default_session_store = Some(Arc::new(
@@ -13259,6 +13270,9 @@ external_addressable = true
                     });
                 injector = injector.with_applicability_policy(Some(Arc::new(policy)));
             }
+            // Applicability degradation / recovery transitions ride the same
+            // §9.3 console timeline as the rest of the memory plane.
+            injector.set_event_sink(runtime.memory_event_sink());
             // Arm the always-on compaction reset sink (state is Arc-shared
             // across injector clones, so resetting through this clone
             // resets the delivery path's budgets too).

@@ -359,6 +359,14 @@ impl TurnInjectionSkip {
     }
 }
 
+/// Last observed applicability health for one identity; the transition
+/// between the two is what gets announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicabilityHealth {
+    Healthy,
+    Degraded(&'static str),
+}
+
 /// Typed outcome of a per-turn injection attempt.
 #[derive(Debug)]
 pub enum TurnInjection {
@@ -385,9 +393,13 @@ pub struct RecallCoordinator {
     /// skip per identity is loud and the rest are DEBUG. Bounded; cleared when
     /// it grows past `MAX_NOTED_SKIPS`, after which a reason may be re-announced.
     noted_skips: Arc<Mutex<HashSet<(String, &'static str)>>>,
-    /// (identity, decision error code) pairs whose applicability degradation
-    /// was already announced at WARN; same bound and clearing as `noted_skips`.
-    noted_degradations: Arc<Mutex<HashSet<(String, &'static str)>>>,
+    /// Per-identity applicability health, so degradation and recovery are
+    /// announced on the transition (WARN / INFO and a typed timeline event)
+    /// rather than once per turn. Same bound and clearing as `noted_skips`.
+    applicability_health: Arc<Mutex<HashMap<String, ApplicabilityHealth>>>,
+    /// §9.3 timeline sink for the applicability transition events. Shared
+    /// across clones so a late-bound sink reaches the delivery path's copy.
+    event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
@@ -410,7 +422,8 @@ impl RecallCoordinator {
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
             noted_skips: Arc::new(Mutex::new(HashSet::new())),
-            noted_degradations: Arc::new(Mutex::new(HashSet::new())),
+            applicability_health: Arc::new(Mutex::new(HashMap::new())),
+            event_sink: Arc::new(Mutex::new(None)),
             nonces: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
@@ -428,6 +441,16 @@ impl RecallCoordinator {
     ) -> Self {
         self.applicability = policy;
         self
+    }
+
+    /// Install the §9.3 timeline sink that carries the applicability
+    /// degradation / recovery transitions. Shared across clones; setting it
+    /// after construction reaches every copy already handed out.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     /// Install the §7.2 provisional operator resolver. Effective only when
@@ -595,41 +618,95 @@ impl RecallCoordinator {
         }
     }
 
-    /// Announce an applicability degradation once per (identity, error code)
-    /// at WARN, then at DEBUG. A pass-through baseline injects exactly what
-    /// the unassessed path would, so without this the operator could not
-    /// tell a working judge from one that has been failing for a month.
-    fn note_degradation(
+    /// Track applicability health per identity and announce transitions: a
+    /// pass-through baseline injects exactly what the unassessed path would,
+    /// so without this the operator could not tell a working judge from one
+    /// that has been failing for a month. Entering degradation (or changing
+    /// failure code) is WARN plus a typed `memory.applicability.degraded`
+    /// timeline event; the first success afterwards is INFO plus
+    /// `memory.applicability.recovered`; steady state is DEBUG.
+    fn observe_applicability(
         &self,
         identity: &AgentIdentity,
-        degradation: &crate::decision::ApplicabilityDegradation,
+        session_key: Option<&str>,
+        outcome: &crate::decision::ApplicabilityOutcome,
     ) {
-        let first = {
-            let mut noted = self
-                .noted_degradations
+        // Only an assessment that ran (or failed) says anything about health;
+        // a turn that skipped the judge (empty text) carries no route and no
+        // degradation and leaves the health as it was.
+        let current = match outcome.degradation.as_ref() {
+            Some(degradation) => ApplicabilityHealth::Degraded(degradation.code.as_str()),
+            None if outcome.route.is_some() => ApplicabilityHealth::Healthy,
+            None => return,
+        };
+        let previous = {
+            let mut health = self
+                .applicability_health
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if noted.len() >= MAX_NOTED_SKIPS {
-                noted.clear();
+            if !health.contains_key(identity.as_str()) && health.len() >= MAX_NOTED_SKIPS {
+                health.clear();
             }
-            noted.insert((identity.to_string(), degradation.code.as_str()))
+            health.insert(identity.as_str().to_string(), current)
         };
-        if first {
-            tracing::warn!(
-                identity = %identity,
-                code = degradation.code.as_str(),
-                baseline = ?degradation.baseline,
-                error = %degradation.message,
-                "memory applicability assessment degraded; declared baseline applied \
-                 (first occurrence for this identity and code)"
-            );
-        } else {
-            tracing::debug!(
-                identity = %identity,
-                code = degradation.code.as_str(),
-                baseline = ?degradation.baseline,
-                "memory applicability assessment degraded; declared baseline applied"
-            );
+        let sink = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match (previous, current, outcome.degradation.as_ref()) {
+            (previous, ApplicabilityHealth::Degraded(code), Some(degradation))
+                if previous != Some(current) =>
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    code,
+                    baseline = ?degradation.baseline,
+                    error = %degradation.message,
+                    "memory applicability assessment degraded; declared baseline applied"
+                );
+                if let Some(sink) = sink {
+                    sink.emit(
+                        crate::memory::events::MemoryTimelineEvent::ApplicabilityDegraded {
+                            identity: identity.as_str().to_string(),
+                            session_key: session_key.map(str::to_string),
+                            code: code.to_string(),
+                            baseline: match degradation.baseline {
+                                crate::decision::ApplicabilityBaseline::PassThrough => {
+                                    "pass_through".to_string()
+                                }
+                                crate::decision::ApplicabilityBaseline::InjectNothing => {
+                                    "inject_nothing".to_string()
+                                }
+                            },
+                            message: degradation.message.clone(),
+                        },
+                    );
+                }
+            }
+            (_, ApplicabilityHealth::Degraded(code), Some(degradation)) => {
+                tracing::debug!(
+                    identity = %identity,
+                    code,
+                    baseline = ?degradation.baseline,
+                    "memory applicability assessment still degraded; declared baseline applied"
+                );
+            }
+            (Some(ApplicabilityHealth::Degraded(_)), ApplicabilityHealth::Healthy, _) => {
+                tracing::info!(
+                    identity = %identity,
+                    "memory applicability assessment recovered"
+                );
+                if let Some(sink) = sink {
+                    sink.emit(
+                        crate::memory::events::MemoryTimelineEvent::ApplicabilityRecovered {
+                            identity: identity.as_str().to_string(),
+                            session_key: session_key.map(str::to_string),
+                        },
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -718,9 +795,7 @@ impl RecallCoordinator {
                     return Ok(TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable));
                 }
                 let assessment = policy.assess(&query_text, fresh).await;
-                if let Some(degradation) = assessment.outcome.degradation.as_ref() {
-                    self.note_degradation(identity, degradation);
-                }
+                self.observe_applicability(identity, session_key, &assessment.outcome);
                 (assessment.included, Some(assessment.outcome))
             }
             None => (records, None),
@@ -2525,6 +2600,71 @@ mod tests {
             outcome.degradation.as_ref().map(|d| d.code),
             Some(meerkat_decision::DecisionErrorCode::BackendFailure)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn applicability_degradation_and_recovery_are_announced_on_the_transition()
+    -> Result<(), Box<dyn Error>> {
+        // Turn 1 fails, turn 2 fails with the same code, turn 3 succeeds,
+        // turn 4 succeeds: exactly one degraded and one recovered event.
+        let yes = |id: &str| {
+            (
+                id.to_string(),
+                meerkat_decision::RawAnswer::BinaryCategorical(meerkat_decision::BinaryAnswer::Yes),
+            )
+        };
+        let service = crate::decision::memory::tests::service_with(vec![
+            Err(meerkat_decision::BackendFailure::Timeout),
+            Err(meerkat_decision::BackendFailure::Timeout),
+            Ok(vec![yes("relevant_0")]),
+            Ok(vec![yes("relevant_0")]),
+        ]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let sink = Arc::new(crate::memory::events::CollectingEventSink::new());
+        coordinator.set_event_sink(sink.clone());
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("book a flight".into());
+        for turn in 0..4 {
+            // A fresh session key per turn so dedup never hides the record.
+            let key = format!("s{turn}");
+            let out = coordinator
+                .inject_for_turn_classified(&id, Some(&key), &content)
+                .await?;
+            assert!(matches!(out, TurnInjection::Injected { .. }), "turn {turn}");
+        }
+        assert_eq!(
+            sink.types(),
+            vec![
+                "memory.applicability.degraded",
+                "memory.applicability.recovered"
+            ]
+        );
+        let events = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(matches!(
+            &events[0],
+            crate::memory::events::MemoryTimelineEvent::ApplicabilityDegraded {
+                identity: event_identity,
+                session_key: Some(key),
+                code,
+                baseline,
+                ..
+            } if event_identity == id.as_str() && key == "s0" && code == "backend_failure" && baseline == "pass_through"
+        ));
+        assert!(matches!(
+            &events[1],
+            crate::memory::events::MemoryTimelineEvent::ApplicabilityRecovered {
+                session_key: Some(key),
+                ..
+            } if key == "s2"
+        ));
         Ok(())
     }
 

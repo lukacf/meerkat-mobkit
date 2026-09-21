@@ -1452,6 +1452,11 @@ impl UnifiedRuntimeBuilder {
         // panel (§9.3) registers for any provider advertising the panel
         // read API. Recall-only providers keep injection + recorder
         // without a panel — by their capability flags, not by type.
+        // The per-turn injector's applicability transitions ride the same
+        // §9.3 timeline; bind the sink now that the runtime owning it exists.
+        if let Some(injector) = agent_memory_injector.as_ref() {
+            injector.set_event_sink(runtime.memory_event_sink());
+        }
         if let Some(provider) = classic_agent_memory.as_ref() {
             if let Some(taintable) = provider.as_taintable() {
                 let llm_writes = self

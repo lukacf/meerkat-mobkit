@@ -197,9 +197,15 @@ the host could have known. If the service fails, is refused, or exceeds the
 policy's `assessment_timeout_ms` (or the service deadline), the declared
 `baseline` applies (`pass_through`, the default, injects every candidate as
 before; `inject_nothing` injects none) and the outcome carries a typed
-degradation marker, announced once per identity at WARN. Explicit remember
-requests and critical corrections are not made to disappear by a low score:
-they are ordinary records the policy sees and the baseline protects.
+degradation marker. Entering degradation is a WARN plus a
+`memory.applicability.degraded` event on the console memory timeline; the
+first success afterwards is `memory.applicability.recovered` — transitions,
+not one event per turn. Records carrying a protected tag (`protected_tags`,
+default `epistemic:operator_said`, the recorder's marker for what the
+operator explicitly said) are never judged: they are kept as
+`protected_kept` without spending a question, so an explicit remember
+request cannot disappear because a model gave it a low score. Applications
+add their own conventions (a correction tag, for example) to the list.
 
 ## Work, evidence, and rubrics
 

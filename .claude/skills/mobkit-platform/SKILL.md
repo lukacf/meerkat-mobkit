@@ -99,12 +99,15 @@ taken from `ToolDispatchContext::nested_model_route`). MobKit composes it in
   required, plus an agent memory provider), runs in
   `RecallCoordinator::inject_for_turn_classified` between candidate recall and
   packing. `probability_threshold`, abstention policy, `assessment_timeout_ms`,
-  and the failure baseline live here; state is byte-bounded (`MAX_ASSESSED_*`)
-  and the worst case is checked against the service limits in `new`. The
-  outcome rides `TurnInjection::Injected { applicability }`; degraded
-  assessments are announced once per identity by the coordinator; the skips
-  `NoApplicableRecords` (judged) and `ApplicabilityDegradedInjectNothing`
-  (nothing judged) are distinct.
+  and the failure baseline live here; state is bounded by JSON-encoded bytes
+  (`MAX_ASSESSED_*`) and the worst case is checked against the service limits
+  in `new`; `protected_tags` (default `epistemic:operator_said`) are kept as
+  `ProtectedKept` without a judgment. The outcome rides
+  `TurnInjection::Injected { applicability }`; the coordinator announces
+  degradation/recovery on the transition (WARN/INFO plus
+  `memory.applicability.{degraded,recovered}` timeline events through the
+  injector's `set_event_sink`); the skips `NoApplicableRecords` (judged) and
+  `ApplicabilityDegradedInjectNothing` (nothing judged) are distinct.
 - `decision/work.rs` — evidence/commitment/rubric/work-fit request builders,
   interpreters, and `WorkDecisionHelpers`. Judgments never complete or confirm
   WorkGraph items; `aggregate_rubric` with no elected level is `Undetermined`.

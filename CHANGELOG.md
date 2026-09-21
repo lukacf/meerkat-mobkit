@@ -53,9 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   byte-bounded state (`MAX_ASSESSED_*`) whose worst case is checked against
   the service's `max_questions` / `max_state_bytes` at build, an optional
   `assessment_timeout_ms`, `probability_threshold` for native probabilities,
-  a declared `pass_through` / `inject_nothing` baseline on failure with a
-  typed degradation marker on `TurnInjection::Injected { applicability }`
-  (announced once per identity at WARN), and the new skips
+  `protected_tags` (default `epistemic:operator_said`) kept as
+  `protected_kept` without a judgment, a declared `pass_through` /
+  `inject_nothing` baseline on failure with a typed degradation marker on
+  `TurnInjection::Injected { applicability }` (degradation and recovery are
+  announced on the transition, at WARN/INFO and as
+  `memory.applicability.degraded` / `memory.applicability.recovered` console
+  timeline events), and the new skips
   `TurnInjectionSkip::NoApplicableRecords` (judged, all excluded) and
   `TurnInjectionSkip::ApplicabilityDegradedInjectNothing` (nothing judged).
   `decision::work` adds per-requirement evidence, commitment applicability,

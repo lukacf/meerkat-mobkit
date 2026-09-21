@@ -521,6 +521,14 @@ impl AgentMemoryRuntimeInjector {
         self
     }
 
+    /// Install the §9.3 timeline sink that carries applicability
+    /// degradation / recovery transitions. Shared across clones of this
+    /// injector, so it may be bound after the runtime that owns the sink
+    /// exists.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        self.coordinator.set_event_sink(sink);
+    }
+
     /// Attach the §8.4 Distiller so the identity runtime's lifecycle paths
     /// can run pre-rotation extraction.
     pub fn with_distiller(

@@ -62,7 +62,17 @@ pub struct MemoryApplicabilityConfig {
     /// when it elapses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assessment_timeout_ms: Option<u64>,
+    /// Records carrying any of these tags are never judged: they are kept
+    /// as `protected_kept` without spending a question. The default is the
+    /// recorder's marker for what the operator explicitly said
+    /// (`epistemic:operator_said`), so an explicit remember request cannot
+    /// disappear because a model gave it a low score. Applications add
+    /// their own conventions (a correction tag, say) here.
+    pub protected_tags: Vec<String>,
 }
+
+/// The recorder's tag for a record that captures what the operator said.
+pub const OPERATOR_SAID_TAG: &str = "epistemic:operator_said";
 
 impl Default for MemoryApplicabilityConfig {
     fn default() -> Self {
@@ -72,6 +82,7 @@ impl Default for MemoryApplicabilityConfig {
             keep_on_abstain: true,
             baseline: ApplicabilityBaseline::PassThrough,
             assessment_timeout_ms: None,
+            protected_tags: vec![OPERATOR_SAID_TAG.to_string()],
         }
     }
 }
@@ -215,6 +226,8 @@ pub enum RecordDisposition {
     },
     /// Beyond `max_assessed_candidates`; kept without a judgment.
     UnassessedKept,
+    /// Carries a protected tag; kept without a judgment by declaration.
+    ProtectedKept,
 }
 
 /// Typed degrade marker: assessment did not produce judgments and the
@@ -322,16 +335,45 @@ impl MemoryApplicabilityPolicy {
         &self.config
     }
 
-    /// Build the bounded request for the first `max_assessed_candidates`.
+    fn is_protected(&self, candidate: &AnnotatedRecord) -> bool {
+        candidate.record.tags.iter().any(|tag| {
+            self.config
+                .protected_tags
+                .iter()
+                .any(|protected| protected == tag)
+        })
+    }
+
+    /// Candidate positions that are judged this turn: the unprotected
+    /// candidates in order, up to `max_assessed_candidates`. Protected
+    /// records consume no slot. `build_request` and `apply` derive the same
+    /// partition from the same inputs.
+    fn assessable_indices(&self, candidates: &[AnnotatedRecord]) -> Vec<usize> {
+        candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| !self.is_protected(candidate))
+            .map(|(index, _)| index)
+            .take(self.config.max_assessed_candidates)
+            .collect()
+    }
+
+    /// Build the bounded request for the assessable candidates (the first
+    /// `max_assessed_candidates` that carry no protected tag).
     pub fn build_request(
         &self,
         request_text: &str,
         candidates: &[AnnotatedRecord],
     ) -> DecisionRequest {
-        let assessed = candidates.iter().zip(self.ids.iter()).enumerate();
+        let assessed = self
+            .assessable_indices(candidates)
+            .into_iter()
+            .zip(self.ids.iter())
+            .enumerate()
+            .map(|(slot, (candidate_index, ids))| (slot, &candidates[candidate_index], ids));
         let mut records = Vec::new();
         let mut questions = Vec::new();
-        for (index, (candidate, (relevance_id, contradiction_id))) in assessed {
+        for (index, candidate, (relevance_id, contradiction_id)) in assessed {
             let record = &candidate.record;
             let (body, truncated) = bounded_str(&record.body, MAX_ASSESSED_BODY_BYTES);
             let (title, _) = bounded_str(&record.title, MAX_ASSESSED_TITLE_BYTES);
@@ -422,10 +464,12 @@ impl MemoryApplicabilityPolicy {
             let dispositions = candidates
                 .iter()
                 .map(|candidate| {
-                    (
-                        candidate.record.memory_id.clone(),
-                        RecordDisposition::UnassessedKept,
-                    )
+                    let disposition = if self.is_protected(candidate) {
+                        RecordDisposition::ProtectedKept
+                    } else {
+                        RecordDisposition::UnassessedKept
+                    };
+                    (candidate.record.memory_id.clone(), disposition)
                 })
                 .collect();
             return ApplicabilityAssessment {
@@ -469,11 +513,21 @@ impl MemoryApplicabilityPolicy {
         candidates: Vec<AnnotatedRecord>,
         result: &meerkat_decision::DecisionResult,
     ) -> ApplicabilityAssessment {
+        let assessable = self.assessable_indices(&candidates);
         let mut included = Vec::with_capacity(candidates.len());
         let mut dispositions = Vec::with_capacity(candidates.len());
         for (index, candidate) in candidates.into_iter().enumerate() {
             let memory_id = candidate.record.memory_id.clone();
-            let Some((relevance_id, contradiction_id)) = self.ids.get(index) else {
+            if self.is_protected(&candidate) {
+                dispositions.push((memory_id, RecordDisposition::ProtectedKept));
+                included.push(candidate);
+                continue;
+            }
+            let Some((relevance_id, contradiction_id)) = assessable
+                .iter()
+                .position(|assessed| *assessed == index)
+                .and_then(|slot| self.ids.get(slot))
+            else {
                 dispositions.push((memory_id, RecordDisposition::UnassessedKept));
                 included.push(candidate);
                 continue;
@@ -830,6 +884,67 @@ pub(crate) mod tests {
             .map(|record| record.record.memory_id.as_str())
             .collect();
         assert_eq!(ids, ["a"]);
+    }
+
+    #[tokio::test]
+    async fn protected_records_are_kept_without_a_judgment_and_take_no_slot() {
+        // One assessed slot; the protected record comes first and must not
+        // consume it, so `relevant_0` addresses the second record. Every
+        // scripted answer is "no", so an assessed protected record would
+        // have been excluded.
+        let service = service_with(vec![Ok(vec![])]);
+        let policy = MemoryApplicabilityPolicy::new(
+            service,
+            MemoryApplicabilityConfig {
+                max_assessed_candidates: 1,
+                ..MemoryApplicabilityConfig::default()
+            },
+        )
+        .unwrap();
+        let mut protected = record("said", "Operator said", "Never book Ryanair");
+        protected.record.tags = vec![OPERATOR_SAID_TAG.to_string()];
+        let request = policy.build_request(
+            "book a flight",
+            &[
+                protected.clone(),
+                record("a", "t", "b"),
+                record("c", "t", "b"),
+            ],
+        );
+        let state = request.state.as_value();
+        assert_eq!(state["records"].as_array().unwrap().len(), 1);
+        assert_eq!(state["records"][0]["title"], "t");
+
+        let assessment = policy
+            .assess(
+                "book a flight",
+                vec![protected, record("a", "t", "b"), record("c", "t", "b")],
+            )
+            .await;
+        let ids: Vec<&str> = assessment
+            .included
+            .iter()
+            .map(|record| record.record.memory_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["said", "c"],
+            "protected kept, judged one excluded, unassessed kept"
+        );
+        assert_eq!(
+            assessment.outcome.dispositions[0].1,
+            RecordDisposition::ProtectedKept
+        );
+        assert_eq!(
+            assessment.outcome.dispositions[1].1,
+            RecordDisposition::Excluded {
+                reason: ExclusionReason::NotRelevant
+            }
+        );
+        assert_eq!(
+            assessment.outcome.dispositions[2].1,
+            RecordDisposition::UnassessedKept
+        );
     }
 
     #[tokio::test]
