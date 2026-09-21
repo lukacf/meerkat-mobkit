@@ -30,7 +30,7 @@ function createMockRuntime() {
 
 const WIRE_RESULT = {
   contract: "v1",
-  route: { backend: "session_llm", provider: "openai", model: "gpt-5.5" },
+  route: { backend: "llm", provider: "openai", model: "gpt-5.5" },
   judgments: {
     is_urgent: { judgment: { kind: "binary", form: "categorical", answer: "yes" } },
     department: {
@@ -99,7 +99,7 @@ describe("MobHandle.decide()", () => {
       task: "Triage",
     });
     assert.equal(result.contract, "v1");
-    assert.equal(result.route.backend, "session_llm");
+    assert.equal(result.route.backend, "llm");
     assert.equal(result.attempts, 2);
     assert.deepEqual(result.accounting, { kind: "unmeasured" });
     assert.deepEqual(result.budget, { kind: "not_issued" });
@@ -122,9 +122,10 @@ describe("MobHandle.decide()", () => {
     });
   });
 
-  it("parseDecisionResult tolerates absent optional fields", () => {
+  it("parseDecisionResult reports absent fields as null instead of inventing values", () => {
     const parsed = parseDecisionResult({ contract: "v1" });
     assert.deepEqual(parsed.judgments, {});
-    assert.equal(parsed.attempts, 0);
+    assert.equal(parsed.attempts, null);
+    assert.equal(parseDecisionResult({}).contract, null);
   });
 });

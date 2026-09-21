@@ -337,6 +337,15 @@ impl AgentLlmClient for TaintObservingLlmClient {
         self.inner.stream_activity_count()
     }
 
+    // The event-isolated fork serves nested, non-committing requests (the
+    // `decide` tool's judge call). Nothing it returns enters the transcript,
+    // so there is nothing for this observer to classify; the default would
+    // refuse the fork and make every decision route-unavailable under taint
+    // observation.
+    fn fork_noncommitting_live_bridge(&self) -> Result<Arc<dyn AgentLlmClient>, AgentError> {
+        self.inner.fork_noncommitting_live_bridge()
+    }
+
     fn compile_schema(&self, output_schema: &OutputSchema) -> Result<CompiledSchema, SchemaError> {
         self.inner.compile_schema(output_schema)
     }

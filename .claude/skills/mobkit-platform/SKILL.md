@@ -88,22 +88,41 @@ Key facts:
 
 Meerkat's optional `meerkat-decision` crate owns the batched semantic decision
 contracts (binary / choose_one / grade), the shared `DecisionService`, the
-session-LLM and Jev backends, and the agent-callable `decide` tool (composed
-by the Meerkat facade when the realm config sets `tools.decision_enabled`).
-MobKit composes it in `meerkat-mobkit/src/decision/`:
+`llm` and Jev backends, and the agent-callable `decide` tool (composed by the
+Meerkat facade when the realm config sets `tools.decision_enabled`; inside a
+turn it routes over the event-isolated fork of the member's current client
+taken from `ToolDispatchContext::nested_model_route`). MobKit composes it in
+`meerkat-mobkit/src/decision/`:
 
 - `decision/memory.rs` — `MemoryApplicabilityPolicy`, installed through
-  `UnifiedRuntimeBuilder::memory_applicability` + `decision_service`, runs in
+  `UnifiedRuntimeBuilder::memory_applicability` + `decision_service` (both
+  required, plus an agent memory provider), runs in
   `RecallCoordinator::inject_for_turn_classified` between candidate recall and
-  packing. Thresholds, abstention policy, and the failure baseline live here;
-  the outcome rides `TurnInjection::Injected { applicability }`.
+  packing. `probability_threshold`, abstention policy, `assessment_timeout_ms`,
+  and the failure baseline live here; state is byte-bounded (`MAX_ASSESSED_*`)
+  and the worst case is checked against the service limits in `new`. The
+  outcome rides `TurnInjection::Injected { applicability }`; degraded
+  assessments are announced once per identity by the coordinator; the skips
+  `NoApplicableRecords` (judged) and `ApplicabilityDegradedInjectNothing`
+  (nothing judged) are distinct.
 - `decision/work.rs` — evidence/commitment/rubric/work-fit request builders,
   interpreters, and `WorkDecisionHelpers`. Judgments never complete or confirm
-  WorkGraph items.
+  WorkGraph items; `aggregate_rubric` with no elected level is `Undetermined`.
 - `rpc/decision_methods.rs` — `mobkit/decision/evaluate` on the unified stdin
-  RPC (SDK transport); console exposure is not wired yet.
+  RPC (SDK transport), advertised by `mobkit/capabilities` only when a service
+  is composed; console exposure is not wired yet.
+- `bin/rpc_gateway.rs` — `compose_gateway_decision_service` builds the host
+  service from the host config (`meerkat::build_host_decision_service`) when
+  `tools.decision_enabled` and a host route exists (`backend = "jev"` or
+  `[decision.host_route]`); `runtime_options.agent_memory.applicability`
+  attaches the policy to the gateway injector (init refuses an unattachable
+  policy).
+- `memory/dispatch_taint.rs` — `TaintObservingLlmClient` forwards
+  `fork_noncommitting_live_bridge`; any new `AgentLlmClient` decorator must
+  too, or `decide` is `route_unavailable` behind it.
 - SDKs: Python `MobHandle.decide` + question builders; TypeScript `mob.decide`
-  + `binaryQuestion`/`chooseOneQuestion`/`gradeQuestion`.
+  + `binaryQuestion`/`chooseOneQuestion`/`gradeQuestion`. Parsers keep absent
+  `contract`/`attempts` as `None`/`null`, never fabricated.
 
 Docs: `docs/concepts/decision-services.mdx`. Local builds against an
 unreleased Meerkat use a `[patch.crates-io]` in the repo-cargo `CARGO_HOME`

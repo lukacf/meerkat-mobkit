@@ -44,8 +44,8 @@ pub(crate) fn decision_error_to_rpc(error: &DecisionError) -> JsonRpcError {
     let code = match error {
         DecisionError::InvalidRequest(_) => -32602,
         DecisionError::Unavailable(_) => CAPABILITY_UNAVAILABLE_CODE,
-        DecisionError::BackendFailure(_)
-        | DecisionError::InvalidAnswer(_)
+        DecisionError::BackendFailure { .. }
+        | DecisionError::InvalidAnswer { .. }
         | DecisionError::DeadlineExceeded { .. }
         | DecisionError::BudgetRefused { .. } => -32000,
     };
@@ -76,8 +76,8 @@ pub(crate) async fn evaluate_decision(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use meerkat_decision::{
-        AnswerValidationError, BackendFailure, DecisionUnavailableReason, QuestionId,
-        RequestValidationError,
+        AnswerValidationError, BackendFailure, BudgetParticipation, DecisionAccounting,
+        DecisionUnavailableReason, QuestionId, RequestValidationError,
     };
 
     use super::*;
@@ -117,19 +117,36 @@ mod tests {
         ));
         assert_eq!(unavailable.code, CAPABILITY_UNAVAILABLE_CODE);
 
-        let backend =
-            decision_error_to_rpc(&DecisionError::BackendFailure(BackendFailure::RateLimited));
+        let backend = decision_error_to_rpc(&DecisionError::BackendFailure {
+            failure: BackendFailure::RateLimited,
+            accounting: DecisionAccounting::Unmeasured,
+            budget: BudgetParticipation::NotIssued,
+        });
         assert_eq!(backend.code, -32000);
-        assert_eq!(backend.data.as_ref().unwrap()["reason"], "rate_limited");
+        let data = backend.data.as_ref().unwrap();
+        assert_eq!(data["failure"]["reason"], "rate_limited");
+        // The failure keeps what the evaluation spent and how the budget was
+        // settled; a host caller can account for a failed call.
+        assert_eq!(data["accounting"]["kind"], "unmeasured");
+        assert_eq!(data["budget"]["kind"], "not_issued");
         assert!(backend.message.starts_with("backend_failure:"));
 
-        let answer = decision_error_to_rpc(&DecisionError::InvalidAnswer(
-            AnswerValidationError::MissingAnswer {
+        let answer = decision_error_to_rpc(&DecisionError::InvalidAnswer {
+            error: AnswerValidationError::MissingAnswer {
                 question: QuestionId::new("q").unwrap(),
             },
-        ));
+            accounting: DecisionAccounting::Measured {
+                input_tokens: 10,
+                output_tokens: 2,
+            },
+            budget: BudgetParticipation::NotIssued,
+        });
         assert_eq!(answer.code, -32000);
         assert_eq!(answer.data.as_ref().unwrap()["code"], "invalid_answer");
+        assert_eq!(
+            answer.data.as_ref().unwrap()["accounting"]["input_tokens"],
+            10
+        );
 
         assert_eq!(
             decision_service_unavailable_error().code,

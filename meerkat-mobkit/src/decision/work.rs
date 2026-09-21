@@ -59,6 +59,8 @@ pub enum WorkDecisionError {
     TooFew { what: &'static str, count: usize },
     /// Nothing was supplied where at least one item is required.
     Empty { what: &'static str },
+    /// A caller supplied JSON `null` where instructions are required.
+    MissingInstructions { what: &'static str },
     /// The result lacks a judgment the helper asked for.
     MissingJudgment { question: String },
     /// The service refused or failed.
@@ -76,6 +78,12 @@ impl std::fmt::Display for WorkDecisionError {
                 write!(f, "at least 2 {what} are required, got {count}")
             }
             Self::Empty { what } => write!(f, "at least one of {what} is required"),
+            Self::MissingInstructions { what } => {
+                write!(
+                    f,
+                    "{what} must carry instructions; JSON null is not admissible"
+                )
+            }
             Self::MissingJudgment { question } => {
                 write!(f, "result lacks a judgment for `{question}`")
             }
@@ -109,13 +117,18 @@ fn option_id(raw: &str) -> Result<OptionId, WorkDecisionError> {
 }
 
 /// Read caller JSON as decision instructions: strings stay text, objects and
-/// arrays stay structured, and other scalars are rendered as text so no
-/// admissible caller value is refused for its JSON type alone.
-fn instructions_from_value(value: &Value) -> Instructions {
+/// arrays stay structured, numbers and booleans are rendered as text, and
+/// `null` is refused — an absent instruction is a caller mistake, not the
+/// four-character prompt "null".
+fn instructions_from_value(
+    value: &Value,
+    what: &'static str,
+) -> Result<Instructions, WorkDecisionError> {
     match value {
-        Value::String(text) => Instructions::text(text.clone()),
-        Value::Object(_) | Value::Array(_) => Instructions::Structured(value.clone()),
-        other => Instructions::text(other.to_string()),
+        Value::Null => Err(WorkDecisionError::MissingInstructions { what }),
+        Value::String(text) => Ok(Instructions::text(text.clone())),
+        Value::Object(_) | Value::Array(_) => Ok(Instructions::Structured(value.clone())),
+        other => Ok(Instructions::text(other.to_string())),
     }
 }
 
@@ -488,9 +501,19 @@ pub fn aggregate_rubric(scores: &[RubricScore], hard_rules: &[RubricHardRule]) -
             RubricLevel::Level { index } => Some(index),
             RubricLevel::Abstain | RubricLevel::Weighted { .. } => None,
         })
-        .min()
-        .unwrap_or(0);
-    RubricAggregate::Passed { minimum_level }
+        .min();
+    match minimum_level {
+        Some(minimum_level) => RubricAggregate::Passed { minimum_level },
+        // No dimension elected a level, so there is no minimum to report.
+        // Naming every undetermined dimension is the truthful answer; a
+        // fabricated level 0 would read as a pass at the lowest rung.
+        None => RubricAggregate::Undetermined {
+            dimension_ids: scores
+                .iter()
+                .map(|score| score.dimension_id.clone())
+                .collect(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +555,7 @@ pub fn work_fit_request(
         .map(|candidate| {
             Ok(ChoiceOption {
                 id: option_id(&candidate.id)?,
-                description: instructions_from_value(&candidate.summary),
+                description: instructions_from_value(&candidate.summary, "work candidate summary")?,
             })
         })
         .collect::<Result<Vec<_>, WorkDecisionError>>()?;

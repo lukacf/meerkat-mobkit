@@ -55,15 +55,23 @@ the Meerkat realm config (`.rkat/config.toml`):
 decision_enabled = true          # exposes the agent-callable `decide` tool
 
 [decision]
-backend = "session_llm"          # default: the session's already-admitted LLM route
+backend = "llm"                  # default: the caller's already-admitted LLM route
 ```
 
 | Configuration | Behavior |
 | --- | --- |
 | `tools.decision_enabled = false` (default) | No decision client, credential lookup, or network call exists |
-| enabled, `backend = "session_llm"` | One tool-free structured request through the session's admitted route; no new account |
-| `backend = "jev"` | Requires a `[decision.jev]` table with a typed credential source **and** `allow_disclosure = true` |
+| enabled, `backend = "llm"` | One tool-free structured request through the caller's admitted route; no new account. Inside a member turn that is the event-isolated fork of the member's own current client; a **host** caller needs an explicit `[decision.host_route]` |
+| `backend = "jev"` | Requires a `[decision.jev]` table with explicit `endpoint`, `model`, a typed credential source **and** `allow_disclosure = true` |
 | A Jev key merely present in the environment | Selects nothing |
+
+```toml
+# Host invocations (mobkit/decision/evaluate, memory applicability) on the
+# llm backend name their own route; the member tool never reads this table.
+[decision.host_route]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+```
 
 ```toml
 [decision]
@@ -84,9 +92,10 @@ max_attempts = 2
 
 Jev returns native probabilities and distributions. The adapter keeps them as
 typed, backend-qualified data and **applies no threshold**; the consuming
-feature owns that policy. The session-LLM backend returns categorical answers
-and explicit abstention and never invents probabilities from self-reported
-confidence.
+feature owns that policy. The LLM backend returns categorical answers and
+explicit abstention and never invents probabilities from self-reported
+confidence. In this release the Jev credential resolves through the `env` and
+`inline_secret` source kinds; other kinds are refused typed at composition.
 
 ## Members: the `decide` tool
 
@@ -104,12 +113,23 @@ Compose a service on the gateway and the SDKs consume it through one RPC:
 ```rust
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 
-let service = std::sync::Arc::new(meerkat::build_decision_service(&config, route_client)?);
+// A host with no admitted session route resolves `[decision.host_route]`
+// (or the Jev table) through the factory; a host that already holds an
+// admitted client passes it to `meerkat::build_decision_service`.
+let service = std::sync::Arc::new(meerkat::build_host_decision_service(&factory, &config).await?);
 let runtime = UnifiedRuntimeBuilder::default()
     .decision_service(service)
     // ...
     .build().await?;
 ```
+
+The SDK gateway (`rpc_gateway`) does this itself from the host config named by
+`runtime_options.meerkat_config_path`: when `tools.decision_enabled = true`
+and the `[decision]` table has a route a host can use (`backend = "jev"`, or
+`[decision.host_route]` on the `llm` backend), the service is composed at
+init and `mobkit/capabilities` advertises `mobkit/decision/evaluate`. Without
+a host route the members still get the `decide` tool over their own session
+route, and the RPC answers capability-unavailable naming the missing table.
 
 ```python
 from meerkat_mobkit import binary_question, choose_one_question, grade_question
@@ -138,7 +158,9 @@ const result = await mob.decide(state, [
 Every result carries the exact `route` that served it, typed `accounting`
 (`measured` or `unmeasured`), and `budget` participation. A runtime with no
 composed service answers the reserved capability-unavailable code; an invalid
-request is a parameter error carrying the typed decision error in `data`.
+request is a parameter error carrying the typed decision error in `data`. A
+failure after the backend ran (`backend_failure`, `invalid_answer`) still
+carries the `accounting` and `budget` that were settled.
 
 ## Memory applicability
 
@@ -155,17 +177,29 @@ UnifiedRuntimeBuilder::default()
     .memory_applicability(MemoryApplicabilityConfig::default())
 ```
 
+On the SDK gateway the same policy is `runtime_options.agent_memory.applicability`
+(`true` for the defaults, or the typed table: `max_assessed_candidates`,
+`probability_threshold`, `keep_on_abstain`, `baseline`,
+`assessment_timeout_ms`); it requires the host decision service above and
+init refuses a policy it could not attach.
+
 Each assessed candidate gets two independent binary predicates: *does it
 state or directly imply information the request needs* and *does it
 contradict or correct an assumption the request relies on*. Contradicting
 records are kept on purpose, so recall never filters down to agreeing
 material. Candidates beyond `max_assessed_candidates` are kept unassessed,
-never silently dropped. If the service fails or times out, the declared
+never silently dropped; records already injected this session are not judged
+again; a turn without text keeps every candidate unassessed without a call.
+The state sent to the judge is byte-bounded per field, and the worst case at
+the candidate bound is checked against the service's `max_questions` and
+`max_state_bytes` when the policy is built, so no turn is refused for a size
+the host could have known. If the service fails, is refused, or exceeds the
+policy's `assessment_timeout_ms` (or the service deadline), the declared
 `baseline` applies (`pass_through`, the default, injects every candidate as
 before; `inject_nothing` injects none) and the outcome carries a typed
-degradation marker. Explicit remember requests and critical corrections are
-not made to disappear by a low score: they are ordinary records the policy
-sees and the baseline protects.
+degradation marker, announced once per identity at WARN. Explicit remember
+requests and critical corrections are not made to disappear by a low score:
+they are ordinary records the policy sees and the baseline protects.
 
 ## Work, evidence, and rubrics
 

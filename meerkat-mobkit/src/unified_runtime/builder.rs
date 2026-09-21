@@ -798,23 +798,23 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Install a pre-built access controller (ABAC enforcement for the
-    /// console and SSE surfaces). Absent — the default — access control is
-    /// off and every surface behaves exactly as before.
     /// Install the host-composed decision service (see
-    /// `meerkat::build_decision_service`). Serves `mobkit/decision/evaluate`
-    /// and backs the memory applicability policy. Members get the
-    /// agent-callable `decide` tool from the Meerkat facade when the
-    /// effective meerkat config sets `tools.decision_enabled = true`; this
-    /// slot is the host-side service, not the member tool.
+    /// `meerkat::build_decision_service` / `meerkat::build_host_decision_service`).
+    /// Serves `mobkit/decision/evaluate` and backs the memory applicability
+    /// policy. Members get the agent-callable `decide` tool from the Meerkat
+    /// facade when the effective meerkat config sets
+    /// `tools.decision_enabled = true`; this slot is the host-side service,
+    /// not the member tool.
     pub fn decision_service(mut self, service: Arc<meerkat_decision::DecisionService>) -> Self {
         self.decision_service = Some(service);
         self
     }
 
     /// Enable decision-backed memory applicability on the per-turn recall
-    /// path. Requires [`decision_service`](Self::decision_service); building
-    /// without one is a configuration conflict, never a silent no-op.
+    /// path. Requires [`decision_service`](Self::decision_service) and an
+    /// agent memory provider to attach to; building without either is a
+    /// configuration conflict, never a silent no-op. The candidate bound is
+    /// checked against the service's request limits at build.
     pub fn memory_applicability(
         mut self,
         config: crate::decision::MemoryApplicabilityConfig,
@@ -823,6 +823,9 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Install a pre-built access controller (ABAC enforcement for the
+    /// console and SSE surfaces). Absent — the default — access control is
+    /// off and every surface behaves exactly as before.
     pub fn access_controller(mut self, controller: crate::access::AccessController) -> Self {
         self.access_controller = Some(controller);
         self
@@ -1119,6 +1122,15 @@ impl UnifiedRuntimeBuilder {
             }
             (None, _) => None,
         };
+        // A policy with nothing to attach to would be configured and never
+        // consulted; refusing here keeps "configured" and "in effect" the same fact.
+        if applicability_policy.is_some() && agent_memory_provider.is_none() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "memory_applicability() requires an agent memory provider \
+                 (agent_memory_provider() or a memory stack) to attach to"
+                    .to_string(),
+            ));
+        }
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
                 provider.clone(),

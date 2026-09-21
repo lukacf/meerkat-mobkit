@@ -115,3 +115,10 @@ async def test_decide_omits_task_when_not_given():
     await handle.decide({"records": []}, [binary_question("q", "x")])
     assert "task" not in calls[0][1]
     assert calls[0][1]["state"] == {"records": []}
+
+
+def test_decision_result_reports_absent_fields_as_none() -> None:
+    parsed = DecisionResult.from_dict({"contract": "v1"})
+    assert parsed.judgments == {}
+    assert parsed.attempts is None
+    assert DecisionResult.from_dict({}).contract is None

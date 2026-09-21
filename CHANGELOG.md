@@ -35,27 +35,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `pkg-config` so bundled Opus is never compiled through CMake.
 - Decision services: MobKit composes Meerkat's optional `meerkat-decision`
   service. `UnifiedRuntimeBuilder::decision_service` installs a host-composed
-  service (see `meerkat::build_decision_service`) and the unified stdin RPC
+  service (see `meerkat::build_decision_service` /
+  `meerkat::build_host_decision_service`) and the unified stdin RPC
   serves `mobkit/decision/evaluate`, consumed by `MobHandle.decide(...)` in the
   Python SDK (`binary_question` / `choose_one_question` / `grade_question`,
   `DecisionResult`, `DecisionJudgment`) and `mob.decide(...)` in the TypeScript
   SDK (`binaryQuestion` / `chooseOneQuestion` / `gradeQuestion`,
   `DecisionResult`, `DecisionJudgment`). A runtime without a composed service
   answers the reserved capability-unavailable code; decision failures keep
-  their typed class in `error.data`. `UnifiedRuntimeBuilder::memory_applicability`
+  their typed class in `error.data` (failures after the backend ran carry
+  `accounting` and `budget`). The method is advertised by `mobkit/capabilities`
+  only when a service is composed. `UnifiedRuntimeBuilder::memory_applicability`
   installs `decision::MemoryApplicabilityPolicy` on the per-turn recall path:
   independent relevance and contradiction predicates per candidate between
   authorized recall and final packing, contradicting records preserved,
-  unassessed candidates kept, a declared `pass_through` / `inject_nothing`
-  baseline on failure with a typed degradation marker on
-  `TurnInjection::Injected { applicability }`, and a new
-  `TurnInjectionSkip::NoApplicableRecords`. `decision::work` adds
-  per-requirement evidence, commitment applicability, rubric dimensions with
-  non-compensating `aggregate_rubric`, and `work_fit` helpers that keep
-  relative choice and sufficiency separate. Members get the agent-callable
-  `decide` tool from the Meerkat facade when the effective realm config sets
-  `tools.decision_enabled = true`. Docs: `docs/concepts/decision-services.mdx`.
-  Requires the Meerkat release that ships `meerkat-decision`.
+  unassessed candidates kept, already-injected records never re-judged, a
+  byte-bounded state (`MAX_ASSESSED_*`) whose worst case is checked against
+  the service's `max_questions` / `max_state_bytes` at build, an optional
+  `assessment_timeout_ms`, `probability_threshold` for native probabilities,
+  a declared `pass_through` / `inject_nothing` baseline on failure with a
+  typed degradation marker on `TurnInjection::Injected { applicability }`
+  (announced once per identity at WARN), and the new skips
+  `TurnInjectionSkip::NoApplicableRecords` (judged, all excluded) and
+  `TurnInjectionSkip::ApplicabilityDegradedInjectNothing` (nothing judged).
+  `decision::work` adds per-requirement evidence, commitment applicability,
+  rubric dimensions with non-compensating `aggregate_rubric` (no elected
+  level is `Undetermined`, never a pass at level 0), and `work_fit` helpers
+  that keep relative choice and sufficiency separate. The SDK gateway
+  (`rpc_gateway`) composes the host service from the host config's
+  `[decision]` table when `tools.decision_enabled = true` and a host can
+  route through it (`backend = "jev"`, or `[decision.host_route]` on the
+  `llm` backend), and `runtime_options.agent_memory.applicability`
+  (`true` or the typed table) attaches the policy to the gateway's memory
+  injector. Members get the agent-callable `decide` tool from the Meerkat
+  facade when the effective realm config sets `tools.decision_enabled = true`,
+  routed over the event-isolated fork of their own current client — the
+  dispatch-taint decorator forwards that fork. Docs:
+  `docs/concepts/decision-services.mdx`. Requires Meerkat `>= 0.8.41`
+  (the first release shipping `meerkat-decision`); the `meerkat-decision`
+  pin is unresolvable against earlier releases.
 
 - Console voice and the external live channel coexist under one shared live
   owner. `rpc_gateway` accepts `runtime_options.console_voice` together with

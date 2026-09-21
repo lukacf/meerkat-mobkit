@@ -4128,9 +4128,14 @@ export function parseDecisionJudgment(raw: unknown): DecisionJudgment {
   };
 }
 
-/** Typed result of `mobkit/decision/evaluate`. */
+/**
+ * Typed result of `mobkit/decision/evaluate`.
+ *
+ * `contract` and `attempts` are always present on the wire; the parser keeps
+ * them `null` rather than inventing `""` / `0` if a result ever lacks them.
+ */
 export interface DecisionResult {
-  readonly contract: string;
+  readonly contract: string | null;
   /** Exact backend route that served the call. */
   readonly route: Record<string, unknown>;
   readonly judgments: Readonly<Record<string, DecisionJudgment>>;
@@ -4138,7 +4143,7 @@ export interface DecisionResult {
   readonly accounting: Record<string, unknown>;
   /** `charged` / `unmeasured` / `not_issued` participation in the owner budget. */
   readonly budget: Record<string, unknown>;
-  readonly attempts: number;
+  readonly attempts: number | null;
 }
 
 export function parseDecisionResult(raw: unknown): DecisionResult {
@@ -4148,11 +4153,11 @@ export function parseDecisionResult(raw: unknown): DecisionResult {
     judgments[questionId] = parseDecisionJudgment(judgment);
   }
   return {
-    contract: String(d.contract ?? ""),
+    contract: typeof d.contract === "string" ? d.contract : null,
     route: asRecord(d.route),
     judgments,
     accounting: asRecord(d.accounting),
     budget: asRecord(d.budget),
-    attempts: typeof d.attempts === "number" ? d.attempts : 0,
+    attempts: typeof d.attempts === "number" ? d.attempts : null,
   };
 }

@@ -1949,7 +1949,6 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/gating/audit",
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
-                decision_methods::DECISION_EVALUATE_METHOD,
                 "mobkit/blob/get",
                 "mobkit/send_message",
                 "mobkit/find_members",
@@ -2009,6 +2008,12 @@ async fn handle_unified_rpc_json_inner(
             if workgraph_configured {
                 methods.extend_from_slice(workgraph_methods::WORKGRAPH_READ_METHODS);
                 methods.extend_from_slice(workgraph_methods::WORKGRAPH_MUTATE_METHODS);
+            }
+            // The decision method is advertised only when a service is
+            // composed; a runtime without one answers the reserved
+            // capability-unavailable code, and must not claim otherwise here.
+            if runtime.decision_service().is_some() {
+                methods.push(decision_methods::DECISION_EVALUATE_METHOD);
             }
             // Live methods are advertised only when the gateway attached a
             // live transport (`runtime_options.live`, persistent mode).
@@ -6848,7 +6853,10 @@ shell = true
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>();
-        assert!(methods.contains(&super::decision_methods::DECISION_EVALUATE_METHOD));
+        assert!(
+            !methods.contains(&super::decision_methods::DECISION_EVALUATE_METHOD),
+            "a runtime without a composed service must not advertise the method"
+        );
         runtime.shutdown().await;
         Ok(())
     }
@@ -6921,7 +6929,27 @@ shell = true
             json!("yes")
         );
         assert_eq!(ok["result"]["budget"]["kind"], json!("not_issued"));
-        assert_eq!(ok["result"]["route"]["backend"], json!("session_llm"));
+        assert_eq!(ok["result"]["route"]["backend"], json!("llm"));
+
+        let capabilities: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({"jsonrpc": "2.0", "id": 9, "method": "mobkit/capabilities"}).to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert!(
+            capabilities["result"]["methods"]
+                .as_array()
+                .expect("methods array")
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|method| method == super::decision_methods::DECISION_EVALUATE_METHOD),
+            "a composed service is advertised"
+        );
 
         let backend_failure = evaluate(
             2,
@@ -6937,8 +6965,12 @@ shell = true
             json!("backend_failure")
         );
         assert_eq!(
-            backend_failure["error"]["data"]["reason"],
+            backend_failure["error"]["data"]["failure"]["reason"],
             json!("rate_limited")
+        );
+        assert_eq!(
+            backend_failure["error"]["data"]["budget"]["kind"],
+            json!("not_issued")
         );
 
         let invalid = evaluate(3, json!({"state": "x", "questions": []})).await?;

@@ -2457,21 +2457,25 @@ class DecisionResult:
     ``{"kind": "measured", ...}`` or ``{"kind": "unmeasured"}``; ``budget``
     reports how the call participated in the owner's token budget
     (``charged`` / ``unmeasured`` / ``not_issued``). Absence is reported,
-    never substituted with zero.
+    never substituted with zero. ``contract`` and ``attempts`` are always
+    present on the wire; the parser keeps them ``None`` rather than inventing
+    ``""`` / ``0`` if a result ever lacks them.
     """
 
-    contract: str
+    contract: str | None
     route: dict[str, Any]
     judgments: dict[str, DecisionJudgment]
     accounting: dict[str, Any]
     budget: dict[str, Any]
-    attempts: int
+    attempts: int | None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DecisionResult:
         judgments = data.get("judgments") or {}
+        contract = data.get("contract")
+        attempts = data.get("attempts")
         return cls(
-            contract=str(data.get("contract", "")),
+            contract=str(contract) if isinstance(contract, str) else None,
             route=dict(data.get("route") or {}),
             judgments={
                 str(question_id): DecisionJudgment.from_dict(judgment)
@@ -2479,5 +2483,5 @@ class DecisionResult:
             },
             accounting=dict(data.get("accounting") or {}),
             budget=dict(data.get("budget") or {}),
-            attempts=_coerce_int(data.get("attempts", 0)),
+            attempts=_coerce_int(attempts) if attempts is not None else None,
         )

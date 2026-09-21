@@ -329,9 +329,13 @@ pub enum TurnInjectionSkip {
     /// Records were recalled but nothing new fit: all already injected this
     /// session, or none fit the remaining budget.
     NothingRenderable,
-    /// Records were recalled but the applicability policy excluded every one
-    /// (or applied its inject-nothing baseline after a failed assessment).
+    /// Records were recalled and assessed, and the applicability policy
+    /// excluded every one on its judgments.
     NoApplicableRecords,
+    /// Records were recalled but the assessment failed and the policy's
+    /// declared `inject_nothing` baseline applied. Distinct from
+    /// `NoApplicableRecords`: nothing was judged.
+    ApplicabilityDegradedInjectNothing,
     /// The member runs as an autonomous host, and meerkat refuses injected
     /// context on that mode ("autonomous inbox delivery carries no user-channel
     /// work boundary"). MobKit skips before delivery so the turn proceeds
@@ -349,6 +353,7 @@ impl TurnInjectionSkip {
             Self::NoRecords => "no_records",
             Self::NothingRenderable => "nothing_renderable",
             Self::NoApplicableRecords => "no_applicable_records",
+            Self::ApplicabilityDegradedInjectNothing => "applicability_degraded_inject_nothing",
             Self::RuntimeModeAutonomousHost => "runtime_mode_autonomous_host",
         }
     }
@@ -380,6 +385,9 @@ pub struct RecallCoordinator {
     /// skip per identity is loud and the rest are DEBUG. Bounded; cleared when
     /// it grows past `MAX_NOTED_SKIPS`, after which a reason may be re-announced.
     noted_skips: Arc<Mutex<HashSet<(String, &'static str)>>>,
+    /// (identity, decision error code) pairs whose applicability degradation
+    /// was already announced at WARN; same bound and clearing as `noted_skips`.
+    noted_degradations: Arc<Mutex<HashSet<(String, &'static str)>>>,
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
@@ -402,6 +410,7 @@ impl RecallCoordinator {
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
             noted_skips: Arc::new(Mutex::new(HashSet::new())),
+            noted_degradations: Arc::new(Mutex::new(HashSet::new())),
             nonces: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
@@ -586,6 +595,44 @@ impl RecallCoordinator {
         }
     }
 
+    /// Announce an applicability degradation once per (identity, error code)
+    /// at WARN, then at DEBUG. A pass-through baseline injects exactly what
+    /// the unassessed path would, so without this the operator could not
+    /// tell a working judge from one that has been failing for a month.
+    fn note_degradation(
+        &self,
+        identity: &AgentIdentity,
+        degradation: &crate::decision::ApplicabilityDegradation,
+    ) {
+        let first = {
+            let mut noted = self
+                .noted_degradations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if noted.len() >= MAX_NOTED_SKIPS {
+                noted.clear();
+            }
+            noted.insert((identity.to_string(), degradation.code.as_str()))
+        };
+        if first {
+            tracing::warn!(
+                identity = %identity,
+                code = degradation.code.as_str(),
+                baseline = ?degradation.baseline,
+                error = %degradation.message,
+                "memory applicability assessment degraded; declared baseline applied \
+                 (first occurrence for this identity and code)"
+            );
+        } else {
+            tracing::debug!(
+                identity = %identity,
+                code = degradation.code.as_str(),
+                baseline = ?degradation.baseline,
+                "memory applicability assessment degraded; declared baseline applied"
+            );
+        }
+    }
+
     /// `inject_for_turn` with the outcome kept typed: every path that injects
     /// nothing says which of the five it was, instead of returning an empty
     /// vector indistinguishable from the others. The dispatch door uses the
@@ -657,15 +704,36 @@ impl RecallCoordinator {
         // untouched; the policy only decides inclusion and reports how.
         let (records, applicability) = match self.applicability.as_ref() {
             Some(policy) => {
-                let assessment = policy.assess(&query_text, records).await;
+                // Records already injected this session are settled for the
+                // packer below; judging them again would spend judge tokens
+                // on dispositions the packer discards.
+                let fresh: Vec<AnnotatedRecord> = match skip_ids.as_ref() {
+                    Some(skip) => records
+                        .into_iter()
+                        .filter(|candidate| !skip.contains(&candidate.record.memory_id))
+                        .collect(),
+                    None => records,
+                };
+                if fresh.is_empty() {
+                    return Ok(TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable));
+                }
+                let assessment = policy.assess(&query_text, fresh).await;
+                if let Some(degradation) = assessment.outcome.degradation.as_ref() {
+                    self.note_degradation(identity, degradation);
+                }
                 (assessment.included, Some(assessment.outcome))
             }
             None => (records, None),
         };
         if records.is_empty() {
-            return Ok(TurnInjection::Skipped(
-                TurnInjectionSkip::NoApplicableRecords,
-            ));
+            let degraded = applicability
+                .as_ref()
+                .is_some_and(crate::decision::ApplicabilityOutcome::is_degraded);
+            return Ok(TurnInjection::Skipped(if degraded {
+                TurnInjectionSkip::ApplicabilityDegradedInjectNothing
+            } else {
+                TurnInjectionSkip::NoApplicableRecords
+            }));
         }
         let nonce = self.nonce_for(identity, session_key);
         let Some(rendered) = render_injection_annotated(
@@ -2354,6 +2422,141 @@ mod tests {
         Ok(())
     }
 
+    fn applicability_coordinator(
+        records: Vec<AgentMemoryRecord>,
+        service: Arc<meerkat_decision::DecisionService>,
+        baseline: crate::decision::ApplicabilityBaseline,
+    ) -> Result<RecallCoordinator, Box<dyn Error>> {
+        let policy = crate::decision::MemoryApplicabilityPolicy::new(
+            service,
+            crate::decision::MemoryApplicabilityConfig {
+                baseline,
+                ..crate::decision::MemoryApplicabilityConfig::default()
+            },
+        )?;
+        Ok(RecallCoordinator::new(
+            Arc::new(FakeProvider::bodies_only(records)),
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        )
+        .with_applicability_policy(Some(Arc::new(policy))))
+    }
+
+    #[tokio::test]
+    async fn applicability_excluding_every_record_is_a_distinct_skip() -> Result<(), Box<dyn Error>>
+    {
+        // The scripted backend answers every unscripted question "no".
+        let service = crate::decision::memory::tests::service_with(vec![Ok(vec![])]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Unrelated", "Likes jazz")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::NoApplicableRecords)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn degraded_assessment_with_inject_nothing_baseline_is_not_no_applicable_records()
+    -> Result<(), Box<dyn Error>> {
+        let service = crate::decision::memory::tests::service_with(vec![Err(
+            meerkat_decision::BackendFailure::Timeout,
+        )]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::InjectNothing,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::ApplicabilityDegradedInjectNothing)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn degraded_pass_through_injects_with_a_typed_marker() -> Result<(), Box<dyn Error>> {
+        let service = crate::decision::memory::tests::service_with(vec![Err(
+            meerkat_decision::BackendFailure::Timeout,
+        )]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        let TurnInjection::Injected {
+            bodies,
+            applicability,
+        } = out
+        else {
+            return Err("expected an injection".into());
+        };
+        assert!(!bodies.is_empty());
+        let outcome = applicability.ok_or("applicability outcome is carried")?;
+        assert!(outcome.is_degraded());
+        assert_eq!(
+            outcome.degradation.as_ref().map(|d| d.code),
+            Some(meerkat_decision::DecisionErrorCode::BackendFailure)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn already_injected_records_are_not_judged_again() -> Result<(), Box<dyn Error>> {
+        // Exactly one scripted turn: a second judge call would panic on the
+        // empty script, so this test proves the second turn never asks.
+        let service = crate::decision::memory::tests::service_with(vec![Ok(vec![(
+            "relevant_0".to_string(),
+            meerkat_decision::RawAnswer::BinaryCategorical(meerkat_decision::BinaryAnswer::Yes),
+        )])]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::InjectNothing,
+        )?;
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("book a flight".into());
+        let first = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(first, TurnInjection::Injected { ref bodies, .. } if !bodies.is_empty()));
+        let second = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(
+            second,
+            TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable)
+        ));
+        Ok(())
+    }
+
     #[test]
     fn skip_reasons_have_distinct_snake_case_labels() {
         let all = [
@@ -2362,6 +2565,8 @@ mod tests {
             TurnInjectionSkip::BudgetExhausted,
             TurnInjectionSkip::NoRecords,
             TurnInjectionSkip::NothingRenderable,
+            TurnInjectionSkip::NoApplicableRecords,
+            TurnInjectionSkip::ApplicabilityDegradedInjectNothing,
             TurnInjectionSkip::RuntimeModeAutonomousHost,
         ];
         let labels: HashSet<&str> = all.iter().map(|r| r.as_str()).collect();
