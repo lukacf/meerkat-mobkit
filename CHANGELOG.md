@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Documentation corrections from the 2026-09-21 accuracy audit: 27 confirmed
+  findings across the RPC catalog, sessions, roster, memory, access control,
+  governance, configuration, console, quickstart, and the Python and Rust SDK
+  pages, each re-verified against current source.
 - The Linux release container installs a pinned Kitware CMake 3.31.12 (sha256
   verified) instead of Bullseye's apt package. The apt install failed on both
   Linux release legs when bullseye-security's pool dropped a dependency the
