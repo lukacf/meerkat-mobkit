@@ -596,6 +596,16 @@ pub(crate) mod tests {
     }
     impl RealRuntime {
         async fn start(suffix: &str) -> Self {
+            // Several tests share a logical suffix and `cargo test` runs them
+            // on parallel threads in one process. The mob id becomes the comms
+            // participant name and the discovery namespace is shared, so two
+            // fixtures with the same suffix collided on
+            // `ParticipantNameOccupied` and saw each other's history rows.
+            // Derive both from a process-unique nonce.
+            static FIXTURE_NONCE: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let nonce = FIXTURE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let unique = format!("{suffix}-{}-{nonce}", std::process::id());
             let provider = ProviderFixture::start().await;
             std::fs::create_dir_all(".rct").expect("test state parent");
             let directory = tempfile::Builder::new()
@@ -644,7 +654,7 @@ pub(crate) mod tests {
             let definition = meerkat_mob::MobDefinition::from_toml(&format!(
                 r#"
     [mob]
-    id = "console-voice-{suffix}"
+    id = "console-voice-{unique}"
     [profiles.agent]
     model = "gpt-5.5"
     external_addressable = true
@@ -674,7 +684,7 @@ pub(crate) mod tests {
                         modules: vec![],
                         pre_spawn: vec![],
                         discovery: DiscoverySpec {
-                            namespace: "voice-test".to_string(),
+                            namespace: format!("voice-test-{unique}"),
                             modules: vec![],
                         },
                     },
