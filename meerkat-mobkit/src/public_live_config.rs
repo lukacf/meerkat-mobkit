@@ -197,6 +197,22 @@ mod tests {
     }
 
     #[test]
+    fn public_live_registration_parses_the_shared_sdk_summary_fixture() {
+        let contracts: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/live_contracts_v1.json"))
+                .expect("live contracts fixture");
+        let parsed =
+            PublicLiveRegistration::parse(&contracts["openai_live_gateway_config_with_summary"])
+                .expect("registration with summary");
+        assert_eq!(parsed.summary.model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(parsed.summary.max_input_bytes, 32768);
+        assert_eq!(parsed.summary.max_output_bytes, 2048);
+        let plain = PublicLiveRegistration::parse(&contracts["openai_live_gateway_config"])
+            .expect("registration without summary");
+        assert_eq!(plain.summary, ConsoleVoiceSummaryConfig::default());
+    }
+
+    #[test]
     fn public_live_registration_accepts_bounded_summary_configuration() {
         let mut configured = registration();
         configured["summary"] = json!({

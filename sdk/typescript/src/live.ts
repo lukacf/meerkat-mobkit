@@ -45,6 +45,21 @@ export interface OpenAiLiveGatewayConfig {
   readonly authBinding: LiveAuthBindingRef;
   readonly voice: string;
   readonly sessionInstructions?: string;
+  /** Console voice context summary bounds; every field optional (gateway defaults apply). */
+  readonly summary?: OpenAiLiveSummaryConfig;
+}
+
+/**
+ * Bounds for the console voice context summary (`console_voice.summary`).
+ * `maxInputBytes` is the most recent slice of the serialized transcript handed
+ * to the summariser (gateway default 65536), `maxOutputBytes` the UTF-8 cap on
+ * the produced summary (gateway default 4096), and `model` the summary model on
+ * the agent's provider and credentials (default: the agent's own model).
+ */
+export interface OpenAiLiveSummaryConfig {
+  readonly model?: string;
+  readonly maxInputBytes?: number;
+  readonly maxOutputBytes?: number;
 }
 
 /** DEPRECATED private ChatGPT-brokered registration; prefer {@link OpenAiLiveGatewayConfig}. */
@@ -88,7 +103,7 @@ export function openAiLiveGatewayConfigToWire(
 ): Record<string, unknown> {
   assertExactKeys(
     asRecord(config, "openai live config"),
-    ["principal", "realm", "authBinding", "voice", "sessionInstructions"],
+    ["principal", "realm", "authBinding", "voice", "sessionInstructions", "summary"],
     "openai live config",
   );
   const principal = requireString(config.principal, "openai live principal");
@@ -106,7 +121,41 @@ export function openAiLiveGatewayConfigToWire(
       "openai live sessionInstructions",
     );
   }
+  if (config.summary !== undefined) {
+    result.summary = openAiLiveSummaryConfigToWire(config.summary);
+  }
   return result;
+}
+
+function requirePositiveInteger(value: unknown, context: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${context} must be a positive integer`);
+  }
+  return value;
+}
+
+export function openAiLiveSummaryConfigToWire(
+  summary: OpenAiLiveSummaryConfig,
+): Record<string, unknown> {
+  const record = asRecord(summary, "openai live summary");
+  assertExactKeys(record, ["model", "maxInputBytes", "maxOutputBytes"], "openai live summary");
+  const wire: Record<string, unknown> = {};
+  if (record.model !== undefined) {
+    wire.model = requireString(record.model, "openai live summary.model");
+  }
+  if (record.maxInputBytes !== undefined) {
+    wire.max_input_bytes = requirePositiveInteger(
+      record.maxInputBytes,
+      "openai live summary.maxInputBytes",
+    );
+  }
+  if (record.maxOutputBytes !== undefined) {
+    wire.max_output_bytes = requirePositiveInteger(
+      record.maxOutputBytes,
+      "openai live summary.maxOutputBytes",
+    );
+  }
+  return wire;
 }
 
 export function experimentalLiveGatewayConfigToWire(
