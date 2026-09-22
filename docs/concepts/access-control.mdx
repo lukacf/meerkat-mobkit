@@ -113,11 +113,17 @@ let runtime = UnifiedRuntime::builder()
 ```
 
 ```typescript
+import { MobKit } from "@rkat/mobkit-sdk";
+
 const mobkit = await MobKit.builder()
-  .mobConfig("config/mob.toml")
+  .mob("config/mob.toml")
   .accessControl("config/access.toml") // auto-discovered if the file exists
-  .start();
+  .gateway("/path/to/rpc_gateway")
+  .build();
 ```
+
+Use the downloaded or locally built gateway binary as described in the
+[quickstart](/quickstart#install).
 
 ```python
 mobkit = await (
