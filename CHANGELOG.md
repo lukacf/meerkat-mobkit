@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Capability invariant reporting. The post-materialization
+  declared-versus-resolved capability invariant logged `requires operator
+  attention` at WARN for every member whose decision was `Unverifiable
+  { cause: NonExactCatalog }` (330 members per boot on one production
+  gateway) although no action existed to take: the members' tools were
+  correct and the invariant simply had no exact catalog to compare against.
+  Reporting now follows the typed decision. A verified `Gap` is the only
+  WarnOnly outcome that asks for operator action, named per missing
+  category. `Unverifiable` is explained once per process per cause at INFO
+  (what could not be verified, and that no action is required unless a
+  member is missing tools), then recorded per member at DEBUG. A failed live
+  catalog read stays at WARN as a read error, not as a mismatch. Decision
+  and policy semantics are unchanged.
+- MobKit's own tool dispatcher wrappers declare exact catalogs. The
+  agent-memory `RecorderToolDispatcher`, the SDK `GatewayCallbackToolDispatcher`,
+  `ComposedExternalTools`, both schedule wrappers, and the mob-tools auto-wire
+  wrapper left `tool_catalog_capabilities()` / `tool_catalog()` on the
+  non-exact trait defaults, so every member built with agent memory or
+  SDK-registered tools carried a non-exact external slot and the capability
+  invariant could never verify it. Each wrapper now derives exactness from
+  what it wraps (composition is exact only when both halves are; a fixed
+  callback tool list is exact on its own) and publishes the catalog it
+  actually advertises, so members with MobKit-composed tools reach a real
+  `Match` or `Gap` decision.
+
 - Stuck voice close. `mobkit/console/voice/context_status` no longer
   validates durable-source availability on every poll; that validation loaded
   the full persisted session body on the mob actor once a second per preparing

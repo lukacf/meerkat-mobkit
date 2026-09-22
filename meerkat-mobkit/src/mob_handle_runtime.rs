@@ -929,14 +929,24 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         self.inner
             .tools()
             .iter()
-            .map(|tool| {
-                if tool.name == "delegate" || tool.name == "fork_off" {
-                    Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
-                } else if tool.name == "mob_spawn_member" {
-                    Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
-                } else {
-                    Arc::clone(tool)
-                }
+            .map(idle_retire_patched_tool_def)
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// The wrapper patches three tool definitions and adds none, so the inner
+    /// exactness holds for the patched catalog as well.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.inner
+            .tool_catalog()
+            .iter()
+            .map(|entry| meerkat_core::ToolCatalogEntry {
+                tool: idle_retire_patched_tool_def(&entry.tool),
+                ..entry.clone()
             })
             .collect::<Vec<_>>()
             .into()
@@ -1533,6 +1543,20 @@ fn fork_off_idle_retire_override_from_args(
 ) -> Result<DelegateIdleRetireOverride, meerkat_core::ToolError> {
     Ok(delegate_idle_retire_override_from_args(tool_name, args)?
         .unwrap_or(DelegateIdleRetireOverride::RuntimeDefault))
+}
+
+/// The one place the wrapper's advertised definitions differ from the inner
+/// surface; `tools()` and `tool_catalog()` must apply the same patch.
+fn idle_retire_patched_tool_def(
+    tool: &Arc<meerkat_core::types::ToolDef>,
+) -> Arc<meerkat_core::types::ToolDef> {
+    if tool.name == "delegate" || tool.name == "fork_off" {
+        Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
+    } else if tool.name == "mob_spawn_member" {
+        Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
+    } else {
+        Arc::clone(tool)
+    }
 }
 
 fn delegate_tool_def_with_idle_retire_secs(
@@ -9801,6 +9825,73 @@ mod tests {
             protected_mob_id: "test-mob".to_string(),
             spawner_comms_name: None,
         }
+    }
+
+    #[test]
+    fn auto_wire_wrapper_forwards_exactness_and_patches_the_catalog_like_tools() {
+        struct ExactMobTools;
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for ExactMobTools {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                ["delegate", "mob_spawn_member", "mob_list_members"]
+                    .into_iter()
+                    .map(|name| {
+                        Arc::new(meerkat_core::types::ToolDef {
+                            name: name.into(),
+                            description: String::new(),
+                            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                            provenance: None,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into()
+            }
+            fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+                meerkat_core::ToolCatalogCapabilities {
+                    exact_catalog: true,
+                    may_require_catalog_control_plane: false,
+                }
+            }
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::not_found(call.name))
+            }
+        }
+
+        use meerkat_core::AgentToolDispatcher as _;
+
+        let wrapper = AutoWireParentMobToolDispatcher {
+            inner: Arc::new(ExactMobTools),
+            ..wrapper_with_overrides(ImplicitDelegateRetirementOverrides::default())
+        };
+        assert!(wrapper.tool_catalog_capabilities().exact_catalog);
+        let catalog = wrapper.tool_catalog();
+        let tools = wrapper.tools();
+        assert_eq!(catalog.len(), tools.len());
+        for (entry, tool) in catalog.iter().zip(tools.iter()) {
+            assert_eq!(entry.tool.name, tool.name);
+            assert_eq!(
+                entry.tool.input_schema, tool.input_schema,
+                "the catalog must advertise the same patched definition as tools()"
+            );
+        }
+        let patched = |name: &str| {
+            catalog
+                .iter()
+                .find(|entry| entry.tool.name == name)
+                .and_then(|entry| {
+                    entry
+                        .tool
+                        .input_schema
+                        .pointer("/properties/idle_retire_secs")
+                })
+                .is_some()
+        };
+        assert!(patched("delegate"));
+        assert!(patched("mob_spawn_member"));
+        assert!(!patched("mob_list_members"));
     }
 
     #[test]

@@ -430,6 +430,17 @@ impl meerkat_core::AgentToolDispatcher for FiringHostGatedScheduleTools {
         self.inner.tools()
     }
 
+    /// The gate refuses calls at dispatch time; it advertises the inner
+    /// surface unchanged, so the inner catalog declarations are forwarded
+    /// verbatim rather than downgraded to the non-exact trait default.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.inner.tool_catalog()
+    }
+
     async fn dispatch(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -515,6 +526,16 @@ impl MobIdentityScheduleToolDispatcher {
 impl meerkat_core::AgentToolDispatcher for MobIdentityScheduleToolDispatcher {
     fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
         self.inner.tools()
+    }
+
+    /// Argument rewriting does not change the advertised surface; forward the
+    /// inner catalog declarations verbatim.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.inner.tool_catalog()
     }
 
     async fn dispatch(
@@ -1731,6 +1752,63 @@ mod tests {
             dir.path().join(SCHEDULE_STORE_FILE).exists(),
             "the durable store file is created",
         );
+    }
+
+    #[tokio::test]
+    async fn schedule_wrappers_forward_the_inner_catalog_declarations() {
+        struct ExactInner;
+        #[async_trait]
+        impl meerkat_core::AgentToolDispatcher for ExactInner {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                vec![Arc::new(meerkat_core::types::ToolDef {
+                    name: "meerkat_schedule_list".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    provenance: None,
+                })]
+                .into()
+            }
+            fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+                meerkat_core::ToolCatalogCapabilities {
+                    exact_catalog: true,
+                    may_require_catalog_control_plane: true,
+                }
+            }
+            async fn dispatch(
+                &self,
+                call: ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::not_found(call.name))
+            }
+        }
+
+        let inner: Arc<dyn meerkat_core::AgentToolDispatcher> = Arc::new(ExactInner);
+        let rewriting = Arc::new(MobIdentityScheduleToolDispatcher::new_for_test(
+            Arc::clone(&inner),
+            |_session| async { None },
+        ));
+        let gated = FiringHostGatedScheduleTools {
+            inner: Arc::clone(&rewriting) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+            binding: ScheduleFiringHostBinding::pending_in_process_host(),
+        };
+        for dispatcher in [
+            Arc::clone(&rewriting) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+            Arc::new(gated) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+        ] {
+            assert_eq!(
+                dispatcher.tool_catalog_capabilities(),
+                inner.tool_catalog_capabilities(),
+                "schedule wrappers must not downgrade the inner exactness"
+            );
+            assert_eq!(
+                dispatcher
+                    .tool_catalog()
+                    .iter()
+                    .map(|entry| entry.tool.name.to_string())
+                    .collect::<Vec<_>>(),
+                vec!["meerkat_schedule_list".to_string()]
+            );
+        }
     }
 
     /// Bug C stopgap: a gateway-owned store with no spawned firing host must
