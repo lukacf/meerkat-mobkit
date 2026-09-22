@@ -312,6 +312,53 @@ pub(crate) enum CollisionCustody {
 const CONVERGENCE_HANDOFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 const CONVERGENCE_HANDOFF_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// Cadence of the non-destructive re-offer while a resume waits on a spawn
+/// that is still in asynchronous custody for the same member.
+///
+/// A pending spawn that FAILS leaves nothing observable outside the actor: no
+/// roster member, no session binding. Re-offering the resume at this cadence
+/// is the only way to notice that the custody ended empty, and it is safe:
+/// `MemberAlreadyExists` means still occupied, success means this call became
+/// the materialization. The wait as a whole is bounded by the bridge's actor
+/// admission budget, the one budget every actor round trip already lives under.
+const IN_FLIGHT_SPAWN_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the roster says about the occupant a resume just collided with.
+///
+/// `MemberAlreadyExists` is raised by two different guards: the roster itself,
+/// and MobMachine's member-admission probe, which also refuses a duplicate
+/// while a spawn for the identity is still in asynchronous custody. Only the
+/// first names something that can be stale. The second is a build in progress
+/// that the roster does not show yet, so "collision without a roster member"
+/// is the observable signature of an in-flight spawn. OB3 2026-09-22 (item 3)
+/// read that signature as a stale occupant: the retire was inert, the resume
+/// retry collided with the build that had just finished, and the identity was
+/// marked Broken over a race that needed 250 ms of patience.
+#[derive(Debug)]
+pub(crate) enum CollidingOccupant {
+    /// The roster holds a committed member under this identity. Custody and
+    /// the preconditioned retire path decide what happens to it.
+    Committed,
+    /// No roster member: the collision came from a spawn still in custody (or
+    /// the projection window just before the roster insert). Convergence to
+    /// await, never debris to clear.
+    InFlight,
+    /// The roster read itself failed. Nothing may be destroyed on that basis.
+    Unobservable(meerkat_mob::MobError),
+}
+
+/// Pure mapping from a roster probe to [`CollidingOccupant`]; generic over the
+/// entry so the mapping is testable without manufacturing a roster row.
+fn classify_colliding_occupant<T>(
+    probe: Result<Option<T>, meerkat_mob::MobError>,
+) -> CollidingOccupant {
+    match probe {
+        Ok(Some(_)) => CollidingOccupant::Committed,
+        Ok(None) => CollidingOccupant::InFlight,
+        Err(error) => CollidingOccupant::Unobservable(error),
+    }
+}
+
 /// Delete and tombstone reset's superseded session projection before asking
 /// Meerkat to retire the physical member.
 ///
@@ -3935,6 +3982,142 @@ impl MobSessionBridge {
         }
     }
 
+    /// Wait, bounded by the actor admission budget, for a spawn that is still
+    /// in asynchronous custody for `member_id` to settle, then adopt its
+    /// result instead of retiring it.
+    ///
+    /// The build in custody is a resume of this very identity (the client
+    /// retry shape: a send timed out and was re-sent while the first spawn sat
+    /// behind a backlog), so its completion IS the materialization this call
+    /// was asked for. Convergence is read from the machine-state projection,
+    /// the read the rest of this bridge already trusts. The only spawn issued
+    /// here is the periodic non-destructive re-offer described on
+    /// [`IN_FLIGHT_SPAWN_PROBE_INTERVAL`]. Nothing here retires anything, and
+    /// a build that converged onto a DIFFERENT session is refused typed, not
+    /// adopted and not destroyed.
+    async fn await_in_flight_spawn_and_attach(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        spawn_spec: &SpawnMemberSpec,
+    ) -> Result<ResumeSessionOutcome, BridgeError> {
+        let budget = self.actor_admission_budget();
+        let started = tokio::time::Instant::now();
+        let deadline = started + budget;
+        let mut next_probe = started + IN_FLIGHT_SPAWN_PROBE_INTERVAL;
+        tracing::info!(
+            identity = %identity,
+            member_id = %member_id,
+            session_id = %session_id,
+            budget_secs = budget.as_secs(),
+            "resume_session collided with a spawn still in asynchronous custody for this \
+             member; awaiting its convergence instead of retiring it"
+        );
+        loop {
+            if self
+                .handle
+                .resolve_bridge_session_id(member_id)
+                .await
+                .as_ref()
+                == Some(session_id)
+            {
+                tracing::info!(
+                    identity = %identity,
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "the spawn in custody converged onto the resumed session; adopted rather \
+                     than retired"
+                );
+                self.remember_runtime_member(runtime_id, member_id).await;
+                self.remember_runtime_session(runtime_id, session_id).await;
+                // NOT Resumed: this call did not materialize the member, so
+                // the caller must register its own authority from its record
+                // before treating the session as resumed (idempotent).
+                return Ok(ResumeSessionOutcome::AttachedPendingRegistration {
+                    session_id: session_id.clone(),
+                });
+            }
+            match self.handle.get_member(member_id).await {
+                Ok(Some(_)) => {
+                    // Committed. Bound elsewhere means this resume can neither
+                    // adopt it nor destroy it; a binding not yet projected
+                    // means keep polling.
+                    if let Some(bound) = self.handle.resolve_bridge_session_id(member_id).await
+                        && bound != *session_id
+                    {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &meerkat_mob::MobError::Internal(format!(
+                                "the spawn in custody for {member_id} converged onto session \
+                                 {bound}, not the resumed session {session_id}; refusing to \
+                                 adopt or retire it (retryable once identity intent and the \
+                                 durable record agree)"
+                            )),
+                            "in-flight spawn converged elsewhere",
+                        ));
+                    }
+                }
+                Ok(None) => {
+                    if tokio::time::Instant::now() >= next_probe {
+                        next_probe = tokio::time::Instant::now() + IN_FLIGHT_SPAWN_PROBE_INTERVAL;
+                        match self.spawn_member_spec(spawn_spec.clone()).await {
+                            Ok(()) => {
+                                tracing::info!(
+                                    identity = %identity,
+                                    member_id = %member_id,
+                                    session_id = %session_id,
+                                    waited_ms = started.elapsed().as_millis() as u64,
+                                    "the spawn in custody ended without a member; this resume \
+                                     materialized the session itself"
+                                );
+                                self.remember_runtime_member(runtime_id, member_id).await;
+                                self.remember_runtime_session(runtime_id, session_id).await;
+                                return Ok(ResumeSessionOutcome::Resumed {
+                                    session_id: session_id.clone(),
+                                });
+                            }
+                            Err(error) if is_member_already_exists_error(&error) => {}
+                            Err(error) => {
+                                return Err(resume_rejected(
+                                    identity,
+                                    session_id,
+                                    &error,
+                                    "resume retry after in-flight spawn",
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        identity = %identity,
+                        member_id = %member_id,
+                        error = %error,
+                        "roster read failed while awaiting a spawn in custody; retrying"
+                    );
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(resume_rejected(
+                    identity,
+                    session_id,
+                    &meerkat_mob::MobError::Internal(format!(
+                        "a spawn for {member_id} was still in asynchronous custody when this \
+                         resume collided with it, and it did not converge within {}s; nothing \
+                         was retired (retryable once the in-flight spawn settles)",
+                        budget.as_secs()
+                    )),
+                    "in-flight spawn convergence",
+                ));
+            }
+            tokio::time::sleep(CONVERGENCE_HANDOFF_POLL).await;
+        }
+    }
+
     async fn resume_source_confirmed_absent(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -5225,6 +5408,67 @@ impl SessionBridge for MobSessionBridge {
                                 "legacy custody unproven",
                             ));
                         }
+                    }
+                }
+                // Identity-first may act on this occupant. Whether it is STALE
+                // is a separate question the roster answers: a collision with
+                // no roster member came from MobMachine's in-flight spawn
+                // guard, and a build in progress for this very identity is
+                // convergence to await, not debris to clear (OB3 2026-09-22
+                // item 3: the inert retire and the retry that collided with
+                // the just-finished build marked a healthy identity Broken).
+                match classify_colliding_occupant(self.handle.get_member(&mid).await) {
+                    CollidingOccupant::InFlight => {
+                        return self
+                            .await_in_flight_spawn_and_attach(
+                                runtime_id,
+                                &mid,
+                                identity,
+                                session_id,
+                                &spawn_spec,
+                            )
+                            .await;
+                    }
+                    // Committed, and already bound to the very session being
+                    // resumed: this IS the member, not a stale predecessor.
+                    // OB3 had a 245 ms window between the collision and the
+                    // spawn completing; a resume that classifies inside that
+                    // window sees the roster row and must adopt it exactly as
+                    // the in-flight path does. Retiring it would destroy a
+                    // healthy member to re-resume the session it already runs
+                    // (the resume-source precondition below checks the durable
+                    // source, not this binding, so it cannot guard this).
+                    CollidingOccupant::Committed
+                        if self.handle.resolve_bridge_session_id(&mid).await.as_ref()
+                            == Some(session_id) =>
+                    {
+                        tracing::info!(
+                            identity = %identity,
+                            member_id = %mid,
+                            session_id = %session_id,
+                            "resume_session collided with a committed member already bound to \
+                             the resumed session; adopted rather than retired"
+                        );
+                        self.remember_runtime_member(runtime_id, &mid).await;
+                        self.remember_runtime_session(runtime_id, session_id).await;
+                        return Ok(ResumeSessionOutcome::AttachedPendingRegistration {
+                            session_id: session_id.clone(),
+                        });
+                    }
+                    // Committed and bound to a different session or to none:
+                    // the preconditioned retire path below decides.
+                    CollidingOccupant::Committed => {}
+                    CollidingOccupant::Unobservable(probe_error) => {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &meerkat_mob::MobError::Internal(format!(
+                                "roster collision on {session_id}, but the roster could not be \
+                                 read to tell a committed occupant from a spawn still in \
+                                 custody ({probe_error}); refusing to retire (retryable)"
+                            )),
+                            "collision occupant probe",
+                        ));
                     }
                 }
                 // Genuine roster collision: an in-process restart where the
@@ -8620,6 +8864,30 @@ mod tests {
                 matches!(verdict, Err(BridgeError::Mob(_))),
                 "retryable-tier errors must stay bridge errors, got {verdict:?}"
             );
+        }
+    }
+
+    /// The occupant classifier is the one read that separates "stale" from
+    /// "still building" before the destructive collision path. Each arm is
+    /// pinned individually: a roster row is committed, an empty roster under a
+    /// collision is an in-flight spawn, and a failed read is neither.
+    #[test]
+    fn colliding_occupant_classifier_separates_committed_in_flight_and_unreadable() {
+        assert!(matches!(
+            super::classify_colliding_occupant(Ok(Some(()))),
+            super::CollidingOccupant::Committed
+        ));
+        assert!(matches!(
+            super::classify_colliding_occupant::<()>(Ok(None)),
+            super::CollidingOccupant::InFlight
+        ));
+        match super::classify_colliding_occupant::<()>(Err(meerkat_mob::MobError::Internal(
+            "roster read failed".to_string(),
+        ))) {
+            super::CollidingOccupant::Unobservable(error) => {
+                assert!(error.to_string().contains("roster read failed"));
+            }
+            other => panic!("a failed roster read must stay unobservable, got {other:?}"),
         }
     }
 }

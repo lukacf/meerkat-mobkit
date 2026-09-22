@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Identity resume no longer retires a spawn that is still in asynchronous
+  custody. When `resume_session` collides with `MemberAlreadyExists` for a
+  member the roster does not hold yet, the collision came from the mob's
+  in-flight spawn guard, not from a stale occupant: the bridge now awaits that
+  spawn's convergence (bounded by the actor admission budget, re-offering the
+  resume every 5 s so a build that ended empty is noticed) and attaches to
+  the resulting member instead of retiring, retrying, colliding with the
+  just-finished build, and marking the identity Broken. A committed member
+  that is already bound to the resumed session (the spawn finished between
+  the collision and classification) is adopted the same way; committed
+  occupants bound elsewhere keep the existing custody-gated retire path, and
+  a roster read failure refuses to retire and stays retryable. OB3 twin report 2026-09-22 item 3
+  (`review:singleton`, spawn ticket 15).
 - Stuck voice close. `mobkit/console/voice/context_status` no longer
   validates durable-source availability on every poll; that validation loaded
   the full persisted session body on the mob actor once a second per preparing
