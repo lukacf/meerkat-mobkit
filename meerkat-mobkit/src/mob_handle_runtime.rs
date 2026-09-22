@@ -5257,6 +5257,29 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
+
+            // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+            // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
+            // a default that took the boundary and then called `fork_persisted_session`
+            // self-deadlocks on the persistent owner's non-reentrant boundary.
+            async fn fork_persisted_session_at_turn_boundary(
+                &self,
+                source_session_id: &meerkat_core::types::SessionId,
+                message_count: Option<usize>,
+                tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+                target: meerkat_core::DurableSessionForkTarget,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+                self.inner
+                    .fork_persisted_session_at_turn_boundary(
+                        source_session_id,
+                        message_count,
+                        tool_access_policy,
+                        target,
+                        bound,
+                    )
+                    .await
+            }
             async fn load_persisted_session_metadata(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -6216,6 +6239,29 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_core::SessionForkResult, SessionError> {
         self.inner
             .fork_persisted_session(source_session_id, message_count, tool_access_policy, target)
+            .await
+    }
+
+    // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+    // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
+    // a default that took the boundary and then called `fork_persisted_session`
+    // self-deadlocks on the persistent owner's non-reentrant boundary.
+    async fn fork_persisted_session_at_turn_boundary(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+        self.inner
+            .fork_persisted_session_at_turn_boundary(
+                source_session_id,
+                message_count,
+                tool_access_policy,
+                target,
+                bound,
+            )
             .await
     }
     async fn load_persisted_session_metadata(
@@ -12332,6 +12378,22 @@ realm_profile = "worker-v2"
             ))
         }
 
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+            Err(SessionError::Unsupported(
+                "absorber probe has no durable turn-boundary fork authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -12841,6 +12903,23 @@ comms = true
             Err(SessionError::NotFound {
                 id: session_id.clone(),
             })
+        }
+
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+            self.record("fork_persisted_session_at_turn_boundary");
+            Err(SessionError::Unsupported(
+                "forwarding probe has no durable turn-boundary fork authority".into(),
+            ))
         }
 
         #[cfg(feature = "openai-live")]

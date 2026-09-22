@@ -232,6 +232,28 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
+    // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+    // every wrapper forwards the boundary-then-fork as ONE contract to the owner.
+    // This decorator owns no session authority, so it forwards to `inner`.
+    async fn fork_persisted_session_at_turn_boundary(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+        self.inner
+            .fork_persisted_session_at_turn_boundary(
+                source_session_id,
+                message_count,
+                tool_access_policy,
+                target,
+                bound,
+            )
+            .await
+    }
+
     // meerkat 0.8.30 made this REQUIRED, replacing a default that
     // answered "projected nothing" for any wrapper that did not
     // override it. This wrapper owns no session authority - it

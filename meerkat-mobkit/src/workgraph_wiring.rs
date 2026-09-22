@@ -1965,6 +1965,22 @@ comms = true
             ))
         }
 
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, meerkat_core::SessionError> {
+            Err(meerkat_core::SessionError::Unsupported(
+                "admission probe has no durable turn-boundary fork authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -2203,6 +2219,22 @@ comms = true
         {
             Err(meerkat_core::SessionError::Unsupported(
                 "switchable store has no Live commit authority".into(),
+            ))
+        }
+
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, meerkat_core::SessionError> {
+            Err(meerkat_core::SessionError::Unsupported(
+                "switchable store has no durable turn-boundary fork authority".into(),
             ))
         }
 
