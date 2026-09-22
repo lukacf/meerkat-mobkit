@@ -23,6 +23,9 @@ examples/*/.state/
 # Console build temp
 console/.tmp/
 
+# Test-run scratch dirs (tempfile-created .tmpXXXXXX with sqlite state)
+**/.tmp*/
+
 # Claude Code worktrees
 .claude/worktrees/
 
