@@ -12121,6 +12121,90 @@ function Icon({ name, className }) {
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("svg", { className, "aria-label": name, children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("use", { href: `#${name}` }) });
 }
 
+// src/lib/identity-log.ts
+function cursorSeq2(cursor) {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function transcriptOrder(a, aIndex, b, bIndex) {
+  const ta = typeof a.timestampMs === "number" ? a.timestampMs : Number.MAX_SAFE_INTEGER;
+  const tb = typeof b.timestampMs === "number" ? b.timestampMs : Number.MAX_SAFE_INTEGER;
+  if (ta !== tb) return ta - tb;
+  const ca = cursorSeq2(a.cursor);
+  const cb = cursorSeq2(b.cursor);
+  if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+  return aIndex - bIndex;
+}
+function insertSorted(sorted, frame) {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = lo + hi >>> 1;
+    if (transcriptOrder(sorted[mid], 0, frame, 1) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === sorted.length) sorted.push(frame);
+  else sorted.splice(lo, 0, frame);
+}
+function sortedEvents(log) {
+  if (log.sorted) return log.sorted;
+  const view = log.events.map((frame, index) => ({ frame, index })).sort((a, b) => transcriptOrder(a.frame, a.index, b.frame, b.index)).map((entry) => entry.frame);
+  log.sorted = view;
+  return view;
+}
+function pushFrame(log, key, frame) {
+  if (log.byKey.has(key)) return false;
+  log.byKey.set(key, log.events.length);
+  log.events.push(frame);
+  log.version += 1;
+  if (log.sorted) insertSorted(log.sorted, frame);
+  return true;
+}
+function mergeFrameUpdate(log, updated) {
+  if (!updated.id) return null;
+  const index = log.byKey.get(updated.id);
+  if (index === void 0) return null;
+  const previous = log.events[index];
+  if (!previous) return null;
+  const existingVersion = previous.frameVersion ?? 0;
+  const updatedVersion = updated.frameVersion ?? existingVersion;
+  if (updatedVersion < existingVersion) return null;
+  const next = { ...previous, ...updated };
+  log.events[index] = next;
+  log.version += 1;
+  const moved = previous.timestampMs !== next.timestampMs || cursorSeq2(previous.cursor) !== cursorSeq2(next.cursor);
+  if (moved) {
+    log.sorted = null;
+  } else if (log.sorted) {
+    const at = log.sorted.indexOf(previous);
+    if (at >= 0) log.sorted[at] = next;
+    else log.sorted = null;
+  }
+  return { previous, next, moved };
+}
+function trimIdentityLogCore(log, max, keyOf) {
+  const sorted = sortedEvents(log);
+  const drop = sorted.length - max;
+  if (drop <= 0) return null;
+  const dropped = new Set(sorted.slice(0, drop));
+  const retained = log.events.filter((frame) => !dropped.has(frame));
+  log.events = retained;
+  log.sorted = sorted.slice(drop);
+  log.byKey.clear();
+  retained.forEach((frame, index) => log.byKey.set(keyOf(frame), index));
+  log.version += 1;
+  return retained;
+}
+function resetIdentityLogCore(log) {
+  log.events = [];
+  log.byKey.clear();
+  log.sorted = null;
+  log.version += 1;
+}
+
 // src/panels/TimelinePanel.tsx
 var import_react18 = __toESM(require("react"));
 var import_jsx_runtime29 = require("react/jsx-runtime");
@@ -18750,13 +18834,12 @@ var TURN_RAIL_TICK_PX = 10;
 var TURN_RAIL_MAX_TICKS = 48;
 var TRANSCRIPT_WINDOW_TURNS = 120;
 var TRANSCRIPT_WINDOW_STEP = 120;
-function transcriptWindowStart(turnCount, revealedFromTurnId, indexOfTurn) {
-  if (revealedFromTurnId === "") return 0;
-  if (revealedFromTurnId !== null) {
-    const index = indexOfTurn(revealedFromTurnId);
-    if (index >= 0) return index;
-  }
-  return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+function transcriptWindowStart(turnCount, anchor, indexOfTurn) {
+  if (anchor === null) return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+  if (anchor.turnId === "") return 0;
+  const index = indexOfTurn(anchor.turnId);
+  if (index >= 0) return index;
+  return Math.max(0, turnCount - Math.max(anchor.mountedTurns, TRANSCRIPT_WINDOW_TURNS));
 }
 function windowTurnRail(turnCount, railHeightPx) {
   if (turnCount <= 1) return { start: 0, overflow: 0 };
@@ -19082,12 +19165,71 @@ function CopyInlineButton({
   );
 }
 var msgSignatures = /* @__PURE__ */ new WeakMap();
+function textMark(value) {
+  if (!value) return "0";
+  let hash2 = value.length;
+  const step = Math.max(1, Math.floor(value.length / 16));
+  for (let i = 0; i < value.length; i += step) {
+    hash2 = hash2 * 31 + value.charCodeAt(i) | 0;
+  }
+  return `${value.length}.${hash2}`;
+}
+function blockSignature(block) {
+  switch (block.type) {
+    case "paragraph":
+      return `p${textMark(block.text)}`;
+    case "heading":
+      return `h${block.level}${textMark(block.text)}`;
+    case "code":
+      return `c${block.language}:${textMark(block.body)}`;
+    case "table":
+      return `t${block.headers.length}x${block.rows.length}`;
+    case "command":
+      return `m${textMark(block.title)}:${textMark(block.body)}:${textMark(block.output)}:${textMark(block.footer)}`;
+    case "tool-call":
+      return `tc${block.toolCallId}:${block.name}:${block.status}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerImages?.length ?? 0}`;
+    case "file-change":
+      return `f${block.verb}:${block.name}:${block.plus}:${block.minus}`;
+    case "divider":
+      return `d${textMark(block.text)}`;
+    case "thinking":
+      return `k${block.final ? 1 : 0}${block.persisted ? 1 : 0}:${textMark(block.text)}`;
+    case "image":
+      return `i${block.src}:${block.width ?? 0}x${block.height ?? 0}`;
+    default:
+      return JSON.stringify(block);
+  }
+}
 function msgSignature(message) {
   let signature = msgSignatures.get(message);
-  if (signature === void 0) {
-    signature = JSON.stringify(message);
-    msgSignatures.set(message, signature);
+  if (signature !== void 0) return signature;
+  const parts = [
+    message.id,
+    message.kind,
+    message.time,
+    message.who ?? "",
+    textMark(message.text),
+    message.workedFor ?? "",
+    textMark(message.workedForCopyText)
+  ];
+  if (message.blocks) parts.push(message.blocks.map(blockSignature).join(","));
+  const wg = message.workGraphEntry;
+  if (wg) {
+    parts.push(
+      `wg${wg.id}:${wg.status}:${wg.progress.completed}/${wg.progress.total}:${wg.itemOverflowCount ?? 0}:${wg.recentEvents?.length ?? 0}`,
+      wg.items.map((item) => `${item.itemId}:${item.status}:${item.revision ?? 0}:${item.priority ?? ""}:${item.ownerLabel ?? ""}`).join(","),
+      wg.attention.map((row) => `${row.bindingId}:${row.mode}:${row.statusLabel}:${row.revision ?? 0}`).join(",")
+    );
   }
+  const council = message.councilEntry;
+  if (council) {
+    parts.push(
+      `cc${council.id}:${council.status}:${council.exitReason}:${council.roundsCompleted}:${council.participants.length}`,
+      council.exchanges.map((row) => `${row.round}.${row.sequence}:${row.status}:${textMark(row.text)}`).join(",")
+    );
+  }
+  signature = parts.join("|");
+  msgSignatures.set(message, signature);
   return signature;
 }
 function messageRowPropsEqual(prev, next) {
@@ -19418,7 +19560,7 @@ function ChatPane({
   }, [entries]);
   const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
   const [revealedFrom, setRevealedFrom] = import_react32.default.useState(null);
-  const revealedFromTurnId = revealedFrom && revealedFrom.identity === identity ? revealedFrom.turnId : null;
+  const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
   const turnIndexById = import_react32.default.useMemo(() => {
     const index = /* @__PURE__ */ new Map();
     turns.forEach((turn, i) => index.set(turn.id, i));
@@ -19426,7 +19568,7 @@ function ChatPane({
   }, [turns]);
   const windowStart = transcriptWindowStart(
     turns.length,
-    revealedFromTurnId,
+    windowAnchor,
     (id) => turnIndexById.get(id) ?? -1
   );
   const pendingScrollToTurnRef = import_react32.default.useRef(null);
@@ -19439,7 +19581,7 @@ function ChatPane({
         olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
       }
       const turnId = target === 0 ? "" : turns[target]?.id ?? "";
-      setRevealedFrom({ identity, turnId });
+      setRevealedFrom({ identity, turnId, mountedTurns: turns.length - target });
     },
     [identity, turns]
   );
@@ -21989,32 +22131,7 @@ function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
 var import_jsx_runtime45 = require("react/jsx-runtime");
 var MAX_IDENTITY_LOG_EVENTS = 5e3;
 var IDENTITY_LOG_TRIM_SLACK = 500;
-function transcriptOrder(a, aIndex, b, bIndex) {
-  const ta = typeof a.timestampMs === "number" ? a.timestampMs : Number.MAX_SAFE_INTEGER;
-  const tb = typeof b.timestampMs === "number" ? b.timestampMs : Number.MAX_SAFE_INTEGER;
-  if (ta !== tb) return ta - tb;
-  const ca = cursorSeq2(a.cursor);
-  const cb = cursorSeq2(b.cursor);
-  if (ca !== null && cb !== null && ca !== cb) return ca - cb;
-  return aIndex - bIndex;
-}
-function insertSorted(sorted, frame) {
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = lo + hi >>> 1;
-    if (transcriptOrder(sorted[mid], 0, frame, 1) <= 0) lo = mid + 1;
-    else hi = mid;
-  }
-  if (lo === sorted.length) sorted.push(frame);
-  else sorted.splice(lo, 0, frame);
-}
-function sortedEvents(log) {
-  if (log.sorted) return log.sorted;
-  const view = log.events.map((frame, index) => ({ frame, index })).sort((a, b) => transcriptOrder(a.frame, a.index, b.frame, b.index)).map((entry) => entry.frame);
-  log.sorted = view;
-  return view;
-}
+var HIDDEN_TAB_FLUSH_MS = 250;
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -22151,13 +22268,6 @@ function browserLocalStorage() {
   } catch {
     return null;
   }
-}
-function cursorSeq2(cursor) {
-  if (!cursor) return null;
-  const match = /^console:(\d+)$/.exec(cursor);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 function isTerminalTurnCompletedFrame(frame) {
   if (frame.event !== "turn_completed") return false;
@@ -22455,27 +22565,50 @@ function ConsoleApp({ baseUrl, transport }) {
   const [liveFrames, setLiveFrames] = import_react37.default.useState([]);
   const renderScheduledRef = import_react37.default.useRef(null);
   const liveFramesDirtyRef = import_react37.default.useRef(false);
+  const flushScheduledRender = import_react37.default.useCallback(() => {
+    renderScheduledRef.current = null;
+    if (liveFramesDirtyRef.current) {
+      liveFramesDirtyRef.current = false;
+      setLiveFrames(liveFramesRef.current);
+    }
+    setRenderTick((n) => n + 1);
+  }, []);
+  const cancelScheduledRender = import_react37.default.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || typeof window === "undefined") return;
+    if (pending.kind === "raf") window.cancelAnimationFrame(pending.id);
+    else window.clearTimeout(pending.id);
+    renderScheduledRef.current = null;
+  }, []);
   const forceRender = import_react37.default.useCallback(() => {
     if (renderScheduledRef.current !== null) return;
-    const schedule = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function" ? (cb) => window.requestAnimationFrame(cb) : (cb) => window.setTimeout(cb, 16);
-    renderScheduledRef.current = schedule(() => {
-      renderScheduledRef.current = null;
-      if (liveFramesDirtyRef.current) {
-        liveFramesDirtyRef.current = false;
-        setLiveFrames(liveFramesRef.current);
-      }
-      setRenderTick((n) => n + 1);
-    });
-  }, []);
-  import_react37.default.useEffect(
-    () => () => {
-      if (renderScheduledRef.current !== null && typeof window !== "undefined") {
-        window.cancelAnimationFrame(renderScheduledRef.current);
-        window.clearTimeout(renderScheduledRef.current);
-      }
-    },
-    []
-  );
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      renderScheduledRef.current = {
+        kind: "raf",
+        id: window.requestAnimationFrame(flushScheduledRender)
+      };
+      return;
+    }
+    renderScheduledRef.current = {
+      kind: "timeout",
+      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16)
+    };
+  }, [flushScheduledRender]);
+  import_react37.default.useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (renderScheduledRef.current?.kind !== "timeout") return;
+      cancelScheduledRender();
+      flushScheduledRender();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      cancelScheduledRender();
+    };
+  }, [cancelScheduledRender, flushScheduledRender]);
   const stagedAttachmentsRef = import_react37.default.useRef(stagedAttachmentsByIdentity);
   import_react37.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
@@ -22631,31 +22764,16 @@ function ConsoleApp({ baseUrl, transport }) {
     const log = getOrCreateLog(identity);
     if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
       const updated = frame.data.frame;
-      if (updated && updated.id) {
-        const existingIndex = log.byKey.get(updated.id);
-        if (existingIndex !== void 0 && log.events[existingIndex]) {
-          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
-          const updatedVersion = updated.frameVersion ?? existingVersion;
-          if (updatedVersion < existingVersion) return false;
-          log.events[existingIndex] = {
-            ...log.events[existingIndex],
-            ...updated
-          };
-          log.version += 1;
-          log.sorted = null;
-          log.busyFoldValid = false;
-          clearOptimisticUserForFrame(identity, updated);
-          return true;
-        }
+      if (!updated || !updated.id) return false;
+      const merged = mergeFrameUpdate(log, updated);
+      if (!merged) return false;
+      if (merged.moved || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+        log.busyFoldValid = false;
       }
-      return false;
+      clearOptimisticUserForFrame(identity, updated);
+      return true;
     }
-    const key = frameKey(frame);
-    if (log.byKey.has(key)) return false;
-    log.byKey.set(key, log.events.length);
-    log.events.push(frame);
-    log.version += 1;
-    if (log.sorted) insertSorted(log.sorted, frame);
+    if (!pushFrame(log, frameKey(frame), frame)) return false;
     if (log.events.length > MAX_IDENTITY_LOG_EVENTS + IDENTITY_LOG_TRIM_SLACK) {
       trimIdentityLog(log);
     }
@@ -22663,23 +22781,13 @@ function ConsoleApp({ baseUrl, transport }) {
     return true;
   }
   function trimIdentityLog(log) {
-    const sorted = sortedEvents(log);
-    const drop = sorted.length - MAX_IDENTITY_LOG_EVENTS;
-    if (drop <= 0) return;
-    const dropped = new Set(sorted.slice(0, drop));
-    const retained = log.events.filter((frame) => !dropped.has(frame));
-    log.events = retained;
-    log.sorted = sorted.slice(drop);
-    log.byKey.clear();
+    const retained = trimIdentityLogCore(log, MAX_IDENTITY_LOG_EVENTS, frameKey);
+    if (!retained) return;
     let oldest;
-    retained.forEach((frame, index) => {
-      log.byKey.set(frameKey(frame), index);
-      oldest = olderCursor(oldest, frame.cursor);
-    });
+    for (const frame of retained) oldest = olderCursor(oldest, frame.cursor);
     log.oldestTimelineCursor = oldest;
     log.olderHistoryExhausted = false;
     log.olderHistoryExhaustedAtCursor = void 0;
-    log.version += 1;
   }
   function busyTransitionForFrame(frame) {
     if (frame.event === "user_input") {
@@ -22847,11 +22955,8 @@ function ConsoleApp({ baseUrl, transport }) {
   function resetIdentityTimelineReplayMetadata(identity) {
     const log = getOrCreateLog(identity);
     const changed = log.events.length > 0 || log.byKey.size > 0 || log.oldestTimelineCursor !== void 0 || log.latestTimelineCursor !== void 0 || log.olderHistoryExhausted !== false || log.olderHistoryExhaustedAtCursor !== void 0;
-    log.events = [];
-    log.byKey.clear();
-    log.sorted = null;
+    resetIdentityLogCore(log);
     log.busyFoldValid = false;
-    log.version += 1;
     log.oldestTimelineCursor = void 0;
     log.latestTimelineCursor = void 0;
     log.olderHistoryExhausted = false;
@@ -24650,6 +24755,16 @@ function ConsoleApp({ baseUrl, transport }) {
     },
     [canManageWorkGraph, makeWorkGraphOperatorHandlers]
   );
+  const workGraphCardActionsByIdentity = import_react37.default.useMemo(
+    () => /* @__PURE__ */ new Map(),
+    [workGraphCardActions]
+  );
+  const workGraphCardActionsFor = (cardIdentity) => {
+    if (!workGraphCardActionsByIdentity.has(cardIdentity)) {
+      workGraphCardActionsByIdentity.set(cardIdentity, workGraphCardActions(cardIdentity));
+    }
+    return workGraphCardActionsByIdentity.get(cardIdentity);
+  };
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
   function handleSidebarResize(event) {
     event.preventDefault();
@@ -24893,7 +25008,7 @@ function ConsoleApp({ baseUrl, transport }) {
         } : void 0,
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
-        workGraphActions: workGraphCardActions(identity)
+        workGraphActions: workGraphCardActionsFor(identity)
       }
     );
   }
