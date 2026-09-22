@@ -3133,12 +3133,15 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     panelId: string,
     target: MobKitDockTarget | null,
     attachments: File[] = [],
+    composerText?: string,
   ): Promise<boolean> {
     if (!target || target.kind !== "agent-chat") return false;
     if (consoleReadOnly) return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
-    const rawDraft = draftByKey[panelKey] || "";
+    // The pane owns the live composer value and hands it over at submit;
+    // the persisted copy is only a fallback for callers without one.
+    const rawDraft = composerText ?? (draftByKey[panelKey] || "");
     const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
 
@@ -3159,7 +3162,13 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
 
     const clearSubmittedDraft = () => {
       setDraftByKey((current) => {
-        if ((current[panelKey] || "") !== rawDraft) return current;
+        // With a pane-supplied text the persisted copy may lag the live
+        // value (its publish is debounced), so the equality guard only
+        // applies when the text came from the persisted copy itself.
+        if (composerText === undefined && (current[panelKey] || "") !== rawDraft) {
+          return current;
+        }
+        if ((current[panelKey] || "") === "") return current;
         return { ...current, [panelKey]: "" };
       });
     };
@@ -4035,7 +4044,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         onStagedChange={(action) =>
           setStagedAttachmentsForIdentity(identity, action)
         }
-        onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
+        onSend={(attachments, text) => onSendMessage(panel.id, target, attachments, text)}
         onInspect={
           configuredActionVisibility.inspect
             ? () => {

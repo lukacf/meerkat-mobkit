@@ -41,7 +41,10 @@ interface ChatPaneProps {
   staged: StagedAttachment[];
   onDraftChange: (value: string) => void;
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
-  onSend: (attachments?: File[]) => boolean | Promise<boolean>;
+  /// `text` is the composer's live value at submit time. The pane owns the
+  /// live draft; `draft`/`onDraftChange` only carry the persisted copy used
+  /// when a panel is switched or reopened.
+  onSend: (attachments: File[], text: string) => boolean | Promise<boolean>;
   onInspect?: () => void;
   onRespawn?: () => void;
   onRetire?: () => void;
@@ -567,10 +570,14 @@ async function fileFromConsoleBlobUrl(url: string): Promise<File | null> {
 
 function CopyInlineButton({
   text,
+  getText,
   label,
   className = "",
 }: {
-  text: string;
+  /// Static text, or `getText` for text that is expensive to build (the whole
+  /// transcript) and only needed when the user actually clicks.
+  text?: string;
+  getText?: () => string;
   label: string;
   className?: string;
 }) {
@@ -584,7 +591,8 @@ function CopyInlineButton({
     },
     [],
   );
-  const disabled = !text.trim();
+  // A lazy source is assumed non-empty; the click resolves it.
+  const disabled = getText ? false : !(text ?? "").trim();
 
   // NOT `navigator.clipboard` directly. That API exists only in a SECURE
   // CONTEXT - https, or localhost - and the console is routinely reached over
@@ -598,7 +606,9 @@ function CopyInlineButton({
   // whether it worked so this button can be honest about the outcome.
   async function copy() {
     if (disabled) return;
-    const ok = await copyTextToClipboard(text);
+    const value = getText ? getText() : text ?? "";
+    if (!value.trim()) return;
+    const ok = await copyTextToClipboard(value);
     setOutcome(ok ? "copied" : "failed");
     if (resetTimer.current) clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
@@ -624,6 +634,167 @@ function CopyInlineButton({
     </button>
   );
 }
+
+const MessageRow = React.memo(function MessageRow({
+  message: m,
+  suppressWorked,
+  workGraphActions,
+}: {
+  message: Msg;
+  suppressWorked: boolean;
+  workGraphActions: WorkGraphCardActions | null;
+}) {
+  return (
+    <div className={`msg msg--${m.kind}`}>
+      <div className="msg__time">{m.time}</div>
+      <div className="msg__bubble">
+        {(m.kind === "user" || m.kind === "agent") && (
+          <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
+        )}
+        {m.kind === "council" && m.councilEntry ? (
+          // No actions prop: council participants are destroyed
+          // before the tool returns, so the card is observational
+          // by construction.
+          <CouncilCard entry={m.councilEntry} />
+        ) : null}
+        {m.kind === "workgraph" && m.workGraphEntry ? (
+          <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
+        ) : m.blocks && m.blocks.length > 0 ? (
+          <ConversationRichContent blocks={m.blocks} displayNormalization={false} />
+        ) : (
+          m.text && <span className="msg__text">{m.text}</span>
+        )}
+        {m.workedFor && !suppressWorked && (
+          <div className="msg__worked">
+            <span>Worked for {m.workedFor}</span>
+            <CopyInlineButton
+              className="msg__copy--inline"
+              label="Copy work time"
+              text={m.workedForCopyText || `Worked for ${m.workedFor}`}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+/// The scrolling transcript. Memoised so composer keystrokes, which re-render
+/// the owning ChatPane, never touch a transcript row: only a change in the
+/// turns, phase, history state, or the stable handlers reaches it.
+const TranscriptView = React.memo(function TranscriptView({
+  identity,
+  agentLabel,
+  turns,
+  messages,
+  phase,
+  lastAgentMessageId,
+  workGraphActions,
+  isLoadingHistory,
+  hasOlderHistory,
+  loadingOlderHistory,
+  bodyRef,
+  onScroll,
+  onRequestOlderHistory,
+}: {
+  identity: string;
+  agentLabel: string;
+  turns: ChatTurn[];
+  messages: Msg[];
+  phase: ChatPaneProps["phase"];
+  lastAgentMessageId: string | null;
+  workGraphActions: WorkGraphCardActions | null;
+  isLoadingHistory: boolean;
+  hasOlderHistory: boolean;
+  loadingOlderHistory: boolean;
+  bodyRef: React.RefObject<HTMLDivElement | null>;
+  onScroll: React.UIEventHandler<HTMLDivElement>;
+  onRequestOlderHistory: () => void;
+}) {
+  countRender("TranscriptView");
+  // Serialised on click only: the whole transcript as text is the single most
+  // expensive derivation in this pane and nobody reads it until they copy.
+  const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
+  return (
+    <div className="conv__body" onScroll={onScroll} ref={bodyRef}>
+      <CopyInlineButton
+        className="msg__copy--transcript"
+        label="Copy transcript"
+        getText={getTranscriptText}
+      />
+      {hasOlderHistory && (
+        <button
+          className="conv__history"
+          disabled={loadingOlderHistory}
+          onClick={onRequestOlderHistory}
+          type="button"
+        >
+          {loadingOlderHistory ? "Loading history" : "Load older history"}
+        </button>
+      )}
+      {messages.length === 0 && isLoadingHistory && (
+        <div
+          className="msg msg--origin"
+          data-testid={`chat-loading-history:${identity}`}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div className="msg__time" />
+          <div className="msg__bubble">
+            <span className="msg__typing">
+              <span className="msg__typing-dots" aria-hidden="true">
+                <span /><span /><span />
+              </span>
+              <span className="msg__typing-label">Loading conversation…</span>
+            </span>
+          </div>
+        </div>
+      )}
+      {messages.length === 0 && !isLoadingHistory && (
+        <div className="msg msg--origin">
+          <div className="msg__time" />
+          <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
+        </div>
+      )}
+      {turns.map((turn, turnIndex) => (
+        <div
+          aria-label={`Turn ${turnIndex + 1}`}
+          className="conv-turn"
+          data-chat-turn-index={turnIndex}
+          data-testid={`chat-turn:${identity}:${turnIndex}`}
+          key={turn.id}
+        >
+          {turn.messages.map((m) => (
+            <MessageRow
+              key={m.id}
+              message={m}
+              suppressWorked={Boolean(phase && m.id === lastAgentMessageId)}
+              workGraphActions={workGraphActions}
+            />
+          ))}
+        </div>
+      ))}
+      {phase && (
+        <div
+          className="msg msg--typing"
+          data-testid={`chat-typing:${identity}`}
+          aria-live="polite"
+          aria-label={`${agentLabel} is ${phaseLabel(phase)}`}
+        >
+          <div className="msg__time" />
+          <div className="msg__bubble">
+            <span className="msg__typing">
+              <span className="msg__typing-dots" aria-hidden="true">
+                <span /><span /><span />
+              </span>
+              <span className="msg__typing-label">{phaseLabel(phase)}</span>
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 export function ChatPane({
   agent,
@@ -658,6 +829,45 @@ export function ChatPane({
   workGraphActions = null,
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
+  // Live composer value lives here so a keystroke re-renders only this pane's
+  // composer, never the app root. The parent's persisted `draft` seeds it and
+  // receives it back on blur, on a short debounce, and on unmount.
+  const [liveDraft, setLiveDraft] = React.useState(draft);
+  const liveDraftRef = React.useRef(draft);
+  const lastPublishedDraftRef = React.useRef(draft);
+  const publishDraftTimerRef = React.useRef<number | null>(null);
+  const onDraftChangeRef = React.useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const publishDraft = React.useCallback(() => {
+    if (publishDraftTimerRef.current !== null) {
+      window.clearTimeout(publishDraftTimerRef.current);
+      publishDraftTimerRef.current = null;
+    }
+    const value = liveDraftRef.current;
+    if (value === lastPublishedDraftRef.current) return;
+    lastPublishedDraftRef.current = value;
+    onDraftChangeRef.current(value);
+  }, []);
+  const setDraft = React.useCallback(
+    (value: string) => {
+      liveDraftRef.current = value;
+      setLiveDraft(value);
+      if (publishDraftTimerRef.current !== null) {
+        window.clearTimeout(publishDraftTimerRef.current);
+      }
+      publishDraftTimerRef.current = window.setTimeout(publishDraft, 400);
+    },
+    [publishDraft],
+  );
+  // The persisted copy changed underneath us (send cleared it, or a blob
+  // reference was stripped): adopt it unless the user has typed since.
+  React.useEffect(() => {
+    if (draft === lastPublishedDraftRef.current) return;
+    lastPublishedDraftRef.current = draft;
+    liveDraftRef.current = draft;
+    setLiveDraft(draft);
+  }, [draft]);
+  React.useEffect(() => () => publishDraft(), [publishDraft]);
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const preserveOlderHistoryScrollRef = React.useRef(false);
   const olderHistoryScrollHeightRef = React.useRef(0);
@@ -801,16 +1011,36 @@ export function ChatPane({
     turnNode?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
-  function requestOlderHistory() {
+  const onLoadOlderRef = React.useRef(onLoadOlder);
+  onLoadOlderRef.current = onLoadOlder;
+  const requestOlderHistory = React.useCallback(() => {
     if (bodyRef.current) {
       preserveOlderHistoryScrollRef.current = true;
       olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
       olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
     }
-    onLoadOlder?.();
-  }
-
-  const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
+    onLoadOlderRef.current?.();
+  }, []);
+  const hasOlderHistoryRef = React.useRef(hasOlderHistory);
+  hasOlderHistoryRef.current = hasOlderHistory;
+  const loadingOlderHistoryRef = React.useRef(loadingOlderHistory);
+  loadingOlderHistoryRef.current = loadingOlderHistory;
+  const onBodyScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
+    (event) => {
+      if (event.currentTarget.scrollLeft !== 0) {
+        event.currentTarget.scrollLeft = 0;
+      }
+      scheduleActiveTurnUpdate();
+      if (
+        event.currentTarget.scrollTop <= 32 &&
+        hasOlderHistoryRef.current &&
+        !loadingOlderHistoryRef.current
+      ) {
+        requestOlderHistory();
+      }
+    },
+    [requestOlderHistory, scheduleActiveTurnUpdate],
+  );
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
@@ -952,7 +1182,7 @@ export function ChatPane({
 
   React.useEffect(() => {
     if (!canAttachImages) return;
-    const refs = consoleBlobReferencesFromText(draft);
+    const refs = consoleBlobReferencesFromText(liveDraft);
     if (refs.length === 0) {
       resolvedDraftBlobRefs.current = "";
       return;
@@ -975,7 +1205,8 @@ export function ChatPane({
         if (files.length > 0) {
           resolvedDraftBlobRefs.current = signature;
           addFiles(files);
-          onDraftChange(stripConsoleBlobReferencesFromText(draft, refs));
+          setDraft(stripConsoleBlobReferencesFromText(liveDraftRef.current, refs));
+          publishDraft();
         } else {
           setAttachmentError("No usable image found");
         }
@@ -986,7 +1217,7 @@ export function ChatPane({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [canAttachImages, draft, onDraftChange]);
+  }, [canAttachImages, liveDraft, publishDraft, setDraft]);
 
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
@@ -996,12 +1227,13 @@ export function ChatPane({
     if (readOnly || sendWithheld) {
       return;
     }
-    if (!draft.trim() && staged.length === 0) {
+    const text = liveDraftRef.current;
+    if (!text.trim() && staged.length === 0) {
       return;
     }
     const files = staged.map((item) => item.file);
     try {
-      const sent = await onSend(files);
+      const sent = await onSend(files, text);
       if (sent) {
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
@@ -1032,124 +1264,21 @@ export function ChatPane({
           ) : null}
         </div>
       </div>
-      <div
-        className="conv__body"
-        onScroll={(event) => {
-          if (event.currentTarget.scrollLeft !== 0) {
-            event.currentTarget.scrollLeft = 0;
-          }
-          scheduleActiveTurnUpdate();
-          if (
-            event.currentTarget.scrollTop <= 32 &&
-            hasOlderHistory &&
-            !loadingOlderHistory
-          ) {
-            requestOlderHistory();
-          }
-        }}
-        ref={bodyRef}
-      >
-        <CopyInlineButton
-          className="msg__copy--transcript"
-          label="Copy transcript"
-          text={transcriptText}
-        />
-        {hasOlderHistory && (
-          <button
-            className="conv__history"
-            disabled={loadingOlderHistory}
-            onClick={requestOlderHistory}
-            type="button"
-          >
-            {loadingOlderHistory ? "Loading history" : "Load older history"}
-          </button>
-        )}
-        {messages.length === 0 && isLoadingHistory && (
-          <div
-            className="msg msg--origin"
-            data-testid={`chat-loading-history:${identity}`}
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <div className="msg__time" />
-            <div className="msg__bubble">
-              <span className="msg__typing">
-                <span className="msg__typing-dots" aria-hidden="true">
-                  <span /><span /><span />
-                </span>
-                <span className="msg__typing-label">Loading conversation…</span>
-              </span>
-            </div>
-          </div>
-        )}
-        {messages.length === 0 && !isLoadingHistory && (
-          <div className="msg msg--origin">
-            <div className="msg__time" />
-            <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
-          </div>
-        )}
-        {turns.map((turn, turnIndex) => (
-          <div
-            aria-label={`Turn ${turnIndex + 1}`}
-            className="conv-turn"
-            data-chat-turn-index={turnIndex}
-            data-testid={`chat-turn:${identity}:${turnIndex}`}
-            key={turn.id}
-          >
-            {turn.messages.map((m) => (
-              <div className={`msg msg--${m.kind}`} key={m.id}>
-                <div className="msg__time">{m.time}</div>
-                <div className="msg__bubble">
-                  {(m.kind === "user" || m.kind === "agent") && (
-                    <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
-                  )}
-                  {m.kind === "council" && m.councilEntry ? (
-                    // No actions prop: council participants are destroyed
-                    // before the tool returns, so the card is observational
-                    // by construction.
-                    <CouncilCard entry={m.councilEntry} />
-                  ) : null}
-                  {m.kind === "workgraph" && m.workGraphEntry ? (
-                    <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
-                  ) : m.blocks && m.blocks.length > 0 ? (
-                    <ConversationRichContent blocks={m.blocks} displayNormalization={false} />
-                  ) : (
-                    m.text && <span className="msg__text">{m.text}</span>
-                  )}
-                  {m.workedFor && !(phase && m.id === lastAgentMessageId) && (
-                    <div className="msg__worked">
-                      <span>Worked for {m.workedFor}</span>
-                      <CopyInlineButton
-                        className="msg__copy--inline"
-                        label="Copy work time"
-                        text={m.workedForCopyText || `Worked for ${m.workedFor}`}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
-        {phase && (
-          <div
-            className="msg msg--typing"
-            data-testid={`chat-typing:${identity}`}
-            aria-live="polite"
-            aria-label={`${agentLabel} is ${phaseLabel(phase)}`}
-          >
-            <div className="msg__time" />
-            <div className="msg__bubble">
-              <span className="msg__typing">
-                <span className="msg__typing-dots" aria-hidden="true">
-                  <span /><span /><span />
-                </span>
-                <span className="msg__typing-label">{phaseLabel(phase)}</span>
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
+      <TranscriptView
+        identity={identity}
+        agentLabel={agentLabel}
+        turns={turns}
+        messages={messages}
+        phase={phase}
+        lastAgentMessageId={lastAgentMessageId}
+        workGraphActions={workGraphActions}
+        isLoadingHistory={isLoadingHistory}
+        hasOlderHistory={hasOlderHistory}
+        loadingOlderHistory={loadingOlderHistory}
+        bodyRef={bodyRef}
+        onScroll={onBodyScroll}
+        onRequestOlderHistory={requestOlderHistory}
+      />
       {turnRail}
       {stackSlot}
       <div className="composer">
@@ -1210,11 +1339,12 @@ export function ChatPane({
                     ? `Message ${agentLabel} (background agent)…`
                     : `Message ${agentLabel}…`
             }
-            value={draft}
+            value={liveDraft}
             disabled={readOnly || sendWithheld}
             onChange={(e) => {
-              if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
+              if (!readOnly && !sendWithheld) setDraft(e.target.value);
             }}
+            onBlur={publishDraft}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
             rows={2}
             data-testid={`chat-composer:${identity}`}
@@ -1233,7 +1363,7 @@ export function ChatPane({
             <button
               className="composer__send"
               disabled={
-                (!draft.trim() && staged.length === 0)
+                (!liveDraft.trim() && staged.length === 0)
                 || readOnly
                 || sendWithheld
                 || (staged.length > 0 && !canAttachImages)
