@@ -27,6 +27,8 @@ Each entry preserves the original claim, concrete source proof, independent verd
 
 The MobKit corrections and ledger are committed and pushed. PR creation is blocked by the app-linked Enterprise Managed User's GitHub authorization. The separately owned upstream skill correction is committed and independently reviewed, but its push is blocked by a pre-existing TLC verification failure. Its exact patch is included here; neither blocker was bypassed. See [publication receipts](publication.md).
 
+Publication note (2026-09-22): the release owner cherry-picked these commits onto `main` at v0.8.40, re-verified the corrections against current source, and merged them through a pull request from an authorized identity. They publish through the main-tracking documentation mirror in lukacf/meerkat once that pipeline lands, independent of any MobKit release; the upstream skill correction is landed separately in lukacf/meerkat. See the note at the end of [publication receipts](publication.md).
+
 ## Baselines and prior work
 
 - MobKit baseline: `af82b6b3ab34faed9bf3e962d148d55f10dcd1dc` (0.8.39; direct Meerkat pins 0.8.40).

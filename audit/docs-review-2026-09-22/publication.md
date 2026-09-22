@@ -64,30 +64,28 @@ An authenticated remote-ref check confirmed that the branch was not created.
 No hook was skipped, and no unrelated formal model, runtime code, shared
 checkout, or personal skill alias was modified.
 
-The [compressed upstream correction patch](upstream-skill-correction.patch.gz)
-is included for a portable handoff. Compression preserves the required
-space-prefixed blank context lines without changing the patch bytes to satisfy
-the documentation repository's trailing-whitespace checks. Its decompressed
-content is byte-for-byte:
-
-```sh
-git diff HEAD^ HEAD -- .claude/skills/meerkat-architecture/references/gotchas.md
-```
-
-at the correction commit. SHA-256 of the decompressed patch:
-
-```text
-4de1cbf3e10de0f6e2b393f33f3fdd227da14631fdc1ce64927e6170d246b0b7
-```
-
-The child session verified a reverse-apply check against the corrected upstream
-worktree without mutation. The patch is for the **Meerkat repository**, not the
-MobKit symlink path. To inspect it without applying anything:
-
-```sh
-gzip -dc audit/docs-review-2026-09-22/upstream-skill-correction.patch.gz
-```
+The upstream correction patch was carried in this ledger as a compressed
+blob (`upstream-skill-correction.patch.gz`, decompressed SHA-256
+`4de1cbf3e10de0f6e2b393f33f3fdd227da14631fdc1ce64927e6170d246b0b7`) at
+handoff. It targets the **Meerkat repository**
+(`.claude/skills/meerkat-architecture/references/gotchas.md`, gotcha 37), not
+the MobKit symlink path, so the blob was removed from this repository at
+publication and the change is applied upstream in lukacf/meerkat instead
+(see the publication note below for the PR). The reverse-apply check the
+child session ran against the corrected upstream worktree is recorded in
+[S](S.md).
 
 Normal upstream verification must be repaired or completed
 before that separate branch can be published. See [S](S.md) for the claim,
 implementation proof, adjudication, and final review.
+
+## Publication note (2026-09-22)
+
+The release owner published this branch from an authorized identity by
+cherry-picking the three audit commits onto `main` at v0.8.40
+(`484d5533`), re-verifying every corrected statement against that source,
+and opening a pull request against `main`. The corrections publish through
+the main-tracking documentation mirror in lukacf/meerkat once that pipeline
+lands; they are not coupled to a MobKit release. The upstream skill
+correction is landed separately in lukacf/meerkat. The original receipts
+above are retained unchanged.
