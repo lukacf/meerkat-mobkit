@@ -6263,6 +6263,29 @@ mod tests {
                 .await
         }
 
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+        // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
+        // a default that took the boundary and then called `fork_persisted_session`
+        // self-deadlocks on the persistent owner's non-reentrant boundary.
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            source_session_id: &meerkat_core::types::SessionId,
+            message_count: Option<usize>,
+            tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            target: meerkat_core::DurableSessionForkTarget,
+            bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+            self.inner
+                .fork_persisted_session_at_turn_boundary(
+                    source_session_id,
+                    message_count,
+                    tool_access_policy,
+                    target,
+                    bound,
+                )
+                .await
+        }
+
         async fn load_persisted_session_metadata(
             &self,
             session_id: &SessionId,
