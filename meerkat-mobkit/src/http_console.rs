@@ -8,7 +8,6 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
-use futures::future::join_all;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
@@ -27,7 +26,7 @@ use crate::mob_handle_runtime::{
     resolved_tools_for_session, topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9314,9 +9313,15 @@ async fn build_live_snapshot(
         mods
     };
 
-    let agents = members
+    // One read lock for every member's response phase instead of one lock
+    // acquisition per member.
+    let response_phases = match console_events {
+        Some(store) => store.response_phases_snapshot().await,
+        None => HashMap::new(),
+    };
+    let mut agents = members
         .iter()
-        .map(|member| async move {
+        .map(|member| {
             let console_identity = console_member_console_identity(member);
             let label = member
                 .labels
@@ -9337,10 +9342,7 @@ async fn build_live_snapshot(
                 .get("console_degraded")
                 .map(|value: &String| value == "true");
             let degraded_reason = member.labels.get("console_degraded_reason").cloned();
-            let response_phase = match console_events {
-                Some(store) => store.response_phase_for_identity(console_identity).await,
-                None => None,
-            };
+            let response_phase = response_phases.get(console_identity).cloned();
             ConsoleAgentLiveSnapshot {
                 agent_id: member.agent_identity.clone(),
                 member_id: member.agent_identity.clone(),
@@ -9359,7 +9361,6 @@ async fn build_live_snapshot(
             }
         })
         .collect::<Vec<_>>();
-    let mut agents = join_all(agents).await;
     agents.sort_by(|left, right| left.label.cmp(&right.label));
     ConsoleLiveSnapshot::new(
         Some(runtime.handle().mob_id().to_string()),
