@@ -19,7 +19,9 @@
 use std::sync::Arc;
 
 use meerkat_core::types::{ToolCallView, ToolDef};
-use meerkat_core::{AgentToolDispatcher, ToolDispatchOutcome, ToolError};
+use meerkat_core::{
+    AgentToolDispatcher, ToolCatalogCapabilities, ToolCatalogEntry, ToolDispatchOutcome, ToolError,
+};
 
 /// Two external-tool dispatchers behind one slot: `primary` wins name
 /// collisions, unknown calls fall through to `fallback`.
@@ -97,6 +99,32 @@ impl AgentToolDispatcher for ComposedExternalTools {
         merged.into()
     }
 
+    /// The merged catalog is exact only when both halves are: the composition
+    /// adds no names of its own, so exactness is the conjunction. Leaving this
+    /// on the trait default made every member whose build composed host tools
+    /// over a pre-installed dispatcher read as `NonExactCatalog` downstream.
+    fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
+        let primary = self.primary.tool_catalog_capabilities();
+        let fallback = self.fallback.tool_catalog_capabilities();
+        ToolCatalogCapabilities {
+            exact_catalog: primary.exact_catalog && fallback.exact_catalog,
+            may_require_catalog_control_plane: primary.may_require_catalog_control_plane
+                || fallback.may_require_catalog_control_plane,
+        }
+    }
+
+    /// Primary entries verbatim, then every fallback entry whose name the
+    /// primary does not advertise - the same precedence `tools()` applies.
+    fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
+        let mut merged: Vec<ToolCatalogEntry> = self.primary.tool_catalog().to_vec();
+        for entry in self.fallback.tool_catalog().iter() {
+            if !self.primary_advertises(&entry.tool.name) {
+                merged.push(entry.clone());
+            }
+        }
+        merged.into()
+    }
+
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         if self.primary_advertises(call.name) {
             self.primary.dispatch(call).await
@@ -127,14 +155,20 @@ mod tests {
 
     struct Probe {
         names: Vec<&'static str>,
+        exact: bool,
         dispatched: AtomicUsize,
         contexted: AtomicUsize,
     }
 
     impl Probe {
         fn new(names: Vec<&'static str>) -> Arc<Self> {
+            Self::with_exactness(names, true)
+        }
+
+        fn with_exactness(names: Vec<&'static str>, exact: bool) -> Arc<Self> {
             Arc::new(Self {
                 names,
+                exact,
                 dispatched: AtomicUsize::new(0),
                 contexted: AtomicUsize::new(0),
             })
@@ -156,6 +190,13 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
                 .into()
+        }
+
+        fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
+            ToolCatalogCapabilities {
+                exact_catalog: self.exact,
+                may_require_catalog_control_plane: false,
+            }
         }
 
         async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
@@ -192,6 +233,32 @@ mod tests {
             .map(|tool| tool.name.to_string())
             .collect();
         assert_eq!(names, vec!["shared", "python_tool", "memory"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_exactness_is_the_conjunction_and_the_catalog_follows_precedence() {
+        let composed = ComposedExternalTools::over(
+            Probe::new(vec!["shared", "python_tool"]),
+            Some(Probe::new(vec!["shared", "memory"])),
+        );
+        assert!(composed.tool_catalog_capabilities().exact_catalog);
+        let names: Vec<String> = composed
+            .tool_catalog()
+            .iter()
+            .map(|entry| entry.tool.name.to_string())
+            .collect();
+        assert_eq!(names, vec!["shared", "python_tool", "memory"]);
+
+        for (primary_exact, fallback_exact) in [(false, true), (true, false), (false, false)] {
+            let composed = ComposedExternalTools::over(
+                Probe::with_exactness(vec!["python_tool"], primary_exact),
+                Some(Probe::with_exactness(vec!["memory"], fallback_exact)),
+            );
+            assert!(
+                !composed.tool_catalog_capabilities().exact_catalog,
+                "one non-exact half must make the composition non-exact"
+            );
+        }
     }
 
     #[tokio::test]

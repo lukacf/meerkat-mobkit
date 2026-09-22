@@ -501,6 +501,23 @@ impl AgentToolDispatcher for GatewayCallbackToolDispatcher {
         self.tool_defs.clone()
     }
 
+    /// A fixed list of SDK-registered tools is its own exact registry: every
+    /// advertised name dispatches through the callback and nothing else does.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        meerkat_core::ToolCatalogCapabilities {
+            exact_catalog: true,
+            may_require_catalog_control_plane: false,
+        }
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.tool_defs
+            .iter()
+            .map(|tool| meerkat_core::ToolCatalogEntry::session_inline(Arc::clone(tool), true))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         let args: Value =
             serde_json::from_str(call.args.get()).map_err(|err| ToolError::InvalidArguments {

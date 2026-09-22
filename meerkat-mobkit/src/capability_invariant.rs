@@ -12,6 +12,15 @@
 //! after `create_session` returns. A non-exact dispatcher chain is not evidence
 //! of absence and therefore produces [`CapabilityInvariantDecision::Unverifiable`],
 //! never a match or a gap.
+//!
+//! Reporting follows the decision, not the other way round
+//! ([`CapabilityInvariantReport`]): a verified [`CapabilityInvariantDecision::Gap`]
+//! is the only WarnOnly outcome that asks for operator action. An
+//! `Unverifiable` outcome is a steady state for any host whose build supplies a
+//! dispatcher without an exact catalog; it is explained once per process per
+//! cause at INFO and then recorded per member at DEBUG. A failed catalog read
+//! is an error and stays at WARN, but it is reported as a read failure, not as
+//! a capability mismatch.
 
 use std::collections::BTreeSet;
 
@@ -173,6 +182,21 @@ impl DeclaredToolCategories {
     }
 }
 
+impl std::fmt::Display for DeclaredToolCategories {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return f.write_str("none");
+        }
+        for (index, category) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(",")?;
+            }
+            f.write_str(category.as_str())?;
+        }
+        Ok(())
+    }
+}
+
 /// Per-member declaration and catalog-completeness witness captured from the
 /// fully resolved build request before the factory consumes its dispatchers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +227,12 @@ impl MemberCapabilityInvariantContext {
         // image-generation, web-search, declarative MCP) all report exact
         // catalogs. One non-exact supplied participant makes the final dynamic
         // composite non-exact, and absence must then stay Unverifiable.
+        //
+        // MobKit's own wrappers in these slots (the agent-memory recorder, the
+        // SDK callback dispatcher, `ComposedExternalTools`) declare their
+        // exactness from what they wrap; a host that supplies a dispatcher on
+        // the trait default is the remaining legitimate source of
+        // `NonExactCatalog`, and that is a steady state, not a defect.
         let catalog_exactness = if [
             build.external_tools.as_ref(),
             build.schedule_tools.as_ref(),
@@ -236,6 +266,25 @@ pub enum CapabilityInvariantUnverifiable {
     CatalogUnavailable,
     /// The authoritative catalog read failed.
     CatalogReadFailed(String),
+}
+
+impl CapabilityInvariantUnverifiable {
+    /// Operator-facing statement of what exactly could not be verified.
+    #[must_use]
+    pub const fn explanation(&self) -> &'static str {
+        match self {
+            Self::NonExactCatalog => {
+                "a tool dispatcher supplied to this member's build does not declare an \
+                 exact catalog, so a tool's absence from the live catalog is not \
+                 evidence of a gap"
+            }
+            Self::CatalogUnavailable => {
+                "the live session service exposes no tool-scope snapshot to compare \
+                 the declared categories against"
+            }
+            Self::CatalogReadFailed(_) => "the live tool catalog read failed",
+        }
+    }
 }
 
 /// Authoritative post-materialization observation before policy or category
@@ -335,7 +384,142 @@ pub fn decide(observation: CapabilityInvariantObservation) -> CapabilityInvarian
     }
 }
 
-/// Emit the warn-first policy projection of a typed transition.
+/// Which unverifiable cause a once-per-process notice covers. A failed
+/// catalog read is deliberately absent: it is an error every time it happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UnverifiableNoticeKind {
+    NonExactCatalog,
+    CatalogUnavailable,
+}
+
+impl UnverifiableNoticeKind {
+    const fn for_cause(cause: &CapabilityInvariantUnverifiable) -> Option<Self> {
+        match cause {
+            CapabilityInvariantUnverifiable::NonExactCatalog => Some(Self::NonExactCatalog),
+            CapabilityInvariantUnverifiable::CatalogUnavailable => Some(Self::CatalogUnavailable),
+            CapabilityInvariantUnverifiable::CatalogReadFailed(_) => None,
+        }
+    }
+}
+
+/// Memory of which unverifiable causes this process has already explained.
+///
+/// Hundreds of members materialize per boot and every one of them shares the
+/// same cause, so the explanation is written once per cause; later members
+/// keep a per-member DEBUG record for anyone tracing a specific session.
+#[derive(Debug, Default)]
+pub struct UnverifiableNotice {
+    announced: std::sync::Mutex<BTreeSet<UnverifiableNoticeKind>>,
+}
+
+impl UnverifiableNotice {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            announced: std::sync::Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    /// Record `kind` and report whether this is its first sighting.
+    fn first_report(&self, kind: UnverifiableNoticeKind) -> bool {
+        self.announced
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(kind)
+    }
+}
+
+static PROCESS_NOTICE: UnverifiableNotice = UnverifiableNotice::new();
+
+/// Log projection of one typed transition. The level policy lives here as a
+/// typed decision so a test can pin it without capturing tracing output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityInvariantReport<'a> {
+    /// INFO per member: the exact live catalog carries every declared category.
+    Matched {
+        declared: &'a DeclaredToolCategories,
+    },
+    /// WARN per member: an exact live catalog is missing declared categories.
+    /// Under `WarnOnly` this is the only outcome that asks for operator action.
+    Gap {
+        declared: &'a DeclaredToolCategories,
+        missing: &'a [DeclaredToolCategory],
+    },
+    /// INFO once per process per cause: what is unverifiable and that no
+    /// action is required unless a member is actually missing tools.
+    UnverifiableAnnounced {
+        declared: &'a DeclaredToolCategories,
+        cause: &'a CapabilityInvariantUnverifiable,
+    },
+    /// DEBUG per member after the cause has been announced.
+    UnverifiableRepeated {
+        declared: &'a DeclaredToolCategories,
+        cause: &'a CapabilityInvariantUnverifiable,
+    },
+    /// WARN per member: the live catalog read failed. An error, not a mismatch.
+    CatalogReadFailed {
+        declared: &'a DeclaredToolCategories,
+        error: &'a str,
+    },
+    /// WARN per member: the rollout policy demands parking for this decision.
+    ParkRequired {
+        decision: &'a CapabilityInvariantDecision,
+    },
+}
+
+/// Project a typed transition onto its report, consulting `notice` for the
+/// once-per-process unverifiable announcement.
+#[must_use]
+pub fn report_for<'a>(
+    transition: &'a CapabilityInvariantTransition,
+    notice: &UnverifiableNotice,
+) -> CapabilityInvariantReport<'a> {
+    let decision = match transition {
+        CapabilityInvariantTransition::ParkRequired(decision) => {
+            return CapabilityInvariantReport::ParkRequired { decision };
+        }
+        CapabilityInvariantTransition::Continue(decision) => {
+            debug_assert!(
+                matches!(decision, CapabilityInvariantDecision::Match { .. }),
+                "only Match may authorize Continue: {decision:?}"
+            );
+            decision
+        }
+        CapabilityInvariantTransition::WarnAndContinue(decision) => decision,
+    };
+    match decision {
+        CapabilityInvariantDecision::Match { declared } => {
+            CapabilityInvariantReport::Matched { declared }
+        }
+        CapabilityInvariantDecision::Gap { declared, missing } => CapabilityInvariantReport::Gap {
+            declared,
+            missing: missing.as_slice(),
+        },
+        CapabilityInvariantDecision::Unverifiable { declared, cause } => {
+            match UnverifiableNoticeKind::for_cause(cause) {
+                None => match cause {
+                    CapabilityInvariantUnverifiable::CatalogReadFailed(error) => {
+                        CapabilityInvariantReport::CatalogReadFailed {
+                            declared,
+                            error: error.as_str(),
+                        }
+                    }
+                    CapabilityInvariantUnverifiable::NonExactCatalog
+                    | CapabilityInvariantUnverifiable::CatalogUnavailable => {
+                        CapabilityInvariantReport::UnverifiableRepeated { declared, cause }
+                    }
+                },
+                Some(kind) if notice.first_report(kind) => {
+                    CapabilityInvariantReport::UnverifiableAnnounced { declared, cause }
+                }
+                Some(_) => CapabilityInvariantReport::UnverifiableRepeated { declared, cause },
+            }
+        }
+    }
+}
+
+/// Emit the policy projection of a typed transition through the process-wide
+/// unverifiable notice.
 pub fn emit_transition(
     mob_id: &str,
     role: &str,
@@ -343,10 +527,24 @@ pub fn emit_transition(
     session_id: &str,
     transition: &CapabilityInvariantTransition,
 ) {
-    match transition {
-        CapabilityInvariantTransition::Continue(CapabilityInvariantDecision::Match {
-            declared,
-        }) => {
+    emit_report(
+        mob_id,
+        role,
+        member,
+        session_id,
+        &report_for(transition, &PROCESS_NOTICE),
+    );
+}
+
+fn emit_report(
+    mob_id: &str,
+    role: &str,
+    member: &str,
+    session_id: &str,
+    report: &CapabilityInvariantReport<'_>,
+) {
+    match report {
+        CapabilityInvariantReport::Matched { declared } => {
             tracing::info!(
                 mob_id,
                 role,
@@ -356,19 +554,72 @@ pub fn emit_transition(
                 "post-materialization declared-versus-resolved capability invariant matched"
             );
         }
-        CapabilityInvariantTransition::WarnAndContinue(decision)
-        | CapabilityInvariantTransition::ParkRequired(decision) => {
+        CapabilityInvariantReport::Gap { declared, missing } => {
+            let missing = missing
+                .iter()
+                .map(|category| category.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            tracing::warn!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                declared = %declared,
+                missing = %missing,
+                "post-materialization declared-versus-resolved capability invariant found a \
+                 verified gap: declared tool categories are missing from the member's live \
+                 tool catalog; operator attention required"
+            );
+        }
+        CapabilityInvariantReport::UnverifiableAnnounced { declared, cause } => {
+            tracing::info!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                declared = %declared,
+                cause = ?cause,
+                "post-materialization declared-versus-resolved capability invariant is \
+                 unverifiable for this process: {}. No action is required unless a member \
+                 is missing tools it should have; a verified gap is reported separately at \
+                 WARN. Further members with this cause are recorded at DEBUG",
+                cause.explanation()
+            );
+        }
+        CapabilityInvariantReport::UnverifiableRepeated { declared, cause } => {
+            tracing::debug!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                declared = %declared,
+                cause = ?cause,
+                "post-materialization declared-versus-resolved capability invariant unverifiable"
+            );
+        }
+        CapabilityInvariantReport::CatalogReadFailed { declared, error } => {
+            tracing::warn!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                declared = %declared,
+                error,
+                "post-materialization declared-versus-resolved capability invariant could not \
+                 read the member's live tool catalog"
+            );
+        }
+        CapabilityInvariantReport::ParkRequired { decision } => {
             tracing::warn!(
                 mob_id,
                 role,
                 member,
                 session_id,
                 decision = ?decision,
-                "post-materialization declared-versus-resolved capability invariant requires operator attention"
+                "post-materialization declared-versus-resolved capability invariant requires \
+                 operator attention: the rollout policy parks this member"
             );
-        }
-        CapabilityInvariantTransition::Continue(decision) => {
-            debug_assert!(false, "only Match may authorize Continue: {decision:?}");
         }
     }
 }
@@ -599,5 +850,162 @@ mod tests {
                 .any(|category| category == DeclaredToolCategory::Memory)
         );
         assert_eq!(declared.iter().count(), 7);
+    }
+
+    fn unverifiable_transition(
+        cause: CapabilityInvariantUnverifiable,
+    ) -> CapabilityInvariantTransition {
+        transition_for(
+            CapabilityInvariantPolicy::WarnOnly,
+            decide(CapabilityInvariantObservation::Unverifiable {
+                declared: DeclaredToolCategories::from_build_options(&build_with_all_categories()),
+                cause,
+            }),
+        )
+    }
+
+    #[test]
+    fn a_match_reports_matched_per_member() {
+        let declared = DeclaredToolCategories::from_build_options(&build_with_all_categories());
+        let transition = transition_for(
+            CapabilityInvariantPolicy::WarnOnly,
+            compare_exact_catalog(declared.clone(), full_catalog()),
+        );
+        let notice = UnverifiableNotice::new();
+        assert_eq!(
+            report_for(&transition, &notice),
+            CapabilityInvariantReport::Matched {
+                declared: &declared
+            }
+        );
+    }
+
+    #[test]
+    fn a_verified_gap_is_the_only_warn_only_outcome_asking_for_operator_action() {
+        let declared = DeclaredToolCategories::from_build_options(&build_with_all_categories());
+        let mut catalog = full_catalog();
+        catalog.retain(|name| name != "workgraph_get");
+        let transition = transition_for(
+            CapabilityInvariantPolicy::WarnOnly,
+            compare_exact_catalog(declared.clone(), catalog),
+        );
+        let notice = UnverifiableNotice::new();
+        assert_eq!(
+            report_for(&transition, &notice),
+            CapabilityInvariantReport::Gap {
+                declared: &declared,
+                missing: &[DeclaredToolCategory::WorkGraph],
+            }
+        );
+    }
+
+    #[test]
+    fn non_exact_catalog_is_announced_once_per_process_then_recorded_per_member() {
+        let notice = UnverifiableNotice::new();
+        let first = unverifiable_transition(CapabilityInvariantUnverifiable::NonExactCatalog);
+        let second = unverifiable_transition(CapabilityInvariantUnverifiable::NonExactCatalog);
+        let third = unverifiable_transition(CapabilityInvariantUnverifiable::NonExactCatalog);
+
+        assert!(matches!(
+            report_for(&first, &notice),
+            CapabilityInvariantReport::UnverifiableAnnounced {
+                cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+                ..
+            }
+        ));
+        for later in [&second, &third] {
+            assert!(matches!(
+                report_for(later, &notice),
+                CapabilityInvariantReport::UnverifiableRepeated {
+                    cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn each_unverifiable_cause_gets_its_own_announcement() {
+        let notice = UnverifiableNotice::new();
+        let non_exact = unverifiable_transition(CapabilityInvariantUnverifiable::NonExactCatalog);
+        let unavailable =
+            unverifiable_transition(CapabilityInvariantUnverifiable::CatalogUnavailable);
+        assert!(matches!(
+            report_for(&non_exact, &notice),
+            CapabilityInvariantReport::UnverifiableAnnounced { .. }
+        ));
+        assert!(matches!(
+            report_for(&unavailable, &notice),
+            CapabilityInvariantReport::UnverifiableAnnounced {
+                cause: CapabilityInvariantUnverifiable::CatalogUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            report_for(&unavailable, &notice),
+            CapabilityInvariantReport::UnverifiableRepeated { .. }
+        ));
+    }
+
+    #[test]
+    fn a_failed_catalog_read_is_reported_as_an_error_every_time() {
+        let notice = UnverifiableNotice::new();
+        let failed = unverifiable_transition(CapabilityInvariantUnverifiable::CatalogReadFailed(
+            "store offline".to_string(),
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                report_for(&failed, &notice),
+                CapabilityInvariantReport::CatalogReadFailed {
+                    error: "store offline",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn park_required_always_reports_for_operator_attention() {
+        let notice = UnverifiableNotice::new();
+        let decision = decide(CapabilityInvariantObservation::Unverifiable {
+            declared: DeclaredToolCategories::default(),
+            cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+        });
+        let transition =
+            transition_for(CapabilityInvariantPolicy::ParkOnMismatch, decision.clone());
+        assert_eq!(
+            report_for(&transition, &notice),
+            CapabilityInvariantReport::ParkRequired {
+                decision: &decision
+            }
+        );
+    }
+
+    #[test]
+    fn unverifiable_causes_explain_themselves() {
+        assert!(
+            CapabilityInvariantUnverifiable::NonExactCatalog
+                .explanation()
+                .contains("does not declare an exact catalog")
+        );
+        assert!(
+            CapabilityInvariantUnverifiable::CatalogUnavailable
+                .explanation()
+                .contains("no tool-scope snapshot")
+        );
+    }
+
+    #[test]
+    fn declared_categories_display_as_a_stable_list() {
+        assert_eq!(DeclaredToolCategories::default().to_string(), "none");
+        let build = SessionBuildOptions {
+            override_mob: ToolCategoryOverride::Enable,
+            override_builtins: ToolCategoryOverride::Enable,
+            ..Default::default()
+        };
+        assert_eq!(
+            DeclaredToolCategories::from_build_options(&build).to_string(),
+            "builtins,mob"
+        );
     }
 }
