@@ -158,8 +158,28 @@ your `auth_config` and enable `persistent_sessions`:
 The optional `summary` block bounds the concurrent context summary (see
 "Context preparation" below). Every field is optional: `model` defaults to
 the background agent's own text model, `max_input_bytes` to 65536 (64 KiB)
-and `max_output_bytes` to 4096 (4 KiB); zero is rejected. In Rust the same
-knobs are `PublicLiveRegistration.summary` (`ConsoleVoiceSummaryConfig`).
+and `max_output_bytes` to 4096 (4 KiB); zero is rejected. The input bound
+degrades rather than fails: when the newest message alone exceeds it (a
+large tool result, say), that one whole message is summarised; only
+Meerkat's 4 MiB capture ceiling refuses a snapshot outright. In Rust the
+same knobs are `PublicLiveRegistration.summary` (`ConsoleVoiceSummaryConfig`);
+the SDK builders take them on `OpenAiLiveGatewayConfig`:
+
+```ts
+gateway.consoleVoice({
+  principal: "alice@example.com", realm: "ops",
+  authBinding: { realm: "ops", binding: "openai" }, voice: "marin",
+  summary: { model: "gpt-5.4-mini", maxInputBytes: 65536, maxOutputBytes: 4096 },
+});
+```
+
+```python
+gateway.console_voice(OpenAiLiveGatewayConfig(
+    principal="alice@example.com", realm="ops",
+    auth_binding=LiveAuthBindingRef(realm="ops", binding="openai"), voice="marin",
+    summary=OpenAiLiveSummaryConfig(model="gpt-5.4-mini", max_input_bytes=65536, max_output_bytes=4096),
+))
+```
 
 The binding must already be configured in the gateway's Meerkat host config.
 The principal must match the authenticated console subject. For an SDK-driven
@@ -198,7 +218,8 @@ and retried.
 Context preparation is a separate, tool-free summary request using the background
 agent's credentials; it does not change that agent's model or reasoning
 settings. It reads the most recent 64 KiB of the serialized transcript (older
-turns are dropped whole; a size bound, not a content heuristic), asks for
+turns are dropped whole; a size bound, not a content heuristic; a newest
+message larger than the window is kept whole), asks for
 compact notes rather than replayed logs, uses low or disabled OpenAI reasoning
 where the model catalog supports it, and caps the result at 4 KiB. The public
 GPT Live transport delivers the summary in UTF-8 fragments of at most 500

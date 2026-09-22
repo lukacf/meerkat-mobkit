@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - The context summary is bounded and cached. `console_voice.summary`
     (`PublicLiveRegistration.summary`) sets `max_input_bytes` (default
     65536: the most recent 64 KiB of the serialized transcript, oldest turns
-    dropped whole, a size bound rather than a content heuristic),
+    dropped whole, a size bound rather than a content heuristic; a newest
+    message larger than the window is summarised whole rather than failing),
     `max_output_bytes` (default 4096, so the 500-byte GPT Live append
     fragments, each awaiting its own receipt, stay at nine or fewer) and
     `model` (default: the agent's own model; Meerkat's catalog exposes a
@@ -39,7 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     derived from it). A produced summary is cached per member, keyed by the
     source session's transcript cursor and a digest of the summarised
     window, so reopening voice on an unchanged transcript reuses it without
-    a model call. Meerkat's 4 MiB capture ceiling is unchanged. Measured on a
+    a model call. Meerkat's 4 MiB capture ceiling is unchanged. The Python
+    and TypeScript SDK `OpenAiLiveGatewayConfig` wrappers accept the same
+    block (`OpenAiLiveSummaryConfig` / `summary: { model, maxInputBytes,
+    maxOutputBytes }`). Measured on a
     40-turn seeded session the previous bounds took 4.0 to 5.9 s of summary
     generation for a 1.3 to 1.5 KB result (3 fragments).
 - Console voice readiness leaves a server-side trace. `mobkit/console/voice/

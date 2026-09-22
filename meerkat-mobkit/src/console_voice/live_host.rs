@@ -62,12 +62,10 @@ impl LiveContextSummarizer for FactorySummarizer {
             identity.model.clone_from(model);
         }
         // Newest messages that fit the configured window; a size bound only.
+        // A newest message larger than the window is summarised whole (the
+        // bound degrades, it does not fail); Meerkat's capture ceiling has
+        // already refused a truly oversized snapshot.
         let window = recent_window(snapshot.messages(), self.summary.max_input_bytes);
-        if window.is_empty() && !snapshot.messages().is_empty() {
-            return Err(LiveContextSummaryError::InputTooLarge {
-                max_bytes: self.summary.max_input_bytes,
-            });
-        }
         let key = SummaryKey::new(
             snapshot.session_id(),
             snapshot.canonical_message_cursor(),

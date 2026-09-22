@@ -18,13 +18,16 @@ use sha2::{Digest as _, Sha256};
 /// text for members that no longer exist.
 pub(crate) const MAX_CACHED_SUMMARIES: usize = 32;
 
-/// The longest suffix of `messages` whose serialized JSON fits `max_bytes`.
+/// The longest suffix of `messages` whose serialized JSON fits `max_bytes`,
+/// and never less than the newest message.
 ///
 /// This is a pure size bound measured on the same serialization the
 /// summariser sends (`serde_json` of each `Message`, plus the array
 /// separators): the newest messages are kept whole, oldest first to go, and
-/// no message content is inspected or truncated. An empty slice means the
-/// newest message alone does not fit.
+/// no message content is inspected or truncated. The bound degrades rather
+/// than fails: when the newest message alone exceeds `max_bytes` (a large
+/// tool result is common) the window is that one whole message, which stays
+/// subject to Meerkat's capture ceiling for the truly oversized case.
 pub(crate) fn recent_window(messages: &[Message], max_bytes: usize) -> &[Message] {
     // `[` + `]` of the JSON array.
     let mut used = 2usize;
@@ -36,11 +39,15 @@ pub(crate) fn recent_window(messages: &[Message], max_bytes: usize) -> &[Message
         // One `,` separator for every message after the first.
         let separator = usize::from(index + 1 < messages.len());
         let next = used.saturating_add(encoded.len()).saturating_add(separator);
-        if next > max_bytes {
+        let newest = start == messages.len();
+        if next > max_bytes && !newest {
             break;
         }
         used = next;
         start = index;
+        if next > max_bytes {
+            break;
+        }
     }
     &messages[start..]
 }
@@ -157,14 +164,36 @@ mod tests {
     }
 
     #[test]
-    fn recent_window_returns_everything_when_it_fits_and_nothing_when_the_newest_is_too_large() {
+    fn recent_window_returns_everything_when_it_fits_and_degrades_to_the_newest_message() {
         let messages = transcript(3, 4);
         assert_eq!(
             recent_window(&messages, serialized_len(&messages)),
             &messages[..]
         );
-        assert!(recent_window(&messages, 8).is_empty());
+        // The newest message alone exceeds the bound: the window is exactly
+        // that one whole message, not an empty slice and not a cut message.
+        let oversized = recent_window(&messages, 8);
+        assert_eq!(oversized.len(), 1);
+        assert_eq!(oversized.last(), messages.last());
+        assert!(serialized_len(oversized) > 8);
+        // A bound that fits the newest message but not the next-older one
+        // yields exactly the newest message as well.
+        let newest_only = serialized_len(&messages[messages.len() - 1..]);
+        assert_eq!(recent_window(&messages, newest_only).len(), 1);
         assert!(recent_window(&[], 1024).is_empty());
+    }
+
+    #[test]
+    fn recent_window_keeps_a_large_newest_tool_result_whole() {
+        let mut messages = transcript(4, 4);
+        let large = "x".repeat(96 * 1024);
+        messages.push(Message::User(UserMessage::text(format!(
+            "tool result: {large}"
+        ))));
+        let window = recent_window(&messages, 64 * 1024);
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0], messages[messages.len() - 1]);
+        assert!(serialized_len(window) > 64 * 1024, "no content is cut");
     }
 
     #[test]
