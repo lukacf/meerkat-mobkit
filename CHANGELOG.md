@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation publication follows main, not releases. A new `Publish docs`
+  workflow dispatches `mobkit-docs-updated` to docs.rkat.ai on every push to
+  main that touches `docs/`, and the release workflow no longer publishes
+  documentation. Published MobKit docs now match whatever is on main.
+
 ### Added
 
 - Library embedders can register console voice and the external live

@@ -160,7 +160,7 @@ def job_runs(name: str, **context) -> bool:
 JOBS = (
     "resolve_release", "require_ci_green", "release_validate", "build_binaries",
     "collect_candidate", "verify_release_assets", "publish_github_release",
-    "publish_sdk_packages", "publish_registries", "publish_docs",
+    "publish_sdk_packages", "publish_registries",
 )
 WORK_JOBS = JOBS[3:]
 
@@ -678,35 +678,40 @@ class RegistryPublicationShellTests(unittest.TestCase):
 
 
 class DocsPublicationWorkflowTests(unittest.TestCase):
-    def test_docs_dispatch_requires_completed_public_release(self):
+    """Documentation mirrors main; releases no longer publish docs."""
+
+    PUBLISH_DOCS_WORKFLOW = RELEASE_WORKFLOW.with_name("publish-docs.yml")
+
+    def test_release_workflow_no_longer_dispatches_documentation(self):
         workflow = RELEASE_WORKFLOW.read_text()
-        docs_job = workflow.index("  publish_docs:")
-        registry_readback = workflow.index(
-            "      - name: Verify exact packages are public on every registry"
-        )
+        self.assertNotIn("publish_docs:", workflow)
+        self.assertNotIn("mobkit-release-published", workflow)
+        self.assertNotIn("repos/lukacf/meerkat/dispatches", workflow)
 
-        self.assertGreater(docs_job, registry_readback)
-        self.assertTrue(
-            {"resolve_release", "verify_release_assets", "publish_github_release", "publish_registries"}
-            <= set(job_needs("publish_docs"))
-        )
-        self.assertIn("needs.publish_github_release.result == 'success'", workflow[docs_job:])
-        self.assertIn("needs.publish_registries.result == 'success'", workflow[docs_job:])
-        self.assertIn("needs.resolve_release.outputs.dry_run == 'false'", job_condition("publish_docs"))
+    def test_docs_dispatch_fires_on_every_docs_push_to_main(self):
+        workflow = self.PUBLISH_DOCS_WORKFLOW.read_text()
+        self.assertIn("branches:\n      - main", workflow)
+        self.assertIn('- "docs/**"', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("secrets.DOCS_PUBLISH_TOKEN", workflow)
+        self.assertIn('event_type: "mobkit-docs-updated"', workflow)
+        self.assertIn("sha: $sha", workflow)
+        self.assertIn('ref: "main"', workflow)
+        self.assertIn("SOURCE_SHA: ${{ github.sha }}", workflow)
+        self.assertIn("repos/lukacf/meerkat/dispatches", workflow)
+        self.assertNotIn("releases/latest", workflow)
+        self.assertNotIn("RELEASE_TAG", workflow)
 
-    def test_docs_dispatch_carries_immutable_release_identity(self):
-        workflow = RELEASE_WORKFLOW.read_text()
-        docs_job = workflow[workflow.index("  publish_docs:") :]
-
-        self.assertIn("secrets.DOCS_PUBLISH_TOKEN", docs_job)
-        self.assertIn('event_type: "mobkit-release-published"', docs_job)
-        self.assertIn("tag: $tag", docs_job)
-        self.assertIn("sha: $sha", docs_job)
-        self.assertIn("version: $version", docs_job)
-        self.assertIn("release_sha=$(git rev-parse HEAD)", docs_job)
-        self.assertIn("repos/lukacf/meerkat/dispatches", docs_job)
-        self.assertIn("RELEASE_TAG: ${{ needs.resolve_release.outputs.tag }}", docs_job)
-        self.assertIn('if [[ "$version" != "$tag_version" ]]', docs_job)
+    def test_docs_dispatch_workflow_parses_when_yaml_is_available(self):
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover
+            self.skipTest("PyYAML is not installed")
+        parsed = yaml.safe_load(self.PUBLISH_DOCS_WORKFLOW.read_text())
+        self.assertEqual(parsed[True]["push"]["branches"], ["main"])
+        self.assertEqual(parsed[True]["push"]["paths"], ["docs/**"])
+        self.assertEqual(parsed["permissions"], {"contents": "read"})
+        self.assertEqual(list(parsed["jobs"]), ["dispatch"])
 
 
 class ReleaseProtocolConditionsTests(unittest.TestCase):
@@ -734,12 +739,10 @@ class ReleaseProtocolConditionsTests(unittest.TestCase):
                             expected.add("publish_github_release")
                         if publish:
                             expected.update(("publish_sdk_packages", "publish_registries"))
-                            if not dry:
-                                expected.add("publish_docs")
                     elif mode == "existing" and publish:
                         expected = {"publish_sdk_packages", "publish_registries"}
                         if not dry:
-                            expected.update(("verify_release_assets", "publish_docs"))
+                            expected.add("verify_release_assets")
                     elif mode == "assets" and not publish and not dry:
                         expected = {"publish_github_release"}
                 # Tag/input validity belongs to resolve_release's tests. Here
@@ -790,10 +793,9 @@ class ReleaseProtocolConditionsTests(unittest.TestCase):
     def test_full_publication_stops_at_each_failed_boundary(self):
         for upstream, downstream in (
             ("verify_release_assets", ("publish_github_release", "publish_sdk_packages",
-                                       "publish_registries", "publish_docs")),
-            ("publish_github_release", ("publish_sdk_packages", "publish_registries", "publish_docs")),
-            ("publish_sdk_packages", ("publish_registries", "publish_docs")),
-            ("publish_registries", ("publish_docs",)),
+                                       "publish_registries")),
+            ("publish_github_release", ("publish_sdk_packages", "publish_registries")),
+            ("publish_sdk_packages", ("publish_registries",)),
         ):
             for status in ("failure", "skipped", "cancelled"):
                 with self.subTest(upstream=upstream, status=status):
@@ -822,10 +824,6 @@ class ReleaseProtocolConditionsTests(unittest.TestCase):
              {"release_validate", "verify_release_assets", "publish_sdk_packages"}),
             ("publish_registries", "existing", True, True,
              {"release_validate", "publish_sdk_packages"}),
-            ("publish_docs", "promote", True, False,
-             {"publish_registries", "publish_github_release"}),
-            ("publish_docs", "existing", True, False,
-             {"publish_registries", "verify_release_assets"}),
         )
         for job, mode, publish, dry, required in scenarios:
             self.assertIn("always()", job_condition(job))
@@ -869,7 +867,6 @@ class ReleaseProtocolConditionsTests(unittest.TestCase):
             self.assertEqual(results["publish_sdk_packages"], "success")
             self.assertEqual(results["publish_registries"], "success")
             self.assertEqual(results["verify_release_assets"], "skipped" if dry else "success")
-            self.assertEqual(results["publish_docs"], "skipped" if dry else "success")
             for status in ("failure", "skipped"):
                 failed = release_results(context, {"verify_release_assets": status})
                 self.assertEqual(failed["publish_sdk_packages"], "success" if dry else "skipped")
@@ -880,7 +877,7 @@ class ReleaseProtocolConditionsTests(unittest.TestCase):
                 results = release_results(protocol_context("promote", publish, True),
                                           {"verify_release_assets": status})
                 for job in ("publish_github_release", "publish_sdk_packages",
-                            "publish_registries", "publish_docs"):
+                            "publish_registries"):
                     self.assertEqual(results[job], "skipped", (publish, status, job))
 
 
@@ -1074,7 +1071,7 @@ class ImmutableReleaseWorkflowTests(unittest.TestCase):
 
     def test_promotion_and_recovery_never_rebuild_resign_repack_or_reattest_binaries(self):
         for job in ("verify_release_assets", "publish_github_release", "publish_sdk_packages",
-                    "publish_registries", "publish_docs"):
+                    "publish_registries"):
             with self.subTest(job=job):
                 block = job_block(job)
                 self.assertNotRegex(block, r"(?m)^\s*(?:cargo|scripts/repo-cargo) build\b")
@@ -1132,8 +1129,7 @@ class ReleasePermissionsTests(unittest.TestCase):
                 self.assertNotIn("secrets.", job_block(job))
         for secret, owner in (("PYPI_API_TOKEN", "publish_sdk_packages"),
                               ("NPM_TOKEN", "publish_sdk_packages"),
-                              ("CARGO_REGISTRY_TOKEN", "publish_registries"),
-                              ("DOCS_PUBLISH_TOKEN", "publish_docs")):
+                              ("CARGO_REGISTRY_TOKEN", "publish_registries")):
             for job in JOBS:
                 self.assertEqual(f"secrets.{secret}" in job_block(job), job == owner, (secret, job))
 
