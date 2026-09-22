@@ -180,6 +180,33 @@ export const TURN_RAIL_TICK_PX = 10;
 /** Hard ceiling on rendered rail ticks, independent of viewport height. */
 export const TURN_RAIL_MAX_TICKS = 48;
 
+/// Transcript windowing. Only the newest `TRANSCRIPT_WINDOW_TURNS` turns
+/// are mounted; scrolling to the top (or jumping to an older turn from the
+/// rail) reveals `TRANSCRIPT_WINDOW_STEP` more, anchored so the content
+/// under the viewport does not move. Rows are variable-height markdown
+/// with code blocks, images and cards, and the pane relies on real DOM
+/// geometry for bottom-anchoring, the older-history anchor and the turn
+/// rail, so a tail window is used instead of a measured virtual list.
+export const TRANSCRIPT_WINDOW_TURNS = 120;
+export const TRANSCRIPT_WINDOW_STEP = 120;
+
+/// First rendered turn index for `turnCount` turns given the reveal state.
+/// `null` means the user has not scrolled into history: render the tail
+/// window. `""` means everything is revealed (the window reached the first
+/// turn, so server-side older history also shows as it loads).
+export function transcriptWindowStart(
+  turnCount: number,
+  revealedFromTurnId: string | null,
+  indexOfTurn: (id: string) => number,
+): number {
+  if (revealedFromTurnId === "") return 0;
+  if (revealedFromTurnId !== null) {
+    const index = indexOfTurn(revealedFromTurnId);
+    if (index >= 0) return index;
+  }
+  return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+}
+
 /**
  * Window the turn rail to the measured band (issue: long-running agents grew
  * a tick per turn and the ladder spilled past the pane — the list cannot
@@ -635,15 +662,40 @@ function CopyInlineButton({
   );
 }
 
+/// Msg objects are rebuilt from scratch on every transcript derivation, so a
+/// reference check alone would re-render every mounted row per SSE burst.
+/// Msg is plain data; compare by a cached serialisation instead. Only the
+/// mounted rows (the window) ever pay for this.
+const msgSignatures = new WeakMap<Msg, string>();
+function msgSignature(message: Msg): string {
+  let signature = msgSignatures.get(message);
+  if (signature === undefined) {
+    signature = JSON.stringify(message);
+    msgSignatures.set(message, signature);
+  }
+  return signature;
+}
+
+type MessageRowProps = {
+  message: Msg;
+  suppressWorked: boolean;
+  workGraphActions: WorkGraphCardActions | null;
+};
+
+function messageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boolean {
+  return (
+    prev.suppressWorked === next.suppressWorked &&
+    prev.workGraphActions === next.workGraphActions &&
+    (prev.message === next.message || msgSignature(prev.message) === msgSignature(next.message))
+  );
+}
+
 const MessageRow = React.memo(function MessageRow({
   message: m,
   suppressWorked,
   workGraphActions,
-}: {
-  message: Msg;
-  suppressWorked: boolean;
-  workGraphActions: WorkGraphCardActions | null;
-}) {
+}: MessageRowProps) {
+  countRender("MessageRow");
   return (
     <div className={`msg msg--${m.kind}`}>
       <div className="msg__time">{m.time}</div>
@@ -677,7 +729,7 @@ const MessageRow = React.memo(function MessageRow({
       </div>
     </div>
   );
-});
+}, messageRowPropsEqual);
 
 /// The scrolling transcript. Memoised so composer keystrokes, which re-render
 /// the owning ChatPane, never touch a transcript row: only a change in the
@@ -693,6 +745,8 @@ const TranscriptView = React.memo(function TranscriptView({
   isLoadingHistory,
   hasOlderHistory,
   loadingOlderHistory,
+  windowStart,
+  onRevealEarlier,
   bodyRef,
   onScroll,
   onRequestOlderHistory,
@@ -707,11 +761,17 @@ const TranscriptView = React.memo(function TranscriptView({
   isLoadingHistory: boolean;
   hasOlderHistory: boolean;
   loadingOlderHistory: boolean;
+  windowStart: number;
+  onRevealEarlier: () => void;
   bodyRef: React.RefObject<HTMLDivElement | null>;
   onScroll: React.UIEventHandler<HTMLDivElement>;
   onRequestOlderHistory: () => void;
 }) {
   countRender("TranscriptView");
+  const windowedTurns = React.useMemo(
+    () => (windowStart > 0 ? turns.slice(windowStart) : turns),
+    [turns, windowStart],
+  );
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
@@ -722,7 +782,16 @@ const TranscriptView = React.memo(function TranscriptView({
         label="Copy transcript"
         getText={getTranscriptText}
       />
-      {hasOlderHistory && (
+      {windowStart > 0 ? (
+        <button
+          className="conv__history"
+          data-testid={`chat-reveal-earlier:${identity}`}
+          onClick={onRevealEarlier}
+          type="button"
+        >
+          Show earlier messages
+        </button>
+      ) : hasOlderHistory && (
         <button
           className="conv__history"
           disabled={loadingOlderHistory}
@@ -756,7 +825,9 @@ const TranscriptView = React.memo(function TranscriptView({
           <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
         </div>
       )}
-      {turns.map((turn, turnIndex) => (
+      {windowedTurns.map((turn, offset) => {
+        const turnIndex = windowStart + offset;
+        return (
         <div
           aria-label={`Turn ${turnIndex + 1}`}
           className="conv-turn"
@@ -773,7 +844,8 @@ const TranscriptView = React.memo(function TranscriptView({
             />
           ))}
         </div>
-      ))}
+        );
+      })}
       {phase && (
         <div
           className="msg msg--typing"
@@ -793,6 +865,110 @@ const TranscriptView = React.memo(function TranscriptView({
         </div>
       )}
     </div>
+  );
+});
+
+/// The composer's text input and send row. Owns the live textarea value so
+/// each keystroke re-renders only this small component; ChatPane learns the
+/// value through `onLiveChange` (kept in a ref there) and can push a new
+/// value down through `externalValue` (send cleared it, a blob reference
+/// was stripped, or the persisted draft changed on panel switch).
+const ComposerTextarea = React.memo(function ComposerTextarea({
+  identity,
+  agentLabel,
+  agentRole,
+  initialValue,
+  externalValue,
+  readOnly,
+  sendWithheld,
+  voiceActive,
+  voiceDisabled,
+  onVoiceToggle,
+  stagedCount,
+  canAttachImages,
+  sending,
+  sendLabel,
+  onLiveChange,
+  onBlur,
+  onSubmit,
+}: {
+  identity: string;
+  agentLabel: string;
+  agentRole: string | null;
+  initialValue: string;
+  externalValue: { value: string; at: number } | null;
+  readOnly: boolean;
+  sendWithheld: boolean;
+  voiceActive: boolean;
+  voiceDisabled: boolean;
+  onVoiceToggle?: () => void;
+  stagedCount: number;
+  canAttachImages: boolean;
+  sending: boolean;
+  sendLabel: string;
+  onLiveChange: (value: string) => void;
+  onBlur: () => void;
+  onSubmit: () => void;
+}) {
+  countRender("ComposerTextarea");
+  const [value, setValue] = React.useState(initialValue);
+  const appliedExternalRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
+    appliedExternalRef.current = externalValue.at;
+    setValue(externalValue.value);
+  }, [externalValue]);
+  return (
+    <>
+      <textarea
+        placeholder={
+          readOnly
+            ? "View-only console"
+            : sendWithheld
+              ? `You can view ${agentLabel} but not message it`
+              : voiceActive
+                ? `Message ${agentLabel} (background agent)…`
+                : `Message ${agentLabel}…`
+        }
+        value={value}
+        disabled={readOnly || sendWithheld}
+        onChange={(e) => {
+          if (readOnly || sendWithheld) return;
+          setValue(e.target.value);
+          onLiveChange(e.target.value);
+        }}
+        onBlur={onBlur}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); } }}
+        rows={2}
+        data-testid={`chat-composer:${identity}`}
+      />
+      <div className="composer__row">
+        <span className="composer__chip mono">{agentRole || "agent"}</span>
+        <span className="composer__spacer" />
+        {onVoiceToggle && !readOnly && !sendWithheld && (
+          <VoiceButton
+            agentLabel={agentLabel}
+            active={voiceActive}
+            disabled={voiceDisabled}
+            onClick={onVoiceToggle}
+          />
+        )}
+        <button
+          className="composer__send"
+          disabled={
+            (!value.trim() && stagedCount === 0)
+            || readOnly
+            || sendWithheld
+            || (stagedCount > 0 && !canAttachImages)
+            || (stagedCount > 0 && sending)
+          }
+          onClick={onSubmit}
+          data-testid={`chat-send:${identity}`}
+        >
+          {sendLabel}  ⏎
+        </button>
+      </div>
+    </>
   );
 });
 
@@ -829,10 +1005,10 @@ export function ChatPane({
   workGraphActions = null,
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
-  // Live composer value lives here so a keystroke re-renders only this pane's
-  // composer, never the app root. The parent's persisted `draft` seeds it and
-  // receives it back on blur, on a short debounce, and on unmount.
-  const [liveDraft, setLiveDraft] = React.useState(draft);
+  // The live composer value lives inside ComposerTextarea (below) so a
+  // keystroke re-renders only that component. ChatPane keeps a ref to the
+  // current value for submit and for the blob-reference effect, and a
+  // debounced publisher back to the parent's persisted per-panel draft.
   const liveDraftRef = React.useRef(draft);
   const lastPublishedDraftRef = React.useRef(draft);
   const publishDraftTimerRef = React.useRef<number | null>(null);
@@ -848,25 +1024,45 @@ export function ChatPane({
     lastPublishedDraftRef.current = value;
     onDraftChangeRef.current(value);
   }, []);
-  const setDraft = React.useCallback(
+  // Bumped when ChatPane needs the blob-reference effect to re-run for a
+  // new live value; the textarea reports through `onLiveChange`.
+  const [liveDraftTick, setLiveDraftTick] = React.useState(0);
+  const onLiveChange = React.useCallback(
     (value: string) => {
       liveDraftRef.current = value;
-      setLiveDraft(value);
       if (publishDraftTimerRef.current !== null) {
         window.clearTimeout(publishDraftTimerRef.current);
       }
       publishDraftTimerRef.current = window.setTimeout(publishDraft, 400);
+      // Only the blob-reference scan needs ChatPane to notice a change, and
+      // only when the text can carry a reference at all.
+      if (value.includes("blob")) setLiveDraftTick((n) => n + 1);
     },
     [publishDraft],
   );
-  // The persisted copy changed underneath us (send cleared it, or a blob
-  // reference was stripped): adopt it unless the user has typed since.
+  // Values pushed down into the textarea, each stamped with a sequence so
+  // the textarea applies every new one exactly once: the persisted copy
+  // changed underneath us (send cleared it, panel navigation swapped the
+  // draft), or ChatPane itself rewrote the text (a blob reference was
+  // stripped after being staged as an attachment).
+  const externalSeqRef = React.useRef(0);
+  const [externalValue, setExternalValue] = React.useState<{ value: string; at: number } | null>(null);
   React.useEffect(() => {
     if (draft === lastPublishedDraftRef.current) return;
     lastPublishedDraftRef.current = draft;
     liveDraftRef.current = draft;
-    setLiveDraft(draft);
+    externalSeqRef.current += 1;
+    setExternalValue({ value: draft, at: externalSeqRef.current });
   }, [draft]);
+  const setDraft = React.useCallback(
+    (value: string) => {
+      liveDraftRef.current = value;
+      externalSeqRef.current += 1;
+      setExternalValue({ value, at: externalSeqRef.current });
+      publishDraft();
+    },
+    [publishDraft],
+  );
   React.useEffect(() => () => publishDraft(), [publishDraft]);
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const preserveOlderHistoryScrollRef = React.useRef(false);
@@ -879,6 +1075,39 @@ export function ChatPane({
     return buildChatMessages(entries);
   }, [entries]);
   const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
+  // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
+  // pane that navigates to another agent starts at that agent's tail again.
+  const [revealedFrom, setRevealedFrom] = React.useState<{ identity: string; turnId: string } | null>(null);
+  const revealedFromTurnId = revealedFrom && revealedFrom.identity === identity ? revealedFrom.turnId : null;
+  const turnIndexById = React.useMemo(() => {
+    const index = new Map<string, number>();
+    turns.forEach((turn, i) => index.set(turn.id, i));
+    return index;
+  }, [turns]);
+  const windowStart = transcriptWindowStart(
+    turns.length,
+    revealedFromTurnId,
+    (id) => turnIndexById.get(id) ?? -1,
+  );
+  const pendingScrollToTurnRef = React.useRef<number | null>(null);
+  /// Reveal turns down to `firstIndex`, keeping the content under the
+  /// viewport in place (same anchor as an older-history prepend).
+  const revealTurnsFrom = React.useCallback(
+    (firstIndex: number) => {
+      const target = Math.max(0, firstIndex);
+      if (bodyRef.current) {
+        preserveOlderHistoryScrollRef.current = true;
+        olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+        olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+      }
+      const turnId = target === 0 ? "" : turns[target]?.id ?? "";
+      setRevealedFrom({ identity, turnId });
+    },
+    [identity, turns],
+  );
+  const revealEarlier = React.useCallback(() => {
+    revealTurnsFrom(windowStart - TRANSCRIPT_WINDOW_STEP);
+  }, [revealTurnsFrom, windowStart]);
   // The id of the in-progress (latest) agent turn. While `phase` is non-null the
   // turn is still working, so we suppress that turn's "Worked for Ns" summary —
   // otherwise it renders alongside the "working…" indicator (the done + working
@@ -929,7 +1158,18 @@ export function ChatPane({
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [scrollSignature]);
+  }, [scrollSignature, windowStart]);
+
+  // A rail jump into the hidden range reveals first, then scrolls once the
+  // target turn is mounted.
+  React.useEffect(() => {
+    const turnIndex = pendingScrollToTurnRef.current;
+    if (turnIndex === null || turnIndex < windowStart) return;
+    pendingScrollToTurnRef.current = null;
+    bodyRef.current
+      ?.querySelector<HTMLElement>(`[data-chat-turn-index="${turnIndex}"]`)
+      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [windowStart]);
 
   React.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
@@ -1005,6 +1245,11 @@ export function ChatPane({
   }, [scheduleActiveTurnUpdate, updateActiveTurn]);
 
   function scrollToTurn(turnIndex: number) {
+    if (turnIndex < windowStart) {
+      pendingScrollToTurnRef.current = turnIndex;
+      revealTurnsFrom(turnIndex);
+      return;
+    }
     const turnNode = bodyRef.current?.querySelector<HTMLElement>(
       `[data-chat-turn-index="${turnIndex}"]`,
     );
@@ -1025,17 +1270,22 @@ export function ChatPane({
   hasOlderHistoryRef.current = hasOlderHistory;
   const loadingOlderHistoryRef = React.useRef(loadingOlderHistory);
   loadingOlderHistoryRef.current = loadingOlderHistory;
+  const windowStartRef = React.useRef(windowStart);
+  windowStartRef.current = windowStart;
+  const revealEarlierRef = React.useRef(revealEarlier);
+  revealEarlierRef.current = revealEarlier;
   const onBodyScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
       if (event.currentTarget.scrollLeft !== 0) {
         event.currentTarget.scrollLeft = 0;
       }
       scheduleActiveTurnUpdate();
-      if (
-        event.currentTarget.scrollTop <= 32 &&
-        hasOlderHistoryRef.current &&
-        !loadingOlderHistoryRef.current
-      ) {
+      if (event.currentTarget.scrollTop > 32) return;
+      if (windowStartRef.current > 0) {
+        revealEarlierRef.current();
+        return;
+      }
+      if (hasOlderHistoryRef.current && !loadingOlderHistoryRef.current) {
         requestOlderHistory();
       }
     },
@@ -1182,7 +1432,7 @@ export function ChatPane({
 
   React.useEffect(() => {
     if (!canAttachImages) return;
-    const refs = consoleBlobReferencesFromText(liveDraft);
+    const refs = consoleBlobReferencesFromText(liveDraftRef.current);
     if (refs.length === 0) {
       resolvedDraftBlobRefs.current = "";
       return;
@@ -1217,9 +1467,11 @@ export function ChatPane({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [canAttachImages, liveDraft, publishDraft, setDraft]);
+  }, [canAttachImages, liveDraftTick, publishDraft, setDraft]);
 
-  async function submitComposer() {
+  const submitComposerRef = React.useRef<() => Promise<void>>(async () => {});
+  const submitComposer = React.useCallback(() => submitComposerRef.current(), []);
+  submitComposerRef.current = async function submitComposerNow() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
       return;
@@ -1232,17 +1484,45 @@ export function ChatPane({
       return;
     }
     const files = staged.map((item) => item.file);
+    // The submitted text must not be re-published as a draft by a pending
+    // debounce after the send cleared it; hold the publish until we know.
+    if (publishDraftTimerRef.current !== null) {
+      window.clearTimeout(publishDraftTimerRef.current);
+      publishDraftTimerRef.current = null;
+    }
+    const setComposerText = (value: string) => {
+      liveDraftRef.current = value;
+      lastPublishedDraftRef.current = value;
+      externalSeqRef.current += 1;
+      setExternalValue({ value, at: externalSeqRef.current });
+    };
+    // Text-only sends empty the composer synchronously, in the same update
+    // as the parent's queue or send bookkeeping, so a busy runtime cannot
+    // freeze the visible composer with the submitted text still in it; the
+    // text comes back if the send is refused. Sends with attachments keep
+    // the text until the upload succeeded.
+    const clearedEarly = files.length === 0;
+    if (clearedEarly) setComposerText("");
+    const restoreIfUntouched = () => {
+      if (clearedEarly && liveDraftRef.current === "") setComposerText(text);
+    };
     try {
       const sent = await onSend(files, text);
       if (sent) {
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
+        if (!clearedEarly && liveDraftRef.current === text) setComposerText("");
+        return;
       }
+      restoreIfUntouched();
+      publishDraft();
     } catch {
       setAttachmentError("send failed; images retained");
+      restoreIfUntouched();
+      publishDraft();
     }
-  }
+  };
 
   return (
     <div className="conv" data-testid={`chat-pane:${identity}`}>
@@ -1275,6 +1555,8 @@ export function ChatPane({
         isLoadingHistory={isLoadingHistory}
         hasOlderHistory={hasOlderHistory}
         loadingOlderHistory={loadingOlderHistory}
+        windowStart={windowStart}
+        onRevealEarlier={revealEarlier}
         bodyRef={bodyRef}
         onScroll={onBodyScroll}
         onRequestOlderHistory={requestOlderHistory}
@@ -1329,52 +1611,25 @@ export function ChatPane({
               ))}
             </div>
           )}
-          <textarea
-            placeholder={
-              readOnly
-                ? "View-only console"
-                : sendWithheld
-                  ? `You can view ${agentLabel} but not message it`
-                  : voiceActive
-                    ? `Message ${agentLabel} (background agent)…`
-                    : `Message ${agentLabel}…`
-            }
-            value={liveDraft}
-            disabled={readOnly || sendWithheld}
-            onChange={(e) => {
-              if (!readOnly && !sendWithheld) setDraft(e.target.value);
-            }}
+          <ComposerTextarea
+            identity={identity}
+            agentLabel={agentLabel}
+            agentRole={agent?.role ?? null}
+            initialValue={draft}
+            externalValue={externalValue}
+            readOnly={readOnly}
+            sendWithheld={sendWithheld}
+            voiceActive={voiceActive}
+            voiceDisabled={voiceDisabled}
+            onVoiceToggle={onVoiceToggle}
+            stagedCount={staged.length}
+            canAttachImages={canAttachImages}
+            sending={sending}
+            sendLabel={sendLabel}
+            onLiveChange={onLiveChange}
             onBlur={publishDraft}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
-            rows={2}
-            data-testid={`chat-composer:${identity}`}
+            onSubmit={submitComposer}
           />
-          <div className="composer__row">
-            <span className="composer__chip mono">{agent?.role || "agent"}</span>
-            <span className="composer__spacer" />
-            {onVoiceToggle && !readOnly && !sendWithheld && (
-              <VoiceButton
-                agentLabel={agentLabel}
-                active={voiceActive}
-                disabled={voiceDisabled}
-                onClick={onVoiceToggle}
-              />
-            )}
-            <button
-              className="composer__send"
-              disabled={
-                (!liveDraft.trim() && staged.length === 0)
-                || readOnly
-                || sendWithheld
-                || (staged.length > 0 && !canAttachImages)
-                || (staged.length > 0 && sending)
-              }
-              onClick={submitComposer}
-              data-testid={`chat-send:${identity}`}
-            >
-              {sendLabel}  ⏎
-            </button>
-          </div>
         </div>
         <div className="composer__footer">
           <span>To: <b style={{ color: "var(--ink-muted)" }}>{agentLabel}</b></span>

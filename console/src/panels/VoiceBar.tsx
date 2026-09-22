@@ -122,7 +122,10 @@ function AudioWaveform({
   return <canvas className={`voice-waveform voice-waveform--${source}`} ref={canvasRef} aria-hidden="true" />;
 }
 
-export function VoiceBar({
+/// Memoised: the app root re-renders on every coalesced frame flush and on
+/// each debounced draft publish, and the props here are stable references
+/// (see ConsoleApp), so unchanged input skips the whole subtree.
+export const VoiceBar = React.memo(function VoiceBar({
   state,
   sampleWaveform,
   onClose,
@@ -242,4 +245,4 @@ export function VoiceBar({
       {state.notice && <p className="voice-bar__message" role="status">{state.notice}</p>}
     </section>
   );
-}
+});

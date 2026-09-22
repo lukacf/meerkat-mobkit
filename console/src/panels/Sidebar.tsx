@@ -1237,7 +1237,10 @@ function inboxCount(agent: ConsoleAgent): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function Sidebar({
+/// Memoised: the app root re-renders on every coalesced frame flush and on
+/// each debounced draft publish, and the props here are stable references
+/// (see ConsoleApp), so unchanged input skips the whole subtree.
+export const Sidebar = React.memo(function Sidebar({
   agents,
   selectedMemberId,
   recentActivity,
@@ -1797,4 +1800,4 @@ export function Sidebar({
       ) : null}
     </aside>
   );
-}
+});

@@ -468,7 +468,10 @@ export function buildSignalGroupsForTest(frames: ConsoleFrame[]): SignalGroup[] 
   return groupSignals(next);
 }
 
-export function SignalsRail({
+/// Memoised: the app root re-renders on every coalesced frame flush and on
+/// each debounced draft publish, and the props here are stable references
+/// (see ConsoleApp), so unchanged input skips the whole subtree.
+export const SignalsRail = React.memo(function SignalsRail({
   frames,
   collapsed,
   filterPresets,
@@ -639,4 +642,4 @@ export function SignalsRail({
       </div>
     </aside>
   );
-}
+});
