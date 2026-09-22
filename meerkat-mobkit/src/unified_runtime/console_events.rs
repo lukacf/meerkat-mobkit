@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -565,6 +565,24 @@ impl ConsoleEventStore {
             .cloned()
             .flatten()
     }
+
+    /// Snapshot every identity's current response phase under a single read
+    /// lock. Identities whose phase has been cleared (`None`) are omitted, so
+    /// a lookup in the returned map is equivalent to
+    /// `response_phase_for_identity` for that identity.
+    pub(crate) async fn response_phases_snapshot(&self) -> HashMap<String, String> {
+        self.state
+            .read()
+            .await
+            .response_phase_by_identity
+            .iter()
+            .filter_map(|(identity, phase)| {
+                phase
+                    .as_ref()
+                    .map(|phase| (identity.clone(), phase.clone()))
+            })
+            .collect()
+    }
 }
 
 fn select_interaction_for_run_started(
@@ -869,6 +887,71 @@ mod tests {
             replay.first().and_then(|event| event.data["idx"].as_u64()),
             Some(8)
         );
+    }
+
+    #[tokio::test]
+    async fn response_phases_snapshot_matches_per_identity_lookups() {
+        let store = ConsoleEventStore::new();
+        // "waiting": reserved interaction, no runtime frames yet.
+        store
+            .reserve_interaction_value("waiting-worker", None, "turn-1", "console", json!({}))
+            .await
+            .expect("reserve waiting interaction");
+        // "generating": runtime text frame after reservation.
+        store
+            .register_runtime_identity("rt:generating:1", "generating-worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "generating-worker",
+                Some("rt:generating:1"),
+                "turn-2",
+                "console",
+                json!({}),
+            )
+            .await
+            .expect("reserve generating interaction");
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-gen".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 1,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:generating:1".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "working" })),
+                },
+            })
+            .await;
+        // `None`: lifecycle event clears the phase but keeps the identity key.
+        store
+            .record_lifecycle("idle-worker", "member_retired", json!({}))
+            .await;
+
+        let snapshot = store.response_phases_snapshot().await;
+
+        assert_eq!(
+            snapshot.get("waiting-worker").map(String::as_str),
+            Some("waiting")
+        );
+        assert_eq!(
+            snapshot.get("generating-worker").map(String::as_str),
+            Some("generating")
+        );
+        assert_eq!(snapshot.get("idle-worker"), None);
+        assert_eq!(snapshot.len(), 2);
+        for identity in [
+            "waiting-worker",
+            "generating-worker",
+            "idle-worker",
+            "unknown",
+        ] {
+            assert_eq!(
+                snapshot.get(identity).cloned(),
+                store.response_phase_for_identity(identity).await,
+                "snapshot diverges from per-identity lookup for {identity}"
+            );
+        }
     }
 
     #[tokio::test]
