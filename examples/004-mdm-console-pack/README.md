@@ -99,18 +99,26 @@ and advertises the resolved TCP endpoint back to external targets.
 For a local-only demo, the default supervisor bridge is
 `tcp://127.0.0.1:5790`.
 
-To run with a pre-existing binding file:
+To query hardware with a pre-existing binding file, configure provider
+credentials for Hive and the target runtimes, and keep the required target-side
+tools enabled. The default Hive model uses `OPENAI_API_KEY`:
 
 ```bash
 cd examples
 npm install
-./004-mdm-console-pack/examples.sh --run --targets ./004-mdm-console-pack/target-bindings.json
+export OPENAI_API_KEY=...
+./004-mdm-console-pack/scripts/start-console.sh --targets ./004-mdm-console-pack/target-bindings.json --real-llm
 ```
 
 Open the printed `/console` URL. The roster should show `Hive` plus the remote
 targets from the binding file. Asking the hive to query hardware should produce
-peer messages to the target members; if the timeline only shows local metadata,
-that is a MobKit/Meerkat remote-support gap.
+peer messages to the target members. Local metadata alone is not proof of a
+remote query; check provider selection, target readiness, tool access, and peer
+connectivity before diagnosing a bridge regression.
+
+The separate `examples.sh --run` launcher always forces `--demo-llm`, even
+when credentials or `--real-llm` are supplied. It is a demo/shape-only console,
+not a provider-backed Hive-to-target query proof.
 
 The success signal is not "target is listed." The success signal is a target
 turn that runs on the target host, uses target-side tools or shell where
@@ -137,27 +145,33 @@ lane does not require a provider response. `mdm:real-target-e2e` additionally
 requires configured provider credentials, sends the operator turn to the local
 hive, waits for the hive to query the wired target through peer comms, and
 fails unless target-side model/shell execution returns through the hive's
-tracked console terminal. Direct external-member delivery remains an
-ingress-acknowledged lane in Meerkat 0.8.2; the hive interaction is the
-supported terminal-owning MDM path.
+tracked console terminal. This lane uses the hive interaction as the
+terminal-owning MDM path, rather than treating a direct external-member
+ingress acknowledgement as proof of target execution.
 `mdm:real-target-multi-e2e` raises the same gate with two independent target
 processes and requires Hive's verified terminal summary to name both targets.
 
-The pack is pinned to Meerkat 0.8.2. Re-apply and validate the pin
-with:
+The pack uses the repository's pinned Meerkat dependency family in
+`meerkat-mobkit/Cargo.toml` (currently `=0.8.40`), not an independent pack pin.
+Validate the checked-in dependencies without changing them:
 
 ```bash
 cd examples
-npm run mdm:upgrade-meerkat -- 0.8.2
 npm run mdm:real-target-smoke
 ```
+
+`mdm:upgrade-meerkat` is an intentional shared dependency-update helper: it
+rewrites the Rust crate's direct Meerkat normal/dev dependencies and updates
+their lockfile entries after a registry precheck. It is not a normal example
+setup step.
 
 Full operator validation requires at least one local or remote target runtime
 with unrestricted shell tools enabled on the target side. The useful prompt is
 something like: "Ask every target what machine it is running on." The answer
 should come from target-side peer turns, not from roster labels.
 
-`mdm:real-target-smoke` and the credential-gated `mdm:real-target-e2e` pass on
-the published Meerkat 0.8.2 line. If either
-fails, treat that as a real bridge or MobKit regression rather than falling back
-to labels, demo model text, or static binding metadata.
+Historical acceptance: `mdm:real-target-smoke` and the credential-gated
+`mdm:real-target-e2e` passed on the published Meerkat 0.8.2 line. That result
+does not establish acceptance of the current dependency pin; rerun the lanes
+above when validating a new version. Investigate failures rather than replacing
+the proof with labels, demo model text, or static binding metadata.

@@ -57,7 +57,7 @@ That gives host apps a few concrete guarantees:
 - **Recovery ergonomics.** MobKit can expose recover/respawn/rematerialize-style operator controls, but the semantic model remains the mob identity/binding model.
 - **Rebuildable projections.** Console timelines, identity rows, and sidebar grouping are projections of mob/runtime truth, not separate authorities.
 
-For local and embedded deployments, `.persistent_state(...)` creates SQLite-backed MobKit metadata, console logs, runtime state, session state, and blob storage under one directory. For externally authoritative deployments, MobKit can be paired with app-provided stores/providers, but those should adapt to the identity-first mob substrate rather than inventing a parallel identity authority.
+For local and embedded deployments, the default `.persistent_state(...)` layout combines SQLite-backed MobKit metadata, console logs, runtime state, and session state with filesystem-backed blob storage under one directory. Include the `blobs/` subtree in backups; copying only the SQLite files omits blob content. For externally authoritative deployments, MobKit can be paired with app-provided stores/providers, but those should adapt to the identity-first mob substrate rather than inventing a parallel identity authority.
 
 ## Quick Start
 
@@ -70,6 +70,43 @@ checkout instead, run
 `./scripts/repo-cargo build -p meerkat-mobkit --bin rpc_gateway --locked`, then
 run `./scripts/repo-cargo --print-env`; the debug binary is at
 `<CARGO_TARGET_DIR>/debug/rpc_gateway`.
+
+Create `config/mob.toml` relative to the directory from which you run the Python
+example (create `config/` if needed):
+
+```toml
+[mob]
+id = "personal-assistant"
+
+[profiles.personal]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.personal.tools]
+comms = true
+
+[profiles.triage]
+model = "gpt-5.5"
+external_addressable = false
+
+[profiles.triage.tools]
+comms = true
+
+[profiles.calendar]
+model = "gpt-5.5"
+external_addressable = false
+
+[profiles.calendar.tools]
+comms = true
+```
+
+These profiles match the roster below: the personal agent is externally
+addressable, while triage and calendar are internal-only peers. Comms is enabled
+for the topology's peer connections. Set `OPENAI_API_KEY` in the launching
+environment for the selected OpenAI `gpt-5.5` model. After installing the Python
+SDK (see [Install](#install)), run the following in an async context, such as a
+notebook supporting top-level `await`, and replace the gateway path with your
+extracted or built executable:
 
 ```python
 from meerkat_mobkit import MobKit
@@ -183,11 +220,16 @@ cargo add meerkat-mobkit
 ## Development
 
 ```bash
-make ci                         # Full CI pipeline
+make ci                         # Local Make validation aggregate
 make test                       # Rust tests
 make test-python                # Python SDK tests
+npm --prefix sdk/typescript run validate  # TypeScript typecheck, build, and tests
 npm --prefix console run build  # Rebuild embedded console assets
 ```
+
+The local Make aggregate is not the complete hosted-CI pipeline. See
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the required console,
+voice, TypeScript, and other hosted gates.
 
 Useful focused checks:
 

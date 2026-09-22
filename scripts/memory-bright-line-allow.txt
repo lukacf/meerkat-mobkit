@@ -14,15 +14,17 @@
 # machinery defeats the ratchet — that work belongs in the memory hub
 # (docs/design/memory-hub-roadmap.md).
 #
-# The §8.4 exception, pinned: the Distiller's post-compaction harvest reads
-# meerkat's OWN session semantic store (MemoryStore::search over the discard
-# range) READ-ONLY. This reads meerkat's store; the §12 bright line governs
-# the bundled agent-memory store, which stays plain B-tree SQLite. Entries
-# suppress per (file, pattern): meerkat-memory/HNSW usage from any OTHER
+# The §8.4 exception, pinned: the Distiller's post-compaction harvest uses
+# bounded, read-only MemoryStore::enumerate_scoped over meerkat's OWN session
+# semantic store. The same source supports explicit drop_scope lifecycle
+# reclamation of permanently abandoned session scopes, used after the delete
+# pre-rotation distillation attempt (not a guarantee of successful preservation).
+# The §12 bright line governs the bundled agent-memory store, which stays plain
+# B-tree SQLite. Entries suppress per (file, pattern): meerkat-memory/HNSW usage from any OTHER
 # memory-module file (coordinator.rs, selector.rs, …) still fails the gate.
 
-meerkat-memory  # §8.4 read-only host-side harvest of meerkat's OWN session semantic store; the bundled agent-memory store stays plain B-tree SQLite
-src:meerkat-mobkit/src/memory/distiller.rs:hnsw  # §8.4 HnswDiscardSource: read-only compaction-discard harvest over meerkat's own store
-src:meerkat-mobkit/src/memory/distiller.rs:meerkat-memory  # §8.4 harvest import site (meerkat_memory::HnswMemoryStore::open, one query, read-only)
+meerkat-memory  # §8.4 bounded host-side harvest and lifecycle scope reclamation of meerkat's OWN session semantic store; the bundled agent-memory store stays plain B-tree SQLite
+src:meerkat-mobkit/src/memory/distiller.rs:hnsw  # §8.4 HnswDiscardSource: bounded read-only enumerate_scoped harvest plus explicit drop_scope lifecycle reclamation
+src:meerkat-mobkit/src/memory/distiller.rs:meerkat-memory  # §8.4 source import site (meerkat_memory::HnswMemoryStore::open, paged harvest and lifecycle scope reclamation)
 src:meerkat-mobkit/src/memory/mod.rs:hnsw  # re-export of the §8.4 HnswDiscardSource only
-src:meerkat-mobkit/src/memory_wiring.rs:hnsw  # §8.4 wiring only: constructs the read-only HnswDiscardSource for the Distiller (same pinned exception as distiller.rs)
+src:meerkat-mobkit/src/memory_wiring.rs:hnsw  # §8.4 wiring only: constructs HnswDiscardSource for bounded harvest and lifecycle scope reclamation (same pinned exception as distiller.rs)

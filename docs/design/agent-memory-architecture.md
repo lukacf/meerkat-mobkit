@@ -359,7 +359,7 @@ promotion; operator approves via the existing gating flow; the record is re-home
 with realm-A evidence refs replaced by an operator-approved summary, since
 provenance pointers into another realm's transcripts are themselves a leak). The
 `MemoryScope::Operator` variant is part of the P0 schema (no migration later);
-operator profiles populate and inject only from P4 once `OperatorId` keying is
+operator profiles populate and join composition only from P4 once `OperatorId` keying is
 settled (§16.1). Operator-fact detections before P4 are held as steward `hold`
 verdicts at identity scope, tagged for promotion, and re-dreamed into Operator
 scope when it activates — leveraging §3.1's re-derivation principle.
@@ -380,12 +380,13 @@ that the steward commits (§8.5). Realm scope is application/SDK-only.
 > **P4 as-built (operator scope).** Activation is
 > `agent_memory.operator_scope = "off" | "provisional"` — the value name
 > says PROVISIONAL on purpose (§16 Q1 stays open; the enum leaves room for a
-> final keying). Recall composition activates on config **and** an
+> final keying). Build-time metadata composition activates on config **and** an
 > `OperatorResolver` (a trait seam so the §16 Q1 keying stays swappable).
 > The shipped SDK gateway installs `ConsolePrincipalOperatorResolver` when
 > `provisional` is configured and shares it with the authenticated console
 > send path. Composition therefore adds operator scope only after a real
-> console principal has addressed the identity. Library embedders can install
+> console principal has addressed the identity; this does not widen selected-body
+> recall beyond identity scope (§8.2). Library embedders can install
 > another resolver; a resolver-less composition remains inert and warns
 > loudly. Steward routing activates on the config knob alone, because
 > operator-scope *proposals carry their own operator key*. The un-hold
@@ -463,8 +464,11 @@ wire-compatible; add `update` (supersede), `manifest`, `propose`, and
 `mobkit/mob_memory/*` mirrors. **As built:** `update` and `manifest` shipped
 (plus the read-only `mobkit/memory/panel/*` family §9.3 grew); a standalone
 `propose` RPC and the `mob_memory/*` mirrors were not built — agent-side
-proposing goes through the memory tool's `propose_to_mob` and mob-scope reads
-compose through recall/manifest, which covered the need; Markdown **import**
+proposing goes through the memory tool's `propose_to_mob`. Configured/bound
+shared scopes contribute metadata to the composed build-time index; the
+current bundled explicit recall/manifest RPCs and automatic selected-body
+recall remain identity-scoped (§8.2). Wider shared-body recall is follow-up
+work. Markdown **import**
 shipped as a one-shot migration when a realm is first accessed and that realm's
 SQLite connection opens, but the `mobkit memory export` command
 has not — records remain inspectable via the panel RPCs and sqlite tooling
@@ -485,9 +489,17 @@ The conflict-signal channel gains one new producer: the steward (§8.5).
 
 ## 8. The judgment plane
 
-Five LLM operations. Each is an agent (or a bounded one-shot structured call)
-with a calibration profile (§11), a containment envelope, and a place on the
-console timeline. Only the Selector touches the turn path.
+> **Status boundary:** the Selector in §8.1/§8.3 and its dependent invocation,
+> cost, rollout, and comparison references preserve the original design.
+> The LLM Selector was retired unactivated; current recall uses the deterministic
+> lexical provider path (§9). Its profiles/fixtures are historical calibration
+> inputs, not a runnable stage. The original design is retained below, not a
+> claim that every planned operation shipped.
+
+The original plan described five LLM operations. Each is an agent (or a bounded
+one-shot structured call) with a calibration profile (§11), a containment
+envelope, and a place on the console timeline. Only the proposed Selector would
+touch the turn path.
 
 ### 8.1 Invocation seam and resource guards
 
@@ -550,15 +562,22 @@ their own writable scopes** — that is the D4 fix, live from P0. Consolidating
 *distinct* records (semantic merge, cross-scope moves, re-tiering) is
 steward-only (§8.5); the staged-commit validator enforces authorship.
 **As built:** the tool's explicit `recall` action (and the recall/manifest
-RPCs) remain identity-scoped v1 surfaces; mob- and operator-scope content
-reaches the agent through the composed build-time index and ambient injection,
-not through explicit recall — widening the explicit-read surfaces to composed
-scopes is follow-up work, not silent behavior.
+RPCs) remain identity-scoped v1 surfaces. Configured/bound mob, operator, and
+realm scopes contribute **metadata only** to the composed build-time index.
+The current bundled provider's selected-body recall is identity-scoped for
+both build-time orientation and ambient turn injection, just as explicit
+recall is. Wider shared-body recall is design intent/follow-up work, not an
+implemented ambient behavior or a restriction on what a custom provider may do.
 
 ### 8.3 Selector — recall judgment without a horizon
 
-Replaces the lexical scorer (term-overlap, threshold 2) entirely. Two design
-constraints hold simultaneously: no heuristic retrieval, and **no bounded-visible-
+> **Historical, unactivated design:** this Selector was retired; the replacement,
+> escalation, and cost model below did not become the live recall path. See §8's
+> status boundary and §9 for current deterministic recall.
+
+The proposed Selector replaces the lexical scorer (term-overlap, threshold 2)
+entirely. Two design constraints hold simultaneously: no heuristic retrieval,
+and **no bounded-visible-
 subset failure** — the selector must be able to reach any active record, not just
 a prompt-resident index. (Claude Code fails the second quietly: its selector scans
 the 200 newest files. The first draft of this document failed it too, by feeding
@@ -799,9 +818,14 @@ calibration infrastructure being real first.
 > failed harvests withhold hygiene loudly); on-demand passes consult the
 > distiller's window cursor and refuse ranges beyond it. Mid-turn sessions
 > are refused by meerkat's `TranscriptEditRunningBehavior::Reject` default.
-> Known gap (upstream-asks.md, ask 4 refinement): no service-level
-> head-revision read exists, so rewrites send `expected_parent_revision:
-> None` and §7.1 revision pinning stays `None` at capture time.
+> Revision/CAS behavior: the internal engine reads the head through
+> `list_transcript_revisions` (`limit: Some(0)`) and forwards it as
+> `expected_parent_revision` on rewrite. Unsupported revision listing yields
+> `None`; other listing errors fail the read. History and head are separate
+> reads, not an atomic snapshot. Transcript distillation captures
+> `session.transcript_revision()` when available; failed capture and the
+> compaction-discard path can leave `EvidenceRef.revision` as `None`.
+> Capturing a revision does not mean every evidence consumer resolves it.
 > The public SDK and gateway do not activate this engine in the current
 > release. Only absent/disabled compatibility config is accepted, and no
 > OpenAI or Anthropic provider-proof claim is made.
@@ -823,39 +847,40 @@ not part of composition.
 |---|---|---|---|---|
 | Build-time (`customize_build` → `additional_instructions`) | Behavioral protocol + composed **index** (budget ~8 KB) + selected bodies for orientation | materialize / resume / respawn / reset | system prompt (`Message::System`) | **yes** (excluded from indexing — verified) |
 | On-demand | `memory` tool (records), `memory_search` (session), each advertised in the index | agent-initiated | tool results | **yes** (excluded — verified) |
-| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **budgeted by default** since 2026-07-01, when the echo-safe injected-context delivery path landed (before that off (upstream ask 1 - see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
+| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | supported non-Steer identity-first sends | Separate typed `InjectedContext` bodies, never concatenated into user text | **yes** (excluded from session semantic-memory indexing) |
 
-This is the P0 posture change that actually fixes D1 rather than bounding it:
-every *default* surface is a message class meerkat already excludes from
-compaction indexing (verified in `followups.md` §1). Ambient per-turn push — the
-one echo-unsafe surface — is demoted to an explicit opt-in
-(`agent_memory.per_turn_injection = "off" | "budgeted"`) carrying the full budget
-ladder and dedup below, and its default flips to on only when delivery is
-echo-safe. (It did, on 2026-07-01. The gateway parser carried its own literal
+**Current posture:** `agent_memory.per_turn_injection = "off" | "budgeted"`
+defaults to **budgeted** on the supported identity-first delivery path, with
+the budget ladder and dedup below. This is a configured default, not a promise
+of injection on every turn: Steer and unsupported delivery paths (including
+generic autonomous-host work) skip ambient injection. The indexing echo-safety
+claim is about the typed message's exclusion from session semantic-memory
+indexing, not universal exclusion from every possible extraction path.
+
+**Historical coupling note:** P0 first defaulted ambient push off and made
+`budgeted` opt-in while delivery was fused into the user's own message text.
+Meerkat's exclusion seam was per-message, so labeling that fused message would
+have excluded either nothing or the operator's real words along with the
+injection. Closing D1 required **both** Meerkat's typed injected-context class
+and MobKit's separate injected-body delivery; the default flipped to budgeted
+when that path landed on 2026-07-01. The gateway parser carried its own literal
 `off` fallback for the object form until 0.8.31 and silently kept every
 object-form client on the old default; it now derives the fallback from the
-library default so one default governs both forms.) **Coupling note (important):** upstream ask 1 alone is not sufficient.
-Today mobkit *fuses* the injection into the user's own message text
-(`ContentInput` has no role field), and meerkat's exclusion seam is per-message —
-a role class on the fused message would either exclude nothing or exclude the
-operator's real words along with the injection. Flipping the default therefore
-requires both halves: meerkat's typed injected-context message class (ask 1) *and*
-mobkit delivering injected bodies as a **separate typed message**, never
-concatenated into user text. Losing ambient push in the interim costs little: the
-thing being disabled is the weak lexical scorer, and the pull model (rich index +
-one cheap tool call) is exactly how Claude Code operates in its skip-index
-cohort.
+library default so one default governs both forms. The interim off posture
+retained the echo-safe build index and on-demand tool recall rather than
+relying on budgets to bound the fused-message indexing leak.
 
 **Classic-mob (roster-less) scope.** The A2 decouple carries the two echo-safe
 surfaces — build-time injection and the Recorder tool — onto the classic mob
 path via meerkat-mob's per-spawn seam
 (`memory/spawn_customizer.rs::MemorySpawnCustomizer`), keyed on the member's
 `AgentIdentity` with no IdentityRuntime/roster requirement. Per-turn ambient
-injection is **deliberately not** carried over: it is off by default anyway
-(this section), and the classic send path has no injection hook. A classic-mob
+injection is **deliberately not** carried over: the classic send path has no
+injection hook. A classic-mob
 per-turn hook is a scoped follow-up gated on the same echo-safe delivery
 coupling above; until then `per_turn_injection = "budgeted"` only takes effect
-on identity-first members (the classic customizer warns at construction).
+on supported identity-first delivery paths (the classic customizer emits a
+debug-level construction notice).
 
 Budget ladder (applies to build-time bodies and to `budgeted` per-turn mode):
 ≤2 KB/record (kept), ≤20 KB/assembly aggregate, ≤60 KB/session cumulative, then
@@ -865,8 +890,8 @@ scan (CC's state-free trick), so compaction naturally resets it.
 coordinator state keyed by the delivered session id, not a transcript scan.
 The compaction-reset property is wired explicitly: the gateway observes the
 member `CompactionCompleted` event unconditionally and calls
-`RecallCoordinator::on_session_compacted`, dropping that session's dedup set,
-byte counter, and any cached full-sweep result (per-assembly cap unaffected).
+`RecallCoordinator::on_session_compacted`, dropping that session's dedup set
+and byte counter (per-assembly cap unaffected).
 This over-resets slightly relative to a transcript scan — bodies surviving in
 the retained post-compaction tail may re-inject once — and the state is
 process-local (a gateway restart also resets it) and shared across injector
@@ -885,9 +910,10 @@ markers (the header pattern, `<mobkit_memory_observation>` syntax, provenance
 labels) and neutralizes them before delivery; (2) a per-session/embodiment nonce
 in the envelope header, never exposed via tool results, RPC responses, files, or
 logs — *bar-raising, not authoritative*, since anything in context can leak via
-echo. The long-term fix is the same typed-message-class delivery required for
-echo-safety: channel authenticity is an explicit second rationale for upstream
-ask 1. Trust-authority render labels (§7.2) ship only together with (1).
+echo. Host-owned channel attribution was an explicit second rationale for
+upstream ask 1; the separate typed delivery described above is now in place,
+but does not make envelope text unforgeable. Trust-authority render labels
+(§7.2) ship only together with (1).
 
 ### 9.2 The usage ledger
 
@@ -1061,10 +1087,13 @@ cost of "no heuristics," paid explicitly:
 - **Harness**: the calibration runner is itself a mob/workflow
   (`make memory-evals`); profile changes gate on scorecard non-regression in CI.
   **As built (harness v0):** CI gates the deterministic half — the fmt-lint lane
-  runs the bright-line ratchet and `memory-evals --check`, and four eval-harness
-  integration tests drive every stage's mock lane end-to-end, failing on
+  runs the bright-line ratchet and `memory-evals --check`, and three eval-harness
+  integration tests drive the runnable Distiller, Steward, and Hygienist mock
+  lanes end-to-end, failing on
   structural violations (distiller quarantine verdicts, steward §10.2 validator
-  law, hygienist §8.6 hard-blocks, selector shuffle stability). Judgment
+  law, hygienist §8.6 hard-blocks). Retired Selector artifacts are schema-checked
+  historical calibration inputs only, not a fourth harness or shuffle-stability
+  CI lane. Judgment
   scorecards gate only in `--mode live`, which requires provider credentials no
   CI lane supplies today; a scheduled authed live-eval lane is the remaining
   step to literal scorecard non-regression gating — live mode exists and gates
@@ -1138,6 +1167,10 @@ behavior, and each removes a class of defect at the right layer when it lands:
 
 ## 14. Why this is superior to Claude Code and Codex
 
+> **Original-plan comparison:** the LLM Selector's whole-store selection and
+> on-path cost below describe the retired design in §8.3, not shipped recall.
+> Current recall is deterministic (§9); retained comparisons are design context.
+
 Not "different": strictly more capable on their own terms, plus capabilities they
 cannot express.
 
@@ -1187,6 +1220,11 @@ appendices.
 Value-first ordering; each phase ships alone and is useful alone. All phases are
 initiative scope; hub work is the roadmap's.
 
+This is the original rollout sequence with explicit as-built notes. The
+Selector parts of P1 were retired unactivated (§8.3), not delivered or still
+pending activation; Recorder/coordinator behavior does not imply a live
+Selector.
+
 - **P0 — stop the bleeding (no new LLM stages).** Per-turn ambient injection →
   budgeted by default since 2026-07-01 (originally off with `budgeted` opt-in; D1 fixed by construction, D2 fixed in
   the opt-in path via the budget ladder + session dedup); provider trait v2 with
@@ -1225,22 +1263,27 @@ initiative scope; hub work is the roadmap's.
   ranking; console Memory panel + timeline events; the §10.3 action additions.
 - **P4 — Operator scope + Hygienist.** Operator profiles (realm-keyed; once
   `OperatorId` keying is settled); transcript-revision curation at compaction
-  boundaries with the span-reference validator rules. *Status: shipped as the
-  resolver SEAM only under §16 Q1 provisional keying — no shipped host
-  installs a resolver, so operator recall composition is inert in stock
-  deployments (steward proposal-routing is active); see the §7.2 and §8.6
-  as-built notes for precise activation semantics and the two deliberate
-  Hygienist narrowings.*
+  boundaries with the span-reference validator rules. *Status: under §16 Q1
+  provisional keying, stock `rpc_gateway` installs
+  `ConsolePrincipalOperatorResolver` when `operator_scope = "provisional"`.
+  Operator scope joins composed build-time metadata after an authenticated
+  console principal addresses that identity; this does not enable shared-body
+  recall. Config-off, absent-resolver, and absent-principal cases remain inert.
+  Steward proposal-routing activates independently on the config knob because
+  proposals carry their operator key. The Hygienist remains parked, not
+  publicly activated; see §7.2 and §8.6 for the precise boundaries.*
 
 Definition of done for the initiative: an identity in a mob accumulates,
 consolidates, and recalls memory across respawns with zero external services;
 every judgment stage has a calibration profile and a CI-gated scorecard; the
 console shows the whole loop; D1–D5 are closed.
 
-**As built:** every judgment stage has a profile and fixtures; CI gates their
-schema/consistency, deterministic invariant verdicts, and mock shuffle
-stability. The judgment scorecard itself gates in `--mode live` only (needs
-credentials no CI lane supplies) — see the §11 as-built note.
+**As built:** Distiller, Steward, and the parked Hygienist have runnable
+calibration harnesses; CI gates profile/fixture schema consistency and their
+mock-lane deterministic invariant verdicts. Retired Selector artifacts are
+schema-checked historical inputs, not runnable mock/shuffle coverage.
+The judgment scorecard itself gates in `--mode live` only (needs credentials
+no CI lane supplies) — see the §11 as-built note.
 
 ---
 
@@ -1248,7 +1291,8 @@ credentials no CI lane supplies) — see the §11 as-built note.
 
 **Non-goals (initiative).** No embeddings, FTS, or retrieval indexes in the
 bundled store — ever (§12 ratchet; scale-out retrieval is the hub's job). No
-synchronous LLM work on the turn path outside the Selector's hard budget. No
+synchronous LLM work on the turn path (the original plan's Selector-budget
+exception was retired with §8.3). No
 Elephant dependency of any kind. No memory-as-instructions, ever. No cross-realm
 scope composition (including operator profiles — realm-keyed in v1, §7.2). No
 mechanical per-turn citation obligation on agents.
@@ -1264,11 +1308,14 @@ mechanical per-turn citation obligation on agents.
    identity-scope writes need read-your-writes and
    last-write-wins-with-supersede semantics; SQLite gives us the primitives, the
    policy needs deciding.
-3. Selector model tier and working-set K (the invocation seam is settled —
-   §8.1; measure tier/K/latency with the calibration harness, don't guess).
+3. **Historical Selector question, no longer an active rollout gate:** model
+   tier and working-set K (the original §8.1 invocation design called for
+   measuring tier/K/latency with calibration rather than guessing; §8.3 is
+   retired).
 4. Default injection budgets per scope (identity vs mob vs operator sub-budgets
-   within the 20 KB/assembly ladder), and the §8.3 scale-posture ceilings
-   (soft/hard active-record limits before hub candidates are the answer).
+   within the 20 KB/assembly ladder). The §8.3 scale-posture ceilings
+   (soft/hard active-record limits before hub candidates are the answer) remain
+   historical Selector design context, not current runtime limits.
 5. Steward cadence defaults, per-mob vs per-realm granularity, and default
    background-LLM budgets / headroom thresholds for the §8.1 resource guards.
 6. Whether the dream's usage-audit verdicts should be surfaced to operators as

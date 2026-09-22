@@ -1,13 +1,45 @@
 # WorkGraph wire contract (mobkit 0.7.30)
 
-Binding contract for the `mobkit/workgraph/*` JSON-RPC group, the experience
-payload section, capabilities, ABAC actions, and SDK method names. All wire
-fields snake_case. Results serialize meerkat 0.7.23's typed results VERBATIM
-(serde of `WorkItem`, `WorkGraphSnapshot`, `WorkAttentionBinding`,
+Historical binding contract for the `mobkit/workgraph/*` JSON-RPC group, the
+experience payload section, capabilities, ABAC actions, and SDK method names,
+with current qualifications called out below. The methods table and as-built
+notes retain the 0.7.30 account; they are not a complete current API inventory.
+All wire fields snake_case. The original results serialized meerkat 0.7.23's
+typed results VERBATIM (serde of `WorkItem`, `WorkGraphSnapshot`, `WorkAttentionBinding`,
 `GoalCreateResult`, etc. — see docs/design/workgraph-integration.md for the
-upstream shapes). `expected_revision` is the CAS token on every mutation.
+upstream shapes).
+
+`expected_revision` is required by revision-checked mutations of existing
+work items or attention bindings, not every mutation. `create`, `goal/create`,
+`link`, and `attention/prune` have no caller-supplied CAS token; their
+transactional invariants still apply. Item mutations and
+`goal/confirm`/`goal/request_close` use the work item's `revision`;
+`attention/pause`/`attention/resume`/`attention/reassign` use
+`attention.machine_state.revision`.
+
+## Current scope qualification (Meerkat 0.8.40)
+
+The audited MobKit 0.8.39 checkout pins Meerkat 0.8.40. Its scope contract
+supersedes the historical realm/namespace behavior described below:
+
+- Stock gateway and default MobKit construction derive the canonical
+  `mob.<mob_id>` realm and use `WorkNamespace::default()`, not the bare mob
+  definition ID as a realm.
+- All WorkGraph reads and mutations stay within the service's one immutable
+  namespace grant, including ordinary item operations, not only goals and
+  attention. An optional `namespace` may name only that granted namespace.
+  The tool surface is pinned to the same grant.
+- `all_namespaces: true` on `list`, `snapshot`, or `events`, and any
+  out-of-grant namespace, are refused with JSON-RPC `-32602`. The optional
+  fields in the historical table do not grant cross-namespace access.
+  `realm_id` remains caller-forbidden on every RPC method.
+- Library embedders can inject a composed `WorkGraphService`; its own fixed
+  grant is authoritative rather than a universal requirement to use the stock
+  namespace. This is not a caller-controlled grant-widening mechanism.
 
 ## Methods
+
+Historical inventory; apply the current scope qualification above.
 
 Read (ABAC `workgraph.view`):
 
@@ -49,8 +81,14 @@ console additionally gated by `can_mutate`):
 - Service not configured: JSON-RPC error code `-32041`,
   `data.kind = "workgraph_unavailable"` (memory-backend-unavailable pattern).
 - CAS/revision conflict (upstream Conflict): code `-32042`,
-  `data.kind = "workgraph_conflict"`, `data.detail` carries upstream message —
-  SDKs and console retry by refetching revision.
+  `data.kind = "workgraph_conflict"`, `data.detail` carries upstream message.
+  Both SDKs raise `WorkGraphConflictError`; neither automatically retries.
+  Callers must inspect the conflict, refetch the relevant item/binding state,
+  reconsider the operation, and explicitly retry with the appropriate current
+  revision if still valid. A revision refresh does not resolve every conflict
+  (for example, target occupancy). The console displays the failure and
+  best-effort refreshes the inline card for the next operator action; it does
+  not replay the failed write.
 - Other WorkGraphError: `-32000` internal with `data.kind = "workgraph_error"`,
   full detail (K2 disclosure posture).
 - Invalid params: `-32602` (standard).
@@ -125,6 +163,10 @@ frames. Operator actions on the card gated by
 `experience.workgraph.can_manage` + `!consoleReadOnly`.
 
 ## Implementation notes (as-built, 0.7.30)
+
+These are historical notes. In particular, the bare realm and narrower
+namespace restriction below are superseded by the
+[current scope qualification](#current-scope-qualification-meerkat-0840).
 
 - `claim.owner`: the wire accepts BOTH the flat `{kind, id, display_name?}`
   form and upstream's nested `{key: {kind, id}, display_name?}`; results

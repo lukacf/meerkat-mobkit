@@ -42,8 +42,9 @@ Node test suite loads the same code the browser runs.
 ## The facade contract
 
 `createMobKitFlowController({ includeTestExports })` assembles the exact
-`window.MobKitFlowController` key set the views consume stringly: 381 keys,
-plus 3 test-only exports behind `includeTestExports`. Key-set parity with
+`window.MobKitFlowController` key set the views consume stringly, with
+additional test-only exports behind `includeTestExports`. Both sets are
+recorded in the checked-in manifest. Key-set parity with
 `flow-editor/test/controller-export-manifest.json` is enforced by
 `controller-export-keys.test.cjs` on every change.
 

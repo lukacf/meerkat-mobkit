@@ -14,10 +14,17 @@ Apps own desired roster and product policy. Meerkat machines admit member and se
 Primary repo: `/Users/luka/src/meerkat-mobkit`
 
 The authoritative MobKit release line is `[workspace.package].version` in the
-root `Cargo.toml`; `make verify-version-parity` checks every SDK and generated
-surface against it.
+root `Cargo.toml`. `make verify-version-parity` checks the Python and TypeScript
+SDK package versions, the TypeScript lockfile's root versions, the root Bazel
+module, the primary `meerkat-mobkit/BUILD.bazel` version fields, and canonical
+Rust installation snippets. Separately, run
+`node scripts/generate-bazel-rust-builds.mjs --check` to check generated
+per-crate BUILD freshness.
 
-Current direct Meerkat dependency family in `meerkat-mobkit/Cargo.toml`: `0.8.24`. Verify the manifest before release or dependency work; do not rely on this note if the checkout has moved.
+For the current Meerkat dependency family, read the exact requirements in
+`meerkat-mobkit/Cargo.toml` and `mobkit-store-conformance/Cargo.toml`, including
+dev-dependencies, and the resolved versions in `Cargo.lock`. Verify these before
+release or dependency work rather than relying on a duplicated version snapshot.
 
 There should be no vendored `meerkat-comms` patch in this repo. Durable image forwarding belongs upstream in Meerkat; do not restore old vendoring.
 
@@ -78,7 +85,7 @@ Key facts:
 - `mob.observe` gates the whole-mob event surfaces (`/mob/events`, `/mobkit/mob_events/stream`, `mobkit/mob_events/query`/`subscribe`) but does NOT override per-agent `agent.view`: events are filtered per source/`agent_identity`, mob-level (unattributed) events flow on `mob.observe` alone. "Observe all" = `mob.observe` + `agent.view` on `*`.
 - Spawn-lineage inheritance: agent-spawned members carry a `spawned_by` console label (recorded by `src/console_spawn.rs`); agent checks walk the member plus its spawn ancestors (`evaluate_access_lineage`, depth 8, cycle-safe), so rules matching the parent also match its spawned members, with deny-overrides preserved across the chain. Lineage is runtime-derived ONLY: `spawned_by`/`via_tool` claims in caller-controlled labels (spawn specs, roster) are stripped at every enforcement seam (`sanitize_unverified_lineage_labels`) — only the in-memory spawn registry may assert them.
 - `/blobs/{id}` is a capability surface (content-addressed `sha256:` ids, deduped across agents, no per-agent ACL) — authn + hash-unguessability, not an `agent.view` boundary.
-- Live config: `AccessController` (std RwLock + revision) persists TOML on every admin mutation; per-request `AccessView` snapshots; agent label/role attributes cached from roster projections so label selectors work on identity-only surfaces.
+- Live config: successful `AccessController` config mutations validate and advance the revision. They persist TOML only when a persistence path is configured through `load_or_default` or `with_persist_path`; `AccessController::new` and `disabled` remain in-memory unless a path is attached. Per-request `AccessView` snapshots and cached agent label/role attributes from roster projections let label selectors work on identity-only surfaces.
 - Console UI: `console/src/panels/AccessPanel.tsx`, nav kind `access` appears only when `experience.access.can_administer`.
 - Denials: JSON-RPC `-32030` with `data.kind = "access_denied"`, HTTP 403 on REST/SSE.
 - Anti-lockout invariant: enabling requires non-empty `admins`; validation lives in `access/model.rs`.
@@ -180,7 +187,7 @@ title = "OB3"
 subgroup_by = ["labels.org"]
 ```
 
-Agent grouping selectors and badge fields support `labels.<key>`, `label:<key>`, raw label keys, and direct fields such as `group`, `subgroup`, `role`, `kind`, `identity`, `member_id`, and `agent_id`. Spawned/delegate rows inherit configured group/subgroup metadata from their detected host if they do not carry matching metadata themselves. Prefer mob member labels such as `console_group = "Initiatives"` and `org = "Payments"` for domain-specific grouping.
+Agent grouping selectors and badge fields support `labels.<key>`, `label:<key>`, raw label keys, and direct fields such as `group`, `subgroup`, `role`, `kind`, `identity`, `member_id`, and `agent_id`. For configured `group_by` and `subgroup_by` selectors, the detected ancestor chain is searched from the highest ancestor down to the child; the first available configured value wins. This keeps spawned/delegate rows with their host even when their own labels differ. Child values apply only when no earlier ancestor supplies a configured value; this inheritance rule does not apply to badges. Prefer mob member labels such as `console_group = "Initiatives"` and `org = "Payments"` for domain-specific grouping.
 
 When extending console customization, keep it view-level. The config should decide presentation, ordering, visibility, labels, defaults, and links; it should not decide runtime authorization, routing, or whether an agent exists. Be cautious with arbitrary CSS/theme color injection until there is a token contract.
 
@@ -268,16 +275,18 @@ Default listen address: `127.0.0.1:63210`. Override with `INCIDENT_COMMAND_CENTE
 
 ## Development Workflow
 
+Run these commands from the repository root with the existing development
+dependencies installed.
+
 For frontend/console changes:
 
 ```bash
-cd console
-npm run phase0:types --silent
-npm run phase1:targets --silent
-npm run build --silent
+npm --prefix console run phase0:types --silent
+npm --prefix console run phase1:targets --silent
+npm --prefix console run build --silent
 ```
 
-`npm run build` updates `console/dist` and `meerkat-mobkit/console-dist`. Include generated bundle changes when the Rust server should serve the new console.
+`npm --prefix console run build` updates `console/dist` and `meerkat-mobkit/console-dist`. Include generated bundle changes when the Rust server should serve the new console.
 
 For Rust changes:
 
@@ -290,8 +299,8 @@ For Rust changes:
 For SDK changes:
 
 ```bash
-cd sdk/python && pytest
-cd sdk/typescript && npm test
+(cd sdk/python && python3 -m pytest)
+npm --prefix sdk/typescript run validate
 ```
 
 For UI behavior, use the Browser plugin against a live console after code changes.
@@ -307,22 +316,29 @@ Inspect a release first with the repository wrapper:
 `--execute` creates the release commit and normally tags and pushes it. The
 release hook moves Cargo, Python, TypeScript, Bazel-module, generated BUILD,
 and install-documentation versions together. For a PR-reviewed cut, prepare
-without a tag or push, regenerate the Rust BUILD files, and run the release
+without a tag or push, verify generated Rust BUILD freshness, and run the release
 dry-run before opening the PR:
 
 ```bash
 ./scripts/repo-cargo release <version> --execute --no-tag --no-push
-node scripts/generate-bazel-rust-builds.mjs
 node scripts/generate-bazel-rust-builds.mjs --check
 make release-dry-run
 ```
 
-The current hook does not regenerate `mobkit-store-conformance/BUILD.bazel`
-by itself, so keep the explicit generation step until that release-tooling
-gap is fixed. Tag the exact merged main commit only after the release PR is
-green.
+With the repository prerequisites installed, the release hook regenerates the
+workspace per-crate BUILD files and stages all tracked `BUILD.bazel` files,
+including `mobkit-store-conformance/BUILD.bazel`. Keep the generator `--check`
+command as verification. Tag
+the exact merged main commit only after the release PR and push-to-main CI on
+that exact commit are green, and the candidate has been accepted as described
+below.
 
-When updating Meerkat dependencies, edit `meerkat-mobkit/Cargo.toml`, then run `./scripts/repo-cargo update -p ...` for the Meerkat family and `meerkat-mobkit`.
+When updating Meerkat dependencies, update the family's exact requirements in
+both `meerkat-mobkit/Cargo.toml` and `mobkit-store-conformance/Cargo.toml`,
+including applicable dev-dependencies, before running
+`./scripts/repo-cargo update -p ...` for the affected packages. Verify that
+`Cargo.lock` resolves the intended coherent upstream family, then run the
+appropriate workspace checks through `./scripts/repo-cargo` or Make.
 
 **Release protocol v1: tags validate only; they no longer build or publish.**
 After merging the final release-version/dependency commit and obtaining green

@@ -162,13 +162,14 @@
           "type_ref": "TYPE-022",
           "required_fields": [
             "identity",
-            "content"
+            "content",
+            "origin",
+            "idempotency_key"
           ],
           "optional_fields": [
-            "origin",
-            "idempotency_key",
             "handling_mode"
-          ]
+          ],
+          "validation": "origin and idempotency_key must be non-empty after trimming. Missing-field HTTP extraction errors are distinct from JSON-RPC invalid-params responses."
         },
         "success": {
           "type_ref": "TYPE-023"
@@ -179,6 +180,13 @@
             "shape": {
               "error": "unauthorized",
               "message": "console send requires a valid auth token"
+            }
+          },
+          {
+            "status": 403,
+            "shape": {
+              "error": "read_only|access_denied",
+              "message": "string"
             }
           },
           {
@@ -208,6 +216,42 @@
               "error": "ambiguous_live_identity_alias|not_addressable|retired|idempotency_conflict",
               "message": "string"
             }
+          },
+          {
+            "status": 409,
+            "shape": {
+              "error": "host_human_input_refused",
+              "message": "string",
+              "data": "structured owner refusal"
+            }
+          },
+          {
+            "status": 429,
+            "shape": {
+              "error": "admission_backlog_full",
+              "message": "string",
+              "data": {
+                "kind": "mob_member_admission_backlog_full",
+                "depth": "integer"
+              }
+            }
+          },
+          {
+            "status": 503,
+            "shape": {
+              "error": "actor_probe_unhealthy|reload_refused",
+              "message": "string",
+              "data": "structured actor-probe observation or {kind: mob_member_reload_refused}"
+            }
+          },
+          {
+            "status": 504,
+            "shape": {
+              "error": "admission_timeout|reload_timed_out",
+              "message": "string",
+              "data": "structured timeout observation, including kind and any owner-provided stage"
+            },
+            "note": "A timeout observation alone does not establish execution fate or retryability; preserve the structured data."
           },
           {
             "status": 500,
@@ -258,10 +302,35 @@
       }
     },
     "rpc": {
+      "policy_errors": {
+        "read_only": {
+          "status": 200,
+          "code": -32010,
+          "message": "console is read-only",
+          "data": {
+            "kind": "read_only"
+          },
+          "applicability": "HTTP console methods classified as mutating, including multipart send/upload. This is not the structural mob-events stale-cursor meaning of -32010; discriminate by method and data."
+        },
+        "access_denied": {
+          "status": 200,
+          "code": -32030,
+          "message": "string",
+          "data": {
+            "kind": "access_denied"
+          },
+          "applicability": "Applicable ABAC action gates and access-administration checks. Additional denial context may be present. Some reads filter results instead of refusing the whole request; this is not an unconditional error on every method."
+        }
+      },
+      "policy_error_inventory": "policy_error_refs supplement each endpoint or method's local errors array. Endpoint references are conditional on the dispatched method, not all requests.",
       "console_rpc_endpoint": {
         "method": "POST",
         "path": "/console/rpc",
         "protocol": "JSON-RPC 2.0",
+        "policy_error_refs": [
+          "#/surfaces/rpc/policy_errors/read_only",
+          "#/surfaces/rpc/policy_errors/access_denied"
+        ],
         "errors": [
           {
             "status": 200,
@@ -281,6 +350,11 @@
         "method": "POST",
         "path": "/console/rpc/multipart",
         "protocol": "multipart JSON-RPC 2.0",
+        "policy_error_refs": [
+          "#/surfaces/rpc/policy_errors/read_only",
+          "#/surfaces/rpc/policy_errors/access_denied"
+        ],
+        "policy_note": "Both supported methods are read-only gated. The agent.send ABAC gate applies to mobkit/console/send, not standalone mobkit/blob/upload.",
         "request": {
           "type_ref": "TYPE-025",
           "required_parts": [
@@ -324,17 +398,22 @@
           }
         },
         "mobkit/console/send": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "type_ref": "TYPE-022",
             "required_fields": [
               "identity",
-              "content"
+              "content",
+              "origin",
+              "idempotency_key"
             ],
             "optional_fields": [
-              "origin",
-              "idempotency_key",
               "handling_mode"
-            ]
+            ],
+            "validation": "origin and idempotency_key must be non-empty after trimming."
           },
           "success": {
             "type_ref": "TYPE-023"
@@ -369,6 +448,9 @@
           ]
         },
         "mobkit/console/inspect_identity": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "identity"
@@ -427,23 +509,42 @@
           ]
         },
         "mobkit/blob/upload": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only"
+          ],
           "request": {
             "type_ref": "TYPE-025",
             "transport": "multipart",
-            "required_fields": [
-              "content_type"
-            ]
+            "fields_location": "params.upload when present, otherwise params",
+            "required_one_of": [
+              "upload_id",
+              "part_name"
+            ],
+            "optional_fields": [
+              "type",
+              "media_type"
+            ],
+            "validation": "upload_id or part_name must be a non-empty string after trimming, identifying the suffix after file:. upload_id takes precedence when both exist. If type is supplied as a string it must be image_upload; media_type, when supplied as a string, must equal the file part's MIME type.",
+            "multipart": {
+              "payload_part": "JSON-RPC request with method mobkit/blob/upload",
+              "file_part": "Exactly one file:<upload_id-or-part_name> part matching the selected identifier",
+              "media_types": [
+                "image/png",
+                "image/jpeg",
+                "image/webp",
+                "image/gif"
+              ],
+              "max_file_bytes": 26214400
+            }
           },
           "success": {
             "type_ref": "TYPE-026",
             "required_fields": [
-              "blob_id"
-            ],
-            "optional_fields": [
-              "url",
-              "content_type",
+              "blob_id",
+              "media_type",
               "size"
-            ]
+            ],
+            "size_unit": "bytes"
           },
           "errors": [
             {
@@ -480,6 +581,10 @@
           ]
         },
         "mobkit/retire": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "identity"
@@ -500,6 +605,10 @@
           ]
         },
         "mobkit/respawn": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "identity"
@@ -520,6 +629,10 @@
           ]
         },
         "mobkit/reset": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "identity"
@@ -540,6 +653,9 @@
           ]
         },
         "mobkit/routing/routes/list": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "success": {
             "body": "routing_routes_response",
             "required_fields": [
@@ -557,11 +673,17 @@
           ]
         },
         "mobkit/delivery/history": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "optional_fields": [
-              "limit",
-              "cursor"
-            ]
+              "limit"
+            ],
+            "defaults": {
+              "limit": 50
+            },
+            "note": "HTTP returns a bounded snapshot without cursor pagination. SDK/stdin additionally accepts recipient/sink filters and defaults limit to 20."
           },
           "success": {
             "body": "delivery_history_response",
@@ -580,6 +702,9 @@
           ]
         },
         "mobkit/gating/pending": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "success": {
             "required_fields": [
               "pending"
@@ -596,6 +721,9 @@
           ]
         },
         "mobkit/gating/audit": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "optional_fields": [
               "limit"
@@ -617,15 +745,29 @@
           ]
         },
         "mobkit/gating/decide": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "pending_id",
-              "approver_id",
               "decision"
             ],
             "optional_fields": [
+              "approver_id",
               "reason"
-            ]
+            ],
+            "conditional_required_fields": {
+              "approver_id": "Required only when HTTP has no resolved principal; otherwise the principal is used regardless of the supplied approver_id."
+            },
+            "decision_values": [
+              "approve",
+              "reject",
+              "escalate",
+              "deny"
+            ],
+            "note": "deny is an HTTP compatibility alias for reject. SDK/stdin requires approver_id and accepts only approve/reject/escalate."
           },
           "success": {
             "body": "gating_decision_result"
@@ -677,6 +819,10 @@
           ]
         },
         "mobkit/access/set": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "config"
@@ -700,6 +846,10 @@
           ]
         },
         "mobkit/access/enable": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "enabled"
@@ -723,6 +873,10 @@
           ]
         },
         "mobkit/access/rules/upsert": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "rule"
@@ -746,6 +900,10 @@
           ]
         },
         "mobkit/access/rules/delete": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "id"
@@ -769,6 +927,10 @@
           ]
         },
         "mobkit/access/groups/set": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "name",
@@ -793,6 +955,10 @@
           ]
         },
         "mobkit/access/groups/delete": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "name"
@@ -818,12 +984,13 @@
         "mobkit/access/preview": {
           "request": {
             "required_fields": [
-              "subject",
               "action"
             ],
             "optional_fields": [
+              "subject",
               "identity"
-            ]
+            ],
+            "note": "Omitted/null subject previews anonymous access. The caller still needs access.admin or admin standing."
           },
           "success": {
             "required_fields": [
@@ -1190,6 +1357,10 @@
           ]
         },
         "mobkit/workgraph/claim": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "id",
@@ -1220,6 +1391,10 @@
           ]
         },
         "mobkit/workgraph/release": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "id",
@@ -1248,6 +1423,10 @@
           ]
         },
         "mobkit/workgraph/close": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "id",
@@ -1277,6 +1456,10 @@
           ]
         },
         "mobkit/workgraph/goal/confirm": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "binding_id",
@@ -1307,6 +1490,10 @@
           ]
         },
         "mobkit/workgraph/goal/request_close": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "binding_id",
@@ -1337,6 +1524,10 @@
           ]
         },
         "mobkit/workgraph/attention/pause": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "binding_id",
@@ -1366,6 +1557,10 @@
           ]
         },
         "mobkit/workgraph/attention/resume": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "binding_id",
@@ -1394,6 +1589,10 @@
           ]
         },
         "mobkit/workgraph/attention/reassign": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "binding_id",
@@ -1471,6 +1670,10 @@
           ]
         },
         "mobkit/topology/apply": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
           "request": {
             "required_fields": [
               "expected_revision",

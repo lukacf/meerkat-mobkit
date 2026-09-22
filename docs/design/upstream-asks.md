@@ -42,11 +42,15 @@ source-verified 2026-07-12.
   transcript intact; the Bug I manual row-copy repair is no longer needed on
   Meerkat 0.7.30+.
 
-Non-ask follow-ups remain: a MobKit console-health affordance from ask 14's
-progress data; an optional MobKit gateway projection for M4's already-shipped
-terminal-status query; and refresh of Meerkat's downstream compatibility
-table after M3. These are local projection/documentation maintenance, not
-open upstream runtime asks.
+At the 2026-07-12 checkpoint, the non-ask follow-ups were a MobKit
+console-health affordance from ask 14's progress data, an optional MobKit
+gateway projection for M4's already-shipped terminal-status query, and refresh
+of Meerkat's downstream compatibility table after M3. **Follow-up update
+(2026-09-22):** the console-health affordance subsequently landed in MobKit
+PR #279 (`f3db01834548ede68faf56bfd2d8cba8a8fea3c3`, 2026-07-13) and is no
+longer outstanding. The M4 projection and compatibility-table refresh are
+separate local projection/documentation follow-ups, not open upstream runtime
+asks.
 
 Everything else in this document is **closed, shipped, superseded, or retired
 as a separate upstream ask**. In particular, ask 12 was fixed before it was
@@ -592,11 +596,16 @@ tool events carry only the tool NAME, so MCP tools can only be attributed to
 a server when their names are server-qualified (`mcp__<server>__<tool>`);
 anything else needs manual `untrusted_tools` config.
 
-**Evidence.** Both gaps are documented as upstream-gated in
-`meerkat-mobkit/src/memory/taint.rs` module docs ("Honest gaps that remain
-(upstream asks, §13)"): the race, and "no `ToolDef.provenance`". Verified
-still absent in meerkat-core 0.7.15 (`types.rs` has no tool provenance
-field; no dispatch-time host taint seam).
+**Historical evidence and correction.** The filing-time MobKit
+`meerkat-mobkit/src/memory/taint.rs` module docs recorded the first-ingestion
+race and that its asynchronous tool events carried names without
+`ToolDef.provenance`. The original report incorrectly generalized this to
+missing upstream APIs in Meerkat 0.7.15: `ToolDef.provenance` and
+provenance-bearing `HookToolCall`/`HookToolResult` payloads were already present
+in that release (`84ecb083e982929d06217185acdcfc2f0182fffb`). This corrects
+the reported upstream diagnosis, not the historical MobKit observer-only
+integration limitation; upstream capability availability and a host
+composition's use of those capabilities are separate adoption questions.
 
 **Proposed shape.** (a) A synchronous seam at tool dispatch — either a
 pre-result host hook or a dispatch-time event with a completion barrier —
@@ -766,7 +775,11 @@ typed last-progress event, machine-owned `health`
 Healthy/Degraded/Wedged/Unknown). Mobkit 0.7.35 exposure: flows natively on
 `mobkit/member_status` (whole-snapshot serde), typed as
 `MemberProgressSnapshot` on `RichMemberSnapshot` in both SDKs, and projected
-on the identity-inspect RPC. Console health affordance remains follow-up.
+on the identity-inspect RPC. The console-health affordance remained a follow-up
+at that checkpoint; it subsequently landed in MobKit PR #279 (`f3db0183`,
+2026-07-13). When progress is available, sidebar chips expose non-healthy
+machine health and roster details show Health, Run state, In flight, and Last
+progress.
 Originally filed 2026-07-10. Lifecycle/member status and restart-durable terminal
 input status had improved before this ask landed, but did not provide the
 requested machine-owned run-open/idle, in-flight-work, last-progress/event,

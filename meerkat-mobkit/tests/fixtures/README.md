@@ -14,9 +14,12 @@ regression shipped past a synthetic 26-chain test for that reason).
   revision, no commits key on the wire, singleton live-head body equal to
   the live transcript), extracted from the HomeCore forensic bundle
   (rows-019f2bdc, runtime_session_snapshots, session
-  019f2bdc-a781-7060-bff8-0b97b7a4fcee). Used by the zero-rewrite
-  import-on-load regression pinning the meerkat d6cafd405 acceptance and
-  its strictness.
+  019f2bdc-a781-7060-bff8-0b97b7a4fcee). Used by
+  `released_zero_rewrite_history_refuses_typed_on_adapter_load` in
+  `src/identity_first/adapters.rs`, which pins typed, session-scoped import
+  refusal, byte preservation, and unrelated-session usability. The meerkat
+  d6cafd405 acceptance was an unshipped historical follow-up, not the
+  contract asserted by this regression.
 
 - released_0_8_8_realms/ - four COMPLETE realms (continuity.sqlite3 v2 +
   runtime.sqlite v1 + mobkit satellites + WAL/SHM/.mfence sidecars, no
@@ -76,12 +79,12 @@ regression shipped past a synthetic 26-chain test for that reason).
   the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
   while the scoped exact-resave equality reads it as zero durable change.
 
-Not part of the frozen corpus, and listed here because it is the one fixture
-two languages read: the entry below is a hand-authored wire contract, so it is
-SUPPOSED to change when the wire changes. The rule above applies only to the
-released and forensic captures.
+The current wire-contract fixtures below are shared across languages and are
+not part of the frozen corpus. They are expected to change when the wire
+changes, following each fixture's maintenance rules. The freeze above applies
+only to released and forensic captures.
 
-- role_migrations_init_params.json - THE wire contract for boot-scoped member
+- role_migrations_init_params.json - the hand-authored wire contract for boot-scoped member
   role migrations: one gateway init-params object carrying a top-level
   role_migrations array of {identity, from_role} declarations (values are
   HomeCore activation-83: identity domain:home-automation migrating from role
@@ -94,3 +97,23 @@ released and forensic captures.
   MobKit.builder().role_migrations([...]) puts exactly this array in the
   gateway init params. Renaming a key on either side goes red on that side
   instead of both sides staying green while a host arms nothing.
+
+- application_tool_policies_init_params.json - generated gateway init params
+  shared by `src/member_tool_policy.rs` and
+  `sdk/python/tests/test_application_tool_policies.py`. Rust's
+  `the_committed_wire_fixture_installs_its_carried_provider` test verifies
+  installation of the carried policy; Python checks the builder's wire output.
+  The canonical policy bytes contain a computed digest, so do not hand-edit
+  this fixture into validity. Regenerate it by setting `MOBKIT_WRITE_FIXTURE=1`
+  when running that Rust test from the repository root:
+
+  ```bash
+  MOBKIT_WRITE_FIXTURE=1 ./scripts/repo-cargo test -p meerkat-mobkit --lib \
+    the_committed_wire_fixture_installs_its_carried_provider
+  ```
+
+- live_contracts_v1.json - shared live wire-contract cases read by Rust
+  `meerkat-mobkit/tests/live_contracts.rs`, Python
+  `sdk/python/tests/test_live_contracts.py`, and TypeScript
+  `sdk/typescript/tests/live.test.ts`. Update the current contract and its
+  cross-language expectations together; this is not a frozen released capture.

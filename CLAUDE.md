@@ -49,9 +49,16 @@ make test
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 
-# Full CI
+# TypeScript (typecheck, build, and tests)
+npm --prefix sdk/typescript run validate
+
+# Local Make validation aggregate
 make ci
 ```
+
+The Make aggregate is not the complete hosted-CI pipeline. Consult
+`.github/workflows/ci.yml` for the required console, voice, TypeScript, and
+other hosted gates.
 
 ## Branch conventions
 
