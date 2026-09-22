@@ -1255,14 +1255,19 @@ test("synchronous observer close during requesting or activation cannot leak res
   }
 });
 
-test("unavailable, unauthenticated, missing, and failed gateway availability never request mic or open voice", async () => {
+test("unavailable, unauthenticated, missing, and failed gateway availability release the microphone and never open voice", async () => {
+  // The microphone is requested during the click, alongside readiness. A negative or
+  // failed readiness stops the granted tracks; no channel is opened and no RPC is made.
+  const released = (h: ReturnType<typeof harness>) =>
+    h.streams.length === 1 && h.streams[0].tracks.every((track) => track.stopped);
   for (const available of [false, undefined, null, "true", 1]) {
     const h = harness();
     h.env.voiceAvailable = async () => available as VoiceAvailability;
     await h.controller.start(target);
+    await flush();
     assert.equal(h.controller.getSnapshot().phase, "error");
     assert.match(h.controller.getSnapshot().error!, /authenticate OpenAI/);
-    assert.equal(h.streams.length, 0);
+    assert.ok(released(h), "granted microphone tracks are stopped");
     assert.equal(h.peers.length, 0);
     assert.equal(h.calls.length, 0);
     assert.ok(h.contexts.every((context) => context.state === "closed"));
@@ -1270,42 +1275,116 @@ test("unavailable, unauthenticated, missing, and failed gateway availability nev
   const h = harness();
   h.env.voiceAvailable = () => Promise.reject(new Error("offline"));
   await h.controller.start(target);
+  await flush();
   assert.equal(h.controller.getSnapshot().phase, "error");
-  assert.equal(h.streams.length, 0);
+  assert.ok(released(h));
   assert.equal(h.calls.length, 0);
   // An unknown readiness (the poll failed) is not "unavailable": it names the network, not auth.
   const unknown = harness();
   unknown.env.voiceAvailable = () => Promise.resolve("unknown");
   await unknown.controller.start(target);
+  await flush();
   assert.equal(unknown.controller.getSnapshot().phase, "error");
   assert.match(unknown.controller.getSnapshot().error!, /could not be checked/);
   assert.doesNotMatch(unknown.controller.getSnapshot().error!, /authenticate OpenAI/);
-  assert.equal(unknown.streams.length, 0);
+  assert.ok(released(unknown));
   assert.equal(unknown.calls.length, 0);
+  // A microphone denial with positive readiness is reported as the microphone problem.
+  const denied = harness();
+  denied.setMedia(() => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" })));
+  await denied.controller.start(target);
+  assert.equal(denied.controller.getSnapshot().phase, "error");
+  assert.match(denied.controller.getSnapshot().error!, /Microphone permission was denied/);
+  assert.equal(denied.calls.length, 0);
 });
 
-test("availability is checked freshly on every start and stale checks cannot prompt for microphone", async () => {
+test("the microphone is requested concurrently with readiness, and a fresh check gates every start", async () => {
   const h = harness();
   const availability = deferred<VoiceAvailability>();
   h.env.voiceAvailable = () => availability.promise;
   const start = h.controller.start(target);
   await flush();
-  assert.equal(h.streams.length, 0);
+  // Requested during the click, before the gateway answered; still gated (disabled).
+  assert.equal(h.streams.length, 1);
+  assert.ok(h.streams[0].tracks.every((track) => !track.enabled && !track.stopped));
+  assert.equal(h.calls.length, 0, "no channel opens before readiness");
   await h.controller.close();
   availability.resolve("available");
   await start;
   await flush();
-  assert.equal(h.streams.length, 0);
+  assert.ok(h.streams[0].tracks.every((track) => track.stopped), "a closed attempt releases its late grant");
   assert.equal(h.calls.length, 0);
   h.env.voiceAvailable = () => Promise.resolve("available");
   await h.controller.start(target);
   assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.streams.length, 2);
+  assert.ok(h.streams[1].tracks.every((track) => track.enabled));
   await h.controller.close();
   const before = h.calls.length;
   h.env.voiceAvailable = () => Promise.resolve("unavailable");
   await h.controller.start(target);
-  assert.equal(h.streams.length, 1);
+  await flush();
+  assert.equal(h.streams.length, 3, "readiness is queried freshly and the microphone requested again");
+  assert.ok(h.streams[2].tracks.every((track) => track.stopped));
   assert.equal(h.calls.length, before);
+});
+
+test("activation waits for the transport by event, with one status poll and no 100 ms polling", async () => {
+  const h = harness();
+  let peer: Peer | undefined;
+  h.setPeer((created) => {
+    peer = created;
+    // The answer applies, but the ICE connection and data channel settle later.
+    created.setRemoteDescription = function (this: Peer) {
+      this.ontrack?.({ track: this.remoteTrack });
+      return Promise.resolve();
+    };
+  });
+  const start = h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "connecting");
+  const statusPolls = () => h.calls.filter((call) => call.method === "mobkit/live/status").length;
+  assert.equal(statusPolls(), 1, "the activation receipt was polled once");
+  // Time passes without transport events: no further status polls are issued.
+  await h.clock.advance(1_000);
+  assert.equal(statusPolls(), 1);
+  assert.equal(h.controller.getSnapshot().phase, "connecting");
+  assert.ok(h.streams[0].tracks.every((track) => !track.enabled), "microphone stays gated");
+  // The peer connects but the data channel is not open yet: still connecting.
+  peer!.connectionState = "connected";
+  peer!.iceConnectionState = "connected";
+  peer!.onconnectionstatechange?.();
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "connecting");
+  // The data channel opens: activation completes from the event alone.
+  peer!.channel.readyState = "open";
+  (peer!.channel as unknown as { onopen?: () => void }).onopen?.();
+  await start;
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(statusPolls(), 1);
+  assert.ok(h.streams[0].tracks.every((track) => track.enabled), "microphone opens on activation");
+  await h.controller.close();
+});
+
+test("a transport that never connects fails activation at the connect deadline without extra polls", async () => {
+  const h = harness();
+  h.setPeer((created) => {
+    created.setRemoteDescription = function (this: Peer) {
+      this.ontrack?.({ track: this.remoteTrack });
+      return Promise.resolve();
+    };
+  });
+  const start = h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "connecting");
+  await h.clock.advance(VOICE_CONNECT_TIMEOUT_MS);
+  await start;
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /media connection timed out/);
+  assert.equal(h.calls.filter((call) => call.method === "mobkit/live/status").length, 1);
+  assert.ok(h.streams[0].tracks.every((track) => track.stopped));
 });
 
 test("StrictMode disposal can be followed by a fresh explicit start on the memoized controller", async () => {

@@ -35,6 +35,37 @@ const fixture = JSON.parse(
 ) as Record<string, unknown>;
 
 describe("openai live gateway registration", () => {
+  it("serializes the console voice summary bounds exactly and omits them when unset", () => {
+    assert.deepEqual(
+      openAiLiveGatewayConfigToWire({
+        principal: "user:luka",
+        realm: "family",
+        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        voice: "marin",
+        sessionInstructions: "You are Reachy's voice embodiment.",
+        summary: { model: "gpt-5.4-mini", maxInputBytes: 32768, maxOutputBytes: 2048 },
+      }),
+      fixture.openai_live_gateway_config_with_summary,
+    );
+    const partial = openAiLiveGatewayConfigToWire({
+      principal: "user:luka",
+      realm: "family",
+      authBinding: { realm: "family", binding: "openai-api-key" },
+      voice: "marin",
+      summary: { maxOutputBytes: 1024 },
+    });
+    assert.deepEqual(partial.summary, { max_output_bytes: 1024 });
+    assert.equal(
+      "summary" in openAiLiveGatewayConfigToWire({
+        principal: "user:luka",
+        realm: "family",
+        authBinding: { realm: "family", binding: "openai-api-key" },
+        voice: "marin",
+      }),
+      false,
+    );
+  });
+
   it("serializes the public gpt-live-1 registration exactly", () => {
     assert.deepEqual(
       openAiLiveGatewayConfigToWire({
@@ -86,6 +117,20 @@ describe("openai live gateway registration", () => {
     assert.throws(() =>
       openAiLiveGatewayConfigToWire({ ...base, sessionInstructions: " " }),
     );
+    for (const summary of [
+      { model: " " },
+      { maxInputBytes: 0 },
+      { maxOutputBytes: -1 },
+      { maxInputBytes: 1.5 },
+      { maxOutputBytes: "4096" },
+      { max_output_bytes: 4096 },
+      { apiKey: "not-a-secret-fixture" },
+    ]) {
+      assert.throws(
+        () => openAiLiveGatewayConfigToWire({ ...base, summary } as never),
+        `summary ${JSON.stringify(summary)} must be rejected`,
+      );
+    }
     for (const forbidden of [
       "model",
       "provider",

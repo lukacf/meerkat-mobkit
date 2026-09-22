@@ -23,6 +23,8 @@ mod context_status;
 #[cfg(feature = "openai-live")]
 pub(crate) mod live_host;
 mod summary;
+#[cfg(feature = "openai-live")]
+mod summary_window;
 
 pub(crate) use context_status::{
     VoiceContextPreparation, VoiceContextStatus, VoiceContextStatusRequest,
@@ -79,6 +81,10 @@ const CLOSED_RETENTION: Duration = Duration::from_mins(10);
 /// reaped first, so no principal can consume the shared capacity by itself.
 const MAX_CLOSED_PER_PRINCIPAL: usize = 32;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
+
+fn elapsed_ms(started: tokio::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 pub const CONSOLE_VOICE_SHUTDOWN_TIMEOUT: Duration = CLOSE_WAIT;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -609,11 +615,21 @@ impl ConsoleVoiceController {
             return Err(VoiceError::Unauthorized);
         }
         if self.stopped.load(Ordering::SeqCst) {
+            tracing::warn!(
+                identity,
+                "console voice readiness refused: controller stopped"
+            );
             return Ok(false);
         }
         match &self.host {
             Some(host) => host.ready(principal, identity).await,
-            None => Ok(false),
+            None => {
+                tracing::warn!(
+                    identity,
+                    "console voice readiness refused: no live host composed"
+                );
+                Ok(false)
+            }
         }
     }
 
@@ -633,6 +649,11 @@ impl ConsoleVoiceController {
             None => None,
         };
         if let Some(holder @ LiveOwner::ExternalLive { .. }) = holder {
+            tracing::info!(
+                identity,
+                holder = ?holder,
+                "console voice readiness refused: external live channel holds the voice path"
+            );
             return Ok(VoiceReadinessReport {
                 available: false,
                 reason: Some(VoiceReadinessReport::EXTERNAL_LIVE_ACTIVE),
@@ -783,10 +804,11 @@ impl ConsoleVoiceController {
         if principal.trim().is_empty() {
             return Err(VoiceError::Unauthorized);
         }
+        // The console already confirmed readiness for this click through
+        // `mobkit/console/voice/readiness`; the host's open resolves the same
+        // target authorization and credential once more inside Meerkat's
+        // open admission, so a second probe here only repeated that work.
         let host = self.host.as_ref().ok_or(VoiceError::Unavailable)?;
-        if !host.ready(principal, &request.identity).await? {
-            return Err(VoiceError::Unavailable);
-        }
         let key = (principal.to_string(), request.request_id.clone());
         let mut requests = self.requests.lock().await;
         if self.stopped.load(Ordering::SeqCst) {
@@ -822,6 +844,7 @@ impl ConsoleVoiceController {
             let owner = principal.to_string();
             let pending = Arc::clone(&slot);
             tokio::spawn(async move {
+                let arbiter_started = tokio::time::Instant::now();
                 // Take the gateway's live voice path first ("latest engaged
                 // wins"): an active external channel is closed with a typed
                 // reason before this call opens. A close that fails keeps the
@@ -861,7 +884,17 @@ impl ConsoleVoiceController {
                 } else {
                     None
                 };
+                let arbiter_ms = elapsed_ms(arbiter_started);
+                let host_open_started = tokio::time::Instant::now();
                 let result = host.open(&owner, &request.identity).await;
+                tracing::info!(
+                    target: "meerkat_mobkit::console_voice::timing",
+                    identity = %request.identity,
+                    arbiter_ms,
+                    host_open_ms = elapsed_ms(host_open_started),
+                    ok = result.is_ok(),
+                    "console voice open stages"
+                );
                 let mut state = pending.state.lock().await;
                 state.opening = false;
                 match result {
@@ -1079,6 +1112,11 @@ mod tests {
             _identity: &str,
         ) -> Result<Arc<dyn ConsoleVoiceSession>, VoiceError> {
             self.opens.fetch_add(1, Ordering::SeqCst);
+            // Like the live host, open resolves the target itself and
+            // refuses an unavailable one; readiness is not consulted.
+            if !self.ready.load(Ordering::SeqCst) {
+                return Err(VoiceError::Unavailable);
+            }
             self.started.notify_one();
             self.permit.acquire().await.expect("open permit").forget();
             Ok(Arc::clone(&self.session) as Arc<dyn ConsoleVoiceSession>)
@@ -1542,6 +1580,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_does_not_probe_readiness_again_and_surfaces_the_host_open_error() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host.clone());
+        controller.open("alice", request()).await.expect("open");
+        assert!(
+            host.checked_identities.lock().await.is_empty(),
+            "the click's readiness RPC is the one probe; open must not repeat it"
+        );
+        assert_eq!(host.opens.load(Ordering::SeqCst), 1);
+        controller.close("alice", request()).await.expect("close");
+        host.ready.store(false, Ordering::SeqCst);
+        let denied = VoiceRequest {
+            identity: "agent-a".to_string(),
+            request_id: "request-b".to_string(),
+        };
+        assert_eq!(
+            controller.open("alice", denied.clone()).await,
+            Err(VoiceError::Unavailable),
+            "the host's own target resolution refuses an unavailable target"
+        );
+        assert_eq!(host.opens.load(Ordering::SeqCst), 2);
+        assert!(host.checked_identities.lock().await.is_empty());
+        // A refused open leaves no live slot behind: the same principal may
+        // try again at once instead of being reported busy.
+        host.ready.store(true, Ordering::SeqCst);
+        host.permit.add_permits(1);
+        controller
+            .open(
+                "alice",
+                VoiceRequest {
+                    identity: "agent-a".to_string(),
+                    request_id: "request-c".to_string(),
+                },
+            )
+            .await
+            .expect("reopen after refusal");
+    }
+
+    #[tokio::test]
     async fn configuration_discovery_does_not_probe_and_readiness_targets_one_identity() {
         let host = Host::new(true, false);
         let controller = ConsoleVoiceController::new(host.clone());
@@ -1574,12 +1651,19 @@ mod tests {
             controller.open("alice", request()).await,
             Err(VoiceError::Unavailable)
         );
+        // The host's own target resolution is the one validation on the open
+        // path; it refused this open and left no slot behind.
+        assert_eq!(host.opens.load(Ordering::SeqCst), 1);
         host.ready.store(true, Ordering::SeqCst);
         assert_eq!(
             controller.open("", request()).await,
             Err(VoiceError::Unauthorized)
         );
-        assert_eq!(host.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            host.opens.load(Ordering::SeqCst),
+            1,
+            "a missing principal is refused before the host is contacted"
+        );
     }
 
     #[tokio::test]
@@ -1705,9 +1789,23 @@ mod tests {
                 .await
                 .expect("revoked readiness")
         );
+        // Re-opening the same active request stays idempotent (its existing
+        // handle, no second channel); a new request for the same principal
+        // is refused because the active call still owns the target.
         assert_eq!(
-            controller.open("alice", request()).await,
-            Err(VoiceError::Unavailable)
+            controller
+                .open("alice", request())
+                .await
+                .expect("idempotent retry"),
+            host.session.pending()
+        );
+        let second = VoiceRequest {
+            identity: "agent-a".to_string(),
+            request_id: "request-b".to_string(),
+        };
+        assert_eq!(
+            controller.open("alice", second.clone()).await,
+            Err(VoiceError::Busy)
         );
         assert_eq!(
             host.opens.load(Ordering::SeqCst),
@@ -1719,6 +1817,13 @@ mod tests {
             controller.replacement_required("alice", request()).await,
             Err(VoiceError::Closed),
         );
+        // With the call ended, the revoked target is refused by the host's
+        // own resolution on the open path, exactly as readiness reports it.
+        assert_eq!(
+            controller.open("alice", second).await,
+            Err(VoiceError::Unavailable)
+        );
+        assert_eq!(host.opens.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]

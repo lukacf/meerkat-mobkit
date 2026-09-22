@@ -21,6 +21,7 @@ from meerkat_mobkit.live import (
     PendingLiveChannelHandle,
     LiveReplacementRequired,
     OpenAiLiveGatewayConfig,
+    OpenAiLiveSummaryConfig,
     live_open_execution_identity_params,
     live_execution_mode_capability,
     supports_live_execution_mode,
@@ -371,3 +372,56 @@ def test_assistant_output_address_is_strict_and_opaque():
         LiveAssistantOutputAddress.from_dict({**wire, "item_id": "provider-item"})
     with pytest.raises(ValueError, match="non-negative integer"):
         LiveAssistantOutputAddress.from_dict({**wire, "content_index": -1})
+
+
+def test_openai_live_gateway_summary_bounds_match_shared_fixture(contracts_fixture):
+    config = OpenAiLiveGatewayConfig(
+        principal="user:luka",
+        realm="family",
+        auth_binding=LiveAuthBindingRef(
+            realm="family", binding="openai-api-key", profile="luka"
+        ),
+        voice="marin",
+        session_instructions="You are Reachy's voice embodiment.",
+        summary=OpenAiLiveSummaryConfig(
+            model="gpt-5.4-mini", max_input_bytes=32768, max_output_bytes=2048
+        ),
+    )
+    assert config.to_dict() == contracts_fixture["openai_live_gateway_config_with_summary"]
+    partial = OpenAiLiveGatewayConfig(
+        principal="user:luka",
+        realm="family",
+        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        voice="marin",
+        summary=OpenAiLiveSummaryConfig(max_output_bytes=1024),
+    )
+    assert partial.to_dict()["summary"] == {"max_output_bytes": 1024}
+    assert "summary" not in OpenAiLiveGatewayConfig(
+        principal="user:luka",
+        realm="family",
+        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        voice="marin",
+    ).to_dict()
+    for invalid in [
+        OpenAiLiveSummaryConfig(model=" "),
+        OpenAiLiveSummaryConfig(max_input_bytes=0),
+        OpenAiLiveSummaryConfig(max_output_bytes=-1),
+        OpenAiLiveSummaryConfig(max_output_bytes=True),
+        OpenAiLiveSummaryConfig(max_input_bytes="65536"),  # type: ignore[arg-type]
+    ]:
+        with pytest.raises(ValueError):
+            OpenAiLiveGatewayConfig(
+                principal="user:luka",
+                realm="family",
+                auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+                voice="marin",
+                summary=invalid,
+            ).to_dict()
+    with pytest.raises(TypeError):
+        OpenAiLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            voice="marin",
+            summary={"max_output_bytes": 1024},  # type: ignore[arg-type]
+        ).to_dict()

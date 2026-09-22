@@ -698,7 +698,53 @@ pub async fn console_rpc_handler(
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
+/// Server-side bound on one readiness answer; exceeding it answers
+/// "unavailable" and is logged with that cause.
+const VOICE_READINESS_SERVER_BUDGET: Duration = Duration::from_secs(5);
+/// A readiness answer slower than this is logged at warn even when positive:
+/// the client's own bound is 5 s and it gates the voice button on the answer.
+const VOICE_READINESS_SLOW_BUDGET: Duration = Duration::from_secs(1);
+
+/// Wall time of every console voice control-plane verb. Status polls are
+/// frequent and land at debug; every other verb lands at info.
 async fn handle_console_voice_rpc(
+    state: &ConsoleJsonState,
+    controller: Option<&crate::console_voice::ConsoleVoiceController>,
+    auth: &ConsoleHttpAuthContext,
+    request: JsonRpcRequest,
+) -> Value {
+    let method = request.method.clone();
+    let channel_id = request
+        .params
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let started = std::time::Instant::now();
+    let response = handle_console_voice_rpc_inner(state, controller, auth, request).await;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let ok = response.get("error").is_none_or(Value::is_null);
+    let phase = response
+        .pointer("/result/phase")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if method == "mobkit/live/status" || method == crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+    {
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            method = %method, channel_id = ?channel_id, elapsed_ms, ok, phase = ?phase,
+            "console voice rpc"
+        );
+    } else {
+        tracing::info!(
+            target: "meerkat_mobkit::console_voice::timing",
+            method = %method, channel_id = ?channel_id, elapsed_ms, ok, phase = ?phase,
+            "console voice rpc"
+        );
+    }
+    response
+}
+
+async fn handle_console_voice_rpc_inner(
     state: &ConsoleJsonState,
     controller: Option<&crate::console_voice::ConsoleVoiceController>,
     auth: &ConsoleHttpAuthContext,
@@ -763,12 +809,55 @@ async fn handle_console_voice_rpc(
                 None,
             );
         };
-        return match tokio::time::timeout(
-            Duration::from_secs(5),
+        // The readiness answer is the console's gate for the voice button and
+        // for every click. A negative or slow answer must leave a server-side
+        // trace with its cause: the client only sees "unavailable" or, on its
+        // own 5 s timeout, "could not be checked".
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            VOICE_READINESS_SERVER_BUDGET,
             controller.readiness(principal, &parsed.identity),
         )
-        .await
-        .unwrap_or(Ok(crate::console_voice::VoiceReadinessReport {
+        .await;
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let slow = started.elapsed() > VOICE_READINESS_SLOW_BUDGET;
+        let cause: Option<String> = match &outcome {
+            Err(_) => Some(format!(
+                "server readiness budget of {} ms exceeded",
+                VOICE_READINESS_SERVER_BUDGET.as_millis()
+            )),
+            Ok(Err(failure)) => Some(format!("{failure:?}")),
+            Ok(Ok(report)) if !report.available => Some(
+                report
+                    .reason
+                    .map_or_else(|| "host reports unavailable".to_string(), str::to_string),
+            ),
+            Ok(Ok(_)) => None,
+        };
+        match &cause {
+            Some(cause) => tracing::warn!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity = %parsed.identity,
+                elapsed_ms,
+                slow,
+                cause = %cause,
+                "console voice readiness not available"
+            ),
+            None if slow => tracing::warn!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity = %parsed.identity,
+                elapsed_ms,
+                budget_ms = VOICE_READINESS_SLOW_BUDGET.as_millis() as u64,
+                "console voice readiness available but slow"
+            ),
+            None => tracing::info!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity = %parsed.identity,
+                elapsed_ms,
+                "console voice readiness available"
+            ),
+        }
+        return match outcome.unwrap_or(Ok(crate::console_voice::VoiceReadinessReport {
             available: false,
             reason: None,
             holder: None,

@@ -18501,6 +18501,12 @@ function voiceContextFailureMessage(reason) {
 
 // src/panels/VoiceBar.tsx
 var import_jsx_runtime41 = require("react/jsx-runtime");
+var TALK_READY_STATUS = "Listening, you can talk";
+var CONTEXT_STAGE_TITLES = {
+  capturing: "being read",
+  generating: "being summarised",
+  delivering: "being sent to the voice model"
+};
 function Glyph({ name }) {
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Icon, { name }) });
 }
@@ -18604,9 +18610,12 @@ var VoiceBar = import_react31.default.memo(function VoiceBar2({
   if (!state.target && !state.error && !state.notice) return null;
   const active = state.phase === "active";
   const transitioning = state.phase === "requesting" || state.phase === "connecting";
-  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? state.connectionStage === "opening" ? "Starting voice" : state.connectionStage === "recovery" ? "Reconnecting" : "Connecting audio" : state.phase === "closing" ? "Ending voice" : active ? state.reconnecting ? "Reconnecting" : state.microphoneMuted ? "Microphone muted" : "Listening" : "Voice ended";
+  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? state.connectionStage === "opening" ? "Starting voice" : state.connectionStage === "recovery" ? "Reconnecting" : "Connecting audio" : state.phase === "closing" ? "Ending voice" : active ? state.reconnecting ? "Reconnecting" : state.microphoneMuted ? "Microphone muted" : TALK_READY_STATUS : "Voice ended";
+  const talkReady = active && !state.reconnecting && !state.microphoneMuted;
   const preparation = state.contextPreparation;
-  const contextLabel = !active || preparation === void 0 ? null : state.contextStatusError ? "Context status unavailable" : preparation === null ? "Checking context" : preparation.phase === "preparing" ? { capturing: "Reading context", generating: "Preparing context", delivering: "Sending context" }[preparation.stage] : preparation.phase === "provider_acknowledged" ? "Context supplied" : preparation.phase === "not_requested" ? "No summary pending" : "Context unavailable";
+  const contextState = !active || preparation === void 0 ? null : state.contextStatusError ? "status_unavailable" : preparation === null ? "checking" : preparation.phase;
+  const contextLabel = contextState === null ? null : contextState === "status_unavailable" ? "Context status unavailable" : contextState === "checking" || contextState === "preparing" ? "Context arriving" : contextState === "provider_acknowledged" ? "Context supplied" : contextState === "not_requested" ? "No summary pending" : "Context unavailable";
+  const contextTitle = contextState === "checking" ? "Checking whether the agent's context is on its way. You can talk now." : contextState === "preparing" ? `The agent's context is ${CONTEXT_STAGE_TITLES[preparation.stage]}. You can talk now; the model receives it as it arrives.` : contextState === "provider_acknowledged" ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion." : contextState === "not_requested" ? "No concurrent context preparation was requested for this call." : void 0;
   const contextMessage = !active ? null : state.contextStatusError ?? (preparation?.phase === "failed" ? voiceContextFailureMessage(preparation.reason) : null);
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
     "section",
@@ -18624,13 +18633,15 @@ var VoiceBar = import_react31.default.memo(function VoiceBar2({
                 "Voice with ",
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("strong", { children: state.target.label })
               ] }) : "Voice" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "voice-bar__status", role: "status", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "voice-bar__status", role: "status", "data-testid": "voice-status", "data-talk-ready": talkReady || void 0, children: [
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: status }),
                 contextLabel && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
                   "span",
                   {
                     className: "voice-bar__context",
-                    title: preparation?.phase === "provider_acknowledged" ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion." : preparation?.phase === "not_requested" ? "No concurrent context preparation was requested for this call." : void 0,
+                    "data-context": contextState ?? void 0,
+                    "data-context-stage": preparation?.phase === "preparing" ? preparation.stage : void 0,
+                    title: contextTitle,
                     children: contextLabel
                   }
                 )
@@ -21232,8 +21243,10 @@ function createVoiceSession(baseUrl, environment) {
     const channel = attempt.channel;
     attempt.peer = void 0;
     attempt.channel = void 0;
+    attempt.onTransportChange = void 0;
     if (channel) {
       channel.onmessage = null;
+      channel.onopen = null;
       channel.onclose = null;
       channel.onerror = null;
       channel.close();
@@ -21648,6 +21661,7 @@ function createVoiceSession(baseUrl, environment) {
     };
     const connectionChanged = () => {
       if (attempt.peer !== peer) return;
+      attempt.onTransportChange?.();
       const states = [peer.connectionState, peer.iceConnectionState];
       if (states.includes("failed") || states.includes("closed")) {
         transportLost(attempt, peer, TRANSPORT_LOST_MESSAGE);
@@ -21663,6 +21677,9 @@ function createVoiceSession(baseUrl, environment) {
     attempt.channel = channel;
     channel.onmessage = (event) => {
       if (attempt.peer === peer) consumeMessage(attempt, event.data);
+    };
+    channel.onopen = () => {
+      if (attempt.peer === peer) attempt.onTransportChange?.();
     };
     channel.onclose = () => {
       transportLost(attempt, peer, "The voice data connection closed. Start voice again.");
@@ -21728,6 +21745,14 @@ function createVoiceSession(baseUrl, environment) {
     }, VOICE_CONNECT_TIMEOUT_MS));
     assertOwns(attempt);
     if (!received || typeof received !== "object" || Array.isArray(received) || received.accepted !== true) throw new VoiceError("The gateway did not acknowledge voice answer delivery. Start voice again.");
+    const [handle] = await Promise.all([
+      awaitActivationReceipt(attempt, pending),
+      connecting(attempt, awaitTransportReady(attempt))
+    ]);
+    assertOwns(attempt);
+    return handle;
+  }
+  async function awaitActivationReceipt(attempt, pending) {
     while (owns(attempt)) {
       const status = parseExperimentalLiveChannelStatus(await connecting(
         attempt,
@@ -21743,13 +21768,24 @@ function createVoiceSession(baseUrl, environment) {
       }
       if (status.phase === "active") {
         if (status.handle.channelId !== pending.channelId || status.handle.targetIdentity !== pending.targetIdentity || status.handle.executionMode !== pending.executionMode) throw new VoiceError("Voice activation authority did not match the requested agent.");
-        if (attempt.peer.connectionState === "connected" && attempt.channel.readyState === "open") {
-          return status.handle;
-        }
+        return status.handle;
       }
       await pollDelay(attempt);
     }
     throw new Cancelled();
+  }
+  function transportReady(attempt) {
+    return attempt.peer?.connectionState === "connected" && attempt.channel?.readyState === "open";
+  }
+  function awaitTransportReady(attempt) {
+    if (transportReady(attempt)) return Promise.resolve();
+    return new Promise((resolve) => {
+      attempt.onTransportChange = () => {
+        if (!transportReady(attempt)) return;
+        attempt.onTransportChange = void 0;
+        resolve();
+      };
+    });
   }
   function scheduleReplacement(attempt, delay2 = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
     if (!owns(attempt) || snapshot.phase !== "active" && !attempt.transportLoss) return;
@@ -21979,7 +22015,20 @@ function createVoiceSession(baseUrl, environment) {
         resumed = attempt.context.resume();
         void resumed.catch(() => {
         });
+        const microphone = env.getUserMedia().then((stream) => {
+          for (const track of stream.getTracks()) track.enabled = false;
+          return stream;
+        });
+        void microphone.catch(() => {
+        });
+        const releaseMicrophone = () => {
+          void microphone.then((stream) => {
+            for (const track of stream.getTracks()) track.stop();
+          }).catch(() => {
+          });
+        };
         media = env.voiceAvailable(attempt.target.identity).then((available) => {
+          if (!owns(attempt) || available !== "available") releaseMicrophone();
           assertOwns(attempt);
           if (available === "unknown") {
             throw new VoiceError("Voice readiness could not be checked. Check your network connection to the gateway, then start voice again.");
@@ -21987,7 +22036,10 @@ function createVoiceSession(baseUrl, environment) {
           if (available !== "available") {
             throw new VoiceError("Voice is unavailable. Ask your administrator to authenticate OpenAI and enable GPT Live.");
           }
-          return env.getUserMedia();
+          return microphone;
+        }, (error) => {
+          releaseMicrophone();
+          throw error;
         }).then((stream) => {
           for (const track of stream.getTracks()) track.enabled = false;
           if (!owns(attempt)) {

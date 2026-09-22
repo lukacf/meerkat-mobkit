@@ -29,6 +29,22 @@
     "voice": "marin",
     "session_instructions": "You are Reachy's voice embodiment."
   },
+  "openai_live_gateway_config_with_summary": {
+    "principal": "user:luka",
+    "realm": "family",
+    "auth_binding": {
+      "realm": "family",
+      "binding": "openai-api-key",
+      "profile": "luka"
+    },
+    "voice": "marin",
+    "session_instructions": "You are Reachy's voice embodiment.",
+    "summary": {
+      "model": "gpt-5.4-mini",
+      "max_input_bytes": 32768,
+      "max_output_bytes": 2048
+    }
+  },
   "openai_live_public_profile_id": "openai.gpt-live-1.client-context.v1",
   "execution_identity": {
     "version": "v1",

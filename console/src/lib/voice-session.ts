@@ -327,6 +327,8 @@ interface Attempt {
   activityRetryAt?: number;
   activityFailure?: FailureWindow;
   contextObservation?: { abort: AbortController; timer?: ReturnType<typeof setTimeout> };
+  /** Wakes the activation transport wait on peer or data channel state changes. */
+  onTransportChange?: () => void;
   lastActivity: number;
 }
 
@@ -456,8 +458,10 @@ export function createVoiceSession(
     const channel = attempt.channel;
     attempt.peer = undefined;
     attempt.channel = undefined;
+    attempt.onTransportChange = undefined;
     if (channel) {
       channel.onmessage = null;
+      channel.onopen = null;
       channel.onclose = null;
       channel.onerror = null;
       channel.close();
@@ -920,6 +924,7 @@ export function createVoiceSession(
     };
     const connectionChanged = () => {
       if (attempt.peer !== peer) return;
+      attempt.onTransportChange?.();
       const states: string[] = [peer.connectionState, peer.iceConnectionState];
       if (states.includes("failed") || states.includes("closed")) {
         transportLost(attempt, peer, TRANSPORT_LOST_MESSAGE);
@@ -938,6 +943,9 @@ export function createVoiceSession(
     attempt.channel = channel;
     channel.onmessage = (event) => {
       if (attempt.peer === peer) consumeMessage(attempt, event.data);
+    };
+    channel.onopen = () => {
+      if (attempt.peer === peer) attempt.onTransportChange?.();
     };
     channel.onclose = () => {
       transportLost(attempt, peer, "The voice data connection closed. Start voice again.");
@@ -1017,6 +1025,22 @@ export function createVoiceSession(
       !received || typeof received !== "object" || Array.isArray(received) ||
       (received as Record<string, unknown>).accepted !== true
     ) throw new VoiceError("The gateway did not acknowledge voice answer delivery. Start voice again.");
+    // Activation needs two independent facts: the gateway's activation receipt
+    // and a usable media transport. The transport wait is event-driven (peer
+    // and data channel state changes) rather than an RPC per 100 ms; both are
+    // bounded by the same connect deadline.
+    const [handle] = await Promise.all([
+      awaitActivationReceipt(attempt, pending),
+      connecting(attempt, awaitTransportReady(attempt)),
+    ]);
+    assertOwns(attempt);
+    return handle;
+  }
+
+  async function awaitActivationReceipt(
+    attempt: Attempt,
+    pending: PendingLiveChannelHandle,
+  ): Promise<ActiveLiveChannelHandle> {
     while (owns(attempt)) {
       const status = parseExperimentalLiveChannelStatus(await connecting(attempt,
         env.rpc("mobkit/live/status", {
@@ -1034,13 +1058,33 @@ export function createVoiceSession(
           status.handle.targetIdentity !== pending.targetIdentity ||
           status.handle.executionMode !== pending.executionMode
         ) throw new VoiceError("Voice activation authority did not match the requested agent.");
-        if (attempt.peer!.connectionState === "connected" && attempt.channel!.readyState === "open") {
-          return status.handle;
-        }
+        return status.handle;
       }
       await pollDelay(attempt);
     }
     throw new Cancelled();
+  }
+
+  function transportReady(attempt: Attempt): boolean {
+    return attempt.peer?.connectionState === "connected" && attempt.channel?.readyState === "open";
+  }
+
+  /**
+   * Resolve once the peer connection is connected and the data channel is open. The
+   * current state is checked first (an answer may already have connected them); otherwise
+   * the peer's connection-state and the channel's open events settle it. Failure and
+   * cancellation are handled by the transport handlers and the caller's bound, so this
+   * promise only ever resolves.
+   */
+  function awaitTransportReady(attempt: Attempt): Promise<void> {
+    if (transportReady(attempt)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      attempt.onTransportChange = () => {
+        if (!transportReady(attempt)) return;
+        attempt.onTransportChange = undefined;
+        resolve();
+      };
+    });
   }
 
   function scheduleReplacement(attempt: Attempt, delay = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
@@ -1266,12 +1310,25 @@ export function createVoiceSession(
       let resumed: Promise<void>;
       try {
         if (!target.identity.trim()) throw new VoiceError("Select an agent before starting voice.");
-        // Unlock playback during the click, but do not request the microphone or open a
-        // channel until the gateway freshly confirms authenticated OpenAI voice availability.
+        // Unlock playback and request the microphone during the click, while the gateway
+        // freshly confirms authenticated OpenAI voice availability. No channel opens until
+        // readiness is positive; a negative or failed readiness releases the microphone.
         attempt.context = env.createAudioContext();
         resumed = attempt.context.resume();
         void resumed.catch(() => {});
+        // Granted tracks are gated at once; nothing consumes them until activation.
+        const microphone = env.getUserMedia().then((stream) => {
+          for (const track of stream.getTracks()) track.enabled = false;
+          return stream;
+        });
+        void microphone.catch(() => {});
+        const releaseMicrophone = () => {
+          void microphone.then((stream) => {
+            for (const track of stream.getTracks()) track.stop();
+          }).catch(() => {});
+        };
         media = env.voiceAvailable(attempt.target.identity).then((available) => {
+          if (!owns(attempt) || available !== "available") releaseMicrophone();
           assertOwns(attempt);
           if (available === "unknown") {
             throw new VoiceError("Voice readiness could not be checked. Check your network connection to the gateway, then start voice again.");
@@ -1279,7 +1336,10 @@ export function createVoiceSession(
           if (available !== "available") {
             throw new VoiceError("Voice is unavailable. Ask your administrator to authenticate OpenAI and enable GPT Live.");
           }
-          return env.getUserMedia();
+          return microphone;
+        }, (error: unknown) => {
+          releaseMicrophone();
+          throw error;
         }).then((stream) => {
           for (const track of stream.getTracks()) track.enabled = false;
           if (!owns(attempt)) {

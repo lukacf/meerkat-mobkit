@@ -2994,6 +2994,7 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
                     Err(response) => return Some(*response),
                 };
             let _ = parsed.identity;
+            let register_started = std::time::Instant::now();
             let channel_id = LiveChannelId::new(parsed.channel_id);
             let custody = match shared_live_host
                 .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
@@ -3028,6 +3029,12 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
                     return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
                 }
             };
+            tracing::debug!(
+                target: "meerkat_mobkit::console_voice::timing",
+                %channel_id,
+                elapsed_ms = u64::try_from(register_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "live playback owner registered"
+            );
             let result = crate::live_contracts::LivePlaybackOwnerReadiness {
                 channel_id: readiness.channel_id().to_string(),
                 readiness_receipt: readiness.readiness_receipt().to_string(),
@@ -3703,6 +3710,8 @@ async fn handle_live_webrtc_answer<B: SessionAgentBuilder + 'static>(
             "experimental live WebRTC bound-ready authority is not available",
         );
     };
+    let answer_started = std::time::Instant::now();
+    let channel_id = parsed.channel_id.clone();
     let coordinated = match shared_live_host
         .answer_webrtc_offer(
             Arc::clone(answer_transport),
@@ -3718,6 +3727,12 @@ async fn handle_live_webrtc_answer<B: SessionAgentBuilder + 'static>(
             return live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string());
         }
     };
+    tracing::info!(
+        target: "meerkat_mobkit::console_voice::timing",
+        channel_id,
+        elapsed_ms = u64::try_from(answer_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "live webrtc answer negotiated with provider"
+    );
     match serde_json::to_value(meerkat_contracts::LiveWebrtcAnswerResult {
         answer_sdp: coordinated.answer_sdp,
     }) {
@@ -4695,6 +4710,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             },
             None => None,
         };
+        let open_started = std::time::Instant::now();
         let result = match shared_live_host
             .open_with_execution_identity(
                 open_authority.as_ref(),
@@ -4708,10 +4724,24 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         {
             Ok(result) => result,
             Err(error) => {
+                tracing::info!(
+                    target: "meerkat_mobkit::console_voice::timing",
+                    %session_id,
+                    elapsed_ms = u64::try_from(open_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    error = ?error,
+                    "live open authority failed"
+                );
                 return experimental_live_open_error_response(rpc_id, error);
             }
         };
         let channel_id = result.channel_id().clone();
+        tracing::info!(
+            target: "meerkat_mobkit::console_voice::timing",
+            %session_id,
+            %channel_id,
+            elapsed_ms = u64::try_from(open_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "live open authority completed"
+        );
         let execution_mode = local_live_execution_mode(result.execution_mode());
         let pending_receipt = result.pending_receipt().to_string();
         let open = result.into_open();

@@ -4657,6 +4657,7 @@ actions = ["agent.view"]
                 },
                 voice: "marin".to_string(),
                 session_instructions: Some("You are Reachy's voice embodiment.".to_string()),
+                summary: Default::default(),
             })
         );
         assert!(options.strict_live_registered());

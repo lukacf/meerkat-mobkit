@@ -34,6 +34,7 @@ const HELP = `PAID MobKit console voice acceptance (gpt-live-1 + original gpt-5.
   npm --prefix console run e2e:voice:live
   node console/voice-e2e-live.cjs --self-test
   node console/voice-e2e-live.cjs --self-test-audio
+  node console/voice-e2e-live.cjs --time-to-talk [--runs=3] [--seed-turns=40] [--seed-words=40] [--hold-ms=0]
   node console/voice-e2e-live.cjs --help
 
 Prepare the embedded console with npm --prefix console run build first.
@@ -49,6 +50,16 @@ existing demo, invented playback ACK or direct Live user-text command is used.
 The synthetic microphone continuously emits zero PCM between WAV utterances.
 --self-test-audio verifies actual local WebRTC RTP before/after speech and while
 muted, decoded speech, and clock cleanup; it makes no provider calls.
+--time-to-talk is a PAID diagnostic: it seeds the original agent's session with
+N typed turns, then times click -> able to talk stage by stage (browser marks,
+each control-plane RPC, status polls, WebRTC connected, microphone enabled) for
+the requested number of open/close runs and prints per-run and median/max
+tables. --seed-words sets the requested reply length per seeded turn and
+--hold-ms keeps each call open until context preparation settles (bounded), so
+the concurrent summary's duration is observed too.
+MOBKIT_VOICE_ALLOW_STALE_BUNDLE=1 accepts an override gateway whose embedded
+console differs from the current build (older commits under test), and
+MOBKIT_VOICE_TTT_RUST_LOG overrides the gateway's RUST_LOG for that run.
 
 Coverage: speech-triggered real keeper verification and keeper-only knowledge;
 typed exact-value recall; delayed peer results;
@@ -729,7 +740,7 @@ function buildGateway() {
   return artifact.executable;
 }
 
-async function launchGateway(binary, apiKey, facts, directory) {
+async function launchGateway(binary, apiKey, facts, directory, options = {}) {
   const workspace = path.join(directory, "workspace");
   fs.mkdirSync(path.join(workspace, "config"), { recursive: true, mode: 0o700 });
   const principal = "voice-acceptance@localhost";
@@ -821,7 +832,7 @@ provider_default = true
   const url = `http://127.0.0.1:${proxy.address().port}`;
   const gateway = spawn(binary, [], { cwd: workspace,
     env: { ...childEnv(), OPENAI_API_KEY: apiKey, XDG_STATE_HOME: path.join(directory, "xdg"),
-      RUST_LOG: "warn,meerkat_mobkit=info,meerkat::experimental_gpt_live=info,meerkat::session_runtime::live_orchestration=info,meerkat_openai::public_live=info" },
+      RUST_LOG: options.rustLog ?? "warn,meerkat_mobkit=info,meerkat::experimental_gpt_live=info,meerkat::session_runtime::live_orchestration=info,meerkat_openai::public_live=info" },
     stdio: ["pipe", "pipe", "pipe"] });
   const stderr = readline.createInterface({ input: gateway.stderr });
   const logPath = path.join(directory, "gateway.log");
@@ -916,9 +927,10 @@ provider_default = true
     assert.equal(ready.status, 200, "Authenticated loopback proxy must reach the real gateway");
     const servedBundle = await preflight("embedded console bundle", `${url}/console/assets/console-app.js`);
     assert.equal(servedBundle.status, 200);
-    assert.ok(servedBundle.bytes.equals(
-      fs.readFileSync(path.join(ROOT, "meerkat-mobkit", "console-dist", "console-app.js"))),
-    "Gateway embeds a stale console: prepare npm run build, then rebuild the openai-live binary");
+    const currentBundle = servedBundle.bytes.equals(
+      fs.readFileSync(path.join(ROOT, "meerkat-mobkit", "console-dist", "console-app.js")));
+    if (options.allowStaleBundle) log("embedded-console-bundle", { matchesCurrentBuild: currentBundle });
+    else assert.ok(currentBundle, "Gateway embeds a stale console: prepare npm run build, then rebuild the openai-live binary");
     log("gateway-ready", { pid: gateway.pid, model: "gpt-5.5", voiceModel: "gpt-live-1" });
     return { url, stop };
   } catch (error) {
@@ -931,7 +943,19 @@ provider_default = true
 // real. AudioContext taps observe decoded samples without bypassing UI muting.
 function instrumentBrowser() {
   const state = window.voiceAcceptance = { events: [], samples: [], peers: [], inputs: [], inputClocks: [],
-    contexts: [], gains: [], sends: [], transportSamples: [], samplingErrors: [] };
+    contexts: [], gains: [], sends: [], transportSamples: [], samplingErrors: [], timeline: [] };
+  // Activation timeline: named marks on the page's performance clock.
+  const mark = (name, extra = {}) => state.timeline.push({ at: performance.now(), name, ...extra });
+  state.mark = mark;
+  const enabledProperty = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, "enabled");
+  Object.defineProperty(MediaStreamTrack.prototype, "enabled", {
+    configurable: true,
+    get() { return enabledProperty.get.call(this); },
+    set(value) {
+      if (this.acceptanceMicrophone && value && !enabledProperty.get.call(this)) mark("mic-enabled");
+      enabledProperty.set.call(this, value);
+    },
+  });
   const NativeContext = window.AudioContext;
   window.AudioContext = class extends NativeContext {
     constructor(...args) { super(...args); state.contexts.push(this); }
@@ -999,12 +1023,34 @@ function instrumentBrowser() {
       super(...args);
       this.acceptanceId = state.peers.length;
       state.peers.push(this);
+      mark("peer-created", { peer: this.acceptanceId });
       this.addEventListener("track", event => {
         if (event.track.kind === "audio") meter(new MediaStream([event.track]), "speaker", this.acceptanceId);
       });
+      this.addEventListener("connectionstatechange", () => mark("connection-state", { peer: this.acceptanceId, state: this.connectionState }));
+      this.addEventListener("iceconnectionstatechange", () => mark("ice-state", { peer: this.acceptanceId, state: this.iceConnectionState }));
+      this.addEventListener("icegatheringstatechange", () => mark("ice-gathering", { peer: this.acceptanceId, state: this.iceGatheringState }));
+    }
+    async createOffer(...args) {
+      mark("create-offer:start", { peer: this.acceptanceId });
+      const offer = await super.createOffer(...args);
+      mark("create-offer:end", { peer: this.acceptanceId });
+      return offer;
+    }
+    async setLocalDescription(...args) {
+      const result = await super.setLocalDescription(...args);
+      mark("set-local:end", { peer: this.acceptanceId });
+      return result;
+    }
+    async setRemoteDescription(...args) {
+      mark("set-remote:start", { peer: this.acceptanceId });
+      const result = await super.setRemoteDescription(...args);
+      mark("set-remote:end", { peer: this.acceptanceId });
+      return result;
     }
     createDataChannel(...args) {
       const channel = super.createDataChannel(...args);
+      channel.addEventListener("open", () => mark("data-channel-open", { peer: this.acceptanceId }));
       channel.addEventListener("message", event => {
         const message = JSON.parse(event.data);
         state.events.push({ at: performance.now(), peer: this.acceptanceId, ...message });
@@ -1019,6 +1065,7 @@ function instrumentBrowser() {
   };
   navigator.mediaDevices.getUserMedia = async constraints => {
     if (!constraints.audio || constraints.video) throw new Error("Only synthetic audio capture is allowed");
+    mark("getUserMedia:start");
     await capture.resume();
     const output = capture.createMediaStreamDestination();
     // An unconnected destination stays live but stops generating RTP once a
@@ -1032,6 +1079,8 @@ function instrumentBrowser() {
     state.inputs.push(output);
     meter(output.stream, "microphone", state.peers.length);
     state.output = output;
+    for (const track of output.stream.getTracks()) track.acceptanceMicrophone = true;
+    mark("getUserMedia:end");
     return output.stream;
   };
 }
@@ -1039,6 +1088,7 @@ async function browserState(page) {
   return page.evaluate(() => {
     const state = window.voiceAcceptance;
     return { observedAt: performance.now(), events: state.events, samples: state.samples, sends: state.sends,
+      timeline: state.timeline,
       capture: { state: state.capture.state, time: state.capture.currentTime },
       inputClocks: state.inputClocks.map(clock => ({ stopped: clock.stopped, value: clock.source.offset.value })),
       transportSamples: state.transportSamples, samplingErrors: state.samplingErrors,
@@ -1662,6 +1712,259 @@ async function runBrowser(url, facts, directory, gate) {
   }
 }
 
+function makeFacts(nonce) {
+  const facts = { nonce, words: randomWords(3), voiceOperation: `old-voice-${nonce}`, typedOperation: `old-typed-${nonce}` };
+  const chosen = new Set();
+  for (const key of ["wordVerification", "typed", "peer", "oldVoice", "oldTyped", "overlapValue", "reopened"]) {
+    let value;
+    do { value = randomWords(4).join(" "); } while (chosen.has(value));
+    chosen.add(value);
+    facts[key] = value;
+  }
+  return facts;
+}
+
+const TTT_RUST_LOG = "warn,meerkat_mobkit=info,meerkat_mobkit::console_voice::timing=debug," +
+  "meerkat::experimental_gpt_live=info,meerkat::session_runtime::live_orchestration=info,meerkat_openai::public_live=info";
+const median = values => {
+  const sorted = [...values].filter(value => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+};
+const maximum = values => {
+  const finite = values.filter(value => Number.isFinite(value));
+  return finite.length ? Math.max(...finite) : null;
+};
+
+// One activation, expressed as milliseconds after the click. Browser marks are
+// on the page performance clock relative to the "click" mark; RPC rows are on
+// the harness wall clock relative to clickWall (the two differ by one evaluate
+// round trip, a few milliseconds).
+function summarizeActivation({ clickWall, activeWall, rows, timeline }) {
+  const clickAt = timeline.find(entry => entry.name === "click")?.at ?? 0;
+  const markAt = (name, predicate = () => true) => {
+    const entry = timeline.find(item => item.name === name && item.at >= clickAt && predicate(item));
+    return entry ? Math.round(entry.at - clickAt) : null;
+  };
+  const rpcRow = method => rows.find(row => row.method === method && row.started >= clickWall - 50 && row.ended);
+  const rpc = method => {
+    const row = rpcRow(method);
+    return row ? { at: row.started - clickWall, ms: row.ended - row.started, ok: !row.error } : null;
+  };
+  const statusRows = rows.filter(row => row.method === "mobkit/live/status" && row.params.pending_receipt &&
+    row.started >= clickWall && row.ended);
+  const activeRow = statusRows.find(row => row.result?.phase === "active");
+  const status = statusRows.length ? {
+    count: statusRows.indexOf(activeRow) + 1 || statusRows.length,
+    firstAt: statusRows[0].started - clickWall,
+    activeAt: activeRow ? activeRow.ended - clickWall : null,
+    spanMs: activeRow ? activeRow.ended - statusRows[0].started : null,
+    maxPollMs: Math.max(...statusRows.map(row => row.ended - row.started)),
+    medianPollMs: median(statusRows.map(row => row.ended - row.started)),
+  } : null;
+  const answerReceived = rpc("mobkit/console/voice/answer_received");
+  return {
+    totalUiActiveMs: activeWall - clickWall,
+    micEnabledAt: markAt("mic-enabled"),
+    readiness: rpc("mobkit/console/voice/readiness"),
+    getUserMedia: { at: markAt("getUserMedia:start"), ms: markAt("getUserMedia:end") - markAt("getUserMedia:start") },
+    open: rpc("mobkit/console/voice/open"),
+    offerLocal: { at: markAt("peer-created"), ms: markAt("set-local:end") - markAt("peer-created") },
+    iceGatheringComplete: markAt("ice-gathering", entry => entry.state === "complete"),
+    register: rpc("mobkit/live/playback_owner/register"),
+    answer: rpc("live/webrtc/answer"),
+    setRemoteMs: markAt("set-remote:end") - markAt("set-remote:start"),
+    answerReceived,
+    iceConnectedAt: markAt("ice-state", entry => entry.state === "connected" || entry.state === "completed"),
+    peerConnectedAt: markAt("connection-state", entry => entry.state === "connected"),
+    dataChannelOpenAt: markAt("data-channel-open"),
+    status,
+    answerReceivedToActiveMs: answerReceived && status?.activeAt !== null && status ?
+      status.activeAt - (answerReceived.at + answerReceived.ms) : null,
+  };
+}
+
+function sessionSize(directory, sessionId) {
+  const database = path.join(directory, "state", "runtime.sqlite");
+  const result = spawnSync("python3", ["-c", `
+import json, sqlite3, sys
+from pathlib import Path
+database, session_id = sys.argv[1:]
+connection = sqlite3.connect(Path(database).as_uri() + "?mode=ro", uri=True, timeout=5)
+try:
+    rows = connection.execute("""
+        SELECT length(bodies.session_snapshot), bodies.session_snapshot
+        FROM runtime_whole_blob_authority AS authority
+        JOIN runtime_whole_blob_bodies AS bodies ON bodies.blob_sha256 = authority.blob_sha256
+        WHERE authority.session_id = ?
+    """, (session_id,)).fetchall()
+    if len(rows) != 1:
+        raise RuntimeError("expected one committed whole-blob authority")
+    size, data = rows[0]
+    print(json.dumps({"bytes": size, "messages": len(json.loads(data).get("messages", []))}))
+finally:
+    connection.close()
+`, database, sessionId], { env: childEnv(), encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 * 1024 });
+  if (result.status !== 0) return { error: redact(result.stderr || result.error?.message || "unknown") };
+  return JSON.parse(result.stdout);
+}
+
+// PAID diagnostic: stage timings for click -> able to talk over several runs.
+async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_OLD;
+  assert.ok(apiKey, "PAID time-to-talk selected: set OPENAI_API_KEY (or OPENAI_API_KEY_OLD).");
+  secrets = [apiKey];
+  const binary = buildGateway();
+  const nonce = crypto.randomUUID();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-voice-ttt-"));
+  fs.chmodSync(directory, 0o700);
+  const facts = makeFacts(nonce);
+  const gateway = await launchGateway(binary, apiKey, facts, directory, {
+    allowStaleBundle: process.env.MOBKIT_VOICE_ALLOW_STALE_BUNDLE === "1",
+    rustLog: process.env.MOBKIT_VOICE_TTT_RUST_LOG || TTT_RUST_LOG,
+  });
+  const logPath = path.join(directory, "gateway.log");
+  const serverLine = /console_voice::timing|context summary finished/;
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch({ headless: true, env: childEnv() });
+  const results = [];
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const requests = [];
+    let rpcSequence = 0;
+    const rpc = async (method, params = {}) => {
+      const response = await fetch(`${gateway.url}/console/rpc`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: `ttt-${++rpcSequence}`, method, params }), signal: AbortSignal.timeout(15_000) });
+      assert.equal(response.status, 200, `${method} HTTP ${response.status}`);
+      const data = await response.json();
+      assert.ok(!data.error, `${method}: ${redact(JSON.stringify(data.error))}`);
+      return data.result;
+    };
+    page.on("request", request => {
+      if (!request.url().endsWith("/console/rpc")) return;
+      const data = request.postDataJSON();
+      requests.push({ request, method: data.method, params: data.params ?? {}, started: Date.now() });
+    });
+    page.on("response", async response => {
+      const row = requests.find(candidate => candidate.request === response.request());
+      if (!row) return;
+      try {
+        const data = await response.json();
+        Object.assign(row, { result: data.result, error: data.error, ended: Date.now() });
+      } catch { row.unreadable = true; }
+    });
+    page.on("pageerror", error => pageErrors.push(redact(error.message)));
+    await page.addInitScript(instrumentBrowser);
+    await page.goto(`${gateway.url}/console`);
+    await page.getByTestId(`chat-composer:${PRIMARY}`).waitFor({ timeout: 30_000 });
+    const finals = async () => new Set(((await rpc("mobkit/console/query_timeline", { identity: PRIMARY, mode: "recent", limit: 1000 }))
+      .frames ?? []).filter(frame => finalText(frame)).map(frame => frame.id));
+    const seedStarted = Date.now();
+    const turns = Math.max(1, seedTurns);
+    for (let turn = 1; turn <= turns; turn++) {
+      const before = await finals();
+      const content = seedTurns < 1
+        ? `Startup barrier ${nonce}. Use no tools. Reply exactly READY.`
+        : `Seed turn ${turn} of ${turns}. Use no tools. Reply in about ${seedWords} words of plain prose that mention the number ${turn} and give facts about the word ${WORDS[turn % WORDS.length]}.`;
+      await rpc("mobkit/console/send", { identity: PRIMARY, content, origin: "voice-time-to-talk", idempotency_key: crypto.randomUUID() });
+      await poll(`seed turn ${turn} final`, async () => [...await finals()].some(id => !before.has(id)), 120_000, 500);
+    }
+    const original = (await rpc("mobkit/console/inspect_identity", { identity: PRIMARY })).identity;
+    // Let the last turn's checkpoint commit before reading the store.
+    await sleep(1500);
+    const size = sessionSize(directory, original.session_id);
+    log("seeded", { turns: seedTurns, seedWords, elapsedMs: Date.now() - seedStarted, session: size });
+    for (let run = 1; run <= runs; run++) {
+      const logOffset = fs.statSync(logPath).size;
+      const begin = requests.length;
+      await page.evaluate(() => { window.voiceAcceptance.timeline.length = 0; window.voiceAcceptance.mark("click"); });
+      const clickWall = Date.now();
+      await page.getByRole("button", { name: `Start voice with ${LABEL}`, exact: true }).click({ timeout: 30_000 });
+      await page.getByTestId("voice-bar").and(page.locator('[data-phase="active"]')).waitFor({ timeout: 60_000 });
+      const activeWall = Date.now();
+      // The primary status must tell the user they can talk as soon as the
+      // microphone is open, independent of context preparation.
+      await page.locator('[data-testid="voice-status"][data-talk-ready="true"]', { hasText: /you can talk/i }).waitFor({ timeout: 10_000 });
+      const talkReadyWall = Date.now();
+      await sleep(400);
+      // The console polls context_status once a second while the concurrent
+      // summary is prepared; hold the call so that phase can settle.
+      const contextRows = () => requests.slice(begin).filter(row => row.method === "mobkit/console/voice/context_status" && row.ended);
+      const preparation = row => row.result?.context_preparation ?? row.result?.preparation;
+      const settled = row => ["provider_acknowledged", "failed"].includes(preparation(row)?.phase);
+      if (holdMs > 0) await poll("context preparation settled", () => contextRows().some(settled), holdMs, 250).catch(() => {});
+      const state = await browserState(page);
+      const stages = summarizeActivation({ clickWall, activeWall, rows: requests.slice(begin), timeline: state.timeline });
+      stages.talkReadyVisibleMs = talkReadyWall - clickWall;
+      const transitions = [];
+      for (const row of contextRows()) {
+        const key = `${preparation(row)?.phase ?? "?"}${preparation(row)?.stage ? `:${preparation(row).stage}` : ""}`;
+        if (transitions.at(-1)?.key !== key) transitions.push({ key, at: row.ended - clickWall });
+      }
+      const settledRow = contextRows().find(settled);
+      stages.contextPreparation = { settledAt: settledRow ? settledRow.ended - clickWall : null,
+        settledPhase: settledRow ? preparation(settledRow).phase : null, polls: contextRows().length,
+        transitions: transitions.map(entry => `${entry.key}@${entry.at}`) };
+      const closeStart = Date.now();
+      await page.getByRole("button", { name: "End voice conversation", exact: true }).click();
+      await poll("voice closed", () => requests.find(row => row.method === "mobkit/console/voice/close" &&
+        row.started >= closeStart && row.result?.phase === "closed"), 30_000, 50);
+      await poll("voice bar gone", async () => (await page.getByTestId("voice-bar").count()) === 0, 10_000, 50);
+      stages.closeMs = Date.now() - closeStart;
+      await sleep(1500);
+      stages.server = fs.readFileSync(logPath, "utf8").slice(logOffset).split("\n")
+        .filter(line => serverLine.test(line)).map(line => line.replace(/^\S+\s+/, ""));
+      // The gateway's summary line: generation time, output size, cache reuse.
+      // The public GPT Live transport appends the summary in UTF-8 fragments of
+      // at most 500 bytes, one provider receipt each.
+      const summaryLine = stages.server.find(line => line.includes("context summary finished"));
+      const field = name => summaryLine?.match(new RegExp(`${name}=(?:Some\\()?([^\\s)]+)`))?.[1];
+      const summaryBytes = Number(field("output_bytes"));
+      stages.summary = summaryLine ? {
+        ms: Number(field("elapsed_ms")), bytes: Number.isFinite(summaryBytes) ? summaryBytes : null,
+        fragments: Number.isFinite(summaryBytes) ? Math.ceil(summaryBytes / 500) : null,
+        cache: field("cache") ?? null, windowMessages: Number(field("window_messages")) || null,
+        totalMessages: Number(field("total_messages")) || null, model: field("model") ?? null,
+      } : null;
+      results.push(stages);
+      log("time-to-talk-run", { run, ...stages });
+    }
+    const pick = (label, select) => ({ stage: label, medianMs: median(results.map(select)), maxMs: maximum(results.map(select)) });
+    const table = [
+      pick("readiness rpc", row => row.readiness?.ms),
+      pick("getUserMedia", row => row.getUserMedia.ms),
+      pick("open rpc", row => row.open?.ms),
+      pick("offer + setLocalDescription", row => row.offerLocal.ms),
+      pick("playback_owner/register rpc", row => row.register?.ms),
+      pick("live/webrtc/answer rpc", row => row.answer?.ms),
+      pick("setRemoteDescription", row => row.setRemoteMs),
+      pick("answer_received rpc", row => row.answerReceived?.ms),
+      pick("answer_received end -> status active", row => row.answerReceivedToActiveMs),
+      pick("status polls until active (count)", row => row.status?.count),
+      pick("status poll rpc (median per run)", row => row.status?.medianPollMs),
+      pick("peer connected (from click)", row => row.peerConnectedAt),
+      pick("data channel open (from click)", row => row.dataChannelOpenAt),
+      pick("status active (from click)", row => row.status?.activeAt),
+      pick("mic enabled (from click)", row => row.micEnabledAt),
+      pick("UI active (from click)", row => row.totalUiActiveMs),
+      pick("'you can talk' visible (from click)", row => row.talkReadyVisibleMs),
+      pick("context preparation settled (from click)", row => row.contextPreparation.settledAt),
+      pick("summary generation (gateway)", row => row.summary?.ms),
+      pick("summary output bytes", row => row.summary?.bytes),
+      pick("summary fragments (500 B each)", row => row.summary?.fragments),
+      pick("close (click -> closed)", row => row.closeMs),
+    ];
+    log("time-to-talk-summary", { runs, seedTurns, seedWords, holdMs, session: size, pageErrors, table });
+    console.table(table);
+  } finally {
+    await browser.close();
+    await gateway.stop();
+    log("artifacts", { directory, contains: "redacted gateway log; no credentials" });
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args[0] === "--help") {
@@ -1680,7 +1983,18 @@ async function main() {
     await selfTestAudioClock();
     return;
   }
-  assert.deepEqual(args, [], "Supported options: --self-test, --self-test-audio, --help");
+  if (args[0] === "--time-to-talk") {
+    const options = { runs: 3, seedTurns: 40, seedWords: 40, holdMs: 0 };
+    const names = { runs: "runs", "seed-turns": "seedTurns", "seed-words": "seedWords", "hold-ms": "holdMs" };
+    for (const arg of args.slice(1)) {
+      const match = /^--(runs|seed-turns|seed-words|hold-ms)=(\d+)$/.exec(arg);
+      assert.ok(match, `Unsupported --time-to-talk option ${arg}; use --runs=N --seed-turns=N --seed-words=N --hold-ms=N`);
+      options[names[match[1]]] = Number(match[2]);
+    }
+    await timeToTalk(options);
+    return;
+  }
+  assert.deepEqual(args, [], "Supported options: --self-test, --self-test-audio, --time-to-talk, --help");
   const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_OLD;
   assert.ok(apiKey, "PAID voice E2E selected: set OPENAI_API_KEY (or OPENAI_API_KEY_OLD). Missing credentials are a FAILURE, never a skip.");
   secrets = [apiKey];
@@ -1689,14 +2003,7 @@ async function main() {
   const nonce = crypto.randomUUID();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-voice-live-"));
   fs.chmodSync(directory, 0o700);
-  const facts = { nonce, words: randomWords(3), voiceOperation: `old-voice-${nonce}`, typedOperation: `old-typed-${nonce}` };
-  const chosen = new Set();
-  for (const key of ["wordVerification", "typed", "peer", "oldVoice", "oldTyped", "overlapValue", "reopened"]) {
-    let value;
-    do { value = randomWords(4).join(" "); } while (chosen.has(value));
-    chosen.add(value);
-    facts[key] = value;
-  }
+  const facts = makeFacts(nonce);
   let gateway;
   let gate;
   let passed = false;

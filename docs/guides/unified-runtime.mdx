@@ -215,6 +215,7 @@ let registration = PublicLiveRegistration::parse(&json!({
     "realm": "default",
     "auth_binding": { "realm": "default", "binding": "openai" },
     "voice": "marin"
+    // optional: "summary": { "model": "...", "max_input_bytes": 65536, "max_output_bytes": 4096 }
 }))?;
 
 let runtime = meerkat_mobkit::UnifiedRuntime::builder()

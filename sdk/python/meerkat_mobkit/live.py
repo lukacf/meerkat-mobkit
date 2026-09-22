@@ -85,6 +85,42 @@ class LiveAuthBindingRef:
         )
 
 
+def _positive_int(value: Any, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{context} must be a positive integer")
+    return value
+
+
+@dataclass(frozen=True)
+class OpenAiLiveSummaryConfig:
+    """Bounds for the console voice context summary (``console_voice.summary``).
+
+    ``max_input_bytes`` is the most recent slice of the serialized transcript
+    handed to the summariser (gateway default 65536), ``max_output_bytes`` the
+    UTF-8 cap on the produced summary (gateway default 4096), and ``model`` the
+    summary model on the agent's provider and credentials (default: the agent's
+    own model). Every field is optional; unset fields keep the gateway default.
+    """
+
+    model: str | None = None
+    max_input_bytes: int | None = None
+    max_output_bytes: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.model is not None:
+            result["model"] = _non_empty(self.model, "openai live summary.model")
+        if self.max_input_bytes is not None:
+            result["max_input_bytes"] = _positive_int(
+                self.max_input_bytes, "openai live summary.max_input_bytes"
+            )
+        if self.max_output_bytes is not None:
+            result["max_output_bytes"] = _positive_int(
+                self.max_output_bytes, "openai live summary.max_output_bytes"
+            )
+        return result
+
+
 @dataclass(frozen=True)
 class OpenAiLiveGatewayConfig:
     """Public OpenAI Live (``gpt-live-1``) host registration.
@@ -103,6 +139,7 @@ class OpenAiLiveGatewayConfig:
     auth_binding: LiveAuthBindingRef
     voice: str
     session_instructions: str | None = None
+    summary: OpenAiLiveSummaryConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
         values = {
@@ -125,6 +162,10 @@ class OpenAiLiveGatewayConfig:
             result["session_instructions"] = _non_empty(
                 self.session_instructions, "openai live session_instructions"
             )
+        if self.summary is not None:
+            if not isinstance(self.summary, OpenAiLiveSummaryConfig):
+                raise TypeError("openai live summary must be an OpenAiLiveSummaryConfig")
+            result["summary"] = self.summary.to_dict()
         return result
 
 
