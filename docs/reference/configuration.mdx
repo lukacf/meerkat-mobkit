@@ -45,7 +45,7 @@ ModuleConfig {
 | `restart_policy` | `RestartPolicy` | -- (required) | Process restart behavior |
 
 Raw Rust construction and serde deserialization of `ModuleConfig` require all
-four fields. The [trust-manifest loader](#trust-manifest-mobkittoml) supplies
+four fields. The [trust-manifest loader](#trust-manifest-mobkit-toml) supplies
 `[]` for omitted `args` and `OnFailure` for omitted `restart_policy`; those
 adapter defaults are not defaults on `ModuleConfig` itself.
 
