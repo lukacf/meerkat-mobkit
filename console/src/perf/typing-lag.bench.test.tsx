@@ -24,6 +24,7 @@ import {
   uninstallRenderCounts,
   type RenderCounts,
 } from "../lib/render-counts";
+import { TRANSCRIPT_WINDOW_TURNS } from "../panels/ChatPane";
 import type { ConsoleFrame } from "../types";
 
 const AGENT_COUNT = 160;
@@ -82,7 +83,7 @@ function transcript(identity: string, count: number): ConsoleFrame[] {
       interactionId: iid,
       timestampMs: ts,
       cursor: `console:${i * 2 + 1}`,
-      data: { text: `Question number ${i}, please summarise.` },
+      data: { content: `Question number ${i}, please summarise.` },
     });
     frames.push({
       id: `${identity}:${i}:done`,
@@ -99,14 +100,18 @@ function transcript(identity: string, count: number): ConsoleFrame[] {
 
 interface FakeTransport extends MobKitConsoleTransport {
   live?: (frame: ConsoleFrame) => void;
+  /// Number of timeline HTTP queries issued so far (idle-rate assertion).
+  timelineQueries: number;
 }
 
 function fakeTransport(frames: ConsoleFrame[]): FakeTransport {
   const fake: FakeTransport = {
+    timelineQueries: 0,
     loadExperience: async () => experience() as never,
     loadModules: async () => ({ modules: [] }) as never,
     capabilities: async () => ({ version: "bench", methods: [] }) as never,
     queryTimeline: async (input) => {
+      fake.timelineQueries += 1;
       const own = input.identity === CHAT_IDENTITY ? frames : [];
       return { frames: own, available: true } as never;
     },
@@ -126,30 +131,44 @@ function fakeTransport(frames: ConsoleFrame[]): FakeTransport {
   return fake;
 }
 
-function seedDockedChat(baseUrl: string): void {
+function seedDockedChat(panelCount = 1): void {
   // Mirrors ConsoleApp's dock persistence key and ConsoleDockState shape so the
-  // app restores one focused chat panel for CHAT_IDENTITY at mount.
+  // app restores focused chat panel(s) at mount: panel-1 for CHAT_IDENTITY,
+  // further panels for the next agents in the roster, laid out as a grid.
   const key = `mobkit-console-dock-state:bench-runtime`;
-  const state = {
-    tabs: [{ id: "tab-1", presetId: "single", layout: { kind: "panel", panelId: "panel-1" } }],
-    panels: [
-      {
-        id: "panel-1",
-        mode: "console",
-        target: {
-          id: `chat:${CHAT_IDENTITY}`,
-          kind: "agent-chat",
-          title: "Agent 0",
-          identity: CHAT_IDENTITY,
-          memberId: CHAT_IDENTITY,
-        },
+  const panels = Array.from({ length: panelCount }, (_, i) => {
+    const identity = i === 0 ? CHAT_IDENTITY : agentRow(i).identity;
+    return {
+      id: `panel-${i + 1}`,
+      mode: "console",
+      target: {
+        id: `chat:${identity}`,
+        kind: "agent-chat",
+        title: `Agent ${i}`,
+        identity,
+        memberId: identity,
       },
-    ],
+    };
+  });
+  type Node = { kind: "panel"; panelId: string } | { kind: "split"; id: string; direction: "horizontal" | "vertical"; first: Node; second: Node };
+  const leaf = (i: number): Node => ({ kind: "panel", panelId: panels[i].id });
+  const layout: Node =
+    panelCount === 1
+      ? leaf(0)
+      : {
+          kind: "split",
+          id: "root",
+          direction: "horizontal",
+          first: panelCount > 2 ? { kind: "split", id: "left", direction: "vertical", first: leaf(0), second: leaf(2) } : leaf(0),
+          second: panelCount > 3 ? { kind: "split", id: "right", direction: "vertical", first: leaf(1), second: leaf(3) } : leaf(1),
+        };
+  const state = {
+    tabs: [{ id: "tab-1", presetId: panelCount === 1 ? "single" : "grid", layout }],
+    panels,
     activeTabId: "tab-1",
     focusedPanelId: "panel-1",
   };
   window.localStorage.setItem(key, JSON.stringify(state));
-  void baseUrl;
 }
 
 async function flush(): Promise<void> {
@@ -170,17 +189,30 @@ interface Measurement {
   keystrokeMs: number[];
   keystrokeRenders: RenderCounts;
   frameMs: number[];
+  /// Wall time for the whole SSE burst including the coalesced render flush.
+  burstMs: number;
   frameRenders: RenderCounts;
+  /// Turn elements mounted in the transcript after initial load.
+  mountedTurns: number;
+  /// Highest turn index rendered (turn count minus one after any log trim).
+  lastTurnIndex: number;
+  /// Timeline queries issued during a 2.5 s idle window after load, with
+  /// the document visible and then hidden.
+  idleTimelineQueries: number;
+  hiddenIdleTimelineQueries: number;
 }
 
 function snapshotCounts(counts: RenderCounts): RenderCounts {
   return { ...counts };
 }
 
-async function measure(transcriptLength: number): Promise<Measurement> {
+async function measure(
+  transcriptLength: number,
+  options: { idleMs?: number; panels?: number } = {},
+): Promise<Measurement> {
   const frames = transcript(CHAT_IDENTITY, transcriptLength);
   const transport = fakeTransport(frames);
-  seedDockedChat("");
+  seedDockedChat(options.panels ?? 1);
   const counts = installRenderCounts();
   const view = render(<ConsoleApp baseUrl="" transport={transport} />);
   await settle(
@@ -190,6 +222,38 @@ async function measure(transcriptLength: number): Promise<Measurement> {
   const textarea = view.container.querySelector("textarea");
   if (!textarea) throw new Error("composer textarea not rendered");
   await flush();
+  if (options.panels && options.panels > 1) {
+    await settle(
+      () => view.container.querySelectorAll("textarea").length >= (options.panels ?? 1),
+      "all docked panels render",
+    );
+  }
+  const turnNodes = view.container.querySelectorAll<HTMLElement>("[data-chat-turn-index]");
+  const mountedTurns = turnNodes.length;
+  const lastTurnIndex = Array.from(turnNodes).reduce(
+    (max, node) => Math.max(max, Number(node.dataset.chatTurnIndex)),
+    -1,
+  );
+  let idleTimelineQueries = 0;
+  let hiddenIdleTimelineQueries = 0;
+  if (options.idleMs) {
+    const before = transport.timelineQueries;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, options.idleMs));
+    });
+    idleTimelineQueries = transport.timelineQueries - before;
+    // A hidden tab must not issue docked-identity refreshes at all.
+    const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    const hiddenBefore = transport.timelineQueries;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, options.idleMs));
+    });
+    hiddenIdleTimelineQueries = transport.timelineQueries - hiddenBefore;
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+    if (visibility) Object.defineProperty(Document.prototype, "visibilityState", visibility);
+  }
 
   resetRenderCounts();
   const keystrokeMs: number[] = [];
@@ -207,6 +271,7 @@ async function measure(transcriptLength: number): Promise<Measurement> {
   resetRenderCounts();
   const frameMs: number[] = [];
   const base = 1_800_000_000_000;
+  const burstStarted = performance.now();
   for (let i = 0; i < SSE_FRAMES; i += 1) {
     const frame: ConsoleFrame = {
       id: `live:${i}`,
@@ -223,14 +288,28 @@ async function measure(transcriptLength: number): Promise<Measurement> {
     });
     frameMs.push(performance.now() - started);
   }
-  // Let any coalescing scheduler drain before reading the frame counts.
+  // Let the coalescing scheduler drain (one animation frame) before reading
+  // the frame counts; the burst time includes that flush.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => {
+      window.requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
   });
+  const burstMs = performance.now() - burstStarted;
   const frameRenders = snapshotCounts(counts);
 
   view.unmount();
-  return { keystrokeMs, keystrokeRenders, frameMs, frameRenders };
+  return {
+    keystrokeMs,
+    keystrokeRenders,
+    frameMs,
+    burstMs,
+    frameRenders,
+    mountedTurns,
+    lastTurnIndex,
+    idleTimelineQueries,
+    hiddenIdleTimelineQueries,
+  };
 }
 
 function stats(samples: number[]): string {
@@ -249,16 +328,67 @@ describe("console typing lag benchmark", () => {
     window.localStorage.clear();
   });
 
-  for (const n of [50, 500, 2000]) {
+  it("repairs a docked identity from its cursor when the stream reports a replay gap", async () => {
+    const frames = transcript(CHAT_IDENTITY, 5);
+    const transport = fakeTransport(frames);
+    const identityQueries: Array<{ mode?: string; after?: string }> = [];
+    const baseQuery = transport.queryTimeline;
+    transport.queryTimeline = async (input) => {
+      if (input.identity === CHAT_IDENTITY) identityQueries.push({ mode: input.mode, after: input.after });
+      return baseQuery(input);
+    };
+    seedDockedChat(1);
+    installRenderCounts();
+    const view = render(<ConsoleApp baseUrl="" transport={transport} />);
+    await settle(() => view.container.querySelectorAll(".conv-turn").length >= 5, "transcript render");
+    const before = identityQueries.length;
+    // The runtime emits a synthetic replay_unavailable frame when its
+    // source log resets; the console must re-query the docked identity.
+    await act(async () => {
+      transport.live?.({ id: "gap-1", event: "replay_unavailable", data: { reason: "source gap" } });
+    });
+    await settle(() => identityQueries.length > before, "replay gap repair query");
+    const repair = identityQueries[identityQueries.length - 1];
+    expect(["since", "recent"]).toContain(repair.mode);
+    view.unmount();
+  }, 30_000);
+
+  it("issues no timeline queries while idle with 4 docked chats, visible or hidden", async () => {
+    const m = await measure(50, { idleMs: 2_500, panels: 4 });
+    console.log(
+      `[typing-lag] 4 docked chats: idle timeline queries visible ${m.idleTimelineQueries} hidden ${m.hiddenIdleTimelineQueries} per 2.5 s`,
+    );
+    expect(m.idleTimelineQueries).toBe(0);
+    expect(m.hiddenIdleTimelineQueries).toBe(0);
+  }, 60_000);
+
+  // N is the number of user/agent message pairs, so E = 2N frames in the
+  // identity log: N=2500 is the E=5000 point, N=3000 exceeds the log cap.
+  for (const n of [50, 500, 2000, 2500, 3000]) {
     it(`N=${n}: keystrokes do not re-render the app root, sidebar or transcript`, async () => {
-      const m = await measure(n);
+      const m = await measure(n, { idleMs: n === 50 ? 2_500 : 0 });
       // Printed for the PR body; the assertions below are the contract.
       console.log(
         `[typing-lag] N=${n} keystroke ${stats(m.keystrokeMs)} renders ${JSON.stringify(m.keystrokeRenders)}`,
       );
       console.log(
-        `[typing-lag] N=${n} sse-frame ${stats(m.frameMs)} renders ${JSON.stringify(m.frameRenders)}`,
+        `[typing-lag] N=${n} sse-frame ${stats(m.frameMs)} burst ${m.burstMs.toFixed(2)} ms renders ${JSON.stringify(m.frameRenders)}`,
       );
+      console.log(
+        `[typing-lag] N=${n} mounted turns ${m.mountedTurns} of ${m.lastTurnIndex + 1}; idle timeline queries visible ${m.idleTimelineQueries} hidden ${m.hiddenIdleTimelineQueries} per 2.5 s`,
+      );
+      // Only the tail window of turns is mounted.
+      expect(m.mountedTurns).toBeLessThanOrEqual(TRANSCRIPT_WINDOW_TURNS);
+      // The per-identity log is capped: trimming keeps between the ceiling
+      // and ceiling plus slack, i.e. at most 2750 pairs at N=3000.
+      expect(m.lastTurnIndex + 1).toBeLessThanOrEqual(Math.min(n, 2750));
+      if (n > 2750) expect(m.lastTurnIndex + 1).toBeGreaterThanOrEqual(2500);
+      // No polling: the live stream is the only source while connected,
+      // whether the tab is visible or hidden.
+      if (n === 50) {
+        expect(m.idleTimelineQueries).toBe(0);
+        expect(m.hiddenIdleTimelineQueries).toBe(0);
+      }
       const perKeystroke = (name: string) => (m.keystrokeRenders[name] ?? 0) / KEYSTROKES;
       expect(perKeystroke("ConsoleApp")).toBe(0);
       expect(perKeystroke("Sidebar")).toBe(0);
@@ -268,8 +398,14 @@ describe("console typing lag benchmark", () => {
       expect(perKeystroke("TranscriptView")).toBe(0);
       // 20 frames within one animation frame budget each coalesce to far fewer
       // app renders than frames; the sidebar must not render per frame.
-      expect(m.frameRenders["Sidebar"] ?? 0).toBeLessThanOrEqual(2);
-      expect(m.frameRenders["ConsoleApp"] ?? 0).toBeLessThan(SSE_FRAMES);
+      expect(m.frameRenders["Sidebar"] ?? 0).toBeLessThanOrEqual(1);
+      expect(m.frameRenders["SignalsRail"] ?? 0).toBeLessThanOrEqual(1);
+      expect(m.frameRenders["VoiceBar"] ?? 0).toBeLessThanOrEqual(1);
+      expect(m.frameRenders["ConsoleApp"] ?? 0).toBeLessThanOrEqual(2);
+      // Only the streaming row re-renders; every other mounted row is
+      // skipped by MessageRow's content comparator. A log trim (N=3000)
+      // legitimately remounts the window once because entry ids shift.
+      if (n * 2 <= 5000) expect(m.frameRenders["MessageRow"] ?? 0).toBeLessThanOrEqual(2);
       const meanKeystroke = m.keystrokeMs.reduce((a, b) => a + b, 0) / m.keystrokeMs.length;
       expect(meanKeystroke).toBeLessThan(25);
     }, 120_000);
