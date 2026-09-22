@@ -405,6 +405,9 @@ export interface ConsoleTimelineController {
   subscribeWithBackfill(
     input: ConsoleTimelineSubscribeInput,
     onFrame: (frame: ConsoleFact<ConsoleFrame>) => void,
+    /// Called after the controller re-seeds the stream past a replay gap.
+    /// Consumers with identity-scoped cursors repair their own logs here.
+    onReplayGap?: () => void,
   ): Promise<() => void>;
 }
 
@@ -590,7 +593,7 @@ function createTimelineController(
         cursor: page.latestCursor || page.nextCursor,
       });
     },
-    async subscribeWithBackfill(input, onFrame) {
+    async subscribeWithBackfill(input, onFrame, onReplayGap) {
       const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame: ConsoleFrame) => {
         const key = timelineDedupKey(frame);
@@ -610,6 +613,9 @@ function createTimelineController(
         if (frame.event === "replay_unavailable") {
           void transport.queryTimeline({ ...input, mode: "recent" }).then((page) => {
             page.frames.forEach(deliver);
+            // The synthetic gap frame never reaches `onFrame`; identity
+            // scoped consumers repair from their own cursors through here.
+            onReplayGap?.();
           });
           return;
         }

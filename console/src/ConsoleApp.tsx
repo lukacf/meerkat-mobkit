@@ -28,16 +28,18 @@ import {
   topologyMutationIntent,
 } from "@console-core";
 
-import { canonicalConsoleIdentity, normalizeAgents } from "./lib/agents";
 import {
-  buildActivityRailViewState,
+  buildConsoleIdentityAliasMap,
+  canonicalConsoleIdentityFromMap,
+  normalizeAgents,
+  type ConsoleIdentityAliasMap,
+} from "./lib/agents";
+import {
   buildControlTarget,
-  buildConversationViewState,
   buildDockTarget,
   buildInspectTarget,
   buildPanelConversationKey,
   buildRoutingSectionView,
-  buildSidebarViewState,
   buildWorkGraphOperatorResultFrame,
   createUserEntry,
   createWorkGraphHydrationGate,
@@ -211,9 +213,33 @@ type MemoryPanelData = {
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
+/// Per-identity event log ceiling. The console is a live view, not the
+/// archive: once an identity has more than this many frames in memory the
+/// oldest (in transcript order) are dropped and the identity's oldest
+/// cursor moves forward so "load older history" re-fetches them from the
+/// runtime's event log on demand. Trimming is amortised: it runs once the
+/// log exceeds the ceiling by the slack, and removes down to the ceiling.
+const MAX_IDENTITY_LOG_EVENTS = 5000;
+const IDENTITY_LOG_TRIM_SLACK = 500;
+
 interface IdentityLog {
   events: ConsoleFrame[];
   byKey: Map<string, number>;
+  /// Bumped on every mutation of `events`; render-time derivations key their
+  /// memoisation on it so an unchanged log is never re-derived.
+  version: number;
+  /// `events` in transcript order (timestamp, then cursor sequence, then
+  /// arrival), maintained on append by binary insertion. Frames almost
+  /// always arrive in order, so the common append is O(log n) with a copy
+  /// only when the tail moves. Reset to `null` by in-place updates that can
+  /// move a frame's timestamp; `sortedEvents` rebuilds it lazily.
+  sorted: ConsoleFrame[] | null;
+  /// Incrementally folded busy lifecycle, valid while `busyFoldedThrough`
+  /// tracks the newest lifecycle frame seen in timestamp order. An older
+  /// lifecycle frame arriving late invalidates it and forces one replay.
+  busyLifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean };
+  busyFoldedThroughMs: number;
+  busyFoldValid: boolean;
   /// `null` while we haven't asked the server yet; `true` if the
   /// runtime has an EventLogStore (we'll fetch backfill); `false`
   /// once we've observed `available: false` (SSE is the only source).
@@ -223,6 +249,48 @@ interface IdentityLog {
   olderHistoryExhausted?: boolean;
   olderHistoryExhaustedAtCursor?: string;
   olderHistoryLoading?: boolean;
+}
+
+function transcriptOrder(
+  a: ConsoleFrame,
+  aIndex: number,
+  b: ConsoleFrame,
+  bIndex: number,
+): number {
+  const ta = typeof a.timestampMs === "number" ? a.timestampMs : Number.MAX_SAFE_INTEGER;
+  const tb = typeof b.timestampMs === "number" ? b.timestampMs : Number.MAX_SAFE_INTEGER;
+  if (ta !== tb) return ta - tb;
+  const ca = cursorSeq(a.cursor);
+  const cb = cursorSeq(b.cursor);
+  if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+  return aIndex - bIndex;
+}
+
+/// Insert `frame` into `sorted`, which holds frames in transcript order.
+/// Every frame already in `sorted` arrived earlier, and arrival is the final
+/// tie-break, so a frame that compares equal to an existing one goes after
+/// it; the common case (newest timestamp) is a plain push.
+function insertSorted(sorted: ConsoleFrame[], frame: ConsoleFrame): void {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    // Existing frame first on ties: compare with a smaller arrival index.
+    if (transcriptOrder(sorted[mid], 0, frame, 1) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === sorted.length) sorted.push(frame);
+  else sorted.splice(lo, 0, frame);
+}
+
+function sortedEvents(log: IdentityLog): ConsoleFrame[] {
+  if (log.sorted) return log.sorted;
+  const view = log.events
+    .map((frame, index) => ({ frame, index }))
+    .sort((a, b) => transcriptOrder(a.frame, a.index, b.frame, b.index))
+    .map((entry) => entry.frame);
+  log.sorted = view;
+  return view;
 }
 
 function normalizeConsoleTheme(value: unknown): ConsoleTheme | null {
@@ -698,6 +766,11 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     edges: [],
     attention: [],
     events: [],
+    version: 0,
+    sorted: null,
+    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
+    busyFoldValid: true,
     capturedAt: null,
     unavailable: false,
     denied: false,
@@ -834,7 +907,37 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
 
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
-  const forceRender = React.useCallback(() => setRenderTick((n) => n + 1), []);
+  const liveFramesRef = React.useRef<ConsoleFrame[]>([]);
+  const [liveFrames, setLiveFrames] = React.useState<ConsoleFrame[]>([]);
+  // One render per animation frame, however many frames or refreshes ask
+  // for it. Every SSE frame used to call setRenderTick directly, so a burst
+  // of 20 deltas cost 20 full app renders; now they cost one.
+  const renderScheduledRef = React.useRef<number | null>(null);
+  const liveFramesDirtyRef = React.useRef(false);
+  const forceRender = React.useCallback(() => {
+    if (renderScheduledRef.current !== null) return;
+    const schedule =
+      typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+        ? (cb: () => void) => window.requestAnimationFrame(cb)
+        : (cb: () => void) => window.setTimeout(cb, 16);
+    renderScheduledRef.current = schedule(() => {
+      renderScheduledRef.current = null;
+      if (liveFramesDirtyRef.current) {
+        liveFramesDirtyRef.current = false;
+        setLiveFrames(liveFramesRef.current);
+      }
+      setRenderTick((n) => n + 1);
+    });
+  }, []);
+  React.useEffect(
+    () => () => {
+      if (renderScheduledRef.current !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(renderScheduledRef.current);
+        window.clearTimeout(renderScheduledRef.current);
+      }
+    },
+    [],
+  );
   const stagedAttachmentsRef = React.useRef(stagedAttachmentsByIdentity);
   React.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
@@ -931,6 +1034,11 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     if (!log) {
       log = {
         events: [],
+    version: 0,
+    sorted: null,
+    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
+    busyFoldValid: true,
         byKey: new Map(),
         hasServerLog: null,
         olderHistoryExhausted: false,
@@ -1048,8 +1156,8 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   }
 
   /// Append one frame to the identity log, deduped by key. Appended
-  /// frames are kept in insertion order; the read-side sorts by
-  /// timestamp at render time. If the appended frame is an
+  /// frames are kept in insertion order in `events`; the transcript-order
+  /// view in `sorted` is maintained incrementally. If the appended frame is an
   /// `interaction_started` whose interaction_id matches a pending
   /// optimistic user message, drop the optimistic — the server is now
   /// rendering the user turn itself.
@@ -1073,6 +1181,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
             ...log.events[existingIndex],
             ...updated,
           };
+          log.version += 1;
+          // The merged frame may have moved in transcript order.
+          log.sorted = null;
+          log.busyFoldValid = false;
           clearOptimisticUserForFrame(identity, updated);
           return true;
         }
@@ -1083,8 +1195,38 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
+    log.version += 1;
+    if (log.sorted) insertSorted(log.sorted, frame);
+    if (log.events.length > MAX_IDENTITY_LOG_EVENTS + IDENTITY_LOG_TRIM_SLACK) {
+      trimIdentityLog(log);
+    }
     clearOptimisticUserForFrame(identity, frame);
     return true;
+  }
+
+  /// Drop the oldest frames (transcript order) down to the ceiling and
+  /// rebuild the key index. The retained frames' oldest cursor becomes the
+  /// paging boundary so the dropped range is fetchable again as older
+  /// history; the incremental busy fold is unaffected because it only
+  /// depends on the newest lifecycle frames, which are always retained.
+  function trimIdentityLog(log: IdentityLog): void {
+    const sorted = sortedEvents(log);
+    const drop = sorted.length - MAX_IDENTITY_LOG_EVENTS;
+    if (drop <= 0) return;
+    const dropped = new Set<ConsoleFrame>(sorted.slice(0, drop));
+    const retained = log.events.filter((frame) => !dropped.has(frame));
+    log.events = retained;
+    log.sorted = sorted.slice(drop);
+    log.byKey.clear();
+    let oldest: string | undefined;
+    retained.forEach((frame, index) => {
+      log.byKey.set(frameKey(frame), index);
+      oldest = olderCursor(oldest, frame.cursor);
+    });
+    log.oldestTimelineCursor = oldest;
+    log.olderHistoryExhausted = false;
+    log.olderHistoryExhaustedAtCursor = undefined;
+    log.version += 1;
   }
 
   function busyTransitionForFrame(frame: ConsoleFrame): boolean | null {
@@ -1144,15 +1286,12 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     }
   }
 
-  function updateBusyStateForFrame(
-    identity: string,
+  /// Fold one lifecycle frame into `lifecycle`. Mirrors the replay switch in
+  /// `recomputeBusyStateFromLog` exactly; both must stay in step.
+  function foldBusyFrame(
+    lifecycle: { interactionOpen: boolean; runOpen: boolean; legacyBusy: boolean },
     frame: ConsoleFrame,
   ): void {
-    const lifecycle = identityLifecycleRef.current[identity] ?? {
-      interactionOpen: false,
-      runOpen: false,
-    };
-    let sawLifecycle = true;
     switch (frame.event) {
       case "interaction_started":
         lifecycle.interactionOpen = true;
@@ -1169,37 +1308,63 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       case "message_delivery_failed":
         lifecycle.interactionOpen = false;
         lifecycle.runOpen = false;
+        lifecycle.legacyBusy = false;
         break;
       case "system_notice":
         if (systemNoticeClearsBusyState(frame)) {
           lifecycle.interactionOpen = false;
           lifecycle.runOpen = false;
-        } else {
-          sawLifecycle = false;
+          lifecycle.legacyBusy = false;
         }
         break;
-      default:
-        sawLifecycle = false;
+      default: {
+        const transition = busyTransitionForFrame(frame);
+        if (transition !== null) lifecycle.legacyBusy = transition;
         break;
-    }
-    identityLifecycleRef.current[identity] = lifecycle;
-    if (sawLifecycle) {
-      applyBusyState(identity, lifecycle.interactionOpen || lifecycle.runOpen);
-      return;
-    }
-
-    const transition = busyTransitionForFrame(frame);
-    if (transition !== null) {
-      applyBusyState(
-        identity,
-        transition || lifecycle.interactionOpen || lifecycle.runOpen,
-      );
+      }
     }
   }
 
+  function busyFromLifecycle(lifecycle: {
+    interactionOpen: boolean;
+    runOpen: boolean;
+    legacyBusy: boolean;
+  }): boolean {
+    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
+  }
+
+  /// Live path: fold the frame in place when it is not older than the newest
+  /// lifecycle frame already folded. Frames arrive in order almost always,
+  /// so this is O(1) per frame; a late frame (older timestamp) invalidates
+  /// the fold and the next read replays the log once.
+  function updateBusyStateForFrame(
+    identity: string,
+    frame: ConsoleFrame,
+  ): void {
+    if (busyTransitionForFrame(frame) === null) return;
+    const log = getOrCreateLog(identity);
+    const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
+    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs) {
+      recomputeBusyStateFromLog(identity);
+      return;
+    }
+    foldBusyFrame(log.busyLifecycle, frame);
+    log.busyFoldedThroughMs = ts;
+    identityLifecycleRef.current[identity] = {
+      interactionOpen: log.busyLifecycle.interactionOpen,
+      runOpen: log.busyLifecycle.runOpen,
+    };
+    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
+  }
+
+  /// Full replay over the transcript-ordered lifecycle frames. Used for the
+  /// initial fold, after in-place frame updates, and after a late frame;
+  /// the ordinary live path never pays for it.
   function recomputeBusyStateFromLog(identity: string): void {
     const log = getOrCreateLog(identity);
-    const lifecycleFrames = log.events
+    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    let foldedThrough = Number.NEGATIVE_INFINITY;
+    const ordered = sortedEvents(log)
       .filter((frame) => busyTransitionForFrame(frame) !== null)
       .sort((a, b) => {
         const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
@@ -1208,46 +1373,20 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         if (rankDelta !== 0) return rankDelta;
         return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
       });
-    const lifecycle = { interactionOpen: false, runOpen: false };
-    let legacyBusy = false;
-    for (const frame of lifecycleFrames) {
-      switch (frame.event) {
-        case "interaction_started":
-          lifecycle.interactionOpen = true;
-          break;
-        case "run_started":
-          lifecycle.runOpen = true;
-          break;
-        case "run_completed":
-        case "run_failed":
-          lifecycle.runOpen = false;
-          break;
-        case "interaction_complete":
-        case "interaction_failed":
-        case "message_delivery_failed":
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          legacyBusy = false;
-          break;
-        case "system_notice":
-          if (systemNoticeClearsBusyState(frame)) {
-            lifecycle.interactionOpen = false;
-            lifecycle.runOpen = false;
-            legacyBusy = false;
-          }
-          break;
-        default: {
-          const transition = busyTransitionForFrame(frame);
-          if (transition !== null) legacyBusy = transition;
-          break;
-        }
+    for (const frame of ordered) {
+      foldBusyFrame(lifecycle, frame);
+      if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
+        foldedThrough = frame.timestampMs;
       }
     }
-    identityLifecycleRef.current[identity] = lifecycle;
-    applyBusyState(
-      identity,
-      lifecycle.interactionOpen || lifecycle.runOpen || legacyBusy,
-    );
+    log.busyLifecycle = lifecycle;
+    log.busyFoldedThroughMs = foldedThrough;
+    log.busyFoldValid = true;
+    identityLifecycleRef.current[identity] = {
+      interactionOpen: lifecycle.interactionOpen,
+      runOpen: lifecycle.runOpen,
+    };
+    applyBusyState(identity, busyFromLifecycle(lifecycle));
   }
 
   /// Reconcile a server-history fetch into the identity log. Frames
@@ -1268,12 +1407,20 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
     let changed = false;
+    let appended = false;
     for (const frame of frames) {
       if (!appendFrame(identity, frame)) continue;
       changed = true;
+      appended = true;
       if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
-    recomputeBusyStateFromLog(identity);
+    // A backfill page can carry frames older than the live fold, so it
+    // invalidates the incremental busy fold and replays once; a page that
+    // added nothing leaves the fold alone.
+    if (appended || !log.busyFoldValid) {
+      log.busyFoldValid = false;
+      recomputeBusyStateFromLog(identity);
+    }
     if (recomputePhaseForIdentity(identity)) changed = true;
     return changed;
   }
@@ -1342,6 +1489,9 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       log.olderHistoryExhaustedAtCursor !== undefined;
     log.events = [];
     log.byKey.clear();
+    log.sorted = null;
+    log.busyFoldValid = false;
+    log.version += 1;
     log.oldestTimelineCursor = undefined;
     log.latestTimelineCursor = undefined;
     log.olderHistoryExhausted = false;
@@ -1441,24 +1591,39 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   function getSortedFrames(identity: string): ConsoleFrame[] {
     const log = identityLogRef.current[identity];
     if (!log) return [];
-    return log.events
-      .map((frame, index) => ({ frame, index }))
-      .sort((a, b) => {
-        const ta =
-          typeof a.frame.timestampMs === "number"
-            ? a.frame.timestampMs
-            : Number.MAX_SAFE_INTEGER;
-        const tb =
-          typeof b.frame.timestampMs === "number"
-            ? b.frame.timestampMs
-            : Number.MAX_SAFE_INTEGER;
-        if (ta !== tb) return ta - tb;
-        const ca = cursorSeq(a.frame.cursor);
-        const cb = cursorSeq(b.frame.cursor);
-        if (ca !== null && cb !== null && ca !== cb) return ca - cb;
-        return a.index - b.index;
-      })
-      .map((entry) => entry.frame);
+    return sortedEvents(log);
+  }
+
+  const derivedTranscriptRef = React.useRef<
+    Record<
+      string,
+      {
+        version: number;
+        agent: ConsoleAgent | null;
+        sortedFrames: ConsoleFrame[];
+        conversationEntries: ConversationTimelineEntry[];
+      }
+    >
+  >({});
+  function derivedTranscriptFor(
+    identity: string,
+    panelId: string,
+    agent: ConsoleAgent | null,
+  ): { sortedFrames: ConsoleFrame[]; conversationEntries: ConversationTimelineEntry[] } {
+    const log = getOrCreateLog(identity);
+    const cached = derivedTranscriptRef.current[identity];
+    if (cached && cached.version === log.version && cached.agent === agent) {
+      return cached;
+    }
+    const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panelId);
+    const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
+      renderInteractionStartsAsUser: true,
+      renderTextDeltas: true,
+      blobBaseUrl: baseUrl,
+    });
+    const next = { version: log.version, agent, sortedFrames, conversationEntries };
+    derivedTranscriptRef.current[identity] = next;
+    return next;
   }
 
   function framesVisibleInPanel(
@@ -1480,11 +1645,12 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   // see tool calls (peer-comms send_*, etc.) in addition to interaction
   // lifecycle. The activity rail filters tool events out; this buffer
   // doesn't.
-  const liveFramesRef = React.useRef<ConsoleFrame[]>([]);
-  const [liveFrames, setLiveFrames] = React.useState<ConsoleFrame[]>([]);
   function commitLiveFrames(frames: ConsoleFrame[]): void {
     liveFramesRef.current = frames;
-    setLiveFrames(frames);
+    // Published with the next scheduled render instead of per call, so a
+    // frame burst commits the topology buffer once.
+    liveFramesDirtyRef.current = true;
+    forceRender();
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -1655,8 +1821,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   );
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
+  const identityAliasesRef = React.useRef<ConsoleIdentityAliasMap>(new Map());
   React.useEffect(() => {
     agentsRef.current = agents;
+    identityAliasesRef.current = buildConsoleIdentityAliasMap(agents);
   }, [agents]);
 
   const initialTargetOpened = React.useRef(false);
@@ -2762,68 +2930,70 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
 
-  React.useEffect(() => {
-    const refreshOpenChatPanels = async () => {
-      const identities = new Set<string>();
-      for (const panel of dock.viewState.panels) {
-        const target = panel.target as MobKitDockTarget | null;
-        if (!target || target.kind !== "agent-chat") continue;
-        identities.add(target.identity || target.memberId);
-      }
-      if (identities.size === 0) return;
+  /// Repair one docked identity's log after the stream reported a replay
+  /// gap: a `since` query from the newest known cursor, falling back to a
+  /// fresh recent page when the server rejects the cursor as stale
+  /// (`replay_unavailable`). This is the only paged query outside panel
+  /// open, older-history paging and the terminal-frame reconcile
+  /// (`scheduleHistoryRefresh`). The unscoped live stream carries every
+  /// frame the runtime appends, including asynchronously backfilled session
+  /// history and synthetic `replay_unavailable` frames (see
+  /// `append_and_emit` in the console aggregator), so there is no periodic
+  /// poll; the 2 s per-identity poll this replaces duplicated the stream
+  /// and replayed the busy fold on every response. Concurrent calls for
+  /// the same identity coalesce into the in-flight one.
+  const identityRefreshInFlightRef = React.useRef(new Set<string>());
+  const repairIdentityAfterReplayGap = React.useCallback(
+    async (identity: string): Promise<boolean> => {
+      const log = getOrCreateLog(identity);
+      if (log.hasServerLog === false) return false;
+      if (identityRefreshInFlightRef.current.has(identity)) return false;
+      identityRefreshInFlightRef.current.add(identity);
       let changed = false;
-      for (const identity of identities) {
-        const log = getOrCreateLog(identity);
-        if (log.hasServerLog === false) continue;
-        try {
-          const sinceCursor =
-            log.latestTimelineCursor &&
-            !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor)
-              ? log.latestTimelineCursor
-              : undefined;
-          const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
-            mode: sinceCursor ? "since" : "recent",
-            after: sinceCursor,
-            limit: sinceCursor ? 1000 : 200,
-          });
-          if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
-            changed = true;
-          }
-        } catch (error) {
-          const replay = error as Error & {
-            replayError?: ConsoleReplayUnavailablePayload;
-            timelineReplayUnavailable?: boolean;
-          };
-          if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
-            if (resetIdentityTimelineReplayMetadata(identity)) {
+      try {
+        const sinceCursor =
+          log.latestTimelineCursor &&
+          !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor)
+            ? log.latestTimelineCursor
+            : undefined;
+        const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+          mode: sinceCursor ? "since" : "recent",
+          after: sinceCursor,
+          limit: sinceCursor ? 1000 : 200,
+        });
+        if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+          changed = true;
+        }
+      } catch (error) {
+        const replay = error as Error & {
+          replayError?: ConsoleReplayUnavailablePayload;
+          timelineReplayUnavailable?: boolean;
+        };
+        if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
+          if (resetIdentityTimelineReplayMetadata(identity)) changed = true;
+          try {
+            const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+              mode: "recent",
+              limit: 200,
+            });
+            if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
               changed = true;
             }
-            try {
-              const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
-                mode: "recent",
-                limit: 200,
-              });
-              if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
-                changed = true;
-              }
-            } catch {
-              // Keep the panel usable; the next refresh will retry.
-            }
-            continue;
+          } catch {
+            // Keep the panel usable; the next gap or refresh will retry.
           }
-          // Keep the panel usable; the next refresh will retry.
         }
+      } finally {
+        identityRefreshInFlightRef.current.delete(identity);
       }
       if (changed) forceRender();
-    };
-
-    const timer = window.setInterval(() => {
-      void refreshOpenChatPanels();
-    }, 2_000);
-    void refreshOpenChatPanels();
-    return () => window.clearInterval(timer);
+      return changed;
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, dock.viewState.panels, forceRender]);
+    [baseUrl, forceRender],
+  );
+  const repairIdentityAfterReplayGapRef = React.useRef(repairIdentityAfterReplayGap);
+  repairIdentityAfterReplayGapRef.current = repairIdentityAfterReplayGap;
 
   // =========================================================================
   // GLOBAL SSE EVENT STREAM — the core event loop
@@ -2843,6 +3013,13 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   memoryPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
   );
+  // Identities with a docked chat, read by the mount-scoped stream
+  // subscription when it repairs after a replay gap.
+  const dockedChatIdentitiesRef = React.useRef<string[]>([]);
+  dockedChatIdentitiesRef.current = dock.viewState.panels.flatMap((panel) => {
+    const target = panel.target as MobKitDockTarget | null;
+    return target && target.kind === "agent-chat" ? [target.identity || target.memberId] : [];
+  });
   const memoryRefreshTimerRef = React.useRef<number | null>(null);
   // WorkGraph panel mirrors the memory freshness pattern: live workgraph
   // signals (workgraph.* frames or workgraph_* tool completions) trigger one
@@ -2860,9 +3037,9 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     // filter as SSE. The activity rail is its own concern; it doesn't
     // share state with the per-identity logs.
     const handleLiveFrame = (incomingFrame: ConsoleFrame) => {
-      const canonicalIdentity = canonicalConsoleIdentity(
+      const canonicalIdentity = canonicalConsoleIdentityFromMap(
         incomingFrame.identity,
-        agentsRef.current,
+        identityAliasesRef.current,
       );
       const frame =
         canonicalIdentity && canonicalIdentity !== incomingFrame.identity
@@ -2932,9 +3109,20 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     let stopped = false;
     let unsubscribe: (() => void) | null = null;
 
-    void consoleController.timeline.subscribeWithBackfill({ limit: 200 }, (frame) => {
-      if (!stopped) handleLiveFrame(frame.value);
-    })
+    void consoleController.timeline.subscribeWithBackfill(
+      { limit: 200 },
+      (frame) => {
+        if (!stopped) handleLiveFrame(frame.value);
+      },
+      () => {
+        if (stopped) return;
+        // The stream resumed past a gap it could not replay; docked
+        // identities repair their own logs from their cursors, once.
+        for (const identity of new Set(dockedChatIdentitiesRef.current)) {
+          void repairIdentityAfterReplayGapRef.current(identity);
+        }
+      },
+    )
       .then((nextUnsubscribe) => {
         if (stopped) {
           nextUnsubscribe();
@@ -3852,6 +4040,46 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   // RENDER GUARDS
   // =========================================================================
 
+  // Stable handlers for the memoised shell components (Sidebar, VoiceBar,
+  // SignalsRail): they read the latest closures through refs so their
+  // identity never changes and a root render with unchanged data skips them.
+  const voiceRef = React.useRef(voice);
+  voiceRef.current = voice;
+  const closeVoice = React.useCallback(() => void voiceRef.current?.close(), []);
+  const toggleVoiceMicrophone = React.useCallback(() => voiceRef.current?.toggleMicrophone(), []);
+  const toggleVoiceSpeaker = React.useCallback(() => voiceRef.current?.toggleSpeaker(), []);
+  const openAgentChatRef = React.useRef(openAgentChat);
+  openAgentChatRef.current = openAgentChat;
+  const selectSidebarAgent = React.useCallback(
+    (agent: ConsoleAgent) => openAgentChatRef.current(agent),
+    [],
+  );
+  const openSidebarControl = React.useCallback((kind: NavKind) => {
+    dockRef.current.openTarget(buildControlTarget(kind), "replace_focused");
+  }, []);
+  const loadMemoryRecordDetailRef = React.useRef(loadMemoryRecordDetail);
+  loadMemoryRecordDetailRef.current = loadMemoryRecordDetail;
+  // "State here" pivot: a live memory signal opens the Memory panel, and
+  // lands on the record's Biography when the frame names one. Offered only
+  // when the server-projected experience grants memory.can_read; the
+  // affordance must never outrun the nav gate.
+  const selectRailFrame = React.useCallback((frame: ConsoleFrame) => {
+    if (!frame.event.startsWith("memory.")) return;
+    dockRef.current.openTarget(buildControlTarget("memory"), "replace_focused");
+    const pivot = memoryFramePivot(frame);
+    if (pivot) void loadMemoryRecordDetailRef.current(pivot.realm, pivot.recordId);
+  }, []);
+  const watchedIdentities = React.useMemo(
+    () =>
+      new Set(
+        agents
+          .filter((agent) => agent.watched)
+          .map((agent) => agent.identity || agent.member_id)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    [agents],
+  );
+
   if (loading)
     return (
       <div
@@ -3882,22 +4110,6 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     dock.focusedTarget?.kind === "agent-chat"
       ? dock.focusedTarget.memberId
       : selectedRosterMemberId;
-  const sidebarVS = buildSidebarViewState({
-    agents,
-    selectedMemberId: focusedMemberId,
-    pinnedAgentIds,
-  });
-  const activityVS = buildActivityRailViewState({
-    agents,
-    eventFrames: activityRef.current,
-    filterPresets:
-      experience?.console_config?.rail?.filter_presets ||
-      experience?.activity_feed?.filter_presets,
-    activePresetId:
-      activeActivityPresetId ||
-      experience?.console_config?.rail?.active_preset_id ||
-      "all",
-  });
   const actionConfig = experience?.console_config?.actions;
   const configuredActionLabels = {
     inspect: actionLabel(actionConfig, "inspect_label", "Details"),
@@ -3923,9 +4135,9 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     <VoiceBar
       state={voiceState}
       sampleWaveform={sampleVoiceWaveform}
-      onClose={() => void voice?.close()}
-      onToggleMicrophone={() => voice?.toggleMicrophone()}
-      onToggleSpeaker={() => voice?.toggleSpeaker()}
+      onClose={closeVoice}
+      onToggleMicrophone={toggleVoiceMicrophone}
+      onToggleSpeaker={toggleVoiceSpeaker}
     />
   );
 
@@ -3944,18 +4156,13 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     // Text deltas are rendered as the interaction streams; the
     // adapter's `streamedText === terminalText` check suppresses the
     // duplicate when text_complete/interaction_complete arrives.
-    const sortedFrames = framesVisibleInPanel(
-      getSortedFrames(identity),
+    //
+    // Keyed on the identity log's version: the sort and the adapter run
+    // only when this identity's frames changed, not on every app render.
+    const { sortedFrames, conversationEntries } = derivedTranscriptFor(
+      identity,
       panel.id,
-    );
-    const conversationEntries = mapFramesToTimelineEntries(
       agent,
-      sortedFrames,
-      {
-        renderInteractionStartsAsUser: true,
-        renderTextDeltas: true,
-        blobBaseUrl: baseUrl,
-      },
     );
 
     // Optimistic user message: rendered until an interaction_started
@@ -3976,12 +4183,6 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       appendOptimisticConversationEntry(conversationEntries, optimisticEntry),
     );
 
-    const conversation = buildConversationViewState({
-      memberId: target.memberId,
-      agentLabel: target.title,
-      agent,
-      entries,
-    });
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const identityLog = getOrCreateLog(identity);
@@ -4236,12 +4437,6 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     experience?.console_config?.environment?.label || "dev";
   const railConfig = experience?.console_config?.rail;
   const railVisible = railConfig?.visible !== false;
-  const watchedIdentities = new Set(
-    agents
-      .filter((agent) => agent.watched)
-      .map((agent) => agent.identity || agent.member_id)
-      .filter((value): value is string => Boolean(value)),
-  );
   const mobStatus =
     experience?.health_overview?.live_snapshot?.running === false
       ? "stopped"
@@ -4511,11 +4706,9 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
           grouping={experience?.console_config?.agent_list}
           storageNamespace={sidebarStorageNamespace}
           pinnedAgentIds={pinnedAgentIds}
-          onSelect={(a) => openAgentChat(a)}
+          onSelect={selectSidebarAgent}
           onTogglePinnedAgent={togglePinnedAgent}
-          onOpenControl={(kind) => {
-            dock.openTarget(buildControlTarget(kind), "replace_focused");
-          }}
+          onOpenControl={openSidebarControl}
         />
         <div
           className="pane-resizer"
@@ -4561,21 +4754,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
               emptyText={railConfig?.empty_text}
               watchedIdentities={watchedIdentities}
               onPresetChange={setActiveActivityPresetId}
-              onSelect={
-                // "State here" pivot: a live memory signal opens the Memory
-                // panel, and lands on the record's Biography when the frame
-                // names one. Offered only when the server-projected
-                // experience grants memory.can_read — the affordance must
-                // never outrun the nav gate.
-                experience?.memory?.can_read === true
-                  ? (frame) => {
-                      if (!frame.event.startsWith("memory.")) return;
-                      dock.openTarget(buildControlTarget("memory"), "replace_focused");
-                      const pivot = memoryFramePivot(frame);
-                      if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
-                    }
-                  : undefined
-              }
+              onSelect={experience?.memory?.can_read === true ? selectRailFrame : undefined}
             />
           </>
         ) : null}

@@ -5,6 +5,38 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleExperience, ConsoleExperienceAgentSnapshotRow } from "../types";
 
+/// Alias to canonical identity for one roster. Built once per roster change
+/// and consulted per frame; the per-frame path used to rebuild a four-entry
+/// alias array for every agent (160 agents x 20 frames/s).
+export type ConsoleIdentityAliasMap = Map<string, string>;
+
+export function buildConsoleIdentityAliasMap(agents: ConsoleAgent[]): ConsoleIdentityAliasMap {
+  const map: ConsoleIdentityAliasMap = new Map();
+  for (const agent of agents) {
+    const canonical = (agent.identity || agent.member_id || agent.agent_id || "").trim();
+    if (!canonical) continue;
+    const labelIdentity =
+      typeof agent.labels?.agent_identity === "string"
+        ? agent.labels.agent_identity.trim()
+        : "";
+    for (const alias of [agent.identity, agent.member_id, agent.agent_id, labelIdentity]) {
+      const key = alias?.trim();
+      // First roster entry wins, matching the linear scan's precedence.
+      if (key && !map.has(key)) map.set(key, canonical);
+    }
+  }
+  return map;
+}
+
+export function canonicalConsoleIdentityFromMap(
+  identity: string | undefined,
+  aliases: ConsoleIdentityAliasMap,
+): string {
+  const normalized = identity?.trim() || "";
+  if (!normalized) return "";
+  return aliases.get(normalized) ?? normalized;
+}
+
 export function canonicalConsoleIdentity(
   identity: string | undefined,
   agents: ConsoleAgent[],
