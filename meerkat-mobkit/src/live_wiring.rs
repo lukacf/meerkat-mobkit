@@ -3289,7 +3289,7 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
                     Ok(value) => live_success(rpc_id, value),
                     Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
                 },
-                Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+                Err(error) => live_error(rpc_id, live_close_error_code(&error), error.to_string()),
             })
         }
         "mobkit/live/send_input" => {
@@ -5434,6 +5434,35 @@ async fn handle_live_close(
     }
 }
 
+/// Whether a channel that the live host no longer treats as active has a
+/// recorded close status, so a repeated `mobkit/live/close` is idempotent.
+#[cfg(feature = "openai-live")]
+async fn live_channel_close_already_complete(
+    machine: &MeerkatMachine,
+    channel_id: &LiveChannelId,
+) -> bool {
+    machine
+        .live_session_for_active_channel(channel_id)
+        .await
+        .is_none()
+        && machine
+            .live_session_for_status_channel(channel_id)
+            .await
+            .is_some()
+}
+
+/// JSON-RPC code for a failed `mobkit/live/close`. A binding or custody
+/// mismatch is the caller's input; a physical transport, terminal projection,
+/// or semantic verb failure is the gateway's, and a caller may retry it.
+#[cfg(feature = "openai-live")]
+fn live_close_error_code(error: &meerkat::surface::ExperimentalLiveChannelCloseError) -> i64 {
+    use meerkat::surface::ExperimentalLiveChannelCloseError as CloseError;
+    match error {
+        CloseError::BindingMismatch | CloseError::LifecycleAuthority(_) => INVALID_PARAMS_CODE,
+        _ => INTERNAL_ERROR_CODE,
+    }
+}
+
 #[cfg(feature = "openai-live")]
 async fn handle_live_close(
     ctx: &GatewayLiveContext,
@@ -5458,7 +5487,19 @@ async fn handle_live_close(
             .await
         {
             Ok(status) => status,
-            Err(error) => return live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+            Err(meerkat::surface::ExperimentalLiveChannelCloseError::BindingMismatch)
+                if live_channel_close_already_complete(machine, &channel_id).await =>
+            {
+                // The channel completed its close earlier: the machine holds
+                // only its close status and no active binding. Closing it
+                // again is a no-op that succeeds, so a caller retrying after
+                // a dropped response or a dead remote converges instead of
+                // failing forever with a binding error.
+                meerkat_contracts::LiveCloseStatus::Closed
+            }
+            Err(error) => {
+                return live_error(rpc_id, live_close_error_code(&error), error.to_string());
+            }
         };
         match serde_json::to_value(LiveCloseResult { status }) {
             Ok(body) => live_success(rpc_id, body),
@@ -7480,5 +7521,38 @@ mod tests {
                 .expect("experimental static config source");
             assert!(experimental.realm.contains_key("live-wiring-test"));
         }
+    }
+}
+
+#[cfg(all(test, feature = "openai-live"))]
+mod live_close_error_code_tests {
+    use super::{INTERNAL_ERROR_CODE, INVALID_PARAMS_CODE, live_close_error_code};
+    use meerkat::surface::ExperimentalLiveChannelCloseError as CloseError;
+
+    #[test]
+    fn caller_side_close_rejections_are_invalid_params() {
+        assert_eq!(
+            live_close_error_code(&CloseError::BindingMismatch),
+            INVALID_PARAMS_CODE
+        );
+        assert_eq!(
+            live_close_error_code(&CloseError::LifecycleAuthority(
+                "receipt mismatch".to_string()
+            )),
+            INVALID_PARAMS_CODE
+        );
+    }
+
+    #[test]
+    fn gateway_side_close_failures_are_retryable_internal_errors() {
+        // A dead remote that the owner has not yet retired surfaces as a
+        // physical authority failure; the console retries this code on its
+        // bounded schedule.
+        assert_eq!(
+            live_close_error_code(&CloseError::PhysicalAuthority(
+                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::ChannelBindingFailed
+            )),
+            INTERNAL_ERROR_CODE
+        );
     }
 }

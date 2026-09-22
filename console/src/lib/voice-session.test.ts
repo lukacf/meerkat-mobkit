@@ -10,6 +10,7 @@ import {
   VOICE_RECOVERY_TIMEOUT_MS,
   VOICE_SILENCE_TIMEOUT_MS,
   VOICE_TEARDOWN_TIMEOUT_MS,
+  VOICE_CLOSE_RETRY_DELAYS_MS,
   VOICE_REPLACEMENT_POLL_INTERVAL_MS,
   VOICE_ACTIVITY_REPORT_INTERVAL_MS,
   VOICE_TRANSPORT_RECONNECT_GRACE_MS,
@@ -862,10 +863,11 @@ test.each(["dispose", "pagehide"])("%s immediately releases an older draining at
   assert.equal(h.calls.filter(call => call.method.endsWith("/open")).length, 1);
 });
 
-test("unconfirmed teardown releases muted WebRTC at the deadline and remains retryable", async () => {
+test("unconfirmed teardown releases muted WebRTC at the first deadline, retries on the backoff schedule, and remains retryable", async () => {
   const h = harness();
   await h.controller.start(target);
   h.setRpc((method) => method.endsWith("/close") ? new Promise(() => {}) : undefined);
+  const closeCalls = () => h.calls.filter((call) => call.method.endsWith("/close")).length;
   const close = h.controller.close();
   await flush();
   await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS - 1);
@@ -873,11 +875,23 @@ test("unconfirmed teardown releases muted WebRTC at the deadline and remains ret
   assert.equal(h.contexts[0].gains[0].gain.value, 0);
   assert.equal(h.peers[0].connectionState, "connected");
   await h.clock.advance(1);
-  await close;
-  assert.equal(h.controller.getSnapshot().phase, "error");
-  assert.match(h.controller.getSnapshot().error!, /not confirmed voice closure/);
+  // Media is released at the first deadline; the gateway close keeps retrying with media off.
   assert.equal(h.streams[0].tracks[0].stopped, true);
   assert.equal(h.peers[0].connectionState, "closed");
+  assert.equal(h.controller.getSnapshot().phase, "closing");
+  assert.equal(closeCalls(), 1);
+  for (const [index, delay] of VOICE_CLOSE_RETRY_DELAYS_MS.entries()) {
+    await h.clock.advance(delay - 1);
+    assert.equal(closeCalls(), index + 1, "no retry before its backoff elapses");
+    await h.clock.advance(1);
+    assert.equal(closeCalls(), index + 2, "one retry per backoff step");
+    await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
+  }
+  await close;
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /not confirmed voice closure after 4 attempts/);
+  assert.equal(closeCalls(), VOICE_CLOSE_RETRY_DELAYS_MS.length + 1, "the retry schedule is capped");
+  assert.equal(h.clock.timers.size, 0, "no retry timer outlives the capped schedule");
   await h.controller.start(other);
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
   h.setRpc(undefined);
@@ -885,6 +899,44 @@ test("unconfirmed teardown releases muted WebRTC at the deadline and remains ret
   await h.controller.start(other);
   assert.equal(h.controller.getSnapshot().phase, "active");
   await h.controller.close();
+});
+
+test("gateway-side close failures are retried on the backoff schedule; caller-side rejections fail at once", async () => {
+  const annotated = (props: Record<string, unknown>) => Object.assign(new Error("gateway"), props);
+  // A gateway fault (-32000) while the owner retires a dead remote resolves on a later attempt.
+  let h = harness();
+  await h.controller.start(target);
+  let faults = 0;
+  h.setRpc((method) => {
+    if (!method.endsWith("/close") || faults >= 2) return undefined;
+    faults++;
+    return Promise.reject(annotated({ rpcError: { code: -32000, message: "experimental live channel binding failed" } }));
+  });
+  const close = h.controller.close();
+  await flush();
+  assert.equal(h.streams[0].tracks[0].stopped, true, "media is released after the first failed attempt");
+  assert.equal(h.controller.getSnapshot().phase, "closing");
+  await h.clock.advance(VOICE_CLOSE_RETRY_DELAYS_MS[0] + VOICE_CLOSE_RETRY_DELAYS_MS[1]);
+  await close;
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/close")).length, 3);
+  assert.equal(h.clock.timers.size, 0);
+  await h.controller.start(other);
+  assert.equal(h.controller.getSnapshot().phase, "active", "a confirmed close admits the next session");
+  await h.controller.close();
+
+  // A caller-side rejection is definite: one attempt, no schedule, no attempt count in the message.
+  h = harness();
+  await h.controller.start(target);
+  h.setRpc((method) => method.endsWith("/close")
+    ? Promise.reject(annotated({ rpcError: { code: -32602, message: "live/close requires exactly one phase receipt" } }))
+    : undefined);
+  await h.controller.close();
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /not confirmed voice closure/);
+  assert.doesNotMatch(h.controller.getSnapshot().error!, /attempts/);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/close")).length, 1);
+  assert.equal(h.clock.timers.size, 0);
 });
 
 test("RTC, data channel, input track, and remote track loss close local and remote voice", async () => {
@@ -1105,8 +1157,12 @@ test("failed replacement teardown blocks further opens until explicit retry clos
   const h = harness();
   await h.controller.start(target);
   h.setRpc((method) => method.endsWith("/close") ? Promise.reject(new Error("offline")) : undefined);
-  await h.controller.start(other);
+  const start = h.controller.start(other);
+  // A network failure is retried on the full backoff schedule before the closure is reported unconfirmed.
+  await h.clock.advance(VOICE_CLOSE_RETRY_DELAYS_MS.reduce((total, delay) => total + delay, 0));
+  await start;
   assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/close")).length, VOICE_CLOSE_RETRY_DELAYS_MS.length + 1);
   assert.ok(h.streams.every((stream) => stream.tracks[0].stopped));
   await h.controller.start({ identity: "agent-c", label: "Agent C" });
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);

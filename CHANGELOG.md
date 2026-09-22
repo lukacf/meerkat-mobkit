@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Stuck voice close. `mobkit/console/voice/context_status` no longer
+  validates durable-source availability on every poll; that validation loaded
+  the full persisted session body on the mob actor once a second per preparing
+  voice call, exceeded the actor's inline step budget, and queued every later
+  mob command behind it. Availability is validated once at open admission,
+  and the channel custody read remains the authority for the poll.
+- `mobkit/live/close` on a channel that already completed its close reports
+  `Closed` when the live host no longer holds an active binding but the
+  machine records the channel's close status, instead of "the experimental
+  live channel is not active for the session". Close failures are coded by
+  origin: a binding or custody mismatch is `-32602`; a physical transport,
+  terminal projection, or semantic failure is `-32000`, which callers may
+  retry. Retiring a remote that already hung up needs meerkat 0.8.41 (the
+  transport retirement bound fix); MobKit on 0.8.40 still surfaces
+  `-32000` until the owner converges.
+- Console voice close is bounded. A retryable close failure (network,
+  timeout, or a `-32000` gateway fault) is retried on a fixed backoff
+  (`VOICE_CLOSE_RETRY_DELAYS_MS`: 2, 4, 8 s) after the first attempt has
+  released the microphone and speaker, then reported as unconfirmed with the
+  attempt count. Caller-side rejections fail at once. The previous behaviour
+  retried once per user click without a cap.
+
 ### Changed
 
 - Documentation publication follows main, not releases. A new `Publish docs`

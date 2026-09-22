@@ -20979,6 +20979,8 @@ var VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var VOICE_CONNECT_TIMEOUT_MS = 3e4;
 var VOICE_RECOVERY_TIMEOUT_MS = 3e4;
 var VOICE_TEARDOWN_TIMEOUT_MS = 5e3;
+var VOICE_CLOSE_RETRY_DELAYS_MS = [2e3, 4e3, 8e3];
+var GATEWAY_INTERNAL_ERROR_CODE = -32e3;
 var VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1e3;
 var VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5e3;
 var VOICE_TRANSPORT_RECONNECT_GRACE_MS = 8e3;
@@ -21095,6 +21097,13 @@ function browserEnvironment(baseUrl) {
 var VoiceError = class extends Error {
 };
 var VoiceTimeout = class extends VoiceError {
+};
+var VoiceCloseUnconfirmed = class extends VoiceError {
+  constructor(attempts, cause) {
+    super(`The gateway has not confirmed voice closure after ${attempts} attempts.`);
+    this.attempts = attempts;
+    this.cause = cause;
+  }
 };
 var TransientRpcFailure = class extends Error {
 };
@@ -21290,6 +21299,36 @@ function createVoiceSession(baseUrl, environment) {
   function closeParams(attempt) {
     return { identity: attempt.target.identity, request_id: attempt.requestId };
   }
+  function closeRetryable(error) {
+    return isTransientRpcFailure(error) || jsonRpcErrorCode(error) === GATEWAY_INTERNAL_ERROR_CODE;
+  }
+  function delay(milliseconds) {
+    return new Promise((resolve) => {
+      env.setTimeout(resolve, milliseconds);
+    });
+  }
+  async function confirmClose(attempt) {
+    let failure;
+    for (let index = 0; index <= VOICE_CLOSE_RETRY_DELAYS_MS.length; index++) {
+      if (index > 0) await delay(VOICE_CLOSE_RETRY_DELAYS_MS[index - 1]);
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS
+        );
+        const result = parseExperimentalLiveChannelStatus(raw);
+        if (result.phase !== "closed" && result.phase !== "revoked") {
+          throw new VoiceError("The gateway did not confirm voice closure.");
+        }
+        return;
+      } catch (error) {
+        cleanupLocal(attempt);
+        if (!closeRetryable(error)) throw error;
+        failure = error;
+      }
+    }
+    throw new VoiceCloseUnconfirmed(VOICE_CLOSE_RETRY_DELAYS_MS.length + 1, failure);
+  }
   async function teardown(attempt) {
     quiesceLocal(attempt);
     if (!attempt.openSent) {
@@ -21300,14 +21339,7 @@ function createVoiceSession(baseUrl, environment) {
     if (attempt.teardown) return attempt.teardown;
     attempt.teardown = (async () => {
       try {
-        const raw = await bounded(
-          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-          VOICE_TEARDOWN_TIMEOUT_MS
-        );
-        const result = parseExperimentalLiveChannelStatus(raw);
-        if (result.phase !== "closed" && result.phase !== "revoked") {
-          throw new VoiceError("The gateway did not confirm voice closure.");
-        }
+        await confirmClose(attempt);
         if (teardownBlock === attempt) teardownBlock = void 0;
         retainedAttempts.delete(attempt);
       } finally {
@@ -21339,11 +21371,12 @@ function createVoiceSession(baseUrl, environment) {
           contextStatusError: null
         });
       }
-    } catch {
+    } catch (failure) {
       if (current === attempt) {
+        const attempts = failure instanceof VoiceCloseUnconfirmed ? ` after ${failure.attempts} attempts` : "";
         publish({
           phase: "error",
-          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.`,
+          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure${attempts}. Close again to retry before starting another session.`,
           notice: null
         });
       }
@@ -21421,13 +21454,13 @@ function createVoiceSession(baseUrl, environment) {
       attempt.activityReportedAt === void 0 ? 0 : attempt.activityReportedAt + VOICE_ACTIVITY_REPORT_INTERVAL_MS,
       attempt.activityRetryAt ?? 0
     );
-    const delay = due - env.now();
-    if (delay > 0) {
+    const delay2 = due - env.now();
+    if (delay2 > 0) {
       if (attempt.activityTimer === void 0) {
         attempt.activityTimer = env.setTimeout(() => {
           attempt.activityTimer = void 0;
           flushActivity(attempt);
-        }, delay);
+        }, delay2);
       }
       return;
     }
@@ -21448,9 +21481,9 @@ function createVoiceSession(baseUrl, environment) {
     } catch (error) {
       if (error instanceof Cancelled || !owns(attempt)) return;
       if (error instanceof TransientRpcFailure) {
-        const delay = recordTransientFailure(attempt, "activityFailure", ACTIVITY_UNCONFIRMED_MESSAGE);
+        const delay2 = recordTransientFailure(attempt, "activityFailure", ACTIVITY_UNCONFIRMED_MESSAGE);
         attempt.activityDirty = true;
-        attempt.activityRetryAt = env.now() + delay;
+        attempt.activityRetryAt = env.now() + delay2;
         return;
       }
       fail(attempt, ACTIVITY_UNCONFIRMED_MESSAGE);
@@ -21510,7 +21543,7 @@ function createVoiceSession(baseUrl, environment) {
     publish({ contextPreparation: null, contextStatusError: null });
     async function read() {
       if (!isCurrent()) return;
-      let delay;
+      let delay2;
       try {
         const raw = await bounded(
           env.rpc("mobkit/console/voice/context_status", {
@@ -21529,19 +21562,19 @@ function createVoiceSession(baseUrl, environment) {
         if (snapshot.contextStatusError || JSON.stringify(snapshot.contextPreparation) !== JSON.stringify(preparation)) {
           publish({ contextPreparation: preparation, contextStatusError: null });
         }
-        if (preparation.phase === "preparing") delay = CONTEXT_POLL_INTERVAL_MS;
+        if (preparation.phase === "preparing") delay2 = CONTEXT_POLL_INTERVAL_MS;
       } catch (error) {
         if (error instanceof Cancelled || !isCurrent()) return;
         publish({
           contextStatusError: "Agent context status is unavailable. Voice remains connected; checking again automatically."
         });
-        delay = CONTEXT_RETRY_INTERVAL_MS;
+        delay2 = CONTEXT_RETRY_INTERVAL_MS;
       }
-      if (isCurrent() && delay !== void 0) {
+      if (isCurrent() && delay2 !== void 0) {
         observation.timer = env.setTimeout(() => {
           observation.timer = void 0;
           void read();
-        }, delay);
+        }, delay2);
       }
     }
     void read();
@@ -21718,13 +21751,13 @@ function createVoiceSession(baseUrl, environment) {
     }
     throw new Cancelled();
   }
-  function scheduleReplacement(attempt, delay = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
+  function scheduleReplacement(attempt, delay2 = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
     if (!owns(attempt) || snapshot.phase !== "active" && !attempt.transportLoss) return;
     if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
     attempt.replacementTimer = env.setTimeout(() => {
       attempt.replacementTimer = void 0;
       requestReplacement(attempt);
-    }, delay);
+    }, delay2);
   }
   function requestReplacement(attempt) {
     if (!owns(attempt) || attempt.replacementPolling) return;
