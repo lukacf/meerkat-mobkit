@@ -1394,6 +1394,49 @@ impl meerkat_core::agent::AgentToolDispatcher for RecorderToolDispatcher {
         self.tools.clone()
     }
 
+    /// The recorder adds exactly one inline tool over the wrapped surface, so
+    /// the catalog is exact whenever the wrapped surface is (or there is
+    /// none). Left on the trait default this wrapper made every agent-memory
+    /// member's external slot non-exact, and the post-materialization
+    /// capability invariant could never verify those members.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        match self.inner.as_ref() {
+            Some(inner) => inner.tool_catalog_capabilities(),
+            None => meerkat_core::ToolCatalogCapabilities {
+                exact_catalog: true,
+                may_require_catalog_control_plane: false,
+            },
+        }
+    }
+
+    /// Inner entries except a shadowed `memory`, then the recorder tool as a
+    /// visible inline session entry - the same order `tools()` advertises.
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        let mut catalog: Vec<meerkat_core::ToolCatalogEntry> = self
+            .inner
+            .as_ref()
+            .map(|inner| {
+                inner
+                    .tool_catalog()
+                    .iter()
+                    .filter(|entry| entry.tool.name.as_ref() != MEMORY_TOOL_NAME)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(memory) = self
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == MEMORY_TOOL_NAME)
+        {
+            catalog.push(meerkat_core::ToolCatalogEntry::session_inline(
+                Arc::clone(memory),
+                true,
+            ));
+        }
+        catalog.into()
+    }
+
     async fn dispatch(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
