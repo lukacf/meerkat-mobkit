@@ -15,6 +15,14 @@ export const VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1000;
 export const VOICE_CONNECT_TIMEOUT_MS = 30_000;
 export const VOICE_RECOVERY_TIMEOUT_MS = 30_000;
 export const VOICE_TEARDOWN_TIMEOUT_MS = 5_000;
+/**
+ * Backoff between gateway close attempts after a retryable failure. The owner retires a dead
+ * remote within its own bound, so the schedule spans that bound; once it is exhausted the
+ * closure is reported unconfirmed and the user must close again.
+ */
+export const VOICE_CLOSE_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000];
+/** Gateway-side failure of a live verb (JSON-RPC `-32000`); retried for close, unlike caller-side rejections. */
+export const GATEWAY_INTERNAL_ERROR_CODE = -32000;
 export const VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1_000;
 export const VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5_000;
 /** ICE `disconnected` is transient and usually self-heals; keep the peer alive this long first. */
@@ -217,6 +225,12 @@ function browserEnvironment(baseUrl: string): VoiceSessionEnvironment {
 class VoiceError extends Error {}
 /** A locally bounded wait expired; distinct from a protocol violation so it can be retried. */
 class VoiceTimeout extends VoiceError {}
+/** Every scheduled gateway close attempt failed; media is already released and the request stays retained. */
+export class VoiceCloseUnconfirmed extends VoiceError {
+  constructor(readonly attempts: number, readonly cause: unknown) {
+    super(`The gateway has not confirmed voice closure after ${attempts} attempts.`);
+  }
+}
 /** Tagged at the RPC boundary only, so local parse and protocol failures stay definite. */
 class TransientRpcFailure extends Error {}
 class Cancelled extends Error {}
@@ -512,6 +526,44 @@ export function createVoiceSession(
     return { identity: attempt.target.identity, request_id: attempt.requestId };
   }
 
+  /** A close failure the gateway can resolve on its own: transport blips and gateway-side faults. */
+  function closeRetryable(error: unknown): boolean {
+    return isTransientRpcFailure(error) || jsonRpcErrorCode(error) === GATEWAY_INTERNAL_ERROR_CODE;
+  }
+
+  function delay(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => { env.setTimeout(resolve, milliseconds); });
+  }
+
+  /**
+   * One request-scoped close, retried on a fixed backoff schedule. The first attempt runs with
+   * muted WebRTC still connected so provider acknowledgements can drain; every later attempt runs
+   * with local media already released. Caller-side rejections fail at once; the schedule caps
+   * gateway-side failures so a dead remote never turns into an unbounded retry loop.
+   */
+  async function confirmClose(attempt: Attempt): Promise<void> {
+    let failure: unknown;
+    for (let index = 0; index <= VOICE_CLOSE_RETRY_DELAYS_MS.length; index++) {
+      if (index > 0) await delay(VOICE_CLOSE_RETRY_DELAYS_MS[index - 1]);
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS,
+        );
+        const result = parseExperimentalLiveChannelStatus(raw);
+        if (result.phase !== "closed" && result.phase !== "revoked") {
+          throw new VoiceError("The gateway did not confirm voice closure.");
+        }
+        return;
+      } catch (error) {
+        cleanupLocal(attempt);
+        if (!closeRetryable(error)) throw error;
+        failure = error;
+      }
+    }
+    throw new VoiceCloseUnconfirmed(VOICE_CLOSE_RETRY_DELAYS_MS.length + 1, failure);
+  }
+
   async function teardown(attempt: Attempt) {
     quiesceLocal(attempt);
     if (!attempt.openSent) {
@@ -523,15 +575,7 @@ export function createVoiceSession(
     attempt.teardown = (async () => {
       // The request-scoped close also fences an open whose response has not reached the browser.
       try {
-        // Muted WebRTC stays connected while provider acknowledgements drain.
-        const raw = await bounded(
-          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-          VOICE_TEARDOWN_TIMEOUT_MS,
-        );
-        const result = parseExperimentalLiveChannelStatus(raw);
-        if (result.phase !== "closed" && result.phase !== "revoked") {
-          throw new VoiceError("The gateway did not confirm voice closure.");
-        }
+        await confirmClose(attempt);
         if (teardownBlock === attempt) teardownBlock = undefined;
         retainedAttempts.delete(attempt);
       } finally {
@@ -559,11 +603,12 @@ export function createVoiceSession(
           reconnecting: false, contextPreparation: undefined, contextStatusError: null,
         });
       }
-    } catch {
+    } catch (failure) {
       if (current === attempt) {
+        const attempts = failure instanceof VoiceCloseUnconfirmed ? ` after ${failure.attempts} attempts` : "";
         publish({
           phase: "error",
-          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.`,
+          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure${attempts}. Close again to retry before starting another session.`,
           notice: null,
         });
       }

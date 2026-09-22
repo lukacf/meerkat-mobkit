@@ -1961,13 +1961,13 @@ impl ConsoleVoiceSession for Session {
         if !access.allows_agent(ACTION_AGENT_VIEW, &self.identity) {
             return Err(VoiceError::Unauthorized);
         }
+        // Durable-source availability is validated once, at open admission
+        // (`prepare_open`). Re-validating on every context status poll loaded
+        // the full persisted session body on the mob actor once a second per
+        // preparing voice call and queued every other mob command behind it.
+        // The custody read below is the authority for whether this channel is
+        // still preparing, active, or closed.
         let read = async {
-            use meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority as _;
-            self.shared
-                .binding
-                .validate_live_durable_source_availability(&self.grant.session)
-                .await
-                .map_err(|_| VoiceError::ContextReadFailed)?;
             let custody = self
                 .shared
                 .handler
