@@ -13524,6 +13524,10 @@ external_addressable = true
                             transport: Arc::clone(&transport),
                             voice: public.voice.clone(),
                             session_instructions: public.session_instructions.clone(),
+                            // The external live channel keeps its configured
+                            // instructions; the per-member capabilities preface
+                            // is a console voice concern.
+                            session_instructions_preface: None,
                         },
                     )
                     .unwrap_or_else(|error| {

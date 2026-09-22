@@ -229,6 +229,11 @@ impl ConsoleVoiceController {
                 transport: transport.clone(),
                 voice: registration.voice,
                 session_instructions: registration.session_instructions,
+                // Per-member identity, peers, tools and skills, resolved at
+                // open for the target session; see `capabilities`.
+                session_instructions_preface: Some(Arc::new(
+                    super::capabilities::MemberPreface::new(runtime.mob_handle()),
+                )),
             })
             .and_then(|authority| {
                 authority.with_public_playback_policy(
@@ -703,8 +708,12 @@ pub(crate) mod tests {
     [profiles.agent]
     model = "gpt-5.5"
     external_addressable = true
+    skills = ["voice-notes"]
     [profiles.agent.tools]
     comms = true
+    [skills.voice-notes]
+    source = "inline"
+    content = "Keep spoken answers short."
     "#,
             ))
             .expect("definition");
@@ -1194,6 +1203,17 @@ pub(crate) mod tests {
             "normal"
         })
         .await;
+        // A second member gives the capabilities preface a peer to name.
+        runtime
+            .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                "agent".to_string(),
+                "agent-b".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect("peer member");
         let session = runtime
             .mob_handle()
             .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("agent-a"))
@@ -1599,7 +1619,9 @@ pub(crate) mod tests {
             .expect("create body")
             .clone()
             .expect("provider created");
-        assert!(body["session"]["input"].is_array(), "{body}");
+        // Meerkat 0.8.41 opens as a continuing conversation: no user-role
+        // startup input, the pending-context notice rides the instructions.
+        assert!(body["session"].get("input").is_none(), "{body}");
         assert!(
             !body
                 .to_string()
@@ -1607,6 +1629,35 @@ pub(crate) mod tests {
             "concurrent context must not be required by the provider-create request"
         );
         assert!(body["session"]["tools"].is_null());
+        // The capabilities preface opens the session instructions at create
+        // time, on its own carrier, whether or not the summary later
+        // succeeds: identity and role, the peer, the tool, and the skill.
+        assert!(
+            body["session"]["instructions"].is_string(),
+            "create body must carry session instructions: {body}"
+        );
+        let instructions = body["session"]["instructions"]
+            .as_str()
+            .expect("string checked above");
+        assert!(
+            instructions.starts_with("You speak for agent-a (agent) in mob console-voice-"),
+            "the preface must open the session instructions: {instructions}"
+        );
+        for needle in [
+            "You are connected to: agent-b (agent).",
+            "available through the executor: comms.",
+            "Skills: voice-notes.",
+            "answer from this list",
+        ] {
+            assert!(
+                instructions.contains(needle),
+                "the preface must carry {needle:?}: {instructions}"
+            );
+        }
+        assert!(
+            instructions.contains("do not greet or introduce yourself"),
+            "the default continuing-conversation guidance must survive the preface: {instructions}"
+        );
         if disconnect_provider {
             provider.capture.disconnect.notify_one();
             provider.capture.disconnected.notified().await;
@@ -1662,7 +1713,8 @@ pub(crate) mod tests {
                 .model,
             "gpt-5.5"
         );
-        assert_eq!(runtime.mob_handle().list_members().await.len(), 1);
+        // agent-a plus the agent-b peer spawned above: voice open adds no member.
+        assert_eq!(runtime.mob_handle().list_members().await.len(), 2);
         let reopened = rpc(
             &app,
             &token,
