@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Documentation: 148 corrections from the 2026-09-22 adversarial documentation
+  audit across the public docs, hidden skills, examples, SDK docstrings, and
+  the RCT contract fixture, with the complete evidence ledger under
+  `audit/docs-review-2026-09-22/`. Overlapping corrections already landed by the
+  27-finding pass are superseded by the audit's fuller wording where both
+  described the same fact.
 - Documentation corrections from the 2026-09-21 accuracy audit: 27 confirmed
   findings across the RPC catalog, sessions, roster, memory, access control,
   governance, configuration, console, quickstart, and the Python and Rust SDK

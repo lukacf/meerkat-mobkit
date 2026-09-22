@@ -13,13 +13,21 @@ session-based" is a false dichotomy — identity-first agents ARE session-owned
 (the bridge creates sessions like everything else). The real split is which
 authority owns the member's lifecycle:
 
+The table describes MobKit's intended allocation of responsibilities, not the
+storage limits of the underlying mob/session substrate.
+
 | | Mob plane (classic) | Identity plane |
 |---|---|---|
 | Owner | mob-actor roster (`MobHandle`) | `IdentityRuntime` |
-| Key | generated runtime member id | stable `AgentIdentity` |
-| Durability | none — dies with the process / idle-retire | continuity records, lease-fenced embodiment, resume-first restore |
+| Key | member `AgentIdentity`/member identifier (a MobKit-generated incarnation alias where applicable), not the per-runtime `AgentRuntimeId` | stable application `AgentIdentity` |
+| Durability | ephemeral-worker usage policy | continuity records, lease-fenced embodiment, resume-first restore |
 | Disposal | strict archive invariants (ask-20 class) | tolerant session-owned cleanup + Broken-identity repair task |
 | Stand-up | `spawn`/`ensure_member` (`SpawnMemberSpec`) | roster reconcile (`restore_flow`) |
+
+Mob/session storage and member launch modes support persistence and resume;
+this does not mean every worker is automatically resumed. Identity-plane
+continuity, leases, and roster reconciliation remain the prescribed abstraction
+for durable populations under D1.
 
 History (verified): the mob plane predates identity-first (`ensure_member`
 2026-03-06, roster API PR #37; identity-first PR #57, 2026-04-01, as an
@@ -129,7 +137,11 @@ for exactly one boot, and is read only by an exact-identity map lookup
 (`declared_role_migration_in`). `resume_session` passes the looked-up
 predecessor role straight into `MemberLaunchMode::Resume { resume_from_role,
 .. }` and does nothing else with it. Nothing MobKit reads can create, widen or
-withdraw a declaration, and MobKit never retries a resume meerkat refused.
+withdraw a declaration. MobKit never infers or widens migration authority and
+does not recover from a role-migration refusal by altering the declaration or
+falling back to a fresh spawn. Separately, a custody- and durable-source-checked
+`MemberAlreadyExists` collision repair can retry the unchanged resume spec;
+that repair does not change migration authority.
 
 The properties that make an activation-scoped carrier safe, each load-bearing:
 

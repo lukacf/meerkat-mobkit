@@ -5,7 +5,6 @@ Synthetic incident-response scenario for the stock MobKit console.
 This pack uses:
 
 - the stock Rust runtime and stock `/console/*` surfaces
-- stock `mobkit/interact`
 - stock `mobkit/console/query_timeline`, `mobkit/console/send`, and `/console/timeline/stream`
 - stock routing, delivery, inspect, lifecycle, topology, and gating methods
 - a live provider-backed MobKit runtime with synthetic incident data and deterministic tool fixtures
@@ -21,11 +20,9 @@ This pack uses:
 
 ## What it proves
 
-- identity-native chat over `mobkit/interact` + `/console/identity/stream`
+- identity-addressed chat with server-owned acceptance over `mobkit/console/send` + `/console/identity/{identity}/stream`
 - canonical console timeline replay over `mobkit/console/query_timeline`
-- server-owned input acknowledgement over `mobkit/console/send`
 - aggregate timeline catch-up/live streaming over `/console/timeline/stream`
-- all-events updates over `/console/events/stream`
 - watch/alert/degraded projection from seeded labels
 - inspect, routing, gating, topology, and health panels in the stock console
 - real runtime wiring reflected in topology
@@ -36,9 +33,14 @@ This pack uses:
 
 ## Run
 
+Complete the [shared prerequisites](../README.md#prerequisites), including
+the console dependencies and Playwright Chromium for both browser lanes.
+Run these commands from the repository root. The live pack requires an
+OpenAI API key:
+
 ```bash
 export OPENAI_API_KEY=...
-./examples.sh
+./examples/001-incident-command-center-pack/examples.sh
 ```
 
 Topology control has a separate deterministic browser path. It builds and
@@ -46,7 +48,7 @@ drives the same embedded stock console against the real Rust runtime, but uses
 MobKit's test client and never performs a model call:
 
 ```bash
-./topology_examples.sh
+./examples/001-incident-command-center-pack/topology_examples.sh
 ```
 
 The topology path uses `./scripts/repo-cargo` for the Rust build and server,

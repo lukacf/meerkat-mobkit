@@ -6,8 +6,8 @@ Thank you for considering contributing to MobKit.
 
 ### Prerequisites
 
-- Rust 1.85+ (edition 2024)
-- Python 3.10+
+- Rust 1.97.0 via rustup, as pinned by `rust-toolchain.toml`; the crate's declared MSRV is 1.94.0
+- Python 3.11+ for the release tooling and repository scripts that import `tomllib`; the Python SDK supports Python 3.10+
 - Node.js 18+ (for console and TypeScript SDK)
 
 ### Building
@@ -33,14 +33,21 @@ PYTHONPATH=sdk/python python3 -c "import meerkat_mobkit; print('OK')"
 # Via Makefile (preferred)
 make test          # Rust tests
 make test-python   # Python tests
-make test-all      # Both
+make test-all      # Rust + Python + Flow Editor
 
 # Or directly
 ./scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
 
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
+
+# TypeScript changes (typecheck, build, and tests)
+npm --prefix sdk/typescript run validate
 ```
+
+`make test-all` covers the local Rust, Python, and Flow Editor suites, not every
+required hosted-CI gate. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+for the console, voice, TypeScript, and other required hosted checks.
 
 ## Branch Conventions
 
@@ -54,8 +61,8 @@ PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 
 1. Create a feature branch from `main`
 2. Make your changes with clear commit messages
-3. Ensure all tests pass (`make test-all`)
-4. Open a PR against `main` with a description of changes
+3. Run the applicable local checks above (`make test-all` covers Rust + Python + Flow Editor; TypeScript changes also need `npm --prefix sdk/typescript run validate`)
+4. Open a PR against `main` with a description of changes; ensure the required hosted-CI gates pass before merging
 
 ## Code Style
 

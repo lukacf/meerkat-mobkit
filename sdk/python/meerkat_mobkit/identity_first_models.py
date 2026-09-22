@@ -662,10 +662,11 @@ class RosterContext:
     ``rpc_gateway`` never does; the field is optional because in-process Rust
     embedders and test harnesses can call the provider without one.
 
-    ``previous_identities`` lists the identities the identity runtime has
-    registered at the time of the call. It is empty on the bootstrap calls
-    (nothing is registered yet) and populated on later re-derivations such as
-    a topology query or edge reconcile.
+    ``previous_identities`` is call-site-dependent prior-identity context,
+    not an authoritative membership snapshot on every callback. Topology
+    queries and edge reconciliation supply currently registered identities.
+    Bootstrap, full roster refresh/reconcile, and reset-time spec adoption
+    currently pass an empty list, even if identities are already registered.
     """
 
     mob_definition: dict[str, Any] | None = None

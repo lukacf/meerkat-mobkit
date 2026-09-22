@@ -269,21 +269,23 @@ Rename in your code:
 
 ### Reconcile error semantics + report shape
 
-- `mob_handle.reconcile(...)` may now return a report with a non-empty
-  `failures` list (meerkat 0.6 collects per-identity failures rather than
+- Native Meerkat `MobHandle::reconcile(...)` may now return a roster report
+  with a non-empty `failures` list (meerkat 0.6 collects per-identity failures rather than
   returning `Err` on the first failure). `UnifiedRuntime::reconcile()` in
-  the Rust layer re-lifts this into an `Err` so callers using `?` see the
-  same propagation behaviour they had pre-0.6; the Python SDK surfaces
-  the full `failures` array in the response JSON when present. Watch for
-  it and handle degraded-roster scenarios explicitly.
+  the Rust layer re-lifts this into `UnifiedRuntimeReconcileError::PartialFailure`
+  so callers using `?` see the same propagation behaviour they had pre-0.6.
 
-- The `spawned` field of the reconcile report is now an array of
+- The `spawned` field in that native roster report's wire projection is now
+  an array of
   `{ "agent_identity": str, "member_ref": str }` objects (the canonical
   `MobSpawnReceiptWire` shape from meerkat-contracts) rather than a list
   of identity strings. `member_ref` is a server-resolved opaque handle
-  for subsequent member-targeted control calls. Iterate with
-  `[r["agent_identity"] for r in report["spawned"]]` to recover the
-  prior projection.
+  for subsequent member-targeted control calls.
+
+These are native Rust roster changes, not Python SDK module-reconcile
+results. The SDK's `MobHandle.reconcile(modules)` is a different operation:
+it calls `mobkit/reconcile` and returns `ReconcileResult` with
+`accepted`, `reconciled_modules`, and `added`, not `failures` or `spawned`.
 
 ### Lightweight roster
 

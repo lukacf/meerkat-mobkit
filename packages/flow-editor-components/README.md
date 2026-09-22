@@ -32,9 +32,10 @@ the window global that `react-globals.js` provides (ambient declaration in
 
 Components call `window.MobKitFlowController.*` at render/handler time — not
 import time. That global is the runtime contract between the views and
-`@flow-editor-core`'s `createMobKitFlowController` (381-key manifest pinned
-by `controller-export-keys.test.cjs`); the shell assigns it once at module
-scope. Views must not import the RPC client or call `fetch` themselves —
+`@flow-editor-core`'s `createMobKitFlowController` (the exact ordinary and
+test-only export sets in `flow-editor/test/controller-export-manifest.json`
+are pinned by `controller-export-keys.test.cjs`); the shell assigns it once
+at module scope. Views must not import the RPC client or call `fetch` themselves —
 enforced by `flow-editor/test/package-boundaries.test.cjs`.
 
 ## DOM output is contractual
