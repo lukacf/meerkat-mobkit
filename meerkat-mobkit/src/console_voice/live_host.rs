@@ -703,6 +703,38 @@ pub(crate) mod tests {
                 ))
                 .await
                 .expect("member");
+            // The spawn returns once the member is durable, but its kickoff
+            // turn ("You have been spawned as ...", answered by the test
+            // client) commits asynchronously. Tests snapshot the source
+            // transcript and assert that voice setup leaves it unchanged, so
+            // a kickoff row landing between their `before` and `after` reads
+            // is a false rewrite. Wait for the kickoff exchange to be durable
+            // before handing the fixture out; on a two-core runner the gap
+            // was wide enough to trip the assertion.
+            let session = runtime
+                .mob_handle()
+                .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("agent-a"))
+                .await
+                .expect("source session for kickoff settle");
+            crate::test_wait::poll_until(
+                "the spawn kickoff exchange of agent-a is durable",
+                crate::test_wait::STRUCTURAL_BACKSTOP,
+                async || {
+                    let snapshot = service
+                        .export_realtime_refresh_session_snapshot(&session)
+                        .await
+                        .expect("kickoff settle snapshot");
+                    let messages = snapshot.messages();
+                    let kickoff_seen = messages.iter().any(|message| match message {
+                        meerkat_core::types::Message::User(user) => user.content.iter().any(|block| {
+                            matches!(block, meerkat_core::types::ContentBlock::Text { text } if text.starts_with("You have been spawned as"))
+                        }),
+                        _ => false,
+                    });
+                    kickoff_seen && matches!(messages.last(), Some(meerkat_core::types::Message::BlockAssistant(_)))
+                },
+            )
+            .await;
             Self {
                 _directory: directory,
                 provider,
