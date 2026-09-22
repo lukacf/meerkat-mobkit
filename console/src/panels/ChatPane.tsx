@@ -26,6 +26,7 @@ import {
   selectImageTransferFiles,
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
+import { countRender } from "../lib/render-counts";
 
 interface ChatPaneProps {
   agent: ConsoleAgent | null;
@@ -656,6 +657,7 @@ export function ChatPane({
   voiceDisabled = false,
   workGraphActions = null,
 }: ChatPaneProps): React.JSX.Element {
+  countRender("ChatPane");
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const preserveOlderHistoryScrollRef = React.useRef(false);
   const olderHistoryScrollHeightRef = React.useRef(0);

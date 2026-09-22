@@ -3,6 +3,7 @@ import { Icon } from "../icon";
 import type { VoiceSessionSnapshot } from "../lib/voice-session";
 import { voiceContextFailureMessage } from "../lib/voice-context";
 import "./voice-bar.css";
+import { countRender } from "../lib/render-counts";
 
 type WaveformSource = "microphone" | "speaker";
 export type WaveformSampler = (source: WaveformSource, samples: Float32Array<ArrayBuffer>) => void;
@@ -128,6 +129,7 @@ export function VoiceBar({
   onToggleMicrophone,
   onToggleSpeaker,
 }: VoiceBarProps): React.JSX.Element | null {
+  countRender("VoiceBar");
   if (!state.target && !state.error && !state.notice) return null;
   const active = state.phase === "active";
   const transitioning = state.phase === "requesting" || state.phase === "connecting";

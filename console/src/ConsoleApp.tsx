@@ -60,6 +60,7 @@ import {
   consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
+  type MobKitConsoleTransport,
 } from "./lib/headless";
 import {
   WORKGRAPH_CONFLICT_CODE,
@@ -158,9 +159,13 @@ import { PendingStack, type PendingItem } from "./panels/PendingStack";
 import { VoiceBar } from "./panels/VoiceBar";
 import { useVoiceController } from "./lib/use-voice-controller";
 import { useVoiceReadiness, voiceReadinessDenied } from "./lib/use-voice-readiness";
+import { countRender } from "./lib/render-counts";
 
 interface ConsoleAppProps {
   baseUrl: string;
+  /// Test seam: supply a transport instead of the HTTP one built from
+  /// `baseUrl`. Production entry points never set it.
+  transport?: MobKitConsoleTransport;
 }
 
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
@@ -606,15 +611,17 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 // CONSOLE APP
 // ============================================================================
 
-export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
+export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.Element {
+  countRender("ConsoleApp");
   const consoleFetchTimeoutMsRef = React.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
   const consoleTransport = React.useMemo(
     () =>
+      transport ??
       createHttpConsoleTransport({
         baseUrl,
         fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current,
       }),
-    [baseUrl],
+    [baseUrl, transport],
   );
   const consoleController = React.useMemo(
     () => createMobKitConsoleController({ transport: consoleTransport }),

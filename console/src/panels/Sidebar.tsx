@@ -28,6 +28,7 @@ import type {
 } from "../types";
 import { Icon } from "../icon";
 import { isAgentPinned, sidebarAgentPinId } from "../lib/adapters";
+import { countRender } from "../lib/render-counts";
 
 export { sidebarAgentPinId } from "../lib/adapters";
 export {
@@ -1250,6 +1251,7 @@ export function Sidebar({
   onTogglePinnedAgent,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
+  countRender("Sidebar");
   const [q, setQ] = React.useState("");
   const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);

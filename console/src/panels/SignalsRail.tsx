@@ -2,6 +2,7 @@ import React from "react";
 import { describeMemoryTimelineEvent, stripPeerTransportScaffold } from "../lib/adapters";
 import { describeFailure } from "../lib/failure-summary";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
+import { countRender } from "../lib/render-counts";
 
 interface SignalsRailProps {
   frames: ConsoleFrame[];
@@ -477,6 +478,7 @@ export function SignalsRail({
   onPresetChange,
   onSelect,
 }: SignalsRailProps): React.JSX.Element {
+  countRender("SignalsRail");
   const presets = React.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
