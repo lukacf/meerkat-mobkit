@@ -17,6 +17,7 @@ import {
   type WorkGraphCardActions,
 } from "@console-components";
 import type { ConsoleAgent } from "../types";
+import type { LiveSpeechItem } from "../lib/voice-session";
 import { VoiceButton } from "./VoiceBar";
 import {
   composerImageFileKey,
@@ -62,6 +63,22 @@ interface ChatPaneProps {
   stackSlot?: React.ReactNode;
   voiceSlot?: React.ReactNode;
   onVoiceToggle?: () => void;
+  /**
+   * Provisional speech for an active voice call on this identity, straight
+   * from the provider's transcript deltas. Rendered as distinct "live" rows,
+   * never copied or persisted; the caller clears it when the call ends and the
+   * canonical transcript takes over.
+   */
+  liveSpeech?: readonly LiveSpeechItem[];
+  /**
+   * When a voice call is active on this identity, the wall-clock start of the
+   * call. Canonical rows created after it are the call's own transcript rows
+   * arriving through history; they stay hidden until the call ends so the
+   * live rows are the only representation of the call while it is happening.
+   * A typed seam: once frames carry a realtime channel origin, hide by that
+   * channel id instead of by time.
+   */
+  voiceCallStartedAt?: number | null;
   voiceActive?: boolean;
   voiceDisabled?: boolean;
   /// Operator actions for inline WorkGraph cards. ConsoleApp gates these on
@@ -433,6 +450,23 @@ function textSignatureForMsg(message: Msg): string {
     return "";
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * A canonical message created after the active voice call started is the
+ * call's own transcript row arriving through history. While the call is
+ * active the live rows represent that speech; the canonical row is shown once
+ * the call ends. Entries without a timestamp are never hidden.
+ */
+export function isCanonicalVoiceRowDuringCall(
+  entry: ConversationTimelineEntry,
+  callStartedAt: number,
+): boolean {
+  if (entry.kind !== "message") return false;
+  if (entry.variant === "meta") return false;
+  const createdAt = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAt)) return false;
+  return createdAt >= callStartedAt;
 }
 
 function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
@@ -817,6 +851,7 @@ const TranscriptView = React.memo(function TranscriptView({
   turns,
   messages,
   phase,
+  liveSpeech,
   lastAgentMessageId,
   workGraphActions,
   isLoadingHistory,
@@ -833,6 +868,7 @@ const TranscriptView = React.memo(function TranscriptView({
   turns: ChatTurn[];
   messages: Msg[];
   phase: ChatPaneProps["phase"];
+  liveSpeech: readonly LiveSpeechItem[] | undefined;
   lastAgentMessageId: string | null;
   workGraphActions: WorkGraphCardActions | null;
   isLoadingHistory: boolean;
@@ -923,6 +959,29 @@ const TranscriptView = React.memo(function TranscriptView({
         </div>
         );
       })}
+      {liveSpeech && liveSpeech.length > 0 && (
+        <div
+          aria-label="Live speech"
+          className="conv-turn conv-turn--live"
+          data-testid={`chat-live-speech:${identity}`}
+        >
+          {liveSpeech.map((item) => (
+            <div
+              className={`msg msg--live msg--live-${item.speaker}`}
+              data-live-final={item.final ? "true" : "false"}
+              data-testid={`chat-live-row:${identity}:${item.itemId}`}
+              key={item.itemId}
+            >
+              <div className="msg__time">
+                <span className="msg__live-label">live</span>
+              </div>
+              <div className="msg__bubble">
+                <span className="msg__text">{item.text}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {phase && (
         <div
           className="msg msg--typing"
@@ -1054,6 +1113,8 @@ export function ChatPane({
   agentLabel,
   identity,
   entries,
+  liveSpeech,
+  voiceCallStartedAt,
   phase,
   draft,
   sending,
@@ -1149,8 +1210,11 @@ export function ChatPane({
   const [visibleTurnIndexes, setVisibleTurnIndexes] = React.useState<number[]>([]);
 
   const messages = React.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
+    const visible = voiceCallStartedAt
+      ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt))
+      : entries;
+    return buildChatMessages(visible);
+  }, [entries, voiceCallStartedAt]);
   const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.
@@ -1629,6 +1693,7 @@ export function ChatPane({
         turns={turns}
         messages={messages}
         phase={phase}
+        liveSpeech={liveSpeech}
         lastAgentMessageId={lastAgentMessageId}
         workGraphActions={workGraphActions}
         isLoadingHistory={isLoadingHistory}

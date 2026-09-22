@@ -47,6 +47,9 @@ export interface VoiceTarget {
   readonly label: string;
 }
 
+/** Upper bound on provisional live-speech rows kept per call. */
+export const LIVE_SPEECH_MAX_ITEMS = 400;
+
 export interface VoiceSessionSnapshot {
   readonly phase: "idle" | "requesting" | "connecting" | "active" | "closing" | "error";
   readonly target: VoiceTarget | null;
@@ -59,6 +62,25 @@ export interface VoiceSessionSnapshot {
   readonly reconnecting?: boolean;
   readonly contextPreparation?: VoiceContextPreparation | null;
   readonly contextStatusError?: string | null;
+  /**
+   * Provisional speech for the active call, straight from the provider's
+   * transcript deltas on the WebRTC data channel. Keyed by provider item id,
+   * never persisted or sent anywhere, and dropped on every call end. The
+   * console renders these as distinct "live" rows and replaces them with the
+   * consolidated canonical transcript once the call is over.
+   */
+  readonly liveSpeech: readonly LiveSpeechItem[];
+  /** Channel id of the active call, when one is active. */
+  readonly activeChannelId?: string | null;
+}
+
+/** One provisional spoken item (user or assistant) accumulated from deltas. */
+export interface LiveSpeechItem {
+  readonly itemId: string;
+  readonly speaker: "user" | "assistant";
+  readonly text: string;
+  readonly startedAt: number;
+  readonly final: boolean;
 }
 
 /**
@@ -357,7 +379,7 @@ export function createVoiceSession(
   const listeners = new Set<() => void>();
   let snapshot: VoiceSessionSnapshot = {
     phase: "idle", target: null, microphoneMuted: false, speakerMuted: false,
-    error: null, notice: null,
+    error: null, notice: null, liveSpeech: [], activeChannelId: null,
   };
   let current: Attempt | undefined;
   let disposed = false;
@@ -605,6 +627,7 @@ export function createVoiceSession(
         publish({
           phase: error ? "error" : "idle", target: error ? attempt.target : null, error, notice,
           reconnecting: false, contextPreparation: undefined, contextStatusError: null,
+          liveSpeech: [], activeChannelId: null,
         });
       }
     } catch (failure) {
@@ -871,6 +894,60 @@ export function createVoiceSession(
     // Text and transcript deltas are not evidence of current audio activity.
     // Provider-managed/unmeasured playback is settled by the shared owner, never by
     // inferred browser completions or fabricated output IDs.
+    if (
+      type === "session.input_transcript.delta" ||
+      type === "session.output_transcript.delta"
+    ) {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      const delta = typeof event.delta === "string" ? event.delta
+        : typeof event.text === "string" ? event.text : null;
+      if (itemId && delta !== null) {
+        accumulateLiveSpeech(
+          itemId,
+          type === "session.input_transcript.delta" ? "user" : "assistant",
+          delta,
+        );
+      }
+      return;
+    }
+    if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      if (itemId) finalizeLiveSpeech(itemId, typeof event.text === "string" ? event.text : null);
+    }
+  }
+
+  /**
+   * Fold one transcript delta into the provisional live-speech list. Items
+   * are keyed by provider item id so an interrupted or resumed item never
+   * duplicates; the list is bounded so a long call cannot grow it without end
+   * (canonical rows carry the history once the call is over).
+   */
+  function accumulateLiveSpeech(itemId: string, speaker: "user" | "assistant", delta: string) {
+    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId);
+    let next: LiveSpeechItem[];
+    if (existing) {
+      next = snapshot.liveSpeech.map((item) =>
+        item.itemId === itemId ? { ...item, text: item.text + delta } : item,
+      );
+    } else {
+      next = [
+        ...snapshot.liveSpeech,
+        { itemId, speaker, text: delta, startedAt: env.now(), final: false },
+      ];
+      if (next.length > LIVE_SPEECH_MAX_ITEMS) next = next.slice(next.length - LIVE_SPEECH_MAX_ITEMS);
+    }
+    publish({ liveSpeech: next });
+  }
+
+  function finalizeLiveSpeech(itemId: string, text: string | null) {
+    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId)) return;
+    publish({
+      liveSpeech: snapshot.liveSpeech.map((item) =>
+        item.itemId === itemId
+          ? { ...item, final: true, text: text !== null && text.length >= item.text.length ? text : item.text }
+          : item,
+      ),
+    });
   }
 
   function preparePeer(attempt: Attempt) {
@@ -1154,7 +1231,9 @@ export function createVoiceSession(
               await stop(attempt, null, "Voice closed after 15 minutes of silence.");
               return;
             }
-            publish({ phase: "active" });
+            // A replacement channel is a fresh provider session; its item ids
+            // start over, so the provisional rows of the old channel are dropped.
+            publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
             assertOwns(attempt);
             gates(attempt);
             scheduleSilence(attempt);
@@ -1240,7 +1319,7 @@ export function createVoiceSession(
       attempt.active = await activatePending(attempt, parsePendingLiveChannelHandle(raw));
       assertOwns(attempt);
       attempt.lastActivity = env.now();
-      publish({ phase: "active" });
+      publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
       assertOwns(attempt);
       gates(attempt);
       scheduleSilence(attempt);

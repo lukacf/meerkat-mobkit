@@ -19017,6 +19017,13 @@ function textSignatureForMsg(message) {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
+function isCanonicalVoiceRowDuringCall(entry, callStartedAt) {
+  if (entry.kind !== "message") return false;
+  if (entry.variant === "meta") return false;
+  const createdAt = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAt)) return false;
+  return createdAt >= callStartedAt;
+}
 function buildChatMessages(entries) {
   const flat = entries.flatMap(flattenEntry);
   const merged = [];
@@ -19286,6 +19293,7 @@ var TranscriptView = import_react32.default.memo(function TranscriptView2({
   turns,
   messages,
   phase,
+  liveSpeech,
   lastAgentMessageId,
   workGraphActions,
   isLoadingHistory,
@@ -19381,6 +19389,27 @@ var TranscriptView = import_react32.default.memo(function TranscriptView2({
         turn.id
       );
     }),
+    liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      "div",
+      {
+        "aria-label": "Live speech",
+        className: "conv-turn conv-turn--live",
+        "data-testid": `chat-live-speech:${identity}`,
+        children: liveSpeech.map((item) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+          "div",
+          {
+            className: `msg msg--live msg--live-${item.speaker}`,
+            "data-live-final": item.final ? "true" : "false",
+            "data-testid": `chat-live-row:${identity}:${item.itemId}`,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__live-label", children: "live" }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: item.text }) })
+            ]
+          },
+          item.itemId
+        ))
+      }
+    ),
     phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
       "div",
       {
@@ -19486,6 +19515,8 @@ function ChatPane({
   agentLabel,
   identity,
   entries,
+  liveSpeech,
+  voiceCallStartedAt,
   phase,
   draft,
   sending,
@@ -19567,8 +19598,9 @@ function ChatPane({
   const activeTurnFrameRef = import_react32.default.useRef(0);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react32.default.useState([]);
   const messages = import_react32.default.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
+    const visible = voiceCallStartedAt ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt)) : entries;
+    return buildChatMessages(visible);
+  }, [entries, voiceCallStartedAt]);
   const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
   const [revealedFrom, setRevealedFrom] = import_react32.default.useState(null);
   const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
@@ -19997,6 +20029,7 @@ function ChatPane({
         turns,
         messages,
         phase,
+        liveSpeech,
         lastAgentMessageId,
         workGraphActions,
         isLoadingHistory,
@@ -21007,6 +21040,7 @@ var ACTIVITY_UNCONFIRMED_MESSAGE = "Voice activity could not be confirmed. Check
 var REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Check your network and voice access, then start again.";
 var TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
 var AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
+var LIVE_SPEECH_MAX_ITEMS = 400;
 async function queryVoiceAvailability(baseUrl, identity) {
   return (await queryVoiceReadiness(baseUrl, identity)).availability;
 }
@@ -21165,7 +21199,9 @@ function createVoiceSession(baseUrl, environment) {
     microphoneMuted: false,
     speakerMuted: false,
     error: null,
-    notice: null
+    notice: null,
+    liveSpeech: [],
+    activeChannelId: null
   };
   let current;
   let disposed = false;
@@ -21381,7 +21417,9 @@ function createVoiceSession(baseUrl, environment) {
           notice,
           reconnecting: false,
           contextPreparation: void 0,
-          contextStatusError: null
+          contextStatusError: null,
+          liveSpeech: [],
+          activeChannelId: null
         });
       }
     } catch (failure) {
@@ -21609,6 +21647,46 @@ function createVoiceSession(baseUrl, environment) {
     if (!attempt.active || snapshot.phase !== "active") return;
     const type = event.type;
     if (!snapshot.microphoneMuted && (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped")) activity(attempt);
+    if (type === "session.input_transcript.delta" || type === "session.output_transcript.delta") {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      const delta = typeof event.delta === "string" ? event.delta : typeof event.text === "string" ? event.text : null;
+      if (itemId && delta !== null) {
+        accumulateLiveSpeech(
+          itemId,
+          type === "session.input_transcript.delta" ? "user" : "assistant",
+          delta
+        );
+      }
+      return;
+    }
+    if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      if (itemId) finalizeLiveSpeech(itemId, typeof event.text === "string" ? event.text : null);
+    }
+  }
+  function accumulateLiveSpeech(itemId, speaker, delta) {
+    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId);
+    let next;
+    if (existing) {
+      next = snapshot.liveSpeech.map(
+        (item) => item.itemId === itemId ? { ...item, text: item.text + delta } : item
+      );
+    } else {
+      next = [
+        ...snapshot.liveSpeech,
+        { itemId, speaker, text: delta, startedAt: env.now(), final: false }
+      ];
+      if (next.length > LIVE_SPEECH_MAX_ITEMS) next = next.slice(next.length - LIVE_SPEECH_MAX_ITEMS);
+    }
+    publish({ liveSpeech: next });
+  }
+  function finalizeLiveSpeech(itemId, text) {
+    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId)) return;
+    publish({
+      liveSpeech: snapshot.liveSpeech.map(
+        (item) => item.itemId === itemId ? { ...item, final: true, text: text !== null && text.length >= item.text.length ? text : item.text } : item
+      )
+    });
   }
   function preparePeer(attempt) {
     const context = attempt.context;
@@ -21854,7 +21932,7 @@ function createVoiceSession(baseUrl, environment) {
               await stop(attempt, null, "Voice closed after 15 minutes of silence.");
               return;
             }
-            publish({ phase: "active" });
+            publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
             assertOwns(attempt);
             gates(attempt);
             scheduleSilence(attempt);
@@ -21931,7 +22009,7 @@ function createVoiceSession(baseUrl, environment) {
       attempt.active = await activatePending(attempt, parsePendingLiveChannelHandle(raw));
       assertOwns(attempt);
       attempt.lastActivity = env.now();
-      publish({ phase: "active" });
+      publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
       assertOwns(attempt);
       gates(attempt);
       scheduleSilence(attempt);
@@ -22467,6 +22545,14 @@ function ConsoleApp({ baseUrl, transport }) {
     [consoleTransport]
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
+  const voiceCallStartedAtRef = import_react37.default.useRef(null);
+  import_react37.default.useEffect(() => {
+    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
+      voiceCallStartedAtRef.current = Date.now();
+    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
+      voiceCallStartedAtRef.current = null;
+    }
+  }, [voiceState.phase]);
   const sampleVoiceWaveform = import_react37.default.useCallback(
     (source, samples) => voice?.sampleWaveform(source, samples),
     [voice]
@@ -25093,6 +25179,8 @@ function ConsoleApp({ baseUrl, transport }) {
         } : void 0,
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
+        liveSpeech: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceState.liveSpeech : void 0,
+        voiceCallStartedAt: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceCallStartedAtRef.current : null,
         workGraphActions: workGraphCardActionsFor(identity)
       }
     );

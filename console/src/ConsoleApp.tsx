@@ -649,6 +649,16 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     [consoleTransport],
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
+  // Wall-clock start of the active voice call, used by the chat pane to keep
+  // the call's canonical rows hidden behind the live rows until the call ends.
+  const voiceCallStartedAtRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
+      voiceCallStartedAtRef.current = Date.now();
+    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
+      voiceCallStartedAtRef.current = null;
+    }
+  }, [voiceState.phase]);
   const sampleVoiceWaveform = React.useCallback(
     (source: "microphone" | "speaker", samples: Float32Array<ArrayBuffer>) => voice?.sampleWaveform(source, samples),
     [voice],
@@ -4256,6 +4266,16 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         }
         voiceActive={voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error"}
         voiceDisabled={voiceState.phase === "closing"}
+        liveSpeech={
+          voiceState.target?.identity === identity && voiceState.phase === "active"
+            ? voiceState.liveSpeech
+            : undefined
+        }
+        voiceCallStartedAt={
+          voiceState.target?.identity === identity && voiceState.phase === "active"
+            ? voiceCallStartedAtRef.current
+            : null
+        }
         workGraphActions={workGraphCardActionsFor(identity)}
       />
     );

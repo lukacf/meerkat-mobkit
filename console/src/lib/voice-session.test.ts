@@ -594,6 +594,58 @@ test("stable snapshot and voice target survive independent background text", asy
   assert.equal(changes, before);
 });
 
+test("transcript deltas accumulate into provisional live speech keyed by provider item id", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, []);
+  const channel = h.peers[0].channel;
+  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "What is " });
+  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "the vault phrase" });
+  channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "The vault " });
+  channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "phrase is amber" });
+  const live = h.controller.getSnapshot().liveSpeech;
+  assert.equal(live.length, 2);
+  assert.deepEqual(live.map((item) => [item.itemId, item.speaker, item.text, item.final]), [
+    ["u1", "user", "What is the vault phrase", false],
+    ["a1", "assistant", "The vault phrase is amber", false],
+  ]);
+  channel.emit({ type: "session.output_transcript.done", item_id: "a1", text: "The vault phrase is amber." });
+  const finalized = h.controller.getSnapshot().liveSpeech.find((item) => item.itemId === "a1");
+  assert.equal(finalized?.final, true);
+  assert.equal(finalized?.text, "The vault phrase is amber.");
+  // Deltas without an item id or a string payload are ignored, never crash.
+  channel.emit({ type: "session.output_transcript.delta", delta: "orphan" });
+  channel.emit({ type: "session.output_transcript.delta", item_id: "a2", delta: 42 });
+  assert.equal(h.controller.getSnapshot().liveSpeech.length, 2);
+  assert.equal(h.controller.getSnapshot().activeChannelId, h.controller.getSnapshot().activeChannelId);
+  await h.controller.close();
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, [], "a normal close drops every provisional row");
+  assert.equal(h.controller.getSnapshot().activeChannelId, null);
+});
+
+test("provisional live speech is dropped when the call is superseded or the provider is lost", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  h.peers[0].channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "hello" });
+  assert.equal(h.controller.getSnapshot().liveSpeech.length, 1);
+  const error = Object.assign(new Error("internal detail"), { rpcError: voiceContract.superseded_error });
+  h.setRpc((method) => method === "mobkit/console/voice/replacement" ? Promise.reject(error) : undefined);
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, [], "supersession drops every provisional row");
+
+  const g = harness();
+  await g.controller.start(target);
+  g.peers[0].channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "partial" });
+  assert.equal(g.controller.getSnapshot().liveSpeech.length, 1);
+  g.peers[0].channel.emit({ type: "error" });
+  await g.clock.advance(1);
+  assert.notEqual(g.controller.getSnapshot().phase, "active");
+  assert.deepEqual(g.controller.getSnapshot().liveSpeech, [], "a provider error drops every provisional row");
+});
+
 test("microphone and speaker mute independently, output waveform and activity continue while speaker-muted", async () => {
   const h = harness();
   await h.controller.start(target);
