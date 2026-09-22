@@ -244,7 +244,15 @@ describe("voice and text composer", () => {
     expect(bodyText()).not.toContain("question 0");
     fireEvent.click(screen.getByTestId("chat-reveal-earlier:identity:alpha"));
     expect(mounted()).toHaveLength(TRANSCRIPT_WINDOW_TURNS + TRANSCRIPT_WINDOW_STEP);
+    // The per-identity log trimmed past the anchored turn (the first 70
+    // turns are gone): the window keeps its size at the oldest retained
+    // turns instead of snapping back to the 120-turn tail.
+    view.rerender(<ChatPane {...pane} entries={entries.slice(70 * 2) as never} />);
+    expect(mounted()).toHaveLength(230);
+    expect(view.container.querySelector('[data-chat-turn-index="0"]')).not.toBeNull();
+    expect(bodyText()).toContain("question 70");
     // Reaching the first turn removes the reveal affordance and shows all.
+    view.rerender(<ChatPane {...pane} entries={entries as never} />);
     fireEvent.click(screen.getByTestId("chat-reveal-earlier:identity:alpha"));
     expect(mounted()).toHaveLength(300);
     expect(screen.queryByTestId("chat-reveal-earlier:identity:alpha")).not.toBeInTheDocument();

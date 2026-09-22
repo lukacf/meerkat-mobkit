@@ -353,6 +353,71 @@ describe("console typing lag benchmark", () => {
     view.unmount();
   }, 30_000);
 
+  it("flushes coalesced frames on a bounded timer while the tab is hidden", async () => {
+    const frames = transcript(CHAT_IDENTITY, 5);
+    const transport = fakeTransport(frames);
+    seedDockedChat(1);
+    const counts = installRenderCounts();
+    const view = render(<ConsoleApp baseUrl="" transport={transport} />);
+    await settle(() => view.container.querySelectorAll(".conv-turn").length >= 5, "transcript render");
+    await flush();
+    const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    const raf = window.requestAnimationFrame;
+    let rafRequests = 0;
+    try {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      // A hidden tab never runs animation frames.
+      window.requestAnimationFrame = () => {
+        rafRequests += 1;
+        return 0;
+      };
+      resetRenderCounts();
+      await act(async () => {
+        transport.live?.({
+          id: "hidden:1",
+          event: "text_delta",
+          identity: CHAT_IDENTITY,
+          interactionId: "hidden-turn",
+          timestampMs: 1_900_000_000_000,
+          cursor: "console:900000",
+          data: "hidden token",
+        });
+      });
+      expect(rafRequests).toBe(0);
+      expect(counts["ConsoleApp"] ?? 0).toBe(0);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+      expect(counts["ConsoleApp"] ?? 0).toBe(1);
+      expect(view.container.textContent).toContain("hidden token");
+      // Becoming visible brings a pending timer flush forward immediately.
+      resetRenderCounts();
+      await act(async () => {
+        transport.live?.({
+          id: "hidden:2",
+          event: "text_delta",
+          identity: CHAT_IDENTITY,
+          interactionId: "hidden-turn",
+          timestampMs: 1_900_000_000_001,
+          cursor: "console:900001",
+          data: " then visible",
+        });
+      });
+      expect(counts["ConsoleApp"] ?? 0).toBe(0);
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(counts["ConsoleApp"] ?? 0).toBe(1);
+      expect(view.container.textContent).toContain("then visible");
+    } finally {
+      window.requestAnimationFrame = raf;
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+      if (visibility) Object.defineProperty(Document.prototype, "visibilityState", visibility);
+      view.unmount();
+    }
+  }, 30_000);
+
   it("issues no timeline queries while idle with 4 docked chats, visible or hidden", async () => {
     const m = await measure(50, { idleMs: 2_500, panels: 4 });
     console.log(

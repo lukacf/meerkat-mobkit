@@ -190,21 +190,31 @@ export const TURN_RAIL_MAX_TICKS = 48;
 export const TRANSCRIPT_WINDOW_TURNS = 120;
 export const TRANSCRIPT_WINDOW_STEP = 120;
 
+/// Where the reader revealed to: the first mounted turn's id, and how many
+/// turns were mounted at that moment. The id survives older-history
+/// prepends (indexes shift, ids do not); the count is the fallback when the
+/// anchored turn is gone (the per-identity log trimmed past it), so the
+/// window keeps its size at the oldest retained turns instead of snapping
+/// back to the tail.
+export interface TranscriptWindowAnchor {
+  turnId: string;
+  mountedTurns: number;
+}
+
 /// First rendered turn index for `turnCount` turns given the reveal state.
 /// `null` means the user has not scrolled into history: render the tail
-/// window. `""` means everything is revealed (the window reached the first
-/// turn, so server-side older history also shows as it loads).
+/// window. A `""` turn id means everything is revealed (the window reached
+/// the first turn, so server-side older history also shows as it loads).
 export function transcriptWindowStart(
   turnCount: number,
-  revealedFromTurnId: string | null,
+  anchor: TranscriptWindowAnchor | null,
   indexOfTurn: (id: string) => number,
 ): number {
-  if (revealedFromTurnId === "") return 0;
-  if (revealedFromTurnId !== null) {
-    const index = indexOfTurn(revealedFromTurnId);
-    if (index >= 0) return index;
-  }
-  return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+  if (anchor === null) return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+  if (anchor.turnId === "") return 0;
+  const index = indexOfTurn(anchor.turnId);
+  if (index >= 0) return index;
+  return Math.max(0, turnCount - Math.max(anchor.mountedTurns, TRANSCRIPT_WINDOW_TURNS));
 }
 
 /**
@@ -664,15 +674,82 @@ function CopyInlineButton({
 
 /// Msg objects are rebuilt from scratch on every transcript derivation, so a
 /// reference check alone would re-render every mounted row per SSE burst.
-/// Msg is plain data; compare by a cached serialisation instead. Only the
-/// mounted rows (the window) ever pay for this.
+/// Rows are compared by a signature over the fields that change when the
+/// rendered row changes (ids, statuses, counts, text lengths plus a sampled
+/// text hash), which is O(fields) per row rather than a full serialisation,
+/// so a long revealed window stays cheap per flush. The signature is cached
+/// per Msg object; a Msg is immutable once built.
 const msgSignatures = new WeakMap<Msg, string>();
+
+function textMark(value: string | undefined | null): string {
+  if (!value) return "0";
+  // Length plus 16 evenly sampled character codes: constant cost, and any
+  // in-place edit that keeps the length still moves a sample in practice.
+  let hash = value.length;
+  const step = Math.max(1, Math.floor(value.length / 16));
+  for (let i = 0; i < value.length; i += step) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return `${value.length}.${hash}`;
+}
+
+function blockSignature(block: ConversationRichBlock): string {
+  switch (block.type) {
+    case "paragraph":
+      return `p${textMark(block.text)}`;
+    case "heading":
+      return `h${block.level}${textMark(block.text)}`;
+    case "code":
+      return `c${block.language}:${textMark(block.body)}`;
+    case "table":
+      return `t${block.headers.length}x${block.rows.length}`;
+    case "command":
+      return `m${textMark(block.title)}:${textMark(block.body)}:${textMark(block.output)}:${textMark(block.footer)}`;
+    case "tool-call":
+      return `tc${block.toolCallId}:${block.name}:${block.status}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerImages?.length ?? 0}`;
+    case "file-change":
+      return `f${block.verb}:${block.name}:${block.plus}:${block.minus}`;
+    case "divider":
+      return `d${textMark(block.text)}`;
+    case "thinking":
+      return `k${block.final ? 1 : 0}${block.persisted ? 1 : 0}:${textMark(block.text)}`;
+    case "image":
+      return `i${block.src}:${block.width ?? 0}x${block.height ?? 0}`;
+    default:
+      return JSON.stringify(block);
+  }
+}
+
 function msgSignature(message: Msg): string {
   let signature = msgSignatures.get(message);
-  if (signature === undefined) {
-    signature = JSON.stringify(message);
-    msgSignatures.set(message, signature);
+  if (signature !== undefined) return signature;
+  const parts = [
+    message.id,
+    message.kind,
+    message.time,
+    message.who ?? "",
+    textMark(message.text),
+    message.workedFor ?? "",
+    textMark(message.workedForCopyText),
+  ];
+  if (message.blocks) parts.push(message.blocks.map(blockSignature).join(","));
+  const wg = message.workGraphEntry;
+  if (wg) {
+    parts.push(
+      `wg${wg.id}:${wg.status}:${wg.progress.completed}/${wg.progress.total}:${wg.itemOverflowCount ?? 0}:${wg.recentEvents?.length ?? 0}`,
+      wg.items.map((item) => `${item.itemId}:${item.status}:${item.revision ?? 0}:${item.priority ?? ""}:${item.ownerLabel ?? ""}`).join(","),
+      wg.attention.map((row) => `${row.bindingId}:${row.mode}:${row.statusLabel}:${row.revision ?? 0}`).join(","),
+    );
   }
+  const council = message.councilEntry;
+  if (council) {
+    parts.push(
+      `cc${council.id}:${council.status}:${council.exitReason}:${council.roundsCompleted}:${council.participants.length}`,
+      council.exchanges.map((row) => `${row.round}.${row.sequence}:${row.status}:${textMark(row.text)}`).join(","),
+    );
+  }
+  signature = parts.join("|");
+  msgSignatures.set(message, signature);
   return signature;
 }
 
@@ -1077,8 +1154,10 @@ export function ChatPane({
   const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.
-  const [revealedFrom, setRevealedFrom] = React.useState<{ identity: string; turnId: string } | null>(null);
-  const revealedFromTurnId = revealedFrom && revealedFrom.identity === identity ? revealedFrom.turnId : null;
+  const [revealedFrom, setRevealedFrom] = React.useState<
+    ({ identity: string } & TranscriptWindowAnchor) | null
+  >(null);
+  const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
   const turnIndexById = React.useMemo(() => {
     const index = new Map<string, number>();
     turns.forEach((turn, i) => index.set(turn.id, i));
@@ -1086,7 +1165,7 @@ export function ChatPane({
   }, [turns]);
   const windowStart = transcriptWindowStart(
     turns.length,
-    revealedFromTurnId,
+    windowAnchor,
     (id) => turnIndexById.get(id) ?? -1,
   );
   const pendingScrollToTurnRef = React.useRef<number | null>(null);
@@ -1101,7 +1180,7 @@ export function ChatPane({
         olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
       }
       const turnId = target === 0 ? "" : turns[target]?.id ?? "";
-      setRevealedFrom({ identity, turnId });
+      setRevealedFrom({ identity, turnId, mountedTurns: turns.length - target });
     },
     [identity, turns],
   );
