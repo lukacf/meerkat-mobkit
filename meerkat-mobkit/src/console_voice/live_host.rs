@@ -1708,11 +1708,17 @@ impl SharedHost {
         {
             return Err(VoiceError::Unauthorized);
         }
+        // Every unavailable answer below names its cause in the log; the wire
+        // answer stays the plain typed `Unavailable`.
+        let unavailable = |cause: &str| {
+            tracing::warn!(identity, cause, "console voice target unavailable");
+            VoiceError::Unavailable
+        };
         let authoritative = if let Some(runtime) = &self.identity_runtime {
             runtime
                 .member_alias_lifecycle_target(identity)
                 .await
-                .map_err(|_| VoiceError::Unavailable)?
+                .map_err(|error| unavailable(&format!("identity lifecycle lookup: {error:?}")))?
                 .is_some()
         } else {
             false
@@ -1724,8 +1730,8 @@ impl SharedHost {
             &json!({"identity": identity}),
         )
         .await
-        .map_err(|_| VoiceError::Unavailable)?
-        .ok_or(VoiceError::Unavailable)?;
+        .map_err(|error| unavailable(&format!("live target resolution: {error:?}")))?
+        .ok_or_else(|| unavailable("no live-capable session for identity"))?;
         let mut owner = None;
         for member in self.handle.list_members().await {
             if self
@@ -1736,13 +1742,24 @@ impl SharedHost {
                 == Some(&session)
             {
                 if owner.is_some() {
-                    return Err(VoiceError::Unavailable);
+                    return Err(unavailable("more than one member owns the target session"));
                 }
                 owner = Some(member.agent_identity);
             }
         }
+        let owner = owner.ok_or_else(|| unavailable("no mob member owns the target session"))?;
         self.binding
-            .register(principal, owner.ok_or(VoiceError::Unavailable)?, session)
+            .register(principal, owner, session)
+            .map_err(|error| match error {
+                VoiceError::Busy => {
+                    tracing::warn!(
+                        identity,
+                        "console voice target grant is held by another principal or identity"
+                    );
+                    VoiceError::Busy
+                }
+                other => other,
+            })
     }
 
     fn guard(
@@ -1848,7 +1865,14 @@ impl ConsoleVoiceHost for Host {
         let grant = match self.0.target(principal, identity).await {
             Ok(grant) => grant,
             Err(VoiceError::Unavailable | VoiceError::Busy) => return Ok(false),
-            Err(error) => return Err(error),
+            Err(error) => {
+                tracing::warn!(
+                    identity,
+                    ?error,
+                    "console voice readiness refused by target authorization"
+                );
+                return Err(error);
+            }
         };
         let target_ms = elapsed_ms(target_started);
         // Shared admission resolves the actual selected configured credential,
@@ -1859,14 +1883,23 @@ impl ConsoleVoiceHost for Host {
             .authority
             .probe_execution_readiness(&grant.session, &self.0.selection)
             .await;
-        tracing::debug!(
-            target: "meerkat_mobkit::console_voice::timing",
-            identity,
-            target_ms,
-            probe_ms = elapsed_ms(probe_started),
-            ok = probe.is_ok(),
-            "console voice readiness probe"
-        );
+        match &probe {
+            Ok(()) => tracing::debug!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity,
+                target_ms,
+                probe_ms = elapsed_ms(probe_started),
+                "console voice readiness probe"
+            ),
+            Err(error) => tracing::warn!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity,
+                target_ms,
+                probe_ms = elapsed_ms(probe_started),
+                cause = %error,
+                "console voice readiness probe failed: execution credential not ready"
+            ),
+        }
         probe.map(|()| true).map_err(|_| VoiceError::Unavailable)
     }
 

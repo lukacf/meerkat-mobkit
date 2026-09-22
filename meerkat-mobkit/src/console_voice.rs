@@ -615,11 +615,21 @@ impl ConsoleVoiceController {
             return Err(VoiceError::Unauthorized);
         }
         if self.stopped.load(Ordering::SeqCst) {
+            tracing::warn!(
+                identity,
+                "console voice readiness refused: controller stopped"
+            );
             return Ok(false);
         }
         match &self.host {
             Some(host) => host.ready(principal, identity).await,
-            None => Ok(false),
+            None => {
+                tracing::warn!(
+                    identity,
+                    "console voice readiness refused: no live host composed"
+                );
+                Ok(false)
+            }
         }
     }
 
@@ -639,6 +649,11 @@ impl ConsoleVoiceController {
             None => None,
         };
         if let Some(holder @ LiveOwner::ExternalLive { .. }) = holder {
+            tracing::info!(
+                identity,
+                holder = ?holder,
+                "console voice readiness refused: external live channel holds the voice path"
+            );
             return Ok(VoiceReadinessReport {
                 available: false,
                 reason: Some(VoiceReadinessReport::EXTERNAL_LIVE_ACTIVE),

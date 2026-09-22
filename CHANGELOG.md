@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     a model call. Meerkat's 4 MiB capture ceiling is unchanged. Measured on a
     40-turn seeded session the previous bounds took 4.0 to 5.9 s of summary
     generation for a 1.3 to 1.5 KB result (3 fragments).
+- Console voice readiness leaves a server-side trace. `mobkit/console/voice/
+  readiness` used to answer `available: false` silently when the host refused,
+  when the target could not be resolved, when the credential probe failed, or
+  when the server's own 5 s budget expired; the console then showed "Voice
+  readiness could not be checked" or "Voice is unavailable" with nothing in
+  the gateway log. Every negative answer now logs at warn with the identity,
+  elapsed time and classified cause (controller stopped, no live host
+  composed, external live channel holding the voice path, identity lookup or
+  live-target resolution failure, no or ambiguous member owning the session,
+  grant held by another principal, credential probe failure, or server budget
+  exceeded); a positive answer slower than 1 s logs at warn as slow, and a
+  normal positive answer logs its duration at info.
 - Console voice activation is traced. Every console voice control-plane RPC,
   the open stages, the durable-source validation, the WebRTC answer, the
   playback-owner registration, and the activation status polls log their wall
