@@ -21,6 +21,11 @@ This pack uses the TypeScript SDK to provide:
 
 ## Run
 
+For live and browser runs, complete the
+[shared prerequisites](../README.md#prerequisites), including the console
+dependencies. Only the browser smoke needs Playwright Chromium; the
+structural `--smoke` mode needs neither the console build nor a browser.
+
 Offline structure check:
 
 ```bash

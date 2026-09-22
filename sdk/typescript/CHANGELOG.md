@@ -251,17 +251,23 @@ Rename in your code:
 
 ### Reconcile error semantics + report shape
 
-- Reconcile responses may now include a `failures` array when meerkat's
-  native `MobHandle::reconcile` records per-identity failures. On the
-  Rust side, mobkit re-lifts a non-empty `failures` list into an `Err`
-  so callers using `?` see pre-0.6 propagation behaviour; the TS SDK
-  surfaces the full array on the JSON response.
+- Native Rust roster reconcile reports may now include a `failures` array
+  when meerkat's native `MobHandle::reconcile` records per-identity failures. On the
+  Rust side, `UnifiedRuntime::reconcile()` re-lifts a non-empty `failures`
+  list into `UnifiedRuntimeReconcileError::PartialFailure` so callers
+  using `?` see pre-0.6 propagation behaviour.
 
-- The `spawned` field of the reconcile report is now an array of
+- The `spawned` field in that native roster report's wire projection is now
+  an array of
   `{ agent_identity: string, member_ref: string }` objects (the canonical
   `MobSpawnReceiptWire` shape from meerkat-contracts) rather than a list
   of identity strings. `member_ref` is a server-resolved opaque handle
   for subsequent member-targeted control calls.
+
+These are native Rust roster changes, not TypeScript SDK module-reconcile
+results. The SDK's `MobHandle.reconcile(modules)` is a different operation:
+it calls `mobkit/reconcile` and returns `ReconcileResult` with
+`accepted`, `reconciledModules`, and `added`, not `failures` or `spawned`.
 
 ### Lightweight roster
 

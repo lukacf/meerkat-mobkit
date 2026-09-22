@@ -9,8 +9,14 @@ Distiller, Steward, and Hygienist have runnable profiles, fixtures, and mock
 lanes; deterministic checks and mock-lane invariant verdicts gate CI today.
 The Selector corpus is retained only as historical calibration evidence after
 the unactivated stage was retired. It is validated by `--check`, but it is not
-a runnable stage. Live modes run real model calls where provider auth resolves
-(exit-3 SKIP otherwise); they run in no CI lane yet (credentials).
+a runnable stage. Live modes run real model calls where provider auth resolves;
+they run in no CI lane yet (credentials). The stage binaries signal unavailable
+provider authentication with exit 3. If the initial live-auth probe returns 3,
+`scripts/memory-evals` prints `LIVE … SKIPPED`, runs a `MOCK-fallback`
+scorecard, and normally exits 0 if its deterministic checks pass. A zero
+wrapper exit alone does not certify live judgment coverage. Deterministic
+failures still fail the run, and authentication disappearing after a successful
+initial probe is a configuration failure, not a successful skip.
 
 ## Layout
 
@@ -28,12 +34,15 @@ memory-evals/
 ```bash
 scripts/memory-evals --check                  # schema/consistency validation (CI gate; default)
 scripts/memory-evals --stage distiller --mode mock  # deterministic mock scorecard
-make memory-evals                             # = --check
+make memory-evals                             # build eval binaries, --check, then all three mock lanes
 ```
 
-`--check` is deterministic and fast; it is what `make ci` gates on in v0.
-`--mode mock` runs a trivial title-word-overlap selector purely to exercise the
-scorecard plumbing — mock misses are expected and never fail the run.
+`--check` is deterministic and fast. `make ci` runs the `memory-evals` target,
+which builds the eval binaries, validates the corpus, and runs all three mock lanes.
+`--mode mock` uses no-op extraction for Distiller and scripted replies through
+the production parsers and validators for Steward and Hygienist. Deterministic
+failures gate every mode; judgment/extraction misses are informational in mock
+mode.
 
 The retired Selector profiles and fixtures remain readable inputs to
 `--check`; no live or mock command executes them.
@@ -55,8 +64,8 @@ shuffle_manifest = true
 ```
 
 Records and staged batches carry the profile that produced them
-(`CalibrationRef` in the record model, §7.1). Live mode exists for every stage;
-profile changes gate on the deterministic lanes in CI today, and on live
+(`CalibrationRef` in the record model, §7.1). Live mode exists for every runnable
+stage; profile changes gate on the deterministic lanes in CI today, and on live
 scorecard non-regression wherever provider auth resolves (no CI lane supplies
 credentials yet — see the design doc's §11 as-built note).
 

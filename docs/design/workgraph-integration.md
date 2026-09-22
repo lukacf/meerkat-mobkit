@@ -5,6 +5,10 @@ bindings, apply-time attention overlays) into MobKit: runtime wiring, agent
 tool surface, `mobkit/workgraph/*` JSON-RPC, Python + TypeScript SDK parity,
 and a conversation-native console widget.
 
+This is the historical 0.7.30 implementation plan and upstream survey, not a
+current source-line inventory. For the current immutable namespace-grant
+boundary, see the [wire contract qualification](workgraph-wire-contract.md#current-scope-qualification-meerkat-0840).
+
 Decision (Luka, 2026-07-08): the console centerpiece is an INLINE, expandable,
 interactive, live-updating WorkGraph card in the chat pane, rendered when an
 agent's turn calls workgraph tools. A light workbench panel is secondary.
@@ -54,8 +58,14 @@ agent's turn calls workgraph tools. A light workbench panel is secondary.
   `with_trusted_principal` (console: authenticated principal).
 - Owner-key lowering for identity-addressed attention:
   `meerkat_mob::lower_agent_identity_attention_target` → `mob/<mob_id>/agent/<identity>`.
-- CAS: every mutation carries `expected_revision: u64`; conflicts are typed errors.
-  Console card must retain per-item `revision`.
+- CAS: revision-checked mutations of existing work items or attention bindings
+  require `expected_revision: u64`; conflicts are typed errors. `create`,
+  `goal/create`, `link`, and `attention/prune` have no caller-supplied CAS token
+  (their transactional invariants still apply). Item mutations and
+  `goal/confirm`/`goal/request_close` use the work item's `revision`;
+  `attention/pause`/`attention/resume`/`attention/reassign` use
+  `attention.machine_state.revision`. Console cards must retain the relevant
+  revisions.
 
 ## Rust core (Stage A)
 

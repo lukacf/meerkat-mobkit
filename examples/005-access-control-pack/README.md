@@ -44,10 +44,14 @@ Three agents are spawned: `ops-lead` (`org=platform`), `scout-1`
 
 ## Run
 
+Complete the [shared prerequisites](../README.md#prerequisites), including
+the console build dependencies. This pack's HTTP-only smoke needs neither
+Playwright Chromium nor provider credentials.
+
 Deterministic smoke (offline, picks a free port):
 
 ```bash
-cd examples && npm install
+cd examples
 ./005-access-control-pack/examples.sh
 ```
 

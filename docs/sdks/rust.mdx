@@ -277,9 +277,15 @@ fn parse_jwks_json(json: &str) -> Result<JwksDocument, OidcContractError>
 ### Governance
 
 ```rust
-fn validate_governance_state(state: &str) -> Result<(), GovernanceValidationError>
-fn validate_traceability_statuses(statuses: &[&str]) -> Result<(), GovernanceValidationError>
+fn validate_governance_state(file_name: &str, content: &str) -> Result<(), GovernanceValidationError>
+fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceValidationError>
 ```
+
+The first function receives a diagnostic file label and document contents, not
+a state value or a file to read. The second accepts a Markdown table or YAML
+traceability document, including evidence for statuses that require it; it does
+not accept an array of status names. See [Governance](/reference/governance)
+for complete examples and the validators' limits.
 
 ## HTTP routers
 
@@ -307,14 +313,34 @@ let json_api_with_runtime: Router =
 Binding is separate from routing. `GatewayHttpBinding::bind_loopback()` is
 the default posture (loopback, ephemeral port) and
 `GatewayHttpBinding::bind(addr)` takes any `SocketAddr`; `http_base_url()`
-always returns the same-host form (`127.0.0.1` for `0.0.0.0` and `::`
-binds) and `with_advertised_base_url(..)` carries a proxy-facing base for
-your init reply. Run `validate_http_bind_policy("my-host", addr,
-HttpBindPolicy::for_gateway(allow_remote, &decisions))` before binding to
-get the gateways' fail-closed rule (non-loopback needs enforced console auth
-or the `allow_remote` acknowledgement) and `warn_on_non_loopback_bind` for
-their WARN line; all four live in `meerkat_mobkit::gateway_composition`. See
-[Deployment](/guides/deployment).
+returns the same-host form, mapping wildcard binds to loopback of the same
+family: `0.0.0.0:PORT` becomes `http://127.0.0.1:PORT`, and `[::]:PORT`
+becomes `http://[::1]:PORT`. Concrete bound addresses and the bound port are
+preserved. `with_advertised_base_url(..)` carries a proxy-facing base for
+your init reply.
+
+Before binding, validate the requested `addr: SocketAddr` against your launch's
+`allow_remote` acknowledgement and decision state:
+
+```rust
+use meerkat_mobkit::gateway_composition::{
+    validate_http_bind_policy, GatewaySurface, HttpBindPolicy,
+};
+
+validate_http_bind_policy(
+    GatewaySurface::RpcGateway,
+    addr,
+    HttpBindPolicy::for_gateway(allow_remote, &decisions),
+)?;
+```
+
+`GatewaySurface` is the closed gateway diagnostic enum, not an arbitrary
+host name; use `GatewaySurface::MobkitGateway` instead when representing that surface.
+The check applies the gateways' fail-closed rule: non-loopback needs enforced
+console auth or the `allow_remote` acknowledgement. After binding, call
+`warn_on_non_loopback_bind(surface, bound, &decisions)` for the gateways'
+WARN line. These helpers and `GatewayHttpBinding` live in
+`meerkat_mobkit::gateway_composition`. See [Deployment](/guides/deployment).
 
 ## See also
 

@@ -16,6 +16,12 @@ It is designed to stress:
 
 The configured model is `gemini-3.1-flash-lite-preview`, matching the cheap/fast flash-lite family available in the local Meerkat model catalog. The live example requires `GEMINI_API_KEY` or `GOOGLE_API_KEY`; `--demo-llm` is only for an explicitly shape-only local check and is not the real stress scenario.
 
+For live and browser runs, complete the
+[shared prerequisites](../README.md#prerequisites), including console build
+dependencies and, for the browser smoke, Playwright Chromium. The structural
+`--smoke` mode needs only the example JavaScript dependencies, not a provider
+key, console build, or browser.
+
 ## Structural Smoke
 
 ```bash
@@ -49,10 +55,20 @@ backfill/replay behavior, run the TypeScript entrypoint with persistent state
 enabled:
 
 ```bash
-MOBKIT_KEEP_EXAMPLE_STATE=1 npx tsx ./003-swarm-stress-pack/run.ts --skip-build
+(cd examples && MOBKIT_KEEP_EXAMPLE_STATE=1 npx tsx ./003-swarm-stress-pack/run.ts --skip-build)
 ```
 
-The dense topology is intentionally reapplied on restart. If you set
-`MOBKIT_SWARM_SKIP_DENSE=1`, the current runtime restores the 540-agent roster
-but can project zero `wired_to` edges until a proper topology restore path exists;
-that mode is useful only for isolating history loading from edge reconciliation.
+`--skip-build` assumes the gateway is already built. Dense topology reapplication
+is skipped when keep-state is enabled, recognized persistent state exists, and
+the restored undirected edge count reaches `DENSE_RESTORE_EDGE_FLOOR`
+(currently 22,500). Otherwise the example reapplies dense wiring, deferring it
+on recognized retained-state boots; requested autoburst/kickoff waits for that
+deferred application.
+
+`MOBKIT_SWARM_SKIP_DENSE=1` bypasses both the dense topology provider and its
+application regardless of the restored edge count. It does not guarantee
+either zero edges or a 540-agent roster. Burst roster restoration is a separate
+decision: `MOBKIT_SWARM_RESTORE_BURST=1` enables it, `=0` disables it, and
+otherwise it follows keep-state plus recognized persistent state. These flags
+describe the example's restart decisions, not a guarantee that every stored
+topology or session will restore successfully.

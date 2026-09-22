@@ -2649,10 +2649,11 @@ export function parseAgentBuildContext(raw: unknown): AgentBuildContext {
  * never does; the field is nullable because in-process Rust embedders and test
  * harnesses can call the provider without one.
  *
- * `previousIdentities` lists the identities the identity runtime has
- * registered at the time of the call. It is empty on the bootstrap calls
- * (nothing is registered yet) and populated on later re-derivations such as a
- * topology query or edge reconcile.
+ * `previousIdentities` is call-site-dependent prior-identity context, not an
+ * authoritative membership snapshot on every callback. Topology queries and
+ * edge reconciliation supply currently registered identities. Bootstrap, full
+ * roster refresh/reconcile, and reset-time spec adoption currently pass an
+ * empty list, even if identities are already registered.
  */
 export interface RosterContext {
   readonly mobDefinition: Record<string, unknown> | null;
