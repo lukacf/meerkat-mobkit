@@ -8510,3 +8510,61 @@ test("failure summary reads meerkat's typed error_report before the flat keys", 
   assert.equal(describeFailure({ session_id: "s" }, ""), "");
   assert.equal(describeFailure(undefined), "error");
 });
+
+test("mapFramesToTimelineEntries on a head-trimmed log equals the suffix of the full derivation", () => {
+  // ConsoleApp caps each identity log at MAX_IDENTITY_LOG_EVENTS and drops
+  // the oldest frames in transcript order. The cut can land inside an
+  // interaction (its `interaction_started` gone, its completion kept). The
+  // adapter must neither throw nor change any entry for interactions whose
+  // frames all survived, so the visible transcript below the cut is
+  // byte-identical to what the uncapped log would have rendered.
+  const agent = {
+    agent_id: "capped",
+    member_id: "capped",
+    label: "Capped",
+    kind: "identity" as const,
+  };
+  const full: Array<Record<string, unknown>> = [];
+  const base = 1_700_000_000_000;
+  for (let i = 0; i < 40; i += 1) {
+    const iid = `turn-${i}`;
+    const ts = base + i * 10_000;
+    full.push({ id: `${i}:start`, event: "interaction_started", interactionId: iid, timestampMs: ts, cursor: `console:${i * 4 + 1}`, data: { text: `question ${i}` } });
+    full.push({ id: `${i}:delta-a`, event: "text_delta", interactionId: iid, timestampMs: ts + 1_000, cursor: `console:${i * 4 + 2}`, data: { delta: "part one " } });
+    full.push({ id: `${i}:delta-b`, event: "text_delta", interactionId: iid, timestampMs: ts + 2_000, cursor: `console:${i * 4 + 3}`, data: { delta: "part two" } });
+    full.push({ id: `${i}:done`, event: "interaction_complete", interactionId: iid, timestampMs: ts + 3_000, cursor: `console:${i * 4 + 4}`, data: { text: `**answer ${i}** with \`code\`` } });
+  }
+  const options = { renderInteractionStartsAsUser: true, renderTextDeltas: true };
+  const fullEntries = mapFramesToTimelineEntries(agent, full as never, options as never);
+  // Cut mid-interaction 3: keep from its first delta onward.
+  const cut = 3 * 4 + 1;
+  const trimmed = full.slice(cut);
+  const trimmedEntries = mapFramesToTimelineEntries(agent, trimmed as never, options as never);
+  assert.ok(trimmedEntries.length > 0);
+  // Entries for interactions 4.. must be identical in both derivations.
+  const fromTurn4 = (entries: unknown[]) => {
+    const index = entries.findIndex((entry) => {
+      const iid = (entry as { interactionId?: string }).interactionId;
+      return iid === "turn-4";
+    });
+    assert.ok(index >= 0, "turn-4 entry present");
+    return entries.slice(index);
+  };
+  // Entry ids carry the frame's position in the input as a uniqueness
+  // suffix, so they shift by the number of dropped frames; every other
+  // field must match exactly.
+  const withoutPositionalId = (entries: unknown[]) =>
+    entries.map((entry) => {
+      const { id, ...rest } = entry as { id?: string };
+      return { ...rest, idStem: typeof id === "string" ? id.replace(/:\d+$/, "") : id };
+    });
+  assert.deepEqual(
+    withoutPositionalId(fromTurn4(trimmedEntries)),
+    withoutPositionalId(fromTurn4(fullEntries)),
+  );
+  // The orphaned tail of interaction 3 renders as something, not nothing.
+  assert.ok(
+    trimmedEntries.some((entry) => (entry as { interactionId?: string }).interactionId === "turn-3"),
+    "partially retained interaction still renders",
+  );
+});

@@ -220,6 +220,13 @@ function startMockConsoleServer(port, options = {}) {
     typeof options.timelineStreamFramesDuringSendByIdentity === "object"
       ? options.timelineStreamFramesDuringSendByIdentity
       : {};
+  // Frames the runtime appends once the send is accepted reach the unscoped
+  // live stream (append_and_emit); emitted right after the send response.
+  const timelineStreamFramesAfterSendByIdentity =
+    options.timelineStreamFramesAfterSendByIdentity &&
+    typeof options.timelineStreamFramesAfterSendByIdentity === "object"
+      ? options.timelineStreamFramesAfterSendByIdentity
+      : {};
   const streamClients = new Set();
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
@@ -276,19 +283,23 @@ function startMockConsoleServer(port, options = {}) {
     ].join("\n"));
   }
 
-  function emitDuringSendFrames(identity) {
+  function emitStreamFramesForIdentity(identity, framesByIdentity, label) {
     const frames =
-      typeof identity === "string" && Array.isArray(timelineStreamFramesDuringSendByIdentity[identity])
-        ? timelineStreamFramesDuringSendByIdentity[identity]
+      typeof identity === "string" && Array.isArray(framesByIdentity[identity])
+        ? framesByIdentity[identity]
         : [];
     if (frames.length === 0 || streamClients.size === 0) return;
     let index = 0;
     for (const res of streamClients) {
       for (const frame of frames) {
         index += 1;
-        writeTimelineStreamFrame(res, frame, `during-send-${index}`);
+        writeTimelineStreamFrame(res, frame, `${label}-${index}`);
       }
     }
+  }
+
+  function emitDuringSendFrames(identity) {
+    emitStreamFramesForIdentity(identity, timelineStreamFramesDuringSendByIdentity, "during-send");
   }
 
   const server = http.createServer((req, res) => {
@@ -755,6 +766,7 @@ function startMockConsoleServer(port, options = {}) {
           const writeSendResponse = () => {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(sendResponse);
+            emitStreamFramesForIdentity(identity, timelineStreamFramesAfterSendByIdentity, "after-send");
           };
           if (options.consoleSendResponseDelayMs) {
             setTimeout(writeSendResponse, options.consoleSendResponseDelayMs);
@@ -2314,11 +2326,18 @@ async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
       text: `Async-backfill worker line ${index + 1}`,
     },
   }));
+  // The runtime appends asynchronously backfilled session history through
+  // `append_and_emit`, so the frames reach the unscoped live stream as they
+  // land; the console has no periodic poll. The mock emits the backfilled
+  // tail on the stream after the pane has taken its provisional empty first
+  // page, and the console's terminal-frame reconcile re-queries the page.
   const server = await startMockConsoleServer(port, {
     includeBusyWorker: true,
     timelineFrameSnapshotsByIdentity: {
       "person-worker-alpha": [[], frames],
     },
+    timelineStreamFrames: [frames[249]],
+    timelineStreamInitialDelayMs: 4_000,
   });
   let browser;
 
@@ -2376,11 +2395,17 @@ async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
       text: `Non-empty async-backfill worker line ${index + 1}`,
     },
   }));
+  // As above: the backfilled history reaches the stream; here the first
+  // page was a provisional non-empty exhausted tail. A backfilled frame
+  // that the tail already held is deduplicated, so the stream carries the
+  // frame just below it to trigger the reconcile.
   const server = await startMockConsoleServer(port, {
     includeBusyWorker: true,
     timelineFrameSnapshotsByIdentity: {
       "person-worker-alpha": [[frames[249]], frames],
     },
+    timelineStreamFrames: [frames[248]],
+    timelineStreamInitialDelayMs: 4_000,
   });
   let browser;
 
@@ -2462,6 +2487,19 @@ async function runChatPaneReplayRecoveryReplacesStaleLocalLogProof() {
     timelineFramesAfterReplayUnavailableByIdentity: {
       "person-worker-alpha": [newFrame],
     },
+    // When the runtime's source log resets it appends a synthetic
+    // `replay_unavailable` frame and emits it on the stream; the console
+    // repairs each docked identity from its own cursor on that signal.
+    timelineStreamFrames: [
+      {
+        id: "replay-reset-1",
+        kind: "replay_unavailable",
+        identity: "__console__",
+        timestamp_ms: Date.parse("2026-05-23T22:47:30.000Z"),
+        payload: { reason: "source gap", source_kind: "console_event" },
+      },
+    ],
+    timelineStreamInitialDelayMs: 4_000,
   });
   let browser;
 
@@ -2505,6 +2543,15 @@ async function runRunStartedClearsOptimisticPromptProof() {
   const port = await reservePort();
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
   const baseTs = Date.parse("2026-05-23T20:45:00.000Z");
+  const orderProofComplete = {
+    id: "order-proof-complete",
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: "turn-identity:luka",
+    timestamp_ms: baseTs + 2_000,
+    cursor: "console:order:2",
+    payload: { text: "ORDER_PROOF_FINAL visible after the prompt." },
+  };
   const server = await startMockConsoleServer(port, {
     // Reproduce the send/SSE race: run_started arrives on the live stream
     // while the console send RPC is still in flight, before the optimistic
@@ -2524,17 +2571,13 @@ async function runRunStartedClearsOptimisticPromptProof() {
       ],
     },
     timelineFramesAfterSendByIdentity: {
-      "identity:luka": [
-        {
-          id: "order-proof-complete",
-          kind: "interaction_complete",
-          identity: "identity:luka",
-          interaction_id: "turn-identity:luka",
-          timestamp_ms: baseTs + 2_000,
-          cursor: "console:order:2",
-          payload: { text: "ORDER_PROOF_FINAL visible after the prompt." },
-        },
-      ],
+      "identity:luka": [orderProofComplete],
+    },
+    // The completion reaches the console on the live stream, as it does
+    // from the runtime; the paged query above only backs the reconcile
+    // that the terminal frame triggers.
+    timelineStreamFramesAfterSendByIdentity: {
+      "identity:luka": [orderProofComplete],
     },
   });
   let browser;
@@ -2591,6 +2634,15 @@ async function runUserInputEchoClearsOptimisticPromptProof() {
   const port = await reservePort();
   const prompt = "USER_INPUT_ECHO_PROOF should render once after the send race.";
   const baseTs = Date.parse("2026-05-23T21:20:00.000Z");
+  const userInputEchoComplete = {
+    id: "user-input-echo-complete",
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: "turn-identity:luka",
+    timestamp_ms: baseTs + 2_000,
+    cursor: "console:user-input-echo:2",
+    payload: { text: "USER_INPUT_ECHO_FINAL visible after one prompt." },
+  };
   const server = await startMockConsoleServer(port, {
     // Reproduce the send/SSE race for the canonical console user_input
     // echo. This is distinct from run_started: the echoed frame already has
@@ -2616,17 +2668,10 @@ async function runUserInputEchoClearsOptimisticPromptProof() {
       ],
     },
     timelineFramesAfterSendByIdentity: {
-      "identity:luka": [
-        {
-          id: "user-input-echo-complete",
-          kind: "interaction_complete",
-          identity: "identity:luka",
-          interaction_id: "turn-identity:luka",
-          timestamp_ms: baseTs + 2_000,
-          cursor: "console:user-input-echo:2",
-          payload: { text: "USER_INPUT_ECHO_FINAL visible after one prompt." },
-        },
-      ],
+      "identity:luka": [userInputEchoComplete],
+    },
+    timelineStreamFramesAfterSendByIdentity: {
+      "identity:luka": [userInputEchoComplete],
     },
   });
   let browser;

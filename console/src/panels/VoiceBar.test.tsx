@@ -1,8 +1,8 @@
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { VoiceSessionSnapshot } from "../lib/voice-session";
-import { ChatPane } from "./ChatPane";
+import { ChatPane, TRANSCRIPT_WINDOW_STEP, TRANSCRIPT_WINDOW_TURNS } from "./ChatPane";
 import { VoiceBar, VoiceButton } from "./VoiceBar";
 
 const activeState: VoiceSessionSnapshot = {
@@ -173,7 +173,90 @@ describe("voice and text composer", () => {
     expect(screen.queryByText("· text to background agent")).not.toBeInTheDocument();
     expect(screen.getByTestId("voice-bar").compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByTestId("chat-send:identity:beta"));
-    expect(beta.onSend).toHaveBeenCalledWith([]);
+    expect(beta.onSend).toHaveBeenCalledWith([], "Keep working on the text task");
+  });
+
+  it("owns the live draft locally, publishes it debounced, and adopts parent resets", async () => {
+    vi.useFakeTimers();
+    try {
+      const pane = props("Alpha");
+      const view = render(<ChatPane {...pane} />);
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      expect(input).toHaveValue("Keep working on the text task");
+      fireEvent.change(input, { target: { value: "Keep working on the text task now" } });
+      // Keystrokes stay local until the debounce elapses.
+      expect(input).toHaveValue("Keep working on the text task now");
+      expect(pane.onDraftChange).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(400);
+      expect(pane.onDraftChange).toHaveBeenCalledWith("Keep working on the text task now");
+      // The exact live text travels with the send, not the persisted copy.
+      fireEvent.click(screen.getByTestId("chat-send:identity:alpha"));
+      expect(pane.onSend).toHaveBeenCalledWith([], "Keep working on the text task now");
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(input).toHaveValue("");
+      // The parent clearing the persisted draft after the send empties the box.
+      view.rerender(<ChatPane {...pane} draft="" />);
+      expect(input).toHaveValue("");
+      // A parent-provided draft (panel navigation) replaces the local value.
+      view.rerender(<ChatPane {...pane} draft="Restored draft" />);
+      expect(input).toHaveValue("Restored draft");
+      // Blur publishes immediately without waiting for the debounce.
+      fireEvent.change(input, { target: { value: "Restored draft edited" } });
+      fireEvent.blur(input);
+      expect(pane.onDraftChange).toHaveBeenLastCalledWith("Restored draft edited");
+      // Sending before the debounce fires must not re-publish the sent
+      // text as a draft afterwards, and the box empties even though the
+      // parent's persisted copy never held it.
+      fireEvent.change(input, { target: { value: "Sent in a hurry" } });
+      fireEvent.click(screen.getByTestId("chat-send:identity:alpha"));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(pane.onSend).toHaveBeenLastCalledWith([], "Sent in a hurry");
+      expect(input).toHaveValue("");
+      vi.advanceTimersByTime(400);
+      expect(pane.onDraftChange).not.toHaveBeenCalledWith("Sent in a hurry");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("mounts only the newest transcript window and reveals earlier turns on demand", () => {
+    const USER = { id: "user", label: "You", role: "user" as const };
+    const AGENT = { id: "agent", label: "Alpha", role: "assistant" as const };
+    const entries = [];
+    for (let i = 0; i < 300; i += 1) {
+      const createdAt = new Date(1_700_000_000_000 + i * 60_000).toISOString();
+      entries.push({ id: `u-${i}`, kind: "message", variant: "plain", identity: USER, createdAt, text: `question ${i}` });
+      entries.push({ id: `a-${i}`, kind: "message", variant: "plain", identity: AGENT, createdAt, text: `answer ${i}` });
+    }
+    const pane = props("Alpha");
+    const view = render(<ChatPane {...pane} entries={entries as never} />);
+    const mounted = () => view.container.querySelectorAll("[data-chat-turn-index]");
+    expect(mounted()).toHaveLength(TRANSCRIPT_WINDOW_TURNS);
+    // Absolute indexes survive windowing: the newest turn is still turn 300.
+    expect(view.container.querySelector('[data-chat-turn-index="299"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-chat-turn-index="0"]')).toBeNull();
+    const bodyText = () => view.container.querySelector(".conv__body")?.textContent ?? "";
+    expect(bodyText()).toContain("answer 299");
+    expect(bodyText()).not.toContain("question 0");
+    fireEvent.click(screen.getByTestId("chat-reveal-earlier:identity:alpha"));
+    expect(mounted()).toHaveLength(TRANSCRIPT_WINDOW_TURNS + TRANSCRIPT_WINDOW_STEP);
+    // The per-identity log trimmed past the anchored turn (the first 70
+    // turns are gone): the window keeps its size at the oldest retained
+    // turns instead of snapping back to the 120-turn tail.
+    view.rerender(<ChatPane {...pane} entries={entries.slice(70 * 2) as never} />);
+    expect(mounted()).toHaveLength(230);
+    expect(view.container.querySelector('[data-chat-turn-index="0"]')).not.toBeNull();
+    expect(bodyText()).toContain("question 70");
+    // Reaching the first turn removes the reveal affordance and shows all.
+    view.rerender(<ChatPane {...pane} entries={entries as never} />);
+    fireEvent.click(screen.getByTestId("chat-reveal-earlier:identity:alpha"));
+    expect(mounted()).toHaveLength(300);
+    expect(screen.queryByTestId("chat-reveal-earlier:identity:alpha")).not.toBeInTheDocument();
+    expect(bodyText()).toContain("question 0");
   });
 
   it("does not offer voice without the authenticated capability callback", () => {

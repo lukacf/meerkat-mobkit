@@ -13,6 +13,7 @@ const consoleDependencies = [
   "d3-force",
   "react",
   "react/jsx-runtime",
+  "react/jsx-dev-runtime",
   "react-dom",
   "react-dom/client",
   "react-dom/test-utils",
@@ -20,6 +21,7 @@ const consoleDependencies = [
 
 export default defineConfig({
   root: repoRoot,
+  esbuild: { jsx: "automatic" },
   server: {
     fs: { allow: [repoRoot, consoleRoot] },
   },
@@ -34,6 +36,13 @@ export default defineConfig({
         replacement: path.resolve(
           consoleRoot,
           "../packages/console-core/src/runtime-types.ts",
+        ),
+      },
+      {
+        find: /^@console-components\/styles$/,
+        replacement: path.resolve(
+          consoleRoot,
+          "../packages/console-components/src/styles/index.ts",
         ),
       },
       {
@@ -57,6 +66,8 @@ export default defineConfig({
       "console/src/lib/use-voice-readiness.test.tsx",
       "console/src/lib/use-voice-controller.test.tsx",
       "console/src/panels/VoiceBar.test.tsx",
+      "console/src/perf/typing-lag.bench.test.tsx",
+      "console/src/lib/identity-log.test.ts",
       "packages/console-core/src/dock.test.ts",
       "packages/console-components/src/conversation/council-card.test.tsx",
       "packages/console-components/src/conversation/work-graph-card.test.tsx",

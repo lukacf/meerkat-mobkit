@@ -28,6 +28,7 @@ import type {
 } from "../types";
 import { Icon } from "../icon";
 import { isAgentPinned, sidebarAgentPinId } from "../lib/adapters";
+import { countRender } from "../lib/render-counts";
 
 export { sidebarAgentPinId } from "../lib/adapters";
 export {
@@ -1236,7 +1237,10 @@ function inboxCount(agent: ConsoleAgent): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function Sidebar({
+/// Memoised: the app root re-renders on every coalesced frame flush and on
+/// each debounced draft publish, and the props here are stable references
+/// (see ConsoleApp), so unchanged input skips the whole subtree.
+export const Sidebar = React.memo(function Sidebar({
   agents,
   selectedMemberId,
   recentActivity,
@@ -1250,6 +1254,7 @@ export function Sidebar({
   onTogglePinnedAgent,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
+  countRender("Sidebar");
   const [q, setQ] = React.useState("");
   const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
@@ -1795,4 +1800,4 @@ export function Sidebar({
       ) : null}
     </aside>
   );
-}
+});

@@ -1060,41 +1060,6 @@ function parseConversationCommandBlock(section) {
 }
 
 // ../packages/console-core/src/conversation.ts
-function conversationIdentityPresentation(identity) {
-  if (identity?.presentation) {
-    return identity.presentation;
-  }
-  if (identity?.role === "user") {
-    return "user";
-  }
-  if (identity?.role === "system") {
-    return "system";
-  }
-  if (identity?.role === "other") {
-    return "participant";
-  }
-  return "assistant";
-}
-function conversationIdentityShowsLabel(identity) {
-  if (!identity?.label) {
-    return false;
-  }
-  if (typeof identity.showLabel === "boolean") {
-    return identity.showLabel;
-  }
-  const presentation = conversationIdentityPresentation(identity);
-  return presentation === "participant" || presentation === "system";
-}
-function conversationIdentityGroupKey(identity) {
-  if (!identity) {
-    return "unknown:assistant:hidden";
-  }
-  return [
-    identity.id || "unknown",
-    conversationIdentityPresentation(identity),
-    conversationIdentityShowsLabel(identity) ? "label" : "hidden"
-  ].join(":");
-}
 function conversationEntryText(entry) {
   if (entry.kind === "summary") {
     const fileLines = entry.files.map((file) => `${file.name} +${file.plus} -${file.minus}`).join("\n");
@@ -1130,90 +1095,6 @@ function conversationEntryText(entry) {
     ].filter(Boolean).join("\n");
   }
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
-}
-function conversationGroupSubstantiveEntries(entries) {
-  return entries.filter((entry) => {
-    if (entry.kind === "summary") {
-      return true;
-    }
-    if (entry.kind !== "message" || entry.variant === "meta") {
-      return false;
-    }
-    const blocks = entry.blocks || [];
-    return !blocks.length || !blocks.every((block) => block.type === "tool-call");
-  });
-}
-function conversationGroupReconciliationAnchor(entries) {
-  const substantive = conversationGroupSubstantiveEntries(entries);
-  const scanOrder = [...substantive, ...entries.filter((entry) => !substantive.includes(entry))];
-  for (const entry of scanOrder) {
-    const groupReconciliationKey = entry.groupReconciliationKey?.trim();
-    if (groupReconciliationKey) {
-      return `group-reconciliation-${groupReconciliationKey}`;
-    }
-  }
-  for (const entry of scanOrder) {
-    const reconciliationKey = entry.reconciliationKey?.trim();
-    if (reconciliationKey) {
-      return `reconciliation-${reconciliationKey}`;
-    }
-  }
-  for (const entry of substantive) {
-    const interactionId = entry.interactionId?.trim();
-    if (interactionId) {
-      return `interaction-${interactionId}`;
-    }
-  }
-  for (const entry of substantive) {
-    if (entry.kind === "message") {
-      const runId = entry.runId?.trim();
-      if (runId) {
-        return `run-${runId}`;
-      }
-    }
-  }
-  return null;
-}
-function groupConversationTimelineEntries(entries) {
-  const groups = [];
-  const turnAnchorsByGroup = [];
-  let turnAnchor = "conversation-start";
-  for (const entry of entries) {
-    const current = groups.at(-1);
-    const identityKey = conversationIdentityGroupKey(entry.identity);
-    if (!current || conversationIdentityGroupKey(current.identity) !== identityKey) {
-      if (conversationIdentityPresentation(entry.identity) === "user") {
-        turnAnchor = entry.groupReconciliationKey?.trim() || entry.reconciliationKey?.trim() || entry.id;
-      }
-      turnAnchorsByGroup.push(turnAnchor);
-      groups.push({
-        // Placeholder id; every group is re-keyed in the post-pass once its
-        // entry list is complete.
-        id: `${turnAnchor}-group-${identityKey}-entry-${entry.id}`,
-        identity: entry.identity,
-        entries: [entry],
-        copyText: conversationEntryText(entry)
-      });
-      continue;
-    }
-    current.entries.push(entry);
-    const nextCopyText = conversationEntryText(entry);
-    current.copyText = [current.copyText, nextCopyText].filter(Boolean).join("\n\n");
-  }
-  const seenIds = /* @__PURE__ */ new Set();
-  return groups.map((group, index) => {
-    const reconciliationAnchor = conversationGroupReconciliationAnchor(group.entries);
-    const anchorEntry = conversationGroupSubstantiveEntries(group.entries)[0] || group.entries[0];
-    const base = reconciliationAnchor ? `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}` : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.id}`;
-    let id = base;
-    let discriminator = anchorEntry.id;
-    while (seenIds.has(id)) {
-      id = `${base}-dup-${discriminator}`;
-      discriminator = `${discriminator}x`;
-    }
-    seenIds.add(id);
-    return { ...group, id };
-  });
 }
 
 // ../packages/console-core/src/topology.ts
@@ -6304,21 +6185,23 @@ var import_react17 = __toESM(require("react"));
 var import_jsx_runtime27 = require("react/jsx-runtime");
 
 // src/lib/agents.ts
-function canonicalConsoleIdentity(identity, agents) {
+function buildConsoleIdentityAliasMap(agents) {
+  const map = /* @__PURE__ */ new Map();
+  for (const agent of agents) {
+    const canonical = (agent.identity || agent.member_id || agent.agent_id || "").trim();
+    if (!canonical) continue;
+    const labelIdentity = typeof agent.labels?.agent_identity === "string" ? agent.labels.agent_identity.trim() : "";
+    for (const alias of [agent.identity, agent.member_id, agent.agent_id, labelIdentity]) {
+      const key = alias?.trim();
+      if (key && !map.has(key)) map.set(key, canonical);
+    }
+  }
+  return map;
+}
+function canonicalConsoleIdentityFromMap(identity, aliases) {
   const normalized = identity?.trim() || "";
   if (!normalized) return "";
-  for (const agent of agents) {
-    const labelIdentity = typeof agent.labels?.agent_identity === "string" ? agent.labels.agent_identity.trim() : "";
-    const aliases = [
-      agent.identity,
-      agent.member_id,
-      agent.agent_id,
-      labelIdentity
-    ].filter((value) => Boolean(value?.trim())).map((value) => value.trim());
-    if (!aliases.includes(normalized)) continue;
-    return (agent.identity || agent.member_id || agent.agent_id || normalized).trim();
-  }
-  return normalized;
+  return aliases.get(normalized) ?? normalized;
 }
 function normalizeModelCapabilities(entry) {
   const record2 = entry && typeof entry === "object" ? entry : {};
@@ -6764,130 +6647,12 @@ function buildControlTarget2(kind) {
       return { id: "health", kind: "health", title: "Health" };
   }
 }
-function agentGroupKey(agent) {
-  return agent.group?.trim() || agent.role?.trim() || agent.kind?.trim() || "Agents";
-}
-function agentStateTone(state) {
-  switch (state) {
-    case "running":
-      return "accent";
-    case "active":
-      return "positive";
-    case "idle":
-      return "muted";
-    case "error":
-      return "negative";
-    default:
-      return "muted";
-  }
-}
-function agentHealthMeta(agent) {
-  const health = agent.progress?.health;
-  if (!health || health === "healthy") return null;
-  const tone = health === "wedged" ? "negative" : health === "degraded" ? "warning" : "muted";
-  return { id: "health", label: health, tone };
-}
-function sectionIconForGroup(group) {
-  const lower = group.toLowerCase();
-  if (lower.includes("coordinator") || lower.includes("system")) return "i-bolt";
-  if (lower.includes("domain") || lower.includes("specialist")) return "i-cube";
-  if (lower.includes("internal") || lower.includes("infra")) return "i-gear";
-  if (lower.includes("personal") || lower.includes("identity")) return "i-team";
-  return "i-folder";
-}
 function sidebarAgentPinId2(agent) {
   return agent.identity?.trim() || agent.labels?.agent_identity?.trim() || agent.member_id.trim();
 }
 function isAgentPinned2(agent, pinnedAgentIds) {
   if (!pinnedAgentIds) return false;
   return pinnedAgentIds.has(sidebarAgentPinId2(agent)) || pinnedAgentIds.has(agent.member_id);
-}
-function buildSidebarViewState2(args) {
-  const { agents, selectedMemberId, pinnedAgentIds = /* @__PURE__ */ new Set(), sortMode = "group" } = args;
-  const sorted = [...agents].sort((a, b) => {
-    const aPinned = isAgentPinned2(a, pinnedAgentIds) ? 0 : 1;
-    const bPinned = isAgentPinned2(b, pinnedAgentIds) ? 0 : 1;
-    if (aPinned !== bPinned) return aPinned - bPinned;
-    if (sortMode === "alpha") return a.label.localeCompare(b.label);
-    if (sortMode === "status") {
-      const stateOrder = (s) => s === "running" ? 0 : s === "active" ? 1 : 2;
-      const diff = stateOrder(a.state) - stateOrder(b.state);
-      if (diff !== 0) return diff;
-    }
-    return a.label.localeCompare(b.label);
-  });
-  const grouped = /* @__PURE__ */ new Map();
-  for (const agent of sorted) {
-    const key = agentGroupKey(agent);
-    const bucket = grouped.get(key) || [];
-    bucket.push(agent);
-    grouped.set(key, bucket);
-  }
-  const sections = Array.from(grouped.entries()).map(([group, members]) => ({
-    id: group,
-    title: group,
-    iconName: sectionIconForGroup(group),
-    meta: [{ id: "count", label: `${members.length}` }],
-    items: members.map((agent) => {
-      const isAddressable = agent.addressable || agent.affordances?.can_send_message;
-      const isPinned = isAgentPinned2(agent, pinnedAgentIds);
-      const watchFields = normalizeSidebarWatchFields(agent);
-      return {
-        id: agent.member_id,
-        title: agent.label,
-        subtitle: agent.identity || agent.member_id,
-        selected: agent.member_id === selectedMemberId,
-        pinned: isPinned,
-        disabled: !isAddressable,
-        ...watchFields,
-        meta: [
-          ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : [],
-          ...(() => {
-            const health = agentHealthMeta(agent);
-            return health ? [health] : [];
-          })(),
-          ...agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" }] : []
-        ],
-        actions: [
-          {
-            id: "inspect_identity",
-            label: "Open roster details",
-            iconName: "i-terminal"
-          },
-          {
-            id: "toggle_pin",
-            label: isPinned ? "Unpin agent" : "Pin agent",
-            iconName: "i-pin",
-            active: isPinned
-          }
-        ]
-      };
-    })
-  }));
-  return {
-    blocks: [
-      {
-        id: "controls",
-        kind: "action_strip",
-        actions: [
-          { id: "open_routing", label: "Routing", iconName: "i-swap" },
-          { id: "open_gating", label: "Gating", iconName: "i-bolt" },
-          { id: "open_topology", label: "Topology", iconName: "i-team" },
-          { id: "open_health", label: "Health", iconName: "i-gear" }
-        ]
-      },
-      {
-        id: "agents",
-        kind: "list",
-        title: "Agents",
-        actions: [
-          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
-          { id: "filter_sort", label: "Sort & filter", iconName: "i-sliders" }
-        ],
-        sections
-      }
-    ]
-  };
 }
 function buildRoutingSectionView2(args) {
   const routesRecord = typeof args.routesResponse === "object" && args.routesResponse !== null ? args.routesResponse : {};
@@ -8481,22 +8246,6 @@ function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
     return true;
   }
   return false;
-}
-function buildQuickPromptSuggestions(agent) {
-  const labels = agent?.labels ?? {};
-  const suggestions = [];
-  for (let index = 1; index <= 4; index++) {
-    const label = labels[`console_prompt_${index}_label`]?.trim();
-    const value = labels[`console_prompt_${index}_value`]?.trim();
-    if (!label || !value) continue;
-    suggestions.push({
-      id: `prompt-${index}`,
-      label,
-      value,
-      iconName: "i-bolt"
-    });
-  }
-  return suggestions;
 }
 function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
   if (frame.event !== "interaction_started" && frame.event !== "user_input") {
@@ -10276,90 +10025,6 @@ function hasOpenLifecycleBefore(frames, beforeIndex) {
   }
   return interactionOpen || runOpen;
 }
-function buildConversationViewState2(args) {
-  const groups = groupConversationTimelineEntries(args.entries);
-  const suggestions = buildQuickPromptSuggestions(args.agent ?? null);
-  return {
-    conversationId: args.memberId || "console",
-    title: args.agentLabel,
-    entries: args.entries,
-    groups,
-    turnDiff: null,
-    emptyState: args.entries.length === 0 ? {
-      title: args.agentLabel,
-      subtitle: "Send a message to start the conversation.",
-      ...suggestions.length ? { suggestions } : {}
-    } : null
-  };
-}
-function buildActivityRailViewState2(args) {
-  const presets = args.filterPresets || [];
-  const activePreset = presets.find((preset) => preset.id === args.activePresetId) || null;
-  const agentByIdentity = /* @__PURE__ */ new Map();
-  const watchedIdentities = /* @__PURE__ */ new Set();
-  const criticalIdentities = /* @__PURE__ */ new Set();
-  for (const agent of args.agents) {
-    if (agent.identity) agentByIdentity.set(agent.identity, agent);
-    agentByIdentity.set(agent.member_id, agent);
-    if (agent.watched && (agent.identity || agent.member_id)) {
-      watchedIdentities.add(agent.identity || agent.member_id);
-    }
-    if (agent.alertLevel === "critical" && (agent.identity || agent.member_id)) {
-      criticalIdentities.add(agent.identity || agent.member_id);
-    }
-  }
-  const filteredFrames = args.eventFrames.filter((frame) => {
-    if (ACTIVITY_HIDDEN_EVENTS2.has(frame.event)) {
-      return false;
-    }
-    if (frame.sourceKind === "session_history") {
-      return false;
-    }
-    const frameIdentity = frame.identity?.trim();
-    if (!activePreset) return true;
-    if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {
-      return false;
-    }
-    if (activePreset.alertLevels?.length && frameIdentity) {
-      const agent = agentByIdentity.get(frameIdentity);
-      if (!agent?.alertLevel || !activePreset.alertLevels.includes(agent.alertLevel)) {
-        return false;
-      }
-    }
-    if (activePreset.eventTypeFilter?.length && !activePreset.eventTypeFilter.includes(frame.event)) {
-      return false;
-    }
-    return true;
-  });
-  const pulseItems = filteredFrames.slice(0, 200).map((frame, index) => {
-    const frameIdentity = frame.identity?.trim();
-    const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
-    const ts = typeof frame.timestampMs === "number" ? new Date(frame.timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
-    return {
-      id: `event:${frame.id || index}`,
-      title: agent?.label || frameIdentity || frame.event || "event",
-      line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-      meta: `${frame.event}${ts ? ` \xB7 ${ts}` : ""}`,
-      ...agent ? { focusId: agent.member_id } : {}
-    };
-  });
-  return {
-    panels: [
-      {
-        id: "pulse",
-        kind: "pulse",
-        title: "Activity",
-        actions: presets.map((preset) => ({
-          id: preset.id,
-          label: preset.label,
-          active: preset.id === (activePreset?.id || "all")
-        })),
-        items: pulseItems,
-        emptyText: "No events yet"
-      }
-    ]
-  };
-}
 
 // src/lib/errors.ts
 function errorMessage(error) {
@@ -11502,7 +11167,7 @@ function createTimelineController(transport, facts) {
         cursor: page.latestCursor || page.nextCursor
       });
     },
-    async subscribeWithBackfill(input, onFrame) {
+    async subscribeWithBackfill(input, onFrame, onReplayGap) {
       const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame) => {
         const key = timelineDedupKey(frame);
@@ -11522,6 +11187,7 @@ function createTimelineController(transport, facts) {
         if (frame.event === "replay_unavailable") {
           void transport.queryTimeline({ ...input, mode: "recent" }).then((page) => {
             page.frames.forEach(deliver);
+            onReplayGap?.();
           });
           return;
         }
@@ -12453,6 +12119,90 @@ function SpriteSheet() {
 }
 function Icon({ name, className }) {
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("svg", { className, "aria-label": name, children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("use", { href: `#${name}` }) });
+}
+
+// src/lib/identity-log.ts
+function cursorSeq2(cursor) {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function transcriptOrder(a, aIndex, b, bIndex) {
+  const ta = typeof a.timestampMs === "number" ? a.timestampMs : Number.MAX_SAFE_INTEGER;
+  const tb = typeof b.timestampMs === "number" ? b.timestampMs : Number.MAX_SAFE_INTEGER;
+  if (ta !== tb) return ta - tb;
+  const ca = cursorSeq2(a.cursor);
+  const cb = cursorSeq2(b.cursor);
+  if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+  return aIndex - bIndex;
+}
+function insertSorted(sorted, frame) {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = lo + hi >>> 1;
+    if (transcriptOrder(sorted[mid], 0, frame, 1) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === sorted.length) sorted.push(frame);
+  else sorted.splice(lo, 0, frame);
+}
+function sortedEvents(log) {
+  if (log.sorted) return log.sorted;
+  const view = log.events.map((frame, index) => ({ frame, index })).sort((a, b) => transcriptOrder(a.frame, a.index, b.frame, b.index)).map((entry) => entry.frame);
+  log.sorted = view;
+  return view;
+}
+function pushFrame(log, key, frame) {
+  if (log.byKey.has(key)) return false;
+  log.byKey.set(key, log.events.length);
+  log.events.push(frame);
+  log.version += 1;
+  if (log.sorted) insertSorted(log.sorted, frame);
+  return true;
+}
+function mergeFrameUpdate(log, updated) {
+  if (!updated.id) return null;
+  const index = log.byKey.get(updated.id);
+  if (index === void 0) return null;
+  const previous = log.events[index];
+  if (!previous) return null;
+  const existingVersion = previous.frameVersion ?? 0;
+  const updatedVersion = updated.frameVersion ?? existingVersion;
+  if (updatedVersion < existingVersion) return null;
+  const next = { ...previous, ...updated };
+  log.events[index] = next;
+  log.version += 1;
+  const moved = previous.timestampMs !== next.timestampMs || cursorSeq2(previous.cursor) !== cursorSeq2(next.cursor);
+  if (moved) {
+    log.sorted = null;
+  } else if (log.sorted) {
+    const at = log.sorted.indexOf(previous);
+    if (at >= 0) log.sorted[at] = next;
+    else log.sorted = null;
+  }
+  return { previous, next, moved };
+}
+function trimIdentityLogCore(log, max, keyOf) {
+  const sorted = sortedEvents(log);
+  const drop = sorted.length - max;
+  if (drop <= 0) return null;
+  const dropped = new Set(sorted.slice(0, drop));
+  const retained = log.events.filter((frame) => !dropped.has(frame));
+  log.events = retained;
+  log.sorted = sorted.slice(drop);
+  log.byKey.clear();
+  retained.forEach((frame, index) => log.byKey.set(keyOf(frame), index));
+  log.version += 1;
+  return retained;
+}
+function resetIdentityLogCore(log) {
+  log.events = [];
+  log.byKey.clear();
+  log.sorted = null;
+  log.version += 1;
 }
 
 // src/panels/TimelinePanel.tsx
@@ -16738,6 +16488,14 @@ function useConsoleVariant() {
 
 // src/panels/Sidebar.tsx
 var import_react29 = __toESM(require("react"));
+
+// src/lib/render-counts.ts
+function countRender(name) {
+  const sink = globalThis.__consoleRenderCounts;
+  if (sink) sink[name] = (sink[name] ?? 0) + 1;
+}
+
+// src/panels/Sidebar.tsx
 var import_jsx_runtime39 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 var NAV_LABEL = {
@@ -17660,7 +17418,7 @@ function inboxCount(agent) {
   const n = Number(agent.labels?.console_inbox_count ?? 0);
   return Number.isFinite(n) ? n : 0;
 }
-function Sidebar({
+var Sidebar = import_react29.default.memo(function Sidebar2({
   agents,
   selectedMemberId,
   recentActivity,
@@ -17674,6 +17432,7 @@ function Sidebar({
   onTogglePinnedAgent,
   onOpenControl
 }) {
+  countRender("Sidebar");
   const [q, setQ] = import_react29.default.useState("");
   const [draggingOrder, setDraggingOrder] = import_react29.default.useState(null);
   const [dragOverOrder, setDragOverOrder] = import_react29.default.useState(null);
@@ -18171,7 +17930,7 @@ function Sidebar({
       }
     ) : null
   ] });
-}
+});
 
 // src/panels/SignalsRail.tsx
 var import_react30 = __toESM(require("react"));
@@ -18518,7 +18277,7 @@ function buildSignalGroupsForTest(frames) {
   }
   return groupSignals(next);
 }
-function SignalsRail({
+var SignalsRail = import_react30.default.memo(function SignalsRail2({
   frames,
   collapsed,
   filterPresets,
@@ -18528,6 +18287,7 @@ function SignalsRail({
   onPresetChange,
   onSelect
 }) {
+  countRender("SignalsRail");
   const presets = import_react30.default.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
@@ -18674,7 +18434,7 @@ function SignalsRail({
       })
     ] })
   ] });
-}
+});
 
 // src/panels/ChatPane.tsx
 var import_react32 = __toESM(require("react"));
@@ -18833,13 +18593,14 @@ function AudioWaveform({
   }, [active, sampleWaveform, source]);
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("canvas", { className: `voice-waveform voice-waveform--${source}`, ref: canvasRef, "aria-hidden": "true" });
 }
-function VoiceBar({
+var VoiceBar = import_react31.default.memo(function VoiceBar2({
   state,
   sampleWaveform,
   onClose,
   onToggleMicrophone,
   onToggleSpeaker
 }) {
+  countRender("VoiceBar");
   if (!state.target && !state.error && !state.notice) return null;
   const active = state.phase === "active";
   const transitioning = state.phase === "requesting" || state.phase === "connecting";
@@ -18940,7 +18701,7 @@ function VoiceBar({
       ]
     }
   );
-}
+});
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -19071,6 +18832,15 @@ function buildChatTurns(messages) {
 }
 var TURN_RAIL_TICK_PX = 10;
 var TURN_RAIL_MAX_TICKS = 48;
+var TRANSCRIPT_WINDOW_TURNS = 120;
+var TRANSCRIPT_WINDOW_STEP = 120;
+function transcriptWindowStart(turnCount, anchor, indexOfTurn) {
+  if (anchor === null) return Math.max(0, turnCount - TRANSCRIPT_WINDOW_TURNS);
+  if (anchor.turnId === "") return 0;
+  const index = indexOfTurn(anchor.turnId);
+  if (index >= 0) return index;
+  return Math.max(0, turnCount - Math.max(anchor.mountedTurns, TRANSCRIPT_WINDOW_TURNS));
+}
 function windowTurnRail(turnCount, railHeightPx) {
   if (turnCount <= 1) return { start: 0, overflow: 0 };
   const byHeight = railHeightPx === null || !Number.isFinite(railHeightPx) || railHeightPx <= 0 ? TURN_RAIL_MAX_TICKS : Math.floor(railHeightPx / TURN_RAIL_TICK_PX);
@@ -19353,6 +19123,7 @@ async function fileFromConsoleBlobUrl(url) {
 }
 function CopyInlineButton({
   text,
+  getText,
   label,
   className = ""
 }) {
@@ -19364,10 +19135,12 @@ function CopyInlineButton({
     },
     []
   );
-  const disabled = !text.trim();
+  const disabled = getText ? false : !(text ?? "").trim();
   async function copy() {
     if (disabled) return;
-    const ok = await copyTextToClipboard(text);
+    const value = getText ? getText() : text ?? "";
+    if (!value.trim()) return;
+    const ok = await copyTextToClipboard(value);
     setOutcome(ok ? "copied" : "failed");
     if (resetTimer.current) clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
@@ -19391,6 +19164,312 @@ function CopyInlineButton({
     }
   );
 }
+var msgSignatures = /* @__PURE__ */ new WeakMap();
+function textMark(value) {
+  if (!value) return "0";
+  let hash2 = value.length;
+  const step = Math.max(1, Math.floor(value.length / 16));
+  for (let i = 0; i < value.length; i += step) {
+    hash2 = hash2 * 31 + value.charCodeAt(i) | 0;
+  }
+  return `${value.length}.${hash2}`;
+}
+function blockSignature(block) {
+  switch (block.type) {
+    case "paragraph":
+      return `p${textMark(block.text)}`;
+    case "heading":
+      return `h${block.level}${textMark(block.text)}`;
+    case "code":
+      return `c${block.language}:${textMark(block.body)}`;
+    case "table":
+      return `t${block.headers.length}x${block.rows.length}`;
+    case "command":
+      return `m${textMark(block.title)}:${textMark(block.body)}:${textMark(block.output)}:${textMark(block.footer)}`;
+    case "tool-call":
+      return `tc${block.toolCallId}:${block.name}:${block.status}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerImages?.length ?? 0}`;
+    case "file-change":
+      return `f${block.verb}:${block.name}:${block.plus}:${block.minus}`;
+    case "divider":
+      return `d${textMark(block.text)}`;
+    case "thinking":
+      return `k${block.final ? 1 : 0}${block.persisted ? 1 : 0}:${textMark(block.text)}`;
+    case "image":
+      return `i${block.src}:${block.width ?? 0}x${block.height ?? 0}`;
+    default:
+      return JSON.stringify(block);
+  }
+}
+function msgSignature(message) {
+  let signature = msgSignatures.get(message);
+  if (signature !== void 0) return signature;
+  const parts = [
+    message.id,
+    message.kind,
+    message.time,
+    message.who ?? "",
+    textMark(message.text),
+    message.workedFor ?? "",
+    textMark(message.workedForCopyText)
+  ];
+  if (message.blocks) parts.push(message.blocks.map(blockSignature).join(","));
+  const wg = message.workGraphEntry;
+  if (wg) {
+    parts.push(
+      `wg${wg.id}:${wg.status}:${wg.progress.completed}/${wg.progress.total}:${wg.itemOverflowCount ?? 0}:${wg.recentEvents?.length ?? 0}`,
+      wg.items.map((item) => `${item.itemId}:${item.status}:${item.revision ?? 0}:${item.priority ?? ""}:${item.ownerLabel ?? ""}`).join(","),
+      wg.attention.map((row) => `${row.bindingId}:${row.mode}:${row.statusLabel}:${row.revision ?? 0}`).join(",")
+    );
+  }
+  const council = message.councilEntry;
+  if (council) {
+    parts.push(
+      `cc${council.id}:${council.status}:${council.exitReason}:${council.roundsCompleted}:${council.participants.length}`,
+      council.exchanges.map((row) => `${row.round}.${row.sequence}:${row.status}:${textMark(row.text)}`).join(",")
+    );
+  }
+  signature = parts.join("|");
+  msgSignatures.set(message, signature);
+  return signature;
+}
+function messageRowPropsEqual(prev, next) {
+  return prev.suppressWorked === next.suppressWorked && prev.workGraphActions === next.workGraphActions && (prev.message === next.message || msgSignature(prev.message) === msgSignature(next.message));
+}
+var MessageRow = import_react32.default.memo(function MessageRow2({
+  message: m,
+  suppressWorked,
+  workGraphActions
+}) {
+  countRender("MessageRow");
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: m.time }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__bubble", children: [
+      (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+      m.kind === "council" && m.councilEntry ? (
+        // No actions prop: council participants are destroyed
+        // before the tool returns, so the card is observational
+        // by construction.
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CouncilCard, { entry: m.councilEntry })
+      ) : null,
+      m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: m.text }),
+      m.workedFor && !suppressWorked && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__worked", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
+          "Worked for ",
+          m.workedFor
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          CopyInlineButton,
+          {
+            className: "msg__copy--inline",
+            label: "Copy work time",
+            text: m.workedForCopyText || `Worked for ${m.workedFor}`
+          }
+        )
+      ] })
+    ] })
+  ] });
+}, messageRowPropsEqual);
+var TranscriptView = import_react32.default.memo(function TranscriptView2({
+  identity,
+  agentLabel,
+  turns,
+  messages,
+  phase,
+  lastAgentMessageId,
+  workGraphActions,
+  isLoadingHistory,
+  hasOlderHistory,
+  loadingOlderHistory,
+  windowStart,
+  onRevealEarlier,
+  bodyRef,
+  onScroll,
+  onRequestOlderHistory
+}) {
+  countRender("TranscriptView");
+  const windowedTurns = import_react32.default.useMemo(
+    () => windowStart > 0 ? turns.slice(windowStart) : turns,
+    [turns, windowStart]
+  );
+  const getTranscriptText = import_react32.default.useCallback(() => transcriptCopyText(messages), [messages]);
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__body", onScroll, ref: bodyRef, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      CopyInlineButton,
+      {
+        className: "msg__copy--transcript",
+        label: "Copy transcript",
+        getText: getTranscriptText
+      }
+    ),
+    windowStart > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      "button",
+      {
+        className: "conv__history",
+        "data-testid": `chat-reveal-earlier:${identity}`,
+        onClick: onRevealEarlier,
+        type: "button",
+        children: "Show earlier messages"
+      }
+    ) : hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      "button",
+      {
+        className: "conv__history",
+        disabled: loadingOlderHistory,
+        onClick: onRequestOlderHistory,
+        type: "button",
+        children: loadingOlderHistory ? "Loading history" : "Load older history"
+      }
+    ),
+    messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+      "div",
+      {
+        className: "msg msg--origin",
+        "data-testid": `chat-loading-history:${identity}`,
+        "aria-live": "polite",
+        "aria-busy": "true",
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+          ] }) })
+        ]
+      }
+    ),
+    messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg msg--origin", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__text", children: [
+        "No messages yet. Say hello to ",
+        agentLabel,
+        "."
+      ] }) })
+    ] }),
+    windowedTurns.map((turn, offset) => {
+      const turnIndex = windowStart + offset;
+      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        "div",
+        {
+          "aria-label": `Turn ${turnIndex + 1}`,
+          className: "conv-turn",
+          "data-chat-turn-index": turnIndex,
+          "data-testid": `chat-turn:${identity}:${turnIndex}`,
+          children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+            MessageRow,
+            {
+              message: m,
+              suppressWorked: Boolean(phase && m.id === lastAgentMessageId),
+              workGraphActions
+            },
+            m.id
+          ))
+        },
+        turn.id
+      );
+    }),
+    phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+      "div",
+      {
+        className: "msg msg--typing",
+        "data-testid": `chat-typing:${identity}`,
+        "aria-live": "polite",
+        "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+          ] }) })
+        ]
+      }
+    )
+  ] });
+});
+var ComposerTextarea = import_react32.default.memo(function ComposerTextarea2({
+  identity,
+  agentLabel,
+  agentRole,
+  initialValue,
+  externalValue,
+  readOnly,
+  sendWithheld,
+  voiceActive,
+  voiceDisabled,
+  onVoiceToggle,
+  stagedCount,
+  canAttachImages,
+  sending,
+  sendLabel,
+  onLiveChange,
+  onBlur,
+  onSubmit
+}) {
+  countRender("ComposerTextarea");
+  const [value, setValue] = import_react32.default.useState(initialValue);
+  const appliedExternalRef = import_react32.default.useRef(null);
+  import_react32.default.useEffect(() => {
+    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
+    appliedExternalRef.current = externalValue.at;
+    setValue(externalValue.value);
+  }, [externalValue]);
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      "textarea",
+      {
+        placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
+        value,
+        disabled: readOnly || sendWithheld,
+        onChange: (e) => {
+          if (readOnly || sendWithheld) return;
+          setValue(e.target.value);
+          onLiveChange(e.target.value);
+        },
+        onBlur,
+        onKeyDown: (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            onSubmit();
+          }
+        },
+        rows: 2,
+        "data-testid": `chat-composer:${identity}`
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__chip mono", children: agentRole || "agent" }),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__spacer" }),
+      onVoiceToggle && !readOnly && !sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        VoiceButton,
+        {
+          agentLabel,
+          active: voiceActive,
+          disabled: voiceDisabled,
+          onClick: onVoiceToggle
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        "button",
+        {
+          className: "composer__send",
+          disabled: !value.trim() && stagedCount === 0 || readOnly || sendWithheld || stagedCount > 0 && !canAttachImages || stagedCount > 0 && sending,
+          onClick: onSubmit,
+          "data-testid": `chat-send:${identity}`,
+          children: [
+            sendLabel,
+            "  \u23CE"
+          ]
+        }
+      )
+    ] })
+  ] });
+});
 function ChatPane({
   agent,
   agentLabel,
@@ -19423,6 +19502,53 @@ function ChatPane({
   voiceDisabled = false,
   workGraphActions = null
 }) {
+  countRender("ChatPane");
+  const liveDraftRef = import_react32.default.useRef(draft);
+  const lastPublishedDraftRef = import_react32.default.useRef(draft);
+  const publishDraftTimerRef = import_react32.default.useRef(null);
+  const onDraftChangeRef = import_react32.default.useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const publishDraft = import_react32.default.useCallback(() => {
+    if (publishDraftTimerRef.current !== null) {
+      window.clearTimeout(publishDraftTimerRef.current);
+      publishDraftTimerRef.current = null;
+    }
+    const value = liveDraftRef.current;
+    if (value === lastPublishedDraftRef.current) return;
+    lastPublishedDraftRef.current = value;
+    onDraftChangeRef.current(value);
+  }, []);
+  const [liveDraftTick, setLiveDraftTick] = import_react32.default.useState(0);
+  const onLiveChange = import_react32.default.useCallback(
+    (value) => {
+      liveDraftRef.current = value;
+      if (publishDraftTimerRef.current !== null) {
+        window.clearTimeout(publishDraftTimerRef.current);
+      }
+      publishDraftTimerRef.current = window.setTimeout(publishDraft, 400);
+      if (value.includes("blob")) setLiveDraftTick((n) => n + 1);
+    },
+    [publishDraft]
+  );
+  const externalSeqRef = import_react32.default.useRef(0);
+  const [externalValue, setExternalValue] = import_react32.default.useState(null);
+  import_react32.default.useEffect(() => {
+    if (draft === lastPublishedDraftRef.current) return;
+    lastPublishedDraftRef.current = draft;
+    liveDraftRef.current = draft;
+    externalSeqRef.current += 1;
+    setExternalValue({ value: draft, at: externalSeqRef.current });
+  }, [draft]);
+  const setDraft = import_react32.default.useCallback(
+    (value) => {
+      liveDraftRef.current = value;
+      externalSeqRef.current += 1;
+      setExternalValue({ value, at: externalSeqRef.current });
+      publishDraft();
+    },
+    [publishDraft]
+  );
+  import_react32.default.useEffect(() => () => publishDraft(), [publishDraft]);
   const bodyRef = import_react32.default.useRef(null);
   const preserveOlderHistoryScrollRef = import_react32.default.useRef(false);
   const olderHistoryScrollHeightRef = import_react32.default.useRef(0);
@@ -19433,6 +19559,35 @@ function ChatPane({
     return buildChatMessages(entries);
   }, [entries]);
   const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const [revealedFrom, setRevealedFrom] = import_react32.default.useState(null);
+  const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
+  const turnIndexById = import_react32.default.useMemo(() => {
+    const index = /* @__PURE__ */ new Map();
+    turns.forEach((turn, i) => index.set(turn.id, i));
+    return index;
+  }, [turns]);
+  const windowStart = transcriptWindowStart(
+    turns.length,
+    windowAnchor,
+    (id) => turnIndexById.get(id) ?? -1
+  );
+  const pendingScrollToTurnRef = import_react32.default.useRef(null);
+  const revealTurnsFrom = import_react32.default.useCallback(
+    (firstIndex) => {
+      const target = Math.max(0, firstIndex);
+      if (bodyRef.current) {
+        preserveOlderHistoryScrollRef.current = true;
+        olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+        olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+      }
+      const turnId = target === 0 ? "" : turns[target]?.id ?? "";
+      setRevealedFrom({ identity, turnId, mountedTurns: turns.length - target });
+    },
+    [identity, turns]
+  );
+  const revealEarlier = import_react32.default.useCallback(() => {
+    revealTurnsFrom(windowStart - TRANSCRIPT_WINDOW_STEP);
+  }, [revealTurnsFrom, windowStart]);
   const lastAgentMessageId = import_react32.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].kind === "agent") return messages[i].id;
@@ -19474,7 +19629,13 @@ function ChatPane({
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [scrollSignature]);
+  }, [scrollSignature, windowStart]);
+  import_react32.default.useEffect(() => {
+    const turnIndex = pendingScrollToTurnRef.current;
+    if (turnIndex === null || turnIndex < windowStart) return;
+    pendingScrollToTurnRef.current = null;
+    bodyRef.current?.querySelector(`[data-chat-turn-index="${turnIndex}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [windowStart]);
   import_react32.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
@@ -19542,20 +19703,51 @@ function ChatPane({
     };
   }, [scheduleActiveTurnUpdate, updateActiveTurn]);
   function scrollToTurn(turnIndex) {
+    if (turnIndex < windowStart) {
+      pendingScrollToTurnRef.current = turnIndex;
+      revealTurnsFrom(turnIndex);
+      return;
+    }
     const turnNode = bodyRef.current?.querySelector(
       `[data-chat-turn-index="${turnIndex}"]`
     );
     turnNode?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
-  function requestOlderHistory() {
+  const onLoadOlderRef = import_react32.default.useRef(onLoadOlder);
+  onLoadOlderRef.current = onLoadOlder;
+  const requestOlderHistory = import_react32.default.useCallback(() => {
     if (bodyRef.current) {
       preserveOlderHistoryScrollRef.current = true;
       olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
       olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
     }
-    onLoadOlder?.();
-  }
-  const transcriptText = import_react32.default.useMemo(() => transcriptCopyText(messages), [messages]);
+    onLoadOlderRef.current?.();
+  }, []);
+  const hasOlderHistoryRef = import_react32.default.useRef(hasOlderHistory);
+  hasOlderHistoryRef.current = hasOlderHistory;
+  const loadingOlderHistoryRef = import_react32.default.useRef(loadingOlderHistory);
+  loadingOlderHistoryRef.current = loadingOlderHistory;
+  const windowStartRef = import_react32.default.useRef(windowStart);
+  windowStartRef.current = windowStart;
+  const revealEarlierRef = import_react32.default.useRef(revealEarlier);
+  revealEarlierRef.current = revealEarlier;
+  const onBodyScroll = import_react32.default.useCallback(
+    (event) => {
+      if (event.currentTarget.scrollLeft !== 0) {
+        event.currentTarget.scrollLeft = 0;
+      }
+      scheduleActiveTurnUpdate();
+      if (event.currentTarget.scrollTop > 32) return;
+      if (windowStartRef.current > 0) {
+        revealEarlierRef.current();
+        return;
+      }
+      if (hasOlderHistoryRef.current && !loadingOlderHistoryRef.current) {
+        requestOlderHistory();
+      }
+    },
+    [requestOlderHistory, scheduleActiveTurnUpdate]
+  );
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
@@ -19688,7 +19880,7 @@ function ChatPane({
   }
   import_react32.default.useEffect(() => {
     if (!canAttachImages) return;
-    const refs = consoleBlobReferencesFromText(draft);
+    const refs = consoleBlobReferencesFromText(liveDraftRef.current);
     if (refs.length === 0) {
       resolvedDraftBlobRefs.current = "";
       return;
@@ -19710,7 +19902,8 @@ function ChatPane({
         if (files.length > 0) {
           resolvedDraftBlobRefs.current = signature;
           addFiles(files);
-          onDraftChange(stripConsoleBlobReferencesFromText(draft, refs));
+          setDraft(stripConsoleBlobReferencesFromText(liveDraftRef.current, refs));
+          publishDraft();
         } else {
           setAttachmentError("No usable image found");
         }
@@ -19720,8 +19913,11 @@ function ChatPane({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [canAttachImages, draft, onDraftChange]);
-  async function submitComposer() {
+  }, [canAttachImages, liveDraftTick, publishDraft, setDraft]);
+  const submitComposerRef = import_react32.default.useRef(async () => {
+  });
+  const submitComposer = import_react32.default.useCallback(() => submitComposerRef.current(), []);
+  submitComposerRef.current = async function submitComposerNow() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
       return;
@@ -19729,21 +19925,43 @@ function ChatPane({
     if (readOnly || sendWithheld) {
       return;
     }
-    if (!draft.trim() && staged.length === 0) {
+    const text = liveDraftRef.current;
+    if (!text.trim() && staged.length === 0) {
       return;
     }
     const files = staged.map((item) => item.file);
+    if (publishDraftTimerRef.current !== null) {
+      window.clearTimeout(publishDraftTimerRef.current);
+      publishDraftTimerRef.current = null;
+    }
+    const setComposerText = (value) => {
+      liveDraftRef.current = value;
+      lastPublishedDraftRef.current = value;
+      externalSeqRef.current += 1;
+      setExternalValue({ value, at: externalSeqRef.current });
+    };
+    const clearedEarly = files.length === 0;
+    if (clearedEarly) setComposerText("");
+    const restoreIfUntouched = () => {
+      if (clearedEarly && liveDraftRef.current === "") setComposerText(text);
+    };
     try {
-      const sent = await onSend(files);
+      const sent = await onSend(files, text);
       if (sent) {
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
+        if (!clearedEarly && liveDraftRef.current === text) setComposerText("");
+        return;
       }
+      restoreIfUntouched();
+      publishDraft();
     } catch {
       setAttachmentError("send failed; images retained");
+      restoreIfUntouched();
+      publishDraft();
     }
-  }
+  };
   return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv__avatar", children: initial }),
@@ -19760,125 +19978,24 @@ function ChatPane({
         agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
-      "div",
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      TranscriptView,
       {
-        className: "conv__body",
-        onScroll: (event) => {
-          if (event.currentTarget.scrollLeft !== 0) {
-            event.currentTarget.scrollLeft = 0;
-          }
-          scheduleActiveTurnUpdate();
-          if (event.currentTarget.scrollTop <= 32 && hasOlderHistory && !loadingOlderHistory) {
-            requestOlderHistory();
-          }
-        },
-        ref: bodyRef,
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-            CopyInlineButton,
-            {
-              className: "msg__copy--transcript",
-              label: "Copy transcript",
-              text: transcriptText
-            }
-          ),
-          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-            "button",
-            {
-              className: "conv__history",
-              disabled: loadingOlderHistory,
-              onClick: requestOlderHistory,
-              type: "button",
-              children: loadingOlderHistory ? "Loading history" : "Load older history"
-            }
-          ),
-          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
-            "div",
-            {
-              className: "msg msg--origin",
-              "data-testid": `chat-loading-history:${identity}`,
-              "aria-live": "polite",
-              "aria-busy": "true",
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
-                ] }) })
-              ]
-            }
-          ),
-          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg msg--origin", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__text", children: [
-              "No messages yet. Say hello to ",
-              agentLabel,
-              "."
-            ] }) })
-          ] }),
-          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-            "div",
-            {
-              "aria-label": `Turn ${turnIndex + 1}`,
-              className: "conv-turn",
-              "data-chat-turn-index": turnIndex,
-              "data-testid": `chat-turn:${identity}:${turnIndex}`,
-              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: m.time }),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__bubble", children: [
-                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
-                  m.kind === "council" && m.councilEntry ? (
-                    // No actions prop: council participants are destroyed
-                    // before the tool returns, so the card is observational
-                    // by construction.
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CouncilCard, { entry: m.councilEntry })
-                  ) : null,
-                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: m.text }),
-                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__worked", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
-                      "Worked for ",
-                      m.workedFor
-                    ] }),
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-                      CopyInlineButton,
-                      {
-                        className: "msg__copy--inline",
-                        label: "Copy work time",
-                        text: m.workedForCopyText || `Worked for ${m.workedFor}`
-                      }
-                    )
-                  ] })
-                ] })
-              ] }, m.id))
-            },
-            turn.id
-          )),
-          phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
-            "div",
-            {
-              className: "msg msg--typing",
-              "data-testid": `chat-typing:${identity}`,
-              "aria-live": "polite",
-              "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
-                ] }) })
-              ]
-            }
-          )
-        ]
+        identity,
+        agentLabel,
+        turns,
+        messages,
+        phase,
+        lastAgentMessageId,
+        workGraphActions,
+        isLoadingHistory,
+        hasOlderHistory,
+        loadingOlderHistory,
+        windowStart,
+        onRevealEarlier: revealEarlier,
+        bodyRef,
+        onScroll: onBodyScroll,
+        onRequestOlderHistory: requestOlderHistory
       }
     ),
     turnRail,
@@ -19928,50 +20045,27 @@ function ChatPane({
               /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
             ] }, item.id)) }),
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-              "textarea",
+              ComposerTextarea,
               {
-                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
-                value: draft,
-                disabled: readOnly || sendWithheld,
-                onChange: (e) => {
-                  if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
-                },
-                onKeyDown: (e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    submitComposer();
-                  }
-                },
-                rows: 2,
-                "data-testid": `chat-composer:${identity}`
+                identity,
+                agentLabel,
+                agentRole: agent?.role ?? null,
+                initialValue: draft,
+                externalValue,
+                readOnly,
+                sendWithheld,
+                voiceActive,
+                voiceDisabled,
+                onVoiceToggle,
+                stagedCount: staged.length,
+                canAttachImages,
+                sending,
+                sendLabel,
+                onLiveChange,
+                onBlur: publishDraft,
+                onSubmit: submitComposer
               }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__spacer" }),
-              onVoiceToggle && !readOnly && !sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-                VoiceButton,
-                {
-                  agentLabel,
-                  active: voiceActive,
-                  disabled: voiceDisabled,
-                  onClick: onVoiceToggle
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
-                "button",
-                {
-                  className: "composer__send",
-                  disabled: !draft.trim() && staged.length === 0 || readOnly || sendWithheld || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
-                  onClick: submitComposer,
-                  "data-testid": `chat-send:${identity}`,
-                  children: [
-                    sendLabel,
-                    "  \u23CE"
-                  ]
-                }
-              )
-            ] })
+            )
           ]
         }
       ),
@@ -22035,6 +22129,9 @@ function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
 
 // src/ConsoleApp.tsx
 var import_jsx_runtime45 = require("react/jsx-runtime");
+var MAX_IDENTITY_LOG_EVENTS = 5e3;
+var IDENTITY_LOG_TRIM_SLACK = 500;
+var HIDDEN_TAB_FLUSH_MS = 250;
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -22172,13 +22269,6 @@ function browserLocalStorage() {
     return null;
   }
 }
-function cursorSeq2(cursor) {
-  if (!cursor) return null;
-  const match = /^console:(\d+)$/.exec(cursor);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
 function isTerminalTurnCompletedFrame(frame) {
   if (frame.event !== "turn_completed") return false;
   const data = frame.data && typeof frame.data === "object" ? frame.data : {};
@@ -22277,14 +22367,15 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed",
   "server_tool_content"
 ]);
-function ConsoleApp({ baseUrl }) {
+function ConsoleApp({ baseUrl, transport }) {
+  countRender("ConsoleApp");
   const consoleFetchTimeoutMsRef = import_react37.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
   const consoleTransport = import_react37.default.useMemo(
-    () => createHttpConsoleTransport2({
+    () => transport ?? createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
-    [baseUrl]
+    [baseUrl, transport]
   );
   const consoleController = import_react37.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
@@ -22356,6 +22447,11 @@ function ConsoleApp({ baseUrl }) {
     edges: [],
     attention: [],
     events: [],
+    version: 0,
+    sorted: null,
+    busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+    busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
+    busyFoldValid: true,
     capturedAt: null,
     unavailable: false,
     denied: false,
@@ -22465,7 +22561,54 @@ function ConsoleApp({ baseUrl }) {
     });
   }, [agents, sidebarPinsStorageKey]);
   const [, setRenderTick] = import_react37.default.useState(0);
-  const forceRender = import_react37.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const liveFramesRef = import_react37.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react37.default.useState([]);
+  const renderScheduledRef = import_react37.default.useRef(null);
+  const liveFramesDirtyRef = import_react37.default.useRef(false);
+  const flushScheduledRender = import_react37.default.useCallback(() => {
+    renderScheduledRef.current = null;
+    if (liveFramesDirtyRef.current) {
+      liveFramesDirtyRef.current = false;
+      setLiveFrames(liveFramesRef.current);
+    }
+    setRenderTick((n) => n + 1);
+  }, []);
+  const cancelScheduledRender = import_react37.default.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || typeof window === "undefined") return;
+    if (pending.kind === "raf") window.cancelAnimationFrame(pending.id);
+    else window.clearTimeout(pending.id);
+    renderScheduledRef.current = null;
+  }, []);
+  const forceRender = import_react37.default.useCallback(() => {
+    if (renderScheduledRef.current !== null) return;
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      renderScheduledRef.current = {
+        kind: "raf",
+        id: window.requestAnimationFrame(flushScheduledRender)
+      };
+      return;
+    }
+    renderScheduledRef.current = {
+      kind: "timeout",
+      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16)
+    };
+  }, [flushScheduledRender]);
+  import_react37.default.useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (renderScheduledRef.current?.kind !== "timeout") return;
+      cancelScheduledRender();
+      flushScheduledRender();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      cancelScheduledRender();
+    };
+  }, [cancelScheduledRender, flushScheduledRender]);
   const stagedAttachmentsRef = import_react37.default.useRef(stagedAttachmentsByIdentity);
   import_react37.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
@@ -22529,6 +22672,11 @@ function ConsoleApp({ baseUrl }) {
     if (!log) {
       log = {
         events: [],
+        version: 0,
+        sorted: null,
+        busyLifecycle: { interactionOpen: false, runOpen: false, legacyBusy: false },
+        busyFoldedThroughMs: Number.NEGATIVE_INFINITY,
+        busyFoldValid: true,
         byKey: /* @__PURE__ */ new Map(),
         hasServerLog: null,
         olderHistoryExhausted: false,
@@ -22616,28 +22764,30 @@ function ConsoleApp({ baseUrl }) {
     const log = getOrCreateLog(identity);
     if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
       const updated = frame.data.frame;
-      if (updated && updated.id) {
-        const existingIndex = log.byKey.get(updated.id);
-        if (existingIndex !== void 0 && log.events[existingIndex]) {
-          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
-          const updatedVersion = updated.frameVersion ?? existingVersion;
-          if (updatedVersion < existingVersion) return false;
-          log.events[existingIndex] = {
-            ...log.events[existingIndex],
-            ...updated
-          };
-          clearOptimisticUserForFrame(identity, updated);
-          return true;
-        }
+      if (!updated || !updated.id) return false;
+      const merged = mergeFrameUpdate(log, updated);
+      if (!merged) return false;
+      if (merged.moved || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+        log.busyFoldValid = false;
       }
-      return false;
+      clearOptimisticUserForFrame(identity, updated);
+      return true;
     }
-    const key = frameKey(frame);
-    if (log.byKey.has(key)) return false;
-    log.byKey.set(key, log.events.length);
-    log.events.push(frame);
+    if (!pushFrame(log, frameKey(frame), frame)) return false;
+    if (log.events.length > MAX_IDENTITY_LOG_EVENTS + IDENTITY_LOG_TRIM_SLACK) {
+      trimIdentityLog(log);
+    }
     clearOptimisticUserForFrame(identity, frame);
     return true;
+  }
+  function trimIdentityLog(log) {
+    const retained = trimIdentityLogCore(log, MAX_IDENTITY_LOG_EVENTS, frameKey);
+    if (!retained) return;
+    let oldest;
+    for (const frame of retained) oldest = olderCursor(oldest, frame.cursor);
+    log.oldestTimelineCursor = oldest;
+    log.olderHistoryExhausted = false;
+    log.olderHistoryExhaustedAtCursor = void 0;
   }
   function busyTransitionForFrame(frame) {
     if (frame.event === "user_input") {
@@ -22666,12 +22816,7 @@ function ConsoleApp({ baseUrl }) {
       maybeDrainHead(identity);
     }
   }
-  function updateBusyStateForFrame(identity, frame) {
-    const lifecycle = identityLifecycleRef.current[identity] ?? {
-      interactionOpen: false,
-      runOpen: false
-    };
-    let sawLifecycle = true;
+  function foldBusyFrame(lifecycle, frame) {
     switch (frame.event) {
       case "interaction_started":
         lifecycle.interactionOpen = true;
@@ -22688,92 +22833,82 @@ function ConsoleApp({ baseUrl }) {
       case "message_delivery_failed":
         lifecycle.interactionOpen = false;
         lifecycle.runOpen = false;
+        lifecycle.legacyBusy = false;
         break;
       case "system_notice":
         if (systemNoticeClearsBusyState2(frame)) {
           lifecycle.interactionOpen = false;
           lifecycle.runOpen = false;
-        } else {
-          sawLifecycle = false;
+          lifecycle.legacyBusy = false;
         }
         break;
-      default:
-        sawLifecycle = false;
+      default: {
+        const transition = busyTransitionForFrame(frame);
+        if (transition !== null) lifecycle.legacyBusy = transition;
         break;
+      }
     }
-    identityLifecycleRef.current[identity] = lifecycle;
-    if (sawLifecycle) {
-      applyBusyState(identity, lifecycle.interactionOpen || lifecycle.runOpen);
+  }
+  function busyFromLifecycle(lifecycle) {
+    return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
+  }
+  function updateBusyStateForFrame(identity, frame) {
+    if (busyTransitionForFrame(frame) === null) return;
+    const log = getOrCreateLog(identity);
+    const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
+    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs) {
+      recomputeBusyStateFromLog(identity);
       return;
     }
-    const transition = busyTransitionForFrame(frame);
-    if (transition !== null) {
-      applyBusyState(
-        identity,
-        transition || lifecycle.interactionOpen || lifecycle.runOpen
-      );
-    }
+    foldBusyFrame(log.busyLifecycle, frame);
+    log.busyFoldedThroughMs = ts;
+    identityLifecycleRef.current[identity] = {
+      interactionOpen: log.busyLifecycle.interactionOpen,
+      runOpen: log.busyLifecycle.runOpen
+    };
+    applyBusyState(identity, busyFromLifecycle(log.busyLifecycle));
   }
   function recomputeBusyStateFromLog(identity) {
     const log = getOrCreateLog(identity);
-    const lifecycleFrames = log.events.filter((frame) => busyTransitionForFrame(frame) !== null).sort((a, b) => {
+    const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
+    let foldedThrough = Number.NEGATIVE_INFINITY;
+    const ordered = sortedEvents(log).filter((frame) => busyTransitionForFrame(frame) !== null).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
       if (rankDelta !== 0) return rankDelta;
       return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
     });
-    const lifecycle = { interactionOpen: false, runOpen: false };
-    let legacyBusy = false;
-    for (const frame of lifecycleFrames) {
-      switch (frame.event) {
-        case "interaction_started":
-          lifecycle.interactionOpen = true;
-          break;
-        case "run_started":
-          lifecycle.runOpen = true;
-          break;
-        case "run_completed":
-        case "run_failed":
-          lifecycle.runOpen = false;
-          break;
-        case "interaction_complete":
-        case "interaction_failed":
-        case "message_delivery_failed":
-          lifecycle.interactionOpen = false;
-          lifecycle.runOpen = false;
-          legacyBusy = false;
-          break;
-        case "system_notice":
-          if (systemNoticeClearsBusyState2(frame)) {
-            lifecycle.interactionOpen = false;
-            lifecycle.runOpen = false;
-            legacyBusy = false;
-          }
-          break;
-        default: {
-          const transition = busyTransitionForFrame(frame);
-          if (transition !== null) legacyBusy = transition;
-          break;
-        }
+    for (const frame of ordered) {
+      foldBusyFrame(lifecycle, frame);
+      if (typeof frame.timestampMs === "number" && frame.timestampMs > foldedThrough) {
+        foldedThrough = frame.timestampMs;
       }
     }
-    identityLifecycleRef.current[identity] = lifecycle;
-    applyBusyState(
-      identity,
-      lifecycle.interactionOpen || lifecycle.runOpen || legacyBusy
-    );
+    log.busyLifecycle = lifecycle;
+    log.busyFoldedThroughMs = foldedThrough;
+    log.busyFoldValid = true;
+    identityLifecycleRef.current[identity] = {
+      interactionOpen: lifecycle.interactionOpen,
+      runOpen: lifecycle.runOpen
+    };
+    applyBusyState(identity, busyFromLifecycle(lifecycle));
   }
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
     let changed = false;
+    let appended = false;
     for (const frame of frames) {
       if (!appendFrame(identity, frame)) continue;
       changed = true;
+      appended = true;
       if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
-    recomputeBusyStateFromLog(identity);
+    if (appended || !log.busyFoldValid) {
+      log.busyFoldValid = false;
+      recomputeBusyStateFromLog(identity);
+    }
     if (recomputePhaseForIdentity(identity)) changed = true;
     return changed;
   }
@@ -22820,8 +22955,8 @@ function ConsoleApp({ baseUrl }) {
   function resetIdentityTimelineReplayMetadata(identity) {
     const log = getOrCreateLog(identity);
     const changed = log.events.length > 0 || log.byKey.size > 0 || log.oldestTimelineCursor !== void 0 || log.latestTimelineCursor !== void 0 || log.olderHistoryExhausted !== false || log.olderHistoryExhaustedAtCursor !== void 0;
-    log.events = [];
-    log.byKey.clear();
+    resetIdentityLogCore(log);
+    log.busyFoldValid = false;
     log.oldestTimelineCursor = void 0;
     log.latestTimelineCursor = void 0;
     log.olderHistoryExhausted = false;
@@ -22901,26 +23036,34 @@ function ConsoleApp({ baseUrl }) {
   function getSortedFrames(identity) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
-    return log.events.map((frame, index) => ({ frame, index })).sort((a, b) => {
-      const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-      const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-      if (ta !== tb) return ta - tb;
-      const ca = cursorSeq2(a.frame.cursor);
-      const cb = cursorSeq2(b.frame.cursor);
-      if (ca !== null && cb !== null && ca !== cb) return ca - cb;
-      return a.index - b.index;
-    }).map((entry) => entry.frame);
+    return sortedEvents(log);
+  }
+  const derivedTranscriptRef = import_react37.default.useRef({});
+  function derivedTranscriptFor(identity, panelId, agent) {
+    const log = getOrCreateLog(identity);
+    const cached = derivedTranscriptRef.current[identity];
+    if (cached && cached.version === log.version && cached.agent === agent) {
+      return cached;
+    }
+    const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panelId);
+    const conversationEntries = mapFramesToTimelineEntries2(agent, sortedFrames, {
+      renderInteractionStartsAsUser: true,
+      renderTextDeltas: true,
+      blobBaseUrl: baseUrl
+    });
+    const next = { version: log.version, agent, sortedFrames, conversationEntries };
+    derivedTranscriptRef.current[identity] = next;
+    return next;
   }
   function framesVisibleInPanel(frames, panelId) {
     void panelId;
     return frames;
   }
   const activityRef = import_react37.default.useRef([]);
-  const liveFramesRef = import_react37.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react37.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
-    setLiveFrames(frames);
+    liveFramesDirtyRef.current = true;
+    forceRender();
   }
   const pendingStackRef = import_react37.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
@@ -23014,8 +23157,10 @@ function ConsoleApp({ baseUrl }) {
     null
   );
   const agentsRef = import_react37.default.useRef([]);
+  const identityAliasesRef = import_react37.default.useRef(/* @__PURE__ */ new Map());
   import_react37.default.useEffect(() => {
     agentsRef.current = agents;
+    identityAliasesRef.current = buildConsoleIdentityAliasMap(agents);
   }, [agents]);
   const initialTargetOpened = import_react37.default.useRef(false);
   const dockLayoutHydrated = import_react37.default.useRef(false);
@@ -23886,57 +24031,50 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
-  import_react37.default.useEffect(() => {
-    const refreshOpenChatPanels = async () => {
-      const identities = /* @__PURE__ */ new Set();
-      for (const panel of dock.viewState.panels) {
-        const target = panel.target;
-        if (!target || target.kind !== "agent-chat") continue;
-        identities.add(target.identity || target.memberId);
-      }
-      if (identities.size === 0) return;
+  const identityRefreshInFlightRef = import_react37.default.useRef(/* @__PURE__ */ new Set());
+  const repairIdentityAfterReplayGap = import_react37.default.useCallback(
+    async (identity) => {
+      const log = getOrCreateLog(identity);
+      if (log.hasServerLog === false) return false;
+      if (identityRefreshInFlightRef.current.has(identity)) return false;
+      identityRefreshInFlightRef.current.add(identity);
       let changed = false;
-      for (const identity of identities) {
-        const log = getOrCreateLog(identity);
-        if (log.hasServerLog === false) continue;
-        try {
-          const sinceCursor = log.latestTimelineCursor && !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor) ? log.latestTimelineCursor : void 0;
-          const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
-            mode: sinceCursor ? "since" : "recent",
-            after: sinceCursor,
-            limit: sinceCursor ? 1e3 : 200
-          });
-          if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
-            changed = true;
-          }
-        } catch (error2) {
-          const replay = error2;
-          if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
-            if (resetIdentityTimelineReplayMetadata(identity)) {
+      try {
+        const sinceCursor = log.latestTimelineCursor && !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor) ? log.latestTimelineCursor : void 0;
+        const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+          mode: sinceCursor ? "since" : "recent",
+          after: sinceCursor,
+          limit: sinceCursor ? 1e3 : 200
+        });
+        if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+          changed = true;
+        }
+      } catch (error2) {
+        const replay = error2;
+        if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
+          if (resetIdentityTimelineReplayMetadata(identity)) changed = true;
+          try {
+            const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+              mode: "recent",
+              limit: 200
+            });
+            if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
               changed = true;
             }
-            try {
-              const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
-                mode: "recent",
-                limit: 200
-              });
-              if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
-                changed = true;
-              }
-            } catch {
-            }
-            continue;
+          } catch {
           }
         }
+      } finally {
+        identityRefreshInFlightRef.current.delete(identity);
       }
       if (changed) forceRender();
-    };
-    const timer = window.setInterval(() => {
-      void refreshOpenChatPanels();
-    }, 2e3);
-    void refreshOpenChatPanels();
-    return () => window.clearInterval(timer);
-  }, [baseUrl, dock.viewState.panels, forceRender]);
+      return changed;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, forceRender]
+  );
+  const repairIdentityAfterReplayGapRef = import_react37.default.useRef(repairIdentityAfterReplayGap);
+  repairIdentityAfterReplayGapRef.current = repairIdentityAfterReplayGap;
   const scheduleHistoryRefreshRef = import_react37.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
   const scheduleExperienceRefreshRef = import_react37.default.useRef(scheduleExperienceRefresh);
@@ -23947,6 +24085,11 @@ function ConsoleApp({ baseUrl }) {
   memoryPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "memory"
   );
+  const dockedChatIdentitiesRef = import_react37.default.useRef([]);
+  dockedChatIdentitiesRef.current = dock.viewState.panels.flatMap((panel) => {
+    const target = panel.target;
+    return target && target.kind === "agent-chat" ? [target.identity || target.memberId] : [];
+  });
   const memoryRefreshTimerRef = import_react37.default.useRef(null);
   const refreshWorkGraphDataRef = import_react37.default.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
@@ -23957,9 +24100,9 @@ function ConsoleApp({ baseUrl }) {
   const workGraphRefreshTimerRef = import_react37.default.useRef(null);
   import_react37.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
-      const canonicalIdentity = canonicalConsoleIdentity(
+      const canonicalIdentity = canonicalConsoleIdentityFromMap(
         incomingFrame.identity,
-        agentsRef.current
+        identityAliasesRef.current
       );
       const frame = canonicalIdentity && canonicalIdentity !== incomingFrame.identity ? { ...incomingFrame, identity: canonicalIdentity } : incomingFrame;
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
@@ -23998,9 +24141,18 @@ function ConsoleApp({ baseUrl }) {
     };
     let stopped = false;
     let unsubscribe = null;
-    void consoleController.timeline.subscribeWithBackfill({ limit: 200 }, (frame) => {
-      if (!stopped) handleLiveFrame(frame.value);
-    }).then((nextUnsubscribe) => {
+    void consoleController.timeline.subscribeWithBackfill(
+      { limit: 200 },
+      (frame) => {
+        if (!stopped) handleLiveFrame(frame.value);
+      },
+      () => {
+        if (stopped) return;
+        for (const identity of new Set(dockedChatIdentitiesRef.current)) {
+          void repairIdentityAfterReplayGapRef.current(identity);
+        }
+      }
+    ).then((nextUnsubscribe) => {
       if (stopped) {
         nextUnsubscribe();
       } else {
@@ -24135,12 +24287,12 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }
-  async function onSendMessage(panelId, target, attachments = []) {
+  async function onSendMessage(panelId, target, attachments = [], composerText) {
     if (!target || target.kind !== "agent-chat") return false;
     if (consoleReadOnly) return false;
     const panelKey = buildPanelConversationKey2(panelId, target);
     const identity = target.identity || target.memberId;
-    const rawDraft = draftByKey[panelKey] || "";
+    const rawDraft = composerText ?? (draftByKey[panelKey] || "");
     const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
     const stack = getPendingStack(identity);
@@ -24153,7 +24305,10 @@ function ConsoleApp({ baseUrl }) {
     const shouldQueue = isIdentityBusy(identity) || visiblePhase !== null || agentPhase !== null || stack.length > 0;
     const clearSubmittedDraft = () => {
       setDraftByKey((current) => {
-        if ((current[panelKey] || "") !== rawDraft) return current;
+        if (composerText === void 0 && (current[panelKey] || "") !== rawDraft) {
+          return current;
+        }
+        if ((current[panelKey] || "") === "") return current;
         return { ...current, [panelKey]: "" };
       });
     };
@@ -24600,6 +24755,16 @@ function ConsoleApp({ baseUrl }) {
     },
     [canManageWorkGraph, makeWorkGraphOperatorHandlers]
   );
+  const workGraphCardActionsByIdentity = import_react37.default.useMemo(
+    () => /* @__PURE__ */ new Map(),
+    [workGraphCardActions]
+  );
+  const workGraphCardActionsFor = (cardIdentity) => {
+    if (!workGraphCardActionsByIdentity.has(cardIdentity)) {
+      workGraphCardActionsByIdentity.set(cardIdentity, workGraphCardActions(cardIdentity));
+    }
+    return workGraphCardActionsByIdentity.get(cardIdentity);
+  };
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
   function handleSidebarResize(event) {
     event.preventDefault();
@@ -24668,6 +24833,34 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
   }
+  const voiceRef = import_react37.default.useRef(voice);
+  voiceRef.current = voice;
+  const closeVoice = import_react37.default.useCallback(() => void voiceRef.current?.close(), []);
+  const toggleVoiceMicrophone = import_react37.default.useCallback(() => voiceRef.current?.toggleMicrophone(), []);
+  const toggleVoiceSpeaker = import_react37.default.useCallback(() => voiceRef.current?.toggleSpeaker(), []);
+  const openAgentChatRef = import_react37.default.useRef(openAgentChat);
+  openAgentChatRef.current = openAgentChat;
+  const selectSidebarAgent = import_react37.default.useCallback(
+    (agent) => openAgentChatRef.current(agent),
+    []
+  );
+  const openSidebarControl = import_react37.default.useCallback((kind) => {
+    dockRef.current.openTarget(buildControlTarget2(kind), "replace_focused");
+  }, []);
+  const loadMemoryRecordDetailRef = import_react37.default.useRef(loadMemoryRecordDetail);
+  loadMemoryRecordDetailRef.current = loadMemoryRecordDetail;
+  const selectRailFrame = import_react37.default.useCallback((frame) => {
+    if (!frame.event.startsWith("memory.")) return;
+    dockRef.current.openTarget(buildControlTarget2("memory"), "replace_focused");
+    const pivot = memoryFramePivot(frame);
+    if (pivot) void loadMemoryRecordDetailRef.current(pivot.realm, pivot.recordId);
+  }, []);
+  const watchedIdentities = import_react37.default.useMemo(
+    () => new Set(
+      agents.filter((agent) => agent.watched).map((agent) => agent.identity || agent.member_id).filter((value) => Boolean(value))
+    ),
+    [agents]
+  );
   if (loading)
     return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
       "div",
@@ -24694,17 +24887,6 @@ function ConsoleApp({ baseUrl }) {
     );
   if (error) return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
-  const sidebarVS = buildSidebarViewState2({
-    agents,
-    selectedMemberId: focusedMemberId,
-    pinnedAgentIds
-  });
-  const activityVS = buildActivityRailViewState2({
-    agents,
-    eventFrames: activityRef.current,
-    filterPresets: experience?.console_config?.rail?.filter_presets || experience?.activity_feed?.filter_presets,
-    activePresetId: activeActivityPresetId || experience?.console_config?.rail?.active_preset_id || "all"
-  });
   const actionConfig = experience?.console_config?.actions;
   const configuredActionLabels = {
     inspect: actionLabel(actionConfig, "inspect_label", "Details"),
@@ -24726,9 +24908,9 @@ function ConsoleApp({ baseUrl }) {
     {
       state: voiceState,
       sampleWaveform: sampleVoiceWaveform,
-      onClose: () => void voice?.close(),
-      onToggleMicrophone: () => voice?.toggleMicrophone(),
-      onToggleSpeaker: () => voice?.toggleSpeaker()
+      onClose: closeVoice,
+      onToggleMicrophone: toggleVoiceMicrophone,
+      onToggleSpeaker: toggleVoiceSpeaker
     }
   );
   function renderChatPanel(panel) {
@@ -24737,18 +24919,10 @@ function ConsoleApp({ baseUrl }) {
     const panelKey = buildPanelConversationKey2(panel.id, target);
     const identity = target.identity || target.memberId;
     const agent = agents.find((c) => c.member_id === target.memberId) || null;
-    const sortedFrames = framesVisibleInPanel(
-      getSortedFrames(identity),
-      panel.id
-    );
-    const conversationEntries = mapFramesToTimelineEntries2(
-      agent,
-      sortedFrames,
-      {
-        renderInteractionStartsAsUser: true,
-        renderTextDeltas: true,
-        blobBaseUrl: baseUrl
-      }
+    const { sortedFrames, conversationEntries } = derivedTranscriptFor(
+      identity,
+      panel.id,
+      agent
     );
     const optimisticUser = optimisticUserMessageForPanel2(
       optimisticUserByPanelKeyRef.current,
@@ -24759,12 +24933,6 @@ function ConsoleApp({ baseUrl }) {
     const entries = sanitizeConversationEntries(
       appendOptimisticConversationEntry2(conversationEntries, optimisticEntry)
     );
-    const conversation = buildConversationViewState2({
-      memberId: target.memberId,
-      agentLabel: target.title,
-      agent,
-      entries
-    });
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const identityLog = getOrCreateLog(identity);
@@ -24816,7 +24984,7 @@ function ConsoleApp({ baseUrl }) {
         staged,
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
         onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
-        onSend: (attachments) => onSendMessage(panel.id, target, attachments),
+        onSend: (attachments, text) => onSendMessage(panel.id, target, attachments, text),
         onInspect: configuredActionVisibility.inspect ? () => {
           if (agent) handleShowRosterDetails(agent);
         } : void 0,
@@ -24840,7 +25008,7 @@ function ConsoleApp({ baseUrl }) {
         } : void 0,
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
-        workGraphActions: workGraphCardActions(identity)
+        workGraphActions: workGraphCardActionsFor(identity)
       }
     );
   }
@@ -24945,9 +25113,6 @@ function ConsoleApp({ baseUrl }) {
   const environmentLabel = experience?.console_config?.environment?.label || "dev";
   const railConfig = experience?.console_config?.rail;
   const railVisible = railConfig?.visible !== false;
-  const watchedIdentities = new Set(
-    agents.filter((agent) => agent.watched).map((agent) => agent.identity || agent.member_id).filter((value) => Boolean(value))
-  );
   const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
@@ -25194,11 +25359,9 @@ function ConsoleApp({ baseUrl }) {
                   grouping: experience?.console_config?.agent_list,
                   storageNamespace: sidebarStorageNamespace,
                   pinnedAgentIds,
-                  onSelect: (a) => openAgentChat(a),
+                  onSelect: selectSidebarAgent,
                   onTogglePinnedAgent: togglePinnedAgent,
-                  onOpenControl: (kind) => {
-                    dock.openTarget(buildControlTarget2(kind), "replace_focused");
-                  }
+                  onOpenControl: openSidebarControl
                 }
               ),
               /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
@@ -25253,19 +25416,7 @@ function ConsoleApp({ baseUrl }) {
                     emptyText: railConfig?.empty_text,
                     watchedIdentities,
                     onPresetChange: setActiveActivityPresetId,
-                    onSelect: (
-                      // "State here" pivot: a live memory signal opens the Memory
-                      // panel, and lands on the record's Biography when the frame
-                      // names one. Offered only when the server-projected
-                      // experience grants memory.can_read — the affordance must
-                      // never outrun the nav gate.
-                      experience?.memory?.can_read === true ? (frame) => {
-                        if (!frame.event.startsWith("memory.")) return;
-                        dock.openTarget(buildControlTarget2("memory"), "replace_focused");
-                        const pivot = memoryFramePivot(frame);
-                        if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
-                      } : void 0
-                    )
+                    onSelect: experience?.memory?.can_read === true ? selectRailFrame : void 0
                   }
                 )
               ] }) : null

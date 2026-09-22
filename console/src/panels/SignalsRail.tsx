@@ -2,6 +2,7 @@ import React from "react";
 import { describeMemoryTimelineEvent, stripPeerTransportScaffold } from "../lib/adapters";
 import { describeFailure } from "../lib/failure-summary";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
+import { countRender } from "../lib/render-counts";
 
 interface SignalsRailProps {
   frames: ConsoleFrame[];
@@ -467,7 +468,10 @@ export function buildSignalGroupsForTest(frames: ConsoleFrame[]): SignalGroup[] 
   return groupSignals(next);
 }
 
-export function SignalsRail({
+/// Memoised: the app root re-renders on every coalesced frame flush and on
+/// each debounced draft publish, and the props here are stable references
+/// (see ConsoleApp), so unchanged input skips the whole subtree.
+export const SignalsRail = React.memo(function SignalsRail({
   frames,
   collapsed,
   filterPresets,
@@ -477,6 +481,7 @@ export function SignalsRail({
   onPresetChange,
   onSelect,
 }: SignalsRailProps): React.JSX.Element {
+  countRender("SignalsRail");
   const presets = React.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
@@ -637,4 +642,4 @@ export function SignalsRail({
       </div>
     </aside>
   );
-}
+});
