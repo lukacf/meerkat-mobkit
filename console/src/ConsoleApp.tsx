@@ -121,6 +121,15 @@ import type {
   WorkGraphSnapshotResult,
   WorkGraphWireEvent,
 } from "./types";
+import {
+  type IdentityLogCore,
+  cursorSeq,
+  mergeFrameUpdate,
+  pushFrame,
+  resetIdentityLogCore,
+  sortedEvents,
+  trimIdentityLogCore,
+} from "./lib/identity-log";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
@@ -221,19 +230,13 @@ type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 /// log exceeds the ceiling by the slack, and removes down to the ceiling.
 const MAX_IDENTITY_LOG_EVENTS = 5000;
 const IDENTITY_LOG_TRIM_SLACK = 500;
+/// Coalesced render flush cadence while the tab is hidden (no rAF there).
+const HIDDEN_TAB_FLUSH_MS = 250;
 
-interface IdentityLog {
-  events: ConsoleFrame[];
-  byKey: Map<string, number>;
-  /// Bumped on every mutation of `events`; render-time derivations key their
-  /// memoisation on it so an unchanged log is never re-derived.
-  version: number;
-  /// `events` in transcript order (timestamp, then cursor sequence, then
-  /// arrival), maintained on append by binary insertion. Frames almost
-  /// always arrive in order, so the common append is O(log n) with a copy
-  /// only when the tail moves. Reset to `null` by in-place updates that can
-  /// move a frame's timestamp; `sortedEvents` rebuilds it lazily.
-  sorted: ConsoleFrame[] | null;
+/// See `IdentityLogCore` (src/lib/identity-log.ts) for the frame store and
+/// its transcript-ordered view; this adds the console's paging and busy
+/// state around it.
+interface IdentityLog extends IdentityLogCore {
   /// Incrementally folded busy lifecycle, valid while `busyFoldedThrough`
   /// tracks the newest lifecycle frame seen in timestamp order. An older
   /// lifecycle frame arriving late invalidates it and forces one replay.
@@ -249,48 +252,6 @@ interface IdentityLog {
   olderHistoryExhausted?: boolean;
   olderHistoryExhaustedAtCursor?: string;
   olderHistoryLoading?: boolean;
-}
-
-function transcriptOrder(
-  a: ConsoleFrame,
-  aIndex: number,
-  b: ConsoleFrame,
-  bIndex: number,
-): number {
-  const ta = typeof a.timestampMs === "number" ? a.timestampMs : Number.MAX_SAFE_INTEGER;
-  const tb = typeof b.timestampMs === "number" ? b.timestampMs : Number.MAX_SAFE_INTEGER;
-  if (ta !== tb) return ta - tb;
-  const ca = cursorSeq(a.cursor);
-  const cb = cursorSeq(b.cursor);
-  if (ca !== null && cb !== null && ca !== cb) return ca - cb;
-  return aIndex - bIndex;
-}
-
-/// Insert `frame` into `sorted`, which holds frames in transcript order.
-/// Every frame already in `sorted` arrived earlier, and arrival is the final
-/// tie-break, so a frame that compares equal to an existing one goes after
-/// it; the common case (newest timestamp) is a plain push.
-function insertSorted(sorted: ConsoleFrame[], frame: ConsoleFrame): void {
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    // Existing frame first on ties: compare with a smaller arrival index.
-    if (transcriptOrder(sorted[mid], 0, frame, 1) <= 0) lo = mid + 1;
-    else hi = mid;
-  }
-  if (lo === sorted.length) sorted.push(frame);
-  else sorted.splice(lo, 0, frame);
-}
-
-function sortedEvents(log: IdentityLog): ConsoleFrame[] {
-  if (log.sorted) return log.sorted;
-  const view = log.events
-    .map((frame, index) => ({ frame, index }))
-    .sort((a, b) => transcriptOrder(a.frame, a.index, b.frame, b.index))
-    .map((entry) => entry.frame);
-  log.sorted = view;
-  return view;
 }
 
 function normalizeConsoleTheme(value: unknown): ConsoleTheme | null {
@@ -509,14 +470,6 @@ function browserLocalStorage(): Storage | null {
   } catch {
     return null;
   }
-}
-
-function cursorSeq(cursor: string | undefined): number | null {
-  if (!cursor) return null;
-  const match = /^console:(\d+)$/.exec(cursor);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isTerminalTurnCompletedFrame(frame: ConsoleFrame): boolean {
@@ -911,33 +864,57 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   const [liveFrames, setLiveFrames] = React.useState<ConsoleFrame[]>([]);
   // One render per animation frame, however many frames or refreshes ask
   // for it. Every SSE frame used to call setRenderTick directly, so a burst
-  // of 20 deltas cost 20 full app renders; now they cost one.
-  const renderScheduledRef = React.useRef<number | null>(null);
+  // of 20 deltas cost 20 full app renders; now they cost one. Browsers do
+  // not run requestAnimationFrame in a hidden tab, so while the document is
+  // hidden the flush runs on a 250 ms timer instead (frames keep landing in
+  // the refs either way), and a pending timer flush is brought forward the
+  // moment the tab becomes visible.
+  const renderScheduledRef = React.useRef<{ kind: "raf" | "timeout"; id: number } | null>(null);
   const liveFramesDirtyRef = React.useRef(false);
+  const flushScheduledRender = React.useCallback(() => {
+    renderScheduledRef.current = null;
+    if (liveFramesDirtyRef.current) {
+      liveFramesDirtyRef.current = false;
+      setLiveFrames(liveFramesRef.current);
+    }
+    setRenderTick((n) => n + 1);
+  }, []);
+  const cancelScheduledRender = React.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || typeof window === "undefined") return;
+    if (pending.kind === "raf") window.cancelAnimationFrame(pending.id);
+    else window.clearTimeout(pending.id);
+    renderScheduledRef.current = null;
+  }, []);
   const forceRender = React.useCallback(() => {
     if (renderScheduledRef.current !== null) return;
-    const schedule =
-      typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
-        ? (cb: () => void) => window.requestAnimationFrame(cb)
-        : (cb: () => void) => window.setTimeout(cb, 16);
-    renderScheduledRef.current = schedule(() => {
-      renderScheduledRef.current = null;
-      if (liveFramesDirtyRef.current) {
-        liveFramesDirtyRef.current = false;
-        setLiveFrames(liveFramesRef.current);
-      }
-      setRenderTick((n) => n + 1);
-    });
-  }, []);
-  React.useEffect(
-    () => () => {
-      if (renderScheduledRef.current !== null && typeof window !== "undefined") {
-        window.cancelAnimationFrame(renderScheduledRef.current);
-        window.clearTimeout(renderScheduledRef.current);
-      }
-    },
-    [],
-  );
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      renderScheduledRef.current = {
+        kind: "raf",
+        id: window.requestAnimationFrame(flushScheduledRender),
+      };
+      return;
+    }
+    renderScheduledRef.current = {
+      kind: "timeout",
+      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+    };
+  }, [flushScheduledRender]);
+  React.useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (renderScheduledRef.current?.kind !== "timeout") return;
+      cancelScheduledRender();
+      flushScheduledRender();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      cancelScheduledRender();
+    };
+  }, [cancelScheduledRender, flushScheduledRender]);
   const stagedAttachmentsRef = React.useRef(stagedAttachmentsByIdentity);
   React.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
@@ -1171,32 +1148,22 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       const updated = (frame.data as Record<string, unknown>).frame as
         | ConsoleFrame
         | undefined;
-      if (updated && updated.id) {
-        const existingIndex = log.byKey.get(updated.id);
-        if (existingIndex !== undefined && log.events[existingIndex]) {
-          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
-          const updatedVersion = updated.frameVersion ?? existingVersion;
-          if (updatedVersion < existingVersion) return false;
-          log.events[existingIndex] = {
-            ...log.events[existingIndex],
-            ...updated,
-          };
-          log.version += 1;
-          // The merged frame may have moved in transcript order.
-          log.sorted = null;
-          log.busyFoldValid = false;
-          clearOptimisticUserForFrame(identity, updated);
-          return true;
-        }
+      if (!updated || !updated.id) return false;
+      const merged = mergeFrameUpdate(log, updated);
+      if (!merged) return false;
+      // The incremental busy fold only depends on lifecycle transitions in
+      // timestamp order: replay it when the frame moved or its transition
+      // changed (a user_input going terminal), not for a tool status flip.
+      if (
+        merged.moved ||
+        busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)
+      ) {
+        log.busyFoldValid = false;
       }
-      return false;
+      clearOptimisticUserForFrame(identity, updated);
+      return true;
     }
-    const key = frameKey(frame);
-    if (log.byKey.has(key)) return false;
-    log.byKey.set(key, log.events.length);
-    log.events.push(frame);
-    log.version += 1;
-    if (log.sorted) insertSorted(log.sorted, frame);
+    if (!pushFrame(log, frameKey(frame), frame)) return false;
     if (log.events.length > MAX_IDENTITY_LOG_EVENTS + IDENTITY_LOG_TRIM_SLACK) {
       trimIdentityLog(log);
     }
@@ -1210,23 +1177,13 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   /// history; the incremental busy fold is unaffected because it only
   /// depends on the newest lifecycle frames, which are always retained.
   function trimIdentityLog(log: IdentityLog): void {
-    const sorted = sortedEvents(log);
-    const drop = sorted.length - MAX_IDENTITY_LOG_EVENTS;
-    if (drop <= 0) return;
-    const dropped = new Set<ConsoleFrame>(sorted.slice(0, drop));
-    const retained = log.events.filter((frame) => !dropped.has(frame));
-    log.events = retained;
-    log.sorted = sorted.slice(drop);
-    log.byKey.clear();
+    const retained = trimIdentityLogCore(log, MAX_IDENTITY_LOG_EVENTS, frameKey);
+    if (!retained) return;
     let oldest: string | undefined;
-    retained.forEach((frame, index) => {
-      log.byKey.set(frameKey(frame), index);
-      oldest = olderCursor(oldest, frame.cursor);
-    });
+    for (const frame of retained) oldest = olderCursor(oldest, frame.cursor);
     log.oldestTimelineCursor = oldest;
     log.olderHistoryExhausted = false;
     log.olderHistoryExhaustedAtCursor = undefined;
-    log.version += 1;
   }
 
   function busyTransitionForFrame(frame: ConsoleFrame): boolean | null {
@@ -1487,11 +1444,8 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       log.latestTimelineCursor !== undefined ||
       log.olderHistoryExhausted !== false ||
       log.olderHistoryExhaustedAtCursor !== undefined;
-    log.events = [];
-    log.byKey.clear();
-    log.sorted = null;
+    resetIdentityLogCore(log);
     log.busyFoldValid = false;
-    log.version += 1;
     log.oldestTimelineCursor = undefined;
     log.latestTimelineCursor = undefined;
     log.olderHistoryExhausted = false;
@@ -3951,6 +3905,19 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     },
     [canManageWorkGraph, makeWorkGraphOperatorHandlers],
   );
+  // One handler bundle per identity for as long as the factory is stable:
+  // MessageRow compares `workGraphActions` by reference, so a fresh bundle
+  // per render would re-render every mounted row on every flush.
+  const workGraphCardActionsByIdentity = React.useMemo(
+    () => new Map<string, WorkGraphCardActions | undefined>(),
+    [workGraphCardActions],
+  );
+  const workGraphCardActionsFor = (cardIdentity: string): WorkGraphCardActions | undefined => {
+    if (!workGraphCardActionsByIdentity.has(cardIdentity)) {
+      workGraphCardActionsByIdentity.set(cardIdentity, workGraphCardActions(cardIdentity));
+    }
+    return workGraphCardActionsByIdentity.get(cardIdentity);
+  };
 
   // =========================================================================
   // RESIZE HANDLERS (unchanged)
@@ -4289,7 +4256,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         }
         voiceActive={voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error"}
         voiceDisabled={voiceState.phase === "closing"}
-        workGraphActions={workGraphCardActions(identity)}
+        workGraphActions={workGraphCardActionsFor(identity)}
       />
     );
   }
