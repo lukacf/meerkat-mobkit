@@ -79,6 +79,10 @@ const CLOSED_RETENTION: Duration = Duration::from_mins(10);
 /// reaped first, so no principal can consume the shared capacity by itself.
 const MAX_CLOSED_PER_PRINCIPAL: usize = 32;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
+
+fn elapsed_ms(started: tokio::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 pub const CONSOLE_VOICE_SHUTDOWN_TIMEOUT: Duration = CLOSE_WAIT;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -784,9 +788,11 @@ impl ConsoleVoiceController {
             return Err(VoiceError::Unauthorized);
         }
         let host = self.host.as_ref().ok_or(VoiceError::Unavailable)?;
+        let ready_started = tokio::time::Instant::now();
         if !host.ready(principal, &request.identity).await? {
             return Err(VoiceError::Unavailable);
         }
+        let ready_ms = elapsed_ms(ready_started);
         let key = (principal.to_string(), request.request_id.clone());
         let mut requests = self.requests.lock().await;
         if self.stopped.load(Ordering::SeqCst) {
@@ -822,6 +828,7 @@ impl ConsoleVoiceController {
             let owner = principal.to_string();
             let pending = Arc::clone(&slot);
             tokio::spawn(async move {
+                let arbiter_started = tokio::time::Instant::now();
                 // Take the gateway's live voice path first ("latest engaged
                 // wins"): an active external channel is closed with a typed
                 // reason before this call opens. A close that fails keeps the
@@ -861,7 +868,18 @@ impl ConsoleVoiceController {
                 } else {
                     None
                 };
+                let arbiter_ms = elapsed_ms(arbiter_started);
+                let host_open_started = tokio::time::Instant::now();
                 let result = host.open(&owner, &request.identity).await;
+                tracing::info!(
+                    target: "meerkat_mobkit::console_voice::timing",
+                    identity = %request.identity,
+                    ready_ms,
+                    arbiter_ms,
+                    host_open_ms = elapsed_ms(host_open_started),
+                    ok = result.is_ok(),
+                    "console voice open stages"
+                );
                 let mut state = pending.state.lock().await;
                 state.opening = false;
                 match result {

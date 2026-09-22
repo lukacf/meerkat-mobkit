@@ -1685,14 +1685,25 @@ impl SharedHost {
         principal: &str,
         identity: &str,
     ) -> Result<Arc<dyn ConsoleVoiceSession>, VoiceError> {
+        let target_started = std::time::Instant::now();
         let grant = self.target(principal, identity).await?;
+        let target_ms = elapsed_ms(target_started);
         let surface = self.guard(Arc::clone(&grant), identity.to_string())?;
+        let live_open_started = std::time::Instant::now();
         let (response, delivery) = capture_live_rpc_response_delivery(self.handler.dispatch(
             surface, Some(grant.session.clone()), Some(identity.to_string()),
             "mobkit/live/open".to_string(),
             json!({"identity": identity, "transport": "webrtc", "execution_identity": {"version":"v1", "profile_id":PROFILE}}),
             json!("console-voice-open"),
         )).await;
+        tracing::info!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            target_ms,
+            live_open_ms = elapsed_ms(live_open_started),
+            ok = response.error.is_none(),
+            "console voice shared host open"
+        );
         let pending = match response
             .result
             .and_then(|value| serde_json::from_value::<PendingLiveChannelHandle>(value).ok())
@@ -1716,26 +1727,42 @@ impl SharedHost {
                 open: delivery,
                 ..Deliveries::default()
             }),
+            polls: StdMutex::new(HashMap::new()),
         }))
     }
+}
+
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[async_trait]
 impl ConsoleVoiceHost for Host {
     async fn ready(&self, principal: &str, identity: &str) -> Result<bool, VoiceError> {
+        let target_started = std::time::Instant::now();
         let grant = match self.0.target(principal, identity).await {
             Ok(grant) => grant,
             Err(VoiceError::Unavailable | VoiceError::Busy) => return Ok(false),
             Err(error) => return Err(error),
         };
+        let target_ms = elapsed_ms(target_started);
         // Shared admission resolves the actual selected configured credential,
         // but does not open/register a provider channel at this preparation seam.
-        self.0
+        let probe_started = std::time::Instant::now();
+        let probe = self
+            .0
             .authority
             .probe_execution_readiness(&grant.session, &self.0.selection)
-            .await
-            .map(|()| true)
-            .map_err(|_| VoiceError::Unavailable)
+            .await;
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            target_ms,
+            probe_ms = elapsed_ms(probe_started),
+            ok = probe.is_ok(),
+            "console voice readiness probe"
+        );
+        probe.map(|()| true).map_err(|_| VoiceError::Unavailable)
     }
 
     async fn open(
@@ -1820,6 +1847,12 @@ struct Deliveries {
     received: HashSet<String>,
 }
 
+/// Activation polls observed for one pending channel.
+struct PollTrace {
+    count: u32,
+    first: std::time::Instant,
+}
+
 struct Session {
     shared: Arc<SharedHost>,
     grant: Arc<ConsoleLiveGrant>,
@@ -1827,9 +1860,43 @@ struct Session {
     current: StdMutex<PendingLiveChannelHandle>,
     channels: StdMutex<Vec<PendingLiveChannelHandle>>,
     deliveries: Mutex<Deliveries>,
+    /// Status polls per channel until the channel is first seen active.
+    polls: StdMutex<HashMap<String, PollTrace>>,
 }
 
 impl Session {
+    /// Count activation status polls per channel and report how many the
+    /// caller needed, and how long it waited, once the channel is active.
+    fn trace_status_poll(&self, channel: &str, result: &Value) {
+        let phase = result.get("phase").and_then(Value::as_str).unwrap_or("");
+        let mut polls = self
+            .polls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let trace = polls
+            .entry(channel.to_string())
+            .or_insert_with(|| PollTrace {
+                count: 0,
+                first: std::time::Instant::now(),
+            });
+        trace.count += 1;
+        if phase == "active" || phase == "closed" || phase == "revoked" {
+            let trace = polls.remove(channel).unwrap_or(PollTrace {
+                count: 0,
+                first: std::time::Instant::now(),
+            });
+            tracing::info!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity = %self.identity,
+                channel_id = channel,
+                phase,
+                polls = trace.count,
+                waited_ms = elapsed_ms(trace.first),
+                "console voice status polls settled"
+            );
+        }
+    }
+
     async fn call(
         &self,
         method: &str,
@@ -2015,7 +2082,14 @@ impl ConsoleVoiceSession for Session {
                     .map_err(|_| VoiceError::HostFailed)?;
             }
         }
+        // Only pending-receipt polls are activation polls; the active call's
+        // periodic status checks carry the activation receipt instead.
+        let activation_poll =
+            method == "mobkit/live/status" && params.get("pending_receipt").is_some();
         let (result, delivery) = self.call(method, params).await?;
+        if activation_poll {
+            self.trace_status_poll(&channel, &result);
+        }
         if let Some(delivery) = delivery {
             if method != "live/webrtc/answer" {
                 let _ = delivery.rejected().await;

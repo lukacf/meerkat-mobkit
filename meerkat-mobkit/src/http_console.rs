@@ -698,7 +698,46 @@ pub async fn console_rpc_handler(
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
+/// Wall time of every console voice control-plane verb. Status polls are
+/// frequent and land at debug; every other verb lands at info.
 async fn handle_console_voice_rpc(
+    state: &ConsoleJsonState,
+    controller: Option<&crate::console_voice::ConsoleVoiceController>,
+    auth: &ConsoleHttpAuthContext,
+    request: JsonRpcRequest,
+) -> Value {
+    let method = request.method.clone();
+    let channel_id = request
+        .params
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let started = std::time::Instant::now();
+    let response = handle_console_voice_rpc_inner(state, controller, auth, request).await;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let ok = response.get("error").is_none_or(Value::is_null);
+    let phase = response
+        .pointer("/result/phase")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if method == "mobkit/live/status" || method == crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+    {
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            method = %method, channel_id = ?channel_id, elapsed_ms, ok, phase = ?phase,
+            "console voice rpc"
+        );
+    } else {
+        tracing::info!(
+            target: "meerkat_mobkit::console_voice::timing",
+            method = %method, channel_id = ?channel_id, elapsed_ms, ok, phase = ?phase,
+            "console voice rpc"
+        );
+    }
+    response
+}
+
+async fn handle_console_voice_rpc_inner(
     state: &ConsoleJsonState,
     controller: Option<&crate::console_voice::ConsoleVoiceController>,
     auth: &ConsoleHttpAuthContext,

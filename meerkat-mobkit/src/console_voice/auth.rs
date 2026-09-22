@@ -136,9 +136,19 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
         &self,
         session: &SessionId,
     ) -> Result<(), ExperimentalLiveOpenAuthorityError> {
-        self.for_session(session)?
+        let started = std::time::Instant::now();
+        let result = self
+            .for_session(session)?
             .validate_live_durable_source_availability(session)
-            .await
+            .await;
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            %session,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ok = result.is_ok(),
+            "console voice durable source validation"
+        );
+        result
     }
 
     async fn authorize_binding_use(
@@ -147,9 +157,19 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
         binding: &AuthBindingRef,
     ) -> Result<ExperimentalLiveSessionBindingAuthorization, ExperimentalLiveOpenAuthorityError>
     {
-        self.for_session(session)?
+        let started = std::time::Instant::now();
+        let result = self
+            .for_session(session)?
             .authorize_binding_use(session, binding)
-            .await
+            .await;
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            %session,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ok = result.is_ok(),
+            "console voice binding authorization"
+        );
+        result
     }
 }
 
