@@ -321,7 +321,9 @@ async function main() {
     await page.getByRole("button", { name: "Start voice with Alpha" }).click();
     await waitForVoice(page, fixture.requests);
     await page.getByRole("region", { name: "Voice with Alpha" }).waitFor();
-    await page.getByText("Preparing context", { exact: true }).waitFor();
+    // Context is still being prepared, yet the primary status already says the user can talk.
+    await page.locator('.voice-bar__context[data-context="preparing"][data-context-stage="generating"]', { hasText: "Context arriving" }).waitFor();
+    await page.locator('[data-testid="voice-status"][data-talk-ready="true"]', { hasText: /you can talk/i }).waitFor();
     assert.equal(await page.locator(".voice-waveform").count(), 2);
     await sendText(page, "identity:alpha", "Keep working while we talk");
     await page.locator('[data-testid="voice-bar"][data-phase="active"]').waitFor();
@@ -342,7 +344,7 @@ async function main() {
       }
       return false;
     });
-    assert.equal(await page.getByText("Preparing context", { exact: true }).count(), 1,
+    assert.equal(await page.locator('.voice-bar__context[data-context-stage="generating"]', { hasText: "Context arriving" }).count(), 1,
       "native audio, text and mute controls must work before the context gate is released");
     fixture.setContext("identity:alpha", { phase: "provider_acknowledged" });
     await page.getByText("Context supplied", { exact: true }).waitFor();
@@ -425,8 +427,13 @@ async function main() {
     fixture.setAvailable(false);
     await page.getByRole("button", { name: "Start voice with Beta" }).click();
     await page.getByRole("alert").filter({ hasText: "authenticate OpenAI" }).waitFor();
-    assert.equal(await page.evaluate(() => window.voiceFixture.microphoneTracks.length), capturesBeforeAuthLoss);
+    // The microphone is requested with the click, concurrently with readiness; a
+    // negative readiness releases that capture and opens no channel.
+    assert.equal(await page.evaluate(() => window.voiceFixture.microphoneTracks.length), capturesBeforeAuthLoss + 1);
+    await page.waitForFunction(() => window.voiceFixture.microphoneTracks.every((track) => track.readyState === "ended"));
     assert.equal(fixture.channels.size, openedBeforeAuthLoss);
+    assert.ok(!fixture.requests.slice(secondOpen + 1).some((request) => request.method === "mobkit/console/voice/open"),
+      "no open follows a negative readiness");
 
     const unauthenticated = await context.newPage();
     const noAuth = await installConsoleFixture(unauthenticated, { available: false });

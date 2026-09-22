@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Console voice time-to-talk. Clicking the voice button on an agent with a
+  long history showed **Checking / Reading / Preparing / Sending context**
+  for 6 to 11 seconds while the microphone had in fact been open since about
+  1.5 seconds, and nothing told the user they could talk. Four changes:
+  - The voice bar says **Listening, you can talk** as soon as the microphone
+    is open; context preparation is a secondary hint (**Context arriving**,
+    then **Context supplied**) that never gates talking. The stage is kept on
+    `data-context-stage` for tests and tooltips; `data-phase` is unchanged.
+  - The console requests the microphone during the click, concurrently with
+    the readiness RPC (released again if readiness is negative), and waits
+    for the WebRTC peer and data channel by event instead of issuing a
+    `mobkit/live/status` poll every 100 ms until the transport connects.
+    The connect timeout still bounds both.
+  - One validation on the open path. `mobkit/console/voice/open` no longer
+    repeats the readiness probe the console already ran on the click; the
+    host's own target resolution and Meerkat's open admission still refuse a
+    foreign principal (`access_denied`), an unknown member, a grant held by
+    another principal, or a missing credential (`voice_unavailable`). A
+    re-open of the same active request stays idempotent.
+  - The context summary is bounded and cached. `console_voice.summary`
+    (`PublicLiveRegistration.summary`) sets `max_input_bytes` (default
+    65536: the most recent 64 KiB of the serialized transcript, oldest turns
+    dropped whole, a size bound rather than a content heuristic),
+    `max_output_bytes` (default 4096, so the 500-byte GPT Live append
+    fragments, each awaiting its own receipt, stay at nine or fewer) and
+    `model` (default: the agent's own model; Meerkat's catalog exposes a
+    support tier, not a speed tier, so no faster same-provider model can be
+    derived from it). A produced summary is cached per member, keyed by the
+    source session's transcript cursor and a digest of the summarised
+    window, so reopening voice on an unchanged transcript reuses it without
+    a model call. Meerkat's 4 MiB capture ceiling is unchanged. Measured on a
+    40-turn seeded session the previous bounds took 4.0 to 5.9 s of summary
+    generation for a 1.3 to 1.5 KB result (3 fragments).
+- Console voice activation is traced. Every console voice control-plane RPC,
+  the open stages, the durable-source validation, the WebRTC answer, the
+  playback-owner registration, and the activation status polls log their wall
+  time under `meerkat_mobkit::console_voice::timing` (polls at debug, the rest
+  at info). `console/voice-e2e-live.cjs --time-to-talk` is an opt-in paid
+  harness mode that seeds a long session and reports click-to-talk stage
+  timings, including the new `'you can talk' visible` stage and the gateway's
+  summary generation time, size, fragment count and cache reuse.
+
 ### Fixed
 
 - Stuck voice close. `mobkit/console/voice/context_status` no longer

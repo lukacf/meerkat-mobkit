@@ -1884,6 +1884,10 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
       await page.getByRole("button", { name: `Start voice with ${LABEL}`, exact: true }).click({ timeout: 30_000 });
       await page.getByTestId("voice-bar").and(page.locator('[data-phase="active"]')).waitFor({ timeout: 60_000 });
       const activeWall = Date.now();
+      // The primary status must tell the user they can talk as soon as the
+      // microphone is open, independent of context preparation.
+      await page.locator('[data-testid="voice-status"][data-talk-ready="true"]', { hasText: /you can talk/i }).waitFor({ timeout: 10_000 });
+      const talkReadyWall = Date.now();
       await sleep(400);
       // The console polls context_status once a second while the concurrent
       // summary is prepared; hold the call so that phase can settle.
@@ -1893,6 +1897,7 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
       if (holdMs > 0) await poll("context preparation settled", () => contextRows().some(settled), holdMs, 250).catch(() => {});
       const state = await browserState(page);
       const stages = summarizeActivation({ clickWall, activeWall, rows: requests.slice(begin), timeline: state.timeline });
+      stages.talkReadyVisibleMs = talkReadyWall - clickWall;
       const transitions = [];
       for (const row of contextRows()) {
         const key = `${preparation(row)?.phase ?? "?"}${preparation(row)?.stage ? `:${preparation(row).stage}` : ""}`;
@@ -1911,6 +1916,18 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
       await sleep(1500);
       stages.server = fs.readFileSync(logPath, "utf8").slice(logOffset).split("\n")
         .filter(line => serverLine.test(line)).map(line => line.replace(/^\S+\s+/, ""));
+      // The gateway's summary line: generation time, output size, cache reuse.
+      // The public GPT Live transport appends the summary in UTF-8 fragments of
+      // at most 500 bytes, one provider receipt each.
+      const summaryLine = stages.server.find(line => line.includes("context summary finished"));
+      const field = name => summaryLine?.match(new RegExp(`${name}=(?:Some\\()?([^\\s)]+)`))?.[1];
+      const summaryBytes = Number(field("output_bytes"));
+      stages.summary = summaryLine ? {
+        ms: Number(field("elapsed_ms")), bytes: Number.isFinite(summaryBytes) ? summaryBytes : null,
+        fragments: Number.isFinite(summaryBytes) ? Math.ceil(summaryBytes / 500) : null,
+        cache: field("cache") ?? null, windowMessages: Number(field("window_messages")) || null,
+        totalMessages: Number(field("total_messages")) || null, model: field("model") ?? null,
+      } : null;
       results.push(stages);
       log("time-to-talk-run", { run, ...stages });
     }
@@ -1932,7 +1949,11 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
       pick("status active (from click)", row => row.status?.activeAt),
       pick("mic enabled (from click)", row => row.micEnabledAt),
       pick("UI active (from click)", row => row.totalUiActiveMs),
+      pick("'you can talk' visible (from click)", row => row.talkReadyVisibleMs),
       pick("context preparation settled (from click)", row => row.contextPreparation.settledAt),
+      pick("summary generation (gateway)", row => row.summary?.ms),
+      pick("summary output bytes", row => row.summary?.bytes),
+      pick("summary fragments (500 B each)", row => row.summary?.fragments),
       pick("close (click -> closed)", row => row.closeMs),
     ];
     log("time-to-talk-summary", { runs, seedTurns, seedWords, holdMs, session: size, pageErrors, table });

@@ -6,6 +6,14 @@ import "./voice-bar.css";
 import { countRender } from "../lib/render-counts";
 
 type WaveformSource = "microphone" | "speaker";
+
+/** Primary status once the microphone is open. Context arrival never gates it. */
+export const TALK_READY_STATUS = "Listening, you can talk";
+const CONTEXT_STAGE_TITLES = {
+  capturing: "being read",
+  generating: "being summarised",
+  delivering: "being sent to the voice model",
+} as const;
 export type WaveformSampler = (source: WaveformSource, samples: Float32Array<ArrayBuffer>) => void;
 
 interface VoiceBarProps {
@@ -149,17 +157,31 @@ export const VoiceBar = React.memo(function VoiceBar({
         : active
           ? state.reconnecting
             ? "Reconnecting"
-            : state.microphoneMuted ? "Microphone muted" : "Listening"
+            : state.microphoneMuted ? "Microphone muted" : TALK_READY_STATUS
           : "Voice ended";
+  // The microphone is open as soon as the phase is active; context
+  // preparation is a secondary hint that never gates talking.
+  const talkReady = active && !state.reconnecting && !state.microphoneMuted;
   const preparation = state.contextPreparation;
-  const contextLabel = !active || preparation === undefined ? null
-    : state.contextStatusError ? "Context status unavailable"
-      : preparation === null ? "Checking context"
-        : preparation.phase === "preparing"
-          ? { capturing: "Reading context", generating: "Preparing context", delivering: "Sending context" }[preparation.stage]
-          : preparation.phase === "provider_acknowledged" ? "Context supplied"
-            : preparation.phase === "not_requested" ? "No summary pending"
-              : "Context unavailable";
+  const contextState = !active || preparation === undefined ? null
+    : state.contextStatusError ? "status_unavailable"
+      : preparation === null ? "checking"
+        : preparation.phase;
+  const contextLabel = contextState === null ? null
+    : contextState === "status_unavailable" ? "Context status unavailable"
+      : contextState === "checking" || contextState === "preparing" ? "Context arriving"
+        : contextState === "provider_acknowledged" ? "Context supplied"
+          : contextState === "not_requested" ? "No summary pending"
+            : "Context unavailable";
+  const contextTitle = contextState === "checking"
+    ? "Checking whether the agent's context is on its way. You can talk now."
+    : contextState === "preparing"
+      ? `The agent's context is ${CONTEXT_STAGE_TITLES[(preparation as { stage: keyof typeof CONTEXT_STAGE_TITLES }).stage]}. You can talk now; the model receives it as it arrives.`
+      : contextState === "provider_acknowledged"
+        ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion."
+        : contextState === "not_requested"
+          ? "No concurrent context preparation was requested for this call."
+          : undefined;
   const contextMessage = !active ? null : state.contextStatusError ??
     (preparation?.phase === "failed" ? voiceContextFailureMessage(preparation.reason) : null);
 
@@ -177,16 +199,14 @@ export const VoiceBar = React.memo(function VoiceBar({
             <span className="voice-bar__name" title={state.target?.label}>
               {state.target ? <>Voice with <strong>{state.target.label}</strong></> : "Voice"}
             </span>
-            <span className="voice-bar__status" role="status">
+            <span className="voice-bar__status" role="status" data-testid="voice-status" data-talk-ready={talkReady || undefined}>
               <span>{status}</span>
               {contextLabel && (
                 <span
                   className="voice-bar__context"
-                  title={preparation?.phase === "provider_acknowledged"
-                    ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion."
-                    : preparation?.phase === "not_requested"
-                      ? "No concurrent context preparation was requested for this call."
-                      : undefined}
+                  data-context={contextState ?? undefined}
+                  data-context-stage={preparation?.phase === "preparing" ? preparation.stage : undefined}
+                  title={contextTitle}
                 >{contextLabel}</span>
               )}
             </span>

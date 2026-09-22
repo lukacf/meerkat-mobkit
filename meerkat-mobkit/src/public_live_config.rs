@@ -12,6 +12,51 @@ pub struct PublicLiveRegistration {
     pub binding: AuthBindingRef,
     pub voice: String,
     pub session_instructions: Option<String>,
+    /// Bounds and model for the concurrent context summary.
+    pub summary: ConsoleVoiceSummaryConfig,
+}
+
+/// Default input window for the context summary: the most recent 64 KiB of
+/// the serialized transcript. Older turns are dropped whole; this is a size
+/// bound, not a content heuristic. 64 KiB is roughly 16k tokens, enough for
+/// several dozen ordinary turns while keeping the summary request's input
+/// cost and time-to-first-token bounded on large histories.
+pub const DEFAULT_SUMMARY_MAX_INPUT_BYTES: usize = 64 * 1024;
+
+/// Default output cap for the context summary: 4 KiB of UTF-8. The public
+/// GPT Live transport delivers the summary in fragments of at most 500 bytes,
+/// each waiting for its own provider receipt, so 4 KiB bounds delivery at 9
+/// fragments (at most 8 full fragments and one remainder) while leaving room
+/// for the 200-word factual notes the summary prompt asks for.
+pub const DEFAULT_SUMMARY_MAX_OUTPUT_BYTES: usize = 4 * 1024;
+
+/// Context summary configuration on the console voice registration.
+///
+/// The summary is a tool-free request made with the background agent's
+/// credentials. `model` defaults to the background agent's own text model
+/// because Meerkat's model catalog exposes a support tier
+/// (`ModelTier::Recommended`/`Supported`), not a speed or cost tier, so no
+/// "fastest model of the same provider" can be derived from catalog
+/// authority. Operators who want a faster summariser name it here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleVoiceSummaryConfig {
+    /// Model for the summary request, on the background agent's provider and
+    /// credentials. `None` uses the agent's own model.
+    pub model: Option<String>,
+    /// Most recent serialized transcript bytes handed to the summariser.
+    pub max_input_bytes: usize,
+    /// Hard UTF-8 cap on the produced summary.
+    pub max_output_bytes: usize,
+}
+
+impl Default for ConsoleVoiceSummaryConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_input_bytes: DEFAULT_SUMMARY_MAX_INPUT_BYTES,
+            max_output_bytes: DEFAULT_SUMMARY_MAX_OUTPUT_BYTES,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -22,6 +67,36 @@ struct RegistrationWire {
     auth_binding: BindingWire,
     voice: String,
     session_instructions: Option<String>,
+    summary: Option<SummaryWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SummaryWire {
+    model: Option<String>,
+    max_input_bytes: Option<usize>,
+    max_output_bytes: Option<usize>,
+}
+
+impl SummaryWire {
+    fn resolve(self) -> Result<ConsoleVoiceSummaryConfig, String> {
+        let defaults = ConsoleVoiceSummaryConfig::default();
+        let config = ConsoleVoiceSummaryConfig {
+            model: self
+                .model
+                .map(|model| nonempty(&model, "summary.model"))
+                .transpose()?,
+            max_input_bytes: self.max_input_bytes.unwrap_or(defaults.max_input_bytes),
+            max_output_bytes: self.max_output_bytes.unwrap_or(defaults.max_output_bytes),
+        };
+        if config.max_input_bytes == 0 {
+            return Err("summary.max_input_bytes must be positive".to_string());
+        }
+        if config.max_output_bytes == 0 {
+            return Err("summary.max_output_bytes must be positive".to_string());
+        }
+        Ok(config)
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,6 +158,11 @@ impl PublicLiveRegistration {
                 .session_instructions
                 .map(|instructions| nonempty(&instructions, "session_instructions"))
                 .transpose()?,
+            summary: wire
+                .summary
+                .map(SummaryWire::resolve)
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
 }
@@ -110,6 +190,41 @@ mod tests {
         assert_eq!(parsed.binding.realm, parsed.realm);
         assert_eq!(parsed.binding.binding.as_str(), "openai");
         assert!(parsed.binding.profile.is_none());
+        assert_eq!(parsed.summary, ConsoleVoiceSummaryConfig::default());
+        assert_eq!(parsed.summary.max_input_bytes, 64 * 1024);
+        assert_eq!(parsed.summary.max_output_bytes, 4 * 1024);
+        assert!(parsed.summary.model.is_none());
+    }
+
+    #[test]
+    fn public_live_registration_accepts_bounded_summary_configuration() {
+        let mut configured = registration();
+        configured["summary"] = json!({
+            "model": "gpt-5.4-mini", "max_input_bytes": 32768, "max_output_bytes": 2048
+        });
+        let parsed = PublicLiveRegistration::parse(&configured).expect("registration");
+        assert_eq!(parsed.summary.model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(parsed.summary.max_input_bytes, 32768);
+        assert_eq!(parsed.summary.max_output_bytes, 2048);
+        let mut partial = registration();
+        partial["summary"] = json!({ "max_output_bytes": 1024 });
+        let parsed = PublicLiveRegistration::parse(&partial).expect("registration");
+        assert_eq!(
+            parsed.summary.max_input_bytes,
+            DEFAULT_SUMMARY_MAX_INPUT_BYTES
+        );
+        assert_eq!(parsed.summary.max_output_bytes, 1024);
+        for invalid in [
+            json!({ "model": " " }),
+            json!({ "max_input_bytes": 0 }),
+            json!({ "max_output_bytes": 0 }),
+            json!({ "api_key": "not-a-secret-fixture" }),
+            json!({ "provider": "openai" }),
+        ] {
+            let mut rejected = registration();
+            rejected["summary"] = invalid;
+            assert!(PublicLiveRegistration::parse(&rejected).is_err());
+        }
     }
 
     #[test]

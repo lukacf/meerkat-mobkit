@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::auth::{ConsoleLiveBindingAuthority, ConsoleLiveGrant};
+use super::summary_window::{SummaryCache, SummaryKey, recent_window};
 use super::{
     ConsoleVoiceController, ConsoleVoiceHost, ConsoleVoiceSession, VoiceContextPreparation,
     VoiceError,
@@ -30,15 +31,23 @@ use crate::live_wiring::{
     AuthenticatedHttpLiveAuthority, LiveCapabilityProvider, LiveOperation, LiveRpcHandler,
     LiveRpcResponseDeliveryCustody, LiveSurfaceAuthority, capture_live_rpc_response_delivery,
 };
-use crate::public_live_config::PublicLiveRegistration;
+use crate::public_live_config::{ConsoleVoiceSummaryConfig, PublicLiveRegistration};
 use crate::unified_runtime::UnifiedRuntime;
 
 const PROFILE: &str = "openai.gpt-live-1.client-context.v1";
+
+/// Admission ceiling handed to Meerkat's summary policy. The policy refuses a
+/// snapshot above this size instead of windowing it; the configured
+/// `max_input_bytes` window is cut below, inside the summariser.
+const SUMMARY_CAPTURE_CEILING_BYTES: usize = 4 * 1024 * 1024;
+const SUMMARY_TIMEOUT: Duration = Duration::from_mins(1);
 
 struct FactorySummarizer {
     factory: meerkat::AgentFactory,
     config: Config,
     machine: Arc<meerkat_runtime::MeerkatMachine>,
+    summary: ConsoleVoiceSummaryConfig,
+    cache: SummaryCache,
 }
 
 #[async_trait]
@@ -48,11 +57,41 @@ impl LiveContextSummarizer for FactorySummarizer {
         snapshot: LiveContextSummarySnapshot<'_>,
     ) -> Result<String, LiveContextSummaryError> {
         let started = std::time::Instant::now();
+        let mut identity = snapshot.llm_identity().clone();
+        if let Some(model) = &self.summary.model {
+            identity.model.clone_from(model);
+        }
+        // Newest messages that fit the configured window; a size bound only.
+        let window = recent_window(snapshot.messages(), self.summary.max_input_bytes);
+        if window.is_empty() && !snapshot.messages().is_empty() {
+            return Err(LiveContextSummaryError::InputTooLarge {
+                max_bytes: self.summary.max_input_bytes,
+            });
+        }
+        let key = SummaryKey::new(
+            snapshot.session_id(),
+            snapshot.canonical_message_cursor(),
+            &identity.model,
+            window,
+        )
+        .map_err(|_| LiveContextSummaryError::Producer("summary input encoding".to_string()))?;
+        if let Some(text) = self.cache.get(&key) {
+            tracing::info!(
+                model = %identity.model,
+                elapsed_ms = started.elapsed().as_millis(),
+                output_bytes = text.len(),
+                window_messages = window.len(),
+                total_messages = snapshot.messages().len(),
+                cache = "hit",
+                "console voice context summary finished"
+            );
+            return Ok(text);
+        }
         let client = self
             .factory
             .build_llm_client_for_identity_with_auth_lease(
                 &self.config,
-                snapshot.llm_identity(),
+                &identity,
                 Some(self.machine.generated_auth_lease_handle()),
             )
             .await
@@ -61,21 +100,26 @@ impl LiveContextSummarizer for FactorySummarizer {
             })?;
         let result = super::summary::summarize_context(
             client.as_ref(),
-            &snapshot.llm_identity().model,
-            snapshot.messages(),
+            &identity.model,
+            window,
             snapshot.max_output_bytes(),
         )
         .await;
         tracing::info!(
-            model = %snapshot.llm_identity().model,
+            model = %identity.model,
             elapsed_ms = started.elapsed().as_millis(),
             output_bytes = ?result.as_ref().ok().map(String::len),
+            window_messages = window.len(),
+            total_messages = snapshot.messages().len(),
+            cache = "miss",
             error = ?result.as_ref().err(),
             "console voice context summary finished"
         );
-        result.map_err(|error| {
+        let text = result.map_err(|error| {
             LiveContextSummaryError::Producer(format!("summary rejected: {error:?}"))
-        })
+        })?;
+        self.cache.insert(key, text.clone());
+        Ok(text)
     }
 }
 
@@ -157,6 +201,7 @@ impl ConsoleVoiceController {
         registration: PublicLiveRegistration,
         summary_override: Option<(LiveContextSummaryPolicy, String)>,
     ) -> Result<Self, String> {
+        let summary_config = registration.summary.clone();
         let access = runtime
             .access_controller()
             .cloned()
@@ -208,10 +253,12 @@ impl ConsoleVoiceController {
                     factory: factory.clone(),
                     config: ctx.config_source.config().clone(),
                     machine: Arc::clone(&machine),
+                    summary: summary_config.clone(),
+                    cache: SummaryCache::default(),
                 }),
-                4 * 1024 * 1024,
-                16 * 1024,
-                Duration::from_mins(1),
+                SUMMARY_CAPTURE_CEILING_BYTES,
+                summary_config.max_output_bytes,
+                SUMMARY_TIMEOUT,
             )
             .map_err(|error| error.to_string())?,
         }
@@ -1216,6 +1263,44 @@ pub(crate) mod tests {
             0,
             "readiness must not invoke summary production"
         );
+        // Open no longer re-probes readiness; the host's own target
+        // resolution must still refuse what the probe refused, with the
+        // same typed answers the console maps today.
+        let open_request = |request_id: &str, identity: &str| super::super::VoiceRequest {
+            identity: identity.to_string(),
+            request_id: request_id.to_string(),
+        };
+        assert_eq!(
+            controller
+                .open("other@example.com", open_request("voice-denied", "agent-a"))
+                .await
+                .err(),
+            Some(VoiceError::Unauthorized),
+            "a foreign principal is refused by the open path itself"
+        );
+        assert_eq!(
+            controller
+                .open(
+                    "voice@example.com",
+                    open_request("voice-missing", "agent-missing")
+                )
+                .await
+                .err(),
+            Some(VoiceError::Unavailable),
+            "an unknown member is unavailable on the open path itself"
+        );
+        assert!(
+            !controller
+                .ready("voice@example.com", "agent-missing")
+                .await
+                .expect("missing member readiness"),
+            "readiness and open agree on an unknown member"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "refused opens never reach summary production"
+        );
         let decisions = crate::console_auth_config::parse_console_auth_config(&json!({
             "shared_secret":"console-test-signing", "email_allowlist":["voice@example.com"]
         }))
@@ -1686,7 +1771,16 @@ impl SharedHost {
         identity: &str,
     ) -> Result<Arc<dyn ConsoleVoiceSession>, VoiceError> {
         let target_started = std::time::Instant::now();
-        let grant = self.target(principal, identity).await?;
+        // The readiness probe reported a grant held by another principal as
+        // plain unavailability; the open path keeps that answer rather than
+        // the same-request "teardown pending" retry hint.
+        let grant = self
+            .target(principal, identity)
+            .await
+            .map_err(|error| match error {
+                VoiceError::Busy => VoiceError::Unavailable,
+                other => other,
+            })?;
         let target_ms = elapsed_ms(target_started);
         let surface = self.guard(Arc::clone(&grant), identity.to_string())?;
         let live_open_started = std::time::Instant::now();
@@ -1714,7 +1808,18 @@ impl SharedHost {
                     let _ = delivery.rejected().await;
                 }
                 tracing::warn!(error = ?response.error, "console live open refused by shared host");
-                return Err(VoiceError::HostFailed);
+                // Meerkat's open admission refuses an unavailable target,
+                // credential, binding, or member with the capability code;
+                // that is the same answer the readiness probe gave.
+                let unavailable = response
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == crate::rpc::CAPABILITY_UNAVAILABLE_CODE);
+                return Err(if unavailable {
+                    VoiceError::Unavailable
+                } else {
+                    VoiceError::HostFailed
+                });
             }
         };
         Ok(Arc::new(Session {
