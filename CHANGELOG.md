@@ -88,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Every `MobSessionService` wrapper forwards the two methods Meerkat 0.8.41
     made required (`fork_persisted_session_at_turn_boundary`,
     `commit_live_delegation_final_transcript_at_turn_boundary`).
+
 ### Changed
 
 - Console voice time-to-talk. Clicking the voice button on an agent with a
