@@ -298,14 +298,22 @@ How to read a gateway that is gone:
 
 ## Blob ids are not meerkat content blob ids
 
-MobKit mints the id of every object under `mobkit/blob/*` and behind
-`/blobs/{id}` as `sha256(media_type || 0x00 || raw_bytes)` over the decoded
-image bytes (`meerkat-mobkit/src/blob_store.rs`, `compute_blob_id`). Meerkat
-mints its content blob ids as `sha256(canonical_media_type || 0x00 ||
-base64_text)` over the base64 string it stores. Both render as
-`sha256:<64 hex digits>`, so the same PNG carries two different, visually
-indistinguishable ids. Compare MobKit ids only with MobKit ids and meerkat ids
-only with meerkat ids; a lookup across the two stores misses. The side by side
+A MobKit blob store applies one of two digest recipes depending on how an
+object enters it. Images that arrive through meerkat's `BlobStore` face
+(`Base64BlobStoreAdapter::put_image`, used by the gateway, the unified runtime
+and the console voice host) and images uploaded through the console
+(`mobkit/blob/upload`, multipart `image_upload` placeholders) are addressed
+with meerkat's `content_blob_id`, `sha256(canonical_media_type || 0x00 ||
+base64_text)` over the base64 form, so meerkat's read-back verification
+(durable fork preflight, realtime image hydration) accepts them. Objects
+written through MobKit's native `BinaryBlobStore::put_bytes` (non-image
+`mobkit/blob/*` objects), and image blobs written by MobKit builds that
+predate this rule, carry MobKit's own address, `sha256(media_type || 0x00 ||
+raw_bytes)` over the decoded bytes (`meerkat-mobkit/src/blob_store.rs`,
+`compute_blob_id`). Both render as `sha256:<64 hex digits>`, so the same PNG
+under the two recipes carries two visually indistinguishable ids. The store
+resolves both forms through both faces, so references written before the rule
+keep hydrating; still, compare ids only within one recipe. The side by side
 recipe, provenance rules and the planned unification are documented in the
 meerkat storage operations runbook under "Blob digests in meerkat and MobKit".
 
