@@ -3887,10 +3887,13 @@ async fn externalize_image_upload_placeholders(
                 file.media_type
             ));
         }
-        let blob_ref = blob_store
-            .put_bytes(&file.media_type, file.bytes)
-            .await
-            .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
+        let blob_ref = crate::blob_store::put_meerkat_image_bytes(
+            blob_store.as_ref(),
+            &file.media_type,
+            file.bytes,
+        )
+        .await
+        .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
         refs.insert(
             upload_id,
             serde_json::json!({
@@ -3949,10 +3952,13 @@ async fn externalize_single_image_upload(
         ));
     }
     let size = file.bytes.len() as u64;
-    let blob_ref = blob_store
-        .put_bytes(&file.media_type, file.bytes.clone())
-        .await
-        .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
+    let blob_ref = crate::blob_store::put_meerkat_image_bytes(
+        blob_store.as_ref(),
+        &file.media_type,
+        file.bytes.clone(),
+    )
+    .await
+    .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
     Ok(json!({
         "blob_id": blob_ref.blob_id,
         "media_type": blob_ref.media_type,
@@ -16872,6 +16878,91 @@ comms = true
             .get_bytes(&meerkat_core::BlobId::from(blob_id))
             .await?;
         assert_eq!(payload.data.as_ref(), b"png-data");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_blob_upload_survives_meerkat_image_integrity_gates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use base64::Engine as _;
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let png = Bytes::from_static(b"\x89PNG\r\n\x1a\n");
+        let mut files = BTreeMap::new();
+        files.insert(
+            "upload-1".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: png.clone(),
+            },
+        );
+        let result = externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store.clone(),
+        )
+        .await
+        .map_err(std::io::Error::other)?;
+        let Some(blob_id) = result["blob_id"].as_str() else {
+            return Err(std::io::Error::other("blob id").into());
+        };
+        let blob_id = meerkat_core::BlobId::from(blob_id);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.as_ref());
+        assert_eq!(
+            blob_id,
+            meerkat_core::blob::content_blob_id("image/png", &encoded),
+            "console uploads carry meerkat's content address"
+        );
+        let adapter = crate::blob_store::Base64BlobStoreAdapter::new(store.clone());
+        meerkat_core::verify_stored_image_blob(&adapter, &blob_id, "image/png", 1 << 20)
+            .await
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let ensured =
+            meerkat_core::ensure_stored_image_blob(&adapter, "image/png", &encoded, 1 << 20)
+                .await
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+        assert_eq!(ensured.blob_ref.blob_id, blob_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pre_fix_raw_bytes_image_refs_still_hydrate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use base64::Engine as _;
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let png = Bytes::from_static(b"\x89PNG\r\n\x1a\n");
+        // A store written before the fix holds the image under MobKit's
+        // raw-bytes address, referenced from session content.
+        let legacy = store.put_bytes("image/png", png.clone()).await?;
+        let adapter = crate::blob_store::Base64BlobStoreAdapter::new(store.clone());
+        let mut blocks = vec![meerkat_core::types::ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: meerkat_core::types::ImageData::Blob {
+                blob_id: legacy.blob_id.clone(),
+            },
+        }];
+        meerkat_core::hydrate_content_blocks(
+            &adapter,
+            &mut blocks,
+            meerkat_core::MissingBlobBehavior::Error,
+        )
+        .await?;
+        let Some(meerkat_core::types::ContentBlock::Image {
+            data: meerkat_core::types::ImageData::Inline { data },
+            ..
+        }) = blocks.first()
+        else {
+            return Err(std::io::Error::other("hydrated inline image").into());
+        };
+        assert_eq!(
+            data,
+            &base64::engine::general_purpose::STANDARD.encode(png.as_ref())
+        );
         Ok(())
     }
 

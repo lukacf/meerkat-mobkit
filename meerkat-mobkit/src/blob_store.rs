@@ -341,6 +341,9 @@ impl BlobStore for Base64BlobStoreAdapter {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data.as_bytes())
             .map_err(|err| BlobStoreError::WriteFailed(format!("invalid blob base64: {err}")))?;
+        // The id is minted over the exact base64 text meerkat handed us, not
+        // over a re-encoding of the decoded bytes, so non-canonical base64
+        // input still matches what meerkat recomputes on read-back.
         self.inner
             .put_bytes_addressed(blob_id, &canonical_media_type, Bytes::from(bytes))
             .await
@@ -422,6 +425,26 @@ impl BinaryBlobStore for BinaryBlobStoreAdapter {
     fn is_persistent(&self) -> bool {
         self.inner.is_persistent()
     }
+}
+
+/// Store raw image bytes under meerkat's required content address.
+///
+/// Console uploads and other byte-bearing entry points that place an image
+/// into session content must address it the way meerkat does
+/// (`content_blob_id(canonical_media_type, base64_text)`), or a later
+/// `verify_stored_image_blob` (durable fork preflight, realtime hydration)
+/// refuses the reference. Non-image blobs keep [`BinaryBlobStore::put_bytes`].
+pub async fn put_meerkat_image_bytes(
+    store: &dyn BinaryBlobStore,
+    media_type: &str,
+    data: Bytes,
+) -> Result<BlobRef, BlobStoreError> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_ref());
+    let blob_id = meerkat_core::blob::content_blob_id(media_type, &encoded);
+    let canonical_media_type = meerkat_core::image_generation::MediaType::canonical_str(media_type);
+    store
+        .put_bytes_addressed(blob_id, &canonical_media_type, data)
+        .await
 }
 
 fn compute_blob_id(media_type: &str, bytes: &[u8]) -> BlobId {

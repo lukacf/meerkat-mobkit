@@ -24,8 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   new `BinaryBlobStore::put_bytes_addressed`. MobKit-native blobs written with
   `put_bytes` (console image uploads, `mobkit/blob/*`) keep their raw-bytes
   address and stay readable through both faces, so existing stores need no
-  migration. `BinaryBlobStore` gains the required method
-  `put_bytes_addressed`; external implementors must add it.
+  migration. Console image uploads (`mobkit/blob/upload` and multipart
+  `image_upload` placeholders) now store through
+  `blob_store::put_meerkat_image_bytes`, so a console-attached image survives
+  `verify_stored_image_blob` in a later durable fork; references to images
+  uploaded before this change keep resolving through the same store.
+  `BinaryBlobStore` gains the required method `put_bytes_addressed`; external
+  implementors must add it.
 
 ### Changed
 
