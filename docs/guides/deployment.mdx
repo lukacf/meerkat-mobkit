@@ -296,6 +296,19 @@ How to read a gateway that is gone:
   a stack overflow) or aborted. The exit status names which; `137` is SIGKILL,
   `139` is a segfault or stack overflow, `134` is an abort.
 
+## Blob ids are not meerkat content blob ids
+
+MobKit mints the id of every object under `mobkit/blob/*` and behind
+`/blobs/{id}` as `sha256(media_type || 0x00 || raw_bytes)` over the decoded
+image bytes (`meerkat-mobkit/src/blob_store.rs`, `compute_blob_id`). Meerkat
+mints its content blob ids as `sha256(canonical_media_type || 0x00 ||
+base64_text)` over the base64 string it stores. Both render as
+`sha256:<64 hex digits>`, so the same PNG carries two different, visually
+indistinguishable ids. Compare MobKit ids only with MobKit ids and meerkat ids
+only with meerkat ids; a lookup across the two stores misses. The side by side
+recipe, provenance rules and the planned unification are documented in the
+meerkat storage operations runbook under "Blob digests in meerkat and MobKit".
+
 ## See also
 
 - [Configuration](/reference/configuration): the `http_listen`,
