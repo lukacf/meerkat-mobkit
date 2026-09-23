@@ -22,6 +22,7 @@ import type {
   TopologyOperationReceipt,
 } from "@console-core";
 import {
+  identityStateLabel,
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
@@ -4354,7 +4355,27 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         ) : (
           <dl className="console-panel__grid">
             <dt>State</dt>
-            <dd>{inspect.state}</dd>
+            <dd data-testid={`inspect-state:${target.identity}`}>
+              {identityStateLabel(inspect)}
+            </dd>
+            {inspect.session_repair ? (
+              <>
+                <dt>Repair</dt>
+                <dd data-testid={`inspect-session-repair:${target.identity}`}>
+                  <p>
+                    The durable session is intact but refused until it is
+                    repaired. Run the diagnose command, then the repair
+                    command, then reload the member (mobkit/reload_member).
+                  </p>
+                  <code data-testid="inspect-session-repair-diagnose">
+                    {inspect.session_repair.diagnose_command}
+                  </code>
+                  <code data-testid="inspect-session-repair-apply">
+                    {inspect.session_repair.apply_command}
+                  </code>
+                </dd>
+              </>
+            ) : null}
             <dt>Role</dt>
             <dd>{inspect.role || "n/a"}</dd>
             <dt>Addressability</dt>
@@ -4387,7 +4408,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         <ul className="console-panel__list">
           {identities.map((r) => (
             <li data-testid={`health-identity:${r.identity}`} key={r.identity}>
-              <strong>{r.display_name || r.identity}</strong> · {r.state} ·{" "}
+              <strong>{r.display_name || r.identity}</strong> · {identityStateLabel(r)} ·{" "}
               {r.addressability}
             </li>
           ))}

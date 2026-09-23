@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use meerkat_core::service::DurableResumeHold;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -441,6 +442,114 @@ pub enum ContinuityFailureKind {
     /// supervisor — retrying is exactly the 2026-07-29 heal/re-Break loop.
     /// The identity stays Broken until an operator intervenes.
     CheckpointUnrecoverable,
+    /// The durable session's committed WholeBlob document fails its own
+    /// audited-endpoint guard (meerkat's typed
+    /// `SessionError::WholeBlobAuditedEndpointDivergence`, resume hold
+    /// `audited_endpoint_divergence`). Every row is intact and every read
+    /// refuses, so no retry, heal, or reconcile can change the verdict: the
+    /// sanctioned repair (`rkat session repair-wholeblob`) is the only way
+    /// forward. The continuity repair supervisor does not retry it; the
+    /// operator repairs the document and runs `mobkit/reload_member`, which
+    /// resumes the same session with no extra flag. The typed hold rides
+    /// [`SessionRepairRequired`] on the identity status and member health.
+    RepairRequired,
+}
+
+/// Typed "session needs repair" hold recorded against a Broken identity.
+///
+/// Produced when a resume, a reload, or the heal authority reports meerkat's
+/// typed [`DurableResumeHold::AuditedEndpointDivergence`]: the committed
+/// WholeBlob document preserves every message but its live transcript no
+/// longer preserves the graph-proved audited endpoint, so every read refuses
+/// (the HomeCore 2026-09-22 wedge). The hold is matched on the typed variant
+/// or the typed wire token only, never on display text.
+///
+/// While recorded, the continuity repair supervisor skips the identity and
+/// reconcile keeps its Broken projection (a retry storm against a stable
+/// verdict is exactly the behaviour this replaces). The operator runs
+/// `diagnose_command`, then `apply_command`, then `mobkit/reload_member`,
+/// which resumes the same durable session and clears the hold. The hold is
+/// process-local (entry state, not durable): a gateway restart re-attempts
+/// the resume once and re-records it if the document is still refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRepairRequired {
+    /// The durable session whose committed document needs the repair.
+    pub session_id: meerkat_core::types::SessionId,
+    /// meerkat's typed resume hold class, on the wire as its stable token
+    /// (`audited_endpoint_divergence`).
+    pub hold: DurableResumeHold,
+    /// `rkat ... session repair-wholeblob <id> --json`: diagnose only, writes
+    /// nothing.
+    pub diagnose_command: String,
+    /// `rkat ... session repair-wholeblob <id> --apply --json`: re-anchors the
+    /// document on its live rows without dropping a message. Add
+    /// `--accept-shorter` only when the diagnose report says the live
+    /// transcript is shorter than the audited endpoint.
+    pub apply_command: String,
+    /// The producing error, verbatim, for operators.
+    pub detail: String,
+}
+
+impl SessionRepairRequired {
+    /// The repair CLI subcommand every hold points operators at.
+    pub const REPAIR_SUBCOMMAND: &'static str = "session repair-wholeblob";
+
+    /// Build the hold for meerkat's audited-endpoint divergence.
+    ///
+    /// The commands name the exact session. The `--state-root` and
+    /// `--realm` scope come from `scope` when the host declared them and
+    /// stay as explicit `<state-root>` / `<realm>` placeholders otherwise:
+    /// MobKit never guesses a filesystem path it did not open.
+    pub fn audited_endpoint_divergence(
+        session_id: meerkat_core::types::SessionId,
+        scope: Option<&SessionRepairScope>,
+        detail: impl Into<String>,
+    ) -> Self {
+        let prefix = Self::rkat_scope_prefix(scope);
+        let diagnose_command = format!("{prefix} {} {session_id} --json", Self::REPAIR_SUBCOMMAND);
+        let apply_command = format!(
+            "{prefix} {} {session_id} --apply --json",
+            Self::REPAIR_SUBCOMMAND
+        );
+        Self {
+            session_id,
+            hold: DurableResumeHold::AuditedEndpointDivergence,
+            diagnose_command,
+            apply_command,
+            detail: detail.into(),
+        }
+    }
+
+    fn rkat_scope_prefix(scope: Option<&SessionRepairScope>) -> String {
+        let state_root = scope
+            .and_then(|scope| scope.state_root.as_deref())
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<state-root>".to_string());
+        let realm = scope
+            .and_then(|scope| scope.realm.as_deref())
+            .unwrap_or("<realm>");
+        format!("rkat --state-root {state_root} --realm {realm}")
+    }
+
+    /// One operator-facing sentence: what stands, and the two commands.
+    pub fn operator_reason(&self) -> String {
+        format!(
+            "session {} needs the sanctioned audited-endpoint repair (typed resume hold              `{}`; every message is intact and every read refuses; no retry or heal can              change this). Diagnose: `{}`; repair: `{}`; then run mobkit/reload_member on              this identity. Refusal: {}",
+            self.session_id, self.hold, self.diagnose_command, self.apply_command, self.detail
+        )
+    }
+}
+
+/// Where the operator's `rkat` scope for [`SessionRepairRequired`] commands
+/// points: the meerkat state root and realm whose runtime store holds the
+/// identity's durable sessions. Declared by the host at composition time
+/// (MobKit embedded in a meerkat realm knows the state root from
+/// `MobKitStorageLayout::meerkat_state_root`); a field the host did not
+/// declare renders as an explicit placeholder in the commands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionRepairScope {
+    pub state_root: Option<std::path::PathBuf>,
+    pub realm: Option<String>,
 }
 
 /// A typed failure payload for broken continuity.
@@ -1072,6 +1181,13 @@ pub struct IdentityStatus {
     /// and optional on the wire; SDK parsers ignore unknown keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
+    /// Typed "session needs repair" hold for a Broken identity whose durable
+    /// session fails meerkat's audited-endpoint guard: present with the exact
+    /// `rkat session repair-wholeblob` commands until the operator repairs the
+    /// document and `mobkit/reload_member` resumes it. Additive and optional
+    /// on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_repair_required: Option<SessionRepairRequired>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1286,10 @@ pub enum ReloadAttemptOutcome {
     TimedOut,
     /// Any other failure (detail carries the error text).
     Failed,
+    /// The durable session needs the sanctioned audited-endpoint repair
+    /// before it can be resumed; `data` carries the typed hold and the
+    /// member health carries the exact commands. Nothing was discarded.
+    RepairRequired,
 }
 
 /// The most recent reload attempt (verb or automatic), so an operator can see
@@ -1244,6 +1364,12 @@ pub struct MemberHealthReport {
     pub durability: Option<MemberDurability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
+    /// Typed "session needs repair" hold (see
+    /// [`IdentityStatus::session_repair_required`]): the exact repair
+    /// commands for this member's durable session, present until the
+    /// operator repairs it and `mobkit/reload_member` resumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_repair_required: Option<SessionRepairRequired>,
 }
 
 // ---------------------------------------------------------------------------

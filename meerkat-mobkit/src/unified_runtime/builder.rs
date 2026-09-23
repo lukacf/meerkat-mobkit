@@ -55,6 +55,8 @@ pub struct UnifiedRuntimeBuilder {
     // --- New convenience path ---
     definition_source: Option<DefinitionSource>,
     persistent_state_path: Option<PathBuf>,
+    /// Host-declared `rkat` scope for `SessionRepairRequired` commands.
+    session_repair_scope: Option<crate::identity_first::SessionRepairScope>,
     /// Root `continuity_from_state_dir` opened — pinned in CANONICAL form at
     /// open time — retained so `build()` can refuse a silent authority fork:
     /// session authority in one directory's continuity.sqlite3 with
@@ -153,6 +155,20 @@ impl UnifiedRuntimeBuilder {
     /// with an auto-created temp directory.
     pub fn persistent_state(mut self, path: impl Into<PathBuf>) -> Self {
         self.persistent_state_path = Some(path.into());
+        self
+    }
+
+    /// Declare the meerkat state root and realm whose runtime store holds this
+    /// mob's durable sessions, so a member parked with a
+    /// `SessionRepairRequired` hold names the exact
+    /// `rkat --state-root .. --realm .. session repair-wholeblob <id>` commands.
+    /// Without it (or an embedded meerkat layout) the commands carry explicit
+    /// `<state-root>` / `<realm>` placeholders; MobKit never guesses a path.
+    pub fn session_repair_scope(
+        mut self,
+        scope: crate::identity_first::SessionRepairScope,
+    ) -> Self {
+        self.session_repair_scope = Some(scope);
         self
     }
 
@@ -1292,6 +1308,17 @@ impl UnifiedRuntimeBuilder {
                 .set_agent_memory(agent_memory_injector.clone())
                 .await;
             identity_runtime.set_error_hook(self.error_hook.clone());
+            identity_runtime.set_session_repair_scope(Some(
+                self.session_repair_scope.clone().unwrap_or_else(|| {
+                    crate::identity_first::SessionRepairScope {
+                        state_root: storage_layout
+                            .as_ref()
+                            .and_then(|layout| layout.meerkat_state_root())
+                            .map(std::path::Path::to_path_buf),
+                        realm: None,
+                    }
+                }),
+            ));
             identity_runtime.set_topology_controller(topology_controller.clone());
 
             let roster_specs = roster_provider

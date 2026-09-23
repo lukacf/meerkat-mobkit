@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Typed "session needs repair" hold for the WholeBlob audited-endpoint wedge
+  (HomeCore 2026-09-22, session `01a000bb-b69e-7570-933d-ffd5d61d51ee`).
+  meerkat 0.8.41 types the refusal (`SessionError::WholeBlobAuditedEndpointDivergence`,
+  resume hold `audited_endpoint_divergence`): the committed document keeps
+  every message, but every read refuses until the operator runs the sanctioned
+  `rkat session repair-wholeblob` repair. MobKit now reads that hold typed
+  (never from error text) on all three doors it can arrive through, the
+  resume (`ResumeRejectionKind::AuditedEndpointDivergence`), the registration
+  reload (`BridgeError::SessionRepairRequired`), and the heal authority
+  (`CommittedBoundaryRepair::RepairRequired`), and parks the identity Broken
+  with a `SessionRepairRequired` hold (`ContinuityFailureKind::RepairRequired`)
+  carrying the session id and the exact diagnose and apply commands. The hold
+  rides `mobkit/member_health.session_repair_required`, the identity status,
+  the console status and inspect payloads (`session_repair`, console health
+  `needs_repair`, rendered as **needs repair** with both commands), and the
+  typed error's `error.data` (`kind: mob_member_session_repair_required`,
+  meerkat's own `durable_resume_hold` key, `retryable: false`).
+  `UnifiedRuntimeBuilder::session_repair_scope` declares the `--state-root` /
+  `--realm` the commands name; without it (or an embedded meerkat layout) they
+  carry explicit placeholders instead of a guessed path.
+
+### Fixed
+
+- A member whose durable session failed the audited-endpoint guard no longer
+  retry-storms. Before, the refusal classified as a retryable resume
+  rejection: the identity Broke, the continuity repair supervisor re-ran
+  recovery and the resume on a timer, the registration reload reported "store
+  not healthy yet, retry later", and every send stayed reload-required with
+  no operator path anywhere. Now the FIRST typed refusal parks the identity;
+  the supervisor makes no heal call and no reconcile retry against it, and
+  reconcile keeps the Broken projection typed `RepairRequired`.
+  `mobkit/reload_member` is the way back: after the operator's repair the same
+  verb, with no extra flag, resumes the SAME session and generation and clears
+  the hold; a document still refused re-parks the identity typed and records
+  the attempt as `last_reload.outcome: repair_required`.
+
 ### Changed
 
 - Console voice time-to-talk. Clicking the voice button on an agent with a

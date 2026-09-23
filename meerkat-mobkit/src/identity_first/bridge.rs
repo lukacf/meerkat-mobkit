@@ -166,11 +166,52 @@ fn classify_submit_mob_error(
 /// (store not healthy yet, retryable later) and `TimedOut` (bounded by
 /// meerkat's `MEMBER_RELOAD_TOTAL_TIMEOUT`, names the stage) keep their class;
 /// everything else keeps the text form.
+/// The session a typed resume hold names, read off the typed error itself
+/// (`SessionError::WholeBlobAuditedEndpointDivergence { id }`, through the
+/// shared failure wrappers) or off meerkat's structured `session_id` field
+/// for wire-carried holds. `None` when the carrier names no session.
+fn reload_hold_session_id(error: &meerkat_mob::MobError) -> Option<meerkat_core::types::SessionId> {
+    match error {
+        meerkat_mob::MobError::SessionError(
+            meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { id },
+        ) => Some(id.clone()),
+        meerkat_mob::MobError::SharedRetirementFailure(inner)
+        | meerkat_mob::MobError::SharedLifecycleFailure(inner) => reload_hold_session_id(inner),
+        other => other
+            .structured_data()
+            .as_ref()
+            .and_then(|data| data.get("session_id"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| meerkat_core::types::SessionId::parse(raw).ok()),
+    }
+}
+
 fn classify_reload_mob_error(
     member_id: &MobAgentIdentity,
     error: meerkat_mob::MobError,
     deadline: &ActorAdmissionDeadline,
 ) -> BridgeError {
+    // A typed audited-endpoint divergence is not "the store is not healthy
+    // yet": it is a stable verdict only the operator's repair clears. Read it
+    // typed before the retryable refusal arm so the reload verb parks the
+    // member instead of advertising a retry that can never succeed.
+    if durable_resume_hold_of(&error)
+        == Some(meerkat_core::service::DurableResumeHold::AuditedEndpointDivergence)
+        && let Some(session_id) = reload_hold_session_id(&error)
+    {
+        tracing::error!(
+            identity = %member_id,
+            session_id = %session_id,
+            error = %error,
+            "member reload refused: the durable session needs the sanctioned \
+             audited-endpoint repair; registration retained; parking typed instead of retrying"
+        );
+        return BridgeError::SessionRepairRequired {
+            identity: member_id.clone(),
+            session_id,
+            detail: error.to_string(),
+        };
+    }
     match error {
         meerkat_mob::MobError::ActorCommandTimedOut {
             command_kind,
@@ -541,6 +582,19 @@ pub enum BridgeError {
         kind: ResumeRejectionKind,
         detail: String,
     },
+    /// The member's durable session needs the sanctioned audited-endpoint
+    /// repair before any resume or reload can read it (meerkat's typed
+    /// `SessionError::WholeBlobAuditedEndpointDivergence`, read typed off the
+    /// mob error). Raised by the registration reload path; the resume path
+    /// raises the same fact as `ResumeRejected { kind:
+    /// AuditedEndpointDivergence }`. The registration and the durable session
+    /// are retained unchanged; nothing is retryable until the operator runs
+    /// the repair CLI and then `mobkit/reload_member`.
+    SessionRepairRequired {
+        identity: MobAgentIdentity,
+        session_id: meerkat_core::types::SessionId,
+        detail: String,
+    },
     /// Provider authentication refused the member build. meerkat resolves the
     /// profile's credential at build time and fails typed
     /// (`SessionError::provider_auth_failure`, carried across the
@@ -724,6 +778,16 @@ impl std::fmt::Display for BridgeError {
                 f,
                 "session bridge resume rejected ({kind:?}): {detail}; durable session preserved, \
                  identity degraded pending retry"
+            ),
+            Self::SessionRepairRequired {
+                identity,
+                session_id,
+                detail,
+            } => write!(
+                f,
+                "session bridge: member {identity} session {session_id} needs the sanctioned \
+                 audited-endpoint repair before it can be resumed or reloaded (every message is \
+                 intact; no retry can change this): {detail}"
             ),
             Self::ProviderAuthRejected { failure, detail } => write!(
                 f,
@@ -986,6 +1050,16 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::Mob(detail) => Self::Mob(detail),
             BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
+            // The registration reload surfaced the same typed fact the resume
+            // path reports as a rejection kind; nothing was admitted.
+            BridgeError::SessionRepairRequired {
+                identity,
+                session_id,
+                detail,
+            } => Self::ResumeRejected {
+                kind: ResumeRejectionKind::AuditedEndpointDivergence,
+                detail: format!("member {identity} session {session_id}: {detail}"),
+            },
             BridgeError::ProviderAuthRejected { failure, detail } => {
                 Self::ProviderAuthRejected { failure, detail }
             }
@@ -1206,8 +1280,42 @@ pub enum ResumeRejectionKind {
     /// Upstream revive-by-document-authority lands in meerkat 0.8.15; until
     /// then `mobkit/reset` is the deliberate fresh start.
     ArchivedNotRevivable,
+    /// meerkat's typed `SessionError::WholeBlobAuditedEndpointDivergence`
+    /// (resume hold `audited_endpoint_divergence`): the committed WholeBlob
+    /// document keeps every message, but its live transcript no longer
+    /// preserves the graph-proved audited endpoint, so every read refuses. A
+    /// STABLE verdict no retry, heal, or reconcile can change; the sanctioned
+    /// `rkat session repair-wholeblob` repair is the only way forward, after
+    /// which `mobkit/reload_member` resumes the same session. Consumers park
+    /// the identity with the typed [`super::types::SessionRepairRequired`]
+    /// hold on the FIRST encounter (the HomeCore 2026-09-22 wedge).
+    AuditedEndpointDivergence,
     /// Any other resume-time failure.
     Other,
+}
+
+/// meerkat's typed resume hold carried by a mob error, when it carries one.
+///
+/// Two typed carriers, both read without display text: the in-process
+/// `MobError::SessionError` variant (through meerkat-mob's shared retirement /
+/// lifecycle failure wrappers, exactly as [`provider_auth_rejection`] reads
+/// them) exposes [`meerkat_core::service::SessionError::durable_resume_hold`];
+/// every other shape is read back off meerkat's structured `durable_resume_hold`
+/// wire token through `SessionError::durable_resume_hold_from_data`, the same
+/// table the meerkat RPC client uses to re-type a hold across the transport.
+/// An unknown token fails closed as `None`.
+pub(crate) fn durable_resume_hold_of(
+    error: &meerkat_mob::MobError,
+) -> Option<meerkat_core::service::DurableResumeHold> {
+    match error {
+        meerkat_mob::MobError::SessionError(session_error) => session_error.durable_resume_hold(),
+        meerkat_mob::MobError::SharedRetirementFailure(inner)
+        | meerkat_mob::MobError::SharedLifecycleFailure(inner) => durable_resume_hold_of(inner),
+        other => other
+            .structured_data()
+            .as_ref()
+            .and_then(meerkat_core::service::SessionError::durable_resume_hold_from_data),
+    }
 }
 
 /// The terminal park reason recorded when a resume hits the typed
@@ -1350,6 +1458,14 @@ fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
     | meerkat_mob::MobError::SharedLifecycleFailure(inner) = error
     {
         return classify_resume_error(inner);
+    }
+    // The audited-endpoint divergence is a typed resume hold, never a
+    // transient: classify it before any other probe so it reaches the typed
+    // repair park instead of the reconcile retry path.
+    if durable_resume_hold_of(error)
+        == Some(meerkat_core::service::DurableResumeHold::AuditedEndpointDivergence)
+    {
+        return ResumeRejectionKind::AuditedEndpointDivergence;
     }
     if matches!(
         error,
@@ -1948,6 +2064,16 @@ pub enum CommittedBoundaryRepair {
     /// absent (or the machine held). Stable across calls — callers must NOT
     /// retry-loop it; surface `reason` to operators instead.
     Unprovable { reason: String },
+    /// The heal authority refused to read the durable head at all: the
+    /// committed WholeBlob document fails meerkat's audited-endpoint guard
+    /// (`SessionError::WholeBlobAuditedEndpointDivergence`). Rows intact, no
+    /// retry can change it, the sanctioned `rkat session repair-wholeblob`
+    /// repair is the only way forward. Callers park the identity with the
+    /// typed repair hold instead of retrying recovery on a timer.
+    RepairRequired {
+        session_id: meerkat_core::types::SessionId,
+        detail: String,
+    },
     /// This bridge exposes no heal seam. Callers keep the legacy behavior
     /// (reconcile retries the resume directly).
     Unsupported,
@@ -2068,6 +2194,19 @@ fn map_committed_boundary_recovery_error(
         | meerkat_core::SessionError::DurableEvidenceQuarantined { .. }) => {
             Ok(CommittedBoundaryRepair::Unprovable {
                 reason: error.to_string(),
+            })
+        }
+        // The one hold an operator must repair by hand: recovery cannot read
+        // the committed document, so retrying recovery every pass is the
+        // HomeCore 2026-09-22 retry storm. Typed verdict, typed park.
+        error @ meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { .. } => {
+            let meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { id } = &error
+            else {
+                unreachable!("bound by the match arm above")
+            };
+            Ok(CommittedBoundaryRepair::RepairRequired {
+                session_id: id.clone(),
+                detail: error.to_string(),
             })
         }
         error => Err(BridgeError::Mob(format!(
@@ -8865,6 +9004,136 @@ mod tests {
                 "retryable-tier errors must stay bridge errors, got {verdict:?}"
             );
         }
+    }
+
+    /// The audited-endpoint divergence is the one hold whose exit is the
+    /// operator's sanctioned repair (HomeCore 2026-09-22): the heal authority
+    /// reports it as the typed repair verdict, not as the retryable error tier
+    /// (a recovery retry every pass is the retry storm) and not as the
+    /// operator-opaque `Unprovable` text.
+    #[test]
+    fn heal_error_tier_audited_endpoint_divergence_is_the_typed_repair_verdict() {
+        let id = meerkat_core::SessionId::new();
+        let verdict = map_committed_boundary_recovery_error(
+            meerkat_core::SessionError::WholeBlobAuditedEndpointDivergence { id: id.clone() },
+        );
+        match verdict {
+            Ok(CommittedBoundaryRepair::RepairRequired { session_id, detail }) => {
+                assert_eq!(session_id, id);
+                assert!(
+                    detail.contains(&id.to_string()),
+                    "the verdict must name the session for the operator: {detail}"
+                );
+            }
+            other => panic!("divergence must be the typed repair verdict, got {other:?}"),
+        }
+    }
+
+    /// The resume classifier reads meerkat's typed hold, never display text:
+    /// the in-process `SessionError` carrier, the same carrier under
+    /// meerkat-mob's shared retirement / lifecycle failure wrappers (a joined
+    /// resume observer receives it this way), and meerkat's structured
+    /// `durable_resume_hold` wire token. Sibling holds keep their own classes.
+    #[test]
+    fn resume_classifier_reads_the_audited_endpoint_hold_typed() {
+        use meerkat_core::service::{DurableResumeHold, SessionError};
+        use meerkat_mob::MobError;
+        let id = meerkat_core::SessionId::new();
+        let divergence = || SessionError::WholeBlobAuditedEndpointDivergence { id: id.clone() };
+
+        assert_eq!(
+            classify_resume_error(&MobError::SessionError(divergence())),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_eq!(
+            classify_resume_error(&MobError::SharedLifecycleFailure(Arc::new(
+                MobError::SessionError(divergence())
+            ))),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_eq!(
+            classify_resume_error(&MobError::SharedRetirementFailure(Arc::new(
+                MobError::SharedLifecycleFailure(Arc::new(MobError::SessionError(divergence())))
+            ))),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_eq!(
+            durable_resume_hold_of(&MobError::SessionError(divergence())),
+            Some(DurableResumeHold::AuditedEndpointDivergence)
+        );
+        // The wire token is the same authority the meerkat RPC client uses to
+        // re-type a hold across the transport.
+        let wire = MobError::SessionError(divergence())
+            .structured_data()
+            .expect("meerkat projects the hold as structured data");
+        assert_eq!(
+            SessionError::durable_resume_hold_from_data(&wire),
+            Some(DurableResumeHold::AuditedEndpointDivergence)
+        );
+
+        // Sibling holds are not the repair class.
+        assert_ne!(
+            classify_resume_error(&MobError::SessionError(
+                SessionError::DurableTailHeldForRecovery { id: id.clone() }
+            )),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_ne!(
+            classify_resume_error(&MobError::SessionError(
+                SessionError::DurableEvidenceQuarantined { id: id.clone() }
+            )),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_eq!(
+            classify_resume_error(&MobError::SessionError(SessionError::Busy {
+                id: id.clone()
+            })),
+            ResumeRejectionKind::Other
+        );
+    }
+
+    /// The registration reload path reports the same typed fact as the
+    /// resume path: a divergence is `SessionRepairRequired` naming the
+    /// session, never the retryable "store not healthy yet" refusal.
+    #[test]
+    fn reload_classifier_reads_the_audited_endpoint_hold_typed() {
+        use meerkat_core::service::SessionError;
+        use meerkat_mob::MobError;
+        let id = meerkat_core::SessionId::new();
+        let member = MobAgentIdentity::from("domain:security");
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(1));
+        let error = classify_reload_mob_error(
+            &member,
+            MobError::SharedLifecycleFailure(Arc::new(MobError::SessionError(
+                SessionError::WholeBlobAuditedEndpointDivergence { id: id.clone() },
+            ))),
+            &deadline,
+        );
+        match error {
+            BridgeError::SessionRepairRequired {
+                identity,
+                session_id,
+                detail,
+            } => {
+                assert_eq!(identity, member);
+                assert_eq!(session_id, id);
+                assert!(detail.contains("audited endpoint"), "{detail}");
+            }
+            other => panic!("divergence on reload must park typed, got {other:?}"),
+        }
+        // A plain refusal keeps its retryable class.
+        let refused = classify_reload_mob_error(
+            &member,
+            MobError::MemberReloadRefused {
+                session_id: id,
+                reason: "store still opening".to_string(),
+            },
+            &deadline,
+        );
+        assert!(
+            matches!(refused, BridgeError::ReloadRefused { .. }),
+            "{refused:?}"
+        );
     }
 
     /// The occupant classifier is the one read that separates "stale" from

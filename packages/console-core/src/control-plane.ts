@@ -39,6 +39,27 @@ export function normalizeMemberProgress(value: unknown): MemberProgress | null {
   };
 }
 
+/// MobKit's typed "session needs repair" hold (`session_repair` on the
+/// identity status and inspect payloads): the member's durable session is
+/// intact but refused until the operator runs the two `rkat` commands and
+/// then `mobkit/reload_member`. Present only while the hold stands.
+export interface IdentitySessionRepair {
+  session_id: string;
+  hold: string;
+  diagnose_command: string;
+  apply_command: string;
+  detail: string;
+}
+
+export const IDENTITY_STATE_NEEDS_REPAIR_LABEL = "needs repair";
+
+/// The state label the console shows for a member: the typed repair hold
+/// wins over the raw lifecycle state, so a parked-for-repair member reads as
+/// repairable rather than failed.
+export function identityStateLabel(row: { state: string; session_repair?: IdentitySessionRepair | null }): string {
+  return row.session_repair ? IDENTITY_STATE_NEEDS_REPAIR_LABEL : row.state;
+}
+
 export interface IdentityStatusRow {
   identity: string;
   display_name?: string;
@@ -50,6 +71,7 @@ export interface IdentityStatusRow {
   checkpoint_version?: number;
   lease_healthy?: boolean;
   progress?: MemberProgress;
+  session_repair?: IdentitySessionRepair | null;
 }
 
 export interface IdentityInspectViewState extends IdentityStatusRow {
@@ -306,6 +328,27 @@ export function normalizeExperienceSectionMeta(value: unknown): ExperienceSectio
   return null;
 }
 
+export function normalizeIdentitySessionRepair(value: unknown): IdentitySessionRepair | null {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (!record) {
+    return null;
+  }
+  const session_id = trimString(record.session_id);
+  const hold = trimString(record.hold);
+  const diagnose_command = trimString(record.diagnose_command);
+  const apply_command = trimString(record.apply_command);
+  if (!session_id || !hold || !diagnose_command || !apply_command) {
+    return null;
+  }
+  return {
+    session_id,
+    hold,
+    diagnose_command,
+    apply_command,
+    detail: trimString(record.detail) ?? "",
+  };
+}
+
 export function normalizeIdentityStatusRow(value: unknown): IdentityStatusRow | null {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
   if (!record) {
@@ -338,6 +381,10 @@ export function normalizeIdentityStatusRow(value: unknown): IdentityStatusRow | 
     ...((): { progress?: MemberProgress } => {
       const progress = normalizeMemberProgress(record.progress);
       return progress ? { progress } : {};
+    })(),
+    ...((): { session_repair?: IdentitySessionRepair } => {
+      const session_repair = normalizeIdentitySessionRepair(record.session_repair);
+      return session_repair ? { session_repair } : {};
     })(),
   };
 }

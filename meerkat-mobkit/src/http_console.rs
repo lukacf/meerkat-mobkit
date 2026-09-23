@@ -4749,6 +4749,11 @@ fn console_addressability_json(
     }
 }
 
+/// Console `health` token for an identity parked with a
+/// `SessionRepairRequired` hold (see `session_repair` on the status and
+/// inspect payloads for the exact repair commands).
+pub(crate) const CONSOLE_HEALTH_NEEDS_REPAIR: &str = "needs_repair";
+
 fn console_identity_record_from_identity_status(
     status: &crate::identity_first::IdentityStatus,
 ) -> ConsoleIdentityRecord {
@@ -4787,6 +4792,14 @@ fn console_identity_record_from_identity_status(
         crate::identity_first::IdentityLifecycleState::Active => "ready",
         crate::identity_first::IdentityLifecycleState::Dormant => "dormant",
         crate::identity_first::IdentityLifecycleState::Uninitialized => "uninitialized",
+        // The typed repair hold is the one Broken shape with a known operator
+        // exit; the console names it so the member reads as repairable, not
+        // failed.
+        crate::identity_first::IdentityLifecycleState::Broken
+            if status.session_repair_required.is_some() =>
+        {
+            CONSOLE_HEALTH_NEEDS_REPAIR
+        }
         crate::identity_first::IdentityLifecycleState::Broken => "broken",
         crate::identity_first::IdentityLifecycleState::Suspended => "suspended",
         crate::identity_first::IdentityLifecycleState::Retiring => "retired",
@@ -4939,6 +4952,7 @@ fn console_identity_status_json_from_identity_status(
         "generation": status.generation.map(crate::identity_first::ContinuityGeneration::get),
         "checkpoint_version": status.checkpoint_version.map(crate::identity_first::CheckpointVersion::get),
         "continuity_health": status.continuity_health,
+        "session_repair": status.session_repair_required,
         "lease_healthy": status.lease.as_ref().map(|lease| lease.healthy),
         "lease": status.lease.as_ref().map(|lease| json!({
             "fencing_token": lease.fencing_token.get(),
@@ -4984,6 +4998,7 @@ fn console_identity_inspect_json_from_identity_status(
         "display_name": status.display_name.as_ref().map(crate::identity_first::DisplayName::as_str),
         "labels": status.labels,
         "continuity_health": status.continuity_health,
+        "session_repair": status.session_repair_required,
         "lease_healthy": status.lease.as_ref().map(|lease| lease.healthy),
         "lease": status.lease.as_ref().map(|lease| json!({
             "fencing_token": lease.fencing_token.get(),

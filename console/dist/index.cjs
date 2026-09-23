@@ -39,7 +39,7 @@ var import_client = require("react-dom/client");
 // src/ConsoleApp.tsx
 var import_react37 = __toESM(require("react"));
 
-// node_modules/clsx/dist/clsx.mjs
+// ../../mobkit-voiceux/console/node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -173,6 +173,10 @@ function normalizeMemberProgress(value) {
     health: typeof record2.health === "string" && record2.health ? record2.health : "unknown"
   };
 }
+var IDENTITY_STATE_NEEDS_REPAIR_LABEL = "needs repair";
+function identityStateLabel(row) {
+  return row.session_repair ? IDENTITY_STATE_NEEDS_REPAIR_LABEL : row.state;
+}
 function trimString(value) {
   if (typeof value !== "string") {
     return void 0;
@@ -233,6 +237,26 @@ function normalizeSidebarWatchFields(value) {
   }
   return normalized;
 }
+function normalizeIdentitySessionRepair(value) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
+    return null;
+  }
+  const session_id = trimString(record2.session_id);
+  const hold = trimString(record2.hold);
+  const diagnose_command = trimString(record2.diagnose_command);
+  const apply_command = trimString(record2.apply_command);
+  if (!session_id || !hold || !diagnose_command || !apply_command) {
+    return null;
+  }
+  return {
+    session_id,
+    hold,
+    diagnose_command,
+    apply_command,
+    detail: trimString(record2.detail) ?? ""
+  };
+}
 function normalizeIdentityStatusRow(value) {
   const record2 = value && typeof value === "object" ? value : null;
   if (!record2) {
@@ -260,6 +284,10 @@ function normalizeIdentityStatusRow(value) {
     ...(() => {
       const progress = normalizeMemberProgress(record2.progress);
       return progress ? { progress } : {};
+    })(),
+    ...(() => {
+      const session_repair = normalizeIdentitySessionRepair(record2.session_repair);
+      return session_repair ? { session_repair } : {};
     })()
   };
 }
@@ -17203,7 +17231,7 @@ function sidebarNavigationRows(model) {
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
-  const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || agent.lease_healthy === false;
+  const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || state === "needs_repair" || agent.lease_healthy === false;
   if (degraded) return "degraded";
   return "active";
 }
@@ -25233,7 +25261,15 @@ function ConsoleApp({ baseUrl, transport }) {
           ] }),
           !inspect ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dl", { className: "console-panel__grid", children: [
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { "data-testid": `inspect-state:${target.identity}`, children: identityStateLabel(inspect) }),
+            inspect.session_repair ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Repair" }),
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dd", { "data-testid": `inspect-session-repair:${target.identity}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "The durable session is intact but refused until it is repaired. Run the diagnose command, then the repair command, then reload the member (mobkit/reload_member)." }),
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("code", { "data-testid": "inspect-session-repair-diagnose", children: inspect.session_repair.diagnose_command }),
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("code", { "data-testid": "inspect-session-repair-apply", children: inspect.session_repair.apply_command })
+              ] })
+            ] }) : null,
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Role" }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.role || "n/a" }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Addressability" }),
@@ -25261,7 +25297,7 @@ function ConsoleApp({ baseUrl, transport }) {
     return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
-      r2.state,
+      identityStateLabel(r2),
       " \xB7",
       " ",
       r2.addressability
