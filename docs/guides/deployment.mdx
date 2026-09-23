@@ -245,6 +245,33 @@ init says so. A resumed launch (same fingerprint) reports the `http_base_url`
 and `http_public_base_url` the live runtime was started with, which are by
 construction the ones you declared.
 
+## Repairing a refused durable session
+
+A member whose committed WholeBlob document fails meerkat's audited-endpoint
+guard (`SessionError::WholeBlobAuditedEndpointDivergence`) is parked with a
+typed `session_repair_required` hold instead of retrying: it shows as
+`needs_repair` in the console and on `mobkit/member_health`, and the hold
+carries the two exact `rkat` commands for the runtime store this gateway
+opened. Both gateways derive that scope from their own storage composition,
+never from a guess:
+
+- the default persistent launch opens `<state_dir>/runtime.sqlite`, so the
+  commands are `rkat session repair-wholeblob <session_id> --runtime-store
+  <state_dir>/runtime.sqlite --json` (diagnose) and the same with
+  `--apply --json` (repair; add `--accept-shorter` only when the diagnose
+  report says the live transcript is shorter than the audited endpoint);
+- a composite storage provider's meerkat-level realm renders as
+  `rkat --state-root <state_dir> --realm mobkit session repair-wholeblob
+  <session_id> ...`;
+- an in-memory or declared-ephemeral runtime store has no document to repair,
+  so no scope is derived and the commands keep explicit `<state-root>` /
+  `<realm>` placeholders.
+
+Stop nothing: the member is already parked. Run the diagnose command, then
+the apply command, then `mobkit/reload_member` on the identity; the same
+verb, with no extra flag, resumes the same session and generation and clears
+the hold.
+
 ## Reading a gateway exit
 
 Both gateways log on stderr, through `tracing`, at the default filter (no

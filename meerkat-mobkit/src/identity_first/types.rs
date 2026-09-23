@@ -496,19 +496,24 @@ impl SessionRepairRequired {
 
     /// Build the hold for meerkat's audited-endpoint divergence.
     ///
-    /// The commands name the exact session. The `--state-root` and
-    /// `--realm` scope come from `scope` when the host declared them and
-    /// stay as explicit `<state-root>` / `<realm>` placeholders otherwise:
-    /// MobKit never guesses a filesystem path it did not open.
+    /// The commands name the exact session and the exact runtime store: a
+    /// realm scope renders as `rkat --state-root <root> --realm <realm> ...`,
+    /// a directly opened database as `... --runtime-store <path>`, and a
+    /// scope the host did not declare stays as explicit `<state-root>` /
+    /// `<realm>` placeholders. MobKit never guesses a filesystem path it did
+    /// not open.
     pub fn audited_endpoint_divergence(
         session_id: meerkat_core::types::SessionId,
         scope: Option<&SessionRepairScope>,
         detail: impl Into<String>,
     ) -> Self {
-        let prefix = Self::rkat_scope_prefix(scope);
-        let diagnose_command = format!("{prefix} {} {session_id} --json", Self::REPAIR_SUBCOMMAND);
+        let (prefix, suffix) = Self::rkat_scope(scope);
+        let diagnose_command = format!(
+            "{prefix} {} {session_id}{suffix} --json",
+            Self::REPAIR_SUBCOMMAND
+        );
         let apply_command = format!(
-            "{prefix} {} {session_id} --apply --json",
+            "{prefix} {} {session_id}{suffix} --apply --json",
             Self::REPAIR_SUBCOMMAND
         );
         Self {
@@ -520,21 +525,45 @@ impl SessionRepairRequired {
         }
     }
 
-    fn rkat_scope_prefix(scope: Option<&SessionRepairScope>) -> String {
-        let state_root = scope
-            .and_then(|scope| scope.state_root.as_deref())
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<state-root>".to_string());
-        let realm = scope
-            .and_then(|scope| scope.realm.as_deref())
-            .unwrap_or("<realm>");
-        format!("rkat --state-root {state_root} --realm {realm}")
+    /// `(prefix, suffix)` around `session repair-wholeblob <id>`: a realm
+    /// scope goes before the subcommand, a direct runtime store after the id.
+    fn rkat_scope(scope: Option<&SessionRepairScope>) -> (String, String) {
+        match scope {
+            Some(SessionRepairScope {
+                state_root: Some(state_root),
+                realm: Some(realm),
+                ..
+            }) => (
+                format!("rkat --state-root {} --realm {realm}", state_root.display()),
+                String::new(),
+            ),
+            Some(SessionRepairScope {
+                runtime_store: Some(runtime_store),
+                ..
+            }) => (
+                "rkat".to_string(),
+                format!(" --runtime-store {}", runtime_store.display()),
+            ),
+            _ => {
+                let state_root = scope
+                    .and_then(|scope| scope.state_root.as_deref())
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<state-root>".to_string());
+                let realm = scope
+                    .and_then(|scope| scope.realm.as_deref())
+                    .unwrap_or("<realm>");
+                (
+                    format!("rkat --state-root {state_root} --realm {realm}"),
+                    String::new(),
+                )
+            }
+        }
     }
 
     /// One operator-facing sentence: what stands, and the two commands.
     pub fn operator_reason(&self) -> String {
         format!(
-            "session {} needs the sanctioned audited-endpoint repair (typed resume hold              `{}`; every message is intact and every read refuses; no retry or heal can              change this). Diagnose: `{}`; repair: `{}`; then run mobkit/reload_member on              this identity. Refusal: {}",
+            "session {} needs the sanctioned audited-endpoint repair (typed resume hold `{}`; every message is intact and every read refuses; no retry or heal can change this). Diagnose: `{}`; repair: `{}`; then run mobkit/reload_member on this identity. Refusal: {}",
             self.session_id, self.hold, self.diagnose_command, self.apply_command, self.detail
         )
     }
@@ -548,8 +577,14 @@ impl SessionRepairRequired {
 /// declare renders as an explicit placeholder in the commands.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionRepairScope {
+    /// meerkat state root of a realm-layout runtime store (`<state_root>/<realm>/runtime.sqlite3`).
     pub state_root: Option<std::path::PathBuf>,
+    /// Realm of a realm-layout runtime store.
     pub realm: Option<String>,
+    /// The runtime database MobKit opened directly (the default persistent
+    /// layout, `<state_dir>/runtime.sqlite`); rendered as `--runtime-store`
+    /// when no realm scope is declared.
+    pub runtime_store: Option<std::path::PathBuf>,
 }
 
 /// A typed failure payload for broken continuity.

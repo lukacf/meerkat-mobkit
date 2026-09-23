@@ -158,12 +158,14 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Declare the meerkat state root and realm whose runtime store holds this
-    /// mob's durable sessions, so a member parked with a
-    /// `SessionRepairRequired` hold names the exact
-    /// `rkat --state-root .. --realm .. session repair-wholeblob <id>` commands.
-    /// Without it (or an embedded meerkat layout) the commands carry explicit
-    /// `<state-root>` / `<realm>` placeholders; MobKit never guesses a path.
+    /// Override where the `rkat session repair-wholeblob` commands in a
+    /// `SessionRepairRequired` hold point. By default the builder derives the
+    /// scope from the runtime store it opened (`persistent_state` opens
+    /// `<state_dir>/runtime.sqlite`, rendered as `--runtime-store`; a
+    /// composite storage provider's meerkat-level realm renders as
+    /// `--state-root <state_dir> --realm mobkit`); a build with no persistent
+    /// runtime store declares no scope and the commands carry explicit
+    /// `<state-root>` / `<realm>` placeholders. MobKit never guesses a path.
     pub fn session_repair_scope(
         mut self,
         scope: crate::identity_first::SessionRepairScope,
@@ -1308,16 +1310,18 @@ impl UnifiedRuntimeBuilder {
                 .set_agent_memory(agent_memory_injector.clone())
                 .await;
             identity_runtime.set_error_hook(self.error_hook.clone());
-            identity_runtime.set_session_repair_scope(Some(
-                self.session_repair_scope.clone().unwrap_or_else(|| {
-                    crate::identity_first::SessionRepairScope {
-                        state_root: storage_layout
-                            .as_ref()
-                            .and_then(|layout| layout.meerkat_state_root())
-                            .map(std::path::Path::to_path_buf),
-                        realm: None,
-                    }
-                }),
+            // The repair commands in a session repair hold name the runtime
+            // store this build opened (recorded by the composition that
+            // opened it); an explicit declaration wins, and a build without
+            // a persistent runtime store declares no scope.
+            identity_runtime.set_session_repair_scope(self.session_repair_scope.clone().or_else(
+                || {
+                    runtime
+                        .mob_runtime
+                        .resolved_storage()
+                        .as_ref()
+                        .and_then(crate::identity_first::SessionRepairScope::from_resolved_storage)
+                },
             ));
             identity_runtime.set_topology_controller(topology_controller.clone());
 
@@ -2188,10 +2192,29 @@ mod tests {
             .resolve_mob_spec()
             .await
             .unwrap_or_else(|e| panic!("declared ephemeral blobs must compose: {e}"));
+        let summary = spec
+            .resolved_storage
+            .expect("persistent builds record their storage");
         assert_eq!(
-            spec.resolved_storage.map(|summary| summary.blob_durability),
-            Some(crate::storage_health::BlobDurability::Custom { persistent: false })
+            summary.blob_durability,
+            crate::storage_health::BlobDurability::Custom { persistent: false }
         );
+        // The repair commands of a session repair hold derive from the
+        // runtime store this build opened: the default persistent layout's
+        // single SQLite file, addressed directly.
+        assert_eq!(
+            summary.runtime_store_locator,
+            Some(crate::storage_health::RuntimeStoreLocator::SqliteFile {
+                path: dir.path().join(crate::storage_layout::RUNTIME_DB_FILE_NAME),
+            })
+        );
+        let scope = crate::identity_first::SessionRepairScope::from_resolved_storage(&summary)
+            .expect("a persistent runtime store derives a repair scope");
+        assert_eq!(
+            scope.runtime_store,
+            Some(dir.path().join(crate::storage_layout::RUNTIME_DB_FILE_NAME))
+        );
+        assert_eq!(scope.state_root, None);
     }
 
     fn deferred_capacity_request(prompt: impl Into<String>) -> CreateSessionRequest {

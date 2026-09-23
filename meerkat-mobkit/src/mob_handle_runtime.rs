@@ -7471,9 +7471,10 @@ impl MobBootstrapSpec {
         // Fail-closed (M4): an open failure is a startup error; the
         // in-memory form exists only as the explicit
         // `ephemeral_runtime_store` declaration.
-        let (runtime_store, runtime_store_slot): (
+        let (runtime_store, runtime_store_slot, runtime_store_locator): (
             Arc<dyn meerkat_runtime::RuntimeStore>,
             StorageSlotSummary,
+            Option<crate::storage_health::RuntimeStoreLocator>,
         ) = if ephemeral_runtime_store {
             (
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
@@ -7482,6 +7483,7 @@ impl MobBootstrapSpec {
                     "InMemoryRuntimeStore",
                     "explicitly declared: sessions do not survive process restart",
                 ),
+                None,
             )
         } else if let Some(provider) = provider_meerkat_stores.as_ref() {
             // M4b single-bundle: runtime authority rides the composite
@@ -7490,11 +7492,18 @@ impl MobBootstrapSpec {
             (
                 Arc::clone(&provider.runtime_store),
                 provider.runtime_slot_summary(),
+                Some(crate::storage_health::RuntimeStoreLocator::MeerkatRealm {
+                    state_root: store_path.clone(),
+                    realm: crate::storage_provider::MEERKAT_LEVEL_REALM_ID.to_string(),
+                }),
             )
         } else {
             (
                 build_persistent_runtime_store(&store_path)?,
                 StorageSlotSummary::persistent("runtime", "SqliteRuntimeStore"),
+                Some(crate::storage_health::RuntimeStoreLocator::SqliteFile {
+                    path: store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME),
+                }),
             )
         };
         // One epoch-observing facade fronts BOTH the machine and the session
@@ -7716,7 +7725,8 @@ impl MobBootstrapSpec {
         slots.extend(scratch_ring_buffer_slots());
         spec.resolved_storage = Some(
             ResolvedStorageSummary::new(blob_durability, session_store_incremental)
-                .with_slots(slots),
+                .with_slots(slots)
+                .with_runtime_store_locator(runtime_store_locator),
         );
         Ok(spec)
     }

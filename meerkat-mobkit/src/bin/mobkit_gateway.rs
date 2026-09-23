@@ -761,7 +761,12 @@ fn build_persistent_session_service(
             meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
             Some(session_store_incremental),
         )
-        .with_slots(slots),
+        .with_slots(slots)
+        .with_runtime_store_locator(Some(
+            meerkat_mobkit::storage_health::RuntimeStoreLocator::SqliteFile {
+                path: layout.runtime_db(),
+            },
+        )),
         session_write_epochs,
         committed_boundary_recoverer,
         runtime_store,
@@ -2032,6 +2037,14 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             default_timeout: None,
         })
         .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone()));
+        // A member parked with a session repair hold names the exact
+        // `rkat session repair-wholeblob` commands for the runtime store this
+        // launch opened; the ephemeral launch has nothing to repair.
+        irt.set_session_repair_scope(
+            runtime.resolved_storage().as_ref().and_then(
+                meerkat_mobkit::identity_first::SessionRepairScope::from_resolved_storage,
+            ),
+        );
 
         let roster = Arc::new(MutableRosterProvider::new(identity_roster_seed));
         let mob_definition = mob_handle.definition().clone();

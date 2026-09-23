@@ -542,6 +542,7 @@ fn identity_first_types_identity_status_full_roundtrip() {
                 Some(&meerkat_mobkit::identity_first::SessionRepairScope {
                     state_root: Some("/srv/state".into()),
                     realm: Some("mobkit".to_string()),
+                    runtime_store: None,
                 }),
                 "live transcript does not preserve the graph-proved audited endpoint",
             ),

@@ -236,6 +236,7 @@ fn runtime_with(bridge: Arc<RepairBridge>) -> (Arc<IdentityRuntime>, Arc<LocalCo
     runtime.set_session_repair_scope(Some(SessionRepairScope {
         state_root: Some("/srv/homecore/state".into()),
         realm: Some("mobkit".to_string()),
+        runtime_store: None,
     }));
     (runtime, store)
 }

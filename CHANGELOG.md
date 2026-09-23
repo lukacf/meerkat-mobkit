@@ -26,9 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `needs_repair`, rendered as **needs repair** with both commands), and the
   typed error's `error.data` (`kind: mob_member_session_repair_required`,
   meerkat's own `durable_resume_hold` key, `retryable: false`).
-  `UnifiedRuntimeBuilder::session_repair_scope` declares the `--state-root` /
-  `--realm` the commands name; without it (or an embedded meerkat layout) they
-  carry explicit placeholders instead of a guessed path.
+  The commands are scoped to the runtime store the runtime actually opened,
+  recorded typed at composition as `ResolvedStorageSummary::runtime_store_locator`
+  (`RuntimeStoreLocator::SqliteFile` for the default `<state_dir>/runtime.sqlite`,
+  rendered as `rkat session repair-wholeblob <id> --runtime-store <path>`;
+  `RuntimeStoreLocator::MeerkatRealm` for a composite storage provider's
+  meerkat-level realm, rendered as `rkat --state-root <state_dir> --realm
+  mobkit ...`). Both gateway binaries and `UnifiedRuntimeBuilder` derive the
+  scope from that record; `UnifiedRuntimeBuilder::session_repair_scope`
+  overrides it, and a runtime with no persistent runtime store declares no
+  scope, so the commands carry explicit placeholders instead of a guessed path.
 
 ### Fixed
 

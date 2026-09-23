@@ -29,6 +29,7 @@ On this definition-based path, only `definition(...)` or
 | `module_config` | Empty module and discovery configuration |
 | `timeout` | 30 seconds |
 | `persistent_state` | Ephemeral session service with an auto-created temporary directory |
+| `session_repair_scope` | Derived from the runtime store the build opened: `persistent_state` opens `<state_dir>/runtime.sqlite`, so a member parked with a `session_repair_required` hold names `rkat session repair-wholeblob <id> --runtime-store <state_dir>/runtime.sqlite`; a composite storage provider's meerkat-level realm renders as `rkat --state-root <state_dir> --realm mobkit ...`; a build with no persistent runtime store declares no scope and the commands keep explicit `<state-root>` / `<realm>` placeholders |
 
 The older `mob_spec(...)` path accepts a pre-built `MobBootstrapSpec`. It still
 requires explicit module configuration and timeout because the spec already
