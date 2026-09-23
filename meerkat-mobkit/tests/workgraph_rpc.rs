@@ -2224,3 +2224,362 @@ async fn console_break_glass_reassign_requires_authenticated_principal() {
     assert_eq!(response["error"]["data"]["kind"], json!("access_denied"));
     runtime.mob_handle().stop().await.expect("stop");
 }
+
+// ---------------------------------------------------------------------------
+// Mob-realm scoping of member-bound attention (meerkat 0.8.41)
+// ---------------------------------------------------------------------------
+
+fn mob_realm(mob_id: &str) -> String {
+    meerkat_core::mob_realm_id(mob_id)
+        .expect("mob realm")
+        .as_str()
+        .to_string()
+}
+
+/// A goal bound to a member of THIS mob through the console/RPC surface lands
+/// in the realm the member resolves attention from: the runtime's service is
+/// scoped to `mob.<id>`, which is exactly what `mob_scoped_workgraph_service`
+/// (the rescoping meerkat applies before every member turn) resolves to.
+#[tokio::test(flavor = "multi_thread")]
+async fn member_bound_goal_lands_in_the_realm_members_read() {
+    let runtime = build_runtime().await;
+    let mob_id = runtime_mob_id(&runtime);
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "review the release notes",
+            "target": { "kind": "identity", "identity": "reviewer" },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let binding_id = goal["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let host_service = runtime.workgraph_service().expect("workgraph configured");
+    assert_eq!(host_service.default_realm_id(), mob_realm(&mob_id));
+    let member_view = meerkat_mob::mob_scoped_workgraph_service(
+        &host_service,
+        &meerkat_mob::MobId::from(mob_id.as_str()),
+    )
+    .expect("mob realm")
+    .expect("mob-scoped service");
+    let visible = member_view
+        .list_attention(meerkat::AttentionListRequest {
+            realm_id: None,
+            namespace: None,
+            target: None,
+            status: None,
+        })
+        .await
+        .expect("member-realm attention list")
+        .attention;
+    assert_eq!(visible.len(), 1, "the member's realm must hold the binding");
+    assert_eq!(visible[0].binding_id.to_string(), binding_id);
+    assert_eq!(
+        visible[0].target.owner_key().expect("owner key"),
+        meerkat::WorkOwnerKey::mob_agent(&mob_id, "reviewer").expect("member key")
+    );
+    let report = runtime
+        .workgraph_realm_migration()
+        .expect("migration ran at bootstrap");
+    assert!(
+        report.migrated.is_empty(),
+        "nothing to migrate on a fresh store"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// A goal, reassignment or break-glass reassignment whose target names a
+/// member of ANOTHER mob is refused before the write with the typed realm
+/// mismatch; nothing is stored in this runtime's realm.
+#[tokio::test(flavor = "multi_thread")]
+async fn member_of_another_mob_is_refused_typed_before_the_write() {
+    let runtime = build_runtime().await;
+    let mob_id = runtime_mob_id(&runtime);
+    let foreign_key =
+        meerkat::WorkOwnerKey::mob_agent("some-other-mob", "reviewer").expect("foreign member key");
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "belongs to another mob",
+            "target": { "kind": "owner", "owner_key": foreign_key },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32602);
+    let data = &response["error"]["data"];
+    assert_eq!(data["kind"], json!("attention_target_realm_mismatch"));
+    assert_eq!(data["mob_id"], json!("some-other-mob"));
+    assert_eq!(
+        data["required_realm_id"],
+        json!(mob_realm("some-other-mob"))
+    );
+    assert_eq!(data["realm_id"], json!(mob_realm(&mob_id)));
+    assert_eq!(data["owner_key"], json!(foreign_key.canonical()));
+
+    let listed = rpc(&runtime, "mobkit/workgraph/attention/list", json!({})).await;
+    assert!(
+        result(&listed)["attention"].as_array().unwrap().is_empty(),
+        "a refused goal must leave no binding behind"
+    );
+
+    // Reassigning an existing binding onto the foreign member is refused the
+    // same way and leaves the binding on its current target.
+    let created = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "stays with the local reviewer",
+            "target": { "kind": "identity", "identity": "reviewer" },
+            "mode": "coordinate",
+        }),
+    )
+    .await;
+    let goal = result(&created).clone();
+    let binding_id = goal["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revision = goal["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+    let reassigned = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": revision,
+            "target": { "kind": "owner", "owner_key": foreign_key },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&reassigned), -32602);
+    assert_eq!(
+        reassigned["error"]["data"]["kind"],
+        json!("attention_target_realm_mismatch")
+    );
+    let status = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/status",
+        json!({ "binding_id": binding_id }),
+    )
+    .await;
+    assert_eq!(
+        result(&status)["attention"]["target"]["owner_key"]["id"],
+        json!(format!("mob/{mob_id}/agent/reviewer"))
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Seed a binding the way a pre-0.8.41 runtime left it: in this mob's realm,
+/// bound to a member of a child mob. The service layer refuses this now, so
+/// the rows go in through the store, exactly as legacy rows exist on disk.
+async fn seed_legacy_child_member_binding(
+    service: &meerkat::WorkGraphService,
+    child_mob: &str,
+    identity: &str,
+    title: &str,
+) -> meerkat::WorkAttentionBinding {
+    let realm_id = service.default_realm_id().to_string();
+    let namespace = service.default_namespace().clone();
+    let now = service
+        .store()
+        .get_store_time_utc()
+        .await
+        .expect("store time");
+    let (item, item_event) = meerkat::WorkGraphMachine::create_item(
+        meerkat::CreateWorkItemRequest {
+            realm_id: Some(realm_id.clone()),
+            namespace: Some(namespace.clone()),
+            title: title.to_string(),
+            description: None,
+            completion_policy: meerkat::WorkCompletionPolicy::SelfAttest,
+            failed_child_join_policy: Default::default(),
+            cancelled_child_join_policy: Default::default(),
+            priority: Default::default(),
+            labels: Default::default(),
+            due_at: None,
+            not_before: None,
+            snoozed_until: None,
+            external_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            status: None,
+        },
+        realm_id.clone(),
+        namespace.clone(),
+        now,
+    )
+    .expect("legacy item");
+    let attention = meerkat::WorkAttentionBinding {
+        binding_id: meerkat::WorkAttentionBindingId::generated(),
+        work_ref: meerkat::WorkItemRef {
+            realm_id: realm_id.clone(),
+            namespace: namespace.clone(),
+            item_id: item.id.clone(),
+        },
+        target: meerkat::WorkAttentionTarget::LoweredOwner {
+            owner_key: meerkat::WorkOwnerKey::mob_agent(child_mob, identity).expect("member key"),
+        },
+        mode: meerkat::WorkAttentionMode::Pursue,
+        status: meerkat::WorkAttentionStatus::Active,
+        machine_state: Default::default(),
+        delegated_authority: meerkat::AttentionDelegatedAuthority::default(),
+        projection_policy: meerkat::AttentionProjectionPolicy::default(),
+        created_at: now,
+        updated_at: now,
+    };
+    let event = meerkat::WorkGraphEvent::graph(
+        realm_id,
+        namespace,
+        meerkat::WorkGraphEventKind::AttentionCreated,
+        now,
+        json!({ "attention": attention }),
+    );
+    let (_, attention) = service
+        .store()
+        .insert_goal(item, item_event, attention, event)
+        .await
+        .expect("seed legacy goal");
+    attention
+}
+
+/// Bootstrap over a store that still holds a pre-rescoping child-member
+/// binding: the runtime moves it into the child's realm, reports it on
+/// `mobkit/status`, and a second bootstrap over the same store has nothing
+/// left to move.
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_migrates_legacy_child_member_bindings_and_reports_them() {
+    let definition = definition();
+    let mob_id = definition.id.as_str().to_string();
+    let child_mob = format!("{mob_id}-child");
+    let store: Arc<dyn meerkat::WorkGraphStore> = Arc::new(meerkat::MemoryWorkGraphStore::new());
+    let service = meerkat::WorkGraphService::with_scope(
+        Arc::clone(&store),
+        mob_realm(&mob_id),
+        meerkat::WorkNamespace::default(),
+    );
+    let legacy =
+        seed_legacy_child_member_binding(&service, &child_mob, "scout", "map the site").await;
+
+    let bootstrap = |definition: MobDefinition| {
+        let service = service.clone();
+        async move {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let factory = AgentFactory::new(temp_dir.path()).comms(true);
+            let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 8));
+            let mob_spec =
+                MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                    .with_workgraph_service(Some(service))
+                    .with_options(MobBootstrapOptions {
+                        allow_ephemeral_sessions: true,
+                        notify_orchestrator_on_resume: true,
+                        default_llm_client: Some(Arc::new(TestClient::default())),
+                    });
+            let module_config = MobKitConfig {
+                modules: vec![],
+                discovery: DiscoverySpec {
+                    namespace: "workgraph-rpc".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            };
+            let runtime =
+                UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+                    .await
+                    .expect("bootstrap runtime with legacy binding");
+            (temp_dir, runtime)
+        }
+    };
+
+    let (_dir, runtime) = bootstrap(definition).await;
+    let report = runtime
+        .workgraph_realm_migration()
+        .expect("migration report");
+    assert_eq!(
+        report.outcome,
+        meerkat_mobkit::WorkGraphRealmMigrationOutcome::Completed
+    );
+    assert_eq!(report.migrated.len(), 1, "{report:#?}");
+    let moved = &report.migrated[0];
+    assert_eq!(moved.binding_id, legacy.binding_id.to_string());
+    assert_eq!(moved.mob_id, child_mob);
+    assert_eq!(moved.from_realm_id, mob_realm(&mob_id));
+    assert_eq!(moved.to_realm_id, mob_realm(&child_mob));
+    let new_binding_id = moved.new_binding_id.clone().expect("new binding id");
+
+    // The child's realm now holds the binding on the same member.
+    let child_view = meerkat::WorkGraphService::with_scope(
+        Arc::clone(&store),
+        mob_realm(&child_mob),
+        meerkat::WorkNamespace::default(),
+    );
+    let child_bindings = child_view
+        .list_attention(meerkat::AttentionListRequest {
+            realm_id: None,
+            namespace: None,
+            target: None,
+            status: None,
+        })
+        .await
+        .expect("child attention")
+        .attention;
+    assert_eq!(child_bindings.len(), 1);
+    assert_eq!(child_bindings[0].binding_id.to_string(), new_binding_id);
+    assert_eq!(
+        child_bindings[0].target.owner_key().expect("owner key"),
+        meerkat::WorkOwnerKey::mob_agent(&child_mob, "scout").expect("member key")
+    );
+
+    // The original is stopped in this runtime's realm and the status surface
+    // carries the report.
+    let listed = rpc(&runtime, "mobkit/workgraph/attention/list", json!({})).await;
+    let original = result(&listed)["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|binding| binding["binding_id"] == json!(legacy.binding_id.to_string()))
+        .expect("original binding row kept")
+        .clone();
+    assert_eq!(original["status"]["state"], json!("stopped"));
+    let status = rpc(&runtime, "mobkit/capabilities", json!({})).await;
+    let reported = &result(&status)["workgraph_realm_migration"];
+    assert_eq!(reported["mode"], json!("apply"));
+    assert_eq!(reported["migrated"].as_array().unwrap().len(), 1);
+    assert_eq!(reported["outcome"]["kind"], json!("completed"));
+    runtime.mob_handle().stop().await.expect("stop");
+
+    // Idempotent: the same scan over the same store (what a second bootstrap
+    // runs) finds only the terminal original and migrates nothing.
+    let again = meerkat_mobkit::workgraph_realm::migrate_member_bindings_to_mob_realms(
+        &service,
+        meerkat_mobkit::WorkGraphRealmMigrationMode::Apply,
+    )
+    .await;
+    assert_eq!(
+        again.outcome,
+        meerkat_mobkit::WorkGraphRealmMigrationOutcome::Completed
+    );
+    assert!(again.migrated.is_empty(), "{again:#?}");
+    assert_eq!(again.skipped_terminal, 1);
+    assert_eq!(
+        child_view
+            .list_attention(meerkat::AttentionListRequest {
+                realm_id: None,
+                namespace: None,
+                target: None,
+                status: None,
+            })
+            .await
+            .expect("child attention")
+            .attention
+            .len(),
+        1
+    );
+}

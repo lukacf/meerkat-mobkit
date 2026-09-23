@@ -323,6 +323,39 @@ How to read a gateway that is gone:
   a stack overflow) or aborted. The exit status names which; `137` is SIGKILL,
   `139` is a segfault or stack overflow, `134` is an abort.
 
+## WorkGraph realms for mob members
+
+Meerkat builds every mob member in the realm `mob.<mob_id>` and rescopes the
+WorkGraph service the gateway hands the mob runtime to that realm, so a member
+resolves its attention bindings there and nowhere else. The gateway's own
+WorkGraph service is scoped to the same realm at construction, which is why a
+goal bound to a member from the console or the RPC surface lands where the
+member reads it.
+
+Two consequences matter to an operator:
+
+- A goal, binding or reassignment whose target names a member of another mob
+  (an explicit `owner` key of the form `mob/<other>/agent/<identity>`) is
+  refused with JSON-RPC `-32602` and `data.kind =
+  "attention_target_realm_mismatch"`. It is not stored anywhere. Create that
+  work through the other mob's own runtime.
+- Bindings written before this rule existed are moved at bootstrap. A child
+  mob spawned by an agent tool used to share the parent runtime's service
+  unscoped, so a goal bound to a child-mob member lived in the parent realm
+  and the child member found it there; it no longer does. On every bootstrap
+  the runtime scans its realm for active or paused bindings whose owner key
+  names another mob, re-creates each in that mob's realm over the same store
+  (title, description, mode, policies, priority, labels, timing fields,
+  external and evidence refs, delegated authority, projection policy and the
+  paused state carried; edges of the original item are not), and cancels the
+  original goal, which stops its binding. A second bootstrap finds nothing to
+  move. `mobkit/capabilities` reports the run under `workgraph_realm_migration`
+  (`mode`, `scanned_bindings`, `skipped_terminal`, `migrated[]` with the old
+  and new binding and item ids, and an `outcome` that records a failed scan or
+  write instead of aborting the launch). Library hosts choose the mode with
+  `MobBootstrapSpec::with_workgraph_realm_migration` (`apply`, `dry_run`,
+  `off`).
+
 ## See also
 
 - [Configuration](/reference/configuration): the `http_listen`,

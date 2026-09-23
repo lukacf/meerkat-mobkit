@@ -1079,7 +1079,10 @@ comms = true
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::MemoryBlobStore::new());
         let mut builder = test_builder(state);
-        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, "admission-realm");
+        // The service must be scoped to the definition's own mob realm: member
+        // owner keys `mob/<mob_id>/agent/<identity>` are refused in any other
+        // realm (meerkat 0.8.41), exactly as the gateways scope it.
+        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, mob_id);
         let dispatcher = builder
             .default_workgraph_tools
             .read()
@@ -1125,7 +1128,10 @@ comms = true
     ) {
         let dir = tempfile::tempdir().expect("temp dir");
         let builder = test_builder(dir.path());
-        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, "admission-realm");
+        // The service must be scoped to the definition's own mob realm: member
+        // owner keys `mob/<mob_id>/agent/<identity>` are refused in any other
+        // realm (meerkat 0.8.41), exactly as the gateways scope it.
+        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, mob_id);
         let dispatcher = builder
             .default_workgraph_tools
             .read()
@@ -1968,6 +1974,21 @@ comms = true
         // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
         // This double owns no durable transcript, so it refuses explicitly rather
         // than inheriting a forward it cannot honour.
+        async fn commit_live_delegation_final_transcript_at_turn_boundary(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::types::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, meerkat_core::SessionError>
+        {
+            Err(meerkat_core::SessionError::Unsupported(
+                "admission probe has no live final transcript turn-boundary commit authority"
+                    .into(),
+            ))
+        }
+
         async fn fork_persisted_session_at_turn_boundary(
             &self,
             _source_session_id: &meerkat_core::types::SessionId,
@@ -2225,6 +2246,21 @@ comms = true
         // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
         // This double owns no durable transcript, so it refuses explicitly rather
         // than inheriting a forward it cannot honour.
+        async fn commit_live_delegation_final_transcript_at_turn_boundary(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::types::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, meerkat_core::SessionError>
+        {
+            Err(meerkat_core::SessionError::Unsupported(
+                "switchable store has no live final transcript turn-boundary commit authority"
+                    .into(),
+            ))
+        }
+
         async fn fork_persisted_session_at_turn_boundary(
             &self,
             _source_session_id: &meerkat_core::types::SessionId,
