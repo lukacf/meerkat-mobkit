@@ -8083,7 +8083,6 @@ mod tests {
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),
-            hold: None,
         };
         assert_eq!(
             classify_resume_error(&restore_failed),
@@ -8148,7 +8147,6 @@ mod tests {
                 member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
                 session_id: None,
                 reason: "durable snapshot missing".to_string(),
-                hold: None,
             },
         ));
         assert_eq!(
@@ -8314,7 +8312,6 @@ mod tests {
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),
-            hold: None,
         };
         assert!(matches!(
             resume_rejected(&identity, &session_id, &restore_failed, "resume"),
