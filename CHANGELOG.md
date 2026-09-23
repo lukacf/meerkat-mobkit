@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Meerkat image blobs stored through MobKit's blob store now carry meerkat's
+  required content address. `Base64BlobStoreAdapter::put_image` (the meerkat
+  `BlobStore` face of every `ObjectStoreBlobStore` the gateway, the storage
+  provider and the console voice host inject) decoded the base64 payload and
+  delegated to `put_bytes`, which addresses blobs as
+  `sha256(media_type || 0x00 || decoded_bytes)`. Meerkat requires
+  `content_blob_id(canonical_media_type, base64_text)` and recomputes it on
+  read-back, so every meerkat integrity gate refused those blobs with
+  `BlobIdentityMismatch`: the durable-fork preflight (the default live
+  delegation policy) for any session carrying an image, realtime user content
+  with an image, and realtime history image hydration. The adapter now mints
+  meerkat's id, stores under the canonical media type, and writes through the
+  new `BinaryBlobStore::put_bytes_addressed`. MobKit-native blobs written with
+  `put_bytes` (console image uploads, `mobkit/blob/*`) keep their raw-bytes
+  address and stay readable through both faces, so existing stores need no
+  migration. `BinaryBlobStore` gains the required method
+  `put_bytes_addressed`; external implementors must add it.
+
 ### Changed
 
 - Console voice time-to-talk. Clicking the voice button on an agent with a

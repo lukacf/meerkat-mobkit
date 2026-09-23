@@ -56,7 +56,24 @@ impl BlobStoreInjection {
 
 #[async_trait]
 pub trait BinaryBlobStore: Send + Sync {
+    /// Store raw bytes under MobKit's own address,
+    /// `sha256(media_type || 0x00 || bytes)`.
     async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError>;
+    /// Store raw bytes under an address the caller already minted.
+    ///
+    /// Meerkat's `BlobStore::put_image` contract requires every image blob to
+    /// be addressed by `meerkat_core::blob::content_blob_id` over the exact
+    /// base64 text it was handed; meerkat's integrity gates
+    /// (`ensure_stored_image_blob`, `verify_stored_image_blob`, realtime image
+    /// hydration) recompute that id and refuse anything else. The
+    /// [`Base64BlobStoreAdapter`] mints that id and stores through this
+    /// method so the binary face serves the same object under the same id.
+    async fn put_bytes_addressed(
+        &self,
+        blob_id: BlobId,
+        media_type: &str,
+        data: Bytes,
+    ) -> Result<BlobRef, BlobStoreError>;
     async fn get_bytes(&self, blob_id: &BlobId) -> Result<BinaryBlobPayload, BlobStoreError>;
     async fn delete(&self, blob_id: &BlobId) -> Result<(), BlobStoreError>;
     fn is_persistent(&self) -> bool;
@@ -157,10 +174,16 @@ impl ObjectStoreBlobStore {
     }
 }
 
-#[async_trait]
-impl BinaryBlobStore for ObjectStoreBlobStore {
-    async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError> {
-        let blob_id = compute_blob_id(media_type, &data);
+impl ObjectStoreBlobStore {
+    async fn store_bytes(
+        &self,
+        blob_id: BlobId,
+        media_type: &str,
+        data: Bytes,
+    ) -> Result<BlobRef, BlobStoreError> {
+        if !is_valid_blob_id(&blob_id) {
+            return Err(BlobStoreError::InvalidId(blob_id));
+        }
         match &self.backend {
             BlobObjectBackend::ObjectStore { store, .. } => {
                 let meta = BlobMetadata {
@@ -195,6 +218,23 @@ impl BinaryBlobStore for ObjectStoreBlobStore {
             blob_id,
             media_type: media_type.to_string(),
         })
+    }
+}
+
+#[async_trait]
+impl BinaryBlobStore for ObjectStoreBlobStore {
+    async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError> {
+        let blob_id = compute_blob_id(media_type, &data);
+        self.store_bytes(blob_id, media_type, data).await
+    }
+
+    async fn put_bytes_addressed(
+        &self,
+        blob_id: BlobId,
+        media_type: &str,
+        data: Bytes,
+    ) -> Result<BlobRef, BlobStoreError> {
+        self.store_bytes(blob_id, media_type, data).await
     }
 
     async fn get_bytes(&self, blob_id: &BlobId) -> Result<BinaryBlobPayload, BlobStoreError> {
@@ -288,11 +328,22 @@ impl Base64BlobStoreAdapter {
 
 #[async_trait]
 impl BlobStore for Base64BlobStoreAdapter {
+    /// Meerkat image blobs are addressed by meerkat's REQUIRED recipe,
+    /// `content_blob_id(canonical_media_type, base64_text)`, and stored under
+    /// the canonical media type, so meerkat's integrity gates that recompute
+    /// the id on read-back accept what this store returns. MobKit-native
+    /// blobs written through [`BinaryBlobStore::put_bytes`] keep MobKit's
+    /// raw-bytes address and stay readable through [`BlobStore::get`].
     async fn put_image(&self, media_type: &str, data: &str) -> Result<BlobRef, BlobStoreError> {
+        let blob_id = meerkat_core::blob::content_blob_id(media_type, data);
+        let canonical_media_type =
+            meerkat_core::image_generation::MediaType::canonical_str(media_type);
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data.as_bytes())
             .map_err(|err| BlobStoreError::WriteFailed(format!("invalid blob base64: {err}")))?;
-        self.inner.put_bytes(media_type, Bytes::from(bytes)).await
+        self.inner
+            .put_bytes_addressed(blob_id, &canonical_media_type, Bytes::from(bytes))
+            .await
     }
 
     async fn get(&self, blob_id: &BlobId) -> Result<BlobPayload, BlobStoreError> {
@@ -328,6 +379,25 @@ impl BinaryBlobStore for BinaryBlobStoreAdapter {
     async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_ref());
         self.inner.put_image(media_type, &encoded).await
+    }
+
+    /// A meerkat `BlobStore` mints its own (content) address; the caller's
+    /// address must be that same id or the write is refused rather than
+    /// silently stored under a different identity.
+    async fn put_bytes_addressed(
+        &self,
+        blob_id: BlobId,
+        media_type: &str,
+        data: Bytes,
+    ) -> Result<BlobRef, BlobStoreError> {
+        let stored = self.put_bytes(media_type, data).await?;
+        if stored.blob_id != blob_id {
+            return Err(BlobStoreError::WriteFailed(format!(
+                "blob store addressed {} but the caller requested {}",
+                stored.blob_id, blob_id
+            )));
+        }
+        Ok(stored)
     }
 
     async fn get_bytes(&self, blob_id: &BlobId) -> Result<BinaryBlobPayload, BlobStoreError> {
@@ -431,6 +501,92 @@ mod tests {
         let payload = adapter.get(&blob.blob_id).await.expect("get base64");
         assert_eq!(payload.media_type, "image/png");
         assert_eq!(payload.data, "YWJj");
+    }
+
+    /// Base64 of the eight-byte PNG signature: the smallest payload meerkat's
+    /// image integrity gate accepts as `image/png`.
+    const PNG_SIGNATURE_BASE64: &str = "iVBORw0KGgo=";
+
+    #[tokio::test]
+    async fn base64_adapter_put_image_mints_meerkat_content_blob_id() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let adapter = Base64BlobStoreAdapter::new(binary.clone());
+        let blob = adapter
+            .put_image("image/png", PNG_SIGNATURE_BASE64)
+            .await
+            .expect("put base64");
+        let expected = meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64);
+        assert_eq!(blob.blob_id, expected, "meerkat's required addressing");
+        assert_eq!(blob.media_type, "image/png");
+        let payload = adapter.get(&expected).await.expect("get by content id");
+        assert_eq!(payload.blob_id, expected);
+        assert_eq!(payload.data, PNG_SIGNATURE_BASE64);
+        let bytes = binary
+            .get_bytes(&expected)
+            .await
+            .expect("binary face by content id");
+        assert_eq!(bytes.data.as_ref(), b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[tokio::test]
+    async fn base64_adapter_canonicalizes_media_type_like_meerkat() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let blob = adapter
+            .put_image("image/PNG", PNG_SIGNATURE_BASE64)
+            .await
+            .expect("put base64");
+        assert_eq!(
+            blob.blob_id,
+            meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64)
+        );
+        assert_eq!(blob.media_type, "image/png");
+        let payload = adapter.get(&blob.blob_id).await.expect("get");
+        assert_eq!(payload.media_type, "image/png");
+    }
+
+    /// The durable-fork preflight and the realtime user-content path store an
+    /// inline image with `ensure_stored_image_blob` and re-verify blob-backed
+    /// images with `verify_stored_image_blob`; both recompute meerkat's content
+    /// address and refuse a store that minted a different id.
+    #[tokio::test]
+    async fn meerkat_image_integrity_gates_accept_the_adapter() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let stored = meerkat_core::ensure_stored_image_blob(
+            &adapter,
+            "image/png",
+            PNG_SIGNATURE_BASE64,
+            1 << 20,
+        )
+        .await
+        .expect("ensure_stored_image_blob through the MobKit adapter");
+        meerkat_core::verify_stored_image_blob(
+            &adapter,
+            &stored.blob_ref.blob_id,
+            &stored.blob_ref.media_type,
+            1 << 20,
+        )
+        .await
+        .expect("verify_stored_image_blob through the MobKit adapter");
+    }
+
+    #[tokio::test]
+    async fn base64_adapter_still_reads_mobkit_native_blob_ids() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let raw = binary
+            .put_bytes("image/png", Bytes::from_static(b"\x89PNG\r\n\x1a\n"))
+            .await
+            .expect("put raw bytes");
+        assert_ne!(
+            raw.blob_id,
+            meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64),
+            "MobKit-native ids keep hashing decoded bytes"
+        );
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let payload = adapter.get(&raw.blob_id).await.expect("native id readable");
+        assert_eq!(payload.blob_id, raw.blob_id);
+        assert_eq!(payload.data, PNG_SIGNATURE_BASE64);
     }
 
     #[tokio::test]
