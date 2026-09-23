@@ -1076,6 +1076,17 @@ service's default namespace. One active (or paused) binding per target is
 enforced across `goal/create`, `attention/reassign`, and `attention/resume`; a
 second returns `-32042` naming the occupant.
 
+Member-bound targets are realm-bound. A mob member resolves its attention
+bindings in its mob's realm (`mob.<mob_id>`) and nowhere else, and this
+runtime's service is scoped to its own mob's realm, so a target that lowers to
+a member of this mob (`{kind:"identity"}`, a member session, or the member's
+`owner` key) is stored where the member reads it. A target whose owner key
+names a member of another mob is refused with `-32602` and
+`data.kind = "attention_target_realm_mismatch"` before anything is written;
+create that work through the other mob's own runtime. Bindings that predate
+this rule are moved at bootstrap; `mobkit/capabilities` reports the result
+under `workgraph_realm_migration`.
+
 ### Errors
 
 | Code | Meaning | `data.kind` |
@@ -1084,6 +1095,7 @@ second returns `-32042` naming the occupant.
 | `-32042` | revision conflict or target already bound; refetch the revision and retry | `workgraph_conflict` (`data.detail` carries the upstream message) |
 | `-32000` | other WorkGraph error | `workgraph_error` |
 | `-32602` | invalid params (including `realm_id`, a non-default namespace where refused, or `limit` above 1000) | none |
+| `-32602` | the target of `goal/create`, `attention/reassign` or `attention/break_glass_reassign` names a member of another mob; its bindings live only in that mob's realm (`mob.<mob_id>`), so the write is refused before it happens | `attention_target_realm_mismatch` (`data.owner_key`, `data.mob_id`, `data.required_realm_id`, `data.realm_id`) |
 | `-32030` | ABAC denial on the console surface | `access_denied` |
 
 SDK method names are the RPC names with the `mobkit/workgraph/` prefix

@@ -6267,6 +6267,25 @@ mod tests {
         // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
         // a default that took the boundary and then called `fork_persisted_session`
         // self-deadlocks on the persistent owner's non-reentrant boundary.
+        async fn commit_live_delegation_final_transcript_at_turn_boundary(
+            &self,
+            machine: &meerkat_runtime::MeerkatMachine,
+            session_id: &meerkat_core::types::SessionId,
+            provisional: meerkat_core::ProvisionalLiveHandoff,
+            final_event: meerkat_core::RealtimeTranscriptEvent,
+            bound: std::time::Duration,
+        ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+            self.inner
+                .commit_live_delegation_final_transcript_at_turn_boundary(
+                    machine,
+                    session_id,
+                    provisional,
+                    final_event,
+                    bound,
+                )
+                .await
+        }
+
         async fn fork_persisted_session_at_turn_boundary(
             &self,
             source_session_id: &meerkat_core::types::SessionId,

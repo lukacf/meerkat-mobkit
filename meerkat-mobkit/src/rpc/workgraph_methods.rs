@@ -163,6 +163,11 @@ fn workgraph_conflict(detail: String) -> JsonRpcError {
 /// between witness fetch and use) get the typed conflict code, domain-level
 /// input rejections read as invalid params, everything else is a workgraph
 /// error with full detail.
+/// `data.kind` of the -32602 refusal for a goal, binding or reassignment
+/// whose target names a member of another mob (its bindings live only in
+/// that mob's realm; see `crate::workgraph_realm`).
+pub(crate) const ATTENTION_TARGET_REALM_MISMATCH_KIND: &str = "attention_target_realm_mismatch";
+
 fn workgraph_error_to_rpc(error: WorkGraphError) -> JsonRpcError {
     let detail = error.to_string();
     match error {
@@ -175,6 +180,25 @@ fn workgraph_error_to_rpc(error: WorkGraphError) -> JsonRpcError {
             workgraph_conflict(detail)
         }
         WorkGraphError::InvalidInput(_) => invalid_params(detail),
+        // A member-bound target outside its mob realm: refused at the call
+        // (meerkat classifies it InvalidArguments) with the typed fields so
+        // a client can name the realm the binding must be created in.
+        WorkGraphError::AttentionTargetRealmMismatch {
+            owner_key,
+            mob_id,
+            required_realm_id,
+            realm_id,
+        } => JsonRpcError {
+            code: -32602,
+            message: format!("Invalid params: {detail}"),
+            data: Some(serde_json::json!({
+                "kind": ATTENTION_TARGET_REALM_MISMATCH_KIND,
+                "owner_key": owner_key,
+                "mob_id": mob_id,
+                "required_realm_id": required_realm_id,
+                "realm_id": realm_id,
+            })),
+        },
         _ => JsonRpcError {
             code: WORKGRAPH_ERROR_CODE,
             message: detail.clone(),
@@ -796,6 +820,8 @@ pub(crate) async fn handle_workgraph_method(
                 .lower_member_session_target(target)
                 .await
                 .map_err(admission_error_to_rpc)?;
+            crate::workgraph_realm::refuse_foreign_mob_target(&target, service)
+                .map_err(workgraph_error_to_rpc)?;
             object.insert("target".to_string(), to_result_value(&target));
             let request: GoalCreateRequest = parse_request(object)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
@@ -901,6 +927,8 @@ pub(crate) async fn handle_workgraph_method(
                 .lower_member_session_target(target)
                 .await
                 .map_err(admission_error_to_rpc)?;
+            crate::workgraph_realm::refuse_foreign_mob_target(&target, service)
+                .map_err(workgraph_error_to_rpc)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
             admission
                 .check_target_free(
@@ -998,6 +1026,8 @@ pub(crate) async fn handle_workgraph_method(
                 .lower_member_session_target(target)
                 .await
                 .map_err(admission_error_to_rpc)?;
+            crate::workgraph_realm::refuse_foreign_mob_target(&target, service)
+                .map_err(workgraph_error_to_rpc)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
             admission
                 .check_target_free(

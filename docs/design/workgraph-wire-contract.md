@@ -33,6 +33,13 @@ supersedes the historical realm/namespace behavior described below:
   out-of-grant namespace, are refused with JSON-RPC `-32602`. The optional
   fields in the historical table do not grant cross-namespace access.
   `realm_id` remains caller-forbidden on every RPC method.
+- Member-bound attention is realm-bound (Meerkat 0.8.41). A member resolves
+  bindings only in `mob.<mob_id>`; `goal/create`, `attention/reassign` and
+  `attention/break_glass_reassign` classify the lowered target by its typed
+  owner key (`WorkOwnerKey::as_mob_agent`) and refuse a member of another mob
+  before the write (`-32602`, `data.kind = "attention_target_realm_mismatch"`).
+  Bindings written before the rule are migrated at bootstrap
+  (`workgraph_realm` module; report on `mobkit/capabilities`).
 - Library embedders can inject a composed `WorkGraphService`; its own fixed
   grant is authoritative rather than a universal requirement to use the stock
   namespace. This is not a caller-controlled grant-widening mechanism.
@@ -92,6 +99,11 @@ console additionally gated by `can_mutate`):
 - Other WorkGraphError: `-32000` internal with `data.kind = "workgraph_error"`,
   full detail (K2 disclosure posture).
 - Invalid params: `-32602` (standard).
+- Member of another mob as attention target: `-32602` with
+  `data.kind = "attention_target_realm_mismatch"` and the typed fields
+  `owner_key`, `mob_id`, `required_realm_id` (`mob.<mob_id>`), `realm_id`
+  (this runtime's realm). Raised by MobKit before the write and by Meerkat's
+  `WorkGraphError::AttentionTargetRealmMismatch` if a write reaches it.
 - ABAC denial (console): `-32030` `access_denied` (standard).
 
 ## Capabilities + experience

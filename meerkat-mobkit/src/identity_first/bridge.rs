@@ -7934,6 +7934,7 @@ mod tests {
     #[test]
     fn resume_error_classification_is_typed_first() {
         let restore_failed = meerkat_mob::MobError::MemberRestoreFailed {
+            hold: None,
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),
@@ -7997,6 +7998,7 @@ mod tests {
         );
         let wrapped_restore_failed = meerkat_mob::MobError::SharedRetirementFailure(Arc::new(
             meerkat_mob::MobError::MemberRestoreFailed {
+                hold: None,
                 member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
                 session_id: None,
                 reason: "durable snapshot missing".to_string(),
@@ -8161,6 +8163,7 @@ mod tests {
         assert_eq!(round_tripped, failure);
         // An ordinary resume failure still classifies as a resume rejection.
         let restore_failed = meerkat_mob::MobError::MemberRestoreFailed {
+            hold: None,
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),

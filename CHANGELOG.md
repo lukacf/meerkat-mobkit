@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Member-bound WorkGraph attention follows Meerkat's mob realm. Meerkat 0.8.41
+  builds every mob member in the realm `mob.<mob_id>` and rescopes the
+  WorkGraph service a host hands the mob runtime to that realm, so a member
+  resolves attention bindings there and nowhere else; a goal, binding or
+  reassignment that names a member (`mob/<mob_id>/agent/<identity>`) from any
+  other realm is refused by Meerkat with the typed
+  `AttentionTargetRealmMismatch`. MobKit's runtime service was already scoped
+  to the mob realm, so console, RPC and agent-tool work bound to this mob's
+  members lands where the member reads it. Two things changed:
+  - `mobkit/workgraph/goal/create`, `attention/reassign` and
+    `attention/break_glass_reassign` classify the lowered target by its typed
+    owner key and refuse a member of another mob before the write with
+    `-32602` and `data.kind = "attention_target_realm_mismatch"` (`owner_key`,
+    `mob_id`, `required_realm_id`, `realm_id`), instead of storing a binding
+    that member would never see. Such work is created through that mob's own
+    runtime; the surface stays scoped to one realm (`realm_id` is still never
+    accepted).
+  - Bootstrap migrates bindings written before the rescoping: every active or
+    paused binding in the runtime's realm whose owner key names a member of
+    another mob (a child mob spawned by an agent tool shared the parent's
+    unscoped service before 0.8.41) is re-created in that mob's realm over the
+    same store, with title, description, mode, policies, priority, labels,
+    timing fields, external and evidence refs, delegated authority, projection
+    policy and paused state preserved, and the original goal is cancelled
+    (which stops its binding), so a rerun finds nothing to do. Edges of the
+    original item are not carried. `MobBootstrapSpec::with_workgraph_realm_migration`
+    selects `apply` (default), `dry_run` or `off`; the report
+    (`MobRuntime::workgraph_realm_migration`, `UnifiedRuntime::workgraph_realm_migration`)
+    is serialized on `mobkit/capabilities` as `workgraph_realm_migration`, and a
+    failed scan or write is recorded there rather than aborting bootstrap.
+  - Every `MobSessionService` wrapper forwards the two methods Meerkat 0.8.41
+    made required (`fork_persisted_session_at_turn_boundary`,
+    `commit_live_delegation_final_transcript_at_turn_boundary`).
+
 ### Changed
 
 - Console voice time-to-talk. Clicking the voice button on an agent with a
