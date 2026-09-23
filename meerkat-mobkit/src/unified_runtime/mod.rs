@@ -323,6 +323,12 @@ pub struct UnifiedRuntime {
     // Optional ABAC enforcement shared by the console/SSE surfaces.
     access_controller: Option<crate::access::AccessController>,
 
+    // Optional shared decision service (Meerkat `meerkat-decision`). Serves
+    // `mobkit/decision/evaluate` and the memory applicability policy. None
+    // (the default) means no decision client, credential lookup, or network
+    // call exists in this runtime.
+    decision_service: Option<Arc<meerkat_decision::DecisionService>>,
+
     // Optional product-level topology authority. The controller always
     // exists so query can remain available, but its policy defaults to
     // disabled and mutation methods are then absent/denied.
@@ -529,6 +535,7 @@ impl UnifiedRuntime {
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,
+            decision_service: None,
             topology_controller: crate::topology_control::TopologyController::default(),
             memory_panel_store: std::sync::RwLock::new(None),
             job_health_projection: Arc::new(std::sync::RwLock::new(None)),
@@ -1358,6 +1365,17 @@ impl UnifiedRuntime {
     /// Borrow the shared access controller if one was installed.
     pub fn access_controller(&self) -> Option<&crate::access::AccessController> {
         self.access_controller.as_ref()
+    }
+
+    /// The shared decision service, when the host composed one.
+    pub fn decision_service(&self) -> Option<Arc<meerkat_decision::DecisionService>> {
+        self.decision_service.clone()
+    }
+
+    /// Install the shared decision service. RPC routers built after this call
+    /// serve `mobkit/decision/evaluate`.
+    pub fn set_decision_service(&mut self, service: Arc<meerkat_decision::DecisionService>) {
+        self.decision_service = Some(service);
     }
 
     /// Optional topology control-plane policy and durable intent store.

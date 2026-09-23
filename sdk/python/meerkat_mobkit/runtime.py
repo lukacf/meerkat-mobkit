@@ -81,6 +81,7 @@ from .types import (
     DeliveryResult,
     GatingAuditEntry,
     GatingDecisionResult,
+    DecisionResult,
     GatingEvaluateResult,
     GatingPendingEntry,
     MemberHealth,
@@ -2284,6 +2285,34 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/gating/audit", {"limit": limit})
         entries = raw.get("entries", []) if isinstance(raw, dict) else []
         return [GatingAuditEntry.from_dict(e) for e in entries]
+
+    # -----------------------------------------------------------------
+    # Decision service — batched semantic judgments
+    # -----------------------------------------------------------------
+
+    async def decide(
+        self,
+        state: str | dict[str, Any] | list[Any],
+        questions: list[dict[str, Any]],
+        *,
+        task: str | None = None,
+    ) -> DecisionResult:
+        """Evaluate a batch of bounded semantic questions over ``state``.
+
+        Build ``questions`` with :func:`~meerkat_mobkit.binary_question`,
+        :func:`~meerkat_mobkit.choose_one_question`, and
+        :func:`~meerkat_mobkit.grade_question`. The gateway's composed decision
+        service (``UnifiedRuntimeBuilder::decision_service``) evaluates them in
+        one call; judgments are evidence for your code to compose, never
+        permission to act. A runtime without a composed service raises
+        ``CapabilityUnavailableError``; an invalid request raises ``RpcError``
+        with the typed decision error in ``data``.
+        """
+        params: dict[str, Any] = {"state": state, "questions": questions}
+        if task is not None:
+            params["task"] = task
+        raw = await self._runtime._rpc("mobkit/decision/evaluate", params)
+        return DecisionResult.from_dict(raw)
 
     # -----------------------------------------------------------------
     # Memory — store management

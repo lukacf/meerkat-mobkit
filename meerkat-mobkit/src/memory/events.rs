@@ -155,6 +155,24 @@ pub enum MemoryTimelineEvent {
         cause: String,
         reason: String,
     },
+    /// The decision-backed memory applicability assessment for this
+    /// identity started failing and its declared baseline applied. Emitted
+    /// on the transition into degradation (and when the failure code
+    /// changes), not per turn; `ApplicabilityRecovered` closes the window.
+    ApplicabilityDegraded {
+        identity: String,
+        session_key: Option<String>,
+        /// Typed decision error code (`backend_failure`, `deadline_exceeded`, ...).
+        code: String,
+        /// `pass_through` or `inject_nothing`.
+        baseline: String,
+        message: String,
+    },
+    /// An applicability assessment succeeded after a degraded window.
+    ApplicabilityRecovered {
+        identity: String,
+        session_key: Option<String>,
+    },
 }
 
 impl MemoryTimelineEvent {
@@ -178,6 +196,8 @@ impl MemoryTimelineEvent {
             Self::HygieneApplied { .. } => "memory.hygiene.applied",
             Self::HygieneBlocked { .. } => "memory.hygiene.blocked",
             Self::HygieneSkipped { .. } => "memory.hygiene.skipped",
+            Self::ApplicabilityDegraded { .. } => "memory.applicability.degraded",
+            Self::ApplicabilityRecovered { .. } => "memory.applicability.recovered",
         }
     }
 
@@ -192,7 +212,9 @@ impl MemoryTimelineEvent {
             | Self::HygieneProposed { identity, .. }
             | Self::HygieneApplied { identity, .. }
             | Self::HygieneBlocked { identity, .. }
-            | Self::HygieneSkipped { identity, .. } => Some(identity),
+            | Self::HygieneSkipped { identity, .. }
+            | Self::ApplicabilityDegraded { identity, .. }
+            | Self::ApplicabilityRecovered { identity, .. } => Some(identity),
             _ => None,
         }
     }
@@ -382,6 +404,26 @@ impl MemoryTimelineEvent {
                 "session_key": session_key,
                 "cause": cause,
                 "reason": reason,
+            }),
+            Self::ApplicabilityDegraded {
+                identity,
+                session_key,
+                code,
+                baseline,
+                message,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
+                "code": code,
+                "baseline": baseline,
+                "message": message,
+            }),
+            Self::ApplicabilityRecovered {
+                identity,
+                session_key,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
             }),
         }
     }

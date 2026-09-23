@@ -511,6 +511,24 @@ impl AgentMemoryRuntimeInjector {
         self
     }
 
+    /// Install the decision-backed memory applicability policy on the
+    /// per-turn recall path. `None` (the default) leaves recall unchanged.
+    pub fn with_applicability_policy(
+        mut self,
+        policy: Option<Arc<crate::decision::MemoryApplicabilityPolicy>>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_applicability_policy(policy);
+        self
+    }
+
+    /// Install the §9.3 timeline sink that carries applicability
+    /// degradation / recovery transitions. Shared across clones of this
+    /// injector, so it may be bound after the runtime that owns the sink
+    /// exists.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        self.coordinator.set_event_sink(sink);
+    }
+
     /// Attach the §8.4 Distiller so the identity runtime's lifecycle paths
     /// can run pre-rotation extraction.
     pub fn with_distiller(

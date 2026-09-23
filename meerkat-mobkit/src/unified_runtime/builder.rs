@@ -127,6 +127,8 @@ pub struct UnifiedRuntimeBuilder {
     live: Option<super::live_compose::LiveOptions>,
     #[cfg(feature = "openai-live")]
     console_voice: Option<crate::public_live_config::PublicLiveRegistration>,
+    decision_service: Option<Arc<meerkat_decision::DecisionService>>,
+    memory_applicability: Option<crate::decision::MemoryApplicabilityConfig>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -796,6 +798,31 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Install the host-composed decision service (see
+    /// `meerkat::build_decision_service` / `meerkat::build_host_decision_service`).
+    /// Serves `mobkit/decision/evaluate` and backs the memory applicability
+    /// policy. Members get the agent-callable `decide` tool from the Meerkat
+    /// facade when the effective meerkat config sets
+    /// `tools.decision_enabled = true`; this slot is the host-side service,
+    /// not the member tool.
+    pub fn decision_service(mut self, service: Arc<meerkat_decision::DecisionService>) -> Self {
+        self.decision_service = Some(service);
+        self
+    }
+
+    /// Enable decision-backed memory applicability on the per-turn recall
+    /// path. Requires [`decision_service`](Self::decision_service) and an
+    /// agent memory provider to attach to; building without either is a
+    /// configuration conflict, never a silent no-op. The candidate bound is
+    /// checked against the service's request limits at build.
+    pub fn memory_applicability(
+        mut self,
+        config: crate::decision::MemoryApplicabilityConfig,
+    ) -> Self {
+        self.memory_applicability = Some(config);
+        self
+    }
+
     /// Install a pre-built access controller (ABAC enforcement for the
     /// console and SSE surfaces). Absent — the default — access control is
     /// off and every surface behaves exactly as before.
@@ -1076,11 +1103,40 @@ impl UnifiedRuntimeBuilder {
             .agent_memory_provider
             .clone()
             .or_else(|| stack_provider.clone());
+        let applicability_policy = match (&self.memory_applicability, &self.decision_service) {
+            (Some(config), Some(service)) => Some(Arc::new(
+                crate::decision::MemoryApplicabilityPolicy::new(
+                    Arc::clone(service),
+                    config.clone(),
+                )
+                .map_err(|error| {
+                    UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                        "memory_applicability: {error}"
+                    ))
+                })?,
+            )),
+            (Some(_), None) => {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    "memory_applicability() requires decision_service()".to_string(),
+                ));
+            }
+            (None, _) => None,
+        };
+        // A policy with nothing to attach to would be configured and never
+        // consulted; refusing here keeps "configured" and "in effect" the same fact.
+        if applicability_policy.is_some() && agent_memory_provider.is_none() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "memory_applicability() requires an agent memory provider \
+                 (agent_memory_provider() or a memory stack) to attach to"
+                    .to_string(),
+            ));
+        }
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
                 provider.clone(),
                 self.agent_memory_config.clone().unwrap_or_default(),
             )
+            .with_applicability_policy(applicability_policy.clone())
         });
         let agent_customizer = self.composed_agent_customizer(agent_memory_provider.clone());
 
@@ -1323,6 +1379,7 @@ impl UnifiedRuntimeBuilder {
         // Set immutable outer fields by rebuilding the struct
         let mut runtime = UnifiedRuntime {
             access_controller: self.access_controller,
+            decision_service: self.decision_service,
             topology_controller,
             post_spawn_hook: self.post_spawn_hook,
             post_reconcile_hook: self.post_reconcile_hook,
@@ -1395,6 +1452,11 @@ impl UnifiedRuntimeBuilder {
         // panel (§9.3) registers for any provider advertising the panel
         // read API. Recall-only providers keep injection + recorder
         // without a panel — by their capability flags, not by type.
+        // The per-turn injector's applicability transitions ride the same
+        // §9.3 timeline; bind the sink now that the runtime owning it exists.
+        if let Some(injector) = agent_memory_injector.as_ref() {
+            injector.set_event_sink(runtime.memory_event_sink());
+        }
         if let Some(provider) = classic_agent_memory.as_ref() {
             if let Some(taintable) = provider.as_taintable() {
                 let llm_writes = self

@@ -1,0 +1,234 @@
+---
+title: "Decision services"
+description: "Batched semantic judgments — binary, choose-one, grade — evaluated in one bounded call over data your code already holds, then composed by code. Optional; off by default."
+icon: "scale-balanced"
+---
+
+MobKit composes Meerkat's optional **decision service** (`meerkat-decision`)
+so ordinary code can insert narrow semantic judgments where it needs language
+understanding, without waking an agent or writing a prompt. You supply
+authorized data, a task, and typed questions; you get back typed judgments
+your code composes. Thresholds, exact checks, authorization, and effects stay
+in code. Nothing here runs until a realm opts in.
+
+## The programming model
+
+```text
+authorized scoped data/candidates + task + typed questions
+                         |
+               shared decision service
+                         |
+        typed judgments + available native signals
+                         |
+    feature-owned code composes the applicable answers
+```
+
+Three question kinds, each carrying its complete meaning:
+
+| Kind | Asks | Judgment forms |
+| --- | --- | --- |
+| `binary` | Is a specific fact stated or directly implied? | `categorical` (yes / no / abstain) or `native_probability` (a probability of yes) |
+| `choose_one` | Which of the supplied options fits best? | `selected` (a supplied option id) or `abstain` |
+| `grade` | Which of the supplied ordered levels applies? | `level` (an index), `abstain`, or `native_weighted` (a probability-weighted position) |
+
+Composition rules worth internalising:
+
+- **Relative choice is not sufficiency.** A best option can still be
+  inadequate. Pair `choose_one` with an independent `binary` predicate where
+  sufficiency matters.
+- **Binary probability is not degree.** Use `binary` for whether a fact
+  exists, `grade` for how much a quality applies.
+- **Ask speculative questions together**, then ignore answers for branches
+  that do not apply.
+- **Keep exact checks in code.** Identifiers, dates, arithmetic, permissions,
+  and receipt existence never need a model.
+- **Judgments are evidence, never permission.** A judgment cannot mint
+  authority, complete work, or confirm anything.
+
+## Backends and enablement
+
+The decision capability and the Jev backend are **independent opt-ins** in
+the Meerkat realm config (`.rkat/config.toml`):
+
+```toml
+[tools]
+decision_enabled = true          # exposes the agent-callable `decide` tool
+
+[decision]
+backend = "llm"                  # default: the caller's already-admitted LLM route
+```
+
+| Configuration | Behavior |
+| --- | --- |
+| `tools.decision_enabled = false` (default) | No decision client, credential lookup, or network call exists |
+| enabled, `backend = "llm"` | One tool-free structured request through the caller's admitted route; no new account. Inside a member turn that is the event-isolated fork of the member's own current client; a **host** caller needs an explicit `[decision.host_route]` |
+| `backend = "jev"` | Requires a `[decision.jev]` table with explicit `endpoint`, `model`, a typed credential source **and** `allow_disclosure = true` |
+| A Jev key merely present in the environment | Selects nothing |
+
+```toml
+# Host invocations (mobkit/decision/evaluate, memory applicability) on the
+# llm backend name their own route; the member tool never reads this table.
+[decision.host_route]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+```
+
+```toml
+[decision]
+backend = "jev"
+
+[decision.jev]
+endpoint = "https://api.typesafe.ai/v1/systemone"
+model = "jev-latest"
+credential = { kind = "env", env = "JEV_API_KEY" }
+allow_disclosure = true          # host permission to send admitted inputs to this destination
+
+[decision.limits]
+max_questions = 32
+max_state_bytes = 65536
+deadline_ms = 30000
+max_attempts = 2
+```
+
+Jev returns native probabilities and distributions. The adapter keeps them as
+typed, backend-qualified data and **applies no threshold**; the consuming
+feature owns that policy. The LLM backend returns categorical answers and
+explicit abstention and never invents probabilities from self-reported
+confidence. In this release the Jev credential resolves through the `env` and
+`inline_secret` source kinds; other kinds are refused typed at composition.
+
+## Members: the `decide` tool
+
+When the effective Meerkat config sets `tools.decision_enabled = true`, the
+Meerkat facade composes the `decide` tool into every agent it builds — roots
+and spawned workers alike, on the same restrictive policy. Nested model usage
+participates exactly once in the member's token budget (reserved before
+egress, settled from measured usage; an unmeasured call releases the
+reservation and is marked `unmeasured`, never counted as zero).
+
+## Hosts: `mobkit/decision/evaluate` and the SDKs
+
+Compose a service on the gateway and the SDKs consume it through one RPC:
+
+```rust
+use meerkat_mobkit::UnifiedRuntimeBuilder;
+
+// A host with no admitted session route resolves `[decision.host_route]`
+// (or the Jev table) through the factory; a host that already holds an
+// admitted client passes it to `meerkat::build_decision_service`.
+let service = std::sync::Arc::new(meerkat::build_host_decision_service(&factory, &config).await?);
+let runtime = UnifiedRuntimeBuilder::default()
+    .decision_service(service)
+    // ...
+    .build().await?;
+```
+
+The SDK gateway (`rpc_gateway`) does this itself from the host config named by
+`runtime_options.meerkat_config_path`: when `tools.decision_enabled = true`
+and the `[decision]` table has a route a host can use (`backend = "jev"`, or
+`[decision.host_route]` on the `llm` backend), the service is composed at
+init and `mobkit/capabilities` advertises `mobkit/decision/evaluate`. Without
+a host route the members still get the `decide` tool over their own session
+route, and the RPC answers capability-unavailable naming the missing table.
+
+```python
+from meerkat_mobkit import binary_question, choose_one_question, grade_question
+
+result = await mob.decide(
+    "Help! My payouts have been failing for 3 days.",
+    [
+        binary_question("is_urgent", "Does this convey urgency?"),
+        choose_one_question("department", "Which team should handle this?",
+                            {"billing": "Payments, invoicing, refunds",
+                             "technical": "Bugs, outages, integrations"}),
+        grade_question("frustration", "How frustrated is the customer?",
+                       ["Calm", "Frustrated", "Very angry"]),
+    ],
+    task="Triage a support message",
+)
+if result.judgments["is_urgent"].answer == "yes": ...
+```
+
+```ts
+const result = await mob.decide(state, [
+  binaryQuestion("is_urgent", "Does this convey urgency?"),
+], { task: "Triage" });
+```
+
+Every result carries the exact `route` that served it, typed `accounting`
+(`measured` or `unmeasured`), and `budget` participation. A runtime with no
+composed service answers the reserved capability-unavailable code; an invalid
+request is a parameter error carrying the typed decision error in `data`. A
+failure after the backend ran (`backend_failure`, `invalid_answer`) still
+carries the `accounting` and `budget` that were settled.
+
+## Memory applicability
+
+MobKit's per-turn memory recall can judge which recalled candidates apply to
+the current request **between authorized candidate recall and the final
+packing**. Scope, active/quarantined status, and provenance are applied by
+recall and survive untouched; the policy decides only inclusion, and says how:
+
+```rust
+use meerkat_mobkit::decision::MemoryApplicabilityConfig;
+
+UnifiedRuntimeBuilder::default()
+    .decision_service(service)
+    .memory_applicability(MemoryApplicabilityConfig::default())
+```
+
+On the SDK gateway the same policy is `runtime_options.agent_memory.applicability`
+(`true` for the defaults, or the typed table: `max_assessed_candidates`,
+`probability_threshold`, `keep_on_abstain`, `baseline`,
+`assessment_timeout_ms`); it requires the host decision service above and
+init refuses a policy it could not attach.
+
+Each assessed candidate gets two independent binary predicates: *does it
+state or directly imply information the request needs* and *does it
+contradict or correct an assumption the request relies on*. Contradicting
+records are kept on purpose, so recall never filters down to agreeing
+material. Candidates beyond `max_assessed_candidates` are kept unassessed,
+never silently dropped; records already injected this session are not judged
+again; a turn without text keeps every candidate unassessed without a call.
+The state sent to the judge is byte-bounded per field, and the worst case at
+the candidate bound is checked against the service's `max_questions` and
+`max_state_bytes` when the policy is built, so no turn is refused for a size
+the host could have known. If the service fails, is refused, or exceeds the
+policy's `assessment_timeout_ms` (or the service deadline), the declared
+`baseline` applies (`pass_through`, the default, injects every candidate as
+before; `inject_nothing` injects none) and the outcome carries a typed
+degradation marker. Entering degradation is a WARN plus a
+`memory.applicability.degraded` event on the console memory timeline; the
+first success afterwards is `memory.applicability.recovered` — transitions,
+not one event per turn. Records carrying a protected tag (`protected_tags`,
+default `epistemic:operator_said`, the recorder's marker for what the
+operator explicitly said) are never judged: they are kept as
+`protected_kept` without spending a question, so an explicit remember
+request cannot disappear because a model gave it a low score. Applications
+add their own conventions (a correction tag, for example) to the list.
+
+## Work, evidence, and rubrics
+
+`meerkat_mobkit::decision::work` supplies request builders, typed
+interpreters, and a thin runner over the service:
+
+- **Per-requirement evidence** — `supported` and `contradicted` signals per
+  requirement; both `No` is omission, which the caller decides how to treat.
+- **Commitment applicability** — whether new information `applies`,
+  `changes_requirements`, or `indicates_satisfied`. `indicates_satisfied` is
+  evidence for an owner to act on; it is never completion.
+- **Rubric dimensions** — one `grade` per independent dimension, with
+  `aggregate_rubric` applying **non-compensating hard rules** in code: a
+  failed hard rule is never averaged away, and an abstained or
+  natively-weighted hard-ruled dimension is `undetermined`, not passed.
+- **Work fit** — a relative `best_fit` among already-ready, already-authorized
+  candidates **plus** an independent `any_fits` predicate.
+
+WorkGraph keeps readiness, topology, claims, revisions, confirmations, and
+completion. A judgment is not a reserved confirmation or a reviewer quorum.
+
+## What this is not
+
+No durable prepare/select/apply operations, no new workflow engine, no
+assessment cache, and no console exposure yet. Those ship, if at all, as their
+own designs with their own authority seams.

@@ -4018,3 +4018,147 @@ export function workGraphAttentionPauseOptionsToDict(
   if (options.namespace !== undefined) result.namespace = options.namespace;
   return result;
 }
+
+// -- Decision service (`mobkit/decision/evaluate`) ------------------------
+
+export type DecisionInstructions = string | Record<string, unknown> | unknown[];
+
+/** A typed decision question; build with the helpers below. */
+export type DecisionQuestion =
+  | {
+      readonly kind: "binary";
+      readonly id: string;
+      readonly instructions: DecisionInstructions;
+      readonly criteria?: { readonly yes: DecisionInstructions; readonly no: DecisionInstructions };
+    }
+  | {
+      readonly kind: "choose_one";
+      readonly id: string;
+      readonly instructions: DecisionInstructions;
+      readonly options: ReadonlyArray<{ readonly id: string; readonly description: DecisionInstructions }>;
+    }
+  | {
+      readonly kind: "grade";
+      readonly id: string;
+      readonly instructions: DecisionInstructions;
+      readonly levels: ReadonlyArray<{ readonly description: DecisionInstructions }>;
+    };
+
+/** Build a `binary` question (yes / no / abstain). */
+export function binaryQuestion(
+  id: string,
+  instructions: DecisionInstructions,
+  criteria?: { yes: DecisionInstructions; no: DecisionInstructions },
+): DecisionQuestion {
+  return criteria === undefined
+    ? { kind: "binary", id, instructions }
+    : { kind: "binary", id, instructions, criteria };
+}
+
+/**
+ * Build a `choose_one` question over supplied options (id -> description).
+ * A relative winner is not proof of adequacy; pair it with a binary
+ * predicate where sufficiency matters.
+ */
+export function chooseOneQuestion(
+  id: string,
+  instructions: DecisionInstructions,
+  options: Record<string, DecisionInstructions>,
+): DecisionQuestion {
+  return {
+    kind: "choose_one",
+    id,
+    instructions,
+    options: Object.entries(options).map(([optionId, description]) => ({
+      id: optionId,
+      description,
+    })),
+  };
+}
+
+/** Build a `grade` question over ordered, self-contained levels. */
+export function gradeQuestion(
+  id: string,
+  instructions: DecisionInstructions,
+  levels: DecisionInstructions[],
+): DecisionQuestion {
+  return {
+    kind: "grade",
+    id,
+    instructions,
+    levels: levels.map((description) => ({ description })),
+  };
+}
+
+/**
+ * One typed judgment plus retained native signals. `form` names the shape the
+ * backend actually supplied; native probabilities and weighted positions are
+ * returned unthresholded — the caller owns that policy.
+ */
+export interface DecisionJudgment {
+  readonly kind: string;
+  readonly form: string;
+  readonly answer: string | null;
+  readonly option: string | null;
+  readonly levelIndex: number | null;
+  readonly probabilityYes: number | null;
+  readonly weightedPosition: number | null;
+  readonly nativeSignals: ReadonlyArray<Record<string, unknown>>;
+  readonly raw: Record<string, unknown>;
+  readonly isAbstain: boolean;
+}
+
+export function parseDecisionJudgment(raw: unknown): DecisionJudgment {
+  const d = asRecord(raw);
+  const judgment = asRecord(d.judgment);
+  const form = String(judgment.form ?? "");
+  const answer = typeof judgment.answer === "string" ? judgment.answer : null;
+  return {
+    kind: String(judgment.kind ?? ""),
+    form,
+    answer,
+    option: typeof judgment.option === "string" ? judgment.option : null,
+    levelIndex: typeof judgment.index === "number" ? judgment.index : null,
+    probabilityYes: typeof judgment.yes === "number" ? judgment.yes : null,
+    weightedPosition: typeof judgment.position === "number" ? judgment.position : null,
+    nativeSignals: Array.isArray(d.native_signals)
+      ? (d.native_signals as unknown[]).map(asRecord)
+      : [],
+    raw: judgment,
+    isAbstain: form === "abstain" || answer === "abstain",
+  };
+}
+
+/**
+ * Typed result of `mobkit/decision/evaluate`.
+ *
+ * `contract` and `attempts` are always present on the wire; the parser keeps
+ * them `null` rather than inventing `""` / `0` if a result ever lacks them.
+ */
+export interface DecisionResult {
+  readonly contract: string | null;
+  /** Exact backend route that served the call. */
+  readonly route: Record<string, unknown>;
+  readonly judgments: Readonly<Record<string, DecisionJudgment>>;
+  /** `{kind: "measured", ...}` or `{kind: "unmeasured"}`; never a fabricated zero. */
+  readonly accounting: Record<string, unknown>;
+  /** `charged` / `unmeasured` / `not_issued` participation in the owner budget. */
+  readonly budget: Record<string, unknown>;
+  readonly attempts: number | null;
+}
+
+export function parseDecisionResult(raw: unknown): DecisionResult {
+  const d = asRecord(raw);
+  const judgments: Record<string, DecisionJudgment> = {};
+  for (const [questionId, judgment] of Object.entries(asRecord(d.judgments))) {
+    judgments[questionId] = parseDecisionJudgment(judgment);
+  }
+  return {
+    contract: typeof d.contract === "string" ? d.contract : null,
+    route: asRecord(d.route),
+    judgments,
+    accounting: asRecord(d.accounting),
+    budget: asRecord(d.budget),
+    attempts: typeof d.attempts === "number" ? d.attempts : null,
+  };
+}

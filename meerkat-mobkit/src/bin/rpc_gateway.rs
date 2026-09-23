@@ -279,6 +279,9 @@ struct GatewayAgentMemoryOptions {
     /// default; enablement is the application's call (mechanism from
     /// MobKit, policy from the app).
     steward: meerkat_mobkit::memory::steward::StewardConfig,
+    /// Decision-backed applicability policy from `agent_memory.applicability`.
+    /// Absent by default; requires the host config's decision service.
+    applicability: Option<meerkat_mobkit::MemoryApplicabilityConfig>,
 }
 
 /// Which bundled store backs agent memory. SQLite is the default now that
@@ -450,6 +453,46 @@ impl Default for GatewayRuntimeOptions {
 /// meerkat's `AgentFactory::build_agent` builds its `DefaultCompactor` from
 /// `config.compaction`, so an un-declared policy here is what leaves the
 /// gateway on meerkat's model-aware `context_window * 4 / 5` trigger.
+/// Whether the host config declares a route a HOST invocation can use: the
+/// Jev backend carries its own destination; the `llm` backend needs an
+/// explicit `[decision.host_route]` because no session is being served.
+fn host_decision_route_declared(config: &Config) -> bool {
+    let decision = config.decision_config();
+    match decision.backend {
+        meerkat_core::DecisionBackendSelection::Jev => true,
+        meerkat_core::DecisionBackendSelection::Llm => decision.host_route.is_some(),
+    }
+}
+
+/// Compose the decision service the gateway serves over
+/// `mobkit/decision/evaluate` and lends to memory applicability, from the
+/// host config's `[decision]` table. `tools.decision_enabled = false` (the
+/// default) composes nothing and the RPC answers capability-unavailable. An
+/// enabled `llm` backend without a host route composes nothing either: the
+/// member `decide` tool still works over each session's own route, and a
+/// host caller is told which table is missing. An enabled table that
+/// cannot be composed is an init refusal, never a silently absent service.
+async fn compose_gateway_decision_service(
+    factory: &AgentFactory,
+    config: &Config,
+) -> Result<Option<Arc<meerkat_decision::DecisionService>>, String> {
+    if !config.tools.decision_enabled {
+        return Ok(None);
+    }
+    if !host_decision_route_declared(config) {
+        tracing::info!(
+            "tools.decision_enabled is set on the llm backend without [decision.host_route]: \
+             members get the decide tool over their own session route; mobkit/decision/evaluate \
+             and agent_memory.applicability need an explicit host route"
+        );
+        return Ok(None);
+    }
+    meerkat::build_host_decision_service(factory, config)
+        .await
+        .map(|service| Some(Arc::new(service)))
+        .map_err(|error| format!("[decision] host service could not be composed: {error}"))
+}
+
 fn gateway_agent_config(options: &GatewayRuntimeOptions) -> Config {
     let mut config = options.host_config.clone().unwrap_or_default();
     if let Some(address) = options.member_comms_address.as_ref() {
@@ -3969,6 +4012,146 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn agent_memory_applicability_parses_fail_loud() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parse = |agent_memory: Value| {
+            parse_gateway_runtime_options(
+                &json!({ "runtime_options": { "agent_memory": agent_memory } }),
+                Some(tmp.path()),
+            )
+        };
+
+        // Absent by default, on both shorthand and object forms.
+        assert!(
+            parse(json!(true))
+                .expect("bool form parses")
+                .agent_memory
+                .expect("agent memory")
+                .applicability
+                .is_none()
+        );
+        assert!(
+            parse(json!({ "selection": "always" }))
+                .expect("object form parses")
+                .agent_memory
+                .expect("agent memory")
+                .applicability
+                .is_none()
+        );
+        assert!(
+            parse(json!({ "applicability": false }))
+                .expect("explicit false parses")
+                .agent_memory
+                .expect("agent memory")
+                .applicability
+                .is_none()
+        );
+
+        // `true` takes the library defaults.
+        let defaults = parse(json!({ "applicability": true }))
+            .expect("true parses")
+            .agent_memory
+            .expect("agent memory")
+            .applicability
+            .expect("applicability configured");
+        assert_eq!(
+            defaults,
+            meerkat_mobkit::MemoryApplicabilityConfig::default()
+        );
+
+        // Object form is the typed table.
+        let configured = parse(json!({
+            "applicability": {
+                "max_assessed_candidates": 4,
+                "probability_threshold": 0.7,
+                "keep_on_abstain": false,
+                "baseline": "inject_nothing",
+                "assessment_timeout_ms": 1500
+            }
+        }))
+        .expect("object parses")
+        .agent_memory
+        .expect("agent memory")
+        .applicability
+        .expect("applicability configured");
+        assert_eq!(configured.max_assessed_candidates, 4);
+        assert_eq!(configured.probability_threshold, 0.7);
+        assert!(!configured.keep_on_abstain);
+        assert_eq!(
+            configured.baseline,
+            meerkat_mobkit::ApplicabilityBaseline::InjectNothing
+        );
+        assert_eq!(configured.assessment_timeout_ms, Some(1500));
+        // Omitted protected tags keep the recorder's operator marker; an
+        // explicit empty list is how an operator turns protection off.
+        assert_eq!(
+            configured.protected_tags,
+            vec![meerkat_mobkit::decision::memory::OPERATOR_SAID_TAG.to_string()]
+        );
+        let unprotected = parse(json!({ "applicability": { "protected_tags": [] } }))
+            .expect("object parses")
+            .agent_memory
+            .expect("agent memory")
+            .applicability
+            .expect("applicability configured");
+        assert!(unprotected.protected_tags.is_empty());
+
+        // Fail-loud matrix: unknown keys, wrong shapes, out-of-range values.
+        for (agent_memory, needle) in [
+            (
+                json!({ "applicability": { "relevance_threshold": 0.5 } }),
+                "unknown field",
+            ),
+            (
+                json!({ "applicability": "on" }),
+                "must be a boolean or an object",
+            ),
+            (
+                json!({ "applicability": { "max_assessed_candidates": 0 } }),
+                "max_assessed_candidates >= 1",
+            ),
+            (
+                json!({ "applicability": { "probability_threshold": 1.5 } }),
+                "within [0, 1]",
+            ),
+            (
+                json!({ "applicability": { "assessment_timeout_ms": 0 } }),
+                "assessment_timeout_ms must be >= 1",
+            ),
+        ] {
+            let err = match parse(agent_memory.clone()) {
+                Ok(_) => panic!("expected fail-loud parse for {agent_memory}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+            assert!(err.contains("agent_memory.applicability"), "{err}");
+        }
+    }
+
+    #[test]
+    fn host_decision_route_is_declared_only_when_a_host_can_use_it() {
+        let mut config = Config::default();
+        assert!(
+            !host_decision_route_declared(&config),
+            "undeclared table: llm backend without host_route"
+        );
+        config.decision = Some(meerkat_core::DecisionConfig {
+            host_route: Some(meerkat_core::DecisionHostRoute {
+                provider: meerkat_core::Provider::Anthropic,
+                model: "claude-sonnet-4-5".to_string(),
+                auth_binding: None,
+            }),
+            ..meerkat_core::DecisionConfig::default()
+        });
+        assert!(host_decision_route_declared(&config));
+        config.decision = Some(meerkat_core::DecisionConfig {
+            backend: meerkat_core::DecisionBackendSelection::Jev,
+            ..meerkat_core::DecisionConfig::default()
+        });
+        assert!(host_decision_route_declared(&config));
+    }
+
+    #[test]
     fn gateway_distiller_max_output_tokens_reaches_effective_memory_profile() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let parse = |distiller| {
@@ -6845,6 +7028,7 @@ fn parse_gateway_agent_memory_config(
             store: GatewayAgentMemoryStoreKind::default(),
             distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
             steward: meerkat_mobkit::memory::steward::StewardConfig::default(),
+            applicability: None,
         }));
     }
 
@@ -6870,6 +7054,7 @@ fn parse_gateway_agent_memory_config(
         "steward",
         "operator_scope",
         "hygienist",
+        "applicability",
     ];
     let unsupported = object
         .keys()
@@ -7119,6 +7304,29 @@ fn parse_gateway_agent_memory_config(
         None => meerkat_mobkit::memory::steward::StewardConfig::default(),
         Some(value) => parse_gateway_steward_config(value)?,
     };
+    // Applicability block: absent by default. `true` takes the library
+    // defaults, an object is parsed with unknown keys refused, and the
+    // service-dependent bounds are checked when the policy is composed.
+    let applicability = match object.get("applicability") {
+        None | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(meerkat_mobkit::MemoryApplicabilityConfig::default()),
+        Some(value @ Value::Object(_)) => {
+            let config: meerkat_mobkit::MemoryApplicabilityConfig =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    format!("runtime_options.agent_memory.applicability: {error}")
+                })?;
+            config
+                .validate()
+                .map_err(|error| format!("runtime_options.agent_memory.applicability: {error}"))?;
+            Some(config)
+        }
+        Some(_) => {
+            return Err(
+                "runtime_options.agent_memory.applicability must be a boolean or an object"
+                    .to_string(),
+            );
+        }
+    };
     // §8.6 Hygienist is parked. Keep only the disabled compatibility forms;
     // any activation intent is a typed invalid-params refusal.
     if let Some(value) = object.get("hygienist") {
@@ -7212,6 +7420,7 @@ fn parse_gateway_agent_memory_config(
         store,
         distiller,
         steward,
+        applicability,
     }))
 }
 
@@ -11579,6 +11788,11 @@ external_addressable = true
     let mut gateway_transcript_edit_service: Option<
         Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
     > = None;
+    // Host decision service (see `compose_gateway_decision_service`),
+    // composed once per launch mode beside the first factory that mode
+    // builds, so it resolves auth and realm facts exactly as member builds
+    // do.
+    let gateway_decision_service: Option<Arc<meerkat_decision::DecisionService>>;
     let (
         mob_spec,
         _temp_dir,
@@ -11822,6 +12036,10 @@ external_addressable = true
         #[cfg(not(feature = "experimental-gpt-live"))]
         let live_agent_factory = factory.clone();
         let live_machine = Arc::clone(&adapter);
+        gateway_decision_service =
+            compose_gateway_decision_service(&factory, &gateway_agent_config(&gateway_options))
+                .await
+                .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
         let mut inner_builder =
             FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
         inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
@@ -12187,6 +12405,10 @@ external_addressable = true
         if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
             factory = factory.user_config_root(root.clone());
         }
+        gateway_decision_service =
+            compose_gateway_decision_service(&factory, &gateway_agent_config(&gateway_options))
+                .await
+                .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
         let mut inner_builder =
             FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
         inner_builder.default_blob_store = Some(blob_store.clone());
@@ -12312,6 +12534,10 @@ external_addressable = true
                 if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
                     factory = factory.user_config_root(root.clone());
                 }
+                // The host decision service was composed beside this launch
+                // mode's first factory above; this factory differs only in its
+                // session store, which the host route never reads, so it is
+                // not composed a second time.
                 let mut inner_builder =
                     FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
                 inner_builder.default_session_store = Some(Arc::new(
@@ -12587,6 +12813,10 @@ external_addressable = true
 
     if let Some(access) = gateway_options.access.take() {
         runtime.set_access_controller(access);
+    }
+
+    if let Some(service) = gateway_decision_service.clone() {
+        runtime.set_decision_service(service);
     }
 
     // 5b. Wire error hook — forwards ErrorEvents to Python as JSON-RPC notifications
@@ -13023,6 +13253,33 @@ external_addressable = true
             }
             injector = injector.with_operator_resolver(agent_memory_operator_resolver.clone());
             injector = injector.with_mob_resolver(agent_memory_mob_resolver.clone());
+            if let Some(applicability) = agent_memory.applicability.clone() {
+                // Configured means in effect: without a host decision
+                // service the policy would be declared and never consulted.
+                let Some(service) = gateway_decision_service.clone() else {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "runtime_options.agent_memory.applicability requires the host config to \
+                         set tools.decision_enabled = true with a [decision] table a host can \
+                         route through (backend = \"jev\", or [decision.host_route] for the llm \
+                         backend)"
+                            .to_string(),
+                    );
+                };
+                let policy = meerkat_mobkit::MemoryApplicabilityPolicy::new(service, applicability)
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            format!("runtime_options.agent_memory.applicability: {error}"),
+                        )
+                    });
+                injector = injector.with_applicability_policy(Some(Arc::new(policy)));
+            }
+            // Applicability degradation / recovery transitions ride the same
+            // §9.3 console timeline as the rest of the memory plane.
+            injector.set_event_sink(runtime.memory_event_sink());
             // Arm the always-on compaction reset sink (state is Arc-shared
             // across injector clones, so resetting through this clone
             // resets the delivery path's budgets too).

@@ -43,6 +43,7 @@
               "concepts/delivery",
               "concepts/scheduling",
               "concepts/memory",
+              "concepts/decision-services",
               "concepts/sessions"
             ]
           },

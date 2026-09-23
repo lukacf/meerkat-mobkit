@@ -106,6 +106,9 @@ import {
   parseRuntimeRouteResult,
   parseGatingEvaluateResult,
   parseGatingDecisionResult,
+  parseDecisionResult,
+  type DecisionQuestion,
+  type DecisionResult,
   parseGatingAuditEntry,
   parseGatingPendingEntry,
   parseRediscoverReport,
@@ -2302,6 +2305,26 @@ export class MobHandle {
         approver_id: approverId,
         ...(options ?? {}),
       }),
+    );
+  }
+
+  // -- Decision service ------------------------------------------------------
+  //
+  // Batched semantic judgments (`mobkit/decision/evaluate`). Build questions
+  // with `binaryQuestion` / `chooseOneQuestion` / `gradeQuestion`. Judgments
+  // are evidence for your code to compose, never permission to act; a
+  // runtime without a composed decision service raises the capability
+  // unavailable error.
+
+  async decide(
+    state: string | Record<string, unknown> | unknown[],
+    questions: ReadonlyArray<DecisionQuestion>,
+    options?: { task?: string },
+  ): Promise<DecisionResult> {
+    const params: Record<string, unknown> = { state, questions };
+    if (options?.task !== undefined) params.task = options.task;
+    return parseDecisionResult(
+      await this._runtime._rpc("mobkit/decision/evaluate", params),
     );
   }
 

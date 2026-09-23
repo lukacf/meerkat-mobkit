@@ -329,6 +329,13 @@ pub enum TurnInjectionSkip {
     /// Records were recalled but nothing new fit: all already injected this
     /// session, or none fit the remaining budget.
     NothingRenderable,
+    /// Records were recalled and assessed, and the applicability policy
+    /// excluded every one on its judgments.
+    NoApplicableRecords,
+    /// Records were recalled but the assessment failed and the policy's
+    /// declared `inject_nothing` baseline applied. Distinct from
+    /// `NoApplicableRecords`: nothing was judged.
+    ApplicabilityDegradedInjectNothing,
     /// The member runs as an autonomous host, and meerkat refuses injected
     /// context on that mode ("autonomous inbox delivery carries no user-channel
     /// work boundary"). MobKit skips before delivery so the turn proceeds
@@ -345,15 +352,31 @@ impl TurnInjectionSkip {
             Self::BudgetExhausted => "budget_exhausted",
             Self::NoRecords => "no_records",
             Self::NothingRenderable => "nothing_renderable",
+            Self::NoApplicableRecords => "no_applicable_records",
+            Self::ApplicabilityDegradedInjectNothing => "applicability_degraded_inject_nothing",
             Self::RuntimeModeAutonomousHost => "runtime_mode_autonomous_host",
         }
     }
 }
 
+/// Last observed applicability health for one identity; the transition
+/// between the two is what gets announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicabilityHealth {
+    Healthy,
+    Degraded(&'static str),
+}
+
 /// Typed outcome of a per-turn injection attempt.
 #[derive(Debug)]
 pub enum TurnInjection {
-    Injected(Vec<meerkat_core::ContentInput>),
+    Injected {
+        bodies: Vec<meerkat_core::ContentInput>,
+        /// Present when an applicability policy assessed the candidates. A
+        /// degraded assessment (baseline applied) is a typed marker here, not
+        /// only a log line.
+        applicability: Option<crate::decision::ApplicabilityOutcome>,
+    },
     Skipped(TurnInjectionSkip),
 }
 
@@ -370,6 +393,13 @@ pub struct RecallCoordinator {
     /// skip per identity is loud and the rest are DEBUG. Bounded; cleared when
     /// it grows past `MAX_NOTED_SKIPS`, after which a reason may be re-announced.
     noted_skips: Arc<Mutex<HashSet<(String, &'static str)>>>,
+    /// Per-identity applicability health, so degradation and recovery are
+    /// announced on the transition (WARN / INFO and a typed timeline event)
+    /// rather than once per turn. Same bound and clearing as `noted_skips`.
+    applicability_health: Arc<Mutex<HashMap<String, ApplicabilityHealth>>>,
+    /// §9.3 timeline sink for the applicability transition events. Shared
+    /// across clones so a late-bound sink reaches the delivery path's copy.
+    event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
@@ -380,6 +410,9 @@ pub struct RecallCoordinator {
     // §7.2 identity→mob binding: consulted per composition. None (the
     // default) keeps mob scope out of read composition.
     mob_resolver: Option<Arc<dyn MobScopeResolver>>,
+    // Optional applicability policy applied between candidate recall and
+    // final packing. None (the default) keeps the lexical path unchanged.
+    applicability: Option<Arc<crate::decision::MemoryApplicabilityPolicy>>,
 }
 
 impl RecallCoordinator {
@@ -389,10 +422,35 @@ impl RecallCoordinator {
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
             noted_skips: Arc::new(Mutex::new(HashSet::new())),
+            applicability_health: Arc::new(Mutex::new(HashMap::new())),
+            event_sink: Arc::new(Mutex::new(None)),
             nonces: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
+            applicability: None,
         }
+    }
+
+    /// Install the decision-backed applicability policy. Assessed candidates
+    /// are judged after authorized recall and before dedup/packing; the
+    /// policy's declared baseline governs failed assessments. No policy —
+    /// the default — leaves recall untouched.
+    pub fn with_applicability_policy(
+        mut self,
+        policy: Option<Arc<crate::decision::MemoryApplicabilityPolicy>>,
+    ) -> Self {
+        self.applicability = policy;
+        self
+    }
+
+    /// Install the §9.3 timeline sink that carries the applicability
+    /// degradation / recovery transitions. Shared across clones; setting it
+    /// after construction reaches every copy already handed out.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     /// Install the §7.2 provisional operator resolver. Effective only when
@@ -512,7 +570,7 @@ impl RecallCoordinator {
             .inject_for_turn_classified(identity, session_key, content)
             .await?
         {
-            TurnInjection::Injected(bodies) => Ok(bodies),
+            TurnInjection::Injected { bodies, .. } => Ok(bodies),
             TurnInjection::Skipped(reason) => {
                 self.note_skip(identity, reason);
                 Ok(Vec::new())
@@ -557,6 +615,98 @@ impl RecallCoordinator {
                 reason = reason.as_str(),
                 "agent memory per-turn injection skipped"
             );
+        }
+    }
+
+    /// Track applicability health per identity and announce transitions: a
+    /// pass-through baseline injects exactly what the unassessed path would,
+    /// so without this the operator could not tell a working judge from one
+    /// that has been failing for a month. Entering degradation (or changing
+    /// failure code) is WARN plus a typed `memory.applicability.degraded`
+    /// timeline event; the first success afterwards is INFO plus
+    /// `memory.applicability.recovered`; steady state is DEBUG.
+    fn observe_applicability(
+        &self,
+        identity: &AgentIdentity,
+        session_key: Option<&str>,
+        outcome: &crate::decision::ApplicabilityOutcome,
+    ) {
+        // Only an assessment that ran (or failed) says anything about health;
+        // a turn that skipped the judge (empty text) carries no route and no
+        // degradation and leaves the health as it was.
+        let current = match outcome.degradation.as_ref() {
+            Some(degradation) => ApplicabilityHealth::Degraded(degradation.code.as_str()),
+            None if outcome.route.is_some() => ApplicabilityHealth::Healthy,
+            None => return,
+        };
+        let previous = {
+            let mut health = self
+                .applicability_health
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !health.contains_key(identity.as_str()) && health.len() >= MAX_NOTED_SKIPS {
+                health.clear();
+            }
+            health.insert(identity.as_str().to_string(), current)
+        };
+        let sink = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match (previous, current, outcome.degradation.as_ref()) {
+            (previous, ApplicabilityHealth::Degraded(code), Some(degradation))
+                if previous != Some(current) =>
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    code,
+                    baseline = ?degradation.baseline,
+                    error = %degradation.message,
+                    "memory applicability assessment degraded; declared baseline applied"
+                );
+                if let Some(sink) = sink {
+                    sink.emit(
+                        crate::memory::events::MemoryTimelineEvent::ApplicabilityDegraded {
+                            identity: identity.as_str().to_string(),
+                            session_key: session_key.map(str::to_string),
+                            code: code.to_string(),
+                            baseline: match degradation.baseline {
+                                crate::decision::ApplicabilityBaseline::PassThrough => {
+                                    "pass_through".to_string()
+                                }
+                                crate::decision::ApplicabilityBaseline::InjectNothing => {
+                                    "inject_nothing".to_string()
+                                }
+                            },
+                            message: degradation.message.clone(),
+                        },
+                    );
+                }
+            }
+            (_, ApplicabilityHealth::Degraded(code), Some(degradation)) => {
+                tracing::debug!(
+                    identity = %identity,
+                    code,
+                    baseline = ?degradation.baseline,
+                    "memory applicability assessment still degraded; declared baseline applied"
+                );
+            }
+            (Some(ApplicabilityHealth::Degraded(_)), ApplicabilityHealth::Healthy, _) => {
+                tracing::info!(
+                    identity = %identity,
+                    "memory applicability assessment recovered"
+                );
+                if let Some(sink) = sink {
+                    sink.emit(
+                        crate::memory::events::MemoryTimelineEvent::ApplicabilityRecovered {
+                            identity: identity.as_str().to_string(),
+                            session_key: session_key.map(str::to_string),
+                        },
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -614,7 +764,7 @@ impl RecallCoordinator {
                 AgentMemoryRecallRequest {
                     identity: identity.clone(),
                     realm: self.config.realm.clone(),
-                    query_text: (!query_text.is_empty()).then_some(query_text),
+                    query_text: (!query_text.is_empty()).then_some(query_text.clone()),
                     query_terms,
                     selection: self.config.selection.clone(),
                     max_entries: self.config.max_entries,
@@ -624,6 +774,41 @@ impl RecallCoordinator {
         );
         if records.is_empty() {
             return Ok(TurnInjection::Skipped(TurnInjectionSkip::NoRecords));
+        }
+        // Applicability sits between authorized candidate recall (above,
+        // before the final cap) and the coordinator's dedup/packing (below).
+        // Scope, status, and provenance were applied by recall and survive
+        // untouched; the policy only decides inclusion and reports how.
+        let (records, applicability) = match self.applicability.as_ref() {
+            Some(policy) => {
+                // Records already injected this session are settled for the
+                // packer below; judging them again would spend judge tokens
+                // on dispositions the packer discards.
+                let fresh: Vec<AnnotatedRecord> = match skip_ids.as_ref() {
+                    Some(skip) => records
+                        .into_iter()
+                        .filter(|candidate| !skip.contains(&candidate.record.memory_id))
+                        .collect(),
+                    None => records,
+                };
+                if fresh.is_empty() {
+                    return Ok(TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable));
+                }
+                let assessment = policy.assess(&query_text, fresh).await;
+                self.observe_applicability(identity, session_key, &assessment.outcome);
+                (assessment.included, Some(assessment.outcome))
+            }
+            None => (records, None),
+        };
+        if records.is_empty() {
+            let degraded = applicability
+                .as_ref()
+                .is_some_and(crate::decision::ApplicabilityOutcome::is_degraded);
+            return Ok(TurnInjection::Skipped(if degraded {
+                TurnInjectionSkip::ApplicabilityDegradedInjectNothing
+            } else {
+                TurnInjectionSkip::NoApplicableRecords
+            }));
         }
         let nonce = self.nonce_for(identity, session_key);
         let Some(rendered) = render_injection_annotated(
@@ -662,9 +847,10 @@ impl RecallCoordinator {
         // (meerkat stamps ContentInput in `injected_context` as the typed
         // InjectedContext role → excluded from compaction indexing). The
         // user's message text is never touched.
-        Ok(TurnInjection::Injected(vec![
-            meerkat_core::ContentInput::Text(rendered.text),
-        ]))
+        Ok(TurnInjection::Injected {
+            bodies: vec![meerkat_core::ContentInput::Text(rendered.text)],
+            applicability,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -2300,7 +2486,207 @@ mod tests {
         let first = coordinator
             .inject_for_turn_classified(&id, Some("s"), &content)
             .await?;
-        assert!(matches!(first, TurnInjection::Injected(ref bodies) if !bodies.is_empty()));
+        assert!(matches!(first, TurnInjection::Injected { ref bodies, .. } if !bodies.is_empty()));
+        let second = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(
+            second,
+            TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable)
+        ));
+        Ok(())
+    }
+
+    fn applicability_coordinator(
+        records: Vec<AgentMemoryRecord>,
+        service: Arc<meerkat_decision::DecisionService>,
+        baseline: crate::decision::ApplicabilityBaseline,
+    ) -> Result<RecallCoordinator, Box<dyn Error>> {
+        let policy = crate::decision::MemoryApplicabilityPolicy::new(
+            service,
+            crate::decision::MemoryApplicabilityConfig {
+                baseline,
+                ..crate::decision::MemoryApplicabilityConfig::default()
+            },
+        )?;
+        Ok(RecallCoordinator::new(
+            Arc::new(FakeProvider::bodies_only(records)),
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        )
+        .with_applicability_policy(Some(Arc::new(policy))))
+    }
+
+    #[tokio::test]
+    async fn applicability_excluding_every_record_is_a_distinct_skip() -> Result<(), Box<dyn Error>>
+    {
+        // The scripted backend answers every unscripted question "no".
+        let service = crate::decision::memory::tests::service_with(vec![Ok(vec![])]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Unrelated", "Likes jazz")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::NoApplicableRecords)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn degraded_assessment_with_inject_nothing_baseline_is_not_no_applicable_records()
+    -> Result<(), Box<dyn Error>> {
+        let service = crate::decision::memory::tests::service_with(vec![Err(
+            meerkat_decision::BackendFailure::Timeout,
+        )]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::InjectNothing,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::ApplicabilityDegradedInjectNothing)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn degraded_pass_through_injects_with_a_typed_marker() -> Result<(), Box<dyn Error>> {
+        let service = crate::decision::memory::tests::service_with(vec![Err(
+            meerkat_decision::BackendFailure::Timeout,
+        )]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("book a flight".into()),
+            )
+            .await?;
+        let TurnInjection::Injected {
+            bodies,
+            applicability,
+        } = out
+        else {
+            return Err("expected an injection".into());
+        };
+        assert!(!bodies.is_empty());
+        let outcome = applicability.ok_or("applicability outcome is carried")?;
+        assert!(outcome.is_degraded());
+        assert_eq!(
+            outcome.degradation.as_ref().map(|d| d.code),
+            Some(meerkat_decision::DecisionErrorCode::BackendFailure)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn applicability_degradation_and_recovery_are_announced_on_the_transition()
+    -> Result<(), Box<dyn Error>> {
+        // Turn 1 fails, turn 2 fails with the same code, turn 3 succeeds,
+        // turn 4 succeeds: exactly one degraded and one recovered event.
+        let yes = |id: &str| {
+            (
+                id.to_string(),
+                meerkat_decision::RawAnswer::BinaryCategorical(meerkat_decision::BinaryAnswer::Yes),
+            )
+        };
+        let service = crate::decision::memory::tests::service_with(vec![
+            Err(meerkat_decision::BackendFailure::Timeout),
+            Err(meerkat_decision::BackendFailure::Timeout),
+            Ok(vec![yes("relevant_0")]),
+            Ok(vec![yes("relevant_0")]),
+        ]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::PassThrough,
+        )?;
+        let sink = Arc::new(crate::memory::events::CollectingEventSink::new());
+        coordinator.set_event_sink(sink.clone());
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("book a flight".into());
+        for turn in 0..4 {
+            // A fresh session key per turn so dedup never hides the record.
+            let key = format!("s{turn}");
+            let out = coordinator
+                .inject_for_turn_classified(&id, Some(&key), &content)
+                .await?;
+            assert!(matches!(out, TurnInjection::Injected { .. }), "turn {turn}");
+        }
+        assert_eq!(
+            sink.types(),
+            vec![
+                "memory.applicability.degraded",
+                "memory.applicability.recovered"
+            ]
+        );
+        let events = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(matches!(
+            &events[0],
+            crate::memory::events::MemoryTimelineEvent::ApplicabilityDegraded {
+                identity: event_identity,
+                session_key: Some(key),
+                code,
+                baseline,
+                ..
+            } if event_identity == id.as_str() && key == "s0" && code == "backend_failure" && baseline == "pass_through"
+        ));
+        assert!(matches!(
+            &events[1],
+            crate::memory::events::MemoryTimelineEvent::ApplicabilityRecovered {
+                session_key: Some(key),
+                ..
+            } if key == "s2"
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn already_injected_records_are_not_judged_again() -> Result<(), Box<dyn Error>> {
+        // Exactly one scripted turn: a second judge call would panic on the
+        // empty script, so this test proves the second turn never asks.
+        let service = crate::decision::memory::tests::service_with(vec![Ok(vec![(
+            "relevant_0".to_string(),
+            meerkat_decision::RawAnswer::BinaryCategorical(meerkat_decision::BinaryAnswer::Yes),
+        )])]);
+        let coordinator = applicability_coordinator(
+            vec![record("m1", "Fact", "Prefers SAS")],
+            service,
+            crate::decision::ApplicabilityBaseline::InjectNothing,
+        )?;
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("book a flight".into());
+        let first = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(first, TurnInjection::Injected { ref bodies, .. } if !bodies.is_empty()));
         let second = coordinator
             .inject_for_turn_classified(&id, Some("s"), &content)
             .await?;
@@ -2319,6 +2705,8 @@ mod tests {
             TurnInjectionSkip::BudgetExhausted,
             TurnInjectionSkip::NoRecords,
             TurnInjectionSkip::NothingRenderable,
+            TurnInjectionSkip::NoApplicableRecords,
+            TurnInjectionSkip::ApplicabilityDegradedInjectNothing,
             TurnInjectionSkip::RuntimeModeAutonomousHost,
         ];
         let labels: HashSet<&str> = all.iter().map(|r| r.as_str()).collect();
