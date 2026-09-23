@@ -18,7 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (never from error text) on all three doors it can arrive through, the
   resume (`ResumeRejectionKind::AuditedEndpointDivergence`), the registration
   reload (`BridgeError::SessionRepairRequired`), and the heal authority
-  (`CommittedBoundaryRepair::RepairRequired`), and parks the identity Broken
+  (`CommittedBoundaryRepair::RepairRequired`), off every carrier meerkat
+  0.8.41 uses (`MobError::SessionError(..).durable_resume_hold()`, the shared
+  retirement / lifecycle wrappers, the `hold` a Broken member's
+  `MemberRestoreFailed` carries, and the structured `durable_resume_hold` wire
+  token), and parks the identity Broken
   with a `SessionRepairRequired` hold (`ContinuityFailureKind::RepairRequired`)
   carrying the session id and the exact diagnose and apply commands. The hold
   rides `mobkit/member_health.session_repair_required`, the identity status,

@@ -1309,6 +1309,12 @@ pub(crate) fn durable_resume_hold_of(
 ) -> Option<meerkat_core::service::DurableResumeHold> {
     match error {
         meerkat_mob::MobError::SessionError(session_error) => session_error.durable_resume_hold(),
+        // meerkat 0.8.41: a Broken member's recorded restore failure keeps the
+        // hold it was, so every later refusal for that member (a repeated
+        // reload, a send) classifies typed instead of as restore-failure prose.
+        meerkat_mob::MobError::MemberRestoreFailed {
+            hold: Some(hold), ..
+        } => Some(*hold),
         meerkat_mob::MobError::SharedRetirementFailure(inner)
         | meerkat_mob::MobError::SharedLifecycleFailure(inner) => durable_resume_hold_of(inner),
         other => other
@@ -8076,6 +8082,7 @@ mod tests {
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),
+            hold: None,
         };
         assert_eq!(
             classify_resume_error(&restore_failed),
@@ -8139,6 +8146,7 @@ mod tests {
                 member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
                 session_id: None,
                 reason: "durable snapshot missing".to_string(),
+                hold: None,
             },
         ));
         assert_eq!(
@@ -8303,6 +8311,7 @@ mod tests {
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
             session_id: None,
             reason: "durable snapshot missing".to_string(),
+            hold: None,
         };
         assert!(matches!(
             resume_rejected(&identity, &session_id, &restore_failed, "resume"),
@@ -9069,6 +9078,28 @@ mod tests {
         assert_eq!(
             SessionError::durable_resume_hold_from_data(&wire),
             Some(DurableResumeHold::AuditedEndpointDivergence)
+        );
+
+        // meerkat 0.8.41: a Broken member's recorded restore failure carries
+        // the hold typed; a restore failure that was not a hold keeps its
+        // own class.
+        assert_eq!(
+            classify_resume_error(&MobError::MemberRestoreFailed {
+                member_id: MobAgentIdentity::from("domain:security"),
+                session_id: Some(id.clone()),
+                reason: "recorded restore failure".to_string(),
+                hold: Some(DurableResumeHold::AuditedEndpointDivergence),
+            }),
+            ResumeRejectionKind::AuditedEndpointDivergence
+        );
+        assert_eq!(
+            classify_resume_error(&MobError::MemberRestoreFailed {
+                member_id: MobAgentIdentity::from("domain:security"),
+                session_id: Some(id.clone()),
+                reason: "recorded restore failure".to_string(),
+                hold: None,
+            }),
+            ResumeRejectionKind::MemberRestoreFailed
         );
 
         // Sibling holds are not the repair class.
