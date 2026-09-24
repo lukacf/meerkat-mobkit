@@ -62,6 +62,7 @@ def test_no_declaration_means_no_key_at_all():
 # a host arms nothing.
 FIXTURE = (
     Path(__file__).resolve().parents[3]
+    / "crates"
     / "meerkat-mobkit"
     / "tests"
     / "fixtures"

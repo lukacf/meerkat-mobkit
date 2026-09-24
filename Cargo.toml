@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "meerkat-mobkit",
-    "mobkit-store-conformance",
+    "crates/meerkat-mobkit",
+    "crates/mobkit-store-conformance",
 ]
 resolver = "2"
 

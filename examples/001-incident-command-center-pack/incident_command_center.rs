@@ -170,7 +170,8 @@ pub struct IncidentRuntimeBundle {
 
 pub fn scenario_path() -> Result<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .ancestors()
+        .nth(2)
         .context("workspace root")?
         .join("examples")
         .join("001-incident-command-center-pack")
@@ -267,8 +268,10 @@ async fn build_runtime_bundle_with_client(
             ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../meerkat-mobkit/assets/release-targets.json")
-            .to_string(),
+        release_metadata_json: include_str!(
+            "../../crates/meerkat-mobkit/assets/release-targets.json"
+        )
+        .to_string(),
     })
     .map_err(|err| anyhow!("failed to build incident console decisions: {err:?}"))?;
 

@@ -20,7 +20,8 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         (self.root / "sdk/python").mkdir(parents=True)
         (self.root / "sdk/typescript").mkdir(parents=True)
-        (self.root / "meerkat-mobkit").mkdir()
+        (self.root / "crates/meerkat-mobkit").mkdir(parents=True)
+        (self.root / "crates/mobkit-store-conformance").mkdir(parents=True)
         (self.root / "docs/sdks").mkdir(parents=True)
         (self.root / "src").mkdir()
 
@@ -59,17 +60,17 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
             )
             + "\n"
         )
-        (self.root / "meerkat-mobkit/BUILD.bazel").write_text(
+        (self.root / "crates/meerkat-mobkit/BUILD.bazel").write_text(
             'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
         )
         # A SECOND generated BUILD.bazel, because one is not a test of the
         # defect. bump-sdk-versions.sh used to sed meerkat-mobkit's file by
         # name and release-hook.sh used to stage it by name, so
-        # mobkit-store-conformance/BUILD.bazel drifted a release behind from
+        # crates/mobkit-store-conformance/BUILD.bazel drifted a release behind from
         # the moment that crate existed. With a single-crate fixture both the
         # broken and the fixed script pass.
-        (self.root / "mobkit-store-conformance").mkdir(parents=True, exist_ok=True)
-        (self.root / "mobkit-store-conformance/BUILD.bazel").write_text(
+        (self.root / "crates/mobkit-store-conformance").mkdir(parents=True, exist_ok=True)
+        (self.root / "crates/mobkit-store-conformance/BUILD.bazel").write_text(
             'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
         )
         (self.root / "MODULE.bazel").write_text(
@@ -125,7 +126,7 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         # is the one the old hardcoded paths missed, so asserting it is what
         # makes this a test of the defect rather than of the happy path.
         for crate in ("meerkat-mobkit", "mobkit-store-conformance"):
-            build_file = f"{crate}/BUILD.bazel"
+            build_file = f"crates/{crate}/BUILD.bazel"
             self.assertIn(
                 '"CARGO_PKG_VERSION": "0.8.1"',
                 (self.root / build_file).read_text(),
@@ -138,8 +139,8 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         dirty = self.run_command(
             "git", "diff", "--name-only"
         ).stdout.splitlines()
-        self.assertNotIn("mobkit-store-conformance/BUILD.bazel", dirty)
-        self.assertNotIn("meerkat-mobkit/BUILD.bazel", dirty)
+        self.assertNotIn("crates/mobkit-store-conformance/BUILD.bazel", dirty)
+        self.assertNotIn("crates/meerkat-mobkit/BUILD.bazel", dirty)
         self.assertIn(
             'meerkat-mobkit = "0.8.1"',
             (self.root / "docs/quickstart.mdx").read_text(),

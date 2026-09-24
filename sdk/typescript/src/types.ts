@@ -2164,7 +2164,7 @@ export function parseMobpackDeployResult(raw: unknown): MobpackDeployResult {
 
 // Every Rust `ErrorEvent` variant must appear here with its serde
 // `snake_case` wire tag. The Rust test
-// `meerkat-mobkit/tests/sdk_error_category_parity.rs` fails the build if this
+// `crates/meerkat-mobkit/tests/sdk_error_category_parity.rs` fails the build if this
 // set drifts from the Rust enum.
 export const ErrorCategory = {
   SPAWN_FAILURE: "spawn_failure",

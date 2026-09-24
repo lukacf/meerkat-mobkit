@@ -32,7 +32,7 @@ from meerkat_mobkit.types import CapabilitiesResult
 
 @pytest.fixture(scope="module")
 def contracts_fixture():
-    path = Path(__file__).parents[3] / "meerkat-mobkit/tests/fixtures/live_contracts_v1.json"
+    path = Path(__file__).parents[3] / "crates/meerkat-mobkit/tests/fixtures/live_contracts_v1.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 

@@ -15,7 +15,7 @@ nine more such methods in both decorators - see PR #390 / #391.
 This gate reads the trait from the pinned meerkat-mob source (via `cargo
 metadata`, so it is the exact version Cargo.lock resolves), reads the features
 Cargo enables on meerkat-mob (via `cargo tree`), and fails when any PRODUCTION
-`impl MobSessionService for X` block in meerkat-mobkit/src lacks a method that
+`impl MobSessionService for X` block in crates/meerkat-mobkit/src lacks a method that
 exists under those features. Test doubles inside `#[cfg(test)]` modules are
 skipped with the same trap-aware scan as verify-decorator-authority.py.
 
@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "meerkat-mobkit" / "src"
+SRC = ROOT / "crates" / "meerkat-mobkit" / "src"
 # Honour the repository wrapper when a caller sets it (CARGO=scripts/repo-cargo);
 # CI uses plain `cargo` with its own cache.
 CARGO = os.environ.get("CARGO", "cargo")

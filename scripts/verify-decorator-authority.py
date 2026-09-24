@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "meerkat-mobkit" / "src"
+SRC = ROOT / "crates" / "meerkat-mobkit" / "src"
 
 IMPL = re.compile(r"^(\s*)impl\s+(?:[\w:]+::)?AgentLlmClient\s+for\s+(\w+)")
 CFG_TEST = re.compile(r"^\s*#\[cfg\(test\)\]")

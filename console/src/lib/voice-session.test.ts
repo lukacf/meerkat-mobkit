@@ -1,6 +1,6 @@
 import { test, vi } from "vitest";
 import assert from "node:assert/strict";
-import voiceContract from "../../../meerkat-mobkit/tests/fixtures/console_voice_v1.json";
+import voiceContract from "../../../crates/meerkat-mobkit/tests/fixtures/console_voice_v1.json";
 import { parseVoiceContextStatus, voiceContextFailureMessage } from "./voice-context";
 import {
   createVoiceSession,

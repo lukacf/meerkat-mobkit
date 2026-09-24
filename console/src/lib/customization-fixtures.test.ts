@@ -64,7 +64,7 @@ test("reference-wrapper fixture keeps host status separate from MobKit console p
   assert.equal(jsResponse.headers["access-control-allow-origin"], undefined);
   assert.equal(
     (jsResponse.body as Record<string, unknown>).javascript,
-    fs.readFileSync(path.join(root, "meerkat-mobkit", "console-dist", "console-app.js"), "utf8"),
+    fs.readFileSync(path.join(root, "crates", "meerkat-mobkit", "console-dist", "console-app.js"), "utf8"),
     "reference wrapper must serve the embedded console JS without rewriting it",
   );
 
@@ -211,12 +211,12 @@ function createReferenceWrapperDispatch(wrapper: Record<string, unknown>) {
   const consoleRoutes = wrapper.consoleRoutes as Record<string, string>;
   const hostRoutes = wrapper.hostRoutes as Record<string, Record<string, unknown>>;
   const consoleIndex = fs.readFileSync(
-    path.join(root, "meerkat-mobkit", "console-dist", "index.html"),
+    path.join(root, "crates", "meerkat-mobkit", "console-dist", "index.html"),
     "utf8",
   );
 
   const consoleJs = fs.readFileSync(
-    path.join(root, "meerkat-mobkit", "console-dist", "console-app.js"),
+    path.join(root, "crates", "meerkat-mobkit", "console-dist", "console-app.js"),
     "utf8",
   );
 

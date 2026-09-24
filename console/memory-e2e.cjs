@@ -2,7 +2,7 @@
 
 // Memory console e2e (UI-P1.C): drives the real console bundle in
 // chromium against a REAL gateway whose sqlite memory store is seeded by
-// meerkat-mobkit/examples/memory_console_reference.rs — 74 records
+// crates/meerkat-mobkit/examples/memory_console_reference.rs — 74 records
 // (3-record supersede chain, quarantined record with a secret-shaped
 // reason, 60 old filler rows so the 50-row default page leaves a keyset
 // cursor), dream audit rows, injection ledger rows, two pending gated

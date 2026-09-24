@@ -208,7 +208,7 @@ cargo add meerkat-mobkit
 
 | Path | Description |
 |------|-------------|
-| `meerkat-mobkit/` | Rust crate, gateway binaries, runtime adapters, RPC, HTTP, console contracts |
+| `crates/meerkat-mobkit/` | Rust crate, gateway binaries, runtime adapters, RPC, HTTP, console contracts |
 | `sdk/python/` | Python SDK (`meerkat-mobkit` on PyPI) |
 | `sdk/typescript/` | TypeScript SDK (`@rkat/mobkit-sdk` on npm) |
 | `console/` | React console source and browser smoke harness |
@@ -246,3 +246,13 @@ Full documentation is available in the [MobKit section of docs.rkat.ai](https://
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE).
+
+## Repository layout
+
+- `crates/` - the Rust workspace: `meerkat-mobkit` (library, `mobkit_gateway` and `rpc_gateway` binaries) and `mobkit-store-conformance`
+- `console/`, `flow-editor/`, `packages/` - the web console, the flow editor and their shared TypeScript packages; built bundles are embedded from `crates/meerkat-mobkit/console-dist` and `flow-editor-dist`
+- `sdk/` - the Python and TypeScript SDKs
+- `examples/` - example mob packs
+- `docs/` - published documentation (`docs/internal/` holds design reviews and audits)
+- `tests/` - cross-cutting test harnesses such as `tests/memory-evals`
+- `scripts/`, `tools/` - repository tooling, release scripts and the Bazel platform definitions

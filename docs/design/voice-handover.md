@@ -59,7 +59,7 @@ New work in this checkpoint:
   `{identity, request_id, channel_id}` and echoes that scope plus
   `context_preparation`. Stages are capturing/generating/delivering; terminal
   states are not_requested/provider_acknowledged/failed with 13 typed reasons.
-  See the shared `meerkat-mobkit/tests/fixtures/console_voice_v1.json`.
+  See the shared `crates/meerkat-mobkit/tests/fixtures/console_voice_v1.json`.
 - Browser status observation is independent of media activation, bounded and
   request/channel-fenced. Failures are visible without muting connected audio.
   Replacement/close/dispose cancel observers; late replies cannot affect a new
@@ -74,7 +74,7 @@ New work in this checkpoint:
   "One shared live owner".
 
 Important files: `console/src/lib/voice-{session,context}.ts`,
-`console/src/panels/VoiceBar.tsx`, `meerkat-mobkit/src/console_voice{.rs,/}`,
+`console/src/panels/VoiceBar.tsx`, `crates/meerkat-mobkit/src/console_voice{.rs,/}`,
 `live_wiring.rs`, `http_console.rs`, `identity_first/{runtime,bridge}.rs`,
 `console_aggregator/mod.rs`, `mob_handle_runtime.rs`, `unified_runtime/http.rs`,
 `console_human_input_tests.rs`, and `tests/agent_events_identity_resolution.rs`.

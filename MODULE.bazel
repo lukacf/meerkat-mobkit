@@ -33,7 +33,7 @@ rust.toolchain(
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
 register_toolchains(
-    "//platforms:meerkat_windows_cc_toolchain_impl",
+    "//tools/bazel/platforms:meerkat_windows_cc_toolchain_impl",
     "@buildbuddy_toolchain//:ubuntu_cc_toolchain",
     "@buildbuddy_toolchain//:ubuntu_cc_toolchain_arm64",
 )

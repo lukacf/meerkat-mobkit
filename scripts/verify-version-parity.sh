@@ -82,7 +82,7 @@ fi
 # 2. Bazel rustc_env parity — drives env!("CARGO_PKG_VERSION") in the
 # bazel-built RELEASE binaries (and their --version). Drifted to 0.7.4 across
 # 0.7.5–0.7.7 because nothing checked it; now it does.
-BAZEL_FILE="$ROOT/meerkat-mobkit/BUILD.bazel"
+BAZEL_FILE="$ROOT/crates/meerkat-mobkit/BUILD.bazel"
 if [ -f "$BAZEL_FILE" ]; then
     BAD_BAZEL=$(grep -oE '"CARGO_PKG_VERSION": "[^"]*"' "$BAZEL_FILE" \
         | grep -v "\"$CARGO_VER\"" | sort -u || true)

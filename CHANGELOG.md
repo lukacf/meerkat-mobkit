@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Repository layout: the workspace crates live under `crates/`
+  (`crates/meerkat-mobkit`, `crates/mobkit-store-conformance`), the memory
+  calibration harness under `tests/memory-evals`, the documentation review
+  archives under `docs/internal/audit`, and the Bazel execution platforms under
+  `tools/bazel/platforms`. The dangling `vendor` symlink is gone. Crate names,
+  published packages, release asset names and the embedded console bundle path
+  inside the crate (`console-dist/`) are unchanged; scripts, CI, the console and
+  flow-editor build scripts, the Bazel labels and the docs point at the new
+  paths.
+
 ### Fixed
 
 - The console voice context status maps Meerkat 0.8.41's
