@@ -54,6 +54,7 @@ pub(crate) enum VoiceContextFailure {
     DeliveryRejected,
     DeliveryAmbiguous,
     Cancelled,
+    AuthorityRejected,
 }
 
 #[cfg(feature = "openai-live")]
@@ -88,6 +89,7 @@ impl From<&meerkat::surface::LiveContextPreparationStatus> for VoiceContextPrepa
                     Failure::DeliveryRejected => VoiceContextFailure::DeliveryRejected,
                     Failure::DeliveryAmbiguous => VoiceContextFailure::DeliveryAmbiguous,
                     Failure::Cancelled => VoiceContextFailure::Cancelled,
+                    Failure::AuthorityRejected => VoiceContextFailure::AuthorityRejected,
                 },
             },
         }
@@ -162,6 +164,7 @@ mod tests {
             Failure::DeliveryRejected,
             Failure::DeliveryAmbiguous,
             Failure::Cancelled,
+            Failure::AuthorityRejected,
         ];
         let mut projected_reasons = Vec::new();
         for reason in reasons {

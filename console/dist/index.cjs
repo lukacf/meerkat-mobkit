@@ -18484,7 +18484,8 @@ var failureMessages = {
   producer_panicked: "The context summary service failed.",
   delivery_rejected: "The voice provider rejected the initial context.",
   delivery_ambiguous: "The voice provider did not confirm the initial context.",
-  cancelled: "Initial context preparation was cancelled."
+  cancelled: "Initial context preparation was cancelled.",
+  authority_rejected: "The session authority refused the initial context; no fallback was attempted."
 };
 function record(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {

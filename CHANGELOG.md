@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The console voice context status maps Meerkat 0.8.41's
+  `LiveContextPreparationFailure::AuthorityRejected` (the generated authority
+  refused the initial context, no fallback attempted) instead of failing to
+  compile with the `openai-live` feature.
+
 ### Changed
 
 - Bind the Meerkat family to published 0.8.41 (WorkGraph-backed parallel live
