@@ -70,6 +70,7 @@
     "producer_panicked",
     "delivery_rejected",
     "delivery_ambiguous",
-    "cancelled"
+    "cancelled",
+    "authority_rejected"
   ]
 }

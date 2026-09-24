@@ -6259,7 +6259,8 @@ mod tests {
         async fn observe_provider_lifecycle(
             &self,
             _observation: &meerkat_live::LiveSidebandObservation,
-        ) -> Result<(), String> {
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveLifecycleObservationError>
+        {
             Ok(())
         }
 
@@ -6294,7 +6295,8 @@ mod tests {
         async fn observe_provider_lifecycle(
             &self,
             _observation: &meerkat_live::LiveSidebandObservation,
-        ) -> Result<(), String> {
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveLifecycleObservationError>
+        {
             Ok(())
         }
 
@@ -6537,7 +6539,8 @@ mod tests {
         async fn observe_provider_lifecycle(
             &self,
             _observation: &meerkat_live::LiveSidebandObservation,
-        ) -> Result<(), String> {
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveLifecycleObservationError>
+        {
             Ok(())
         }
 
