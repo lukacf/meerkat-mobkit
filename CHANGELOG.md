@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Bind the Meerkat family to published 0.8.42 (Claude Opus 5.5 as the default
+  Anthropic model, GPT-6 Sol and Luna in the model catalog, upstream crates/
+  repository layout).
 - Repository layout: the workspace crates live under `crates/`
   (`crates/meerkat-mobkit`, `crates/mobkit-store-conformance`), the memory
   calibration harness under `tests/memory-evals`, the documentation review
