@@ -726,7 +726,7 @@ function buildGateway() {
   }
   for (const name of ["console-app.js", "console-app.css", "index.html"]) {
     assert.ok(fs.readFileSync(path.join(__dirname, "dist", name))
-      .equals(fs.readFileSync(path.join(ROOT, "meerkat-mobkit", "console-dist", name))),
+      .equals(fs.readFileSync(path.join(ROOT, "crates", "meerkat-mobkit", "console-dist", name))),
     "Prepare the current embedded console first: cd console && npm run build");
   }
   log("build", { binary: "mobkit_gateway", features: "openai-live", incremental: false });
@@ -928,7 +928,7 @@ provider_default = true
     const servedBundle = await preflight("embedded console bundle", `${url}/console/assets/console-app.js`);
     assert.equal(servedBundle.status, 200);
     const currentBundle = servedBundle.bytes.equals(
-      fs.readFileSync(path.join(ROOT, "meerkat-mobkit", "console-dist", "console-app.js")));
+      fs.readFileSync(path.join(ROOT, "crates", "meerkat-mobkit", "console-dist", "console-app.js")));
     if (options.allowStaleBundle) log("embedded-console-bundle", { matchesCurrentBuild: currentBundle });
     else assert.ok(currentBundle, "Gateway embeds a stale console: prepare npm run build, then rebuild the openai-live binary");
     log("gateway-ready", { pid: gateway.pid, model: "gpt-5.5", voiceModel: "gpt-live-1" });

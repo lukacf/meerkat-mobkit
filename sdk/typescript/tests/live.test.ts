@@ -29,7 +29,7 @@ import { parseCapabilitiesResult } from "../src/types.js";
 
 const fixture = JSON.parse(
   readFileSync(
-    new URL("../../../meerkat-mobkit/tests/fixtures/live_contracts_v1.json", import.meta.url),
+    new URL("../../../crates/meerkat-mobkit/tests/fixtures/live_contracts_v1.json", import.meta.url),
     "utf8",
   ),
 ) as Record<string, unknown>;
