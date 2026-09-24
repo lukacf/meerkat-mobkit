@@ -30,7 +30,7 @@ filegroup(
 
 rust_library(
     name = "mobkit_store_conformance",
-    aliases = aliases(package_name = "mobkit-store-conformance"),
+    aliases = aliases(package_name = "crates/mobkit-store-conformance"),
     crate_name = "mobkit_store_conformance",
     crate_root = "src/lib.rs",
     crate_features = [],
@@ -42,16 +42,16 @@ rust_library(
     visibility = ["//visibility:public"],
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
-        "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
+        "CARGO_MANIFEST_DIR": "./crates/mobkit-store-conformance",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
     ),
 )
@@ -59,7 +59,7 @@ rust_library(
 rust_test(
     name = "mobkit_store_conformance_unit_test",
     aliases = aliases(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -76,7 +76,7 @@ rust_test(
     visibility = ["//visibility:public"],
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
-        "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
+        "CARGO_MANIFEST_DIR": "./crates/mobkit-store-conformance",
     },
     tags = [
         "fast",
@@ -90,14 +90,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
     ),
@@ -106,7 +106,7 @@ rust_test(
 rust_test(
     name = "conformance_test",
     aliases = aliases(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -126,7 +126,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "conformance",
-        "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
+        "CARGO_MANIFEST_DIR": "./crates/mobkit-store-conformance",
     },
     tags = [
         "fast",
@@ -137,15 +137,15 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
-        "//mobkit-store-conformance:mobkit_store_conformance",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
+        "//crates/mobkit-store-conformance:mobkit_store_conformance",
     ] + all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
     ),
@@ -154,7 +154,7 @@ rust_test(
 rust_test(
     name = "one_remote_bundle_test",
     aliases = aliases(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -174,7 +174,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "one_remote_bundle",
-        "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
+        "CARGO_MANIFEST_DIR": "./crates/mobkit-store-conformance",
     },
     tags = [
         "fast",
@@ -185,15 +185,15 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
-        "//mobkit-store-conformance:mobkit_store_conformance",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
+        "//crates/mobkit-store-conformance:mobkit_store_conformance",
     ] + all_crate_deps(
-        package_name = "mobkit-store-conformance",
+        package_name = "crates/mobkit-store-conformance",
         normal = True,
         normal_dev = True,
     ),

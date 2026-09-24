@@ -30,7 +30,7 @@ filegroup(
 
 rust_library(
     name = "meerkat_mobkit",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "meerkat_mobkit",
     crate_root = "src/lib.rs",
     crate_features = [],
@@ -60,14 +60,14 @@ rust_library(
     visibility = ["//visibility:public"],
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
@@ -75,7 +75,7 @@ rust_library(
 rust_test(
     name = "meerkat_mobkit_unit_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -110,7 +110,7 @@ rust_test(
     visibility = ["//visibility:public"],
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -124,12 +124,12 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -137,7 +137,7 @@ rust_test(
 
 rust_binary(
     name = "baseline_check_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "baseline_check",
     crate_root = "src/bin/baseline_check.rs",
     crate_features = [],
@@ -168,23 +168,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "baseline_check",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "distiller_eval_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "distiller_eval",
     crate_root = "src/bin/distiller_eval.rs",
     crate_features = [],
@@ -215,23 +215,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "distiller-eval",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "governance_check_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "governance_check",
     crate_root = "src/bin/governance_check.rs",
     crate_features = [],
@@ -262,23 +262,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "governance_check",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "hygienist_eval_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "hygienist_eval",
     crate_root = "src/bin/hygienist_eval.rs",
     crate_features = [],
@@ -309,23 +309,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "hygienist-eval",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "mcp_fixture_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "mcp_fixture",
     crate_root = "src/bin/mcp_fixture.rs",
     crate_features = [],
@@ -356,23 +356,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mcp_fixture",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "mobkit_flow_editor_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "mobkit_flow_editor",
     crate_root = "src/bin/mobkit_flow_editor.rs",
     crate_features = [],
@@ -403,23 +403,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mobkit_flow_editor",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "mobkit_gateway_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "mobkit_gateway",
     crate_root = "src/bin/mobkit_gateway.rs",
     crate_features = [],
@@ -450,23 +450,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mobkit_gateway",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "mobkit_repair_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "mobkit_repair",
     crate_root = "src/bin/mobkit_repair.rs",
     crate_features = [],
@@ -497,23 +497,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mobkit_repair",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "rpc_gateway_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "rpc_gateway",
     crate_root = "src/bin/rpc_gateway.rs",
     crate_features = [],
@@ -544,23 +544,23 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "rpc_gateway",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
 
 rust_binary(
     name = "steward_eval_bin",
-    aliases = aliases(package_name = "meerkat-mobkit"),
+    aliases = aliases(package_name = "crates/meerkat-mobkit"),
     crate_name = "steward_eval",
     crate_root = "src/bin/steward_eval.rs",
     crate_features = [],
@@ -591,16 +591,16 @@ rust_binary(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "steward-eval",
-        "CARGO_MANIFEST_DIR": "meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "crates/meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
     ),
 )
@@ -608,7 +608,7 @@ rust_binary(
 rust_test(
     name = "access_control_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -659,7 +659,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "access_control",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -670,14 +670,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -686,7 +686,7 @@ rust_test(
 rust_test(
     name = "agent_events_identity_resolution_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -738,7 +738,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "agent_events_identity_resolution",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -749,14 +749,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -765,7 +765,7 @@ rust_test(
 rust_test(
     name = "agent_lifecycle_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -816,7 +816,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "agent_lifecycle",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -831,14 +831,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -847,7 +847,7 @@ rust_test(
 rust_test(
     name = "bigquery_adapter_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -899,7 +899,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "bigquery_adapter",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -910,14 +910,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -926,7 +926,7 @@ rust_test(
 rust_test(
     name = "bigquery_gc_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -978,7 +978,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "bigquery_gc",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -989,14 +989,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1005,7 +1005,7 @@ rust_test(
 rust_test(
     name = "bridge_completion_seam_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1057,7 +1057,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "bridge_completion_seam",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1068,14 +1068,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1084,7 +1084,7 @@ rust_test(
 rust_test(
     name = "builder_api_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1135,7 +1135,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "builder_api",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1146,14 +1146,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1162,7 +1162,7 @@ rust_test(
 rust_test(
     name = "capability_invariant_choke_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1213,7 +1213,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "capability_invariant_choke",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1224,14 +1224,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1240,7 +1240,7 @@ rust_test(
 rust_test(
     name = "classic_agent_memory_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1291,7 +1291,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "classic_agent_memory",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1302,14 +1302,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1318,7 +1318,7 @@ rust_test(
 rust_test(
     name = "console_customization_fixtures_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1369,7 +1369,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "console_customization_fixtures",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fixture",
@@ -1379,14 +1379,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1395,7 +1395,7 @@ rust_test(
 rust_test(
     name = "console_experience_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1446,7 +1446,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "console_experience",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1457,14 +1457,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1473,7 +1473,7 @@ rust_test(
 rust_test(
     name = "console_route_auth_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1524,7 +1524,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "console_route_auth",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1537,14 +1537,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1553,7 +1553,7 @@ rust_test(
 rust_test(
     name = "core_types_and_rpc_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1604,7 +1604,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "core_types_and_rpc",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1615,14 +1615,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1631,7 +1631,7 @@ rust_test(
 rust_test(
     name = "cross_mob_control_grants_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1682,7 +1682,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_control_grants",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1693,14 +1693,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1709,7 +1709,7 @@ rust_test(
 rust_test(
     name = "cross_mob_control_round_trip_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1760,7 +1760,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_control_round_trip",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1771,14 +1771,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1787,7 +1787,7 @@ rust_test(
 rust_test(
     name = "cross_mob_signed_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1838,7 +1838,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_signed",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1849,14 +1849,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1865,7 +1865,7 @@ rust_test(
 rust_test(
     name = "cross_mob_tcp_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1916,7 +1916,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_tcp",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -1927,14 +1927,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -1943,7 +1943,7 @@ rust_test(
 rust_test(
     name = "cross_mob_two_process_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -1994,7 +1994,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_two_process",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2005,14 +2005,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2021,7 +2021,7 @@ rust_test(
 rust_test(
     name = "cross_mob_uds_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2072,7 +2072,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "cross_mob_uds",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2083,14 +2083,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2099,7 +2099,7 @@ rust_test(
 rust_test(
     name = "discovery_bootstrap_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2150,7 +2150,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "discovery_bootstrap",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2161,14 +2161,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2177,7 +2177,7 @@ rust_test(
 rust_test(
     name = "distiller_eval_harness_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2228,7 +2228,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "distiller_eval_harness",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2242,14 +2242,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2258,7 +2258,7 @@ rust_test(
 rust_test(
     name = "e2e_sdk_wire_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2309,7 +2309,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "e2e_sdk_wire",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "e2e",
@@ -2319,14 +2319,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2335,7 +2335,7 @@ rust_test(
 rust_test(
     name = "e2e_target_contracts_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2387,7 +2387,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "e2e_target_contracts",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "e2e",
@@ -2401,14 +2401,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2417,7 +2417,7 @@ rust_test(
 rust_test(
     name = "edge_wiring_reconcile_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2468,7 +2468,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "edge_wiring_reconcile",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2479,14 +2479,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2495,7 +2495,7 @@ rust_test(
 rust_test(
     name = "event_log_recovery_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2546,7 +2546,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "event_log_recovery",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2559,14 +2559,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2575,7 +2575,7 @@ rust_test(
 rust_test(
     name = "external_boundary_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2626,7 +2626,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "external_boundary",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2637,14 +2637,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2653,7 +2653,7 @@ rust_test(
 rust_test(
     name = "fork_persistent_integration_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2704,7 +2704,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "fork_persistent_integration",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "integration",
@@ -2714,14 +2714,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2730,7 +2730,7 @@ rust_test(
 rust_test(
     name = "gateway_composition_root_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2781,7 +2781,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_composition_root",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2792,14 +2792,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2808,7 +2808,7 @@ rust_test(
 rust_test(
     name = "gateway_concurrent_dispatch_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2859,7 +2859,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_concurrent_dispatch",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2870,14 +2870,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2886,7 +2886,7 @@ rust_test(
 rust_test(
     name = "gateway_exit_reason_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -2937,7 +2937,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_exit_reason",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -2952,14 +2952,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -2968,7 +2968,7 @@ rust_test(
 rust_test(
     name = "gateway_external_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3019,7 +3019,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_external",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3030,14 +3030,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3046,7 +3046,7 @@ rust_test(
 rust_test(
     name = "gateway_live_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3097,7 +3097,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_live",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "live",
@@ -3107,14 +3107,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3123,7 +3123,7 @@ rust_test(
 rust_test(
     name = "gateway_memory_config_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3174,7 +3174,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_memory_config",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3187,14 +3187,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3203,7 +3203,7 @@ rust_test(
 rust_test(
     name = "gateway_schedule_lease_release_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3254,7 +3254,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gateway_schedule_lease_release",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3269,14 +3269,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3285,7 +3285,7 @@ rust_test(
 rust_test(
     name = "gating_policy_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3336,7 +3336,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "gating_policy",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3351,14 +3351,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3367,7 +3367,7 @@ rust_test(
 rust_test(
     name = "governance_contracts_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3418,7 +3418,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "governance_contracts",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3431,14 +3431,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3447,7 +3447,7 @@ rust_test(
 rust_test(
     name = "hooks_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3498,7 +3498,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "hooks",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3509,14 +3509,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3525,7 +3525,7 @@ rust_test(
 rust_test(
     name = "http_router_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3576,7 +3576,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "http_router",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3587,14 +3587,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3603,7 +3603,7 @@ rust_test(
 rust_test(
     name = "hygienist_eval_harness_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3654,7 +3654,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "hygienist_eval_harness",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3668,14 +3668,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3684,7 +3684,7 @@ rust_test(
 rust_test(
     name = "identity_first_boundary_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3735,7 +3735,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_boundary",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3746,14 +3746,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3762,7 +3762,7 @@ rust_test(
 rust_test(
     name = "identity_first_builder_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3813,7 +3813,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_builder",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3824,14 +3824,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3840,7 +3840,7 @@ rust_test(
 rust_test(
     name = "identity_first_choke_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3891,7 +3891,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_choke",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3902,14 +3902,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3918,7 +3918,7 @@ rust_test(
 rust_test(
     name = "identity_first_cold_restart_continuity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -3970,7 +3970,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_cold_restart_continuity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -3981,14 +3981,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -3997,7 +3997,7 @@ rust_test(
 rust_test(
     name = "identity_first_completion_bearing_send_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4048,7 +4048,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_completion_bearing_send",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4059,14 +4059,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4075,7 +4075,7 @@ rust_test(
 rust_test(
     name = "identity_first_completion_cursor_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4126,7 +4126,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_completion_cursor",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4137,14 +4137,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4153,7 +4153,7 @@ rust_test(
 rust_test(
     name = "identity_first_contracts_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4204,7 +4204,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_contracts",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4215,14 +4215,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4231,7 +4231,7 @@ rust_test(
 rust_test(
     name = "identity_first_e2e_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4282,7 +4282,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_e2e",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "e2e",
@@ -4292,14 +4292,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4308,7 +4308,7 @@ rust_test(
 rust_test(
     name = "identity_first_head_canonical_resume_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4360,7 +4360,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_head_canonical_resume",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4373,14 +4373,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4389,7 +4389,7 @@ rust_test(
 rust_test(
     name = "identity_first_kitchen_sink_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4440,7 +4440,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_kitchen_sink",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4454,14 +4454,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4470,7 +4470,7 @@ rust_test(
 rust_test(
     name = "identity_first_lazy_recall_continuity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4522,7 +4522,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_lazy_recall_continuity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4535,14 +4535,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4551,7 +4551,7 @@ rust_test(
 rust_test(
     name = "identity_first_ob3_smoke_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4602,7 +4602,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_ob3_smoke",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4616,14 +4616,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4632,7 +4632,7 @@ rust_test(
 rust_test(
     name = "identity_first_respawn_continuity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4684,7 +4684,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_respawn_continuity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4695,14 +4695,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4711,7 +4711,7 @@ rust_test(
 rust_test(
     name = "identity_first_resume_pair_coherence_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4763,7 +4763,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_resume_pair_coherence",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4774,14 +4774,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4790,7 +4790,7 @@ rust_test(
 rust_test(
     name = "identity_first_runtime_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4841,7 +4841,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_runtime",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4855,14 +4855,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4871,7 +4871,7 @@ rust_test(
 rust_test(
     name = "identity_first_session_repair_hold_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -4922,7 +4922,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_session_repair_hold",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -4933,14 +4933,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -4949,7 +4949,7 @@ rust_test(
 rust_test(
     name = "identity_first_subprocess_reboot_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5000,7 +5000,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_subprocess_reboot",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5013,14 +5013,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5029,7 +5029,7 @@ rust_test(
 rust_test(
     name = "identity_first_types_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5080,7 +5080,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "identity_first_types",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5091,14 +5091,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5107,7 +5107,7 @@ rust_test(
 rust_test(
     name = "idle_cpu_gate_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5158,7 +5158,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "idle_cpu_gate",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5169,14 +5169,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5185,7 +5185,7 @@ rust_test(
 rust_test(
     name = "incident_command_center_pack_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5237,7 +5237,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "incident_command_center_pack",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5248,14 +5248,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5264,7 +5264,7 @@ rust_test(
 rust_test(
     name = "judgment_plane_deweld_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5315,7 +5315,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "judgment_plane_deweld",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5326,14 +5326,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5342,7 +5342,7 @@ rust_test(
 rust_test(
     name = "jwks_cache_and_auth_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5393,7 +5393,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "jwks_cache_and_auth",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5404,14 +5404,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5420,7 +5420,7 @@ rust_test(
 rust_test(
     name = "jwt_oidc_auth_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5471,7 +5471,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "jwt_oidc_auth",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5482,14 +5482,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5498,7 +5498,7 @@ rust_test(
 rust_test(
     name = "jwt_rsa_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5549,7 +5549,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "jwt_rsa",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5560,14 +5560,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5576,7 +5576,7 @@ rust_test(
 rust_test(
     name = "legacy_session_resume_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5627,7 +5627,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "legacy_session_resume",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5638,14 +5638,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5654,7 +5654,7 @@ rust_test(
 rust_test(
     name = "list_flows_run_flow_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5706,7 +5706,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "list_flows_run_flow",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5717,14 +5717,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5733,7 +5733,7 @@ rust_test(
 rust_test(
     name = "list_runs_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5784,7 +5784,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "list_runs",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5795,14 +5795,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5811,7 +5811,7 @@ rust_test(
 rust_test(
     name = "live_contracts_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5862,7 +5862,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "live_contracts",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "live",
@@ -5872,14 +5872,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5888,7 +5888,7 @@ rust_test(
 rust_test(
     name = "llm_fallback_decorators_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -5939,7 +5939,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "llm_fallback_decorators",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -5950,14 +5950,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -5966,7 +5966,7 @@ rust_test(
 rust_test(
     name = "markdown_store_surface_retired_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6017,7 +6017,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "markdown_store_surface_retired",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6028,14 +6028,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6044,7 +6044,7 @@ rust_test(
 rust_test(
     name = "mcp_boundary_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6095,7 +6095,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mcp_boundary",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6110,14 +6110,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6126,7 +6126,7 @@ rust_test(
 rust_test(
     name = "memory_comms_taint_contract_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6177,7 +6177,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "memory_comms_taint_contract",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6188,14 +6188,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6204,7 +6204,7 @@ rust_test(
 rust_test(
     name = "memory_dispatch_taint_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6256,7 +6256,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "memory_dispatch_taint",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6267,14 +6267,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6283,7 +6283,7 @@ rust_test(
 rust_test(
     name = "memory_store_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6334,7 +6334,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "memory_store",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6345,14 +6345,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6361,7 +6361,7 @@ rust_test(
 rust_test(
     name = "mob_events_cursor_persistence_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6412,7 +6412,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_events_cursor_persistence",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6423,14 +6423,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6439,7 +6439,7 @@ rust_test(
 rust_test(
     name = "mob_events_ingestion_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6490,7 +6490,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_events_ingestion",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6501,14 +6501,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6517,7 +6517,7 @@ rust_test(
 rust_test(
     name = "mob_events_query_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6568,7 +6568,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_events_query",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6579,14 +6579,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6595,7 +6595,7 @@ rust_test(
 rust_test(
     name = "mob_events_query_ledger_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6646,7 +6646,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_events_query_ledger",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6657,14 +6657,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6673,7 +6673,7 @@ rust_test(
 rust_test(
     name = "mob_events_streaming_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6724,7 +6724,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_events_streaming",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6735,14 +6735,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6751,7 +6751,7 @@ rust_test(
 rust_test(
     name = "mob_run_labels_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6802,7 +6802,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_run_labels",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6813,14 +6813,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6829,7 +6829,7 @@ rust_test(
 rust_test(
     name = "mob_storage_persistence_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6880,7 +6880,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mob_storage_persistence",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6893,14 +6893,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6909,7 +6909,7 @@ rust_test(
 rust_test(
     name = "mobkit_gateway_bootstrap_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -6960,7 +6960,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "mobkit_gateway_bootstrap",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -6975,14 +6975,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -6991,7 +6991,7 @@ rust_test(
 rust_test(
     name = "model_fallback_wiring_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7042,7 +7042,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "model_fallback_wiring",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7053,14 +7053,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7069,7 +7069,7 @@ rust_test(
 rust_test(
     name = "module_restart_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7120,7 +7120,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "module_restart",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7131,14 +7131,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7147,7 +7147,7 @@ rust_test(
 rust_test(
     name = "never_executed_persistence_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7198,7 +7198,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "never_executed_persistence",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7209,14 +7209,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7225,7 +7225,7 @@ rust_test(
 rust_test(
     name = "public_roster_resolver_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7276,7 +7276,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "public_roster_resolver",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7287,14 +7287,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7303,7 +7303,7 @@ rust_test(
 rust_test(
     name = "reference_app_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7354,7 +7354,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "reference_app",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7368,14 +7368,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7384,7 +7384,7 @@ rust_test(
 rust_test(
     name = "released_realm_upgrade_drive_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7435,7 +7435,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "released_realm_upgrade_drive",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7448,14 +7448,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7464,7 +7464,7 @@ rust_test(
 rust_test(
     name = "repair_queue_carry_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7516,7 +7516,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "repair_queue_carry",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7527,14 +7527,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7543,7 +7543,7 @@ rust_test(
 rust_test(
     name = "repair_tool_result_bounds_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7594,7 +7594,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "repair_tool_result_bounds",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7605,14 +7605,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7621,7 +7621,7 @@ rust_test(
 rust_test(
     name = "resume_collision_inflight_spawn_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7673,7 +7673,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "resume_collision_inflight_spawn",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7684,14 +7684,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7700,7 +7700,7 @@ rust_test(
 rust_test(
     name = "routing_delivery_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7751,7 +7751,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "routing_delivery",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "live",
@@ -7765,14 +7765,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7781,7 +7781,7 @@ rust_test(
 rust_test(
     name = "rpc_builtins_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7832,7 +7832,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "rpc_builtins",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7843,14 +7843,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7859,7 +7859,7 @@ rust_test(
 rust_test(
     name = "rpc_envelope_golden_labels_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7910,7 +7910,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "rpc_envelope_golden_labels",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7921,14 +7921,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -7937,7 +7937,7 @@ rust_test(
 rust_test(
     name = "runtime_bootstrap_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -7988,7 +7988,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "runtime_bootstrap",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -7999,14 +7999,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8015,7 +8015,7 @@ rust_test(
 rust_test(
     name = "schedule_store_text_carry_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8066,7 +8066,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "schedule_store_text_carry",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8077,14 +8077,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8093,7 +8093,7 @@ rust_test(
 rust_test(
     name = "sdk_enum_mirror_parity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8144,7 +8144,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "sdk_enum_mirror_parity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8157,14 +8157,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8173,7 +8173,7 @@ rust_test(
 rust_test(
     name = "sdk_error_category_parity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8224,7 +8224,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "sdk_error_category_parity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8237,14 +8237,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8253,7 +8253,7 @@ rust_test(
 rust_test(
     name = "sdk_parity_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8304,7 +8304,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "sdk_parity",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8318,14 +8318,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8334,7 +8334,7 @@ rust_test(
 rust_test(
     name = "sdk_productization_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8385,7 +8385,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "sdk_productization",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8399,14 +8399,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8415,7 +8415,7 @@ rust_test(
 rust_test(
     name = "session_compaction_wiring_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8467,7 +8467,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "session_compaction_wiring",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8478,14 +8478,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8494,7 +8494,7 @@ rust_test(
 rust_test(
     name = "session_store_jsonl_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8546,7 +8546,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "session_store_jsonl",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8557,14 +8557,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8573,7 +8573,7 @@ rust_test(
 rust_test(
     name = "shutdown_drain_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8624,7 +8624,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "shutdown_drain",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8635,14 +8635,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8651,7 +8651,7 @@ rust_test(
 rust_test(
     name = "sse_auth_gate_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8702,7 +8702,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "sse_auth_gate",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8713,14 +8713,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8729,7 +8729,7 @@ rust_test(
 rust_test(
     name = "steward_eval_harness_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8780,7 +8780,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "steward_eval_harness",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8794,14 +8794,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8810,7 +8810,7 @@ rust_test(
 rust_test(
     name = "storage_doctor_gateway_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8861,7 +8861,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_doctor_gateway",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8872,14 +8872,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8888,7 +8888,7 @@ rust_test(
 rust_test(
     name = "storage_gate_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -8939,7 +8939,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_gate",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -8952,14 +8952,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -8968,7 +8968,7 @@ rust_test(
 rust_test(
     name = "storage_health_gateway_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9019,7 +9019,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_health_gateway",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9030,14 +9030,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9046,7 +9046,7 @@ rust_test(
 rust_test(
     name = "storage_layout_boot_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9097,7 +9097,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_layout_boot",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9112,14 +9112,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9128,7 +9128,7 @@ rust_test(
 rust_test(
     name = "storage_migrate_cli_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9179,7 +9179,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_migrate_cli",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9192,14 +9192,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9208,7 +9208,7 @@ rust_test(
 rust_test(
     name = "storage_wire_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9259,7 +9259,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "storage_wire",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9270,14 +9270,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9286,7 +9286,7 @@ rust_test(
 rust_test(
     name = "studio_k_asks_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9337,7 +9337,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "studio_k_asks",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9348,14 +9348,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9364,7 +9364,7 @@ rust_test(
 rust_test(
     name = "swarm_integration_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9415,7 +9415,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "swarm_integration",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "integration",
@@ -9425,14 +9425,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9441,7 +9441,7 @@ rust_test(
 rust_test(
     name = "tool_event_stream_contracts_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9492,7 +9492,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "tool_event_stream_contracts",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9503,14 +9503,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9519,7 +9519,7 @@ rust_test(
 rust_test(
     name = "topology_control_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9571,7 +9571,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "topology_control",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9584,14 +9584,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9600,7 +9600,7 @@ rust_test(
 rust_test(
     name = "turn_boundary_fork_forwarding_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9651,7 +9651,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "turn_boundary_fork_forwarding",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9662,14 +9662,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9678,7 +9678,7 @@ rust_test(
 rust_test(
     name = "unified_console_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9730,7 +9730,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "unified_console",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9741,14 +9741,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9757,7 +9757,7 @@ rust_test(
 rust_test(
     name = "wildcard_routes_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9808,7 +9808,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "wildcard_routes",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9823,14 +9823,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9839,7 +9839,7 @@ rust_test(
 rust_test(
     name = "workgraph_e2e_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9891,7 +9891,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "workgraph_e2e",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "e2e",
@@ -9901,14 +9901,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9917,7 +9917,7 @@ rust_test(
 rust_test(
     name = "workgraph_facts_sse_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -9968,7 +9968,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "workgraph_facts_sse",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -9979,14 +9979,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
@@ -9995,7 +9995,7 @@ rust_test(
 rust_test(
     name = "workgraph_rpc_test",
     aliases = aliases(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
         proc_macro = True,
@@ -10046,7 +10046,7 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.8.41",
         "CARGO_BIN_NAME": "workgraph_rpc",
-        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+        "CARGO_MANIFEST_DIR": "./crates/meerkat-mobkit",
     },
     tags = [
         "fast",
@@ -10059,14 +10059,14 @@ rust_test(
         "RUST_MIN_STACK": "16777216",
     },
     proc_macro_deps = all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = [
-        "//meerkat-mobkit:meerkat_mobkit",
+        "//crates/meerkat-mobkit:meerkat_mobkit",
     ] + all_crate_deps(
-        package_name = "meerkat-mobkit",
+        package_name = "crates/meerkat-mobkit",
         normal = True,
         normal_dev = True,
     ),
