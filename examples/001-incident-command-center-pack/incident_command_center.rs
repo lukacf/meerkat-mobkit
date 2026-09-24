@@ -170,7 +170,8 @@ pub struct IncidentRuntimeBundle {
 
 pub fn scenario_path() -> Result<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .ancestors()
+        .nth(2)
         .context("workspace root")?
         .join("examples")
         .join("001-incident-command-center-pack")

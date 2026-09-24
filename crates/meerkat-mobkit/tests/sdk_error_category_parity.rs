@@ -33,8 +33,9 @@ const TYPESCRIPT_SDK_PATH: &str = "sdk/typescript/src/types.ts";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("meerkat-mobkit should sit under the repo root")
+        .ancestors()
+        .nth(2)
+        .expect("meerkat-mobkit should sit under crates/ at the repo root")
         .to_path_buf()
 }
 
