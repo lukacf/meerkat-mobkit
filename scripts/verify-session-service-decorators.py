@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "meerkat-mobkit" / "src"
+SRC = ROOT / "crates" / "meerkat-mobkit" / "src"
 # Honour the repository wrapper when a caller sets it (CARGO=scripts/repo-cargo);
 # CI uses plain `cargo` with its own cache.
 CARGO = os.environ.get("CARGO", "cargo")

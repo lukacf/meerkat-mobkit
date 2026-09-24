@@ -4,7 +4,7 @@ use meerkat_mobkit::console_config::load_console_ui_config_from_toml;
 fn configured_host_shell_fixture_preserves_stock_console_config_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     let config = load_console_ui_config_from_toml(include_str!(
-        "../../console/fixtures/configured-host-shell/config/console.toml"
+        "../../../console/fixtures/configured-host-shell/config/console.toml"
     ))?;
 
     assert_eq!(config.title.as_deref(), Some("Configured Host Console"));

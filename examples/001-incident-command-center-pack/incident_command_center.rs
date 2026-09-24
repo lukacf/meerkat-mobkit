@@ -267,8 +267,10 @@ async fn build_runtime_bundle_with_client(
             ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../meerkat-mobkit/assets/release-targets.json")
-            .to_string(),
+        release_metadata_json: include_str!(
+            "../../crates/meerkat-mobkit/assets/release-targets.json"
+        )
+        .to_string(),
     })
     .map_err(|err| anyhow!("failed to build incident console decisions: {err:?}"))?;
 

@@ -105,8 +105,10 @@ fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
             ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../meerkat-mobkit/assets/release-targets.json")
-            .to_string(),
+        release_metadata_json: include_str!(
+            "../../crates/meerkat-mobkit/assets/release-targets.json"
+        )
+        .to_string(),
     })
     .expect("decision state builds")
 }

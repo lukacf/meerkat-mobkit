@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CARGO_TOML = REPO_ROOT / "meerkat-mobkit" / "Cargo.toml"
+CARGO_TOML = REPO_ROOT / "crates" / "meerkat-mobkit" / "Cargo.toml"
 ALLOWLIST_PATH = REPO_ROOT / "scripts" / "memory-bright-line-allow.txt"
 DESIGN_DOC = "docs/design/agent-memory-architecture.md"
 
@@ -162,7 +162,7 @@ def scan_dependencies(allowlist):
 
 
 def memory_source_files():
-    src = REPO_ROOT / "meerkat-mobkit" / "src"
+    src = REPO_ROOT / "crates" / "meerkat-mobkit" / "src"
     files = sorted(src.glob("identity_first/agent_memory*.rs"))
     files += sorted(src.glob("memory*.rs"))
     for directory in sorted(src.glob("memory*/")):
