@@ -39,7 +39,7 @@ var import_client = require("react-dom/client");
 // src/ConsoleApp.tsx
 var import_react37 = __toESM(require("react"));
 
-// ../../mobkit-voiceux/console/node_modules/clsx/dist/clsx.mjs
+// node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
