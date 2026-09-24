@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Bind the Meerkat family to published 0.8.41 (WorkGraph-backed parallel live
+  delegation, typed WholeBlob repair hold, mob-realm WorkGraph attention rule,
+  summary seeding as startup input, cargo-only PR CI upstream).
+
 ### Added
 
 - Typed "session needs repair" hold for the WholeBlob audited-endpoint wedge

@@ -319,9 +319,10 @@ pub(crate) mod tests {
         body: StdMutex<Option<Value>>,
         disconnect: tokio::sync::Notify,
         disconnected: tokio::sync::Notify,
-        /// The concurrent bootstrap summary. Meerkat 0.8.40 delivers it on
-        /// the provider's instructions lane (recalled knowledge), never as
-        /// spoken commentary and no longer as quiet thinking.
+        /// The concurrent bootstrap summary. Meerkat seeds a summary that is
+        /// ready before the provider open as a developer `session.input` item
+        /// and delivers a late one on the thinking lane only after the user's
+        /// first turn on the channel, never as spoken commentary.
         /// Wire fragments (500 chars each) concatenated in arrival order.
         summary_append: StdMutex<Option<String>>,
         /// Fragments received so far.
