@@ -35,6 +35,7 @@ def _init_params(builder):
 # so this cannot be hand-edited into validity.
 FIXTURE = (
     Path(__file__).resolve().parents[3]
+    / "crates"
     / "meerkat-mobkit"
     / "tests"
     / "fixtures"
