@@ -9,6 +9,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Bind the Meerkat family to published 0.8.41 (WorkGraph-backed parallel live
+  delegation, typed WholeBlob repair hold, mob-realm WorkGraph attention rule,
+  summary seeding as startup input, cargo-only PR CI upstream).
+
+### Added
+
+- Typed "session needs repair" hold for the WholeBlob audited-endpoint wedge
+  (HomeCore 2026-09-22, session `01a000bb-b69e-7570-933d-ffd5d61d51ee`).
+  meerkat 0.8.41 types the refusal (`SessionError::WholeBlobAuditedEndpointDivergence`,
+  resume hold `audited_endpoint_divergence`): the committed document keeps
+  every message, but every read refuses until the operator runs the sanctioned
+  `rkat session repair-wholeblob` repair. MobKit now reads that hold typed
+  (never from error text) on all three doors it can arrive through, the
+  resume (`ResumeRejectionKind::AuditedEndpointDivergence`), the registration
+  reload (`BridgeError::SessionRepairRequired`), and the heal authority
+  (`CommittedBoundaryRepair::RepairRequired`), off every carrier meerkat
+  0.8.41 uses (`MobError::SessionError(..).durable_resume_hold()`, the shared
+  retirement / lifecycle wrappers, the `hold` a Broken member's
+  `MemberRestoreFailed` carries, and the structured `durable_resume_hold` wire
+  token), and parks the identity Broken
+  with a `SessionRepairRequired` hold (`ContinuityFailureKind::RepairRequired`)
+  carrying the session id and the exact diagnose and apply commands. The hold
+  rides `mobkit/member_health.session_repair_required`, the identity status,
+  the console status and inspect payloads (`session_repair`, console health
+  `needs_repair`, rendered as **needs repair** with both commands), and the
+  typed error's `error.data` (`kind: mob_member_session_repair_required`,
+  meerkat's own `durable_resume_hold` key, `retryable: false`).
+  The commands are scoped to the runtime store the runtime actually opened,
+  recorded typed at composition as `ResolvedStorageSummary::runtime_store_locator`
+  (`RuntimeStoreLocator::SqliteFile` for the default `<state_dir>/runtime.sqlite`,
+  rendered as `rkat session repair-wholeblob <id> --runtime-store <path>`;
+  `RuntimeStoreLocator::MeerkatRealm` for a composite storage provider's
+  meerkat-level realm, rendered as `rkat --state-root <state_dir> --realm
+  mobkit ...`). Both gateway binaries and `UnifiedRuntimeBuilder` derive the
+  scope from that record; `UnifiedRuntimeBuilder::session_repair_scope`
+  overrides it, and a runtime with no persistent runtime store declares no
+  scope, so the commands carry explicit placeholders instead of a guessed path.
+
+### Fixed
+
+- A member whose durable session failed the audited-endpoint guard no longer
+  retry-storms. Before, the refusal classified as a retryable resume
+  rejection: the identity Broke, the continuity repair supervisor re-ran
+  recovery and the resume on a timer, the registration reload reported "store
+  not healthy yet, retry later", and every send stayed reload-required with
+  no operator path anywhere. Now the FIRST typed refusal parks the identity;
+  the supervisor makes no heal call and no reconcile retry against it, and
+  reconcile keeps the Broken projection typed `RepairRequired`.
+  `mobkit/reload_member` is the way back: after the operator's repair the same
+  verb, with no extra flag, resumes the SAME session and generation and clears
+  the hold; a document still refused re-parks the identity typed and records
+  the attempt as `last_reload.outcome: repair_required`.
+- Member-bound WorkGraph attention follows Meerkat's mob realm. Meerkat 0.8.41
+  builds every mob member in the realm `mob.<mob_id>` and rescopes the
+  WorkGraph service a host hands the mob runtime to that realm, so a member
+  resolves attention bindings there and nowhere else; a goal, binding or
+  reassignment that names a member (`mob/<mob_id>/agent/<identity>`) from any
+  other realm is refused by Meerkat with the typed
+  `AttentionTargetRealmMismatch`. MobKit's runtime service was already scoped
+  to the mob realm, so console, RPC and agent-tool work bound to this mob's
+  members lands where the member reads it. Two things changed:
+  - `mobkit/workgraph/goal/create`, `attention/reassign` and
+    `attention/break_glass_reassign` classify the lowered target by its typed
+    owner key and refuse a member of another mob before the write with
+    `-32602` and `data.kind = "attention_target_realm_mismatch"` (`owner_key`,
+    `mob_id`, `required_realm_id`, `realm_id`), instead of storing a binding
+    that member would never see. Such work is created through that mob's own
+    runtime; the surface stays scoped to one realm (`realm_id` is still never
+    accepted).
+  - Bootstrap migrates bindings written before the rescoping: every active or
+    paused binding in the runtime's realm whose owner key names a member of
+    another mob (a child mob spawned by an agent tool shared the parent's
+    unscoped service before 0.8.41) is re-created in that mob's realm over the
+    same store, with title, description, mode, policies, priority, labels,
+    timing fields, external and evidence refs, delegated authority, projection
+    policy and paused state preserved, and the original goal is cancelled
+    (which stops its binding), so a rerun finds nothing to do. Edges of the
+    original item are not carried. `MobBootstrapSpec::with_workgraph_realm_migration`
+    selects `apply` (default), `dry_run` or `off`; the report
+    (`MobRuntime::workgraph_realm_migration`, `UnifiedRuntime::workgraph_realm_migration`)
+    is serialized on `mobkit/capabilities` as `workgraph_realm_migration`, and a
+    failed scan or write is recorded there rather than aborting bootstrap.
+  - Every `MobSessionService` wrapper forwards the two methods Meerkat 0.8.41
+    made required (`fork_persisted_session_at_turn_boundary`,
+    `commit_live_delegation_final_transcript_at_turn_boundary`).
+- Meerkat image blobs stored through MobKit's blob store now carry meerkat's
+  required content address. `Base64BlobStoreAdapter::put_image` (the meerkat
+  `BlobStore` face of every `ObjectStoreBlobStore` the gateway, the storage
+  provider and the console voice host inject) decoded the base64 payload and
+  delegated to `put_bytes`, which addresses blobs as
+  `sha256(media_type || 0x00 || decoded_bytes)`. Meerkat requires
+  `content_blob_id(canonical_media_type, base64_text)` and recomputes it on
+  read-back, so every meerkat integrity gate refused those blobs with
+  `BlobIdentityMismatch`: the durable-fork preflight (the default live
+  delegation policy) for any session carrying an image, realtime user content
+  with an image, and realtime history image hydration. The adapter now mints
+  meerkat's id, stores under the canonical media type, and writes through the
+  new `BinaryBlobStore::put_bytes_addressed`. MobKit-native blobs written with
+  `put_bytes` (console image uploads, `mobkit/blob/*`) keep their raw-bytes
+  address and stay readable through both faces, so existing stores need no
+  migration. Console image uploads (`mobkit/blob/upload` and multipart
+  `image_upload` placeholders) now store through
+  `blob_store::put_meerkat_image_bytes`, so a console-attached image survives
+  `verify_stored_image_blob` in a later durable fork; references to images
+  uploaded before this change keep resolving through the same store.
+  `BinaryBlobStore` gains the required method `put_bytes_addressed`; external
+  implementors must add it.
+
+### Changed
+
 - Console voice time-to-talk. Clicking the voice button on an agent with a
   long history showed **Checking / Reading / Preparing / Sending context**
   for 6 to 11 seconds while the microphone had in fact been open since about

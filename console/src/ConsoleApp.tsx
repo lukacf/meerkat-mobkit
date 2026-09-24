@@ -22,6 +22,7 @@ import type {
   TopologyOperationReceipt,
 } from "@console-core";
 import {
+  identityStateLabel,
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
@@ -649,6 +650,16 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     [consoleTransport],
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
+  // Wall-clock start of the active voice call, used by the chat pane to keep
+  // the call's canonical rows hidden behind the live rows until the call ends.
+  const voiceCallStartedAtRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
+      voiceCallStartedAtRef.current = Date.now();
+    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
+      voiceCallStartedAtRef.current = null;
+    }
+  }, [voiceState.phase]);
   const sampleVoiceWaveform = React.useCallback(
     (source: "microphone" | "speaker", samples: Float32Array<ArrayBuffer>) => voice?.sampleWaveform(source, samples),
     [voice],
@@ -4256,6 +4267,16 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         }
         voiceActive={voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error"}
         voiceDisabled={voiceState.phase === "closing"}
+        liveSpeech={
+          voiceState.target?.identity === identity && voiceState.phase === "active"
+            ? voiceState.liveSpeech
+            : undefined
+        }
+        voiceCallStartedAt={
+          voiceState.target?.identity === identity && voiceState.phase === "active"
+            ? voiceCallStartedAtRef.current
+            : null
+        }
         workGraphActions={workGraphCardActionsFor(identity)}
       />
     );
@@ -4334,7 +4355,27 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         ) : (
           <dl className="console-panel__grid">
             <dt>State</dt>
-            <dd>{inspect.state}</dd>
+            <dd data-testid={`inspect-state:${target.identity}`}>
+              {identityStateLabel(inspect)}
+            </dd>
+            {inspect.session_repair ? (
+              <>
+                <dt>Repair</dt>
+                <dd data-testid={`inspect-session-repair:${target.identity}`}>
+                  <p>
+                    The durable session is intact but refused until it is
+                    repaired. Run the diagnose command, then the repair
+                    command, then reload the member (mobkit/reload_member).
+                  </p>
+                  <code data-testid="inspect-session-repair-diagnose">
+                    {inspect.session_repair.diagnose_command}
+                  </code>
+                  <code data-testid="inspect-session-repair-apply">
+                    {inspect.session_repair.apply_command}
+                  </code>
+                </dd>
+              </>
+            ) : null}
             <dt>Role</dt>
             <dd>{inspect.role || "n/a"}</dd>
             <dt>Addressability</dt>
@@ -4367,7 +4408,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         <ul className="console-panel__list">
           {identities.map((r) => (
             <li data-testid={`health-identity:${r.identity}`} key={r.identity}>
-              <strong>{r.display_name || r.identity}</strong> · {r.state} ·{" "}
+              <strong>{r.display_name || r.identity}</strong> · {identityStateLabel(r)} ·{" "}
               {r.addressability}
             </li>
           ))}

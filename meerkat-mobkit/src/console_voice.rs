@@ -19,6 +19,8 @@ use crate::live_wiring::{
 
 #[cfg(feature = "openai-live")]
 mod auth;
+#[cfg(feature = "openai-live")]
+pub(crate) mod capabilities;
 mod context_status;
 #[cfg(feature = "openai-live")]
 pub(crate) mod live_host;

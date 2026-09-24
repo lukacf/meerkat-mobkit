@@ -9,8 +9,10 @@ import {
   TURN_RAIL_MAX_TICKS,
   TURN_RAIL_TICK_PX,
   __chatPaneTest,
+  isCanonicalVoiceRowDuringCall,
   windowTurnRail,
 } from "./ChatPane";
+import type { LiveSpeechItem } from "../lib/voice-session";
 
 const USER = { id: "user", label: "You", role: "user" as const };
 const AGENT = { id: "agent", label: "Agent", role: "assistant" as const };
@@ -183,6 +185,8 @@ function renderChat(args: {
   entries: ConversationTimelineEntry[];
   phase: "waiting" | "tool-executing" | "generating" | null;
   isLoadingHistory?: boolean;
+  liveSpeech?: readonly LiveSpeechItem[];
+  voiceCallStartedAt?: number | null;
 }): string {
   return renderToStaticMarkup(
     React.createElement(ChatPane, {
@@ -208,9 +212,57 @@ function renderChat(args: {
       onDraftChange: () => undefined,
       onStagedChange: () => undefined,
       onSend: () => true,
+      liveSpeech: args.liveSpeech,
+      voiceCallStartedAt: args.voiceCallStartedAt ?? null,
     }),
   );
 }
+
+test("live speech renders as distinct provisional rows, never as transcript messages", () => {
+  const html = renderChat({
+    entries: WORK_ENTRIES,
+    phase: null,
+    voiceCallStartedAt: Date.parse("2026-05-20T07:00:00.000Z"),
+    liveSpeech: [
+      { itemId: "item-1", speaker: "user", text: "What is the vault phrase", startedAt: 1, final: true },
+      { itemId: "item-2", speaker: "assistant", text: "The vault phrase is", startedAt: 2, final: false },
+    ],
+  });
+  assert.match(html, /chat-live-speech:agent/);
+  assert.match(html, /chat-live-row:agent:item-1/);
+  assert.match(html, /msg--live msg--live-user/);
+  assert.match(html, /msg--live msg--live-assistant/);
+  assert.match(html, /msg__live-label[^>]*>live</);
+  assert.match(html, /data-live-final="false"/);
+  // Provisional rows carry no copy affordance and are not counted as turns.
+  const liveBlock = html.slice(html.indexOf("chat-live-speech:agent"));
+  assert.doesNotMatch(liveBlock, /Copy (message|turn)/);
+  // The two canonical entries still render as ordinary message rows; the live
+  // rows are outside every turn container.
+  assert.equal((html.match(/class="msg msg--(user|agent)"/g) || []).length, 2);
+});
+
+test("canonical rows created during the active call stay hidden until the call ends", () => {
+  const callStart = Date.parse("2026-05-20T07:00:00.000Z");
+  const entries = [
+    ...WORK_ENTRIES,
+    message({ id: "spoken-q", role: "user", createdAt: "2026-05-20T07:00:05.000Z", text: "Spoken question" }),
+    message({ id: "spoken-a", role: "assistant", createdAt: "2026-05-20T07:00:09.000Z", text: "Spoken answer" }),
+  ];
+  const during = renderChat({ entries, phase: null, voiceCallStartedAt: callStart });
+  assert.match(during, /Review complete\./);
+  assert.doesNotMatch(during, /Spoken question/);
+  assert.doesNotMatch(during, /Spoken answer/);
+  const after = renderChat({ entries, phase: null, voiceCallStartedAt: null });
+  assert.match(after, /Spoken question/);
+  assert.match(after, /Spoken answer/);
+  assert.doesNotMatch(after, /chat-live-speech:agent/);
+  // Rows without a timestamp are never hidden.
+  const undated = { ...message({ id: "u", role: "user", createdAt: "x", text: "Undated" }), createdAt: undefined };
+  assert.equal(isCanonicalVoiceRowDuringCall(undated, callStart), false);
+  assert.equal(isCanonicalVoiceRowDuringCall(entries[2], callStart), true);
+  assert.equal(isCanonicalVoiceRowDuringCall(entries[0], callStart), false);
+});
 
 const WORK_ENTRIES: ConversationTimelineEntry[] = [
   message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }),

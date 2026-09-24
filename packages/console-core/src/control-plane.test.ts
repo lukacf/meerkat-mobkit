@@ -7,7 +7,9 @@ import {
   normalizeGatingActionRequest,
   normalizeGatingActionResult,
   normalizeIdentityInspectViewState,
+  normalizeIdentitySessionRepair,
   normalizeIdentityStatusRow,
+  identityStateLabel,
   normalizeReplayUnavailableError,
   normalizeResponsePhase,
   normalizeRoutingSectionView,
@@ -433,4 +435,47 @@ test("normalize tool-call accumulator state for pending and out-of-order results
       },
     },
   );
+});
+
+test("session_repair hold rides the status row and the inspect view and wins the state label", () => {
+  const hold = {
+    session_id: " 01a000bb-b69e-7570-933d-ffd5d61d51ee ",
+    hold: "audited_endpoint_divergence",
+    diagnose_command:
+      "rkat --state-root /srv/state --realm mobkit session repair-wholeblob 01a000bb-b69e-7570-933d-ffd5d61d51ee --json",
+    apply_command:
+      "rkat --state-root /srv/state --realm mobkit session repair-wholeblob 01a000bb-b69e-7570-933d-ffd5d61d51ee --apply --json",
+    detail: "session needs the sanctioned audited-endpoint repair",
+  };
+  const row = normalizeIdentityStatusRow({
+    identity: "domain:security",
+    state: "broken",
+    addressability: "addressable",
+    labels: {},
+    session_repair: hold,
+  });
+  assert.equal(row?.session_repair?.session_id, "01a000bb-b69e-7570-933d-ffd5d61d51ee");
+  assert.equal(row?.session_repair?.hold, "audited_endpoint_divergence");
+  assert.equal(identityStateLabel(row!), "needs repair");
+
+  const inspect = normalizeIdentityInspectViewState({
+    identity: "domain:security",
+    state: "broken",
+    addressability: "addressable",
+    labels: {},
+    continuity: {},
+    session_repair: hold,
+  });
+  assert.equal(inspect?.session_repair?.apply_command, hold.apply_command);
+  assert.equal(inspect?.session_repair?.diagnose_command, hold.diagnose_command);
+  assert.equal(identityStateLabel(inspect!), "needs repair");
+
+  // A Broken member without the hold keeps its raw state; a hold missing one
+  // of the two commands is not a hold.
+  assert.equal(
+    identityStateLabel(normalizeIdentityStatusRow({ identity: "x", state: "broken", addressability: "addressable", labels: {} })!),
+    "broken",
+  );
+  assert.equal(normalizeIdentitySessionRepair({ ...hold, apply_command: "" }), null);
+  assert.equal(normalizeIdentitySessionRepair(null), null);
 });

@@ -536,10 +536,46 @@ fn identity_first_types_identity_status_full_roundtrip() {
         continuity_unrecoverable: Some(meerkat_mobkit::identity_first::ContinuityUnrecoverable {
             reason: "the only durable checkpoint is an intra-turn projection".to_string(),
         }),
+        session_repair_required: Some(
+            meerkat_mobkit::identity_first::SessionRepairRequired::audited_endpoint_divergence(
+                meerkat_core::types::SessionId::new(),
+                Some(&meerkat_mobkit::identity_first::SessionRepairScope {
+                    state_root: Some("/srv/state".into()),
+                    realm: Some("mobkit".to_string()),
+                    runtime_store: None,
+                }),
+                "live transcript does not preserve the graph-proved audited endpoint",
+            ),
+        ),
     };
     let json = serde_json::to_string(&status).expect("serialize");
     let back: IdentityStatus = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(status, back);
+    // The hold rides meerkat's stable wire token and the exact commands.
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse json");
+    assert_eq!(
+        val["session_repair_required"]["hold"],
+        "audited_endpoint_divergence"
+    );
+    let session = val["session_id"].as_str().expect("session id");
+    let held = val["session_repair_required"]["session_id"]
+        .as_str()
+        .expect("held session id");
+    assert!(
+        val["session_repair_required"]["diagnose_command"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("session repair-wholeblob {held} --json")),
+        "{val}"
+    );
+    assert!(
+        val["session_repair_required"]["apply_command"]
+            .as_str()
+            .unwrap()
+            .starts_with("rkat --state-root /srv/state --realm mobkit session repair-wholeblob"),
+        "{val}"
+    );
+    let _ = session;
 
     // Check ttl_remaining serialized as ms
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse json");

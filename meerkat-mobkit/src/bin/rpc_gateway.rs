@@ -11726,6 +11726,14 @@ external_addressable = true
         // (the former silent fallback left resume and archive broken long
         // after boot).
         let runtime_db_path = storage_layout.runtime_db();
+        // The typed source of the repair commands in a session repair hold:
+        // the exact database this launch opens, or none for the declared
+        // in-memory store.
+        let runtime_store_locator = (!gateway_options.runtime_store_ephemeral).then(|| {
+            meerkat_mobkit::storage_health::RuntimeStoreLocator::SqliteFile {
+                path: runtime_db_path.clone(),
+            }
+        });
         let (runtime_store, runtime_store_slot): (
             Arc<dyn meerkat_runtime::RuntimeStore>,
             meerkat_mobkit::storage_health::StorageSlotSummary,
@@ -12129,7 +12137,8 @@ external_addressable = true
                 Some(session_store_incremental),
             )
             .with_state_dir(storage_layout.state_dir())
-            .with_slots(slots),
+            .with_slots(slots)
+            .with_runtime_store_locator(runtime_store_locator),
         );
         (
             spec,
@@ -12689,6 +12698,14 @@ external_addressable = true
             .with_runtime_services(AgentRuntimeServices::new(mob_handle)),
         );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
+        // A member parked with a session repair hold names the exact
+        // `rkat session repair-wholeblob` commands for the runtime store this
+        // launch opened; an in-memory store has nothing to repair.
+        irt.set_session_repair_scope(
+            runtime.resolved_storage().as_ref().and_then(
+                meerkat_mobkit::identity_first::SessionRepairScope::from_resolved_storage,
+            ),
+        );
 
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
@@ -13524,6 +13541,10 @@ external_addressable = true
                             transport: Arc::clone(&transport),
                             voice: public.voice.clone(),
                             session_instructions: public.session_instructions.clone(),
+                            // The external live channel keeps its configured
+                            // instructions; the per-member capabilities preface
+                            // is a console voice concern.
+                            session_instructions_preface: None,
                         },
                     )
                     .unwrap_or_else(|error| {

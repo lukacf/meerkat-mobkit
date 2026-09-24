@@ -981,6 +981,7 @@ function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired"
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
   const degraded = agent.labels?.console_degraded === "true" ||
                    state.includes("degrade") ||
+                   state === "needs_repair" ||
                    agent.lease_healthy === false;
   if (degraded) return "degraded";
   return "active";

@@ -1307,6 +1307,14 @@ impl UnifiedRuntime {
         self.workgraph_service.clone()
     }
 
+    /// Report of the bootstrap-time migration of member-bound attention
+    /// bindings into their mob realm (`None` without a WorkGraph service).
+    pub fn workgraph_realm_migration(
+        &self,
+    ) -> Option<std::sync::Arc<crate::workgraph_realm::WorkGraphRealmMigrationReport>> {
+        self.mob_runtime.workgraph_realm_migration()
+    }
+
     /// Clone the runtime's lossy WorkGraph fact hub when WorkGraph is
     /// configured. Every subscriber must begin with a durable pull; the hub
     /// has no replay or state authority.

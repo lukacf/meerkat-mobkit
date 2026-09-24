@@ -64,6 +64,7 @@ pub mod types;
 pub mod unified_runtime;
 pub mod workgraph_admission;
 pub mod workgraph_events;
+pub mod workgraph_realm;
 pub mod workgraph_wiring;
 
 pub use access::{
@@ -281,4 +282,8 @@ pub use unified_runtime::{
     UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
     UnifiedRuntimeShutdownReport, discovery_spec_to_spawn_spec,
+};
+pub use workgraph_realm::{
+    AttentionTargetRealm, MigratedMemberBinding, WorkGraphRealmMigrationMode,
+    WorkGraphRealmMigrationOutcome, WorkGraphRealmMigrationReport,
 };

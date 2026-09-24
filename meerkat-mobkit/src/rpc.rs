@@ -2157,6 +2157,12 @@ async fn handle_unified_rpc_json_inner(
                     // True when a WorkGraph service is configured and the
                     // mobkit/workgraph/* group is live.
                     "workgraph": workgraph_configured,
+                    // Bootstrap migration of member-bound attention bindings
+                    // into their mob realm (null without a WorkGraph service).
+                    "workgraph_realm_migration": runtime
+                        .workgraph_realm_migration()
+                        .map(|report| serde_json::to_value(report.as_ref()).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null),
                     "detached_jobs": job_health
                         .as_ref()
                         .and_then(|projection| projection.get("detached_jobs"))

@@ -5257,6 +5257,48 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
+
+            // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+            // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
+            // a default that took the boundary and then called `fork_persisted_session`
+            // self-deadlocks on the persistent owner's non-reentrant boundary.
+            async fn commit_live_delegation_final_transcript_at_turn_boundary(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::types::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+                self.inner
+                    .commit_live_delegation_final_transcript_at_turn_boundary(
+                        machine,
+                        session_id,
+                        provisional,
+                        final_event,
+                        bound,
+                    )
+                    .await
+            }
+
+            async fn fork_persisted_session_at_turn_boundary(
+                &self,
+                source_session_id: &meerkat_core::types::SessionId,
+                message_count: Option<usize>,
+                tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+                target: meerkat_core::DurableSessionForkTarget,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+                self.inner
+                    .fork_persisted_session_at_turn_boundary(
+                        source_session_id,
+                        message_count,
+                        tool_access_policy,
+                        target,
+                        bound,
+                    )
+                    .await
+            }
             async fn load_persisted_session_metadata(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -6218,6 +6260,48 @@ impl MobSessionService for AfterCreateMobSessionService {
             .fork_persisted_session(source_session_id, message_count, tool_access_policy, target)
             .await
     }
+
+    // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+    // every wrapper forwards the boundary-then-fork as ONE contract to the owner;
+    // a default that took the boundary and then called `fork_persisted_session`
+    // self-deadlocks on the persistent owner's non-reentrant boundary.
+    async fn commit_live_delegation_final_transcript_at_turn_boundary(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::types::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript_at_turn_boundary(
+                machine,
+                session_id,
+                provisional,
+                final_event,
+                bound,
+            )
+            .await
+    }
+
+    async fn fork_persisted_session_at_turn_boundary(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+        self.inner
+            .fork_persisted_session_at_turn_boundary(
+                source_session_id,
+                message_count,
+                tool_access_policy,
+                target,
+                bound,
+            )
+            .await
+    }
     async fn load_persisted_session_metadata(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -6581,6 +6665,10 @@ pub struct MobBootstrapSpec {
     /// state dir), `None` for memory-backed runtimes (single-process by
     /// construction).
     pub(crate) workgraph_admission_sidecar: Option<PathBuf>,
+    /// Whether bootstrap migrates member-bound attention bindings that
+    /// predate meerkat's mob-realm rescoping (see
+    /// [`crate::workgraph_realm::migrate_member_bindings_to_mob_realms`]).
+    pub(crate) workgraph_realm_migration: crate::workgraph_realm::WorkGraphRealmMigrationMode,
     /// Composition-time storage durability resolution (H1/H2), surfaced by
     /// the runtime health surfaces. The stock constructors record it;
     /// externally-composed specs (`MobBootstrapSpec::new` — both gateway
@@ -6672,6 +6760,8 @@ impl MobBootstrapSpec {
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
+            workgraph_realm_migration: crate::workgraph_realm::WorkGraphRealmMigrationMode::default(
+            ),
             resolved_storage: None,
             session_write_epochs: None,
             runtime_authority_prewarm: None,
@@ -6764,6 +6854,19 @@ impl MobBootstrapSpec {
     #[must_use]
     pub fn with_workgraph_service(mut self, service: Option<meerkat::WorkGraphService>) -> Self {
         self.workgraph_service = service;
+        self
+    }
+
+    /// Choose whether bootstrap migrates member-bound WorkGraph attention
+    /// bindings that predate meerkat's mob-realm rescoping into the realm
+    /// their owner key names (default: apply). The report lands on
+    /// [`MobRuntime::workgraph_realm_migration`] and `mobkit/capabilities`.
+    #[must_use]
+    pub fn with_workgraph_realm_migration(
+        mut self,
+        mode: crate::workgraph_realm::WorkGraphRealmMigrationMode,
+    ) -> Self {
+        self.workgraph_realm_migration = mode;
         self
     }
 
@@ -7425,9 +7528,10 @@ impl MobBootstrapSpec {
         // Fail-closed (M4): an open failure is a startup error; the
         // in-memory form exists only as the explicit
         // `ephemeral_runtime_store` declaration.
-        let (runtime_store, runtime_store_slot): (
+        let (runtime_store, runtime_store_slot, runtime_store_locator): (
             Arc<dyn meerkat_runtime::RuntimeStore>,
             StorageSlotSummary,
+            Option<crate::storage_health::RuntimeStoreLocator>,
         ) = if ephemeral_runtime_store {
             (
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
@@ -7436,6 +7540,7 @@ impl MobBootstrapSpec {
                     "InMemoryRuntimeStore",
                     "explicitly declared: sessions do not survive process restart",
                 ),
+                None,
             )
         } else if let Some(provider) = provider_meerkat_stores.as_ref() {
             // M4b single-bundle: runtime authority rides the composite
@@ -7444,11 +7549,18 @@ impl MobBootstrapSpec {
             (
                 Arc::clone(&provider.runtime_store),
                 provider.runtime_slot_summary(),
+                Some(crate::storage_health::RuntimeStoreLocator::MeerkatRealm {
+                    state_root: store_path.clone(),
+                    realm: crate::storage_provider::MEERKAT_LEVEL_REALM_ID.to_string(),
+                }),
             )
         } else {
             (
                 build_persistent_runtime_store(&store_path)?,
                 StorageSlotSummary::persistent("runtime", "SqliteRuntimeStore"),
+                Some(crate::storage_health::RuntimeStoreLocator::SqliteFile {
+                    path: store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME),
+                }),
             )
         };
         // One epoch-observing facade fronts BOTH the machine and the session
@@ -7670,7 +7782,8 @@ impl MobBootstrapSpec {
         slots.extend(scratch_ring_buffer_slots());
         spec.resolved_storage = Some(
             ResolvedStorageSummary::new(blob_durability, session_store_incremental)
-                .with_slots(slots),
+                .with_slots(slots)
+                .with_runtime_store_locator(runtime_store_locator),
         );
         Ok(spec)
     }
@@ -8268,6 +8381,10 @@ pub struct MobRuntime {
     /// consumers (MobBuilder overlays, the schedule host) use the bare
     /// service and are intentionally not serialized here.
     workgraph_admission: Arc<crate::workgraph_admission::WorkGraphAdmission>,
+    /// Report of the bootstrap-time migration of member-bound attention
+    /// bindings into their mob realm; `None` when no WorkGraph service is
+    /// configured or the runtime was adopted from a bare handle.
+    workgraph_realm_migration: Option<Arc<crate::workgraph_realm::WorkGraphRealmMigrationReport>>,
     /// Composition-time storage durability resolution carried over from the
     /// bootstrap spec so the health surfaces can report it.
     resolved_storage: Option<ResolvedStorageSummary>,
@@ -8690,6 +8807,21 @@ impl MobRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(Arc::clone(&workgraph_admission));
         }
+        // Member-bound attention bindings written before meerkat rescoped
+        // member attention to the mob realm are moved there now, before any
+        // member turn resolves its overlay. The report is exposed on
+        // `mobkit/capabilities`; a failure is recorded there, not raised, because
+        // the typed realm refusal already prevents new misplaced rows.
+        let workgraph_realm_migration = match spec.workgraph_service.as_ref() {
+            Some(service) => Some(Arc::new(
+                crate::workgraph_realm::migrate_member_bindings_to_mob_realms(
+                    service,
+                    spec.workgraph_realm_migration,
+                )
+                .await,
+            )),
+            None => None,
+        };
         Ok((
             Self {
                 handle,
@@ -8702,6 +8834,7 @@ impl MobRuntime {
                 identity_runtime_slot,
                 workgraph_service: spec.workgraph_service,
                 workgraph_admission,
+                workgraph_realm_migration,
                 resolved_storage: spec.resolved_storage,
                 session_write_epochs: spec.session_write_epochs,
                 runtime_authority_prewarm: spec.runtime_authority_prewarm,
@@ -8735,6 +8868,7 @@ impl MobRuntime {
             identity_runtime_slot: None,
             workgraph_service: None,
             workgraph_admission,
+            workgraph_realm_migration: None,
             resolved_storage: None,
             session_write_epochs: None,
             runtime_authority_prewarm: None,
@@ -8766,6 +8900,14 @@ impl MobRuntime {
     /// The realm-scoped WorkGraph service the runtime was bootstrapped with.
     pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
         self.workgraph_service.clone()
+    }
+
+    /// Report of the bootstrap-time migration of member-bound attention
+    /// bindings into their mob realm, when a WorkGraph service is configured.
+    pub fn workgraph_realm_migration(
+        &self,
+    ) -> Option<Arc<crate::workgraph_realm::WorkGraphRealmMigrationReport>> {
+        self.workgraph_realm_migration.clone()
     }
 
     /// The runtime-wide admission authority for the workgraph
@@ -12332,6 +12474,35 @@ realm_profile = "worker-v2"
             ))
         }
 
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn commit_live_delegation_final_transcript_at_turn_boundary(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::types::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+            Err(SessionError::Unsupported(
+                "absorber probe has no live final transcript turn-boundary commit authority".into(),
+            ))
+        }
+
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+            Err(SessionError::Unsupported(
+                "absorber probe has no durable turn-boundary fork authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -12841,6 +13012,37 @@ comms = true
             Err(SessionError::NotFound {
                 id: session_id.clone(),
             })
+        }
+
+        // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED.
+        // This double owns no durable transcript, so it refuses explicitly rather
+        // than inheriting a forward it cannot honour.
+        async fn commit_live_delegation_final_transcript_at_turn_boundary(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::types::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+            self.record("commit_live_delegation_final_transcript_at_turn_boundary");
+            Err(SessionError::Unsupported(
+                "fork_persisted_session_at_turn_boundary".into(),
+            ))
+        }
+
+        async fn fork_persisted_session_at_turn_boundary(
+            &self,
+            _source_session_id: &meerkat_core::types::SessionId,
+            _message_count: Option<usize>,
+            _tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+            _target: meerkat_core::DurableSessionForkTarget,
+            _bound: std::time::Duration,
+        ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+            self.record("fork_persisted_session_at_turn_boundary");
+            Err(SessionError::Unsupported(
+                "forwarding probe has no durable turn-boundary fork authority".into(),
+            ))
         }
 
         #[cfg(feature = "openai-live")]

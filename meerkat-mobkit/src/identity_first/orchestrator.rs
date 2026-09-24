@@ -514,10 +514,24 @@ async fn register_roster_metadata(
         // A terminal continuity verdict owns this Broken projection. It must
         // preserve the durable lower-plane binding for operator repair rather
         // than entering ordinary failed-embodiment cleanup.
-        let terminal_verdict = if currently_active {
+        // Two typed projections own a Broken entry against reconcile: the
+        // heal authority's unprovable verdict (CheckpointUnrecoverable) and
+        // the audited-endpoint repair hold (RepairRequired), whose exit is the
+        // operator's `rkat session repair-wholeblob` plus `reload_member`.
+        let terminal_verdict: Option<(ContinuityFailureKind, String)> = if currently_active {
             None
+        } else if let Some(verdict) = runtime.continuity_unrecoverable(identity).await {
+            Some((
+                ContinuityFailureKind::CheckpointUnrecoverable,
+                verdict.reason,
+            ))
         } else {
-            runtime.continuity_unrecoverable(identity).await
+            runtime.session_repair_required(identity).await.map(|hold| {
+                (
+                    ContinuityFailureKind::RepairRequired,
+                    hold.operator_reason(),
+                )
+            })
         };
         if current_state == Some(IdentityLifecycleState::Broken)
             && terminal_verdict.is_none()
@@ -573,21 +587,22 @@ async fn register_roster_metadata(
                     if update_active_specs {
                         runtime.update_spec(spec.clone()).await?;
                     }
-                } else if let Some(verdict) = terminal_verdict {
+                } else if let Some((kind, reason)) = terminal_verdict {
                     // 2026-07-29 incident: re-registering a heal-unprovable
                     // identity as Dormant is the cosmetic "heal" that the
                     // next on-demand materialization immediately re-Breaks.
                     // Keep the Broken projection and its typed terminal
                     // reason; delivery keeps refusing loudly (REQ-13) until
-                    // an operator intervenes.
+                    // an operator intervenes. The repair hold is the same
+                    // shape with the operator's repair as its exit.
                     runtime.update_spec(spec.clone()).await?;
                     outcomes.insert(
                         identity.clone(),
                         RestoreOutcome::Broken(ContinuityFailure {
                             identity: identity.clone(),
-                            kind: ContinuityFailureKind::CheckpointUnrecoverable,
+                            kind,
                             record: Some(record),
-                            detail: verdict.reason,
+                            detail: reason,
                         }),
                     );
                     continue;
@@ -627,7 +642,7 @@ async fn register_roster_metadata(
                             draft,
                         },
                     );
-                } else if let Some(verdict) = terminal_verdict
+                } else if let Some((kind, reason)) = terminal_verdict
                     && matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
                     && failure.record.is_some()
                 {
@@ -639,9 +654,9 @@ async fn register_roster_metadata(
                         identity.clone(),
                         RestoreOutcome::Broken(ContinuityFailure {
                             identity: identity.clone(),
-                            kind: ContinuityFailureKind::CheckpointUnrecoverable,
+                            kind,
                             record: failure.record.clone(),
-                            detail: verdict.reason,
+                            detail: reason,
                         }),
                     );
                 } else if matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)

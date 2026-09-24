@@ -2745,6 +2745,26 @@ svg[data-svg="fit"],
   0%, 60%, 100% { transform: translateY(0);   opacity: 0.45; }
   30%           { transform: translateY(-3px); opacity: 1; }
 }
+/* Provisional live speech during a voice call: visibly not a transcript row. */
+.conv-turn--live {
+  border-left: 2px dashed var(--border, rgba(127, 127, 127, 0.5));
+  padding-left: 8px;
+  opacity: 0.8;
+}
+.msg--live .msg__bubble {
+  font-style: italic;
+  background: transparent;
+  border: 1px dashed var(--border, rgba(127, 127, 127, 0.5));
+}
+.msg--live-user .msg__bubble {
+  align-self: flex-end;
+}
+.msg__live-label {
+  font-size: 0.7em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
 .msg--typing .msg__bubble {
   align-self: flex-start;
   padding: 0;

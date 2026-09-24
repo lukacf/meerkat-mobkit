@@ -39,7 +39,7 @@ var import_client = require("react-dom/client");
 // src/ConsoleApp.tsx
 var import_react37 = __toESM(require("react"));
 
-// node_modules/clsx/dist/clsx.mjs
+// ../../mobkit-voiceux/console/node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -173,6 +173,10 @@ function normalizeMemberProgress(value) {
     health: typeof record2.health === "string" && record2.health ? record2.health : "unknown"
   };
 }
+var IDENTITY_STATE_NEEDS_REPAIR_LABEL = "needs repair";
+function identityStateLabel(row) {
+  return row.session_repair ? IDENTITY_STATE_NEEDS_REPAIR_LABEL : row.state;
+}
 function trimString(value) {
   if (typeof value !== "string") {
     return void 0;
@@ -233,6 +237,26 @@ function normalizeSidebarWatchFields(value) {
   }
   return normalized;
 }
+function normalizeIdentitySessionRepair(value) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
+    return null;
+  }
+  const session_id = trimString(record2.session_id);
+  const hold = trimString(record2.hold);
+  const diagnose_command = trimString(record2.diagnose_command);
+  const apply_command = trimString(record2.apply_command);
+  if (!session_id || !hold || !diagnose_command || !apply_command) {
+    return null;
+  }
+  return {
+    session_id,
+    hold,
+    diagnose_command,
+    apply_command,
+    detail: trimString(record2.detail) ?? ""
+  };
+}
 function normalizeIdentityStatusRow(value) {
   const record2 = value && typeof value === "object" ? value : null;
   if (!record2) {
@@ -260,6 +284,10 @@ function normalizeIdentityStatusRow(value) {
     ...(() => {
       const progress = normalizeMemberProgress(record2.progress);
       return progress ? { progress } : {};
+    })(),
+    ...(() => {
+      const session_repair = normalizeIdentitySessionRepair(record2.session_repair);
+      return session_repair ? { session_repair } : {};
     })()
   };
 }
@@ -17203,7 +17231,7 @@ function sidebarNavigationRows(model) {
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
-  const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || agent.lease_healthy === false;
+  const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || state === "needs_repair" || agent.lease_healthy === false;
   if (degraded) return "degraded";
   return "active";
 }
@@ -19017,6 +19045,13 @@ function textSignatureForMsg(message) {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
+function isCanonicalVoiceRowDuringCall(entry, callStartedAt) {
+  if (entry.kind !== "message") return false;
+  if (entry.variant === "meta") return false;
+  const createdAt = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAt)) return false;
+  return createdAt >= callStartedAt;
+}
 function buildChatMessages(entries) {
   const flat = entries.flatMap(flattenEntry);
   const merged = [];
@@ -19286,6 +19321,7 @@ var TranscriptView = import_react32.default.memo(function TranscriptView2({
   turns,
   messages,
   phase,
+  liveSpeech,
   lastAgentMessageId,
   workGraphActions,
   isLoadingHistory,
@@ -19381,6 +19417,27 @@ var TranscriptView = import_react32.default.memo(function TranscriptView2({
         turn.id
       );
     }),
+    liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      "div",
+      {
+        "aria-label": "Live speech",
+        className: "conv-turn conv-turn--live",
+        "data-testid": `chat-live-speech:${identity}`,
+        children: liveSpeech.map((item) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+          "div",
+          {
+            className: `msg msg--live msg--live-${item.speaker}`,
+            "data-live-final": item.final ? "true" : "false",
+            "data-testid": `chat-live-row:${identity}:${item.itemId}`,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__live-label", children: "live" }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: item.text }) })
+            ]
+          },
+          item.itemId
+        ))
+      }
+    ),
     phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
       "div",
       {
@@ -19486,6 +19543,8 @@ function ChatPane({
   agentLabel,
   identity,
   entries,
+  liveSpeech,
+  voiceCallStartedAt,
   phase,
   draft,
   sending,
@@ -19567,8 +19626,9 @@ function ChatPane({
   const activeTurnFrameRef = import_react32.default.useRef(0);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react32.default.useState([]);
   const messages = import_react32.default.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
+    const visible = voiceCallStartedAt ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt)) : entries;
+    return buildChatMessages(visible);
+  }, [entries, voiceCallStartedAt]);
   const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
   const [revealedFrom, setRevealedFrom] = import_react32.default.useState(null);
   const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
@@ -19997,6 +20057,7 @@ function ChatPane({
         turns,
         messages,
         phase,
+        liveSpeech,
         lastAgentMessageId,
         workGraphActions,
         isLoadingHistory,
@@ -21007,6 +21068,7 @@ var ACTIVITY_UNCONFIRMED_MESSAGE = "Voice activity could not be confirmed. Check
 var REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Check your network and voice access, then start again.";
 var TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
 var AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
+var LIVE_SPEECH_MAX_ITEMS = 400;
 async function queryVoiceAvailability(baseUrl, identity) {
   return (await queryVoiceReadiness(baseUrl, identity)).availability;
 }
@@ -21165,7 +21227,9 @@ function createVoiceSession(baseUrl, environment) {
     microphoneMuted: false,
     speakerMuted: false,
     error: null,
-    notice: null
+    notice: null,
+    liveSpeech: [],
+    activeChannelId: null
   };
   let current;
   let disposed = false;
@@ -21381,7 +21445,9 @@ function createVoiceSession(baseUrl, environment) {
           notice,
           reconnecting: false,
           contextPreparation: void 0,
-          contextStatusError: null
+          contextStatusError: null,
+          liveSpeech: [],
+          activeChannelId: null
         });
       }
     } catch (failure) {
@@ -21609,6 +21675,46 @@ function createVoiceSession(baseUrl, environment) {
     if (!attempt.active || snapshot.phase !== "active") return;
     const type = event.type;
     if (!snapshot.microphoneMuted && (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped")) activity(attempt);
+    if (type === "session.input_transcript.delta" || type === "session.output_transcript.delta") {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      const delta = typeof event.delta === "string" ? event.delta : typeof event.text === "string" ? event.text : null;
+      if (itemId && delta !== null) {
+        accumulateLiveSpeech(
+          itemId,
+          type === "session.input_transcript.delta" ? "user" : "assistant",
+          delta
+        );
+      }
+      return;
+    }
+    if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      if (itemId) finalizeLiveSpeech(itemId, typeof event.text === "string" ? event.text : null);
+    }
+  }
+  function accumulateLiveSpeech(itemId, speaker, delta) {
+    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId);
+    let next;
+    if (existing) {
+      next = snapshot.liveSpeech.map(
+        (item) => item.itemId === itemId ? { ...item, text: item.text + delta } : item
+      );
+    } else {
+      next = [
+        ...snapshot.liveSpeech,
+        { itemId, speaker, text: delta, startedAt: env.now(), final: false }
+      ];
+      if (next.length > LIVE_SPEECH_MAX_ITEMS) next = next.slice(next.length - LIVE_SPEECH_MAX_ITEMS);
+    }
+    publish({ liveSpeech: next });
+  }
+  function finalizeLiveSpeech(itemId, text) {
+    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId)) return;
+    publish({
+      liveSpeech: snapshot.liveSpeech.map(
+        (item) => item.itemId === itemId ? { ...item, final: true, text: text !== null && text.length >= item.text.length ? text : item.text } : item
+      )
+    });
   }
   function preparePeer(attempt) {
     const context = attempt.context;
@@ -21854,7 +21960,7 @@ function createVoiceSession(baseUrl, environment) {
               await stop(attempt, null, "Voice closed after 15 minutes of silence.");
               return;
             }
-            publish({ phase: "active" });
+            publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
             assertOwns(attempt);
             gates(attempt);
             scheduleSilence(attempt);
@@ -21931,7 +22037,7 @@ function createVoiceSession(baseUrl, environment) {
       attempt.active = await activatePending(attempt, parsePendingLiveChannelHandle(raw));
       assertOwns(attempt);
       attempt.lastActivity = env.now();
-      publish({ phase: "active" });
+      publish({ phase: "active", activeChannelId: attempt.active?.channelId ?? null, liveSpeech: [] });
       assertOwns(attempt);
       gates(attempt);
       scheduleSilence(attempt);
@@ -22467,6 +22573,14 @@ function ConsoleApp({ baseUrl, transport }) {
     [consoleTransport]
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
+  const voiceCallStartedAtRef = import_react37.default.useRef(null);
+  import_react37.default.useEffect(() => {
+    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
+      voiceCallStartedAtRef.current = Date.now();
+    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
+      voiceCallStartedAtRef.current = null;
+    }
+  }, [voiceState.phase]);
   const sampleVoiceWaveform = import_react37.default.useCallback(
     (source, samples) => voice?.sampleWaveform(source, samples),
     [voice]
@@ -25093,6 +25207,8 @@ function ConsoleApp({ baseUrl, transport }) {
         } : void 0,
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
+        liveSpeech: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceState.liveSpeech : void 0,
+        voiceCallStartedAt: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceCallStartedAtRef.current : null,
         workGraphActions: workGraphCardActionsFor(identity)
       }
     );
@@ -25145,7 +25261,15 @@ function ConsoleApp({ baseUrl, transport }) {
           ] }),
           !inspect ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dl", { className: "console-panel__grid", children: [
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { "data-testid": `inspect-state:${target.identity}`, children: identityStateLabel(inspect) }),
+            inspect.session_repair ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Repair" }),
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dd", { "data-testid": `inspect-session-repair:${target.identity}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "The durable session is intact but refused until it is repaired. Run the diagnose command, then the repair command, then reload the member (mobkit/reload_member)." }),
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("code", { "data-testid": "inspect-session-repair-diagnose", children: inspect.session_repair.diagnose_command }),
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("code", { "data-testid": "inspect-session-repair-apply", children: inspect.session_repair.apply_command })
+              ] })
+            ] }) : null,
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Role" }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.role || "n/a" }),
             /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Addressability" }),
@@ -25173,7 +25297,7 @@ function ConsoleApp({ baseUrl, transport }) {
     return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
-      r2.state,
+      identityStateLabel(r2),
       " \xB7",
       " ",
       r2.addressability

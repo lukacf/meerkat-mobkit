@@ -130,6 +130,47 @@ impl MobSessionService for NeverStartsActorRunService {
             .await
     }
 
+    // meerkat 0.8.41 made `fork_persisted_session_at_turn_boundary` REQUIRED so
+    // every wrapper forwards the boundary-then-fork as ONE contract to the owner.
+    // This decorator owns no session authority, so it forwards to `inner`.
+    async fn commit_live_delegation_final_transcript_at_turn_boundary(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::types::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript_at_turn_boundary(
+                machine,
+                session_id,
+                provisional,
+                final_event,
+                bound,
+            )
+            .await
+    }
+
+    async fn fork_persisted_session_at_turn_boundary(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::DurableForkAtTurnBoundary, SessionError> {
+        self.inner
+            .fork_persisted_session_at_turn_boundary(
+                source_session_id,
+                message_count,
+                tool_access_policy,
+                target,
+                bound,
+            )
+            .await
+    }
+
     async fn load_session_for_resume(
         &self,
         session_id: &SessionId,

@@ -217,6 +217,54 @@ pub fn scratch_ring_buffer_slots() -> Vec<StorageSlotSummary> {
     ]
 }
 
+/// Where the runtime store that holds this runtime's durable sessions
+/// physically lives, recorded by the composition that opened it. This is
+/// the typed fact behind the operator's `rkat session repair-wholeblob`
+/// scope in a `SessionRepairRequired` hold: the exact database the command
+/// must open, never a guess from the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeStoreLocator {
+    /// MobKit opened one SQLite runtime database directly (the default
+    /// persistent layout, `<state_dir>/runtime.sqlite`). The operator
+    /// addresses it with `rkat session repair-wholeblob <id> --runtime-store
+    /// <path>`.
+    SqliteFile { path: PathBuf },
+    /// The runtime store rides a meerkat realm bundle (a composite storage
+    /// provider's meerkat-level realm under the state directory). The
+    /// operator addresses it with `rkat --state-root <state_root> --realm
+    /// <realm> session repair-wholeblob <id>`.
+    MeerkatRealm { state_root: PathBuf, realm: String },
+}
+
+impl crate::identity_first::SessionRepairScope {
+    /// The `rkat` scope that opens exactly the runtime store `locator` names.
+    pub fn from_runtime_store_locator(locator: &RuntimeStoreLocator) -> Self {
+        match locator {
+            RuntimeStoreLocator::SqliteFile { path } => Self {
+                state_root: None,
+                realm: None,
+                runtime_store: Some(path.clone()),
+            },
+            RuntimeStoreLocator::MeerkatRealm { state_root, realm } => Self {
+                state_root: Some(state_root.clone()),
+                realm: Some(realm.clone()),
+                runtime_store: None,
+            },
+        }
+    }
+
+    /// The scope for the runtime store a composed runtime actually opened,
+    /// `None` when the composition recorded no persistent runtime store (an
+    /// in-memory or declared-ephemeral runtime store has no document an
+    /// operator could repair).
+    pub fn from_resolved_storage(summary: &ResolvedStorageSummary) -> Option<Self> {
+        summary
+            .runtime_store_locator
+            .as_ref()
+            .map(Self::from_runtime_store_locator)
+    }
+}
+
 /// Composition-time storage resolution summary, recorded when the runtime's
 /// stores are composed and surfaced through `mobkit/status` and
 /// `mobkit/capabilities`.
@@ -237,6 +285,10 @@ pub struct ResolvedStorageSummary {
     /// RPC to prove a requested state_dir is this runtime's own before
     /// attaching the live census; never part of `status_json`.
     pub state_dir: Option<PathBuf>,
+    /// The persistent runtime store this runtime opened, when it opened one:
+    /// the typed source of the repair commands in a `SessionRepairRequired`
+    /// hold. Never part of `status_json`.
+    pub runtime_store_locator: Option<RuntimeStoreLocator>,
 }
 
 impl ResolvedStorageSummary {
@@ -248,7 +300,16 @@ impl ResolvedStorageSummary {
             session_store_incremental,
             slots: Vec::new(),
             state_dir: None,
+            runtime_store_locator: None,
         }
+    }
+
+    /// Record where the persistent runtime store was opened (`None` for an
+    /// in-memory or declared-ephemeral runtime store).
+    #[must_use]
+    pub fn with_runtime_store_locator(mut self, locator: Option<RuntimeStoreLocator>) -> Self {
+        self.runtime_store_locator = locator;
+        self
     }
 
     /// Attach the per-slot census.

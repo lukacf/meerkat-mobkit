@@ -38,7 +38,7 @@ use super::types::{
     IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus,
     LeaseGrant, LeaseInfo, ManagedPeerEdge, MemberHealthReport, MemberReloadDisposition,
     MemberReloadOutcome, NotAddressable, ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext,
-    SendAdmission, SessionSnapshot, TopologyContext,
+    SendAdmission, SessionRepairRequired, SessionRepairScope, SessionSnapshot, TopologyContext,
 };
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
@@ -851,6 +851,28 @@ impl IdentityRuntimeError {
             Self::ReloadTimedOut { stage, .. } => Some(serde_json::json!({
                 "kind": "mob_member_reload_timed_out", "stage": stage,
             })),
+            // The typed repair hold rides the same `durable_resume_hold` key
+            // meerkat uses on every surface, so a caller classifies this
+            // exactly as it would classify meerkat's own -32013 refusal.
+            Self::EmbodimentRejected(failure)
+                if failure.kind == ContinuityFailureKind::RepairRequired =>
+            {
+                Some(serde_json::json!({
+                    "kind": "mob_member_session_repair_required",
+                    meerkat_core::service::SessionError::DURABLE_RESUME_HOLD_KEY:
+                        meerkat_core::service::DurableResumeHold::AuditedEndpointDivergence.as_str(),
+                    "session_id": failure
+                        .record
+                        .as_ref()
+                        .map(|record| record.session_id.to_string()),
+                    "content_retained": true,
+                    "retryable": false,
+                    "operator_path": [
+                        SessionRepairRequired::REPAIR_SUBCOMMAND,
+                        "mobkit/reload_member",
+                    ],
+                }))
+            }
             _ => None,
         }
     }
@@ -929,6 +951,13 @@ pub(crate) struct IdentityEntry {
     /// bridge/callback churn) and the repair supervisor skips the identity.
     /// A changed spec clears it — the retry is then permitted.
     pub host_rejected_build_park: Option<HostRejectedBuildPark>,
+    /// Typed "session needs repair" hold: meerkat's audited-endpoint
+    /// divergence reported by a resume, a registration reload, or the heal
+    /// authority. While set, the repair supervisor skips the identity and
+    /// reconcile keeps its Broken projection; the reload verb is the one
+    /// door that re-attempts the resume (after the operator's repair).
+    /// Cleared by any non-Broken lifecycle projection.
+    pub session_repair_required: Option<SessionRepairRequired>,
     /// The most recent delivery failure for this identity, cleared by the
     /// next successful delivery. Read by `mobkit/member_health` so an
     /// operator learns WHY sends fail without spending an admission budget.
@@ -1406,6 +1435,17 @@ impl IdentityFirstRuntimeContext {
                 }
                 if self
                     .runtime
+                    .session_repair_required(identity)
+                    .await
+                    .is_some()
+                {
+                    // The durable document needs the operator's sanctioned
+                    // repair; the heal authority cannot even read it. Only
+                    // `reload_member` after the repair re-attempts the resume.
+                    continue;
+                }
+                if self
+                    .runtime
                     .host_rejected_build_park(identity)
                     .await
                     .is_some()
@@ -1420,7 +1460,8 @@ impl IdentityFirstRuntimeContext {
                 }
                 match self.attempt_committed_boundary_recovery(identity).await {
                     BrokenRepairDisposition::Repairable => repairable.push(identity.clone()),
-                    BrokenRepairDisposition::Unprovable => {}
+                    BrokenRepairDisposition::Unprovable
+                    | BrokenRepairDisposition::RepairRequired => {}
                     BrokenRepairDisposition::RetryLater => recovery_failures += 1,
                 }
             }
@@ -1598,6 +1639,27 @@ impl IdentityFirstRuntimeContext {
                 }
                 BrokenRepairDisposition::Unprovable
             }
+            Ok(CommittedBoundaryRepair::RepairRequired { session_id, detail }) => {
+                tracing::error!(
+                    %identity,
+                    %session_id,
+                    detail = %detail,
+                    "continuity heal verdict: the durable document needs the sanctioned \
+                     audited-endpoint repair; parking the identity typed until the operator \
+                     repairs it and runs reload_member"
+                );
+                if !self
+                    .runtime
+                    .mark_session_repair_required(identity, session_id, detail)
+                    .await
+                {
+                    tracing::debug!(
+                        %identity,
+                        "repair-required verdict arrived after the identity left Broken"
+                    );
+                }
+                BrokenRepairDisposition::RepairRequired
+            }
             Err(error) => {
                 // Only the error tier is retryable per the heal contract
                 // (Busy mid-turn, store I/O, CAS races).
@@ -1621,6 +1683,10 @@ enum BrokenRepairDisposition {
     Repairable,
     /// Terminal typed verdict recorded; excluded until an operator clears it.
     Unprovable,
+    /// Typed repair hold recorded: the durable document needs the operator's
+    /// sanctioned audited-endpoint repair; excluded until `reload_member`
+    /// resumes it after that repair.
+    RepairRequired,
     /// The recovery attempt itself failed transiently; retry next pass.
     RetryLater,
 }
@@ -1762,6 +1828,9 @@ pub struct IdentityRuntime {
     pending_unactivated_lease_release_gate: Mutex<()>,
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
+    /// Host-declared `rkat` scope rendered into [`SessionRepairRequired`]
+    /// commands; absent fields render as explicit placeholders.
+    session_repair_scope: StdRwLock<Option<SessionRepairScope>>,
     error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
     /// The unified runtime's actor-loop probe verdict, installed late (the
     /// probe starts with the base runtime, identity-first attaches after).
@@ -1949,6 +2018,7 @@ impl IdentityRuntime {
             pending_unactivated_lease_release_gate: Mutex::new(()),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
             materialization_failure_backoff: RwLock::new(BTreeMap::new()),
+            session_repair_scope: StdRwLock::new(None),
             error_hook: StdRwLock::new(None),
             actor_loop_health: StdRwLock::new(None),
             bootstrap_status,
@@ -2752,6 +2822,24 @@ impl IdentityRuntime {
     }
 
     /// Attach a best-effort operational error hook used for alerting.
+    /// Declare where the operator's `rkat --state-root .. --realm ..` scope
+    /// for [`SessionRepairRequired`] commands points. Hosts that embed MobKit
+    /// in a meerkat realm know both; a field left `None` renders as an
+    /// explicit placeholder rather than a guessed path.
+    pub fn set_session_repair_scope(&self, scope: Option<SessionRepairScope>) {
+        *self
+            .session_repair_scope
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = scope;
+    }
+
+    pub fn session_repair_scope(&self) -> Option<SessionRepairScope> {
+        self.session_repair_scope
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn set_error_hook(&self, hook: Option<crate::unified_runtime::ErrorHook>) {
         match self.error_hook.write() {
             Ok(mut stored_hook) => *stored_hook = hook,
@@ -3646,6 +3734,16 @@ impl IdentityRuntime {
             } else {
                 None
             };
+            // Same rule for the typed repair hold: it is about the durable
+            // document, so a re-projected Broken entry keeps it and any
+            // non-Broken projection (a successful resume) clears it.
+            let session_repair_required = if state == IdentityLifecycleState::Broken {
+                entries
+                    .get(&identity)
+                    .and_then(|existing| existing.session_repair_required.clone())
+            } else {
+                None
+            };
             // A host-rejected-build park is about the SPEC, not this entry
             // instance: re-registration (a reconcile pass, a repair retry)
             // with the same spec must not forget it — retrying an unchanged
@@ -3668,6 +3766,7 @@ impl IdentityRuntime {
                 has_runtime_store: self.has_runtime_store,
                 continuity_unrecoverable,
                 host_rejected_build_park,
+                session_repair_required,
                 last_delivery_error: None,
                 last_reload: None,
             };
@@ -5596,6 +5695,29 @@ impl IdentityRuntime {
                                  park could be recorded"
                             );
                         }
+                        // The audited-endpoint divergence is the same shape
+                        // of wall with a different exit: the operator's
+                        // sanctioned repair, then reload_member. Record the
+                        // typed hold with the exact commands on this FIRST
+                        // refusal so nothing retries against it.
+                        if let BridgeError::ResumeRejected {
+                            kind: ResumeRejectionKind::AuditedEndpointDivergence,
+                            detail,
+                        } = &err
+                            && !self
+                                .mark_session_repair_required(
+                                    identity,
+                                    registered_session_id.clone(),
+                                    detail.clone(),
+                                )
+                                .await
+                        {
+                            tracing::debug!(
+                                %identity,
+                                "identity left Broken before the session repair hold could \
+                                 be recorded"
+                            );
+                        }
                         let detail = format!(
                             "bridge resume_session rejected (identity degraded, durable session \
                              preserved for reconcile retry): {err}{}{}",
@@ -5608,16 +5730,16 @@ impl IdentityRuntime {
                                 .map(|e| format!("; lease cleanup failed: {e}"))
                                 .unwrap_or_default(),
                         );
-                        let kind = if matches!(
-                            err,
+                        let kind = match &err {
                             BridgeError::ResumeRejected {
                                 kind: ResumeRejectionKind::ArchivedNotRevivable,
                                 ..
-                            }
-                        ) {
-                            ContinuityFailureKind::CheckpointUnrecoverable
-                        } else {
-                            ContinuityFailureKind::ResumeRejected
+                            } => ContinuityFailureKind::CheckpointUnrecoverable,
+                            BridgeError::ResumeRejected {
+                                kind: ResumeRejectionKind::AuditedEndpointDivergence,
+                                ..
+                            } => ContinuityFailureKind::RepairRequired,
+                            _ => ContinuityFailureKind::ResumeRejected,
                         };
                         return Err(IdentityRuntimeError::EmbodimentRejected(Box::new(
                             ContinuityFailure {
@@ -8887,6 +9009,7 @@ impl IdentityRuntime {
             lease: lease_info,
             continuity_health,
             continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
+            session_repair_required: entry.session_repair_required.clone(),
         })
     }
 
@@ -9224,15 +9347,28 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<MemberReloadOutcome, IdentityRuntimeError> {
-        let (state, before) = {
+        let (state, before, repair_held) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            (entry.state, entry.continuity.clone())
+            (
+                entry.state,
+                entry.continuity.clone(),
+                entry.session_repair_required.is_some(),
+            )
         };
         match state {
             IdentityLifecycleState::Active => {}
+            // The one Broken shape the reload verb IS the repair path for:
+            // the operator has (presumably) run the sanctioned WholeBlob
+            // repair and asks for the same durable session back. No flag, no
+            // reset: re-embody the recorded continuity through the ordinary
+            // resume door, which re-records the hold if the document is
+            // still refused.
+            IdentityLifecycleState::Broken if repair_held => {
+                return self.reload_repaired_session_locked(identity, before).await;
+            }
             // Dormant, uninitialized, or retired: no live registration to
             // reload; the next send materializes lazily.
             IdentityLifecycleState::Dormant
@@ -9269,12 +9405,31 @@ impl IdentityRuntime {
         // healthy registration apart (`not_degraded`). Preferred when the
         // bridge exposes it. A `not_current` verdict is a no-op, not authority
         // to retire or replace the member.
-        if let Some(bridge) = self.bridge.as_ref()
-            && let Some(reload) = bridge
-                .reload_member_registration(&before.agent_runtime_id)
-                .await
-                .map_err(|error| reload_phase_error(identity, error))?
-        {
+        let registration_reload = match self.bridge.as_ref() {
+            Some(bridge) => {
+                match bridge
+                    .reload_member_registration(&before.agent_runtime_id)
+                    .await
+                {
+                    Ok(reload) => reload,
+                    // Typed audited-endpoint divergence: the registration is
+                    // retained, but no reload can read the document. Park
+                    // the member with the exact repair commands instead of
+                    // reporting a store-not-healthy refusal that invites the
+                    // retry storm.
+                    Err(BridgeError::SessionRepairRequired {
+                        session_id, detail, ..
+                    }) => {
+                        return Err(self
+                            .park_session_repair_required(identity, session_id, detail)
+                            .await);
+                    }
+                    Err(error) => return Err(reload_phase_error(identity, error)),
+                }
+            }
+            None => None,
+        };
+        if let Some(reload) = registration_reload {
             if reload.session_id != before.session_id {
                 return Err(IdentityRuntimeError::Internal(format!(
                     "reload_member registration session {} differs from continuity session {}",
@@ -9343,6 +9498,91 @@ impl IdentityRuntime {
         })
     }
 
+    /// `reload_member` for a Broken identity parked with a
+    /// [`SessionRepairRequired`] hold: release the Broken entry's lower-plane
+    /// remnants and lease exactly as the repair pass would, re-project it
+    /// Dormant with its continuity record intact, and resume the SAME durable
+    /// session through the shared embodiment door. A successful resume clears
+    /// the hold (non-Broken projection); a document still refused re-parks
+    /// the identity through the resume door with a fresh hold, and the typed
+    /// `EmbodimentRejected(RepairRequired)` failure is what the operator sees.
+    async fn reload_repaired_session_locked(
+        &self,
+        identity: &AgentIdentity,
+        before: Option<ContinuityRecord>,
+    ) -> Result<MemberReloadOutcome, IdentityRuntimeError> {
+        let Some(before) = before else {
+            return Err(IdentityRuntimeError::InvalidState {
+                identity: identity.clone(),
+                state: IdentityLifecycleState::Broken,
+                operation: "reload_member",
+            });
+        };
+        tracing::info!(
+            %identity,
+            session_id = %before.session_id,
+            generation = before.generation.get(),
+            "reload_member: re-attempting the resume of a session parked for the sanctioned \
+             audited-endpoint repair (same session, same generation)"
+        );
+        self.prepare_broken_identity_for_registration(identity)
+            .await?;
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(identity) {
+                entry.state = IdentityLifecycleState::Dormant;
+                entry.lease = None;
+            }
+        }
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Dormant,
+            },
+        )
+        .await;
+        self.clear_materialization_backoff(identity).await;
+
+        let mut bound_generation = None;
+        let result = self
+            .embody_identity_locked(
+                identity,
+                None,
+                None,
+                None,
+                &mut bound_generation,
+                EmbodimentOverrides::default(),
+            )
+            .await
+            .map(|outcome| outcome.record);
+        self.mark_bootstrap_materialization_finished(identity, &result, bound_generation);
+        let record = result?;
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(identity)
+                && entry.state != IdentityLifecycleState::Broken
+            {
+                entry.session_repair_required = None;
+            }
+        }
+        if record.session_id != before.session_id {
+            tracing::warn!(
+                %identity,
+                before = %before.session_id,
+                after = %record.session_id,
+                "reload_member: the repaired-session resume fell back to a fresh session; the \
+                 identity is bound to the new session"
+            );
+        }
+        Ok(MemberReloadOutcome {
+            reloaded: true,
+            disposition: MemberReloadDisposition::Discarded,
+            session_id: Some(record.session_id),
+            generation: Some(record.generation),
+        })
+    }
+
     fn unix_ms_now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9376,6 +9616,11 @@ impl IdentityRuntime {
             }
             IdentityRuntimeError::ActorAdmissionTimeout { .. } => {
                 (ReloadAttemptOutcome::TimedOut, error.to_string())
+            }
+            IdentityRuntimeError::EmbodimentRejected(failure)
+                if failure.kind == ContinuityFailureKind::RepairRequired =>
+            {
+                (ReloadAttemptOutcome::RepairRequired, failure.detail.clone())
             }
             other => (ReloadAttemptOutcome::Failed, other.to_string()),
         };
@@ -9535,6 +9780,7 @@ impl IdentityRuntime {
             open_stall_id,
             durability: None,
             continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
+            session_repair_required: entry.session_repair_required.clone(),
         };
         // Custom bridges may await I/O. Never hold the fleet entries lock
         // across that extension point.
@@ -11043,6 +11289,7 @@ impl IdentityRuntime {
                 lease: lease_info,
                 continuity_health,
                 continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
+                session_repair_required: entry.session_repair_required.clone(),
             };
             result.insert(identity.clone(), (entry.spec.clone(), status));
         }
@@ -11203,6 +11450,7 @@ impl IdentityRuntime {
             .filter(|(_, entry)| {
                 entry.state == IdentityLifecycleState::Broken
                     && entry.continuity_unrecoverable.is_none()
+                    && entry.session_repair_required.is_none()
                     && entry
                         .host_rejected_build_park
                         .as_ref()
@@ -11222,6 +11470,113 @@ impl IdentityRuntime {
             .await
             .get(identity)
             .and_then(|entry| entry.continuity_unrecoverable.clone())
+    }
+
+    /// The typed "session needs repair" hold recorded for an identity, if any.
+    pub async fn session_repair_required(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<SessionRepairRequired> {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .and_then(|entry| entry.session_repair_required.clone())
+    }
+
+    /// Record meerkat's typed audited-endpoint divergence against a Broken
+    /// identity as a [`SessionRepairRequired`] hold carrying the exact repair
+    /// commands.
+    ///
+    /// Returns `false` (without writing) when the identity is unknown or not
+    /// Broken: the hold only ever parks an already-Broken entry. While
+    /// recorded, the repair supervisor skips the identity and reconcile keeps
+    /// its Broken projection; `reload_member` re-attempts the resume once the
+    /// operator has repaired the document.
+    pub async fn mark_session_repair_required(
+        &self,
+        identity: &AgentIdentity,
+        session_id: meerkat_core::types::SessionId,
+        detail: impl Into<String>,
+    ) -> bool {
+        let hold = SessionRepairRequired::audited_endpoint_divergence(
+            session_id,
+            self.session_repair_scope().as_ref(),
+            detail,
+        );
+        let reason = hold.operator_reason();
+        let marked = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry) if entry.state == IdentityLifecycleState::Broken => {
+                    entry.session_repair_required = Some(hold);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if marked {
+            tracing::error!(
+                %identity,
+                reason = %reason,
+                "identity parked: durable session needs the sanctioned audited-endpoint repair"
+            );
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(reason),
+            );
+        }
+        marked
+    }
+
+    /// Project a live or Dormant identity Broken with the typed repair hold
+    /// and hand back the typed failure the caller returns. Used by the doors
+    /// that learn about the divergence outside the resume path (the
+    /// registration reload of an Active member).
+    async fn park_session_repair_required(
+        &self,
+        identity: &AgentIdentity,
+        session_id: meerkat_core::types::SessionId,
+        detail: String,
+    ) -> IdentityRuntimeError {
+        let (record, transitioned) = {
+            let mut entries = self.entries.write().await;
+            let record = entries
+                .get(identity)
+                .and_then(|entry| entry.continuity.clone());
+            let mut transitioned = false;
+            if let Some(entry) = entries.get_mut(identity) {
+                transitioned = entry.state != IdentityLifecycleState::Broken;
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            (record, transitioned)
+        };
+        if transitioned {
+            self.emit_event(
+                identity,
+                IdentityEvent::StateChanged {
+                    identity: identity.clone(),
+                    new_state: IdentityLifecycleState::Broken,
+                },
+            )
+            .await;
+        }
+        if !self
+            .mark_session_repair_required(identity, session_id, detail.clone())
+            .await
+        {
+            tracing::debug!(
+                %identity,
+                "identity left Broken before the session repair hold could be recorded"
+            );
+        }
+        IdentityRuntimeError::EmbodimentRejected(Box::new(ContinuityFailure {
+            identity: identity.clone(),
+            kind: ContinuityFailureKind::RepairRequired,
+            record,
+            detail,
+        }))
     }
 
     /// Record a terminal heal verdict against a Broken identity.
