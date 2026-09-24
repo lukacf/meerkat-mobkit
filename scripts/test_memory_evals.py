@@ -20,7 +20,7 @@ class ProfileTomlCompatibilityTests(unittest.TestCase):
         expected_stages = {"selector", "distiller", "steward", "hygienist"}
         actual_stages = set()
 
-        for path in sorted((REPO_ROOT / "memory-evals" / "profiles").glob("*.toml")):
+        for path in sorted((REPO_ROOT / "tests" / "memory-evals" / "profiles").glob("*.toml")):
             profile = MEMORY_EVALS.parse_profile_toml(
                 path.read_text(), force_fallback=True
             )
@@ -35,7 +35,7 @@ class ProfileTomlCompatibilityTests(unittest.TestCase):
 
     @unittest.skipIf(MEMORY_EVALS._tomllib is None, "stdlib tomllib unavailable")
     def test_fallback_matches_stdlib_for_current_profiles(self):
-        for path in sorted((REPO_ROOT / "memory-evals" / "profiles").glob("*.toml")):
+        for path in sorted((REPO_ROOT / "tests" / "memory-evals" / "profiles").glob("*.toml")):
             text = path.read_text()
             self.assertEqual(
                 MEMORY_EVALS.parse_profile_toml(text, force_fallback=True),

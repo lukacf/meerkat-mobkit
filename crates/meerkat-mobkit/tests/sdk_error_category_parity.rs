@@ -27,7 +27,7 @@ use meerkat_mobkit::ErrorEvent;
 /// A category string that must never be a real variant.
 const PROBE_CATEGORY: &str = "__sdk_parity_probe__";
 
-const RUST_ENUM_PATH: &str = "meerkat-mobkit/src/unified_runtime/types.rs";
+const RUST_ENUM_PATH: &str = "crates/meerkat-mobkit/src/unified_runtime/types.rs";
 const PYTHON_SDK_PATH: &str = "sdk/python/meerkat_mobkit/types.py";
 const TYPESCRIPT_SDK_PATH: &str = "sdk/typescript/src/types.ts";
 

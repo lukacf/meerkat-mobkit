@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // WorkGraph graph-view browser e2e: boots the real console bundle in
-// chromium against meerkat-mobkit/examples/workgraph_console_reference
+// chromium against crates/meerkat-mobkit/examples/workgraph_console_reference
 // (library-mode runtime, builder-wired ephemeral WorkGraph service,
 // unenforced console), seeds a deterministic six-item fixture through the
 // real `POST /console/rpc` wire contract (goal/create root + 5 children,

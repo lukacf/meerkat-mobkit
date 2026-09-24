@@ -123,7 +123,7 @@ overlapping the injected records' vocabulary.
 - Indexing of every discarded message on every successful compaction:
   `meerkat-core/src/agent/state.rs:1265` (call site), `state.rs:1362-1431`
   (session-scoped `MemoryIndexScope`).
-- MobKit side of the fusion: `meerkat-mobkit/src/identity_first/runtime.rs:2425-2448`
+- MobKit side of the fusion: `crates/meerkat-mobkit/src/identity_first/runtime.rs:2425-2448`
   (every non-Steer send passes through `inject_for_turn`),
   `identity_first/agent_memory.rs:854-871` (`prepend_memory_injection`
   physically concatenates: `format!("{injection}\n\nCurrent user
@@ -200,7 +200,7 @@ and startup latency — monotonically, with no cleanup facility of any kind
   (`hnsw.rs:348-354`).
 - Host lifecycle rotates session ids: MobKit's `mobkit/respawn` RPC is always
   a mob-level retire+spawn that mints a fresh `SessionId` and rebinds
-  continuity (`meerkat-mobkit/src/rpc.rs:2937-2972`; meerkat-mob
+  continuity (`crates/meerkat-mobkit/src/rpc.rs:2937-2972`; meerkat-mob
   `actor.rs:14553` builds the replacement with no `resume_session`); `reset`
   mints a new id by design; resume has a fresh-spawn fallback; retire/delete
   leave all rows behind forever (survival matrix in `followups.md` §2).
@@ -390,7 +390,7 @@ untrusted by default with an explicit allowlist) plus an observe-stream
 tracker that marks the session tainted — session-sticky, cleared only at
 fresh-context boundaries — with the first-ingestion race documented. P2
 ships the comms taint join over what the observe surface actually carries
-(implemented in `meerkat-mobkit/src/memory/taint.rs`,
+(implemented in `crates/meerkat-mobkit/src/memory/taint.rs`,
 `observe_inbound_peer_content`), and building it sharpened this ask:
 meerkat 0.7.9 has **no typed inbound peer-message event** — a delivery
 surfaces only as injected prompt text on the receiver's `RunStarted`
@@ -444,7 +444,7 @@ an agentic dream member.
   list and gates via a `canUseTool` closure —
   `../archive/design/evidence/memory-survey-2026-07/followups.md` and
   `agent-memory-architecture.md` §8.4.
-- MobKit's decision record: `meerkat-mobkit/src/memory/distiller.rs` module
+- MobKit's decision record: `crates/meerkat-mobkit/src/memory/distiller.rs` module
   docs ("full tool surface … §8.4's fork containment") — the fork seam is
   named and parked there.
 
@@ -490,7 +490,7 @@ cadence semantics, separate operational story.
 - Target vocabulary: `meerkat-schedule` `TargetBinding::{Session, Mob}` —
   verified during MobKit P3 implementation; no host-runnable variant.
 - The workaround and its deliberate forward-compatibility:
-  `meerkat-mobkit/src/memory/steward.rs` (`spawn_dream_loop`) uses the
+  `crates/meerkat-mobkit/src/memory/steward.rs` (`spawn_dream_loop`) uses the
   schedule subsystem's own interval-marker grammar
   (`parse_interval_marker_ms`) for its cadence config, so the config
   migrates unchanged the day a real target type exists; module docs carry
@@ -533,7 +533,7 @@ cannot list), as does any re-derivation/re-indexing tooling.
 - Trait surface: `meerkat-core/src/memory.rs:404-434` — three methods, no
   list/enumerate/count.
 - The approximation and its honesty caveat:
-  `meerkat-mobkit/src/memory/distiller.rs` (`HnswDiscardSource`) — one
+  `crates/meerkat-mobkit/src/memory/distiller.rs` (`HnswDiscardSource`) — one
   scoped `MemoryStore::search` with a generous limit per harvest, caveat
   documented in code ("search is the only read surface … approximates
   enumeration").
@@ -597,7 +597,7 @@ a server when their names are server-qualified (`mcp__<server>__<tool>`);
 anything else needs manual `untrusted_tools` config.
 
 **Historical evidence and correction.** The filing-time MobKit
-`meerkat-mobkit/src/memory/taint.rs` module docs recorded the first-ingestion
+`crates/meerkat-mobkit/src/memory/taint.rs` module docs recorded the first-ingestion
 race and that its asynchronous tool events carried names without
 `ToolDef.provenance`. The original report incorrectly generalized this to
 missing upstream APIs in Meerkat 0.7.15: `ToolDef.provenance` and
@@ -646,7 +646,7 @@ from the session store.
 **Evidence.** meerkat-core 0.7.15 `service/mod.rs:1632-1636`
 (`SessionForkAtRequest { message_index, running_behavior }` — no policy
 field); the fork-harness seam documented in
-`meerkat-mobkit/src/memory/distiller.rs` module docs ("TODO(§8.4 fork
+`crates/meerkat-mobkit/src/memory/distiller.rs` module docs ("TODO(§8.4 fork
 harness)").
 
 **Proposed shape.** Add `tool_access_policy: Option<ToolAccessPolicy>` to
@@ -994,7 +994,7 @@ primitives on a non-crashing path (see M1) fail for exactly the members an
 operator most wants to manage.
 
 **Evidence.** Deterministic mobkit repro
-(`meerkat-mobkit/tests/studio_k_asks.rs`, the `#[ignore]`d persistent test):
+(`crates/meerkat-mobkit/tests/studio_k_asks.rs`, the `#[ignore]`d persistent test):
 3-member crew via `ensure_member` on
 FactoryAgentBuilder→PersistentSessionService; both RPCs fail with the exact
 field string; members verified stranded in `retiring`. The identity-first
@@ -1117,7 +1117,7 @@ runtime session" → member stranded `state=retiring`. The authority-read
 control-read disagree about the same session.
 
 **Evidence.** Deterministic mobkit repro on meerkat =0.7.19
-(`meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d persistent test):
+(`crates/meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d persistent test):
 3-member `ensure_member` crew on FactoryAgentBuilder→PersistentSessionService;
 probe confirms `session_known_to_archive_authority = Ok(true)` for all three
 idle members; retire still fails with the exact field string. The wrapper-
@@ -1214,7 +1214,7 @@ the repro fails identically when the mob shares the concrete service's own
 cached machine as the sole authority. Wrapper forwarding of
 `session_known_to_archive_authority` verified live (probe: `Ok(true)`).
 
-Repro unchanged: `meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d
+Repro unchanged: `crates/meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d
 persistent test; the trace capture recipe is a `tracing_subscriber` init
 with `meerkat_mob=debug,meerkat_session=debug` in the test body.
 
@@ -1225,7 +1225,7 @@ residue closed in 0.7.23 (#849).** Runtime-loop stop realization no longer
 runs executor cleanup while holding the session mutation gate.
 
 Verified against meerkat =0.7.21 with the mobkit K1 persistent repro
-(`meerkat-mobkit/tests/studio_k_asks.rs`,
+(`crates/meerkat-mobkit/tests/studio_k_asks.rs`,
 `studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew`):
 respawn of a never-run member now HANGS FOREVER at 0% CPU (deterministic,
 4/4 runs) instead of 0.7.20's fast-fail NotFound. The wedged task is the
@@ -1352,7 +1352,7 @@ open_identity_substrate` + identity_first bridge on MobHandle) with the
 worker member on the mob plane; session service wiring differs from the
 classic FactoryAgentBuilder → PersistentSessionService chain.
 
-Repro: `meerkat-mobkit/tests/studio_k_asks.rs`,
+Repro: `crates/meerkat-mobkit/tests/studio_k_asks.rs`,
 `doctrine_member_rpcs_route_identity_owned_members_through_identity_authority`
 — currently TOLERANT of the ArchiveSession failure class (assert-routing
 only); tighten the branch at the end of the test when 21d lands. Trace

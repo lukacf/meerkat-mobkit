@@ -1,6 +1,6 @@
 # Memory Console UI Proposal — The Ledger of What It Knows
 
-**Status:** proposal · **Target:** mobkit console (`console/src`) + read-only `mobkit/memory/panel/*` RPC surface (`meerkat-mobkit/src/http_console.rs`)
+**Status:** proposal · **Target:** mobkit console (`console/src`) + read-only `mobkit/memory/panel/*` RPC surface (`crates/meerkat-mobkit/src/http_console.rs`)
 **Basis:** winning concept from a three-way design competition ("The Ledger of What It Knows", state-first Memory Explorer), with eight judge-required grafts from the two runners-up. Judge scores in Appendix A.
 **Feasibility note:** data-source claims below refer to the investigated `memory-system` worktree (post-`caf18995`); corrections from earlier investigation snapshots are called out inline — notably that snapshot's event vocabulary has **17** `memory.*` subtypes (`memory.quarantine.release_blocked` is new, `events.rs:169`) and `DreamVerdicts` carries **14** counters (`quarantine_release_blocked`, `steward.rs:804`). The budget limits are **20 KiB per assembly** (`MAX_INJECTED_ASSEMBLY_BYTES = 20 * 1024`) and **60 KiB for the session-keyed per-turn counter** (`MAX_INJECTED_SESSION_BYTES = 60 * 1024`, `coordinator.rs:46-47`), not a durable session-lifetime total. That counter resets on compaction, coordinator/process reset, or bounded-map clearing. Injection-ledger rows have **`session_key = NULL` for build-surface assembly** (`sqlite_store.rs:121-128`); turn rows carry no reset epoch, so repeated session-key groups alone cannot prove a dedup violation.
 

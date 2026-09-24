@@ -51,7 +51,7 @@ use crate::memory::records::{ManifestTier, MemoryScope, RecordStatus};
 use crate::memory::taint::MemberAgentEventSink;
 
 /// Embedded prompt bundle (crate-local copy of
-/// `memory-evals/prompts/hygienist-v0.md`; a unit test enforces byte
+/// `tests/memory-evals/prompts/hygienist-v0.md`; a unit test enforces byte
 /// equality so the calibration artifact and the shipped default cannot
 /// drift — same pattern as the other stages).
 pub const EMBEDDED_PROMPT_V0: &str = include_str!("hygienist_prompt_v0.md");
@@ -181,7 +181,7 @@ struct RawProfile {
 }
 
 impl HygienistProfile {
-    /// The embedded default: `memory-evals/profiles/hygienist-v0.toml` with
+    /// The embedded default: `tests/memory-evals/profiles/hygienist-v0.toml` with
     /// the prompt compiled in. The model tier is a calibration decision
     /// (§11); `hygienist.model` overrides per-deployment.
     pub fn embedded_default() -> Self {
@@ -2461,15 +2461,15 @@ mod tests {
 
     #[test]
     fn embedded_prompt_matches_calibration_bundle() -> Result<(), Box<dyn std::error::Error>> {
-        let bundle =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../memory-evals/prompts/hygienist-v0.md");
+        let bundle = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/memory-evals/prompts/hygienist-v0.md");
         if !bundle.is_file() {
             return Ok(());
         }
         let text = std::fs::read_to_string(bundle)?;
         assert_eq!(
             text, EMBEDDED_PROMPT_V0,
-            "memory-evals/prompts/hygienist-v0.md and src/memory/hygienist_prompt_v0.md have drifted"
+            "tests/memory-evals/prompts/hygienist-v0.md and src/memory/hygienist_prompt_v0.md have drifted"
         );
         Ok(())
     }

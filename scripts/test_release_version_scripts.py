@@ -59,17 +59,17 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
             )
             + "\n"
         )
-        (self.root / "meerkat-mobkit/BUILD.bazel").write_text(
+        (self.root / "crates/meerkat-mobkit/BUILD.bazel").write_text(
             'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
         )
         # A SECOND generated BUILD.bazel, because one is not a test of the
         # defect. bump-sdk-versions.sh used to sed meerkat-mobkit's file by
         # name and release-hook.sh used to stage it by name, so
-        # mobkit-store-conformance/BUILD.bazel drifted a release behind from
+        # crates/mobkit-store-conformance/BUILD.bazel drifted a release behind from
         # the moment that crate existed. With a single-crate fixture both the
         # broken and the fixed script pass.
         (self.root / "mobkit-store-conformance").mkdir(parents=True, exist_ok=True)
-        (self.root / "mobkit-store-conformance/BUILD.bazel").write_text(
+        (self.root / "crates/mobkit-store-conformance/BUILD.bazel").write_text(
             'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
         )
         (self.root / "MODULE.bazel").write_text(
@@ -138,8 +138,8 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         dirty = self.run_command(
             "git", "diff", "--name-only"
         ).stdout.splitlines()
-        self.assertNotIn("mobkit-store-conformance/BUILD.bazel", dirty)
-        self.assertNotIn("meerkat-mobkit/BUILD.bazel", dirty)
+        self.assertNotIn("crates/mobkit-store-conformance/BUILD.bazel", dirty)
+        self.assertNotIn("crates/meerkat-mobkit/BUILD.bazel", dirty)
         self.assertIn(
             'meerkat-mobkit = "0.8.1"',
             (self.root / "docs/quickstart.mdx").read_text(),

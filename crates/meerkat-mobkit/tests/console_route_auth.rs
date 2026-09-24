@@ -277,7 +277,7 @@ async fn console_voice_http_read_only_blocks_open_but_not_owned_cancel_fencing()
 #[test]
 fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced() {
     let artifact: Value = serde_json::from_str(include_str!(
-        "../../docs/rct/console-rest-sse-contract-v0.5.0.json"
+        "../../../docs/rct/console-rest-sse-contract-v0.5.0.json"
     ))
     .expect("contract artifact json should parse");
 

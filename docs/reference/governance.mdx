@@ -50,7 +50,7 @@ use meerkat_mobkit::validate_traceability_statuses;
 
 let traceability = r#"rows:
   - status: TYPED
-    evidence: [meerkat-mobkit/src/governance.rs]
+    evidence: [crates/meerkat-mobkit/src/governance.rs]
 "#;
 validate_traceability_statuses(traceability)?;
 ```

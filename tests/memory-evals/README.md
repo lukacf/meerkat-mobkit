@@ -21,7 +21,7 @@ initial probe is a configuration failure, not a successful skip.
 ## Layout
 
 ```
-memory-evals/
+tests/memory-evals/
   profiles/     calibration profiles — {stage, version, model, params, prompt_bundle}
   prompts/      prompt bundles referenced by profiles
   fixtures/
@@ -55,7 +55,7 @@ One TOML file per `{stage, version}` in `profiles/`:
 stage        = "selector"           # judgment stage this profile calibrates
 version      = "0"                  # bumped on any prompt/params change
 model        = "PLACEHOLDER"        # per-stage default lives in the embedded profile; override here
-prompt_bundle = "prompts/selector-v0.md"   # path relative to memory-evals/
+prompt_bundle = "prompts/selector-v0.md"   # path relative to tests/memory-evals/
 
 [params]
 temperature   = 0.0
@@ -115,7 +115,7 @@ corpus* — `--check` validates their schema and internal consistency so their
 shape stays honest, while the executable checks live where the invariant is
 enforced (the taint tracker for poisoning, the coordinator's inbound defang,
 and the staged-commit validator's own Rust tests in
-`meerkat-mobkit/src/memory/staged.rs`).
+`crates/meerkat-mobkit/src/memory/staged.rs`).
 
 Common fields: `name`, `invariant`, `stage`, `expected`, `notes`, plus
 per-invariant payload:
@@ -158,7 +158,7 @@ binary, one fixture-shaped JSON object on stdin per invocation:
 
 ```json
 {"manifest": [...], "turn_text": "...", "suppressed_ids": [],
- "profile_path": "memory-evals/profiles/selector-v0.toml"}
+ "profile_path": "tests/memory-evals/profiles/selector-v0.toml"}
 ```
 
 stdout is `{"selected_ids": [...], "coverage": "..."}`. Prompt rendering,

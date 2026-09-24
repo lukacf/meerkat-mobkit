@@ -152,7 +152,7 @@ ingress acknowledgement as proof of target execution.
 processes and requires Hive's verified terminal summary to name both targets.
 
 The pack uses the repository's pinned Meerkat dependency family in
-`meerkat-mobkit/Cargo.toml` (currently `=0.8.40`), not an independent pack pin.
+`crates/meerkat-mobkit/Cargo.toml` (currently `=0.8.40`), not an independent pack pin.
 Validate the checked-in dependencies without changing them:
 
 ```bash

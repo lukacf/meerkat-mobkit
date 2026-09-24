@@ -6,9 +6,9 @@ Companion product and composition layer for the [Meerkat](https://github.com/luk
 
 | Area | Path |
 |------|------|
-| Rust crate | `meerkat-mobkit/` |
-| Console/admin gateway | `meerkat-mobkit/src/bin/mobkit_gateway.rs` |
-| SDK stdin-RPC gateway | `meerkat-mobkit/src/bin/rpc_gateway.rs` |
+| Rust crate | `crates/meerkat-mobkit/` |
+| Console/admin gateway | `crates/meerkat-mobkit/src/bin/mobkit_gateway.rs` |
+| SDK stdin-RPC gateway | `crates/meerkat-mobkit/src/bin/rpc_gateway.rs` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | Python tests | `sdk/python/tests/` |
 | TypeScript SDK | `sdk/typescript/` |

@@ -16,13 +16,13 @@ Primary repo: `/Users/luka/src/meerkat-mobkit`
 The authoritative MobKit release line is `[workspace.package].version` in the
 root `Cargo.toml`. `make verify-version-parity` checks the Python and TypeScript
 SDK package versions, the TypeScript lockfile's root versions, the root Bazel
-module, the primary `meerkat-mobkit/BUILD.bazel` version fields, and canonical
+module, the primary `crates/meerkat-mobkit/BUILD.bazel` version fields, and canonical
 Rust installation snippets. Separately, run
 `node scripts/generate-bazel-rust-builds.mjs --check` to check generated
 per-crate BUILD freshness.
 
 For the current Meerkat dependency family, read the exact requirements in
-`meerkat-mobkit/Cargo.toml` and `mobkit-store-conformance/Cargo.toml`, including
+`crates/meerkat-mobkit/Cargo.toml` and `crates/mobkit-store-conformance/Cargo.toml`, including
 dev-dependencies, and the resolved versions in `Cargo.lock`. Verify these before
 release or dependency work rather than relying on a duplicated version snapshot.
 
@@ -32,28 +32,28 @@ There should be no vendored `meerkat-comms` patch in this repo. Durable image fo
 
 | Path | Purpose |
 | --- | --- |
-| `meerkat-mobkit/` | Rust crate, runtime, HTTP, JSON-RPC, gateway binaries, and embedded console bundle. |
-| `meerkat-mobkit/src/lib.rs` | Public exports and the fastest map of current modules. Read this before trusting notes. |
-| `meerkat-mobkit/src/mob_handle_runtime.rs` | `MobRuntime` / `RealMobRuntime`, mob bootstrap, member operations, session hooks, identity bridge points. |
-| `meerkat-mobkit/src/runtime/` | Runtime subsystems: bootstrap, routing/delivery, gating, scheduling, memory, metadata, event transport, cross-mob control, session stores, supervisor. |
-| `meerkat-mobkit/src/unified_runtime/` | Unified runtime builder, discovery, lifecycle, mob ops, event log, console/mob event projection, edge reconciliation, cross-mob wiring. |
-| `meerkat-mobkit/src/console_aggregator/` | Console timeline/log aggregation, replay, visibility policy, SQL/in-memory stores, send state machine. |
-| `meerkat-mobkit/src/http_console.rs` | Embedded console, REST console JSON, JSON-RPC, multipart upload/send, timeline stream, blob serving. |
-| `meerkat-mobkit/src/http_sse.rs` | Agent events, mob events, structural mob-events SSE. |
-| `meerkat-mobkit/src/rpc.rs` and `src/rpc/` | JSON-RPC dispatcher and method groups for console ingress, mob ops/events, routing/delivery, gating, memory, scheduling, session store, subscriptions. |
-| `meerkat-mobkit/src/identity_first/` | Identity-first continuity, local store/lease, bridge, orchestrator, gateway bridges, contracts. |
-| `meerkat-mobkit/src/contact_directory.rs`, `src/auth/peer_keys.rs` | Cross-mob contacts and signed peer-key handling. |
+| `crates/meerkat-mobkit/` | Rust crate, runtime, HTTP, JSON-RPC, gateway binaries, and embedded console bundle. |
+| `crates/meerkat-mobkit/src/lib.rs` | Public exports and the fastest map of current modules. Read this before trusting notes. |
+| `crates/meerkat-mobkit/src/mob_handle_runtime.rs` | `MobRuntime` / `RealMobRuntime`, mob bootstrap, member operations, session hooks, identity bridge points. |
+| `crates/meerkat-mobkit/src/runtime/` | Runtime subsystems: bootstrap, routing/delivery, gating, scheduling, memory, metadata, event transport, cross-mob control, session stores, supervisor. |
+| `crates/meerkat-mobkit/src/unified_runtime/` | Unified runtime builder, discovery, lifecycle, mob ops, event log, console/mob event projection, edge reconciliation, cross-mob wiring. |
+| `crates/meerkat-mobkit/src/console_aggregator/` | Console timeline/log aggregation, replay, visibility policy, SQL/in-memory stores, send state machine. |
+| `crates/meerkat-mobkit/src/http_console.rs` | Embedded console, REST console JSON, JSON-RPC, multipart upload/send, timeline stream, blob serving. |
+| `crates/meerkat-mobkit/src/http_sse.rs` | Agent events, mob events, structural mob-events SSE. |
+| `crates/meerkat-mobkit/src/rpc.rs` and `src/rpc/` | JSON-RPC dispatcher and method groups for console ingress, mob ops/events, routing/delivery, gating, memory, scheduling, session store, subscriptions. |
+| `crates/meerkat-mobkit/src/identity_first/` | Identity-first continuity, local store/lease, bridge, orchestrator, gateway bridges, contracts. |
+| `crates/meerkat-mobkit/src/contact_directory.rs`, `src/auth/peer_keys.rs` | Cross-mob contacts and signed peer-key handling. |
 | `console/` | React console app source, tests, Vite/build entrypoints, generated `console/dist`. |
 | `packages/console-core/` | Reusable console contracts, conversation/activity/sidebar/dock logic, formatting, rich content. |
 | `packages/console-components/` | Reusable console UI components and CSS tokens/themes. |
-| `meerkat-mobkit/console-dist/` | Embedded console bundle copied from `console/dist` by `npm run build`. |
+| `crates/meerkat-mobkit/console-dist/` | Embedded console bundle copied from `console/dist` by `npm run build`. |
 | `sdk/python/` | Python SDK, gateway subprocess transport, identity-first models/providers, tests. |
 | `sdk/typescript/` | TypeScript SDK, fetch/SSE client, runtime builders, tests. |
 | `examples/001-incident-command-center-pack/` | Self-contained Incident Commander example pack. Keep example-specific source here. |
 | `examples/002-foresight-studio-pack/` | TypeScript SDK example with identity-first providers, callback tools, and a heavily customized console. |
 | `scripts/repo-cargo` | Preferred Cargo wrapper for this repo. |
 
-Do not put example-specific support code under `meerkat-mobkit/src`. Same repo is fine; the core crate source tree is not.
+Do not put example-specific support code under `crates/meerkat-mobkit/src`. Same repo is fine; the core crate source tree is not.
 
 ## Console Surfaces
 
@@ -71,11 +71,11 @@ Current HTTP routes to remember:
 
 Console projection is contract-boundary code. Prefer changing `console_aggregator`, `http_console`, `console/src/lib/adapters.ts`, or `packages/console-core` rather than leaking raw runtime text into React components.
 
-Agent-tool spawns (`mob_spawn_member`, `delegate`, `spawn_member`/`spawn_many_members`) project into the console through `meerkat-mobkit/src/console_spawn.rs`: the unified runtime installs a `ConsoleSpawnSink` on the mob runtime at bootstrap, and the `AutoWireParentMobToolDispatcher` (in `mob_handle_runtime.rs`) registers each spawned member's identity + labels (`spawned_by`, `via_tool`, spawn labels) and appends the `initial_message` as a deduped `spawn-kickoff:*` `user_input` console event. Live runtime events resolve to the same chat identity. No console sink → spawn behavior unchanged.
+Agent-tool spawns (`mob_spawn_member`, `delegate`, `spawn_member`/`spawn_many_members`) project into the console through `crates/meerkat-mobkit/src/console_spawn.rs`: the unified runtime installs a `ConsoleSpawnSink` on the mob runtime at bootstrap, and the `AutoWireParentMobToolDispatcher` (in `mob_handle_runtime.rs`) registers each spawned member's identity + labels (`spawned_by`, `via_tool`, spawn labels) and appends the `initial_message` as a deduped `spawn-kickoff:*` `user_input` console event. Live runtime events resolve to the same chat identity. No console sink → spawn behavior unchanged.
 
 ## Access Control (ABAC)
 
-Optional attribute-based access control for console and SSE surfaces lives in `meerkat-mobkit/src/access/` (model, engine, controller). Deny-by-default with deny-overrides when enabled; `admins` bypass rules; a disabled config (or absent controller) changes nothing.
+Optional attribute-based access control for console and SSE surfaces lives in `crates/meerkat-mobkit/src/access/` (model, engine, controller). Deny-by-default with deny-overrides when enabled; `admins` bypass rules; a disabled config (or absent controller) changes nothing.
 
 Key facts:
 
@@ -89,7 +89,7 @@ Key facts:
 - Console UI: `console/src/panels/AccessPanel.tsx`, nav kind `access` appears only when `experience.access.can_administer`.
 - Denials: JSON-RPC `-32030` with `data.kind = "access_denied"`, HTTP 403 on REST/SSE.
 - Anti-lockout invariant: enabling requires non-empty `admins`; validation lives in `access/model.rs`.
-- Tests: `meerkat-mobkit/tests/access_control.rs`, unit tests in `src/access/*`, console helper tests in `console/src/panels/AccessPanel.test.ts`. Docs: `docs/concepts/access-control.mdx`.
+- Tests: `crates/meerkat-mobkit/tests/access_control.rs`, unit tests in `src/access/*`, console helper tests in `console/src/panels/AccessPanel.test.ts`. Docs: `docs/concepts/access-control.mdx`.
 
 ## Console Configuration
 
@@ -97,12 +97,12 @@ The stock console can be shaped by `config/console.toml` in the conventional wor
 
 Key files:
 
-- `meerkat-mobkit/src/console_config.rs` defines the TOML-backed config schema, normalization, realm overlays, and loader helpers.
-- `meerkat-mobkit/src/config_convention.rs` discovers `config/console.toml`.
-- `meerkat-mobkit/src/bin/mobkit_gateway.rs` loads the conventional config and applies the TUX init `realm` overlay.
-- `meerkat-mobkit/src/bin/rpc_gateway.rs` accepts `runtime_options.console_config_path`.
+- `crates/meerkat-mobkit/src/console_config.rs` defines the TOML-backed config schema, normalization, realm overlays, and loader helpers.
+- `crates/meerkat-mobkit/src/config_convention.rs` discovers `config/console.toml`.
+- `crates/meerkat-mobkit/src/bin/mobkit_gateway.rs` loads the conventional config and applies the TUX init `realm` overlay.
+- `crates/meerkat-mobkit/src/bin/rpc_gateway.rs` accepts `runtime_options.console_config_path`.
 - `sdk/typescript/src/builder.ts` exposes `MobKit.builder().consoleConfig("config/console.toml")` for RPC-gateway embedders, plus `.consoleAuthRequired(false)` for explicit local unauthenticated console demos.
-- `meerkat-mobkit/src/runtime/console_ingress.rs` projects `console_config` and uses `title` for the base panel title.
+- `crates/meerkat-mobkit/src/runtime/console_ingress.rs` projects `console_config` and uses `title` for the base panel title.
 - `console/src/ConsoleApp.tsx`, `console/src/panels/Topbar.tsx`, and `console/src/panels/Sidebar.tsx` consume the config.
 
 Current shape:
@@ -210,14 +210,14 @@ Cross-mob support includes in-process wiring and signed TCP/UDS contacts. Real t
 
 Useful files:
 
-- `meerkat-mobkit/src/unified_runtime/cross_mob.rs`
-- `meerkat-mobkit/src/runtime/cross_mob_control.rs`
-- `meerkat-mobkit/src/runtime/cross_mob_remote.rs`
-- `meerkat-mobkit/src/contact_directory.rs`
-- `meerkat-mobkit/src/auth/peer_keys.rs`
-- `meerkat-mobkit/tests/cross_mob_signed.rs`
-- `meerkat-mobkit/tests/cross_mob_tcp.rs`
-- `meerkat-mobkit/tests/cross_mob_uds.rs`
+- `crates/meerkat-mobkit/src/unified_runtime/cross_mob.rs`
+- `crates/meerkat-mobkit/src/runtime/cross_mob_control.rs`
+- `crates/meerkat-mobkit/src/runtime/cross_mob_remote.rs`
+- `crates/meerkat-mobkit/src/contact_directory.rs`
+- `crates/meerkat-mobkit/src/auth/peer_keys.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_signed.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_tcp.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_uds.rs`
 
 Image forwarding gotcha: the old failure was `image_ref_unavailable: current_turn image 0 did not resolve to a current-turn image`. Same-turn generate-and-send worked because the image was still in current-turn scope. Durable forwarding should use current upstream Meerkat behavior, not a vendored patch.
 
@@ -237,12 +237,12 @@ mob-plane workers.
 
 Key files:
 
-- `meerkat-mobkit/src/identity_first/types.rs`
-- `meerkat-mobkit/src/identity_first/contracts.rs`
-- `meerkat-mobkit/src/identity_first/runtime.rs`
-- `meerkat-mobkit/src/identity_first/orchestrator.rs`
-- `meerkat-mobkit/src/identity_first/bridge.rs`
-- `meerkat-mobkit/src/identity_first/gateway_bridges.rs`
+- `crates/meerkat-mobkit/src/identity_first/types.rs`
+- `crates/meerkat-mobkit/src/identity_first/contracts.rs`
+- `crates/meerkat-mobkit/src/identity_first/runtime.rs`
+- `crates/meerkat-mobkit/src/identity_first/orchestrator.rs`
+- `crates/meerkat-mobkit/src/identity_first/bridge.rs`
+- `crates/meerkat-mobkit/src/identity_first/gateway_bridges.rs`
 - `sdk/python/meerkat_mobkit/identity_first_models.py`
 - `sdk/python/meerkat_mobkit/identity_first_providers.py`
 - `sdk/typescript/src/runtime.ts`
@@ -286,7 +286,7 @@ npm --prefix console run phase1:targets --silent
 npm --prefix console run build --silent
 ```
 
-`npm --prefix console run build` updates `console/dist` and `meerkat-mobkit/console-dist`. Include generated bundle changes when the Rust server should serve the new console.
+`npm --prefix console run build` updates `console/dist` and `crates/meerkat-mobkit/console-dist`. Include generated bundle changes when the Rust server should serve the new console.
 
 For Rust changes:
 
@@ -327,14 +327,14 @@ make release-dry-run
 
 With the repository prerequisites installed, the release hook regenerates the
 workspace per-crate BUILD files and stages all tracked `BUILD.bazel` files,
-including `mobkit-store-conformance/BUILD.bazel`. Keep the generator `--check`
+including `crates/mobkit-store-conformance/BUILD.bazel`. Keep the generator `--check`
 command as verification. Tag
 the exact merged main commit only after the release PR and push-to-main CI on
 that exact commit are green, and the candidate has been accepted as described
 below.
 
 When updating Meerkat dependencies, update the family's exact requirements in
-both `meerkat-mobkit/Cargo.toml` and `mobkit-store-conformance/Cargo.toml`,
+both `crates/meerkat-mobkit/Cargo.toml` and `crates/mobkit-store-conformance/Cargo.toml`,
 including applicable dev-dependencies, before running
 `./scripts/repo-cargo update -p ...` for the affected packages. Verify that
 `Cargo.lock` resolves the intended coherent upstream family, then run the
@@ -379,19 +379,19 @@ Registry versions are immutable. If a version already published from the wrong c
 
 Rust:
 
-- `meerkat-mobkit/tests/unified_console.rs`
-- `meerkat-mobkit/tests/console_experience.rs`
-- `meerkat-mobkit/tests/console_route_auth.rs`
-- `meerkat-mobkit/tests/cross_mob_signed.rs`
-- `meerkat-mobkit/tests/cross_mob_tcp.rs`
-- `meerkat-mobkit/tests/cross_mob_uds.rs`
-- `meerkat-mobkit/tests/e2e_target_contracts.rs`
-- `meerkat-mobkit/tests/e2e_sdk_wire.rs`
-- `meerkat-mobkit/tests/identity_first_*.rs`
-- `meerkat-mobkit/tests/incident_command_center_pack.rs`
-- `meerkat-mobkit/tests/mob_events_*.rs`
-- `meerkat-mobkit/tests/routing_delivery.rs`
-- `meerkat-mobkit/tests/sse_auth_gate.rs`
+- `crates/meerkat-mobkit/tests/unified_console.rs`
+- `crates/meerkat-mobkit/tests/console_experience.rs`
+- `crates/meerkat-mobkit/tests/console_route_auth.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_signed.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_tcp.rs`
+- `crates/meerkat-mobkit/tests/cross_mob_uds.rs`
+- `crates/meerkat-mobkit/tests/e2e_target_contracts.rs`
+- `crates/meerkat-mobkit/tests/e2e_sdk_wire.rs`
+- `crates/meerkat-mobkit/tests/identity_first_*.rs`
+- `crates/meerkat-mobkit/tests/incident_command_center_pack.rs`
+- `crates/meerkat-mobkit/tests/mob_events_*.rs`
+- `crates/meerkat-mobkit/tests/routing_delivery.rs`
+- `crates/meerkat-mobkit/tests/sse_auth_gate.rs`
 
 Console:
 
@@ -411,7 +411,7 @@ SDK:
 
 ## Practical Rules
 
-- Follow the code that exists now. Start with `rg` and `meerkat-mobkit/src/lib.rs`.
+- Follow the code that exists now. Start with `rg` and `crates/meerkat-mobkit/src/lib.rs`.
 - Keep examples out of core source.
 - Keep signed cross-mob transport fail-closed. Missing pubkeys on real transports are errors.
 - Keep raw transport, checksum, scaffold, reasoning, and tool-envelope details out of user-facing console rendering.

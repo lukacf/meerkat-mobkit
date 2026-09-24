@@ -1506,7 +1506,7 @@ describe("parseErrorEvent", () => {
   });
 
   // The full set is gated against the Rust `ErrorEvent` enum by
-  // meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
+  // crates/meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
   // tags so a rename here cannot pass by editing both sides of that gate.
   it("ErrorCategory constants match expected values", () => {
     assert.deepEqual({ ...ErrorCategory }, {

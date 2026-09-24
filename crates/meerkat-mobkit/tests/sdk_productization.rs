@@ -63,7 +63,7 @@ const PRODUCTIZATION_CHECKS: [&str; 12] = [
 ];
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Resolve a program name to an absolute path using a given PATH string.

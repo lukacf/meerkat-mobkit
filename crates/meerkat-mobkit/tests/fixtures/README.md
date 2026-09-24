@@ -113,7 +113,7 @@ only to released and forensic captures.
   ```
 
 - live_contracts_v1.json - shared live wire-contract cases read by Rust
-  `meerkat-mobkit/tests/live_contracts.rs`, Python
+  `crates/meerkat-mobkit/tests/live_contracts.rs`, Python
   `sdk/python/tests/test_live_contracts.py`, and TypeScript
   `sdk/typescript/tests/live.test.ts`. Update the current contract and its
   cross-language expectations together; this is not a frozen released capture.

@@ -1220,7 +1220,7 @@ class TestErrorEvent:
             assert event.is_resolution is expected, category
 
     # The full set is gated against the Rust `ErrorEvent` enum by
-    # meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
+    # crates/meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
     # tags so a rename here cannot pass by editing both sides of that gate.
     def test_error_category_members_match_expected_values(self):
         assert {member.name: member.value for member in ErrorCategory} == {

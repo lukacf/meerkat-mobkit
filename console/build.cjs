@@ -7,7 +7,7 @@ const { build } = require("esbuild");
 const { EMBEDDED_SHARED_FILES } = require("./generated-assets.cjs");
 
 const outDir = path.join(__dirname, "dist");
-const embeddedOutDir = path.join(__dirname, "../meerkat-mobkit/console-dist");
+const embeddedOutDir = path.join(__dirname, "../crates/meerkat-mobkit/console-dist");
 const indexSourcePath = path.join(__dirname, "src/index.tsx");
 const browserSourcePath = path.join(__dirname, "src/browser.tsx");
 const libraryBundlePath = path.join(outDir, "index.cjs");

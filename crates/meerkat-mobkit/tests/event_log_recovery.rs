@@ -113,7 +113,7 @@ async fn batch_size_zero_does_not_panic() {
 }
 
 // `flush_failure_retries_instead_of_dropping_events`: see the unit
-// test of the same name in `meerkat-mobkit/src/unified_runtime/event_log.rs`.
+// test of the same name in `crates/meerkat-mobkit/src/unified_runtime/event_log.rs`.
 // `start_event_log` / `EventLogHandle` are `pub(crate)`, so the
 // retry-buffer behavior is exercised in a unit test next to the
 // implementation rather than from this integration target.

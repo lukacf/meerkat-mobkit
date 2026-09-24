@@ -77,7 +77,7 @@ use crate::memory::records::{
 use crate::memory::taint::{MemberAgentEventSink, SessionTaintTracker};
 
 /// Embedded prompt bundle (crate-local copy of
-/// `memory-evals/prompts/distiller-v0.md`; a unit test enforces byte
+/// `tests/memory-evals/prompts/distiller-v0.md`; a unit test enforces byte
 /// equality so the calibration artifact and the shipped default cannot
 /// drift — same pattern as the Selector).
 pub const EMBEDDED_PROMPT_V0: &str = include_str!("distiller_prompt_v0.md");
@@ -225,7 +225,7 @@ struct RawProfile {
 }
 
 impl DistillerProfile {
-    /// The embedded default: `memory-evals/profiles/distiller-v0.toml` with
+    /// The embedded default: `tests/memory-evals/profiles/distiller-v0.toml` with
     /// the prompt compiled in. The model tier is a calibration decision
     /// (§11/§16); the config's `distiller.model` override adjusts it
     /// per-deployment without a new profile file.
@@ -2886,15 +2886,15 @@ mod tests {
 
     #[test]
     fn embedded_prompt_matches_calibration_bundle() -> Result<(), Box<dyn std::error::Error>> {
-        let bundle =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../memory-evals/prompts/distiller-v0.md");
+        let bundle = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/memory-evals/prompts/distiller-v0.md");
         if !bundle.is_file() {
             return Ok(());
         }
         let text = std::fs::read_to_string(bundle)?;
         assert_eq!(
             text, EMBEDDED_PROMPT_V0,
-            "memory-evals/prompts/distiller-v0.md and \
+            "tests/memory-evals/prompts/distiller-v0.md and \
              src/memory/distiller_prompt_v0.md have drifted"
         );
         Ok(())
@@ -2914,7 +2914,7 @@ mod tests {
     #[test]
     fn external_profile_loads_from_evals_layout() -> Result<(), Box<dyn std::error::Error>> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../memory-evals/profiles/distiller-v0.toml");
+            .join("../../tests/memory-evals/profiles/distiller-v0.toml");
         if !path.is_file() {
             return Ok(());
         }

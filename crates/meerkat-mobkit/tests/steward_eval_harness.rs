@@ -12,7 +12,7 @@ use std::process::Command;
 
 #[test]
 fn memory_evals_mock_mode_runs_steward_eval_end_to_end() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/memory-evals");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/memory-evals");
     if !script.is_file() {
         // Packaged crate builds have no repo scripts tree; nothing to test.
         return;

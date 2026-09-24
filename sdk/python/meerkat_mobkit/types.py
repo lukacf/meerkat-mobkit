@@ -2014,7 +2014,7 @@ class ErrorCategory(str, Enum):
 
     Every Rust ``ErrorEvent`` variant must appear here with its serde
     ``snake_case`` wire tag. The Rust test
-    ``meerkat-mobkit/tests/sdk_error_category_parity.rs`` fails the build if
+    ``crates/meerkat-mobkit/tests/sdk_error_category_parity.rs`` fails the build if
     this set drifts from the Rust enum.
     """
     SPAWN_FAILURE = "spawn_failure"

@@ -766,7 +766,7 @@ fn skill_catalog_dirs() -> Vec<(String, String, PathBuf)> {
     out.push((
         "mobkit/repo".to_string(),
         "mobkit/repo".to_string(),
-        manifest_dir.join("../.claude/skills"),
+        manifest_dir.join("../../.claude/skills"),
     ));
     if let Ok(cwd) = std::env::current_dir() {
         out.push((

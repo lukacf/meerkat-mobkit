@@ -194,7 +194,7 @@ key at all when unused (`sdk/python/meerkat_mobkit/builder.py`,
 `identity_first_models.py`, `runtime.py`). The TypeScript SDK's builder exposes
 no equivalent setter, so a TypeScript host cannot authorize a role-migrating
 resume today. The wire key names are pinned by one shared fixture,
-`meerkat-mobkit/tests/fixtures/role_migrations_init_params.json`, read by both
+`crates/meerkat-mobkit/tests/fixtures/role_migrations_init_params.json`, read by both
 the Rust parser test (`identity_first::bridge` tests) and its Python twin
 (`sdk/python/tests/test_role_migrations.py`), so a rename on either side goes
 red instead of both staying green while a host arms nothing.

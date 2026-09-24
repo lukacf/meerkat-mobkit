@@ -69,7 +69,7 @@ agent's turn calls workgraph tools. A light workbench panel is secondary.
 
 ## Rust core (Stage A)
 
-1. New `meerkat-mobkit/src/workgraph_wiring.rs`:
+1. New `crates/meerkat-mobkit/src/workgraph_wiring.rs`:
    `pub const WORKGRAPH_STORE_FILE: &str = "workgraph.sqlite3";`
    `attach_workgraph_tools(&FactoryAgentBuilder, state_dir, realm_id) -> Option<WorkGraphService>`
    = open sqlite store (warn + None on failure — boot-without, matches schedule),

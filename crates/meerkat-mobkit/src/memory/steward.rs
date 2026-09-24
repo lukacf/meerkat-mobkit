@@ -91,7 +91,7 @@ use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
 
 /// Embedded prompt bundle (crate-local copy of
-/// `memory-evals/prompts/steward-v0.md`; a unit test enforces byte
+/// `tests/memory-evals/prompts/steward-v0.md`; a unit test enforces byte
 /// equality so the calibration artifact and the shipped default cannot
 /// drift — same pattern as the Selector and Distiller).
 pub const EMBEDDED_PROMPT_V0: &str = include_str!("steward_prompt_v0.md");
@@ -275,7 +275,7 @@ struct RawProfile {
 }
 
 impl StewardProfile {
-    /// The embedded default: `memory-evals/profiles/steward-v0.toml` with
+    /// The embedded default: `tests/memory-evals/profiles/steward-v0.toml` with
     /// the prompt compiled in. Consolidation judgment is weightier than
     /// extraction, so the default tier sits above the Distiller's; the
     /// config's `steward.model` override adjusts per-deployment.
@@ -4608,14 +4608,14 @@ mod tests {
         // must stay byte-identical; skip when the evals tree is absent
         // (published crate builds).
         let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../memory-evals/prompts/steward-v0.md");
+            .join("../../tests/memory-evals/prompts/steward-v0.md");
         if !bundle.is_file() {
             return Ok(());
         }
         let text = std::fs::read_to_string(bundle)?;
         assert_eq!(
             text, EMBEDDED_PROMPT_V0,
-            "memory-evals/prompts/steward-v0.md and \
+            "tests/memory-evals/prompts/steward-v0.md and \
              src/memory/steward_prompt_v0.md have drifted"
         );
         Ok(())

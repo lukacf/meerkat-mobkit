@@ -1,6 +1,6 @@
 //! M5 anti-regression gate for the storage-unification plan.
 //!
-//! Scans `meerkat-mobkit/src` production code (skipping `#[cfg(test)]`
+//! Scans `crates/meerkat-mobkit/src` production code (skipping `#[cfg(test)]`
 //! regions) and fails on:
 //!
 //! 1. **Ambient root resolution** — `env::var`/`env::var_os` reads of

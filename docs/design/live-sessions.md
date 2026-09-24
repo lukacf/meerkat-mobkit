@@ -607,7 +607,7 @@ The current console composition is described above.
 ## mobkit design
 
 Original design and versioned compatibility history for
-`meerkat-mobkit/src/live_wiring.rs`; the ordinary-stdin versus console-HTTP
+`crates/meerkat-mobkit/src/live_wiring.rs`; the ordinary-stdin versus console-HTTP
 boundary in item 5 is clarified for the current implementation. Older
 published-version limitations below do not require a development pin today.
 
@@ -723,7 +723,7 @@ advertising those generic atoms.
 
 Meerkat 0.8.38 ships a public OpenAI Live path for the released `gpt-live-1`
 catalog row behind the `openai-live` feature (mobkit forwards it as
-`meerkat-mobkit/openai-live`). It reuses the strict channel machinery above
+`crates/meerkat-mobkit/openai-live`). It reuses the strict channel machinery above
 (pending/active receipts, WebRTC answer, playback custody, client-context
 delegation) but has no operator, Gate0 qualification, or factory identity:
 the released catalog row, the host's configured OpenAI API-key binding, and

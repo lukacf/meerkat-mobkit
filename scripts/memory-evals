@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Memory calibration harness runner — memory-evals/ (arch doc §11).
+"""Memory calibration harness runner — tests/memory-evals/ (arch doc §11).
 
 Modes:
 
@@ -189,7 +189,7 @@ def load_profile(path):
     return parse_profile_toml(path.read_text())
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EVALS_DIR = REPO_ROOT / "memory-evals"
+EVALS_DIR = REPO_ROOT / "tests" / "memory-evals"
 PROFILES_DIR = EVALS_DIR / "profiles"
 SELECTOR_FIXTURES_DIR = EVALS_DIR / "fixtures" / "selector"
 DISTILLER_FIXTURES_DIR = EVALS_DIR / "fixtures" / "distiller"
@@ -218,7 +218,7 @@ KNOWN_INVARIANTS = (
 RECORD_META_KEYS = ("id", "kind", "title", "description", "age_days", "rank")
 
 # Staged-validator invariants mirror the Rust wire shapes exactly
-# (meerkat-mobkit/src/memory/records.rs + staged.rs serde): snake_case kinds
+# (crates/meerkat-mobkit/src/memory/records.rs + staged.rs serde): snake_case kinds
 # and tiers, internally-tagged scope/status/author/op enums. Each invariant
 # pins the StagedBatchError variant the validator must produce.
 STAGED_INVARIANT_ERRORS = {
@@ -1253,7 +1253,7 @@ def selector_profile_path():
             continue
         if profile.get("stage") == "selector":
             return path
-    fail_config("no selector-stage profile in memory-evals/profiles/")
+    fail_config("no selector-stage profile in tests/memory-evals/profiles/")
 
 
 def invoke_selector_eval(payload, mock):
@@ -1400,7 +1400,7 @@ def distiller_profile_path():
             continue
         if profile.get("stage") == "distiller":
             return path
-    fail_config("no distiller-stage profile in memory-evals/profiles/")
+    fail_config("no distiller-stage profile in tests/memory-evals/profiles/")
 
 
 def invoke_distiller_eval(payload, mock):
@@ -1570,7 +1570,7 @@ def steward_profile_path():
             continue
         if profile.get("stage") == "steward":
             return path
-    fail_config("no steward-stage profile in memory-evals/profiles/")
+    fail_config("no steward-stage profile in tests/memory-evals/profiles/")
 
 
 def invoke_steward_eval(payload, mock):
@@ -1774,7 +1774,7 @@ def hygienist_profile_path():
             continue
         if profile.get("stage") == "hygienist":
             return path
-    fail_config("no hygienist-stage profile in memory-evals/profiles/")
+    fail_config("no hygienist-stage profile in tests/memory-evals/profiles/")
 
 
 def invoke_hygienist_eval(payload, mock):
@@ -1945,7 +1945,7 @@ def run_hygienist(live_requested):
 def main():
     parser = argparse.ArgumentParser(
         prog="memory-evals",
-        description="Memory calibration harness (memory-evals/, arch doc §11).",
+        description="Memory calibration harness (tests/memory-evals/, arch doc §11).",
     )
     parser.add_argument(
         "--check",

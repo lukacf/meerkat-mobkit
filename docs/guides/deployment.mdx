@@ -369,7 +369,7 @@ base64_text)` over the base64 form, so meerkat's read-back verification
 written through MobKit's native `BinaryBlobStore::put_bytes` (non-image
 `mobkit/blob/*` objects), and image blobs written by MobKit builds that
 predate this rule, carry MobKit's own address, `sha256(media_type || 0x00 ||
-raw_bytes)` over the decoded bytes (`meerkat-mobkit/src/blob_store.rs`,
+raw_bytes)` over the decoded bytes (`crates/meerkat-mobkit/src/blob_store.rs`,
 `compute_blob_id`). Both render as `sha256:<64 hex digits>`, so the same PNG
 under the two recipes carries two visually indistinguishable ids. The store
 resolves both forms through both faces, so references written before the rule

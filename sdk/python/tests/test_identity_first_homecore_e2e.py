@@ -661,9 +661,9 @@ class TestHC07ResetVsDelete:
             # BEFORE it returns, so this status read cannot race it. Pinned
             # deterministically in Rust (reset record, post-reset status, and
             # the durable continuity record all assert exactly 2):
-            #   meerkat-mobkit/tests/identity_first_builder.rs
+            #   crates/meerkat-mobkit/tests/identity_first_builder.rs
             #     reset_checkpoint_version_is_the_initial_document_flush_not_cleanup
-            #   meerkat-mobkit/src/identity_first/adapters.rs
+            #   crates/meerkat-mobkit/src/identity_first/adapters.rs
             #     incremental_mutations_park_before_registration_and_flush_on_register
             #
             # This bound was previously `in (0, 1, 2, None)`, which admitted
