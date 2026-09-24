@@ -325,15 +325,22 @@ pub(crate) mod tests {
         /// first turn on the channel, never as spoken commentary.
         /// Wire fragments (500 chars each) concatenated in arrival order.
         summary_append: StdMutex<Option<String>>,
-        /// Fragments received so far.
+        /// Summary fragments received so far (thinking lane).
         summary_received: AtomicUsize,
         /// Fragments acknowledged so far; acks are held until the test
         /// releases them, then every received fragment is acknowledged.
         summary_acknowledged: AtomicUsize,
         release_summary_append: tokio::sync::Notify,
-        /// Quiet causal-tail reassertions still travel on the thinking lane;
-        /// the fixture acknowledges them immediately and only counts them.
+        /// Every thinking-lane append, the late summary included.
         thinking_received: AtomicUsize,
+        /// Instructions-lane appends. Meerkat 0.8.41 sends none for the
+        /// summary: a ready one is seeded at create, a late one rides the
+        /// thinking lane. Acknowledged immediately.
+        instructions_received: AtomicUsize,
+        /// The test asks the fixture to make the user speak: one
+        /// `session.input_transcript.delta`, the provider event Meerkat
+        /// treats as the user's first turn on the channel.
+        speak: tokio::sync::Notify,
     }
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
@@ -392,11 +399,18 @@ pub(crate) mod tests {
                                 summary_released = true;
                                 for client_event_id in held_summary_acks.drain(..) {
                                     socket.send(SocketMessage::Text(json!({
-                                        "type":"session.instructions.appended","event_id":"instructions-ack",
+                                        "type":"session.thinking.appended","event_id":"thinking-ack",
                                         "client_event_id":client_event_id,"start_ms":0.0,"end_ms":0.0
-                                    }).to_string().into())).await.expect("instructions acknowledgement");
+                                    }).to_string().into())).await.expect("thinking acknowledgement");
                                     capture.summary_acknowledged.fetch_add(1, Ordering::SeqCst);
                                 }
+                                continue;
+                            }
+                            () = capture.speak.notified() => {
+                                socket.send(SocketMessage::Text(json!({
+                                    "type":"session.input_transcript.delta","event_id":"first-user-delta",
+                                    "delta":"hello","start_ms":0.0,"end_ms":600.0
+                                }).to_string().into())).await.expect("user transcript delta");
                                 continue;
                             }
                             message = socket.recv() => message,
@@ -406,10 +420,18 @@ pub(crate) mod tests {
                         let event: Value = serde_json::from_str(&text).expect("provider command");
                         match event["type"].as_str() {
                             Some("session.instructions.append") => {
-                                // The bootstrap summary arrives as pipelined
-                                // 500-char fragments; the ack of each is held
-                                // until the test releases the lane so the
-                                // "delivering" stage stays observable.
+                                capture.instructions_received.fetch_add(1, Ordering::SeqCst);
+                                socket.send(SocketMessage::Text(json!({
+                                    "type":"session.instructions.appended","event_id":"instructions-ack",
+                                    "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
+                                }).to_string().into())).await.expect("instructions acknowledgement");
+                            }
+                            Some("session.thinking.append") => {
+                                // The late summary arrives on the thinking
+                                // lane as pipelined fragments; the ack of
+                                // each is held until the test releases the
+                                // lane so the "delivering" stage stays
+                                // observable.
                                 let fragment = event["content"].as_str().unwrap_or_default().to_string();
                                 capture
                                     .summary_append
@@ -418,22 +440,16 @@ pub(crate) mod tests {
                                     .get_or_insert_with(String::new)
                                     .push_str(&fragment);
                                 capture.summary_received.fetch_add(1, Ordering::SeqCst);
+                                capture.thinking_received.fetch_add(1, Ordering::SeqCst);
                                 if summary_released {
                                     socket.send(SocketMessage::Text(json!({
-                                        "type":"session.instructions.appended","event_id":"instructions-ack",
+                                        "type":"session.thinking.appended","event_id":"thinking-ack",
                                         "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
-                                    }).to_string().into())).await.expect("instructions acknowledgement");
+                                    }).to_string().into())).await.expect("thinking acknowledgement");
                                     capture.summary_acknowledged.fetch_add(1, Ordering::SeqCst);
                                 } else {
                                     held_summary_acks.push(event["event_id"].clone());
                                 }
-                            }
-                            Some("session.thinking.append") => {
-                                capture.thinking_received.fetch_add(1, Ordering::SeqCst);
-                                socket.send(SocketMessage::Text(json!({
-                                    "type":"session.thinking.appended","event_id":"thinking-ack",
-                                    "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
-                                }).to_string().into())).await.expect("thinking acknowledgement");
                             }
                             Some("session.commentary.append") => {
                                 socket.send(SocketMessage::Text(json!({
@@ -1529,6 +1545,31 @@ pub(crate) mod tests {
                 );
                 assert_eq!(provider.capture.summary_received.load(Ordering::SeqCst), 0);
             } else {
+                // Meerkat 0.8.41 never appends a late summary into silence:
+                // generation may finish, but the status stays at generating
+                // and no lane carries anything until the user's first turn.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                wait_context(
+                    &app,
+                    &token,
+                    pending,
+                    json!({"phase":"preparing","stage":"generating"}),
+                )
+                .await;
+                assert_eq!(
+                    provider.capture.summary_received.load(Ordering::SeqCst),
+                    0,
+                    "a late summary must not be appended before the user speaks"
+                );
+                assert_eq!(
+                    provider
+                        .capture
+                        .instructions_received
+                        .load(Ordering::SeqCst),
+                    0,
+                    "nothing rides the instructions lane before the user speaks"
+                );
+                provider.capture.speak.notify_one();
                 wait_context(
                     &app,
                     &token,
@@ -1542,7 +1583,7 @@ pub(crate) mod tests {
                     }
                 })
                 .await
-                .expect("actual summary append on the instructions lane");
+                .expect("actual summary append on the thinking lane after the first user turn");
                 assert_eq!(
                     provider.capture.summary_acknowledged.load(Ordering::SeqCst),
                     0
@@ -1563,8 +1604,13 @@ pub(crate) mod tests {
                     .expect("append");
                 assert!(
                     summary_append
+                        .contains(meerkat::experimental_gpt_live::LIVE_LATE_SUMMARY_PREFIX),
+                    "the late summary must open with the context-data prefix: {summary_append}"
+                );
+                assert!(
+                    summary_append
                         .contains("The background agent is configured for the test conversation."),
-                    "the instructions-lane append must carry the generated summary: {summary_append}"
+                    "the thinking-lane append must carry the generated summary: {summary_append}"
                 );
                 provider.capture.release_summary_append.notify_one();
                 wait_context(
@@ -1580,10 +1626,12 @@ pub(crate) mod tests {
                     "the summary must have arrived in at least one fragment"
                 );
                 assert_eq!(
-                    provider.capture.thinking_received.load(Ordering::SeqCst),
+                    provider
+                        .capture
+                        .instructions_received
+                        .load(Ordering::SeqCst),
                     0,
-                    "the summary travels on the instructions lane; without native speech no \
-                     causal-tail reassertion should reach the thinking lane"
+                    "the late summary travels on the thinking lane; the instructions lane stays quiet"
                 );
                 assert_eq!(
                     provider.capture.summary_acknowledged.load(Ordering::SeqCst),
@@ -1701,11 +1749,29 @@ pub(crate) mod tests {
             .export_realtime_refresh_session_snapshot(&session)
             .await
             .expect("after");
+        // Voice setup must not rewrite source history. The one utterance the
+        // fixture spoke may have become a canonical user row at the end of
+        // the source; every pre-existing row stays byte-identical.
+        assert!(
+            after.messages().len() >= before.messages().len(),
+            "voice setup must not drop source history"
+        );
         assert_eq!(
+            &after.messages()[..before.messages().len()],
             before.messages(),
-            after.messages(),
             "voice setup must not rewrite source history"
         );
+        for appended in &after.messages()[before.messages().len()..] {
+            let meerkat_core::Message::User(user) = appended else {
+                panic!("only the spoken user utterance may be appended by voice: {appended:?}");
+            };
+            assert!(
+                user.content.iter().any(|block| {
+                    matches!(block, meerkat_core::ContentBlock::Text { text } if text.contains("hello"))
+                }),
+                "an appended row must be the fixture's spoken utterance: {user:?}"
+            );
+        }
         assert_eq!(
             service
                 .live_session_llm_identity(&session)
