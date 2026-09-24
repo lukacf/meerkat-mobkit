@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
 
-#[path = "../../examples/001-incident-command-center-pack/incident_command_center.rs"]
+#[path = "../../../examples/001-incident-command-center-pack/incident_command_center.rs"]
 mod incident_command_center;
 
 /// The one definition of the normalized-provider-accounting contract every
