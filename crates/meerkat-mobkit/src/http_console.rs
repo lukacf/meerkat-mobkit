@@ -42,11 +42,12 @@ use crate::access::{
 };
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
-    ConsoleCursor, ConsoleFrame, ConsoleIdentityRecord, ConsoleLogError, ConsoleLogResult,
-    ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
-    ConsoleTimelineWindowQuery, ConsoleVisibility, ConsoleVisibilityPolicy,
-    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
+    ConsoleCursor, ConsoleFrame, ConsoleFrameSourceKind, ConsoleIdentityRecord, ConsoleLogError,
+    ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError,
+    ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery,
+    ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleVisibility,
+    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -68,7 +69,9 @@ use crate::runtime::{
     resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{RuntimeMetadataTable, labels_to_json_value};
-use crate::unified_runtime::console_events::ConsoleEventStore;
+use crate::unified_runtime::console_events::{
+    ConsoleEventStore, is_terminal_turn_completed_event, payload_stop_reason_is_tool_use,
+};
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
 
@@ -10358,12 +10361,7 @@ async fn wait_for_reset_startup_history(
                 ..ConsoleTimelineQuery::default()
             }))
             .await?;
-            let startup_completed = page.frames.iter().any(|frame| {
-                matches!(
-                    frame.kind.as_str(),
-                    "interaction_complete" | "turn_completed"
-                )
-            });
+            let startup_completed = page.frames.iter().any(frame_ends_startup_turn);
             if startup_completed {
                 pending.remove(&identity);
                 ready.insert(identity);
@@ -10388,6 +10386,31 @@ async fn wait_for_reset_startup_history(
         "ready": ready.into_iter().collect::<Vec<_>>(),
         "pending": Vec::<String>::new(),
     }))
+}
+
+/// Whether a timeline frame proves that an identity's startup turn ended.
+///
+/// Terminality comes from typed data only, never from message text:
+/// - `interaction_complete` (the console projection of meerkat's
+///   `run_completed`) and a raw `run_completed` end the run. The exception is
+///   a session-history `interaction_complete`: it projects one assistant step
+///   that said something, and a step whose typed `stop_reason` is `tool_use`
+///   continues with tool results.
+/// - `turn_completed` ends the turn only when its typed `stop_reason` is not
+///   `tool_use`. meerkat emits a `tool_use` `turn_completed` after every
+///   tool-loop call, so counting any `turn_completed` marked a tool-using
+///   startup turn ready after its first tool round.
+fn frame_ends_startup_turn(frame: &ConsoleFrame) -> bool {
+    match frame.kind.as_str() {
+        "interaction_complete" if frame.source.kind == ConsoleFrameSourceKind::SessionHistory => {
+            !frame
+                .payload
+                .get("message")
+                .is_some_and(payload_stop_reason_is_tool_use)
+        }
+        "interaction_complete" | "run_completed" => true,
+        kind => is_terminal_turn_completed_event(kind, &frame.payload),
+    }
 }
 
 fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
@@ -17333,5 +17356,196 @@ comms = true
             console_runtime_alias_generation("rt:review:singleton:8", "review:other"),
             None
         );
+    }
+
+    fn startup_frame(
+        identity: &str,
+        seq: u64,
+        kind: &str,
+        source: ConsoleFrameSourceKind,
+        payload: Value,
+    ) -> NewConsoleFrame {
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!("{identity}-{seq}"),
+            timestamp_ms: seq,
+            runtime_key: "runtime-a".to_string(),
+            identity: identity.to_string(),
+            conversation_id: Some(identity.to_string()),
+            session_id: None,
+            kind: kind.to_string(),
+            status: ConsoleFrameStatus::Delivered,
+            payload,
+            source: ConsoleFrameSource {
+                kind: source,
+                source_cursor: None,
+            },
+            source_event_id: Some(format!("{identity}-{seq}")),
+            interaction_id: Some("startup-turn".to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        }
+    }
+
+    async fn startup_readiness(aggregator: &MobKitConsoleAggregator, identities: &[&str]) -> Value {
+        // A zero timeout makes the wait scan the timeline exactly once.
+        super::wait_for_reset_startup_history(
+            aggregator,
+            identities.iter().map(ToString::to_string).collect(),
+            Duration::ZERO,
+        )
+        .await
+        .expect("startup readiness scan")
+    }
+
+    /// A tool-using startup turn is ready only at its real terminal. Newer
+    /// meerkat emits `turn_completed` with `stop_reason: tool_use` after every
+    /// tool-loop call, and session history projects a text-plus-tool step as
+    /// an `interaction_complete` carrying the step's `tool_use` stop reason;
+    /// neither ends the turn.
+    #[tokio::test]
+    async fn reset_startup_readiness_waits_past_tool_use_turn_completed() {
+        for terminal in [
+            (
+                "turn_completed",
+                ConsoleFrameSourceKind::ConsoleEvent,
+                json!({ "type": "turn_completed", "stop_reason": "end_turn" }),
+            ),
+            (
+                "interaction_complete",
+                ConsoleFrameSourceKind::ConsoleEvent,
+                json!({ "type": "run_completed", "result": "ready" }),
+            ),
+        ] {
+            let identity = "agent:startup";
+            let aggregator = MobKitConsoleAggregator::in_memory();
+            let store = aggregator.store();
+            let tool_round = [
+                startup_frame(
+                    identity,
+                    1,
+                    "tool_call_requested",
+                    ConsoleFrameSourceKind::ConsoleEvent,
+                    json!({ "name": "inspect", "tool_call_id": "toolu-1" }),
+                ),
+                startup_frame(
+                    identity,
+                    2,
+                    "turn_completed",
+                    ConsoleFrameSourceKind::ConsoleEvent,
+                    json!({ "type": "turn_completed", "stop_reason": "tool_use" }),
+                ),
+                startup_frame(
+                    identity,
+                    3,
+                    "interaction_complete",
+                    ConsoleFrameSourceKind::SessionHistory,
+                    json!({
+                        "result": "Checking.",
+                        "text": "Checking.",
+                        "type": "session_history",
+                        "message": {
+                            "role": "block_assistant",
+                            "blocks": [
+                                { "block_type": "text", "data": { "text": "Checking." } },
+                                {
+                                    "block_type": "tool_use",
+                                    "data": { "id": "toolu-1", "name": "inspect", "args": {} }
+                                }
+                            ],
+                            "stop_reason": "tool_use"
+                        }
+                    }),
+                ),
+                startup_frame(
+                    identity,
+                    4,
+                    "tool_result_received",
+                    ConsoleFrameSourceKind::ConsoleEvent,
+                    json!({ "tool_call_id": "toolu-1", "result": "ok" }),
+                ),
+            ];
+            for frame in tool_round {
+                store.append_if_absent(frame).await.expect("append frame");
+            }
+
+            let mid_turn = startup_readiness(&aggregator, &[identity]).await;
+            assert_eq!(mid_turn["timeout"], json!(true), "{mid_turn}");
+            assert_eq!(mid_turn["ready"], json!([]), "{mid_turn}");
+            assert_eq!(mid_turn["pending"], json!([identity]), "{mid_turn}");
+
+            let (kind, source, payload) = terminal;
+            store
+                .append_if_absent(startup_frame(identity, 5, kind, source, payload))
+                .await
+                .expect("append terminal frame");
+
+            let ended = startup_readiness(&aggregator, &[identity]).await;
+            assert_eq!(ended["timeout"], json!(false), "{kind}: {ended}");
+            assert_eq!(ended["ready"], json!([identity]), "{kind}: {ended}");
+            assert_eq!(ended["pending"], json!([]), "{kind}: {ended}");
+        }
+    }
+
+    /// The older shape, one terminal event per turn, still becomes ready:
+    /// meerkat 0.8.42 emits `turn_completed` only at the end of the turn.
+    #[tokio::test]
+    async fn reset_startup_readiness_accepts_single_terminal_event() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let store = aggregator.store();
+        let cases = [
+            (
+                "agent:end-turn",
+                "turn_completed",
+                ConsoleFrameSourceKind::ConsoleEvent,
+                json!({ "type": "turn_completed", "stop_reason": "end_turn" }),
+            ),
+            (
+                "agent:no-stop-reason",
+                "turn_completed",
+                ConsoleFrameSourceKind::ConsoleEvent,
+                json!({ "type": "turn_completed" }),
+            ),
+            (
+                "agent:run-completed",
+                "interaction_complete",
+                ConsoleFrameSourceKind::ConsoleEvent,
+                json!({ "type": "run_completed", "result": "ready" }),
+            ),
+            (
+                "agent:history-answer",
+                "interaction_complete",
+                ConsoleFrameSourceKind::SessionHistory,
+                json!({
+                    "result": "Ready.",
+                    "text": "Ready.",
+                    "type": "session_history",
+                    "message": {
+                        "role": "block_assistant",
+                        "blocks": [{ "block_type": "text", "data": { "text": "Ready." } }],
+                        "stop_reason": "end_turn"
+                    }
+                }),
+            ),
+        ];
+        let identities = cases
+            .iter()
+            .map(|(identity, ..)| *identity)
+            .collect::<Vec<_>>();
+        for (seq, (identity, kind, source, payload)) in (1_u64..).zip(cases) {
+            store
+                .append_if_absent(startup_frame(identity, seq, kind, source, payload))
+                .await
+                .expect("append terminal frame");
+        }
+
+        let readiness = startup_readiness(&aggregator, &identities).await;
+        let mut expected_ready = identities;
+        expected_ready.sort_unstable();
+        assert_eq!(readiness["timeout"], json!(false), "{readiness}");
+        assert_eq!(readiness["ready"], json!(expected_ready), "{readiness}");
+        assert_eq!(readiness["pending"], json!([]), "{readiness}");
     }
 }
