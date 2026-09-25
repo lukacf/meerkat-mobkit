@@ -92,6 +92,50 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   taskStatus?: string;
   runId?: string | null;
   connectionEvent?: ConversationConnectionEvent | null;
+  /**
+   * Typed provenance of a user-lane entry, copied from the wire. Renderers
+   * label the entry from these fields only, never from its text.
+   */
+  origin?: ConversationEntryOrigin | null;
+  /**
+   * A runtime event the console has no dedicated card for. Carried typed so
+   * the transcript can say what happened in words and keep the raw payload
+   * behind a disclosure, instead of printing the payload inline.
+   */
+  runtimeEvent?: ConversationRuntimeEvent | null;
+}
+
+/** Typed provenance of a user-lane message. */
+export interface ConversationEntryOrigin {
+  /**
+   * Caller identifier from a console send (`user_input.origin`). The
+   * console's own composer sends `console:<panel-id>`; other callers choose
+   * their own identifier.
+   */
+  sendOrigin?: string | null;
+  /** meerkat `render_metadata.class` persisted on the transcript message. */
+  renderClass?: string | null;
+}
+
+/** A peer reference as carried on a runtime event. */
+export interface ConversationPeerRef {
+  /** Stable peer id (UUID on the wire). */
+  id: string | null;
+  /** meerkat comms name, `mob_id/role/member`. */
+  displayName: string | null;
+}
+
+/** A generic runtime event, typed from its frame. */
+export interface ConversationRuntimeEvent {
+  /** Frame event name, e.g. `peer_content_ingested`. */
+  eventType: string;
+  /** Payload `kind` when present, e.g. `message`, `request`, `response`. */
+  kind: string | null;
+  peer: ConversationPeerRef | null;
+  /** meerkat `SenderContentTaint`: `clean` or `tainted`. */
+  senderTaint: string | null;
+  /** The raw frame payload, shown only behind a disclosure. */
+  payload: unknown;
 }
 
 export interface ConversationSummaryFile {

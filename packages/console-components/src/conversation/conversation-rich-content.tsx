@@ -22,6 +22,7 @@ import { copyTextToClipboard } from "../shared";
 
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
+import { CopyGlyph } from "../copy-glyph";
 import type { IconRenderer } from "../shared";
 
 type ConversationRichContentProps = {
@@ -370,7 +371,6 @@ function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
     },
     [],
   );
-  const mark = outcome === "copied" ? "✓" : outcome === "failed" ? "✗" : "⎘";
   const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
   return (
     <button
@@ -390,7 +390,7 @@ function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
         });
       }}
     >
-      {mark}
+      <CopyGlyph state={outcome} />
     </button>
   );
 }

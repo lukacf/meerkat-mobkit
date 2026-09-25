@@ -70,6 +70,8 @@ export default defineConfig({
       "console/src/lib/identity-log.test.ts",
       "packages/console-core/src/dock.test.ts",
       "packages/console-components/src/conversation/council-card.test.tsx",
+      "packages/console-components/src/conversation/conversation-message-view.test.tsx",
+      "packages/console-components/src/conversation/conversation-transcript.test.tsx",
       "packages/console-components/src/conversation/work-graph-card.test.tsx",
       "packages/console-components/src/topology/data.test.ts",
       "packages/console-components/src/dock/browser-dock-target-host.test.tsx",

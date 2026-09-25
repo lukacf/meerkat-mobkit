@@ -9,6 +9,47 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationMessageView", () => {
+  test("renders a runtime event as a sentence with a taint badge and a payload disclosure", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "peer-ingested",
+      kind: "message",
+      variant: "meta",
+      identity: { id: "system", label: "System", role: "system" },
+      createdAt: "2026-05-19T21:04:24.000Z",
+      text: "",
+      runtimeEvent: {
+        eventType: "peer_content_ingested",
+        kind: "message",
+        peer: { id: "978419a8", displayName: "homecore/identity/mk--identity_cparent-1" },
+        senderTaint: "tainted",
+        payload: { kind: "message", sender_taint: "tainted" },
+      },
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+    const line = container.querySelector(".cc-message__event-line");
+    expect(line?.textContent).toContain("Received a message from identity:parent-1 (homecore mob).");
+    expect(screen.getByText("untrusted source").getAttribute("title")).toContain("tainted");
+    expect(line?.textContent).not.toContain("sender_taint");
+    expect(container.querySelector(".cc-message__event-details pre")?.textContent).toContain("sender_taint");
+  });
+
+  test("labels a user entry from its typed origin, not its text", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "probe",
+      kind: "message",
+      variant: "plain",
+      identity: { id: "user", label: "You", role: "user" },
+      text: "Operator gate probe. Reply with exactly the token.",
+      origin: { sendOrigin: "homecore-gate" },
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+    const header = container.querySelector(".cc-message__source");
+    expect(header?.textContent).toContain("User message");
+    expect(header?.textContent).toContain("via homecore-gate");
+  });
+
   test("renders typed connection history as a compact immutable peer snapshot", () => {
     const entry: ConversationTimelineEntry = {
       id: "connection-1",

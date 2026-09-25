@@ -3,14 +3,22 @@ import type {
   ConversationTimelineEntry,
   ConversationRichBlock,
   ConversationCouncilEntry,
+  ConversationEntrySource,
+  ConversationEntrySourceOptions,
+  ConversationRuntimeEvent,
   ConversationWorkGraphEntry,
 } from "@console-core";
 import {
+  UNTRUSTED_SOURCE_DESCRIPTION,
   conversationEntryText,
   conversationRichBlocksToText,
+  describeConversationEntrySource,
+  transcriptDayKey,
+  transcriptDayLabel,
 } from "@console-core";
 import {
   ConversationRichContent,
+  CopyGlyph,
   CouncilCard,
   WorkGraphCard,
   copyTextToClipboard,
@@ -85,6 +93,12 @@ interface ChatPaneProps {
   /// `experience.workgraph.can_manage` and read-only state; omitted callbacks
   /// render no buttons.
   workGraphActions?: WorkGraphCardActions | null;
+  /**
+   * Roster labels keyed by public member alias (e.g. `triage:main`), used to
+   * name peers in runtime-event rows. Typed lookup; unknown aliases render
+   * as the alias itself.
+   */
+  peerLabels?: ReadonlyMap<string, string> | null;
 }
 
 export interface StagedAttachment {
@@ -97,13 +111,21 @@ const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "i
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate" | "workgraph" | "council";
+type MsgKind = "origin" | "event" | "user" | "agent" | "tool" | "thought" | "gate" | "workgraph" | "council";
 
 interface Msg {
   id: string;
   kind: MsgKind;
   time: string;
   createdAt?: string;
+  /** Typed source classification of the entry this row came from. */
+  source?: ConversationEntrySource;
+  /** Render the source header above this row (first row of an entry). */
+  showHeader?: boolean;
+  /** Local calendar day of `createdAt`, for day separators. */
+  dayKey?: string | null;
+  /** Typed runtime event behind an `event` row (raw payload for details). */
+  runtimeEvent?: ConversationRuntimeEvent;
   who?: string;
   text?: string;
   blocks?: ConversationRichBlock[];
@@ -130,14 +152,27 @@ function phaseLabel(_phase: "waiting" | "tool-executing" | "generating"): string
   return "working";
 }
 
+/// Row time: local `HH:MM`. The full date and seconds ride in the tooltip
+/// and day separators carry the date, so a bare time is never ambiguous.
 function formatTime(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/// Tooltip / copy stamp: local `YYYY-MM-DD HH:MM:SS`.
+function formatFullTimestamp(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const day = transcriptDayKey(iso) || "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
   const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
+  return `${day} ${hh}:${mm}:${ss}`;
 }
 
 function parseTimeMs(iso?: string): number | null {
@@ -300,14 +335,19 @@ function isScaffoldUserMessage(message: Msg): boolean {
 function transcriptCopyText(messages: Msg[]): string {
   return messages
     .map((message) => {
-      const text = msgCopyText(message);
+      const text = message.kind === "event" || message.kind === "origin"
+        ? (message.source?.sentence || msgCopyText(message))
+        : msgCopyText(message);
       if (!text) return "";
-      const label = message.kind === "user"
-        ? "You"
-        : message.kind === "agent"
-          ? message.who || "Agent"
-          : message.kind.toUpperCase();
-      const time = message.time ? `[${message.time}] ` : "";
+      const label = message.kind === "tool"
+        ? "Tool"
+        : message.kind === "thought"
+          ? "Thinking"
+          : message.source
+            ? [message.source.label, message.source.detail].filter(Boolean).join(" - ")
+            : message.kind === "user" ? "User message" : message.who || "Assistant";
+      const stamp = formatFullTimestamp(message.createdAt);
+      const time = stamp ? `[${stamp}] ` : "";
       const worked = message.workedFor ? `\nWorked for ${message.workedFor}` : "";
       return `${time}${label}: ${text}${worked}`.trim();
     })
@@ -328,7 +368,23 @@ function richBlockKind(block: ConversationRichBlock, isUser: boolean): MsgKind {
 /// calls (`send_request` to multiple peers) and consecutive
 /// `tool-call` blocks render as one collapsible group via
 /// `ConversationRichContent`'s `PeerToolGroup` / per-block render.
-function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
+function flattenEntry(
+  entry: ConversationTimelineEntry,
+  options: ConversationEntrySourceOptions = {},
+): Msg[] {
+  const rows = flattenEntryRows(entry);
+  if (rows.length === 0) return rows;
+  const source = describeConversationEntrySource(entry, options);
+  const dayKey = transcriptDayKey(entry.createdAt);
+  return rows.map((row, index) => ({
+    ...row,
+    source,
+    dayKey,
+    showHeader: index === 0,
+  }));
+}
+
+function flattenEntryRows(entry: ConversationTimelineEntry): Msg[] {
   if (entry.kind === "summary") {
     return [{
       id: entry.id,
@@ -366,10 +422,11 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
   if (entry.variant === "meta") {
     return [{
       id: entry.id,
-      kind: "origin",
+      kind: entry.runtimeEvent ? "event" : "origin",
       time: formatTime(entry.createdAt),
       createdAt: entry.createdAt,
       text: entry.text || "",
+      ...(entry.runtimeEvent ? { runtimeEvent: entry.runtimeEvent } : {}),
     }];
   }
 
@@ -469,7 +526,14 @@ export function isCanonicalVoiceRowDuringCall(
   return createdAt >= callStartedAt;
 }
 
-function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
+function sameSource(a: ConversationEntrySource | undefined, b: ConversationEntrySource | undefined): boolean {
+  return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
+}
+
+function buildChatMessages(
+  entries: ConversationTimelineEntry[],
+  options: ConversationEntrySourceOptions = {},
+): Msg[] {
   // Defensive cross-entry merge: the adapter already groups
   // consecutive same-name tool calls into one entry, but the
   // merge breaks if a non-tool entry slips between adjacent tool
@@ -477,7 +541,7 @@ function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
   // bubble). Walk the flattened message list and fold neighbouring
   // tool messages whose blocks all share the same tool `name` —
   // and, for peer tools, the same direction.
-  const flat = entries.flatMap(flattenEntry);
+  const flat = entries.flatMap((entry) => flattenEntry(entry, options));
   const merged: Msg[] = [];
   for (const m of flat) {
     const last = merged[merged.length - 1];
@@ -517,6 +581,21 @@ function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
         }
       }
       merged.push({ ...m });
+    }
+  }
+  // One header per run of assistant output: consecutive assistant entries
+  // from the same assistant on the same day read as one reply.
+  for (let index = 1; index < merged.length; index += 1) {
+    const message = merged[index];
+    const previous = merged[index - 1];
+    if (
+      message.showHeader
+      && message.source?.kind === "assistant"
+      && previous.kind !== "user"
+      && sameSource(previous.source, message.source)
+      && previous.dayKey === message.dayKey
+    ) {
+      merged[index] = { ...message, showHeader: false };
     }
   }
   let pendingUserStartedAt: number | null = null;
@@ -701,7 +780,7 @@ function CopyInlineButton({
       title={title}
       type="button"
     >
-      {outcome === "copied" ? "✓" : outcome === "failed" ? "✗" : "⎘"}
+      <CopyGlyph state={outcome} />
     </button>
   );
 }
@@ -762,6 +841,9 @@ function msgSignature(message: Msg): string {
     message.kind,
     message.time,
     message.who ?? "",
+    message.showHeader ? "h" : "",
+    message.dayKey ?? "",
+    message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? undefined)}` : "",
     textMark(message.text),
     message.workedFor ?? "",
     textMark(message.workedForCopyText),
@@ -801,18 +883,106 @@ function messageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boo
   );
 }
 
+/// Badge for content the sender declared tainted. The explanation is both a
+/// native tooltip and a focusable CSS tooltip, so keyboard users get it too.
+function UntrustedBadge() {
+  return (
+    <span
+      aria-label={`Untrusted source. ${UNTRUSTED_SOURCE_DESCRIPTION}`}
+      className="msg__badge msg__badge--untrusted"
+      data-tooltip={UNTRUSTED_SOURCE_DESCRIPTION}
+      role="note"
+      tabIndex={0}
+      title={UNTRUSTED_SOURCE_DESCRIPTION}
+    >
+      untrusted source
+    </span>
+  );
+}
+
+function MessageTime({ message }: { message: Msg }) {
+  if (!message.time) return null;
+  return (
+    <time className="msg__time" dateTime={message.createdAt} title={formatFullTimestamp(message.createdAt)}>
+      {message.time}
+    </time>
+  );
+}
+
+function runtimeEventJson(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, null, 2) ?? "";
+  } catch {
+    return String(payload);
+  }
+}
+
+/// Compact one-line row for runtime events and system notices: a sentence,
+/// the time, a taint badge, and (for runtime events) the raw payload behind a
+/// disclosure.
+function EventRow({ message: m }: { message: Msg }) {
+  const sentence = m.source?.sentence || m.text || "";
+  const payloadJson = m.runtimeEvent ? runtimeEventJson(m.runtimeEvent.payload) : "";
+  return (
+    <div
+      aria-label={m.source?.label}
+      className={`msg msg--${m.kind}`}
+      data-source-kind={m.source?.kind}
+      data-testid={m.kind === "event" ? `chat-event:${m.runtimeEvent?.eventType ?? ""}` : undefined}
+    >
+      <div className="msg__bubble">
+        <div className="msg__event-line">
+          <span aria-hidden="true" className="msg__event-mark" />
+          <span className="msg__event-text">{sentence}</span>
+          {m.source?.untrusted ? <UntrustedBadge /> : null}
+          <MessageTime message={m} />
+        </div>
+        {payloadJson ? (
+          <details className="msg__event-details">
+            <summary>Event details</summary>
+            <pre>{payloadJson}</pre>
+          </details>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MessageHeader({ message: m, copyLabel }: { message: Msg; copyLabel: string | null }) {
+  const source = m.source;
+  if (!source) return null;
+  return (
+    <div className="msg__head">
+      <span className="msg__source">{source.label}</span>
+      {source.detail ? <span className="msg__source-detail">{source.detail}</span> : null}
+      {source.untrusted ? <UntrustedBadge /> : null}
+      <MessageTime message={m} />
+      {copyLabel ? (
+        <CopyInlineButton className="msg__copy--head" label={copyLabel} text={msgCopyText(m)} />
+      ) : null}
+    </div>
+  );
+}
+
 const MessageRow = React.memo(function MessageRow({
   message: m,
   suppressWorked,
   workGraphActions,
 }: MessageRowProps) {
   countRender("MessageRow");
+  if (m.kind === "event" || m.kind === "origin") {
+    return <EventRow message={m} />;
+  }
+  const copyLabel = m.kind === "user" || m.kind === "agent"
+    ? `Copy ${m.kind === "user" ? "message" : "reply"}`
+    : null;
+  const header = m.showHeader && m.source;
   return (
-    <div className={`msg msg--${m.kind}`}>
-      <div className="msg__time">{m.time}</div>
+    <div className={`msg msg--${m.kind}`} data-source-kind={m.source?.kind}>
+      {header ? <MessageHeader copyLabel={copyLabel} message={m} /> : null}
       <div className="msg__bubble">
-        {(m.kind === "user" || m.kind === "agent") && (
-          <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
+        {!header && copyLabel && (
+          <CopyInlineButton label={copyLabel} text={msgCopyText(m)} />
         )}
         {m.kind === "council" && m.councilEntry ? (
           // No actions prop: council participants are destroyed
@@ -921,7 +1091,6 @@ const TranscriptView = React.memo(function TranscriptView({
           aria-live="polite"
           aria-busy="true"
         >
-          <div className="msg__time" />
           <div className="msg__bubble">
             <span className="msg__typing">
               <span className="msg__typing-dots" aria-hidden="true">
@@ -934,11 +1103,32 @@ const TranscriptView = React.memo(function TranscriptView({
       )}
       {messages.length === 0 && !isLoadingHistory && (
         <div className="msg msg--origin">
-          <div className="msg__time" />
           <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
         </div>
       )}
-      {windowedTurns.map((turn, offset) => {
+      {(() => {
+        // Day separators: before the first mounted row and at every local
+        // calendar-day change, so a bare HH:MM is never ambiguous.
+        let previousDay: string | null = null;
+        const now = new Date();
+        const daySeparator = (message: Msg): React.ReactNode => {
+          const day = message.dayKey ?? null;
+          if (!day || day === previousDay) return null;
+          previousDay = day;
+          const label = transcriptDayLabel(day, now);
+          return (
+            <div
+              aria-label={label}
+              className="conv__day"
+              data-testid={`chat-day:${identity}:${day}`}
+              key={`day:${day}:${message.id}`}
+              role="separator"
+            >
+              <span>{label}</span>
+            </div>
+          );
+        };
+        return windowedTurns.map((turn, offset) => {
         const turnIndex = windowStart + offset;
         return (
         <div
@@ -949,16 +1139,19 @@ const TranscriptView = React.memo(function TranscriptView({
           key={turn.id}
         >
           {turn.messages.map((m) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              suppressWorked={Boolean(phase && m.id === lastAgentMessageId)}
-              workGraphActions={workGraphActions}
-            />
+            <React.Fragment key={m.id}>
+              {daySeparator(m)}
+              <MessageRow
+                message={m}
+                suppressWorked={Boolean(phase && m.id === lastAgentMessageId)}
+                workGraphActions={workGraphActions}
+              />
+            </React.Fragment>
           ))}
         </div>
         );
-      })}
+      });
+      })()}
       {liveSpeech && liveSpeech.length > 0 && (
         <div
           aria-label="Live speech"
@@ -972,7 +1165,8 @@ const TranscriptView = React.memo(function TranscriptView({
               data-testid={`chat-live-row:${identity}:${item.itemId}`}
               key={item.itemId}
             >
-              <div className="msg__time">
+              <div className="msg__head">
+                <span className="msg__source">{item.speaker === "user" ? "Operator (voice)" : "Assistant (voice)"}</span>
                 <span className="msg__live-label">live</span>
               </div>
               <div className="msg__bubble">
@@ -989,7 +1183,6 @@ const TranscriptView = React.memo(function TranscriptView({
           aria-live="polite"
           aria-label={`${agentLabel} is ${phaseLabel(phase)}`}
         >
-          <div className="msg__time" />
           <div className="msg__bubble">
             <span className="msg__typing">
               <span className="msg__typing-dots" aria-hidden="true">
@@ -1141,6 +1334,7 @@ export function ChatPane({
   voiceActive = false,
   voiceDisabled = false,
   workGraphActions = null,
+  peerLabels = null,
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
   // The live composer value lives inside ComposerTextarea (below) so a
@@ -1213,8 +1407,10 @@ export function ChatPane({
     const visible = voiceCallStartedAt
       ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt))
       : entries;
-    return buildChatMessages(visible);
-  }, [entries, voiceCallStartedAt]);
+    return buildChatMessages(visible, {
+      resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
+    });
+  }, [entries, voiceCallStartedAt, peerLabels]);
   const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.

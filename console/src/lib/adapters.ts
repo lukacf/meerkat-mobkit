@@ -25,8 +25,12 @@ import type {
   WorkGraphCardStatus,
 } from "@console-core";
 import {
+  entryOriginFromFrameData,
   groupConversationTimelineEntries,
+  humanizeRuntimeEventType,
   normalizeRoutingSectionView,
+  runtimeEventFromFrame,
+  runtimeEventText,
   normalizeSidebarWatchFields,
   parseConversationRichBlocks,
   parseStreamingConversationRichBlocks,
@@ -2383,8 +2387,13 @@ function renderTerminalEntry(
     // meerkat's typed `error_report` first (message + reason_type), then the
     // flat keys; the generic summarizer falls through to a JSON dump of the
     // whole report for frames that predate the gateway's `error` mirror.
-    const text = `${frame.event}: ${describeFailure(frame.data, "") || summarizeFrameData(frame.data)}`.trim();
-    if (!text || text === `${frame.event}:`) return null;
+    // The raw report rides on the entry (runtimeEvent.payload) for the
+    // details disclosure; the row itself reads as a sentence.
+    const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
+    const detail = describeFailure(frame.data, "");
+    const text = detail
+      ? `${humanizeRuntimeEventType(frame.event)}: ${detail}`
+      : runtimeEventText(runtimeEvent);
     return {
       kind: "message",
       id: entryId,
@@ -2392,6 +2401,7 @@ function renderTerminalEntry(
       variant: "meta",
       createdAt: isoFromTimestampMs(frame.timestampMs),
       text,
+      runtimeEvent,
     };
   }
 
@@ -2677,6 +2687,9 @@ function renderHistoryUserEntry(
   }
   const record = frame.data as Record<string, unknown>;
   const content = record.content;
+  // Typed provenance only (send origin, persisted render class); the text
+  // itself never decides what kind of message this is.
+  const origin = entryOriginFromFrameData(record);
   if (Array.isArray(content)) {
     const blocks = contentToUserBlocks(content, blobBaseUrl);
     if (blocks.length === 0) return null;
@@ -2687,6 +2700,7 @@ function renderHistoryUserEntry(
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
       blocks,
+      ...(origin ? { origin } : {}),
     };
   }
   const text = extractTextFromContentBlocks(content).trim();
@@ -2698,6 +2712,7 @@ function renderHistoryUserEntry(
     variant: "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text,
+    ...(origin ? { origin } : {}),
   };
 }
 
@@ -4907,14 +4922,18 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    // Any other runtime event: typed record plus a plain-language line. The
+    // raw payload rides on the entry for an expandable details view and is
+    // never printed inline.
+    const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
     entries.push({
       kind: "message",
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
       createdAt: isoFromTimestampMs(frame.timestampMs),
-      text,
+      text: runtimeEventText(runtimeEvent),
+      runtimeEvent,
     });
   }
 
@@ -4922,6 +4941,10 @@ export function mapFramesToTimelineEntries(
   flushPendingText(false);
   return entries;
 }
+
+/// Optimistic composer entries are typed as this console's own sends, the
+/// same `console` origin namespace the send request carries.
+const LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console" } as const;
 
 export function createUserEntry(
   message: string,
@@ -4944,6 +4967,7 @@ export function createUserEntry(
       variant: "rich",
       createdAt: new Date().toISOString(),
       blocks,
+      origin: LOCAL_COMPOSER_ORIGIN,
     };
   }
   return {
@@ -4953,6 +4977,7 @@ export function createUserEntry(
     variant: "plain",
     createdAt: new Date().toISOString(),
     text: message,
+    origin: LOCAL_COMPOSER_ORIGIN,
   };
 }
 

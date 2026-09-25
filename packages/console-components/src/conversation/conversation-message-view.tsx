@@ -1,9 +1,12 @@
 import { Fragment } from "react";
 
 import {
+  UNTRUSTED_SOURCE_DESCRIPTION,
   conversationRichBlockCopyText,
   conversationRichBlocksToText,
   conversationIdentityPresentation,
+  describeConversationEntrySource,
+  type ConversationEntrySource,
   type ConversationTimelineEntry,
 } from "@console-core";
 
@@ -33,6 +36,61 @@ function humanizeSystemTaskMetadata(value: string | null | undefined) {
     return "";
   }
   return `${normalized[0]?.toUpperCase() || ""}${normalized.slice(1)}`;
+}
+
+function formatEntryTime(iso: string | undefined): { short: string; full: string } | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const short = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const full = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${short}:${pad(date.getSeconds())}`;
+  return { short, full };
+}
+
+function EntryTime({ iso }: { iso: string | undefined }) {
+  const time = formatEntryTime(iso);
+  if (!time) return null;
+  return (
+    <time className="cc-message__time" dateTime={iso} title={time.full}>
+      {time.short}
+    </time>
+  );
+}
+
+function UntrustedSourceBadge() {
+  return (
+    <span
+      aria-label={`Untrusted source. ${UNTRUSTED_SOURCE_DESCRIPTION}`}
+      className="cc-message__badge cc-message__badge--untrusted"
+      role="note"
+      tabIndex={0}
+      title={UNTRUSTED_SOURCE_DESCRIPTION}
+    >
+      untrusted source
+    </span>
+  );
+}
+
+function payloadJson(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, null, 2) ?? "";
+  } catch {
+    return String(payload);
+  }
+}
+
+/// Source header for user-lane entries: what the message is, from the typed
+/// origin, plus its time.
+function EntrySourceHeader({ source, iso }: { source: ConversationEntrySource; iso: string | undefined }) {
+  return (
+    <div className="cc-message__source" data-source-kind={source.kind}>
+      <span className="cc-message__source-label">{source.label}</span>
+      {source.detail ? <span className="cc-message__source-detail">{source.detail}</span> : null}
+      {source.untrusted ? <UntrustedSourceBadge /> : null}
+      <EntryTime iso={iso} />
+    </div>
+  );
 }
 
 type ConversationMessageViewProps = {
@@ -134,10 +192,33 @@ export function ConversationMessageView({
     if (entry.connectionEvent?.peers?.length) {
       return <ConversationConnectionEventView event={entry.connectionEvent} />;
     }
+    if (entry.runtimeEvent) {
+      // A runtime event reads as a sentence; the raw payload stays behind a
+      // disclosure instead of being printed inline.
+      const source = describeConversationEntrySource(entry);
+      return (
+        <article
+          aria-label={source.label}
+          className={`${assistantClassName} cc-message--meta cc-message--event`}
+          data-source-kind={source.kind}
+        >
+          <p className="cc-message__event-line">
+            <span>{source.sentence || entry.text}</span>
+            {source.untrusted ? <UntrustedSourceBadge /> : null}
+            <EntryTime iso={entry.createdAt} />
+          </p>
+          <details className="cc-message__event-details">
+            <summary>Event details</summary>
+            <pre>{payloadJson(entry.runtimeEvent.payload)}</pre>
+          </details>
+        </article>
+      );
+    }
     return <article className={`${assistantClassName} cc-message--meta`}><p>{entry.text}</p></article>;
   }
 
   if (presentation === "user") {
+    const source = describeConversationEntrySource(entry);
     const visibleRichBlocks = entry.variant === "rich" && entry.blocks?.length
       ? entry.blocks.filter((block) => conversationRichBlockCopyText(block).trim().length > 0)
       : [];
@@ -153,6 +234,7 @@ export function ConversationMessageView({
             text={copyText}
           />
         ) : null}
+        {!compact ? <EntrySourceHeader iso={entry.createdAt} source={source} /> : null}
         {visibleRichBlocks.length ? (
           <ConversationRichContent blocks={visibleRichBlocks} Icon={Icon} richStyle={entry.richStyle} />
         ) : (
