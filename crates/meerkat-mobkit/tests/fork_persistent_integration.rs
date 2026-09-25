@@ -171,15 +171,19 @@ impl LlmClient for ForkScriptClient {
     }
 }
 
-struct ForkHarness {
+struct ForkHarness<B> {
     runtime: UnifiedRuntime,
     service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
-    blob_store: Arc<meerkat_store::MemoryBlobStore>,
+    blob_store: Arc<B>,
     client: Arc<ForkScriptClient>,
     _state: tempfile::TempDir,
 }
 
-async fn harness() -> ForkHarness {
+async fn harness() -> ForkHarness<meerkat_store::MemoryBlobStore> {
+    harness_with_blob_store(Arc::new(meerkat_store::MemoryBlobStore::new())).await
+}
+
+async fn harness_with_blob_store<B: BlobStore + 'static>(blob_store: Arc<B>) -> ForkHarness<B> {
     let state = tempfile::tempdir().expect("state tempdir");
     let root = state.path().join("state");
     std::fs::create_dir_all(&root).expect("state directory");
@@ -192,7 +196,6 @@ async fn harness() -> ForkHarness {
         meerkat_runtime::store::SqliteRuntimeStore::new(root.join("runtime.sqlite"))
             .expect("runtime store"),
     );
-    let blob_store = Arc::new(meerkat_store::MemoryBlobStore::new());
     let blob_store_trait: Arc<dyn BlobStore> = blob_store.clone();
     let client = Arc::new(ForkScriptClient::new());
     let factory = AgentFactory::new(&root).comms(true).builtins(false);
@@ -530,6 +533,162 @@ async fn unified_runtime_fork_is_durable_typed_and_recoverable() {
     );
     assert_complete_tool_group(&recovered_history.messages);
     assert_eq!(image_blob_id(&recovered_history.messages), source_blob_id);
+
+    let shutdown = runtime.shutdown().await;
+    assert!(
+        shutdown.cleanup_completed(),
+        "fork harness shutdown must close every authority owner: {shutdown:?}"
+    );
+}
+
+/// Rewrite every blob-backed image reference `from` to `to`.
+fn with_image_blob_id(
+    messages: &[Message],
+    from: &meerkat_core::BlobId,
+    to: &meerkat_core::BlobId,
+) -> Vec<Message> {
+    let mut messages = messages.to_vec();
+    for message in &mut messages {
+        if let Message::User(user) = message {
+            for block in &mut user.content {
+                if let ContentBlock::Image {
+                    data: ImageData::Blob { blob_id },
+                    ..
+                } = block
+                    && blob_id == from
+                {
+                    *blob_id = to.clone();
+                }
+            }
+        }
+    }
+    messages
+}
+
+/// HomeCore regression: MobKit before 0.8.41 stored meerkat images under its
+/// raw-bytes address, `sha256(media_type || 0x00 || decoded_bytes)`, and those
+/// references stay in committed transcripts. meerkat's durable-fork preflight
+/// recomputes its own content address and refused every fork of such a
+/// transcript with "blob identity mismatch". MobKit's adapter now attests its
+/// own recipe, so the fork commits, the child's reference is re-homed to the
+/// meerkat content address, and the source keeps its reference and object.
+#[tokio::test]
+async fn unified_runtime_forks_a_transcript_holding_a_pre_0841_image_reference() {
+    use meerkat_mobkit::{Base64BlobStoreAdapter, BinaryBlobStore, ObjectStoreBlobStore};
+
+    let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+    // Exactly what the pre-0.8.41 adapter did with meerkat's base64 image.
+    let legacy = binary
+        .put_bytes("image/png", bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\n"))
+        .await
+        .expect("store image under the pre-0.8.41 address");
+    let legacy_id = legacy.blob_id;
+    let content_id = meerkat_core::content_blob_id("image/png", IMAGE_BASE64);
+    assert_ne!(
+        legacy_id, content_id,
+        "the fixture must model a non-content address"
+    );
+
+    let ForkHarness {
+        runtime,
+        service,
+        blob_store,
+        client,
+        _state,
+    } = harness_with_blob_store(Arc::new(Base64BlobStoreAdapter::new(binary.clone()))).await;
+
+    let mut source_spec = worker_spec("source");
+    source_spec.external_tools = Some(Arc::new(ForkProbeTool));
+    runtime.spawn(source_spec).await.expect("spawn source");
+    let admission = runtime
+        .start_member_turn(
+            "source",
+            ContentInput::Blocks(vec![
+                ContentBlock::Text {
+                    text: "seed a legacy image reference".to_string(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: ImageData::Blob {
+                        blob_id: legacy_id.clone(),
+                    },
+                },
+            ]),
+            HandlingMode::Queue,
+            meerkat_mob::MemberTurnOptions::new(),
+            None,
+        )
+        .await
+        .expect("admit source turn");
+    let source_session_id =
+        meerkat_core::SessionId::parse(&admission.session_id).expect("source admission session id");
+    admission
+        .turn
+        .wait()
+        .await
+        .expect("source turn reaches its exact committed terminal");
+
+    let source_history = service
+        .read_history(&source_session_id, SessionHistoryQuery::default())
+        .await
+        .expect("read committed source history");
+    assert_eq!(
+        image_blob_id(&source_history.messages),
+        legacy_id,
+        "the source transcript holds the pre-0.8.41 reference"
+    );
+
+    let forked = runtime
+        .fork_member("source", worker_spec("child"), None)
+        .await
+        .expect("a transcript with a pre-0.8.41 image reference forks");
+    assert_eq!(forked.member_alias, "child");
+
+    let child_history = service
+        .read_history(&forked.result.session_id, SessionHistoryQuery::default())
+        .await
+        .expect("read committed child history");
+    assert_eq!(image_blob_id(&child_history.messages), content_id);
+    assert_eq!(
+        child_history.messages,
+        with_image_blob_id(&source_history.messages, &legacy_id, &content_id),
+        "the child inherits the transcript with only the image reference re-homed"
+    );
+    meerkat_core::verify_stored_image_blob(blob_store.as_ref(), &content_id, "image/png", 1 << 20)
+        .await
+        .expect("the child's reference verifies under meerkat's strict gate");
+
+    let source_after = service
+        .read_history(&source_session_id, SessionHistoryQuery::default())
+        .await
+        .expect("read source history after the fork");
+    assert_eq!(
+        source_after.messages, source_history.messages,
+        "the fork leaves the source transcript untouched"
+    );
+    let source_object = binary
+        .get_bytes(&legacy_id)
+        .await
+        .expect("the source's legacy object is kept");
+    assert_eq!(source_object.data.as_ref(), b"\x89PNG\r\n\x1a\n");
+
+    // The child runs a turn over its re-homed history. The script's third
+    // call parks until `release_running`; a stored permit lets it through.
+    client.release_running.notify_one();
+    runtime
+        .start_member_turn(
+            "child",
+            ContentInput::Text("continue in the child".to_string()),
+            HandlingMode::Queue,
+            meerkat_mob::MemberTurnOptions::new(),
+            None,
+        )
+        .await
+        .expect("admit child turn")
+        .turn
+        .wait()
+        .await
+        .expect("child turn over the re-homed image reaches its committed terminal");
 
     let shutdown = runtime.shutdown().await;
     assert!(

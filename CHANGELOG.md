@@ -137,6 +137,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   TypeScript smoke applies the same rule to its `query_timeline` replay
   terminal check.
 
+- Forks of transcripts holding an image written before MobKit 0.8.41 no longer
+  fail with "blob identity mismatch". Those references carry MobKit's raw-bytes
+  address, `sha256(media_type || 0x00 || decoded_bytes)`, while Meerkat
+  recomputes `content_blob_id(canonical_media_type, base64)` on read-back.
+  `Base64BlobStoreAdapter` implements Meerkat's `BlobStore::attest_address`: it
+  recomputes MobKit's raw-bytes recipe over the payload it returned and attests
+  only an exact match, so Meerkat's durable-fork preflight re-homes the child's
+  reference to the Meerkat content address and realtime history hydration
+  accepts it. The source transcript and its stored object are unchanged; any
+  other reference stays unattested and is refused as before. Requires the
+  Meerkat release that adds `BlobStore::attest_address`.
+
 - Console WorkGraph graph view: labels no longer render smeared or tiny. The
   graph SVG inherited the global icon reset (`stroke: currentColor;
   stroke-width: 2`), which outlined every glyph, status dot and arrowhead, and
