@@ -36,6 +36,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   machine, as the gateway and runtime-backed ephemeral compositions already
   did.
 
+- Spawned members' idle-retirement opt-ins survive a gateway restart. The
+  opt-in (`idle_retire_secs` on `fork_off`, `delegate` and `mob_spawn_member`,
+  and the runtime-default opt-in every `fork_off`, RPC and console fork child
+  gets) lived only in an in-memory map, so after a restart the restored fork
+  children were never idle-retired and held their sessions until retired by
+  hand. Opt-ins are now written through to the persistent metadata store
+  (new `member_idle_retire/<member_id>` rows in the existing `mobkit_metadata`
+  table; no schema change) and restored when the idle sweep starts, so the
+  sweep re-arms for restored members. Each opt-in is bound to the member
+  instance it was set for, by the member's bridge session: the sweep honours
+  it only while the member seated under that id still runs that session and
+  drops it otherwise, so a member id reused after its member was retired
+  outside the sweep never inherits the old opt-in. A respawn keeps the
+  opt-in: MobKit's operator, RPC and console respawns carry it to the
+  respawned session, and an identity member's continuity rebind (respawn or
+  delivery repair) does the same. Every retirement of a member session,
+  whatever surface caused it (the sweep, `mob_retire_member`, operator or
+  console retire, reset, destroy), releases the opt-in bound to exactly that
+  session, observed on the mob event stream; a reset starts the member fresh
+  without its opt-in. Opt-ins for members that are not seated when the call
+  returns (a `delegate` helper is already retired) or that sit in a mob the
+  sweep does not manage are not recorded, and one undecodable row is skipped
+  with a warning instead of aborting the restore.
+  `PersistentMetadataStore` gains `load_member_idle_retire_overrides`,
+  `set_member_idle_retire_override` and `clear_member_idle_retire_override`
+  with default bodies that keep the old in-process behavior for external
+  implementations; `MemberIdleRetireOverrideRecord` and
+  `DelegateIdleRetireOverride` are now public.
+
 - `reset_all` startup readiness (`startup_history`) now waits for the startup
   turn to really end. It counted any `turn_completed` frame as the end, but
   upcoming Meerkat emits `turn_completed` with `stop_reason: tool_use` after
