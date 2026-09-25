@@ -430,6 +430,92 @@ span.cc-conversation-turn-preview__file-icon::after {
   font-size: var(--_cc-text-xs);
 }
 
+/* Source header on user-lane entries (typed origin label + time). */
+.cc-message__source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-bottom: 2px;
+  color: var(--_cc-foreground-subtle);
+  font-size: var(--_cc-text-xs);
+  line-height: 1.3;
+}
+
+.cc-message__source-label {
+  color: var(--_cc-foreground-muted);
+  font-weight: 600;
+}
+
+.cc-message__time {
+  font-family: var(--_cc-font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-message__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+  cursor: help;
+}
+
+.cc-message__badge--untrusted {
+  color: var(--_cc-warning);
+  border: 1px solid color-mix(in srgb, var(--_cc-warning) 45%, transparent);
+}
+
+.cc-message__badge:focus-visible {
+  outline: 2px solid var(--_cc-focus-ring);
+  outline-offset: 1px;
+}
+
+/* Runtime events: one sentence, raw payload behind a disclosure. */
+.cc-message__event-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+}
+
+.cc-message__event-details > summary {
+  cursor: pointer;
+  width: max-content;
+}
+
+.cc-message__event-details > pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: var(--_cc-radius-sm);
+  background: var(--_cc-surface-soft);
+  font-family: var(--_cc-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cc-conversation-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--_cc-foreground-subtle);
+  font-size: var(--_cc-text-xs);
+  font-weight: 600;
+}
+
+.cc-conversation-day::before,
+.cc-conversation-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--_cc-border-soft);
+}
+
 .cc-connection-event {
   display: flex;
   flex-direction: column;

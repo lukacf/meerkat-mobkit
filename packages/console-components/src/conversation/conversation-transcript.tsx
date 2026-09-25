@@ -1,6 +1,12 @@
 import clsx from "clsx";
+import { Fragment } from "react";
 
-import type { ConversationViewState } from "@console-core";
+import {
+  transcriptDayKey,
+  transcriptDayLabel,
+  type ConversationTimelineGroup,
+  type ConversationViewState,
+} from "@console-core";
 
 import { ConversationMessageGroup } from "./conversation-message-group";
 import type { FlowRunRestoreHandler } from "./flow-run-card";
@@ -22,6 +28,14 @@ export type ConversationTranscriptProps = {
   onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
 };
+
+function groupDayKey(group: ConversationTimelineGroup): string | null {
+  for (const entry of group.entries) {
+    const key = transcriptDayKey(entry.createdAt);
+    if (key) return key;
+  }
+  return null;
+}
 
 export function ConversationTranscript({
   viewState,
@@ -47,6 +61,23 @@ export function ConversationTranscript({
     return null;
   }
 
+  // Day separators before the first dated group and at each local
+  // calendar-day change, so row times are never ambiguous.
+  const now = new Date();
+  let previousDay: string | null = null;
+  const daySeparator = (group: ConversationTimelineGroup) => {
+    if (compact) return null;
+    const day = groupDayKey(group);
+    if (!day || day === previousDay) return null;
+    previousDay = day;
+    const label = transcriptDayLabel(day, now);
+    return (
+      <div aria-label={label} className="cc-conversation-day" data-testid={`conversation-day:${day}`} role="separator">
+        <span>{label}</span>
+      </div>
+    );
+  };
+
   return (
     <div className={clsx("cc-theme-scope", "cc-conversation-transcript", compact && "is-compact", className)}>
       {turns.map((turn, turnIndex) => {
@@ -60,15 +91,17 @@ export function ConversationTranscript({
             key={turn.id}
           >
             {turn.groups.map((group) => (
-              <ConversationMessageGroup
-                compact={compact}
-                group={group}
-                Icon={Icon}
-                key={group.id}
-                onFlowRunMessageMember={onFlowRunMessageMember}
-                onFlowRunRestore={onFlowRunRestore}
-                workGraphActions={workGraphActions}
-              />
+              <Fragment key={group.id}>
+                {daySeparator(group)}
+                <ConversationMessageGroup
+                  compact={compact}
+                  group={group}
+                  Icon={Icon}
+                  onFlowRunMessageMember={onFlowRunMessageMember}
+                  onFlowRunRestore={onFlowRunRestore}
+                  workGraphActions={workGraphActions}
+                />
+              </Fragment>
             ))}
             {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (
               <TurnDiffCard

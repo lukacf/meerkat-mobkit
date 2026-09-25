@@ -1,5 +1,7 @@
 export { ConsoleActivityRail } from "./activity/console-activity-rail";
 export { CopyButton } from "./copy-button";
+export { CopyGlyph } from "./copy-glyph";
+export type { CopyGlyphState } from "./copy-glyph";
 export { ConversationEmptyState } from "./conversation/conversation-empty-state";
 export { ConsoleConversationPanel } from "./conversation/console-conversation-panel";
 export { ConversationPane } from "./conversation/conversation-pane";

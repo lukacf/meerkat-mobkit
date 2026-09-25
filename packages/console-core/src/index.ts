@@ -74,6 +74,31 @@ export {
   conversationMessageHasIntrinsicCopyAction,
   groupConversationTimelineEntries,
 } from "./conversation";
+export type {
+  ConversationEntryOrigin,
+  ConversationPeerRef,
+  ConversationRuntimeEvent,
+} from "./conversation";
+export type {
+  ConversationEntrySource,
+  ConversationEntrySourceKind,
+  ConversationEntrySourceOptions,
+  MemberCommsName,
+  PeerPresentation,
+} from "./transcript-source";
+export {
+  UNTRUSTED_SOURCE_DESCRIPTION,
+  decodeMemberAlias,
+  describeConversationEntrySource,
+  describePeer,
+  entryOriginFromFrameData,
+  humanizeRuntimeEventType,
+  parseMemberCommsName,
+  runtimeEventFromFrame,
+  runtimeEventText,
+  transcriptDayKey,
+  transcriptDayLabel,
+} from "./transcript-source";
 
 export type {
   ConsoleTopologyControlCapabilities,

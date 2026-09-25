@@ -521,3 +521,84 @@ test("long histories render a windowed rail with the overflow jump tick", () => 
     "the overflow preview names the collapsed count",
   );
 });
+
+test("transcript rows carry a typed source header, compact event rows, and day separators", () => {
+  const peerEvent: ConversationTimelineEntry = {
+    id: "peer-ingested",
+    kind: "message",
+    variant: "meta",
+    identity: { id: "system", label: "System", role: "system" },
+    createdAt: "2026-05-19T21:04:24.000Z",
+    text: "Received a message from triage:main (homecore mob).",
+    runtimeEvent: {
+      eventType: "peer_content_ingested",
+      kind: "message",
+      peer: { id: "978419a8-69f6-5103-8d31-4482e1f76b52", displayName: "homecore/triage/mk--triage_cmain" },
+      senderTaint: "tainted",
+      payload: { kind: "message", sender_taint: "tainted", type: "peer_content_ingested" },
+    },
+  };
+  const probe: ConversationTimelineEntry = {
+    ...message({
+      id: "probe",
+      role: "user",
+      createdAt: "2026-05-20T01:00:29.000Z",
+      text: "Operator gate probe. Reply with exactly the token gate-turn-proof-1 and nothing else.",
+    }),
+  };
+  const reply = message({ id: "reply", role: "assistant", createdAt: "2026-05-20T01:00:31.000Z", text: "gate-turn-proof-1" });
+  const html = renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      agent: null,
+      agentLabel: "Triage",
+      identity: "agent",
+      entries: [peerEvent, probe, reply],
+      phase: null,
+      draft: "",
+      sending: false,
+      staged: [],
+      onDraftChange: () => undefined,
+      onStagedChange: () => undefined,
+      onSend: () => true,
+      peerLabels: new Map([["triage:main", "Triage"]]),
+    }),
+  );
+  // The runtime event reads as a sentence with the roster label, a taint
+  // badge, and its raw payload only inside the details disclosure.
+  assert.match(html, /Received a message from Triage \(homecore mob\)\./);
+  assert.match(html, /untrusted source/);
+  assert.doesNotMatch(html, /peer_content_ingested: \{/);
+  const beforeDetails = html.slice(0, html.indexOf("<details"));
+  assert.doesNotMatch(beforeDetails, /sender_taint/);
+  assert.match(html, /<summary>Event details<\/summary>/);
+  // The probe has no typed origin, so it is a plain user message: never
+  // classified by its text.
+  assert.match(html, /class="msg__source">User message</);
+  assert.match(html, /class="msg__source">Assistant</);
+  // Icon copy buttons, no bare glyph in the text flow.
+  assert.doesNotMatch(html, /⎘/);
+  assert.match(html, /aria-label="Copy message"/);
+  assert.match(html, /data-icon="copy"/);
+  // Day separators at the first row and at the local day change.
+  const days = html.match(/data-testid="chat-day:agent:[0-9-]+"/g) || [];
+  const expectedDays = new Set([
+    "2026-05-19T21:04:24.000Z",
+    "2026-05-20T01:00:29.000Z",
+  ].map((iso) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }));
+  assert.equal(days.length, expectedDays.size);
+});
+
+test("consecutive rows from the same assistant share one header", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({ id: "q", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Question" }),
+    message({ id: "a1", role: "assistant", createdAt: "2026-05-20T06:43:05.000Z", text: "Part one" }),
+    message({ id: "a2", role: "assistant", createdAt: "2026-05-20T06:43:09.000Z", text: "Part two" }),
+  ]);
+  assert.deepEqual(
+    messages.map((m) => [m.id, m.showHeader]),
+    [["q", true], ["a1", true], ["a2", false]],
+  );
+});

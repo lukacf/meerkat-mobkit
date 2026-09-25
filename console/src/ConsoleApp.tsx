@@ -670,6 +670,20 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     null,
   );
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
+  // Roster labels keyed by public alias (durable identity and member id), so
+  // transcript rows can name a peer the way the sidebar does.
+  const peerLabels = React.useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const agent of agents) {
+      const label = agent.label?.trim();
+      if (!label) continue;
+      const identity = agent.identity?.trim();
+      if (identity) labels.set(identity, label);
+      const memberId = agent.member_id?.trim();
+      if (memberId && !labels.has(memberId)) labels.set(memberId, label);
+    }
+    return labels;
+  }, [agents]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>(
     {},
   );
@@ -4209,6 +4223,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     return (
       <ChatPane
         agent={agent}
+        peerLabels={peerLabels}
         agentLabel={target.title || agent?.label || identity}
         identity={identity}
         entries={entries}

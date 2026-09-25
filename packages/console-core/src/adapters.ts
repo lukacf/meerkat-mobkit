@@ -1,3 +1,8 @@
+import {
+  entryOriginFromFrameData,
+  runtimeEventFromFrame,
+  runtimeEventText,
+} from "./transcript-source";
 import type {
   ConsoleActivityPulseItem,
   ConsoleActivityRailViewState,
@@ -1318,15 +1323,15 @@ function renderTerminalEntry(
   }
 
   if (frame.event === "interaction_failed" || frame.event === "run_failed") {
-    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
-    if (!text || text === `${frame.event}:`) return null;
+    const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
     return {
       kind: "message",
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
       createdAt: isoFromTimestampMs(frame.timestampMs),
-      text,
+      text: runtimeEventText(runtimeEvent),
+      runtimeEvent,
     };
   }
 
@@ -1575,6 +1580,9 @@ function renderHistoryUserEntry(
   }
   const record = frame.data as Record<string, unknown>;
   const content = record.content;
+  // Typed provenance only (send origin, persisted render class); the text
+  // itself never decides what kind of message this is.
+  const origin = entryOriginFromFrameData(record);
   if (Array.isArray(content)) {
     const blocks = contentToUserBlocks(content, blobBaseUrl);
     if (blocks.length === 0) return null;
@@ -1585,6 +1593,7 @@ function renderHistoryUserEntry(
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
       blocks,
+      ...(origin ? { origin } : {}),
     };
   }
   const text = extractTextFromContentBlocks(content).trim();
@@ -1596,6 +1605,7 @@ function renderHistoryUserEntry(
     variant: "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text,
+    ...(origin ? { origin } : {}),
   };
 }
 
@@ -3683,14 +3693,18 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    // Any other runtime event: typed record plus a plain-language line. The
+    // raw payload rides on the entry for an expandable details view and is
+    // never printed inline.
+    const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
     entries.push({
       kind: "message",
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
       createdAt: isoFromTimestampMs(frame.timestampMs),
-      text,
+      text: runtimeEventText(runtimeEvent),
+      runtimeEvent,
     });
   }
 

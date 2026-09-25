@@ -1218,7 +1218,8 @@ test("tool-call copy over plain http, where navigator.clipboard is undefined, co
       ["copy"],
       "the execCommand fallback must be the path taken on plain http",
     );
-    assert.equal(copyButton!.textContent, "✓");
+    assert.equal(copyButton!.querySelector("svg")?.getAttribute("data-icon"), "check");
+    assert.equal(copyButton!.textContent, "", "the copy button is an icon, not a glyph in the text flow");
     assert.equal(copyButton!.getAttribute("aria-label"), "Copied");
     assert.equal(copyButton!.getAttribute("data-copy-outcome"), "copied");
     // Unmount inside the scope too: React needs `window` to tear down.
@@ -1249,11 +1250,11 @@ test("tool-call copy over plain http shows a FAILURE mark rather than an unearne
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.notEqual(
-      copyButton!.textContent,
-      "✓",
+      copyButton!.querySelector("svg")?.getAttribute("data-icon"),
+      "check",
       "a failed copy must never render the success mark - a silent lie is worse than an error",
     );
-    assert.equal(copyButton!.textContent, "✗");
+    assert.equal(copyButton!.querySelector("svg")?.getAttribute("data-icon"), "cross");
     assert.equal(copyButton!.getAttribute("aria-label"), "Copy failed");
     assert.equal(copyButton!.getAttribute("data-copy-outcome"), "failed");
     root!.unmount();
