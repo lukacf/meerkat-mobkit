@@ -265,9 +265,7 @@ impl std::error::Error for MetadataStoreError {}
 /// otherwise.
 ///
 /// `recorded_at` orders the opt-in against mob events (a reset or destroy
-/// releases only opt-ins recorded before it). `carrying` is set while a
-/// respawn of the member is moving the opt-in to the respawned session; a
-/// restored runtime finishes a carry a crash left open.
+/// releases only opt-ins recorded before it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberIdleRetireOverrideRecord {
     pub mob_id: String,
@@ -275,20 +273,23 @@ pub struct MemberIdleRetireOverrideRecord {
     pub session_id: meerkat_core::types::SessionId,
     pub policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
     pub recorded_at: chrono::DateTime<chrono::Utc>,
-    pub carrying: bool,
 }
 
 /// Stored value of a member idle-retirement row (the key carries the member
 /// id, the row's `mob_id` column the mob). Rows written before `recorded_at`
-/// and `carrying` existed decode as recorded at the epoch, not carrying.
+/// existed decode as recorded at the epoch.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredMemberIdleRetireOverride {
     session_id: meerkat_core::types::SessionId,
     policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
     #[serde(default)]
     recorded_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    carrying: bool,
+}
+
+/// The one field a delete matches on, decoded from any version's row.
+#[derive(serde::Deserialize)]
+struct StoredMemberIdleRetireSession {
+    session_id: meerkat_core::types::SessionId,
 }
 
 impl StoredMemberIdleRetireOverride {
@@ -297,7 +298,6 @@ impl StoredMemberIdleRetireOverride {
             session_id: record.session_id.clone(),
             policy: record.policy,
             recorded_at: record.recorded_at,
-            carrying: record.carrying,
         })
         .map_err(|err| MetadataStoreError::Io(format!("encode idle-retire opt-in: {err}")))
     }
@@ -347,8 +347,8 @@ pub trait PersistentMetadataStore: Send + Sync {
         Ok(())
     }
 
-    /// Forget exactly this opt-in: the row is removed only while it still
-    /// holds `record` (same session and policy), so an opt-in recorded for a
+    /// Forget this member instance's opt-in: the row is removed only while it
+    /// is still bound to `record.session_id`, so an opt-in recorded for a
     /// newer member under the same id survives. Clearing an absent or
     /// different row is not an error.
     async fn clear_member_idle_retire_override(
@@ -429,7 +429,10 @@ impl PersistentMetadataStore for InMemoryMetadataStore {
     ) -> Result<(), MetadataStoreError> {
         let mut overrides = self.idle_retire_overrides.write().await;
         let key = (record.mob_id.clone(), record.member_id.clone());
-        if overrides.get(&key) == Some(record) {
+        if overrides
+            .get(&key)
+            .is_some_and(|stored| stored.session_id == record.session_id)
+        {
             overrides.remove(&key);
         }
         Ok(())
@@ -649,7 +652,6 @@ impl PersistentMetadataStore for SqliteMetadataStore {
                     session_id: stored.session_id,
                     policy: stored.policy,
                     recorded_at: stored.recorded_at,
-                    carrying: stored.carrying,
                 }),
                 Err(error) => tracing::warn!(
                     mob_id,
@@ -686,18 +688,35 @@ impl PersistentMetadataStore for SqliteMetadataStore {
         &self,
         record: &MemberIdleRetireOverrideRecord,
     ) -> Result<(), MetadataStoreError> {
-        // Exact-value match: a row rewritten for a newer member under the
-        // same id since the caller read `record` is kept.
-        let value = StoredMemberIdleRetireOverride::encode(record)?;
+        // Match on the key and the DECODED session id, not the stored bytes:
+        // rows written by other versions (another `recorded_at` shape) must
+        // stay deletable. The DELETE then pins the exact value read, so a row
+        // rewritten for a newer member in between is kept.
         let _fence = self.operation_fence()?;
         let conn = self.lock_conn()?;
+        let key = member_idle_retire_key(&record.member_id);
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM mobkit_metadata WHERE mob_id = ?1 AND key = ?2",
+                rusqlite::params![record.mob_id, key],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(MetadataStoreError::Io(format!("query: {other}"))),
+            })?;
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        let bound_to_record = serde_json::from_str::<StoredMemberIdleRetireSession>(&stored)
+            .is_ok_and(|row| row.session_id == record.session_id);
+        if !bound_to_record {
+            return Ok(());
+        }
         conn.execute(
             "DELETE FROM mobkit_metadata WHERE mob_id = ?1 AND key = ?2 AND value = ?3",
-            rusqlite::params![
-                record.mob_id,
-                member_idle_retire_key(&record.member_id),
-                value
-            ],
+            rusqlite::params![record.mob_id, key, stored],
         )
         .map_err(|err| MetadataStoreError::Io(format!("delete: {err}")))?;
         Ok(())
@@ -991,7 +1010,6 @@ mod tests {
             policy,
             recorded_at: chrono::DateTime::from_timestamp(1_790_000_000, 0)
                 .expect("fixed timestamp"),
-            carrying: false,
         }
     }
 
@@ -1185,5 +1203,76 @@ mod tests {
                 .expect("load"),
             vec![kept]
         );
+    }
+
+    /// Review of #447: a release deletes a row by its key and the session it
+    /// is bound to, whatever version wrote it. A row written by #442 (no
+    /// `recorded_at`) or by a build that stored extra fields is deletable; a
+    /// row bound to another session (a newer member) is kept.
+    #[tokio::test]
+    async fn sqlite_member_idle_retire_rows_from_other_versions_are_deletable() {
+        use crate::mob_handle_runtime::DelegateIdleRetireOverride;
+        use meerkat_core::types::SessionId;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+        let store = SqliteMetadataStore::open(&path).expect("open metadata store");
+        let (old_format, new_format, kept) = (SessionId::new(), SessionId::new(), SessionId::new());
+        {
+            let conn = store.lock_conn().expect("connection");
+            for (member, value) in [
+                (
+                    "written-by-442",
+                    format!(r#"{{"session_id":"{old_format}","policy":{{"seconds":300}}}}"#),
+                ),
+                (
+                    "written-with-extras",
+                    format!(
+                        r#"{{"session_id":"{new_format}","policy":"runtime_default","recorded_at":"2026-09-25T20:00:00Z","carrying":true}}"#
+                    ),
+                ),
+                (
+                    "newer-member",
+                    format!(r#"{{"session_id":"{kept}","policy":"disabled"}}"#),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO mobkit_metadata (mob_id, key, value) VALUES (?1, ?2, ?3)",
+                    rusqlite::params!["mob-a", member_idle_retire_key(member), value],
+                )
+                .expect("insert row");
+            }
+        }
+        let loaded = store
+            .load_member_idle_retire_overrides()
+            .await
+            .expect("load");
+        assert_eq!(loaded.len(), 3, "every version's row decodes: {loaded:?}");
+        for record in loaded
+            .iter()
+            .filter(|record| record.member_id != "newer-member")
+        {
+            store
+                .clear_member_idle_retire_override(record)
+                .await
+                .expect("clear");
+        }
+        // A release for a gone instance of `newer-member` keeps the row.
+        store
+            .clear_member_idle_retire_override(&idle_record(
+                "mob-a",
+                "newer-member",
+                &SessionId::new(),
+                DelegateIdleRetireOverride::Disabled,
+            ))
+            .await
+            .expect("stale clear");
+        let remaining = store
+            .load_member_idle_retire_overrides()
+            .await
+            .expect("load");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].member_id, "newer-member");
+        assert_eq!(remaining[0].session_id, kept);
     }
 }
