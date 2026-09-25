@@ -282,6 +282,8 @@ export type {
   ConversationParsedSummary,
   ConversationParsedSummaryFile,
   ConversationRichBlock,
+  ConversationRichMarkdownBlock,
+  ConversationTextMode,
   ConversationRichCodeBlock,
   ConversationRichCommandBlock,
   ConversationRichDividerBlock,
@@ -304,6 +306,7 @@ export {
   normalizeConversationDisplayLabel,
   normalizeConversationDisplayText,
   normalizeProjectDisplayLabel,
+  buildConversationMarkdownBlocks,
   parseConversationRichBlocks,
   parseConversationSummary,
   parseStreamingConversationRichBlocks,
@@ -391,6 +394,7 @@ export type {
 } from "./headless";
 export {
   CONSOLE_COMMAND_NAMES,
+  ConsoleCapabilityUnavailableError,
   consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
@@ -430,3 +434,18 @@ export type {
 export {
   migrateConsoleWorkbenchTarget,
 } from "./targets";
+
+export type {
+  ConsoleTransportPhase,
+  ConsoleTransportState,
+  ConsoleTimelineSubscriptionOptions,
+  ConsoleTimelineSubscription,
+} from "./timeline-subscription";
+
+export * from "./pending-approvals";
+
+export * from "./send-attempt";
+
+export * from "./context-record";
+
+export * from "./tool-completion";

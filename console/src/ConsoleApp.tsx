@@ -9,11 +9,15 @@ import {
   ConsoleSidebar,
   TopologyPanel,
   ConsoleWorkbench,
+  ConsoleTransportStatus,
   useConsoleDockController,
 } from "@console-components";
-import type { WorkGraphCardActions } from "@console-components";
+import type { MarkdownUrlPolicy, WorkGraphCardActions } from "@console-components";
 import type {
   ConsoleDockState,
+  ConsoleTransportState,
+  PendingApprovalResource,
+  PendingApprovalSnapshot,
   ConsoleWorkbenchTarget,
   ConversationTimelineEntry,
   IdentityInspectViewState,
@@ -22,6 +26,7 @@ import type {
   TopologyOperationReceipt,
 } from "@console-core";
 import {
+  createPendingApprovalResource,
   identityStateLabel,
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
@@ -60,6 +65,7 @@ import {
 } from "./lib/network";
 import {
   CONSOLE_COMMAND_NAMES,
+  ConsoleCapabilityUnavailableError,
   consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
@@ -168,6 +174,12 @@ import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
+import { beginConsoleSendAttempt, createConsoleSendAttempt, finishConsoleSendAttempt, consoleSendFailureState, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope } from "../../packages/console-core/src/send-attempt";
+import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
+import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
+import type { ConsoleQuoteSelection } from "../../packages/console-components/src/conversation/context-selection";
+import { consoleSendStorageKey, loadConsoleSendAttempts, saveConsoleSendAttempts, readLegacyConsoleQueue, consoleLegacyQueueImported, consoleComposerTabId, loadConsoleComposerDraft, saveConsoleComposerDraft } from "./lib/send-attempt-storage";
+
 import { VoiceBar } from "./panels/VoiceBar";
 import { useVoiceController } from "./lib/use-voice-controller";
 import { useVoiceReadiness, voiceReadinessDenied } from "./lib/use-voice-readiness";
@@ -175,6 +187,10 @@ import { countRender } from "./lib/render-counts";
 
 interface ConsoleAppProps {
   baseUrl: string;
+  /** Opaque host scope covering authority/runtime, realm and authenticated principal. */
+  storageNamespace?: string;
+  /** Host decisions for Markdown links and images. Resolvers do not grant access. */
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   /// Test seam: supply a transport instead of the HTTP one built from
   /// `baseUrl`. Production entry points never set it.
   transport?: MobKitConsoleTransport;
@@ -297,6 +313,7 @@ function actionVisible(
 function richBlockHasVisibleContent(block: unknown): boolean {
   if (!block || typeof block !== "object") return false;
   const record = block as Record<string, unknown>;
+  if (record.type === "markdown") return typeof record.source === "string" && record.source.trim().length > 0;
   const scalarText = [
     typeof record.text === "string" ? record.text : "",
     typeof record.label === "string" ? record.label : "",
@@ -473,6 +490,18 @@ function browserLocalStorage(): Storage | null {
   }
 }
 
+function browserComposerStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    // Browsers clone sessionStorage for duplicated tabs, then isolate writes.
+    // Keeping unsent composers here preserves reloads without allowing a
+    // copied tab ID to overwrite another tab's draft in localStorage.
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function isTerminalTurnCompletedFrame(frame: ConsoleFrame): boolean {
   if (frame.event !== "turn_completed") return false;
   const data =
@@ -633,16 +662,63 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 // CONSOLE APP
 // ============================================================================
 
-export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.Element {
+export function ConsoleApp(props: ConsoleAppProps): React.JSX.Element {
+  // All authorized state belongs to one host authority and transport lifetime.
+  // A keyed instance clears it in the same commit as the host scope change.
+  const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace]);
+  return <ConsoleAppInstance key={instanceKey} {...props} />;
+}
+
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy }: ConsoleAppProps): React.JSX.Element {
   countRender("ConsoleApp");
+  const lifetimeRef = React.useRef({ active: true, generation: 0 });
+  React.useLayoutEffect(() => {
+    lifetimeRef.current.active = true;
+    lifetimeRef.current.generation += 1;
+    return () => {
+      lifetimeRef.current.active = false;
+      lifetimeRef.current.generation += 1;
+    };
+  }, []);
   const consoleFetchTimeoutMsRef = React.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
   const consoleTransport = React.useMemo(
-    () =>
-      transport ??
-      createHttpConsoleTransport({
+    () => {
+      const source = transport ?? createHttpConsoleTransport({
         baseUrl,
         fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current,
-      }),
+      });
+      const current = (generation = lifetimeRef.current.generation) => {
+        if (!lifetimeRef.current.active || lifetimeRef.current.generation !== generation) {
+          throw new DOMException("Console authority lifetime ended", "AbortError");
+        }
+      };
+      const call = async <T,>(operation: () => Promise<T>): Promise<T> => {
+        const generation = lifetimeRef.current.generation;
+        current(generation);
+        const value = await operation();
+        current(generation);
+        return value;
+      };
+      const scoped: MobKitConsoleTransport = {
+        loadExperience: () => call(() => source.loadExperience()),
+        loadModules: source.loadModules ? () => call(() => source.loadModules!()) : undefined,
+        capabilities: () => call(() => source.capabilities()),
+        queryTimeline: input => call(() => source.queryTimeline(input)),
+        send: input => call(() => source.send(input)),
+        executeCommand: source.executeCommand ? input => call(() => source.executeCommand!(input)) : undefined,
+        upload: source.upload ? input => call(() => source.upload!(input)) : undefined,
+        blobUrl: source.blobUrl ? id => { current(); return source.blobUrl!(id); } : undefined,
+        subscribeTimeline(input, onFrame, options) {
+          const generation = lifetimeRef.current.generation;
+          current(generation);
+          const active = () => lifetimeRef.current.active && lifetimeRef.current.generation === generation;
+          return source.subscribeTimeline({ ...input, onTransportState: state => { if (active()) input.onTransportState?.(state); } },
+            frame => { if (active()) onFrame(frame); },
+            { ...options, onTransportState: state => { if (active()) options?.onTransportState?.(state); } });
+        },
+      };
+      return scoped;
+    },
     [baseUrl, transport],
   );
   const consoleController = React.useMemo(
@@ -775,6 +851,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   // Recoverable per-action failures (e.g. an access-denied send). Rendered
   // as a dismissible banner inside the shell — never the fatal error screen.
   const [actionError, setActionError] = React.useState("");
+  const [transportState, setTransportState] = React.useState<ConsoleTransportState>({
+    phase: "connecting", stale: true, freshness: "unknown",
+  });
+  const [transportRetry, setTransportRetry] = React.useState(0);
   const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
     try {
       return (
@@ -1633,140 +1713,184 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   }
 
   // ──────────────────────────────────────────────────────────────
-  // Pending message stack (per-identity, persisted, cross-tab synced)
-  //
-  // Codex-style queue: when the user sends while an agent is busy,
-  // the message lands here instead of going straight to the wire.
-  // The stack drains FIFO on busy→idle. Each item supports Steer
-  // (cut the line, sends immediately with HandlingMode::Steer),
-  // Trash (client-side delete, never sent), Edit (in-place text
-  // mutation), and Reorder (drag-and-drop or keyboard).
-  //
-  // Persistence: localStorage under `mobkit-pending-stack:<identity>`.
-  // Cross-tab sync: a `storage` event listener mirrors changes from
-  // other tabs into the in-memory ref. Items in transient animation
-  // states are stripped or leased before persisting so reloads do not
-  // resurrect an in-flight animation without the timer that owned it.
-  // ──────────────────────────────────────────────────────────────
+  // Queue entries are immutable attempts once dispatched. Persistence requires
+  // an opaque authenticated host scope; unknown outcomes never auto-replay.
+  const sendControllerRef = React.useRef(consoleController);
+  sendControllerRef.current = consoleController;
+  const transientSendScope = React.useMemo(() => `transient:${createIdempotencyKey()}`, [consoleController]);
+  const sendScope = storageNamespace?.trim() || `${transientSendScope}:${baseUrl}`;
+  const [composerTabId] = React.useState(() => {
+    try { return consoleComposerTabId(window.sessionStorage, createIdempotencyKey); }
+    catch { return createIdempotencyKey(); }
+  });
+  const composerIdFor = (panelKey: string) => JSON.stringify([composerTabId, panelKey]);
+  const sendScopeRef = React.useRef(sendScope);
+  const persistentSendScopeRef = React.useRef(storageNamespace?.trim() || null);
   const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
-  const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
-  const PENDING_DRAIN_CLAIM_TTL_MS = 15_000;
-  const stackKeyFor = (identity: string) =>
-    `${PENDING_STACK_KEY_PREFIX}${identity}`;
-
-  function loadPendingStack(
-    identity: string,
-    opts: { preserveFreshDraining?: boolean } = {},
-  ): PendingItem[] {
+  const autoDrainRequestedRef = React.useRef(new Map<string, { inFlight: boolean; token: string }>());
+  const sendRetryEpochRef = React.useRef(0);
+  const pendingStorageErrorRef = React.useRef<Record<string, string>>({});
+  const [contextDrafts, setContextDrafts] = React.useState<Record<string, ConsoleContextRecord[]>>({});
+  const [submittedFrames, setSubmittedFrames] = React.useState<Record<string, string>>({});
+  const loadedComposerDraftsRef = React.useRef<Record<string, { text: string; contexts: ConsoleContextRecord[] }>>({});
+  function storedComposerDraft(identity: string, panelKey: string) {
+    const namespace = persistentSendScopeRef.current;
+    const key = `${sendScopeRef.current}:${composerIdFor(panelKey)}`;
+    if (!loadedComposerDraftsRef.current[key]) {
+      try {
+        const storage = browserComposerStorage();
+        loadedComposerDraftsRef.current[key] = namespace && storage
+          ? loadConsoleComposerDraft(storage, namespace, identity, composerIdFor(panelKey)) : { text: "", contexts: [] };
+      } catch (error) {
+        pendingStorageErrorRef.current[identity] = errorMessage(error);
+        return { text: "", contexts: [] };
+      }
+    }
+    return loadedComposerDraftsRef.current[key];
+  }
+  function persistComposerDraft(identity: string, panelKey: string, text: string, contexts: ConsoleContextRecord[]): boolean {
+    // The pane flushes its debounced draft while unmounting. Its captured
+    // namespace/composer still owns this write even after outbound work stops.
+    const namespace = persistentSendScopeRef.current;
     try {
-      const raw = localStorage.getItem(stackKeyFor(identity));
-      if (!raw) return [];
-      const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      const now = Date.now();
-      return parsed
-        .filter((it): it is PendingItem => {
-          if (!it || typeof it !== "object") return false;
-          const r = it as Record<string, unknown>;
-          return (
-            typeof r.id === "string" &&
-            typeof r.text === "string" &&
-            typeof r.addedAt === "number"
-          );
-        })
-        .map((it) => {
-          const r = it as Record<string, unknown>;
-          const drainClaimedAt =
-            typeof r.drainClaimedAt === "number"
-              ? r.drainClaimedAt
-              : undefined;
-          const freshDrainClaim =
-            opts.preserveFreshDraining === true &&
-            r.status === "draining" &&
-            typeof r.drainClaim === "string" &&
-            typeof drainClaimedAt === "number" &&
-            now - drainClaimedAt < PENDING_DRAIN_CLAIM_TTL_MS;
-          return {
-            id: it.id,
-            text: it.text,
-            addedAt: it.addedAt,
-            status: freshDrainClaim ? ("draining" as const) : null,
-            drainClaim: freshDrainClaim ? r.drainClaim : undefined,
-            drainClaimedAt: freshDrainClaim ? drainClaimedAt : undefined,
-          };
-        });
-    } catch {
-      return [];
+      validateConsoleContexts(contexts);
+      if (namespace) {
+        const storage = browserComposerStorage();
+        if (!storage) throw new Error("Draft storage is unavailable.");
+        saveConsoleComposerDraft(storage, namespace, identity, { text, contexts }, composerIdFor(panelKey));
+      }
+      loadedComposerDraftsRef.current[`${sendScopeRef.current}:${composerIdFor(panelKey)}`] = { text, contexts };
+      return true;
+    } catch (error) {
+      setActionError(`Draft remains visible but was not saved: ${errorMessage(error)}`);
+      return false;
     }
   }
-
-  function persistPendingStack(identity: string, items: PendingItem[]) {
-    try {
-      // Strip purely visual transient flags before persisting. Keep fresh
-      // draining claims so multiple open tabs do not all auto-drain the same
-      // queued item when they observe the same busy→idle transition.
-      const clean = items
-        .filter(
-          (it) =>
-            it.status !== "trashing" &&
-            it.status !== "promoting",
-        )
-        .map((it) => ({
-          id: it.id,
-          text: it.text,
-          addedAt: it.addedAt,
-          ...(it.status === "draining"
-            ? {
-                status: "draining",
-                drainClaim: it.drainClaim,
-                drainClaimedAt: it.drainClaimedAt,
-              }
-            : {}),
-        }));
-      if (clean.length === 0) {
-        localStorage.removeItem(stackKeyFor(identity));
-      } else {
-        localStorage.setItem(stackKeyFor(identity), JSON.stringify(clean));
-      }
-    } catch {
-      /* quota / private mode — silently degrade */
+  if (sendScopeRef.current !== sendScope) {
+    // Render uses scope-prefixed draft keys, so prior-principal text is never exposed.
+    sendScopeRef.current = sendScope;
+    pendingStackRef.current = {};
+    autoDrainRequestedRef.current.clear();
+    pendingStorageErrorRef.current = {};
+    loadedComposerDraftsRef.current = {};
+    for (const optimistic of Object.values(optimisticUserByPanelKeyRef.current)) {
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
     }
+    optimisticUserByPanelKeyRef.current = {};
+  }
+  React.useEffect(() => {
+    setDraftByKey({});
+    setContextDrafts({});
+    setSubmittedFrames({});
+    setSendingPanels(new Set());
+  }, [sendScope]);
+  persistentSendScopeRef.current = storageNamespace?.trim() || null;
+  const scopedDraftKey = (panelKey: string) => `${sendScopeRef.current}:${panelKey}`;
+
+  function loadPendingStack(identity: string): PendingItem[] {
+    const namespace = persistentSendScopeRef.current;
+    if (!namespace) return pendingStackRef.current[identity] ?? [];
+    const storage = browserLocalStorage();
+    if (!storage) {
+      pendingStorageErrorRef.current[identity] = "Queue storage is unavailable. Your message has not been sent.";
+      return pendingStackRef.current[identity] ?? [];
+    }
+    const loaded = loadConsoleSendAttempts(storage, namespace, identity);
+    if (loaded.kind === "blocked") {
+      pendingStorageErrorRef.current[identity] = loaded.reason;
+      return pendingStackRef.current[identity] ?? [];
+    }
+    delete pendingStorageErrorRef.current[identity];
+    return loaded.attempts;
   }
 
   function getPendingStack(identity: string): PendingItem[] {
-    if (!pendingStackRef.current[identity]) {
-      pendingStackRef.current[identity] = loadPendingStack(identity);
+    return pendingStackRef.current[identity] ??= loadPendingStack(identity);
+  }
+
+  function commitPendingStack(identity: string, update: (prev: PendingItem[]) => PendingItem[], legacyImported = false): boolean {
+    if (!lifetimeRef.current.active) return false;
+    const previous = getPendingStack(identity);
+    let next = update(previous);
+    const namespace = persistentSendScopeRef.current;
+    if (namespace) {
+      try {
+        const storage = browserLocalStorage();
+        if (!storage) throw new Error("Queue storage is unavailable.");
+        const clean = (items: PendingItem[]) => items.map(({ status: _status, editing: _editing, expanded: _expanded, ...attempt }) => attempt);
+        const saved = saveConsoleSendAttempts(storage, namespace, identity, clean(next), clean(previous), legacyImported);
+        next = saved.map((attempt) => ({ ...next.find((item) => item.id === attempt.id), ...attempt }));
+        delete pendingStorageErrorRef.current[identity];
+      } catch (error) {
+        // The composer or prior queue stays visible until persistence succeeds.
+        pendingStorageErrorRef.current[identity] = errorMessage(error);
+        setActionError(`Message was not queued or dispatched: ${errorMessage(error)}`);
+        forceRender();
+        return false;
+      }
     }
-    return pendingStackRef.current[identity];
-  }
-
-  function setPendingStack(
-    identity: string,
-    update: (prev: PendingItem[]) => PendingItem[],
-  ) {
-    const prev = getPendingStack(identity);
-    const next = update(prev);
     pendingStackRef.current[identity] = next;
-    persistPendingStack(identity, next);
     forceRender();
+    return true;
   }
 
-  // Cross-tab sync: a write to `mobkit-pending-stack:<identity>` in
-  // another tab fires a `storage` event here. Reload the affected
-  // stack into the ref and re-render. Same-tab writes don't fire
-  // `storage` so this is one-way only — the sender does its own update.
+  async function setPendingStack(identity: string, update: (prev: PendingItem[]) => PendingItem[], legacyImported = false): Promise<boolean> {
+    const generation = lifetimeRef.current.generation;
+    if (!lifetimeRef.current.active) return false;
+    const scope = sendScopeRef.current;
+    const controller = sendControllerRef.current;
+    const namespace = persistentSendScopeRef.current;
+    if (!namespace) return commitPendingStack(identity, update, legacyImported);
+    if (!navigator.locks) {
+      setActionError("This browser cannot coordinate saved queues across tabs. Your message remains in the composer.");
+      return false;
+    }
+    return navigator.locks.request(consoleSendStorageKey(namespace, identity), () => {
+      if (!lifetimeRef.current.active || generation !== lifetimeRef.current.generation || scope !== sendScopeRef.current || controller !== sendControllerRef.current) return false;
+      // Every durable writer shares this lock, including enqueue/edit/discard.
+      const visible = getPendingStack(identity);
+      pendingStackRef.current[identity] = loadPendingStack(identity).map((attempt) => ({
+        ...visible.find((item) => item.id === attempt.id), ...attempt,
+      }));
+      return commitPendingStack(identity, update, legacyImported);
+    });
+  }
+
   React.useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
-      const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
-      pendingStackRef.current[identity] = loadPendingStack(identity, {
-        preserveFreshDraining: true,
-      });
+    const onStorage = (event: StorageEvent) => {
+      const namespace = persistentSendScopeRef.current;
+      if (!namespace) return;
+      for (const identity of Object.keys(pendingStackRef.current)) {
+        if (event.key !== null && event.key !== consoleSendStorageKey(namespace, identity)) continue;
+        pendingStackRef.current[identity] = loadPendingStack(identity);
+      }
+      sendRetryEpochRef.current += 1;
       forceRender();
     };
+    const onRetryOpportunity = () => { sendRetryEpochRef.current += 1; forceRender(); };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    window.addEventListener("focus", onRetryOpportunity);
+    window.addEventListener("online", onRetryOpportunity);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onRetryOpportunity);
+      window.removeEventListener("online", onRetryOpportunity);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => {
+      let changed = false;
+      for (const [identity, items] of Object.entries(pendingStackRef.current)) {
+        const next = items.map((item) => recoverConsoleSendAttempt(item, Date.now()));
+        if (next.some((item, index) => item !== items[index])) {
+          pendingStackRef.current[identity] = next;
+          changed = true;
+        }
+      }
+      if (changed) forceRender();
+    }, 15_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   // Per-identity busy state — driven by interaction lifecycle events on
@@ -1798,6 +1922,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   const experienceLoadInFlightRef = React.useRef<Promise<ConsoleAgent[]> | null>(
     null,
   );
+  const experienceLoadGenerationRef = React.useRef(-1);
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
   const identityAliasesRef = React.useRef<ConsoleIdentityAliasMap>(new Map());
@@ -1836,6 +1961,16 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       const parsed = JSON.parse(raw) as ConsoleDockState<MobKitDockTarget>;
       const restored = normalizeConsoleDockState(parsed);
       if (restored.tabs.length === 0 || restored.panels.length === 0) return;
+      // Saved labels and targets are preferences, not current authority. A
+      // different principal on the same runtime must not inherit a hidden
+      // identity (or its draft) merely because the browser saved that pane.
+      restored.panels = restored.panels.map(panel => {
+        const target = panel.target;
+        if (!target || (target.kind !== "agent-chat" && target.kind !== "identity-inspect")) return panel;
+        const identity = target.identity || target.memberId;
+        const agent = agents.find(agent => [agent.identity, agent.member_id, agent.agent_id].includes(identity));
+        return { ...panel, target: agent ? (target.kind === "agent-chat" ? buildDockTarget(agent) : buildInspectTarget(agent)) : null };
+      });
       dockLayoutRestored.current = true;
       dockLayoutRestoring.current = true;
       dock.setState(restored);
@@ -2057,7 +2192,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
   // =========================================================================
 
   const loadExperience = React.useCallback(() => {
-    if (experienceLoadInFlightRef.current) {
+    if (experienceLoadInFlightRef.current && experienceLoadGenerationRef.current === lifetimeRef.current.generation) {
       return experienceLoadInFlightRef.current;
     }
 
@@ -2096,6 +2231,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     });
 
     experienceLoadInFlightRef.current = request;
+    experienceLoadGenerationRef.current = lifetimeRef.current.generation;
     return request;
   }, [consoleTransport]);
 
@@ -2188,6 +2324,45 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  const [approvalSnapshot, setApprovalSnapshot] = React.useState<{
+    owner: typeof consoleController;
+    snapshot: PendingApprovalSnapshot;
+  }>();
+  const [selectedApprovalId, setSelectedApprovalId] = React.useState<string>();
+  const approvalResourceRef = React.useRef<PendingApprovalResource | null>(null);
+  const approvalScope = `${sendScope}:${experience?.runtime_id || "loading"}`;
+  React.useEffect(() => {
+    setApprovalSnapshot(undefined);
+    setSelectedApprovalId(undefined);
+    if (!experience || !hasMobControlSurface) return;
+    const target = controlWorkbenchTarget("gating");
+    const resource = createPendingApprovalResource({
+      scopeKey: approvalScope,
+      readOnly: consoleReadOnly,
+      load: async signal => (await consoleController.commands.execute({
+        command: CONSOLE_COMMAND_NAMES.listGatingPending, target, signal,
+      })).result,
+      decide: async (pendingId, decision, signal) => (await consoleController.commands.execute({
+        command: CONSOLE_COMMAND_NAMES.decideGating, target, signal,
+        params: { pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` },
+      })).result,
+    });
+    approvalResourceRef.current = resource;
+    const publish = () => setApprovalSnapshot({ owner: consoleController, snapshot: resource.getSnapshot() });
+    const unsubscribe = resource.subscribe(publish);
+    publish();
+    return () => {
+      unsubscribe(); resource.dispose();
+      if (approvalResourceRef.current === resource) approvalResourceRef.current = null;
+    };
+  }, [approvalScope, Boolean(experience), hasMobControlSurface, consoleReadOnly, consoleController]);
+  // Scope changes hide the previous principal's snapshot before effects run.
+  const activeApprovals = approvalSnapshot?.owner === consoleController && approvalSnapshot.snapshot.scopeKey === approvalScope
+    ? approvalSnapshot.snapshot : undefined;
+  function openApproval(pendingId?: string) {
+    setSelectedApprovalId(pendingId);
+    dock.openTarget(buildControlTarget("gating"), "replace_focused");
+  }
   const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
   const voiceReadiness = useVoiceReadiness(
     baseUrl,
@@ -2791,17 +2966,8 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
     ) {
-      const gatingTarget = controlWorkbenchTarget("gating");
-      const [p, a] = await Promise.all([
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 }),
-      ]);
-      const pending = p && typeof p === "object" ? p as { pending?: unknown[] } : {};
-      const audit = a && typeof a === "object" ? a as { entries?: unknown[] } : {};
-      setGatingData({
-        pending: Array.isArray(pending.pending) ? pending.pending : [],
-        audit: Array.isArray(audit.entries) ? audit.entries : [],
-      });
+      const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 }) as { entries?: unknown[] };
+      setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
 
@@ -3087,9 +3253,14 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
 
     let stopped = false;
     let unsubscribe: (() => void) | null = null;
+    const subscriptionLifetime = new AbortController();
 
     void consoleController.timeline.subscribeWithBackfill(
-      { limit: 200 },
+      {
+        limit: 200,
+        signal: subscriptionLifetime.signal,
+        onTransportState: (state) => { if (!stopped) setTransportState(state); },
+      },
       (frame) => {
         if (!stopped) handleLiveFrame(frame.value);
       },
@@ -3109,16 +3280,17 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
           unsubscribe = nextUnsubscribe;
         }
       })
-      .catch(() => {
-        if (!stopped) unsubscribe = consoleTransport.subscribeTimeline({}, handleLiveFrame);
+      .catch((error) => {
+        if (!stopped) setTransportState({ phase: "stopped", stale: true, freshness: "unknown", error });
       });
 
     return () => {
       stopped = true;
+      subscriptionLifetime.abort();
       unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [consoleController, consoleTransport]);
+  }, [consoleController, consoleTransport, sidebarStorageNamespace, transportRetry]);
 
   // Timer cleanup on unmount
   React.useEffect(() => {
@@ -3196,11 +3368,15 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     text: string,
     handlingMode: "queue" | "steer",
     attachments: File[] = [],
+    pendingAttempt?: PendingItem,
+    dispatchController = sendControllerRef.current,
   ): Promise<boolean> {
     if (target.kind !== "agent-chat") return false;
-    if (consoleReadOnlyRef.current) return false;
+    if (!lifetimeRef.current.active || consoleReadOnlyRef.current || dispatchController !== sendControllerRef.current) return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
+    const attemptScope = sendScopeRef.current;
+    const envelope: ConsoleFrozenSendEnvelope | undefined = pendingAttempt?.envelopeJson ? JSON.parse(pendingAttempt.envelopeJson) : undefined;
 
     const optimisticObjectUrls = attachments.map((file) =>
       URL.createObjectURL(file),
@@ -3246,16 +3422,25 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       if (!workbenchTarget) {
         throw new Error("console send requires an identity-addressed target");
       }
-      const result = (await consoleController.commands.sendMessage(
+      const result = (await dispatchController.commands.sendMessage(
         workbenchTarget,
         {
-          content: text,
-          origin: `console:${panelId}`,
-          idempotencyKey: createIdempotencyKey(),
-          handlingMode,
+          content: envelope?.content ?? text,
+          origin: envelope?.origin ?? `console:${panelId}`,
+          idempotencyKey: envelope?.idempotency_key ?? createIdempotencyKey(),
+          handlingMode: envelope?.handling_mode ?? handlingMode,
           attachments,
         },
       )).accepted.value;
+      if (!result.interaction_id || result.identity !== identity) throw new Error("Server response did not prove acceptance for this destination.");
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (pendingAttempt) {
+        // Save acceptance before removing the row; if storage fails, retain the attempt.
+        if (await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
+          await setPendingStack(identity, (previous) => previous.filter((item) => item.id !== pendingAttempt.id));
+        }
+      }
+      if (result.input_frame_id) setSubmittedFrames((current) => ({ ...current, [scopedDraftKey(panelKey)]: result.input_frame_id! }));
       const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
       if (optimisticUser) {
         optimisticUser.interactionId = result.interaction_id;
@@ -3275,9 +3460,14 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
           delete optimisticUserByPanelKeyRef.current[panelKey];
         }
       }
-      setActionError("");
+      if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (pendingAttempt) {
+        const state = submitError instanceof ConsoleCapabilityUnavailableError ? "definitely-rejected" : consoleSendFailureState(submitError);
+        await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
+      }
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url),
       );
@@ -3288,7 +3478,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       forceRender();
       return false;
     } finally {
-      setSendingPanels((c) => {
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) setSendingPanels((c) => {
         const n = new Set(c);
         n.delete(panelKey);
         return n;
@@ -3303,14 +3493,15 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     composerText?: string,
   ): Promise<boolean> {
     if (!target || target.kind !== "agent-chat") return false;
-    if (consoleReadOnly) return false;
+    if (!lifetimeRef.current.active || consoleReadOnly) return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
     // The pane owns the live composer value and hands it over at submit;
     // the persisted copy is only a fallback for callers without one.
-    const rawDraft = composerText ?? (draftByKey[panelKey] || "");
-    const text = rawDraft.trim();
-    if (!text && attachments.length === 0) return false;
+    const draftKey = scopedDraftKey(panelKey);
+    const rawDraft = composerText ?? (draftByKey[draftKey] || "");
+    const text = rawDraft;
+    if (!text.trim() && attachments.length === 0) return false;
 
     const stack = getPendingStack(identity);
     const visiblePhase =
@@ -3327,82 +3518,53 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       agentPhase !== null ||
       stack.length > 0;
 
-    const clearSubmittedDraft = () => {
-      setDraftByKey((current) => {
-        // With a pane-supplied text the persisted copy may lag the live
-        // value (its publish is debounced), so the equality guard only
-        // applies when the text came from the persisted copy itself.
-        if (composerText === undefined && (current[panelKey] || "") !== rawDraft) {
-          return current;
-        }
-        if ((current[panelKey] || "") === "") return current;
-        return { ...current, [panelKey]: "" };
-      });
+    const contexts = contextDrafts[draftKey] ?? storedComposerDraft(identity, panelKey).contexts;
+    const submittedScope = sendScopeRef.current;
+    const submittedController = sendControllerRef.current;
+    const clearSubmittedContexts = () => {
+      if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) return;
+      // ChatPane owns the live text, including edits made while this send
+      // waited for storage or the network. Remove only the submitted quotes.
+      const latest = storedComposerDraft(identity, panelKey);
+      const submittedIds = new Set(contexts.map((context) => context.id));
+      const remaining = latest.contexts.filter((context) => !submittedIds.has(context.id));
+      setContextDrafts((current) => ({ ...current, [draftKey]: remaining }));
+      persistComposerDraft(identity, panelKey, latest.text, remaining);
     };
-    const restoreSubmittedDraftIfEmpty = () => {
-      setDraftByKey((current) => {
-        if ((current[panelKey] || "") !== "") return current;
-        return { ...current, [panelKey]: rawDraft };
-      });
-    };
-
-    if (!shouldQueue || attachments.length > 0) {
-      // Idle + empty stack: bypass straight to the wire.
-      // Clear the text before awaiting the RPC so a busy runtime cannot
-      // freeze the visible composer with the just-submitted draft still in it.
-      if (attachments.length === 0) {
-        clearSubmittedDraft();
+    if (attachments.length > 0) {
+      if (contexts.length) {
+        setActionError("Send quoted context separately from file attachments.");
+        return false;
       }
-      const sent = await submitMessageNow(
-        panelId,
-        target,
-        text,
-        "queue",
-        attachments,
-      );
-      if (sent) {
-        clearSubmittedDraft();
-      } else if (attachments.length === 0) {
-        restoreSubmittedDraftIfEmpty();
-      }
+      const sent = await submitMessageNow(panelId, target, text, "queue", attachments);
+      if (sent) clearSubmittedContexts();
       return sent;
     }
-
-    // Push onto the stack instead. The animation flag clears itself
-    // shortly after so subsequent reorders/edits don't see an
-    // is-entering ghost.
-    const newId = `pmsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    setPendingStack(identity, (prev) => [
-      ...prev,
-      { id: newId, text, addedAt: Date.now(), status: "entering" },
-    ]);
-    clearSubmittedDraft();
-    window.setTimeout(() => {
-      setPendingStack(identity, (prev) =>
-        prev.map((it) =>
-          it.id === newId && it.status === "entering"
-            ? { ...it, status: null }
-            : it,
-        ),
-      );
-    }, 240);
+    let item: PendingItem;
+    try {
+      item = createConsoleSendAttempt({
+        id: `pmsg-${createIdempotencyKey()}`, scope: sendScopeRef.current,
+        destination: identity, origin: `console:${panelId}`, idempotencyKey: createIdempotencyKey(),
+        text, contexts, now: Date.now(),
+      });
+    } catch (error) {
+      setActionError(errorMessage(error));
+      return false;
+    }
+    if (!await setPendingStack(identity, (previous) => [...previous, item])) return false;
+    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) return false;
+    clearSubmittedContexts();
+    if (!shouldQueue) void dispatchPendingAttempt(identity, item.id, "queue");
+    // This acknowledges local persistence only. submittedRowId is set on server acceptance.
     return true;
   }
 
-  // ── Pending-stack action handlers ────────────────────────────────
-  //
-  // Each handler that ends with "send to wire" (Steer, auto-drain)
-  // first marks the item with the corresponding animation flag, then
-  // — after the animation duration — removes the item and calls
-  // `submitMessageNow`. The animation timing matches `pending-stack.css`
-  // (steer 360ms, drain 420ms, trash 320ms). `reduced-motion` collapses
-  // these to 0 so the item leaves the DOM immediately.
+  // Drafts are dispatched only after persisting their frozen attempt.
   const reducedMotion =
     typeof window !== "undefined"
       ? (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
         false)
       : false;
-  const animMs = (ms: number) => (reducedMotion ? 0 : ms);
   const pendingDrainOwnerRef = React.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   );
@@ -3423,156 +3585,140 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     return null;
   }
 
-  function onStackSteer(identity: string, id: string) {
-    if (consoleReadOnlyRef.current) return;
-    setPendingStack(identity, (prev) =>
-      prev.map((it) =>
-        it.id === id ? { ...it, status: "promoting", editing: false } : it,
-      ),
-    );
-    window.setTimeout(() => {
-      if (consoleReadOnlyRef.current) return;
-      const stack = getPendingStack(identity);
-      const item = stack.find((it) => it.id === id);
-      if (!item) return;
-      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
+  async function dispatchPendingAttempt(identity: string, id: string, handlingMode: "queue" | "steer", retryRejected = false) {
+    const generation = lifetimeRef.current.generation;
+    const scope = sendScopeRef.current;
+    const namespace = persistentSendScopeRef.current;
+    const dispatchController = sendControllerRef.current;
+    const freeze = (): { attempting: PendingItem; target: { panelId: string; target: MobKitDockTarget } } | null => {
+      if (!lifetimeRef.current.active || generation !== lifetimeRef.current.generation || scope !== sendScopeRef.current || dispatchController !== sendControllerRef.current || consoleReadOnlyRef.current) return null;
+      if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
+      const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      if (target) {
-        void submitMessageNow(
-          target.panelId,
-          target.target,
-          item.text,
-          "steer",
-        );
-      }
-    }, animMs(360));
+      if (!item || (item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected")) || item.scope !== scope || !target) return null;
+      let attempting: PendingItem;
+      try {
+        attempting = beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected });
+      } catch (error) { setActionError(errorMessage(error)); return null; }
+      if (!commitPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
+      return { attempting, target };
+    };
+    if (namespace && !navigator.locks) {
+      setActionError("This browser cannot coordinate a persisted send across tabs. The message remains queued.");
+      return;
+    }
+    const frozen = namespace ? await navigator.locks.request(consoleSendStorageKey(namespace, identity), freeze) : freeze();
+    if (frozen && lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
+      await submitMessageNow(frozen.target.panelId, frozen.target.target, frozen.attempting.text, handlingMode, [], frozen.attempting, dispatchController);
+    }
   }
 
+  function onStackSteer(identity: string, id: string) {
+    if (!consoleReadOnlyRef.current) void dispatchPendingAttempt(identity, id, "steer");
+  }
+
+  async function onStackReconcile(identity: string, id: string) {
+    const scope = sendScopeRef.current;
+    try { await refreshIdentityTimelineNow(identity); } catch (error) { setActionError(errorMessage(error)); return; }
+    if (scope !== sendScopeRef.current) return;
+    const item = getPendingStack(identity).find((candidate) => candidate.id === id);
+    if (!item) return;
+    const accepted = getOrCreateLog(identity).events.map((frame) => reconcileConsoleSendReceipt(item, frame)).find(Boolean);
+    if (!accepted) { setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically."); return; }
+    if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
+      await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));
+    }
+  }
+  function updatePendingContexts(identity: string, id: string, update: (contexts: ConsoleContextRecord[]) => ConsoleContextRecord[]) {
+    setPendingStack(identity, (previous) => previous.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
+  }
+  function reorderContexts(contexts: ConsoleContextRecord[], id: string, direction: "up" | "down") {
+    const index = contexts.findIndex((record) => record.id === id);
+    const to = index + (direction === "up" ? -1 : 1);
+    if (index < 0 || to < 0 || to >= contexts.length) return contexts;
+    const next = contexts.slice();
+    [next[index], next[to]] = [next[to], next[index]];
+    return next;
+  }
   function onStackTrash(identity: string, id: string) {
-    setPendingStack(identity, (prev) =>
-      prev.map((it) =>
-        it.id === id ? { ...it, status: "trashing", editing: false } : it,
-      ),
-    );
-    window.setTimeout(() => {
-      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
-    }, animMs(320));
+    // Explicit discard is permitted even when acceptance is unknown.
+    setPendingStack(identity, (previous) => previous.filter((item) => item.id !== id));
   }
-
   function onStackEdit(identity: string, id: string) {
-    setPendingStack(identity, (prev) =>
-      prev.map((it) =>
-        it.id === id ? { ...it, editing: true } : { ...it, editing: false },
-      ),
-    );
+    setPendingStack(identity, (previous) => previous.map((item) => ({ ...item, editing: item.id === id && item.state === "draft" })));
   }
-
   function onStackCommitEdit(identity: string, id: string, text: string) {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setPendingStack(identity, (prev) =>
-      prev.map((it) =>
-        it.id === id
-          ? { ...it, text: trimmed, editing: false, addedAt: Date.now() }
-          : it,
-      ),
-    );
+    if (!text.trim()) return;
+    setPendingStack(identity, (previous) => previous.map((item) => item.id === id && item.state === "draft" ? { ...item, text, editing: false } : item));
   }
-
   function onStackCancelEdit(identity: string, id: string) {
-    setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, editing: false } : it)),
-    );
+    setPendingStack(identity, (previous) => previous.map((item) => item.id === id ? { ...item, editing: false } : item));
   }
-
-  function onStackReorder(
-    identity: string,
-    dragId: string,
-    dropId: string,
-    where: "above" | "below",
-  ) {
-    setPendingStack(identity, (prev) => {
-      const fromIdx = prev.findIndex((it) => it.id === dragId);
-      const toIdx = prev.findIndex((it) => it.id === dropId);
-      if (fromIdx === -1 || toIdx === -1) return prev;
-      const next = prev.slice();
-      const [moved] = next.splice(fromIdx, 1);
-      let insertAt = next.findIndex((it) => it.id === dropId);
-      if (where === "below") insertAt += 1;
-      next.splice(insertAt, 0, moved);
+  function onStackReorder(identity: string, dragId: string, dropId: string, where: "above" | "below") {
+    setPendingStack(identity, (previous) => {
+      const from = previous.findIndex((item) => item.id === dragId && item.state === "draft");
+      if (from < 0 || !previous.some((item) => item.id === dropId)) return previous;
+      const next = previous.slice();
+      const [item] = next.splice(from, 1);
+      next.splice(next.findIndex((item) => item.id === dropId) + (where === "below" ? 1 : 0), 0, item);
       return next;
     });
   }
-
-  function onStackClearAll(identity: string) {
-    setPendingStack(identity, (prev) =>
-      prev.map((it) => ({ ...it, status: "trashing", editing: false })),
-    );
-    window.setTimeout(() => {
-      setPendingStack(identity, () => []);
-    }, animMs(320));
-  }
-
+  function onStackClearAll(identity: string) { setPendingStack(identity, () => []); }
   function onStackToggleExpand(identity: string, id: string) {
-    setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, expanded: !it.expanded } : it)),
-    );
+    setPendingStack(identity, (previous) => previous.map((item) => item.id === id ? { ...item, expanded: !item.expanded } : item));
   }
+  React.useEffect(() => {
+    // Resume persisted drafts after the authoritative initial history settles,
+    // including when a terminal arrived before acceptance removed the prior head.
+    for (const identity of Object.keys(pendingStackRef.current)) {
+      if (getOrCreateLog(identity).hasServerLog === null) continue;
+      maybeDrainHead(identity);
+    }
+  });
 
-  /// Auto-drain hook — fires when an identity transitions busy→idle
-  /// AND has pending items. Pops the head, plays the drain animation,
-  /// then submits via `submitMessageNow` with normal queue handling.
   function maybeDrainHead(identity: string) {
-    if (consoleReadOnlyRef.current) return;
-    const stack = getPendingStack(identity);
-    if (stack.length === 0) return;
-    const target = findChatTargetFor(identity);
-    if (!target) return;
-    // Only drain if no item is already mid-drain or mid-promotion.
-    if (
-      stack.some((it) => it.status === "draining" || it.status === "promoting")
-    )
-      return;
-    const head = stack.find((it) => !it.status || it.status === "entering");
-    if (!head) return;
-    const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
-    const drainClaimedAt = Date.now();
-    setPendingStack(identity, (prev) =>
-      prev.map((it) =>
-        it.id === head.id
-          ? { ...it, status: "draining", drainClaim, drainClaimedAt }
-          : it,
-      ),
-    );
-    window.setTimeout(() => {
-      if (consoleReadOnlyRef.current) return;
-      const persistedHead = loadPendingStack(identity, {
-        preserveFreshDraining: true,
-      }).find((it) => it.id === head.id);
-      if (persistedHead?.drainClaim !== drainClaim) return;
+    if (consoleReadOnlyRef.current || isIdentityBusy(identity)) return;
+    const ownerPhase = agentsRef.current.find((agent) => [agent.identity, agent.member_id, agent.agent_id].includes(identity))?.response_phase;
+    if (ownerPhase) return;
+    const head = getPendingStack(identity)[0];
+    // An unknown/in-flight head blocks automatic progress until explicit reconciliation.
+    if (head?.state === "draft" && !head.editing) {
       const target = findChatTargetFor(identity);
+      const key = `${sendScopeRef.current}:${head.id}`;
       if (!target) {
-        setPendingStack(identity, (prev) =>
-          prev.map((it) =>
-            it.id === head.id && it.drainClaim === drainClaim
-              ? { ...it, status: null, drainClaim: undefined }
-              : it,
-          ),
-        );
+        if (!autoDrainRequestedRef.current.get(key)?.inFlight) autoDrainRequestedRef.current.delete(key);
         return;
       }
-      setPendingStack(identity, (prev) =>
-        prev.filter(
-          (it) => it.id !== head.id || it.drainClaim !== drainClaim,
-        ),
-      );
-      void submitMessageNow(
-        target.panelId,
-        target.target,
-        head.text,
-        "queue",
-      );
-    }, animMs(420));
+      const tokenFor = () => JSON.stringify([findChatTargetFor(identity)?.panelId ?? null, sendRetryEpochRef.current, Boolean(navigator.locks), head.text, head.contexts]);
+      const token = tokenFor();
+      const previous = autoDrainRequestedRef.current.get(key);
+      if (previous?.inFlight || previous?.token === token) return;
+      const request = { inFlight: true, token };
+      autoDrainRequestedRef.current.set(key, request);
+      void dispatchPendingAttempt(identity, head.id, "queue").finally(() => {
+        if (autoDrainRequestedRef.current.get(key) !== request) return;
+        const current = getPendingStack(identity).find((item) => item.id === head.id);
+        if (current?.state === "draft") autoDrainRequestedRef.current.set(key, { inFlight: false, token: tokenFor() });
+        else autoDrainRequestedRef.current.delete(key);
+      });
+    }
+  }
+
+  async function importLegacyPending(identity: string) {
+    const namespace = persistentSendScopeRef.current;
+    const storage = browserLocalStorage();
+    if (!namespace || !storage) return;
+    try {
+      if (consoleLegacyQueueImported(storage, namespace, identity)) return;
+      const legacy = readLegacyConsoleQueue(storage, identity);
+      const imported = legacy.map((item) => createConsoleSendAttempt({
+        id: `legacy:${item.id}`, scope: namespace, destination: identity, origin: "console:legacy-import",
+        idempotencyKey: createIdempotencyKey(), text: item.text, now: item.addedAt,
+      }));
+      await setPendingStack(identity, (previous) => [...previous, ...imported.filter((item) => !previous.some((old) => old.id === item.id))], true);
+      // Original legacy bytes are preserved, including after a successful import.
+    } catch (error) { setActionError(errorMessage(error)); }
   }
 
   // =========================================================================
@@ -3625,24 +3771,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     pendingId: string,
     decision: "approve" | "reject" | "escalate",
   ) {
-    if (consoleReadOnly) return;
-    const gatingTarget = controlWorkbenchTarget("gating");
-    await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.decideGating, gatingTarget, {
-      pending_id: pendingId,
-      approver_id: DEFAULT_APPROVER_ID,
-      decision,
-      reason: `console_${decision}`,
-    } as ConsoleGatingActionPayload);
-    const [p, a] = await Promise.all([
-      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
-      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 }),
-    ]);
-    const pending = p && typeof p === "object" ? p as { pending?: unknown[] } : {};
-    const audit = a && typeof a === "object" ? a as { entries?: unknown[] } : {};
-    setGatingData({
-      pending: Array.isArray(pending.pending) ? pending.pending : [],
-      audit: Array.isArray(audit.entries) ? audit.entries : [],
-    });
+    await approvalResourceRef.current?.decide(pendingId, decision);
+    if (dock.viewState.panels.some(panel => panel.target?.kind === "gating" || panel.target?.kind === "gates")) {
+      await refreshPanelData().catch(() => {});
+    }
   }
 
   function upsertTopologyOperation(receipt: TopologyOperationReceipt) {
@@ -4175,7 +4307,9 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       appendOptimisticConversationEntry(conversationEntries, optimisticEntry),
     );
 
-    const draft = draftByKey[panelKey] || "";
+    const draftKey = scopedDraftKey(panelKey);
+    const draft = draftByKey[draftKey] ?? storedComposerDraft(identity, panelKey).text;
+    const quotedContexts = contextDrafts[draftKey] ?? storedComposerDraft(identity, panelKey).contexts;
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const identityLog = getOrCreateLog(identity);
     const isSending = sendingPanels.has(panelKey);
@@ -4200,14 +4334,30 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
       agent?.affordances?.can_retire === true;
 
     const stackItems = getPendingStack(identity);
+    let hasLegacyQueue = false;
+    try {
+      const storage = browserLocalStorage();
+      const namespace = persistentSendScopeRef.current;
+      hasLegacyQueue = Boolean(storage && namespace && !consoleLegacyQueueImported(storage, namespace, identity) && storage.getItem(`mobkit-pending-stack:${identity}`));
+    } catch { /* Queue reader reports preserved invalid bytes separately. */ }
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot =
-      stackItems.length > 0 ? (
+    const stackSlot = <>
+      {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload"}</small> : null}
+      {pendingStorageErrorRef.current[identity] && <p role="alert">{pendingStorageErrorRef.current[identity]}</p>}
+      {hasLegacyQueue && <button type="button" onClick={() => importLegacyPending(identity)}>Import legacy queue into this account</button>}
+      {stackItems.length > 0 ? (
         <PendingStack
           items={stackItems}
           agentBusy={agentBusy}
           reducedMotion={reducedMotion}
           onSteer={(itemId) => onStackSteer(identity, itemId)}
+          onRetry={(itemId) => {
+            const item = getPendingStack(identity).find((candidate) => candidate.id === itemId);
+            if (item?.envelopeJson) void dispatchPendingAttempt(identity, itemId, JSON.parse(item.envelopeJson).handling_mode, true);
+          }}
+          onReconcile={(itemId) => onStackReconcile(identity, itemId)}
+          onRemoveContext={(itemId, contextId) => updatePendingContexts(identity, itemId, (contexts) => contexts.filter((record) => record.id !== contextId))}
+          onReorderContext={(itemId, contextId, direction) => updatePendingContexts(identity, itemId, (contexts) => reorderContexts(contexts, contextId, direction))}
           onTrash={(itemId) => onStackTrash(identity, itemId)}
           onEdit={(itemId) => onStackEdit(identity, itemId)}
           onCommitEdit={(itemId, t) => onStackCommitEdit(identity, itemId, t)}
@@ -4218,14 +4368,52 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
           onClearAll={() => onStackClearAll(identity)}
           onToggleExpand={(itemId) => onStackToggleExpand(identity, itemId)}
         />
-      ) : null;
+      ) : null}
+    </>;
+    const submittedFrameId = submittedFrames[draftKey];
+    const submittedRowId = submittedFrameId && sortedFrames.some((frame) => frame.id === submittedFrameId)
+      ? entries.find((entry) => entry.kind === "message" && (entry.id === submittedFrameId || entry.id.startsWith(`${submittedFrameId}:`)))?.id : undefined;
+    const addQuote = (quote: ConsoleQuoteSelection) => {
+      if (sendScope !== sendScopeRef.current) return;
+      try {
+        const context = createConsoleContextRecord({ id: `quote:${createIdempotencyKey()}`, sourceScope: sendScopeRef.current,
+          // The renderer ID names a stable message assembled from potentially many
+          // frames. Without canonical frame provenance, no frame-relative range is claimed.
+          sourceIdentity: identity, messageId: quote.messageId,
+          quote: quote.text, label: target.title || agent?.label || identity });
+        const next = [...quotedContexts, context];
+        validateConsoleContexts(next);
+        setContextDrafts((current) => ({ ...current, [draftKey]: next }));
+        persistComposerDraft(identity, panelKey, draft, next);
+      } catch (error) { setActionError(errorMessage(error)); }
+    };
 
     return (
       <ChatPane
         agent={agent}
+        markdownUrlPolicy={markdownUrlPolicy}
+        headerVariant="compact"
+        displayLabels={{ peers: peerLabels }}
+        approvalSnapshot={activeApprovals}
+        onApprovalDecision={onGatingDecision}
         peerLabels={peerLabels}
         agentLabel={target.title || agent?.label || identity}
         identity={identity}
+        key={`${sendScope}:${panel.id}:${identity}`}
+        viewportKey={{ authority: sendScope, identity, conversation: identity, pane: panel.id }}
+        submittedRowId={submittedRowId}
+        onQuoteSelection={addQuote}
+        contextSlot={<QuoteContextChips records={quotedContexts} destinationLabel={target.title || agent?.label || identity} onRemove={(id) => {
+          if (sendScope !== sendScopeRef.current) return;
+          const next = quotedContexts.filter((record) => record.id !== id);
+          setContextDrafts((current) => ({ ...current, [draftKey]: next }));
+          persistComposerDraft(identity, panelKey, draft, next);
+        }} onReorder={(id, direction) => {
+          if (sendScope !== sendScopeRef.current) return;
+          const next = reorderContexts(quotedContexts, id, direction);
+          setContextDrafts((current) => ({ ...current, [draftKey]: next }));
+          persistComposerDraft(identity, panelKey, draft, next);
+        }} />}
         entries={entries}
         phase={phase}
         isLoadingHistory={Boolean(loadingHistory[identity])}
@@ -4234,11 +4422,15 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         readOnly={consoleReadOnly}
         accessEnforcing={accessEnforcing}
         staged={staged}
-        onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
+        onDraftChange={(value) => {
+          if (sendScope !== sendScopeRef.current) return;
+          setDraftByKey((current) => ({ ...current, [draftKey]: value }));
+          persistComposerDraft(identity, panelKey, value, storedComposerDraft(identity, panelKey).contexts);
+        }}
         onStagedChange={(action) =>
           setStagedAttachmentsForIdentity(identity, action)
         }
-        onSend={(attachments, text) => onSendMessage(panel.id, target, attachments, text)}
+        onSend={(attachments, text) => sendScope === sendScopeRef.current ? onSendMessage(panel.id, target, attachments, text) : false}
         onInspect={
           configuredActionVisibility.inspect
             ? () => {
@@ -4502,7 +4694,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     if (target.kind === "gating")
       return (
         <GatingInboxPanel
-          pending={gatingData.pending}
+          pending={activeApprovals?.requests.map(request => request.raw) || []}
+          resource={activeApprovals}
+          selectedPendingId={selectedApprovalId}
+          onRefresh={() => void approvalResourceRef.current?.refresh()}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
           readOnly={consoleReadOnly}
@@ -4551,7 +4746,10 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
     if (target.kind === "gates")
       return (
         <GatingInboxPanel
-          pending={gatingData.pending}
+          pending={activeApprovals?.requests.map(request => request.raw) || []}
+          resource={activeApprovals}
+          selectedPendingId={selectedApprovalId}
+          onRefresh={() => void approvalResourceRef.current?.refresh()}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
           readOnly={consoleReadOnly}
@@ -4699,6 +4897,7 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
         </div>
       )}
       <Topbar
+        connectionStatus={<ConsoleTransportStatus state={transportState} onRetry={() => setTransportRetry((value) => value + 1)} />}
         mobName={mobName}
         brandLabel={brand?.label}
         brandLogoUrl={brand?.logo_url}
@@ -4732,6 +4931,8 @@ export function ConsoleApp({ baseUrl, transport }: ConsoleAppProps): React.JSX.E
           onSelect={selectSidebarAgent}
           onTogglePinnedAgent={togglePinnedAgent}
           onOpenControl={openSidebarControl}
+          approvals={activeApprovals}
+          onOpenApproval={openApproval}
         />
         <div
           className="pane-resizer"

@@ -1,3 +1,5 @@
+import { consumeSseResponse } from "../../../packages/console-core/src/sse-reader";
+import { createTimelineSubscription, type ConsoleTimelineSubscription, type ConsoleTimelineSubscriptionOptions, type ConsoleStreamFailure } from "../../../packages/console-core/src/timeline-subscription";
 import {
   normalizeConsoleInteractionRejectedError,
   normalizeReplayUnavailableError,
@@ -204,14 +206,16 @@ async function fetchWithConsoleTimeout(
   init: RequestInit,
   label: string,
   timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeoutReason = `${label} timeout after ${formatTimeoutReason(timeoutMs)}`;
   const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
     return await fetch(input, {
       ...init,
-      signal: controller.signal,
+      signal: fetchSignal,
     });
   } catch (error) {
     if (controller.signal.aborted && typeof controller.signal.reason === "string") {
@@ -284,6 +288,7 @@ async function rpc<T>(
   method: string,
   params: Record<string, unknown>,
   timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetchWithConsoleTimeout(
     `${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`,
@@ -299,6 +304,7 @@ async function rpc<T>(
     },
     "console rpc",
     timeoutMs,
+    signal,
   );
 
   if (!response.ok) {
@@ -333,6 +339,9 @@ async function rpc<T>(
     }
     const error = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
     (error as Error & { rpcError?: { code?: unknown; message?: unknown; data?: unknown } }).rpcError = result.error;
+    if (result.error.code === -32030 || result.error.data?.kind === "access_denied") {
+      (error as Error & { httpStatus?: number }).httpStatus = 403;
+    }
     throw error;
   }
 
@@ -475,6 +484,7 @@ interface StreamFramesOptions {
   correlation?: TerminalCorrelation;
   onFrame?: (frame: ConsoleFrame) => void;
   stopOnTerminal?: boolean;
+  signal?: AbortSignal;
 }
 
 function matchesCorrelation(
@@ -516,190 +526,47 @@ function isTerminalSseFrame(frame: ConsoleFrame): boolean {
   return isTerminalTurnCompletedData(frame.data);
 }
 
-/**
- * Scan complete SSE blocks (delimited by double-newline) for a terminal
- * event: line.  The last block is skipped because it may be incomplete.
- * If `sessionId` is supplied, only a terminal event whose JSON data carries
- * a matching `session_id` field stops the stream; terminals from other
- * sessions (concurrent turns, other clients) are ignored so they cannot
- * prematurely satisfy the stop condition.
- */
-function hasMatchingTerminalEvent(rawText: string, correlation?: TerminalCorrelation): boolean {
-  const blocks = rawText.split(/\n\n+/);
-  for (let i = 0; i < blocks.length - 1; i++) {
-    const block = blocks[i].trim();
-    if (!block) continue;
-    let eventName = "";
-    const dataLines: string[] = [];
-    for (const line of block.split("\n")) {
-      if (line.startsWith("event:")) eventName = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-    }
-    if (!TERMINAL_SSE_EVENTS.has(eventName)) continue;
-    let data: Record<string, unknown> | null = null;
-    try {
-      data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
-    } catch {
-      data = null;
-    }
-    if (eventName === "turn_completed" && !isTerminalTurnCompletedData(data)) continue;
-    if (!correlation?.sessionId && !correlation?.interactionId) return true;
-    if (data && matchesCorrelation(data, correlation, false)) return true;
-  }
-  return false;
-}
-
-async function drainInteractionResponse(
-  response: Response,
-  correlation?: TerminalCorrelation,
-): Promise<ConsoleFrame[]> {
-  return streamFramesFromResponse(response, { correlation });
+function replayStreamError(frame: ConsoleFrame): ConsoleStreamFailure {
+  const error = new Error("Timeline replay is unavailable") as ConsoleStreamFailure;
+  error.replayFrame = frame;
+  return error;
 }
 
 async function streamFramesFromResponse(
   response: Response,
   options: StreamFramesOptions = {},
-): Promise<ConsoleFrame[]> {
-  const stopOnTerminal = options.stopOnTerminal ?? Boolean(options.correlation);
+  mode: "consume" | "collect" = "collect",
+): Promise<ConsoleFrame[] | void> {
   if (!response.ok) {
     const text = await response.text();
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-    const replayError = normalizeReplayUnavailableError(parsed) as ConsoleReplayUnavailablePayload | null;
-    if (replayError) {
-      const error = new Error(
-        `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`,
-      );
-      (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
-      throw error;
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+    const replayError = normalizeReplayUnavailableError(parsed);
+    const ownerFault = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+    // The typed owner response permits an absent latest cursor (empty/reset
+    // log). A repair still needs to run; no speculative frontier is invented.
+    if (response.status === 409 && (replayError || ownerFault?.error === "replay_unavailable")) {
+      throw replayStreamError({ id: "", event: "replay_unavailable", data: replayError || parsed });
     }
     const preview = responseTextErrorPreview(text);
-    throw new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    const error = new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`) as ConsoleStreamFailure;
+    error.httpStatus = response.status;
+    throw error;
   }
-
-  const replayUnavailableError = (frame: ConsoleFrame): Error | null => {
-    if (frame.event !== "replay_unavailable") {
-      return null;
-    }
-    const replayError = normalizeReplayUnavailableError(frame.data) as ConsoleReplayUnavailablePayload | null;
-    if (!replayError) {
-      return new Error("timeline stream replay unavailable");
-    }
-    const error = new Error(
-      `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`,
-    );
-    (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
-    return error;
+  const readerOptions = {
+    parseBlock: parseSseFrames,
+    signal: options.signal,
+    accept(frame: ConsoleFrame) {
+      // This is a server control frame, including cursorless source resets.
+      if (frame.event === "replay_unavailable") throw replayStreamError(frame);
+      return matchesCorrelation(frame, options.correlation, true);
+    },
+    onFrame: options.onFrame,
+    terminal: (options.stopOnTerminal ?? Boolean(options.correlation)) ? isTerminalSseFrame : undefined,
   };
-
-  if (!response.body || typeof response.body.getReader !== "function") {
-    const frames = parseSseFrames(await response.text());
-    for (const frame of frames) {
-      const replayError = replayUnavailableError(frame);
-      if (replayError) {
-        throw replayError;
-      }
-      if (matchesCorrelation(frame, options.correlation, true)) {
-        options.onFrame?.(frame);
-      }
-    }
-    return !options.correlation
-      ? frames
-      : frames.filter((frame) => matchesCorrelation(frame, options.correlation, true));
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let frameBuffer = "";
-  const frames: ConsoleFrame[] = [];
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-      const chunk = decoder.decode(value, { stream: true });
-      frameBuffer += chunk;
-      let sawTerminal = false;
-      frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
-        const replayError = replayUnavailableError(frame);
-        if (replayError) {
-          throw replayError;
-        }
-        if (matchesCorrelation(frame, options.correlation, true)) {
-          frames.push(frame);
-          options.onFrame?.(frame);
-          if (stopOnTerminal && isTerminalSseFrame(frame)) {
-            sawTerminal = true;
-          }
-        }
-      });
-      if (sawTerminal) {
-        break;
-      }
-    }
-    const finalChunk = decoder.decode();
-    frameBuffer += finalChunk;
-    frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
-      const replayError = replayUnavailableError(frame);
-      if (replayError) {
-        throw replayError;
-      }
-      if (matchesCorrelation(frame, options.correlation, true)) {
-        frames.push(frame);
-        options.onFrame?.(frame);
-      }
-    });
-    flushTrailingSseBlock(frameBuffer, (frame) => {
-      const replayError = replayUnavailableError(frame);
-      if (replayError) {
-        throw replayError;
-      }
-      if (matchesCorrelation(frame, options.correlation, true)) {
-        frames.push(frame);
-        options.onFrame?.(frame);
-      }
-    });
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Reader cancellation is best-effort only.
-    }
-  }
-
-  return frames;
-}
-
-function flushSseBlocks(buffer: string, onFrame: (frame: ConsoleFrame) => void): string {
-  let searchIndex = 0;
-  while (true) {
-    const boundaryIndex = buffer.indexOf("\n\n", searchIndex);
-    if (boundaryIndex === -1) {
-      break;
-    }
-    const block = buffer.slice(0, boundaryIndex + 2);
-    buffer = buffer.slice(boundaryIndex + 2);
-    searchIndex = 0;
-    for (const frame of parseSseFrames(block)) {
-      onFrame(frame);
-    }
-  }
-  return buffer;
-}
-
-function flushTrailingSseBlock(buffer: string, onFrame: (frame: ConsoleFrame) => void) {
-  if (!buffer.trim()) {
-    return;
-  }
-  for (const frame of parseSseFrames(`${buffer}\n\n`)) {
-    onFrame(frame);
-  }
+  return mode === "consume"
+    ? consumeSseResponse(response, { ...readerOptions, mode: "consume" })
+    : consumeSseResponse(response, { ...readerOptions, mode: "collect" });
 }
 
 export async function queryTimeline(
@@ -713,6 +580,7 @@ export async function queryTimeline(
   },
   limit = 400,
   timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<ConsoleTimelinePage> {
   const result = await rpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
@@ -721,7 +589,7 @@ export async function queryTimeline(
     ...(target.after?.trim() ? { after: target.after.trim() } : {}),
     ...(target.before?.trim() ? { before: target.before.trim() } : {}),
     ...(target.mode ? { mode: target.mode } : {}),
-  }, timeoutMs);
+  }, timeoutMs, signal);
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
@@ -763,12 +631,20 @@ export async function sendConsole(
 
 function normalizeConsoleTimelineAccepted(
   accepted: unknown,
-  fallbackIdentity: string,
+  expectedIdentity: string,
 ): ConsoleTimelineAccepted {
   const record = accepted && typeof accepted === "object" ? accepted as Record<string, unknown> : {};
+  // Only explicit owner receipts can settle a send. A malformed success is
+  // still an unknown outcome; never synthesize destination or interaction IDs.
+  if (typeof record.interaction_id !== "string" || !record.interaction_id.trim()
+    || typeof record.identity !== "string" || record.identity !== expectedIdentity
+    || ("input_frame_id" in record && record.input_frame_id != null
+      && (typeof record.input_frame_id !== "string" || !record.input_frame_id.trim()))) {
+    throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
+  }
   return {
-    interaction_id: String(record.interaction_id || ""),
-    identity: String(record.identity || fallbackIdentity),
+    interaction_id: record.interaction_id,
+    identity: record.identity,
     conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : undefined,
     session_id: typeof record.session_id === "string" ? record.session_id : undefined,
     input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : undefined,
@@ -782,8 +658,9 @@ export async function callConsoleRpc<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
-  return rpc<T>(baseUrl, method, params, timeoutMs);
+  return rpc<T>(baseUrl, method, params, timeoutMs, signal);
 }
 
 function timelineStreamPath(target: { identity?: string; conversationId?: string }): string {
@@ -793,87 +670,27 @@ function timelineStreamPath(target: { identity?: string; conversationId?: string
   return `${CONSOLE_REST_PATHS.timelineStream}${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 
-function cursorFromTimelineFrame(frame: ConsoleFrame): string | undefined {
-  const cursor = frame.cursor?.trim();
-  if (cursor) return cursor;
-  if (frame.event === "snapshot_complete") {
-    const id = frame.id?.trim();
-    if (id?.startsWith("console:")) return id;
-  }
-  return undefined;
-}
-
-function replayUnavailableFrame(error: unknown): ConsoleFrame {
-  const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
-  return {
-    id: `replay_unavailable:${Date.now()}`,
-    event: "replay_unavailable",
-    data: replayError || {
-      message: error instanceof Error ? error.message : String(error),
-    },
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export function subscribeTimelineEvents(
   baseUrl: string,
   target: { identity?: string; conversationId?: string; after?: string },
   onFrame: (frame: ConsoleFrame) => void,
-): () => void {
-  let stopped = false;
-  let controller: AbortController | null = null;
-  let after = target.after?.trim() || undefined;
+  options: ConsoleTimelineSubscriptionOptions = {},
+): ConsoleTimelineSubscription {
   const fetchImpl = globalThis.fetch;
-
-  void (async () => {
-    let retryDelayMs = 250;
-    while (!stopped) {
-      controller = new AbortController();
-      try {
-        const headers: Record<string, string> = { "content-type": "application/json" };
-        if (after) {
-          headers["Last-Event-ID"] = after;
-        }
-        await streamFramesFromResponse(
-          await fetchImpl(`${baseUrl}${timelineStreamPath(target)}`, {
-            method: "GET",
-            headers,
-            signal: controller.signal,
-          }),
-          {
-            stopOnTerminal: false,
-            onFrame: (frame) => {
-              const nextCursor = cursorFromTimelineFrame(frame);
-              if (nextCursor) {
-                after = nextCursor;
-              }
-              onFrame(frame);
-            },
-          },
-        );
-        retryDelayMs = 250;
-      } catch (error) {
-        if (stopped || controller.signal.aborted) {
-          break;
-        }
-        const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
-        if (replayError?.latest_event_id) {
-          after = replayError.latest_event_id;
-        }
-        onFrame(replayUnavailableFrame(error));
-      }
-      if (!stopped) {
-        await sleep(retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 2_000);
-      }
-    }
-  })();
-
-  return () => {
-    stopped = true;
-    controller?.abort();
-  };
+  return createTimelineSubscription({
+    after: target.after,
+    options,
+    onFrame,
+    async open(signal, after, connected, deliver) {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (after) headers["Last-Event-ID"] = after;
+      const response = await fetchImpl(`${baseUrl}${timelineStreamPath(target)}`, {
+        method: "GET", headers, signal,
+      });
+      if (response.ok) connected();
+      await streamFramesFromResponse(response, {
+        signal, onFrame: deliver, stopOnTerminal: false,
+      }, "consume");
+    },
+  });
 }

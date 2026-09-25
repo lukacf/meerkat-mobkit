@@ -2411,9 +2411,11 @@ svg[data-svg="fit"],
   position: absolute;
   top: -6px;
   bottom: -6px;
-  left: -4px;
-  width: 1px;
-  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  left: -5px;
+  width: 16px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklch, var(--ink) 9%, transparent);
+  background: color-mix(in oklch, var(--ink) 3%, transparent);
   pointer-events: none;
 }
 
@@ -2477,7 +2479,7 @@ svg[data-svg="fit"],
 
 .conv-turn-rail__button.is-active .conv-turn-rail__tick,
 .conv-turn-rail__button[aria-current="true"] .conv-turn-rail__tick {
-  background: var(--ink);
+  background: color-mix(in oklch, var(--ink) 65%, transparent);
 }
 
 .conv-turn-rail__item:has(+ .conv-turn-rail__item + .conv-turn-rail__item:hover) .conv-turn-rail__tick,
@@ -3000,6 +3002,12 @@ svg[data-svg="fit"],
   position: relative;
   z-index: 30;
 }
+
+.composer > [role="alert"] { margin: 0 0 8px; color: var(--danger, #b64339); font-size: 12px; }
+.conv > small[role="status"] { display: block; padding: 4px 16px; color: var(--ink-dim); font-size: 10px; }
+.gating__list > div > button { margin: 8px 14px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper, #fff); color: var(--ink); font: inherit; cursor: pointer; }
+.gating__list > div > button:hover { background: var(--bg); }
+.gating__list > div > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .composer__shell {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -4159,3 +4167,18 @@ svg[data-svg="fit"],
   line-height: 1;
   padding: 2px 6px;
 }
+
+
+.conv__history-status { flex: none; padding: 4px 16px; color: var(--ink-muted); font-size: 12px; }
+
+
+.conv__head--compact { padding-block: 6px; gap: 8px; }
+.conv__head--compact .conv__avatar { width: 22px; height: 22px; font-size: 10px; }
+.conv__head--compact .conv__title { font-size: 12px; }
+.conv__head--compact .conv__action { min-height: 28px; }
+.conv__action:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.conv__identity { color: var(--ink-muted); }
+
+.conv > .queue-storage-note { font-size: 12px; color: var(--ink-muted); padding: 6px 16px; }
+
+.gating__list > div > p { margin: 14px 18px; color: var(--ink-muted); }

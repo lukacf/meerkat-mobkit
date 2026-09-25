@@ -1,3 +1,5 @@
+import { ConversationApprovals, type ConversationApprovalProps } from "./conversation-approvals";
+import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import clsx from "clsx";
 import { Fragment } from "react";
 
@@ -15,7 +17,7 @@ import { groupConversationTranscriptTurns } from "./conversation-turns";
 import { TurnDiffCard } from "./turn-diff-card";
 import type { IconRenderer } from "../shared";
 
-export type ConversationTranscriptProps = {
+export type ConversationTranscriptProps = ConversationApprovalProps & {
   viewState: ConversationViewState;
   compact?: boolean;
   maxGroups?: number | null;
@@ -23,6 +25,7 @@ export type ConversationTranscriptProps = {
   expandedDiffFile?: string | null;
   onToggleDiffFile?: ((filePath: string) => void) | null;
   Icon?: IconRenderer | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   className?: string;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: FlowRunRestoreHandler | null;
@@ -39,12 +42,16 @@ function groupDayKey(group: ConversationTimelineGroup): string | null {
 
 export function ConversationTranscript({
   viewState,
+  approvalSnapshot,
+  approvalIdentity,
+  onApprovalDecision,
   compact = false,
   maxGroups = null,
   showTurnDiff = true,
   expandedDiffFile = null,
   onToggleDiffFile = null,
   Icon,
+  markdownUrlPolicy,
   className,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
@@ -57,7 +64,7 @@ export function ConversationTranscript({
     : viewState.groups;
   const turns = groupConversationTranscriptTurns(groups);
 
-  if (!groups.length && !renderableTurnDiff) {
+  if (!groups.length && !renderableTurnDiff && !approvalSnapshot?.requests.length) {
     return null;
   }
 
@@ -87,6 +94,7 @@ export function ConversationTranscript({
             aria-label={`Turn ${turnIndex + 1}`}
             className="cc-conversation-turn"
             data-cc-conversation-turn-index={turnIndex}
+            data-conversation-turn-id={turn.id}
             data-testid={`conversation-turn:${turnIndex}`}
             key={turn.id}
           >
@@ -100,9 +108,11 @@ export function ConversationTranscript({
                   onFlowRunMessageMember={onFlowRunMessageMember}
                   onFlowRunRestore={onFlowRunRestore}
                   workGraphActions={workGraphActions}
+            markdownUrlPolicy={markdownUrlPolicy}
                 />
               </Fragment>
             ))}
+            <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={approvalIdentity} onApprovalDecision={onApprovalDecision} conversationId={viewState.conversationId} interactionIds={turn.groups.flatMap((group) => group.entries.flatMap((entry) => entry.interactionId ? [entry.interactionId] : []))} />
             {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (
               <TurnDiffCard
                 expandedFile={expandedDiffFile}
@@ -113,6 +123,7 @@ export function ConversationTranscript({
           </section>
         );
       })}
+      <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={approvalIdentity} onApprovalDecision={onApprovalDecision} conversationId={viewState.conversationId} />
       {!turns.length && renderableTurnDiff && onToggleDiffFile ? (
         <section
           aria-label="Turn 1"

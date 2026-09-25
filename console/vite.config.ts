@@ -10,6 +10,8 @@ export default defineConfig({
       "@console-components/styles": path.resolve(__dirname, "../packages/console-components/src/styles/index.ts"),
       "@console-components": path.resolve(__dirname, "../packages/console-components/src/index.ts"),
       clsx: path.resolve(__dirname, "node_modules/clsx"),
+      "react-markdown": path.resolve(__dirname, "node_modules/react-markdown"),
+      "remark-gfm": path.resolve(__dirname, "node_modules/remark-gfm"),
     },
   },
   optimizeDeps: {

@@ -530,7 +530,8 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
     ].filter(Boolean).join("\n");
   }
 
-  return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
+  const text = String(entry.copyText ?? entry.text ?? conversationRichBlocksToText(entry.blocks));
+  return entry.blocks?.some((block) => block.type === "markdown") ? text : text.trim();
 }
 
 export function conversationMessageHasIntrinsicCopyAction(

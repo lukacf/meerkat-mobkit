@@ -1,3 +1,5 @@
+import { ApprovalAttention } from "../../../packages/console-components/src/conversation/approval-card";
+import type { PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 import React from "react";
 import {
   SECTION_COLLAPSE_STORAGE_PREFIX,
@@ -57,6 +59,8 @@ interface SidebarProps {
   grouping?: ConsoleAgentListConfig;
   storageNamespace?: string;
   pinnedAgentIds?: Set<string>;
+  approvals?: PendingApprovalSnapshot;
+  onOpenApproval?: (pendingId?: string) => void;
   onSelect: (agent: ConsoleAgent) => void;
   onTogglePinnedAgent?: (agent: ConsoleAgent, familyPinIds?: Set<string>) => void;
   onOpenControl: (kind: NavKind) => void;
@@ -1254,6 +1258,8 @@ export const Sidebar = React.memo(function Sidebar({
   onSelect,
   onTogglePinnedAgent,
   onOpenControl,
+  approvals,
+  onOpenApproval,
 }: SidebarProps): React.JSX.Element {
   countRender("Sidebar");
   const [q, setQ] = React.useState("");
@@ -1612,6 +1618,7 @@ export const Sidebar = React.memo(function Sidebar({
       >
         {orderAnnouncement}
       </div>
+      {approvals ? <ApprovalAttention snapshot={approvals} onOpen={onOpenApproval || (() => onOpenControl("gating"))} /> : null}
       <div className="sidebar__mast">
         <div>
           <div className="sidebar__mast-title">Roster</div>

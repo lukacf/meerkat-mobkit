@@ -1,3 +1,4 @@
+import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import {
   entryOriginFromFrameData,
   runtimeEventFromFrame,
@@ -27,17 +28,26 @@ import type {
   ConsoleSidebarViewState,
 } from "./sidebar";
 import {
+  buildConversationMarkdownBlocks,
   parseConversationRichBlocks,
   parseStreamingConversationRichBlocks,
 } from "./rich-content";
 import type {
   ConversationRichBlock,
+  ConversationTextMode,
   ConversationRichToolCallBlock,
 } from "./rich-content";
 import type {
   ConsoleAgent,
   ConsoleFrame,
 } from "./runtime-types";
+
+function messageTextBlocks(source: string, textMode: ConversationTextMode = "legacy", streaming = false): ConversationRichBlock[] {
+  if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
+  return streaming
+    ? parseStreamingConversationRichBlocks(source, { displayNormalization: false })
+    : parseConversationRichBlocks(source, { displayNormalization: false });
+}
 
 export type MobKitDockTarget =
   | AgentChatTarget
@@ -1059,62 +1069,18 @@ function peerTargetFromArgs(
           : undefined;
 }
 
-function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
+function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error"; completionEvidence: ToolCompletionEvidence } {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
-  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
-
-  // Extract actual result content — prefer tool_execution_completed which has the real result
-  let result = "";
-  const toolName = typeof record?.name === "string"
-    ? record.name
-    : typeof record?.tool_name === "string"
-      ? record.tool_name
-      : undefined;
-  if (typeof record?.result === "string") {
-    const display = summarizeToolResultForDisplay(toolName, record.result);
-    if (display) {
-      result = display;
-    } else {
-    // Try to parse JSON result and format it readably
-      try {
-        const parsed = JSON.parse(record.result);
-        if (typeof parsed === "object" && parsed !== null) {
-          // Remove metadata keys, keep the actual content
-          const clean = { ...parsed };
-          delete clean.source_event_type;
-          delete clean.type;
-          result = JSON.stringify(clean, null, 2);
-        } else {
-          result = record.result;
-        }
-      } catch {
-        result = record.result;
-      }
-    }
-  } else if (typeof record?.result === "object" && record.result !== null) {
-    result = summarizeToolResultForDisplay(toolName, record.result) || "";
-    if (!result) {
-      const clean = { ...(record.result as Record<string, unknown>) };
-      delete clean.source_event_type;
-      delete clean.type;
-      result = JSON.stringify(clean, null, 2);
-    }
-  }
-
-  // For tool_result_received without a result field, don't use the metadata dump
-  if (!result && frame.event === "tool_result_received") {
-    return { status: isError ? "error" : "success" };
-  }
-
-  return {
-    ...(result ? { result } : {}),
-    status: isError ? "error" : "success",
-  };
+  const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
+  const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
+  const raw = record?.result ?? record?.content;
+  const result = typeof raw === "string" ? raw : raw === undefined || raw === null ? undefined : JSON.stringify(raw, null, 2);
+  return { ...(result !== undefined ? { result } : {}), status, completionEvidence };
 }
 
 function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichToolCallBlock> {
   const toolCalls = new Map<string, ConversationRichToolCallBlock>();
-  const pendingResults = new Map<string, { result?: string; status: "pending" | "success" | "error" }>();
+  const pendingResults = new Map<string, { result?: string; status: "pending" | "success" | "error"; completionEvidence: ToolCompletionEvidence }>();
   // Peer registry built from `peers` tool results: peer_id (uuid) -> name.
   // The LLM-supplied `display_name` field on send_* args is unreliable
   // (agents have been observed filling it with their own name on every
@@ -1166,7 +1132,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       continue;
     }
 
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       const toolCallId = parseToolCallId(frame);
       const data = frame.data as Record<string, unknown> | undefined;
       // Capture peer registry from the `peers` tool result.
@@ -1181,6 +1147,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
           ...current,
           ...(parsed.result ? { result: parsed.result } : {}),
           status: parsed.status,
+          completionEvidence: parsed.completionEvidence,
         });
       } else {
         pendingResults.set(toolCallId, parsed);
@@ -1218,9 +1185,11 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
         arguments: parseToolArguments(frame),
         ...(pending?.result ? { result: pending.result } : {}),
         status: pending?.status || "pending",
+        completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...(peerTarget ? { peerTarget } : {}),
+        ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
         ...(peerIntent ? { peerIntent } : {}),
-        ...(peerBody ? { peerBody } : {}),
+        ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
       });
     }
   }
@@ -1288,10 +1257,12 @@ function renderTerminalEntry(
   frame: ConsoleFrame,
   entryId: string,
   streamedText = "",
+  textMode: ConversationTextMode = "legacy",
 ): ConversationTimelineEntry | null {
   if (frame.event === "interaction_complete") {
     if (isSteerDeliveryTerminalFrame(frame)) return null;
-    const text = summarizeFrameData(frame.data).trim();
+    const source = summarizeFrameData(frame.data);
+    const text = textMode === "markdown" ? source : source.trim();
     if (!text) return null;
 
     // Peer responses always render as compact meta, even if text was streamed
@@ -1311,7 +1282,7 @@ function renderTerminalEntry(
       return null;
     }
 
-    const blocks = parseConversationRichBlocks(text, { displayNormalization: false });
+    const blocks = messageTextBlocks(text, textMode);
     return {
       kind: "message",
       id: entryId,
@@ -1508,6 +1479,7 @@ function conversationEntryVisibleText(entry: ConversationTimelineEntry): string 
       if (!block || typeof block !== "object") return "";
       const record = block as unknown as Record<string, unknown>;
       if (record.type === "thinking") return "";
+      if (record.type === "markdown" && typeof record.source === "string") return record.source;
       if (typeof record.text === "string") return record.text;
       if (typeof record.peerBody === "string") return record.peerBody;
       return "";
@@ -1568,6 +1540,7 @@ function renderHistoryUserEntry(
   frame: ConsoleFrame,
   entryId: string,
   blobBaseUrl?: string,
+  textMode: ConversationTextMode = "legacy",
 ): ConversationTimelineEntry | null {
   if (
     frame.event !== "interaction_started"
@@ -1584,7 +1557,7 @@ function renderHistoryUserEntry(
   // itself never decides what kind of message this is.
   const origin = entryOriginFromFrameData(record);
   if (Array.isArray(content)) {
-    const blocks = contentToUserBlocks(content, blobBaseUrl);
+    const blocks = contentToUserBlocks(content, blobBaseUrl, textMode);
     if (blocks.length === 0) return null;
     return {
       kind: "message",
@@ -1596,16 +1569,36 @@ function renderHistoryUserEntry(
       ...(origin ? { origin } : {}),
     };
   }
-  const text = extractTextFromContentBlocks(content).trim();
+  const source = extractTextFromContentBlocks(content);
+  const text = textMode === "markdown" ? source : source.trim();
   if (!text) return null;
   return {
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
-    variant: "plain",
+    variant: textMode === "markdown" ? "rich" : "plain",
+    ...(textMode === "markdown" ? { blocks: messageTextBlocks(text, textMode) } : {}),
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text,
     ...(origin ? { origin } : {}),
+  };
+}
+
+function renderUserDeliveryFailureEntry(frame: ConsoleFrame, entryId: string): ConversationTimelineEntry | null {
+  if (frame.event !== "user_input" || frame.status !== "delivery_failed") return null;
+  return {
+    kind: "message",
+    id: `${entryId}:delivery-status`,
+    identity: SYSTEM_IDENTITY,
+    variant: "meta",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
+    text: "Message delivery failed.",
+    runtimeEvent: runtimeEventFromFrame(frame.event, {
+      status: frame.status,
+      input_frame_id: frame.id,
+      payload: frame.data,
+    }),
   };
 }
 
@@ -1647,14 +1640,17 @@ function renderRunStartedPromptEntries(
     suppressEmbeddedRpcPrompt?: boolean;
     suppressStructuredCommsPrompt?: boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry[] {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
   const record = frame.data as Record<string, unknown>;
-  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl);
-  const prompt = extractPromptText(record.prompt).trim();
+  const textMode = options.textMode ?? "legacy";
+  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl, textMode);
+  const source = extractPromptText(record.prompt);
+  const prompt = textMode === "markdown" ? source : source.trim();
   if (!prompt) {
     return [];
   }
@@ -1683,7 +1679,8 @@ function renderRunStartedPromptEntries(
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
-      variant: "plain",
+      variant: textMode === "markdown" ? "rich" : "plain",
+      ...(textMode === "markdown" ? { blocks: promptBlocks } : {}),
       ...(createdAt ? { createdAt } : {}),
       text: prompt,
     });
@@ -1728,9 +1725,9 @@ function extractPromptText(prompt: unknown): string {
     .join("\n");
 }
 
-function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
+function contentToUserBlocks(content: unknown, blobBaseUrl?: string, textMode: ConversationTextMode = "legacy"): ConversationRichBlock[] {
   if (typeof content === "string") {
-    return parseConversationRichBlocks(content, { displayNormalization: false });
+    return messageTextBlocks(content, textMode);
   }
   if (!Array.isArray(content)) {
     return [];
@@ -1738,7 +1735,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   const blocks: ConversationRichBlock[] = [];
   for (const block of content) {
     if (typeof block === "string") {
-      blocks.push(...parseConversationRichBlocks(block, { displayNormalization: false }));
+      blocks.push(...messageTextBlocks(block, textMode));
       continue;
     }
     if (!block || typeof block !== "object") continue;
@@ -1750,7 +1747,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
         : typeof record.content === "string"
           ? record.content
           : "";
-      blocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
+      blocks.push(...messageTextBlocks(text, textMode));
       continue;
     }
     if (type === "image" || type === "image_ref") {
@@ -1968,7 +1965,8 @@ function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
 
 type HistoryToolResult = {
   result?: string;
-  status: "success" | "error";
+  status: "pending" | "success" | "error";
+  completionEvidence: ToolCompletionEvidence;
 };
 
 function toolResultTextFromContent(content: unknown): string {
@@ -1997,7 +1995,7 @@ function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResu
   for (const frame of frames) {
     if (
       frame.sourceKind !== "session_history"
-      || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received")
+      || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out")
     ) {
       continue;
     }
@@ -2011,12 +2009,13 @@ function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResu
         : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = rawResult !== undefined
-      ? summarizeToolResultForDisplay(undefined, rawResult) || toolResultTextFromContent(rawResult)
+    const result = typeof rawResult === "string" ? rawResult : rawResult !== undefined
+      ? toolResultTextFromContent(rawResult) || JSON.stringify(rawResult, null, 2)
       : "";
-    const status = data?.is_error === true || data?.status === "error" ? "error" : "success";
+    const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
+    const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
-      status,
+      status, completionEvidence,
       ...(result.trim() ? { result } : {}),
     });
   }
@@ -2086,10 +2085,12 @@ function blockAssistantToolBlock(
       name,
       arguments: argumentsText,
       ...(displayResult ? { result: displayResult } : {}),
-      status: result?.status || "success",
+      status: result?.status || "pending",
+      completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
       ...(peerTarget ? { peerTarget } : {}),
+        ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
       ...(peerIntent ? { peerIntent } : {}),
-      ...(peerBody ? { peerBody } : {}),
+      ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
     };
 }
 
@@ -2097,6 +2098,7 @@ function blockAssistantRichBlocks(
   blocks: unknown[],
   peerRegistry?: Map<string, string>,
   toolResults?: Map<string, HistoryToolResult>,
+  textMode: ConversationTextMode = "legacy",
 ): ConversationRichBlock[] {
   const reasoningBlocks: ConversationRichBlock[] = [];
   const actionAndTextBlocks: ConversationRichBlock[] = [];
@@ -2142,10 +2144,10 @@ function blockAssistantRichBlocks(
         : typeof item.text === "string"
           ? item.text
           : "";
-      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
+      if (text.trim()) actionAndTextBlocks.push(...messageTextBlocks(text, textMode));
     }
   }
-  return hasNonTextBlock ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
+  return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
 }
 
 function textFromUnknown(value: unknown): string {
@@ -2153,7 +2155,7 @@ function textFromUnknown(value: unknown): string {
 }
 
 function typedNoticeContentBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
-  return contentToUserBlocks(content, blobBaseUrl);
+  return contentToUserBlocks(content, blobBaseUrl, "legacy");
 }
 
 function typedNoticeBlockText(block: Record<string, unknown>): string {
@@ -2622,7 +2624,7 @@ function structuredCommsPromptSuppressionKeys(
     let best: { key: string; distance: number } | null = null;
     for (let index = 0; index < frames.length; index++) {
       const frame = frames[index];
-      const key = `${frame.id || frame.event || "frame"}:${index}`;
+      const key = frame.id || `${frame.event || "frame"}:${index}`;
       if (consumed.has(key)) continue;
       if (
         typeof signature.timestampMs === "number"
@@ -2856,6 +2858,7 @@ function typedSystemNoticeBlocksToRich(
   blobBaseUrl?: string,
   sourceKind?: string,
   consumeDuplicateCommsBlock?: (key: string) => boolean,
+  textMode: ConversationTextMode = "legacy",
 ): ConversationRichBlock[] {
   const rich: ConversationRichBlock[] = [];
   const bodyText = textFromUnknown(body);
@@ -2900,7 +2903,27 @@ function typedSystemNoticeBlocksToRich(
         displayBodySource,
         peerAliases,
       );
-      const displayBody = normalizeStructuredCommsBodyText(
+      // Typed content is owner text, including envelope-looking authored lines.
+      // Preserve it without running the legacy parser or scaffold normalization.
+      const ownerContentText = typeof record.content === "string"
+        ? record.content
+        : Array.isArray(record.content)
+          ? record.content.map((part: unknown) => {
+            if (typeof part === "string") return part;
+            if (!part || typeof part !== "object") return "";
+            const textPart = part as Record<string, unknown>;
+            if (textPart.type !== "text") return "";
+            return typeof textPart.text === "string" ? textPart.text
+              : typeof textPart.content === "string" ? textPart.content : "";
+          }).join("")
+          : "";
+      // This typed runtime request's content is model-facing routing guidance,
+      // not an authored message. Its summary already describes the operation.
+      const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
+      const exactDisplayBody = (!runtimeKickoff && ownerContentText)
+        || [record.summary, record.body, record.detail].filter((part): part is string => typeof part === "string").join("\n")
+        || (typeof body === "string" ? body : "");
+      const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
         displayBodySource,
         preserveStructuredContentEnvelope ? [] : peerAliases,
       );
@@ -2912,8 +2935,10 @@ function typedSystemNoticeBlocksToRich(
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
+        peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,
+        peerBodyFormat: textMode === "markdown" ? "verbatim" : "legacy",
         ...(peerImages.length > 0 ? { peerImages } : {}),
       });
       continue;
@@ -2963,6 +2988,7 @@ function historyMessageText(
   toolResults?: Map<string, HistoryToolResult>,
   sourceKind?: string,
   consumeDuplicateCommsBlock?: (key: string) => boolean,
+  textMode: ConversationTextMode = "legacy",
 ): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
@@ -2981,6 +3007,7 @@ function historyMessageText(
         blobBaseUrl,
         sourceKind,
         consumeDuplicateCommsBlock,
+        textMode,
       );
       const duplicateCommsConsumed = Boolean(
         consumeDuplicateCommsBlock
@@ -3004,7 +3031,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -3043,6 +3070,7 @@ function renderSessionHistoryTextCompleteEntry(
     consumeDuplicateCommsBlock?: (key: string) => boolean;
     peerRegistry?: Map<string, string>;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
     toolResults?: Map<string, HistoryToolResult>;
   } = {},
 ): ConversationTimelineEntry | null {
@@ -3057,8 +3085,10 @@ function renderSessionHistoryTextCompleteEntry(
     options.toolResults,
     frame.sourceKind,
     options.consumeDuplicateCommsBlock,
+    options.textMode,
   );
-  const text = parsed.text.trim();
+  const textMode = options.textMode ?? "legacy";
+  const text = textMode === "markdown" ? parsed.text : parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
     const filteredParsedBlocks = options.consumeDuplicateToolBlock
@@ -3070,7 +3100,7 @@ function renderSessionHistoryTextCompleteEntry(
     if (!text && filteredParsedBlocks.length === 0) return null;
     const blocks = filteredParsedBlocks.length > 0
       ? filteredParsedBlocks
-      : parseConversationRichBlocks(text, { displayNormalization: false });
+      : messageTextBlocks(text, textMode);
     return {
       kind: "message",
       id: entryId,
@@ -3093,7 +3123,7 @@ function renderSessionHistoryTextCompleteEntry(
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0
     ? filteredParsedBlocks
-    : parseConversationRichBlocks(text, { displayNormalization: false });
+    : messageTextBlocks(text, textMode);
   return {
     kind: "message",
     id: entryId,
@@ -3111,6 +3141,7 @@ function renderSystemNoticeEntry(
     consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
     consumeDuplicateCommsBlock?: (key: string) => boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry | null {
   if (frame.event !== "system_notice") return null;
@@ -3137,6 +3168,7 @@ function renderSystemNoticeEntry(
     undefined,
     frame.sourceKind,
     options.consumeDuplicateCommsBlock,
+    options.textMode ?? "legacy",
   );
   if (parsed.role !== "meta") return null;
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
@@ -3169,11 +3201,13 @@ export function mapFramesToTimelineEntries(
     renderTextDeltas?: boolean;
     suppressEmbeddedRunStartedPrompt?: boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry[] {
   // Live streams keep store order so unscoped comms events do not jump
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
+  const textMode = options.textMode ?? "legacy";
   const orderedFrames = options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
     : frames;
@@ -3304,9 +3338,7 @@ export function mapFramesToTimelineEntries(
 
   function flushPendingText(final = true) {
     if (!pendingText) return;
-    const blocks = final
-      ? parseConversationRichBlocks(pendingText, { displayNormalization: false })
-      : parseStreamingConversationRichBlocks(pendingText, { displayNormalization: false });
+    const blocks = messageTextBlocks(pendingText, textMode, !final);
     entries.push({
       kind: "message",
       id: pendingId,
@@ -3324,7 +3356,8 @@ export function mapFramesToTimelineEntries(
 
   for (let i = 0; i < orderedFrames.length; i++) {
     const frame = orderedFrames[i];
-    const entryId = `${frame.id || frame.event || "frame"}:${i}`;
+    // Canonical frame identity must survive insertion of older history.
+    const entryId = frame.id || `${frame.event || "frame"}:${i}`;
 
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
@@ -3464,7 +3497,7 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       flushPendingReasoning(true);
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
@@ -3489,19 +3522,21 @@ export function mapFramesToTimelineEntries(
         streamedInteractionText = "";
         streamedInteractionId = frameInteractionId;
       }
-      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
+      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl, textMode);
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
         if (userKey && emittedUserInputs.has(userKey)) {
           foldUserOrigin(userKey, userEntry);
-          continue;
+        } else {
+          if (userKey) {
+            emittedUserInputs.add(userKey);
+            emittedUserEntries.set(userKey, userEntry);
+          }
+          entries.push(userEntry);
         }
-        if (userKey) {
-          emittedUserInputs.add(userKey);
-          emittedUserEntries.set(userKey, userEntry);
-        }
-        entries.push(userEntry);
       }
+      const failureEntry = renderUserDeliveryFailureEntry(frame, entryId);
+      if (failureEntry) entries.push(failureEntry);
       continue;
     }
 
@@ -3509,6 +3544,7 @@ export function mapFramesToTimelineEntries(
       flushPendingReasoning(true);
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
+        textMode,
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
         suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId),
         blobBaseUrl: options.blobBaseUrl,
@@ -3538,6 +3574,7 @@ export function mapFramesToTimelineEntries(
       }
       const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
         blobBaseUrl: options.blobBaseUrl,
+        textMode,
         consumeDuplicateCommsBlock: (key) => {
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
@@ -3595,6 +3632,7 @@ export function mapFramesToTimelineEntries(
         continue;
       }
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          textMode,
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
           toolResults: sessionToolResults,
@@ -3625,11 +3663,8 @@ export function mapFramesToTimelineEntries(
       || frame.event === "interaction_failed"
       || frame.event === "run_failed"
     ) {
-      const streamedText = streamedInteractionText || pendingText;
-      flushPendingReasoning(true);
-      flushPendingText();
-      streamedInteractionText = "";
-      streamedInteractionId = "";
+      // Replayed completion can arrive before the final live chunk. Ignored
+      // history must not flush or reset that still-streaming document.
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
         if (
@@ -3638,7 +3673,15 @@ export function mapFramesToTimelineEntries(
         ) {
           continue;
         }
+      }
+      const streamedText = streamedInteractionText || pendingText;
+      flushPendingReasoning(true);
+      flushPendingText();
+      streamedInteractionText = "";
+      streamedInteractionId = "";
+      if (frame.sourceKind === "session_history") {
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          textMode,
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
           toolResults: sessionToolResults,
@@ -3662,7 +3705,7 @@ export function mapFramesToTimelineEntries(
         }
         continue;
       }
-      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
+      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {
         if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
@@ -3688,7 +3731,7 @@ export function mapFramesToTimelineEntries(
 
     // Skip remaining tool lifecycle events (handled by tool blocks above)
     if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started"
-      || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       continue;
     }
 
@@ -3727,16 +3770,24 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
-  return entries;
+  return entries.map((entry) => {
+    if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    let textIndex = 0;
+    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
+      ? { ...block, id: `${entry.id}:text:${textIndex++}` }
+      : block) };
+  });
 }
 
 export function createUserEntry(
   message: string,
   images: Array<{ src: string; mediaType: string; alt?: string }> = [],
+  options: { textMode?: ConversationTextMode } = {},
 ): ConversationTimelineEntry {
-  if (images.length > 0) {
+  const textMode = options.textMode ?? "legacy";
+  if (images.length > 0 || textMode === "markdown") {
     const blocks: ConversationRichBlock[] = [
-      ...parseConversationRichBlocks(message, { displayNormalization: false }),
+      ...messageTextBlocks(message, textMode),
       ...images.map((image) => ({
         type: "image" as const,
         src: image.src,

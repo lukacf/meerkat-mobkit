@@ -23,6 +23,7 @@ import {
 import { describeFailure, summarizeFailureData } from "./failure-summary";
 import { mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared } from "../../../packages/console-core/src/adapters";
 import {
+  conversationRichBlockCopyText,
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
 function typedCommsNotice(args: {
@@ -244,9 +245,7 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
   const entry = entries[0]!;
   const text = "text" in entry
     ? entry.text
-    : "blocks" in entry && Array.isArray(entry.blocks) && entry.blocks[0]?.type === "paragraph"
-      ? entry.blocks[0].text
-      : "";
+    : "blocks" in entry && Array.isArray(entry.blocks) && (entry.blocks[0]?.type === "paragraph" || entry.blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entry.blocks[0]) : "";
   assert.equal(text, "Status is stable.");
 });
 
@@ -319,7 +318,7 @@ test("streamed reasoning entries carry the turn interactionId (audit fix, both a
     const text = entries.find(
       (entry) => entry.kind === "message"
         && (("text" in entry && entry.text) || ("blocks" in entry
-          && entry.blocks?.some((block) => block.type === "paragraph"))),
+          && entry.blocks?.some((block) => (block.type === "paragraph" || block.type === "markdown")))),
     );
     assert.ok(text, `${name}: text entry rendered`);
     assert.equal(
@@ -352,9 +351,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
   const answerIdx = entries.findIndex((e) => {
     const t = "text" in e
       ? e.text
-      : "blocks" in e && Array.isArray(e.blocks) && e.blocks[0]?.type === "paragraph"
-        ? e.blocks[0].text
-        : "";
+      : "blocks" in e && Array.isArray(e.blocks) && (e.blocks[0]?.type === "paragraph" || e.blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(e.blocks[0]) : "";
     return typeof t === "string" && t.includes("The answer.");
   });
   assert.ok(thinkingIdx >= 0, "thinking entry present");
@@ -362,7 +359,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
   assert.ok(thinkingIdx < answerIdx, `thinking (${thinkingIdx}) should precede answer (${answerIdx})`);
 });
 
-test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conservative", () => {
+test("mapFramesToTimelineEntries preserves incomplete streamed Markdown as one raw document", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -378,12 +375,10 @@ test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conser
 
   assert.equal(entries.length, 1);
   const blocks = "blocks" in entries[0]! ? entries[0].blocks : [];
-  assert.equal(blocks?.[0]?.type, "heading");
-  assert.equal(blocks?.[1]?.type, "paragraph");
-  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "- first\n- seco");
+  assert.deepEqual(blocks, [{ type: "markdown", id: "evt-1:text:0", source: "## Risk\n\n- first\n- seco", streaming: true }]);
 });
 
-test("mapFramesToTimelineEntries reparses completed streamed markdown normally", () => {
+test("mapFramesToTimelineEntries keeps the same Markdown document on stream completion", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -409,9 +404,7 @@ test("mapFramesToTimelineEntries reparses completed streamed markdown normally",
 
   const assistant = entries.find((entry) => entry.kind === "message" && entry.identity.role === "assistant");
   const blocks = assistant && "blocks" in assistant ? assistant.blocks : [];
-  assert.equal(blocks?.[0]?.type, "heading");
-  assert.equal(blocks?.[1]?.type, "paragraph");
-  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "first\nsecond");
+  assert.deepEqual(blocks, [{ type: "markdown", id: "evt-1:text:0", source: "## Risk\n\n- first\n- second", streaming: false }]);
 });
 
 test("mapFramesToTimelineEntries renders run_started parent prompts as the inbound turn", () => {
@@ -515,9 +508,7 @@ test("mapFramesToTimelineEntries suppresses duplicate terminal text after stream
   assert.equal(entries[0]?.kind, "message");
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Hello! How can I assist you today?",
   );
@@ -572,7 +563,7 @@ test("mapFramesToTimelineEntries suppresses session-history terminal text alread
       if ("text" in entry) return entry.text;
       if ("blocks" in entry && Array.isArray(entry.blocks)) {
         return entry.blocks
-          .map((block) => block.type === "paragraph" ? block.text : "")
+          .map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "")
           .join("");
       }
       return "";
@@ -611,9 +602,7 @@ test("mapFramesToTimelineEntries ignores text_complete so the terminal event doe
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Status is stable.",
   );
@@ -646,9 +635,7 @@ test("mapFramesToTimelineEntries ignores live text_complete before matching inte
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : entries[0] && "text" in entries[0]
         ? entries[0].text
         : "",
@@ -675,9 +662,7 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Status is stable.",
   );
@@ -1013,9 +998,7 @@ test("mapFramesToTimelineEntries renders terminal completion without streamed de
   assert.equal(entries[0]?.identity.role, "assistant");
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "The uploaded badge says ALL CLEAR.",
   );
@@ -1183,8 +1166,8 @@ test("mapFramesToTimelineEntries renders image-tool turns without duplicating fi
     return "blocks" in entry
       && Array.isArray(entry.blocks)
       && entry.blocks.some(
-        (block) => block.type === "paragraph"
-          && block.text === "Generated the square ALL CLEAR incident badge image.",
+        (block) => (block.type === "paragraph" || block.type === "markdown")
+          && conversationRichBlockCopyText(block) === "Generated the square ALL CLEAR incident badge image.",
       );
   });
   const imageEntries = entries.filter(
@@ -1426,8 +1409,8 @@ test("appendOptimisticConversationEntry preserves timestamp transcript order", (
       if (entry.id === "optimistic") return "optimistic";
       if (entry.kind !== "message") return entry.kind;
       if (entry.variant === "rich" && entry.blocks?.[0]?.type === "tool-call") return "tool";
-      if (entry.variant === "rich" && entry.blocks?.[0]?.type === "paragraph") {
-        return entry.blocks[0].text;
+      if (entry.variant === "rich" && (entry.blocks?.[0]?.type === "paragraph" || entry.blocks?.[0]?.type === "markdown")) {
+        return conversationRichBlockCopyText(entry.blocks[0]);
       }
       return "text" in entry ? entry.text : "rich";
     }),
@@ -1484,9 +1467,7 @@ test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle s
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Sent the status check.",
   );
@@ -1557,8 +1538,8 @@ test("mapFramesToTimelineEntries renders server tool content as tool activity wi
     assert.match(tool.result || "", /https:\/\/example\.com/);
   }
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "I found one source.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "I found one source.");
 });
 
 test("mapFramesToTimelineEntries renders completed web_search_call status and query context", () => {
@@ -1703,7 +1684,7 @@ test("mapFramesToTimelineEntries preserves text and tool interleaving inside one
       if (entry.variant === "rich") {
         const block = entry.blocks?.[0];
         if (block?.type === "tool-call") return "tool";
-        if (block?.type === "paragraph") return block.text;
+        if (block?.type === "paragraph" || block?.type === "markdown") return conversationRichBlockCopyText(block);
         return "rich";
       }
       return entry.text;
@@ -1880,7 +1861,7 @@ test("mapFramesToTimelineEntries renders session-history assistant text_complete
   const renderedText = entries[0] && "text" in entries[0]
     ? entries[0].text
     : entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      ? entries[0].blocks.map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "").join("")
       : "";
   assert.equal(
     renderedText,
@@ -1964,12 +1945,12 @@ test("mapFramesToTimelineEntries renders session-history reasoning blocks outsid
   assert.equal(finalBlocks?.[0]?.type, "thinking");
   assert.equal(finalBlocks?.[0]?.text, "**Considering event response**\n\nI should not be rendered as an answer.");
   assert.equal(finalBlocks?.[0]?.label, "");
-  assert.equal(finalBlocks?.[1]?.type, "paragraph");
-  assert.equal(finalBlocks?.[1]?.text, "Ready as the incident investigation worker and standing by for follow-up tasks.");
+  assert.equal(finalBlocks?.[1]?.type, "markdown");
+  assert.equal(finalBlocks?.[1]?.source, "Ready as the incident investigation worker and standing by for follow-up tasks.");
   const renderedText = entries[1] && "text" in entries[1]
     ? entries[1].text
     : entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      ? entries[1].blocks.map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "").join("")
       : "";
   assert.equal(
     renderedText,
@@ -2020,8 +2001,8 @@ test("mapFramesToTimelineEntries renders live reasoning deltas as thought blocks
   assert.equal(thought?.label, "");
   assert.equal(thought?.final, true);
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries suppresses history reasoning replay after a streamed answer", () => {
@@ -2076,8 +2057,8 @@ test("mapFramesToTimelineEntries suppresses history reasoning replay after a str
   assert.equal(thought?.type, "thinking");
   assert.equal(thought?.text, "Planning before answering.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries suppresses late completed reasoning slices after an answer", () => {
@@ -2125,8 +2106,8 @@ test("mapFramesToTimelineEntries suppresses late completed reasoning slices afte
   assert.equal(thought?.type, "thinking");
   assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice arrives before an answer", () => {
@@ -2167,8 +2148,8 @@ test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice a
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(thinking?.type, "thinking");
   assert.equal(thinking?.text, "Searching for context.\n\nEvaluating relocation choices.");
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Answer.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Answer.");
 });
 
 test("mapFramesToTimelineEntries upgrades prior reasoning when a late complete is fuller", () => {
@@ -2216,8 +2197,8 @@ test("mapFramesToTimelineEntries upgrades prior reasoning when a late complete i
   assert.equal(thought?.type, "thinking");
   assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries flushes pending reasoning before another interaction completes", () => {
@@ -2290,8 +2271,8 @@ test("mapFramesToTimelineEntries suppresses late unscoped reasoning without muta
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(first?.type, "thinking");
   assert.equal(first?.text, "Searching for context.");
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final", () => {
@@ -2586,8 +2567,8 @@ test("mapFramesToTimelineEntries renders user image content blocks inline", () =
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks[0]?.type, "paragraph");
-  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Describe this badge.");
+  assert.equal(blocks[0]?.type, "markdown");
+  assert.equal((blocks[0]?.type === "paragraph" || blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(blocks[0]) : "", "Describe this badge.");
   assert.equal(blocks[1]?.type, "image");
   assert.equal(
     blocks[1]?.type === "image" ? blocks[1].src : "",
@@ -2626,8 +2607,8 @@ test("mapFramesToTimelineEntries renders user image_ref content blocks inline", 
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks[0]?.type, "paragraph");
-  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Please inspect the forwarded image.");
+  assert.equal(blocks[0]?.type, "markdown");
+  assert.equal((blocks[0]?.type === "paragraph" || blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(blocks[0]) : "", "Please inspect the forwarded image.");
   assert.equal(blocks[1]?.type, "image");
   assert.equal(
     blocks[1]?.type === "image" ? blocks[1].src : "",
@@ -2793,9 +2774,7 @@ test("mapFramesToTimelineEntries treats spawn-looking interaction prompts as use
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Acknowledged.",
   );
@@ -2943,7 +2922,7 @@ test("mapFramesToTimelineEntries renders session-history typed comms frames as c
   assert.equal(block?.type, "tool-call");
   assert.equal(block?.peerIncoming, true);
   assert.equal(block?.peerTarget, "grandchild-worker");
-  assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
+  assert.equal(block?.peerBody, "Peer message from implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker:\ngrandchild-worker ping acknowledgement.");
 });
 
 test("mapFramesToTimelineEntries preserves outgoing typed comms direction", () => {
@@ -3043,9 +3022,7 @@ test("mapFramesToTimelineEntries suppresses repeated assistant history after an 
   assert.equal(assistantMessages.length, 1);
   const assistantText = "text" in assistantMessages[0]
     ? assistantMessages[0].text
-    : "blocks" in assistantMessages[0] && assistantMessages[0].blocks?.[0]?.type === "paragraph"
-      ? assistantMessages[0].blocks[0].text
-      : "";
+    : "blocks" in assistantMessages[0] && (assistantMessages[0].blocks?.[0]?.type === "paragraph" || assistantMessages[0].blocks?.[0]?.type === "markdown") ? conversationRichBlockCopyText(assistantMessages[0].blocks[0]) : "";
   assert.equal(assistantText, "qa-child-worker said: “Ping acknowledged.”");
   const commsMessages = entries.filter(
     (entry) => entry.kind === "message" && entry.identity.id === "comms",
@@ -3853,7 +3830,7 @@ test("mapFramesToTimelineEntries preserves literal Body lines in clean comms bod
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Here is the report Body: section one",
+    "Here is the report\nBody: section one",
   );
 });
 
@@ -3897,7 +3874,7 @@ test("mapFramesToTimelineEntries preserves clean comms bodies that look like int
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Intent: preserve this line Body: preserve this too",
+    "Intent: preserve this line\nBody: preserve this too",
   );
 });
 
@@ -3931,7 +3908,7 @@ test("mapFramesToTimelineEntries preserves quoted peer envelope lines in clean c
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Peer message from incident-lead: Please keep this quote.",
+    "Peer message from incident-lead:\nPlease keep this quote.",
   );
 });
 
@@ -3965,7 +3942,7 @@ test("mapFramesToTimelineEntries preserves same-peer envelope lines quoted insid
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Quoted wrapper: Peer message from review:singleton: Please keep this quote.",
+    "Quoted wrapper:\nPeer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -3999,7 +3976,7 @@ test("mapFramesToTimelineEntries preserves bracketed COMMS note literals in clea
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "[COMMS NOTE] Intent: preserve this Body: preserve this too",
+    "[COMMS NOTE]\nIntent: preserve this\nBody: preserve this too",
   );
 });
 
@@ -4033,7 +4010,7 @@ test("mapFramesToTimelineEntries preserves quoted bracketed COMMS envelopes in c
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "[COMMS MESSAGE from incident-lead] Intent: preserve this Body: preserve this too",
+    "[COMMS MESSAGE from incident-lead]\nIntent: preserve this\nBody: preserve this too",
   );
 });
 
@@ -4067,7 +4044,7 @@ test("mapFramesToTimelineEntries preserves standalone peer scaffold words in cle
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Peer message Please keep this heading.",
+    "Peer message\nPlease keep this heading.",
   );
 });
 
@@ -4477,7 +4454,7 @@ test("mapFramesToTimelineEntries does not suppress later envelope-looking prompt
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "comms");
   assert.equal(entries[1]?.identity.id, "user");
-  assert.equal(entries[1]?.id, "later-operator-looking-prompt:2");
+  assert.equal(entries[1]?.id, "later-operator-looking-prompt");
 });
 
 test("mapFramesToTimelineEntries does not suppress quoted peer envelopes inside operator prompts", () => {
@@ -4554,7 +4531,7 @@ test("mapFramesToTimelineEntries suppresses nearest duplicate by frame order wit
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "comms");
   assert.equal(entries[1]?.identity.id, "user");
-  assert.equal(entries[1]?.id, "later-raw-run-started:2");
+  assert.equal(entries[1]?.id, "later-raw-run-started");
 });
 
 test("mapFramesToTimelineEntries does not suppress colon-prefixed peer aliases", () => {
@@ -4628,7 +4605,7 @@ test("mapFramesToTimelineEntries suppresses runtime-id peer envelopes without tr
   assert.equal(entries[0]?.identity.id, "comms");
 });
 
-test("mapFramesToTimelineEntries strips typed one-line comms envelopes by structured peer alias", () => {
+test("mapFramesToTimelineEntries preserves typed one-line comms owner content", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "planner",
@@ -4655,7 +4632,7 @@ test("mapFramesToTimelineEntries strips typed one-line comms envelopes by struct
   assert.equal(entries.length, 1);
   const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : undefined;
   assert.equal(block?.type, "tool-call");
-  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Error: failed");
+  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Peer message from review:singleton: Error: failed");
 });
 
 test("mapFramesToTimelineEntries does not suppress unrelated same-body peer prompts", () => {
@@ -5049,7 +5026,7 @@ test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from review:singleton: Please keep this quote.",
+    "Peer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -5090,7 +5067,7 @@ test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from review:singleton: Please keep this quote.",
+    "Peer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -5123,7 +5100,7 @@ test("mapFramesToTimelineEntries preserves leading slash peer envelopes in struc
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from fugue/issue_lead/LUC-642/issue_lead: Please keep this quote.",
+    "Peer message from fugue/issue_lead/LUC-642/issue_lead:\nPlease keep this quote.",
   );
 });
 
@@ -5352,9 +5329,7 @@ test("mapFramesToTimelineEntries renders live untyped peer system notices", () =
 
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.identity.id, "comms");
-  const text = entries[0] && "blocks" in entries[0] && entries[0].blocks?.[0]?.type === "paragraph"
-    ? entries[0].blocks[0].text
-    : "";
+  const text = entries[0] && "blocks" in entries[0] && (entries[0].blocks?.[0]?.type === "paragraph" || entries[0].blocks?.[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : "";
   assert.match(text, /LIVE_PEER_NOTICE landed in the parent chat/);
 });
 
@@ -5467,7 +5442,7 @@ test("mapFramesToTimelineEntries renders live non-comms system notices without t
   const runtimeBlock = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(runtimeBlock?.type, "paragraph");
   assert.equal(
-    runtimeBlock?.type === "paragraph" ? runtimeBlock.text : "",
+    (runtimeBlock?.type === "paragraph" || runtimeBlock?.type === "markdown") ? conversationRichBlockCopyText(runtimeBlock) : "",
     "Runtime recovered from transient stream lag",
   );
 });
@@ -5707,7 +5682,7 @@ test("mapFramesToTimelineEntries hides image external-event notices after rich u
   assert.equal(entries[0]?.identity.id, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks : [];
-  assert.equal(blocks?.filter((block) => block.type === "paragraph").length, 1);
+  assert.equal(blocks?.filter((block) => block.type === "paragraph" || block.type === "markdown").length, 1);
   assert.equal(blocks?.filter((block) => block.type === "image").length, 1);
 });
 
@@ -6178,8 +6153,8 @@ test("mapFramesToTimelineEntries renders inbound content-block run_started promp
   assert.equal(blocks.length, 3);
   assert.equal(
     blocks
-      .filter((block) => block.type === "paragraph")
-      .map((block) => block.type === "paragraph" ? block.text : "")
+      .filter((block) => block.type === "paragraph" || block.type === "markdown")
+      .map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "")
       .join("\n"),
     "[COMMS MESSAGE from incident-command-center/commander/incident-commander]\nPlease describe this generated self-portrait image.",
   );
@@ -6228,9 +6203,7 @@ test("mapFramesToTimelineEntries orders persisted interaction history by interac
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Working on it.",
   );
@@ -6271,9 +6244,7 @@ test("mapFramesToTimelineEntries keeps accepted user input before the later assi
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "OK",
   );
@@ -6379,9 +6350,7 @@ test("mapFramesToTimelineEntries decodes stringified delta payloads from persist
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Enterprise merchants are experiencing significant payment failures.",
   );
@@ -6406,9 +6375,7 @@ test("mapFramesToTimelineEntries preserves whitespace-only text deltas instead o
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Payments-API remains degraded at 38%",
   );
@@ -8178,9 +8145,11 @@ function entryVisibleTestText(entry: unknown): string {
   if (typeof record.text === "string") return record.text;
   if (Array.isArray(record.blocks)) {
     return record.blocks
-      .map((block) => (typeof (block as { text?: unknown }).text === "string"
-        ? (block as { text: string }).text
-        : ""))
+      .map((block) => (block as { type?: string }).type === "markdown"
+        ? (block as { source: string }).source
+        : typeof (block as { text?: unknown }).text === "string"
+          ? (block as { text: string }).text
+          : "")
       .join(" ");
   }
   return "";

@@ -602,3 +602,41 @@ test("consecutive rows from the same assistant share one header", () => {
     [["q", true], ["a1", true], ["a2", false]],
   );
 });
+
+test("Markdown copy and transcript export retain exact source whitespace", () => {
+  const source = "  # A heading\n\nA line with a hard break  \nNext line\n\n";
+  const entries: ConversationTimelineEntry[] = [{
+    id: "raw-markdown", kind: "message", variant: "rich", identity: AGENT,
+    blocks: [{ type: "markdown", id: "document", source, streaming: true }],
+  }];
+  const rows = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(__chatPaneTest.msgCopyText(rows[0]), source);
+  assert.equal(__chatPaneTest.transcriptCopyText(rows), `Assistant - Agent: ${source}`);
+  assert.equal(rows[0].scrollRowId, "raw-markdown");
+});
+
+test("Markdown rows remain distinct when whitespace carries source meaning", () => {
+  const entries: ConversationTimelineEntry[] = ["one  \ntwo", "one two"].map((source, i) => ({
+    id: `raw-${i}`, kind: "message", variant: "rich", identity: AGENT,
+    blocks: [{ type: "markdown", id: `document-${i}`, source, streaming: false }],
+  }));
+  assert.equal(__chatPaneTest.buildChatMessages(entries).length, 2);
+});
+
+test("compact stock header retains target actions and destination", () => {
+  const html = renderToStaticMarkup(React.createElement(ChatPane, { agent: null, agentLabel: "Agent", identity: "canonical-agent", entries: [], phase: null, draft: "", sending: false, staged: [], onDraftChange: () => {}, onStagedChange: () => {}, onSend: () => true, onInspect: () => {}, headerVariant: "compact" }));
+  assert.match(html, /conv__head--compact/);
+  assert.match(html, /title="canonical-agent"/);
+  assert.match(html, /conv-action:details/);
+  assert.match(html, /To:/);
+  assert.doesNotMatch(html, /class="conv__identity"/);
+});
+
+test("stock folds consecutive proven generic completion but keeps unknown visible", () => {
+  const makeTool = (id: string, name: string, known: boolean): ConversationTimelineEntry => ({ id, kind: "message", variant: "rich", identity: AGENT, blocks: [{ type: "tool-call", toolCallId: id, name, arguments: "{}", status: known ? "success" : "pending", completionEvidence: { outcome: known ? "success" : "unknown", source: known ? "session-history" : "unknown", toolCallId: id } }] });
+  const html = renderToStaticMarkup(React.createElement(ChatPane, { agent: null, agentLabel: "Agent", identity: "agent", entries: [makeTool("one", "read_file", true), makeTool("two", "list_files", true), makeTool("three", "read_file", false)], phase: null, draft: "", sending: false, staged: [], onDraftChange: () => {}, onStagedChange: () => {}, onSend: () => true }));
+  assert.match(html, /2 completed tool calls/);
+  assert.match(html, /Completion unknown/);
+  assert.match(html, /data-conversation-row-id="one"/);
+  assert.match(html, /data-conversation-row-id="two"/);
+});

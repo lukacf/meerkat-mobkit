@@ -1,9 +1,9 @@
+import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, groupRoutineToolRows, useConversationDisplayLabels, useInsideCompletedToolDisclosure } from "./presentation-policy";
 import clsx from "clsx";
 
 import {
   conversationRichPeerBodyForDisplay,
   conversationRichPeerIntentForDisplay,
-  conversationRichPeerTargetForDisplay,
   normalizeConversationDisplayText,
   renderConversationInlineMarkdown,
   type ConversationRichBlock,
@@ -20,6 +20,8 @@ import { cloneElement, useEffect, useRef, useState, type KeyboardEvent, type Rea
 
 import { copyTextToClipboard } from "../shared";
 
+import { ConversationMarkdown, type MarkdownUrlPolicy } from "./conversation-markdown";
+
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
 import { CopyGlyph } from "../copy-glyph";
@@ -27,6 +29,7 @@ import type { IconRenderer } from "../shared";
 
 type ConversationRichContentProps = {
   blocks: ConversationRichBlock[];
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   richStyle?: "default" | "streaming";
   Icon?: IconRenderer | null;
   // Default true preserves meerkat-studio's display normalization; the MobKit
@@ -84,7 +87,12 @@ function renderBlock(
   index: number,
   Icon?: IconRenderer | null,
   displayNormalization = true,
+  markdownUrlPolicy?: MarkdownUrlPolicy,
 ) {
+  if (block.type === "markdown") {
+    return <ConversationMarkdown block={block} urlPolicy={markdownUrlPolicy} key={block.id} />;
+  }
+
   if (block.type === "paragraph") {
     return <p className="cc-rich-paragraph" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} key={`paragraph-${index}`} />;
   }
@@ -281,10 +289,10 @@ function formatJsonIfPossible(text: string): string {
 function toolBlockCopyText(block: ConversationRichToolCallBlock): string {
   if (block.peerTarget) {
     const dir = block.peerIncoming ? "← from" : "→ to";
-    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
     const result = meaningfulPeerResult(block.result);
     return [
-      `${dir} ${conversationRichPeerTargetForDisplay(block.peerTarget)}`,
+      `${dir} ${block.peerIdentity || block.peerTarget || "Unknown peer"}`,
       conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
       peerBody,
       result,
@@ -293,7 +301,7 @@ function toolBlockCopyText(block: ConversationRichToolCallBlock): string {
   const parts = [`$ ${block.name}`];
   if (block.arguments) parts.push(`Input: ${block.arguments}`);
   if (block.result) parts.push(`Result: ${block.result}`);
-  return parts.join("\n").trim();
+  return parts.join("\n");
 }
 
 function parseObjectJson(text: string | null | undefined): Record<string, unknown> | null {
@@ -331,7 +339,7 @@ function meaningfulPeerResult(value: string | null | undefined): string {
 
 function peerDetailRows(block: ConversationRichToolCallBlock): Array<{ label: string; value: string }> {
   const args = parseObjectJson(block.arguments) || {};
-  const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+  const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
   const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
   const body = peerBody
     || textFromUnknown(args.body)
@@ -403,6 +411,31 @@ function onToolHeaderKeyDown(event: KeyboardEvent<HTMLDivElement>, toggle: () =>
   toggle();
 }
 
+function toolCompletionLabel(block: ConversationRichToolCallBlock): string {
+  const outcome = block.completionEvidence?.outcome;
+  if (outcome === "unknown") return "Completion unknown";
+  if (outcome === "cancelled") return "Cancelled";
+  if (outcome === "interrupted") return "Interrupted";
+  return block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed";
+}
+
+function toolAttentionKey(block: ConversationRichToolCallBlock): string | null {
+  const outcome = block.completionEvidence?.outcome ?? (block.status === "pending" ? "running" : block.status);
+  return block.status === "error" || ["running", "error", "cancelled", "interrupted", "unknown"].includes(outcome)
+    ? JSON.stringify([block.toolCallId, block.status, outcome]) : null;
+}
+
+/** New actionable information reopens details once; a later manual close holds. */
+function useToolDisclosure(blocks: ConversationRichToolCallBlock[], initiallyOpen: boolean) {
+  const keys = blocks.map(toolAttentionKey).filter((key): key is string => key !== null);
+  const signature = JSON.stringify(keys);
+  const [state, setState] = useState(() => ({ signature, keys, expanded: initiallyOpen }));
+  const expanded = state.expanded || (state.signature !== signature && keys.some((key) => !state.keys.includes(key)));
+  if (state.signature !== signature) setState({ signature, keys, expanded });
+  const toggle = () => setState({ signature, keys, expanded: !expanded });
+  return { expanded, toggle };
+}
+
 function ToolCallBlock({
   block,
   className,
@@ -410,33 +443,37 @@ function ToolCallBlock({
   block: ConversationRichToolCallBlock;
   className?: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const insideDisclosure = useInsideCompletedToolDisclosure();
+  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
+  const displayLabels = useConversationDisplayLabels();
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
   const statusClass = `cc-tool-call--${block.status}`;
 
   if (isPeer || block.peerIncoming) {
-    const target = conversationRichPeerTargetForDisplay(block.peerTarget);
-    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+    const target = explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers);
+    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
     const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
     const content = peerBody || peerIntent || "";
     const arrow = block.peerIncoming ? "↙" : "↗";
     const detailRows = peerDetailRows(block);
     return (
-      <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass, className)}>
+      <section data-quote-exclude className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass, className)}>
         <div
           className="cc-tool-call__header"
           role="button"
           tabIndex={0}
-          onClick={() => setExpanded((prev) => !prev)}
-          onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
+          onClick={toggle}
+          onKeyDown={(event) => onToolHeaderKeyDown(event, toggle)}
           aria-expanded={expanded}
         >
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
           <span className="cc-tool-call__icon">{arrow}</span>
-          <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
-          {peerIntent && <span className="cc-tool-call__peer-intent">{peerIntent}</span>}
-          {content && <span className="cc-tool-call__preview">{content}</span>}
+          <span className="cc-tool-call__name" title={block.peerIdentity || block.peerTarget}>{block.peerIncoming ? `Received from ${target}` : target}</span>
+          <span className="cc-tool-call__peer-summary">
+            {peerIntent && <span className="cc-tool-call__peer-intent">{peerIntent}</span>}
+            {content && <span className="cc-tool-call__peer-body">{content}</span>}
+          </span>
           <span className="cc-tool-call__status">{statusIcon}</span>
           <CopyBtn text={toolBlockCopyText(block)} />
         </div>
@@ -487,20 +524,20 @@ function ToolCallBlock({
   } catch { /* use raw */ }
 
   return (
-    <section className={clsx("cc-tool-call", statusClass, className)}>
+    <section data-quote-exclude className={clsx("cc-tool-call", statusClass, className)}>
       <div
         className="cc-tool-call__header"
         role="button"
         tabIndex={0}
-        onClick={() => setExpanded((prev) => !prev)}
-        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
+        onClick={toggle}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, toggle)}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
         <span className="cc-tool-call__icon">⚙</span>
-        <span className="cc-tool-call__name">{block.name}</span>
+        <span className="cc-tool-call__name" title={block.name}>{explicitDisplayLabel(block.name, displayLabels?.tools)}</span>
         {argsPreview && <span className="cc-tool-call__preview">{argsPreview}</span>}
-        <span className="cc-tool-call__status">{statusIcon} {block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"}</span>
+        <span className="cc-tool-call__status">{statusIcon} {toolCompletionLabel(block)}</span>
         <CopyBtn text={toolBlockCopyText(block)} />
       </div>
       {expanded && (
@@ -508,7 +545,7 @@ function ToolCallBlock({
           {argsPreview && (
             <div className="cc-tool-call__section">
               <div className="cc-tool-call__section-label">Input</div>
-              <pre className="cc-tool-call__pre">{argsPreview}</pre>
+              <pre className="cc-tool-call__pre">{block.arguments}</pre>
             </div>
           )}
           {block.result && (
@@ -528,11 +565,13 @@ function ToolCallBlock({
 /// the header; expanded body lists each call's input + result. The
 /// status icon is composite — success only when every call succeeded.
 function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
-  const [expanded, setExpanded] = useState(false);
+  const insideDisclosure = useInsideCompletedToolDisclosure();
+  const { expanded, toggle } = useToolDisclosure(blocks, insideDisclosure || !canFoldCompletedTools(blocks));
+  const displayLabels = useConversationDisplayLabels();
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
-  const statusLabel = anyError ? "Failed" : allSuccess ? "Success" : "Running";
+  const statusLabel = anyError ? "Failed" : blocks.some((block) => block.completionEvidence?.outcome === "interrupted") ? "Interrupted" : blocks.some((block) => block.completionEvidence?.outcome === "cancelled") ? "Cancelled" : blocks.some((block) => block.completionEvidence?.outcome === "unknown") ? "Completion unknown" : allSuccess ? "Success" : "Running";
   const statusClass = anyError
     ? "cc-tool-call--error"
     : allSuccess
@@ -541,18 +580,18 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
   const name = blocks[0]?.name || "tool";
 
   return (
-    <section className={clsx("cc-tool-call cc-tool-call--group", statusClass)}>
+    <section data-quote-exclude className={clsx("cc-tool-call cc-tool-call--group", statusClass)}>
       <div
         className="cc-tool-call__header"
         role="button"
         tabIndex={0}
-        onClick={() => setExpanded((prev) => !prev)}
-        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
+        onClick={toggle}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, toggle)}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
         <span className="cc-tool-call__icon">⚙</span>
-        <span className="cc-tool-call__name">{name}</span>
+        <span className="cc-tool-call__name" title={name}>{explicitDisplayLabel(name, displayLabels?.tools)}</span>
         <span className="cc-tool-call__count">×{blocks.length}</span>
         <span className="cc-tool-call__status">{statusIcon} {statusLabel}</span>
         <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
@@ -596,8 +635,9 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 }
 
 function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const targets = Array.from(new Set(blocks.map((b) => conversationRichPeerTargetForDisplay(b.peerTarget))));
+  const { expanded, toggle } = useToolDisclosure(blocks, true);
+  const displayLabels = useConversationDisplayLabels();
+  const targets = Array.from(new Set(blocks.map((b) => explicitDisplayLabel(b.peerIdentity || b.peerTarget || "Unknown peer", displayLabels?.peers))));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
@@ -609,13 +649,13 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
     : `Sent to ${targets.join(", ")}`;
 
   return (
-    <section className={clsx("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass)}>
+    <section data-quote-exclude className={clsx("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass)}>
       <div
         className="cc-tool-call__header"
         role="button"
         tabIndex={0}
-        onClick={() => setExpanded((prev) => !prev)}
-        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
+        onClick={toggle}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, toggle)}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
@@ -627,11 +667,11 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
       {expanded && (
         <div className="cc-tool-call__body">
           {blocks.map((block, i) => {
-            const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+            const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
             const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
             return (
               <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
-                <span className="cc-tool-call__peer-target">{isIncoming ? "←" : "→"} {conversationRichPeerTargetForDisplay(block.peerTarget)}</span>
+                <span className="cc-tool-call__peer-target" title={block.peerIdentity || block.peerTarget}>{isIncoming ? "←" : "→"} {explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers)}</span>
                 {peerIntent ? (
                   <span className="cc-tool-call__peer-intent">
                     {peerIntent}
@@ -639,6 +679,12 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
                 ) : null}
                 {peerBody && (
                   <span className="cc-tool-call__peer-body">{peerBody}</span>
+                )}
+                {block.result && toolAttentionKey(block) && (
+                  <div className="cc-tool-call__peer-result">
+                    <div className="cc-tool-call__section-label">{toolCompletionLabel(block)}</div>
+                    <pre className="cc-tool-call__pre">{block.result}</pre>
+                  </div>
                 )}
                 <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
                   {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
@@ -654,10 +700,15 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 
 export function ConversationRichContent({
   blocks,
+  markdownUrlPolicy,
   richStyle = "default",
   Icon,
   displayNormalization = true,
 }: ConversationRichContentProps) {
+  const insideDisclosure = useInsideCompletedToolDisclosure();
+  if (!insideDisclosure && canFoldCompletedTools(blocks)) {
+    return <CompletedToolDisclosure blocks={blocks}><ConversationRichContent blocks={blocks} markdownUrlPolicy={markdownUrlPolicy} richStyle={richStyle} Icon={Icon} displayNormalization={displayNormalization} /></CompletedToolDisclosure>;
+  }
   // Render multi-block tool runs as a single collapsible group:
   // peer tools get the `Sent to a, b, c` blob, generic same-name
   // tool runs get the `<name> ×N` blob. The adapter (and ChatPane's
@@ -665,7 +716,7 @@ export function ConversationRichContent({
   // share a `name` and, for peer tools, the same direction — so
   // detection here is just a "are they all tool-call and same-name"
   // check.
-  if (blocks.length > 1 && blocks.every((b) => b.type === "tool-call")) {
+  if (blocks.length > 1 && blocks.every((b) => b.type === "tool-call") && (insideDisclosure || !groupRoutineToolRows(blocks, (block) => [block]).some((run) => run.tools.length >= 2))) {
     const tools = blocks as ConversationRichToolCallBlock[];
     const firstName = tools[0].name;
     if (tools.every((b) => b.name === firstName)) {
@@ -677,9 +728,14 @@ export function ConversationRichContent({
     }
   }
 
-  const body = blocks
-    .map((block, index) => renderBlock(block, index, Icon, displayNormalization))
-    .filter((element): element is ReactElement<{ className?: string }> => element !== null);
+  // Text siblings keep their element type and source key when nearby tools
+  // become foldable. A recursive wrapper around every run would remount them.
+  const body = groupRoutineToolRows(blocks, (block) => [block]).flatMap((run) => {
+    if (!insideDisclosure && run.tools.length >= 2) return [
+      <CompletedToolDisclosure key={`completed:${run.tools[0].toolCallId}`} blocks={run.tools}><ConversationRichContent blocks={run.rows} markdownUrlPolicy={markdownUrlPolicy} richStyle={richStyle} Icon={Icon} displayNormalization={displayNormalization} /></CompletedToolDisclosure>,
+    ];
+    return run.rows.map((block) => renderBlock(block, blocks.indexOf(block), Icon, displayNormalization, markdownUrlPolicy));
+  }).filter((element): element is ReactElement<{ className?: string }> => element !== null);
 
   if (body.length === 0) {
     return null;

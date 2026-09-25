@@ -372,7 +372,7 @@ describe("ConversationMessageView", () => {
     expect(screen.queryByText(/completed/)).not.toBeInTheDocument();
   });
 
-  test("renders persisted raw UUID peer targets as a generic peer label", () => {
+  test("retains unknown raw peer IDs when no authorized display label exists", () => {
     const entry: ConversationTimelineEntry = {
       id: "assistant-peer-uuid",
       kind: "message",
@@ -392,8 +392,37 @@ describe("ConversationMessageView", () => {
 
     render(<ConversationMessageView entry={entry} Icon={Icon} />);
 
-    expect(screen.getByText("Peer")).toBeInTheDocument();
-    expect(screen.queryByText("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).not.toBeInTheDocument();
+    expect(screen.getByText("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).toHaveAttribute("title", "e3ec9e90-460e-51b3-80b9-dea0f0c31752");
+  });
+
+  test.each([false, true])("preserves exact typed peer bodies in single and grouped cards: grouped=%s", (grouped) => {
+    const body = '  Please send_response with result.token exactly "peer-merge-123".\r\n\tKeep  whitespace.\n';
+    const block = {
+      type: "tool-call" as const,
+      toolCallId: "typed-peer-body",
+      name: "send_request",
+      arguments: JSON.stringify({ body }),
+      status: "success" as const,
+      peerIncoming: true,
+      peerTarget: "HSNS thread",
+      peerBody: body,
+      peerBodyFormat: "verbatim" as const,
+    };
+    const entry: ConversationTimelineEntry = {
+      id: "typed-peer-protocol-body",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: body,
+      blocks: grouped ? [block, { ...block, toolCallId: "typed-peer-body-2" }] : [block],
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    const bodies = Array.from(container.querySelectorAll(".cc-tool-call__peer-body"));
+    expect(bodies).toHaveLength(grouped ? 2 : 1);
+    expect(bodies.map((element) => element.textContent)).toEqual(grouped ? [body, body] : [body]);
+    expect(screen.queryByText("Response requested.")).not.toBeInTheDocument();
   });
 
   test("summarizes legacy MobKit peer protocol prompts in peer cards", () => {

@@ -1,4 +1,7 @@
+import { CompletedToolDisclosure, groupRoutineToolRows } from "./presentation-policy";
+import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import clsx from "clsx";
+import { Fragment } from "react";
 
 import {
   conversationEntryText,
@@ -74,6 +77,7 @@ type ConversationMessageGroupProps = {
   group: ConversationTimelineGroup;
   compact?: boolean;
   Icon?: IconRenderer | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
@@ -83,6 +87,7 @@ export function ConversationMessageGroup({
   group,
   compact = false,
   Icon,
+  markdownUrlPolicy,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
   workGraphActions = null,
@@ -94,15 +99,17 @@ export function ConversationMessageGroup({
     return (
       <>
         {group.entries.map((entry) => (
-          <ConversationMessageView
-            compact={compact}
-            entry={entry}
-            Icon={Icon}
-            key={entry.id}
-            onFlowRunMessageMember={onFlowRunMessageMember}
-            onFlowRunRestore={onFlowRunRestore}
-            workGraphActions={workGraphActions}
-          />
+          <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+            <ConversationMessageView
+              compact={compact}
+              entry={entry}
+              Icon={Icon}
+              onFlowRunMessageMember={onFlowRunMessageMember}
+              onFlowRunRestore={onFlowRunRestore}
+              workGraphActions={workGraphActions}
+              markdownUrlPolicy={markdownUrlPolicy}
+            />
+          </div>
         ))}
       </>
     );
@@ -132,17 +139,12 @@ export function ConversationMessageGroup({
         </div>
       ) : null}
       <div className="cc-message-group__body">
-        {group.entries.map((entry) => (
-          <ConversationMessageView
-            compact={compact}
-            entry={entry}
-            Icon={Icon}
-            key={entry.id}
-            onFlowRunMessageMember={onFlowRunMessageMember}
-            onFlowRunRestore={onFlowRunRestore}
-            workGraphActions={workGraphActions}
-          />
-        ))}
+        {groupRoutineToolRows(group.entries, (entry) => entry.kind === "message" && !entry.taskKind && !entry.taskLabel && entry.variant === "rich" ? entry.blocks : undefined).map((run) => {
+          const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+            <ConversationMessageView compact={compact} entry={entry} Icon={Icon} onFlowRunMessageMember={onFlowRunMessageMember} onFlowRunRestore={onFlowRunRestore} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+          </div>);
+          return <Fragment key={run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
+        })}
       </div>
       {showGroupCopy ? (
         <div className="cc-message-group__actions">

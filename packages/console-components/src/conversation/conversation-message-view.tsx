@@ -1,3 +1,4 @@
+import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import { Fragment } from "react";
 
 import {
@@ -97,6 +98,7 @@ type ConversationMessageViewProps = {
   entry: ConversationTimelineEntry;
   compact?: boolean;
   Icon?: IconRenderer | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
@@ -106,6 +108,7 @@ export function ConversationMessageView({
   entry,
   compact = false,
   Icon,
+  markdownUrlPolicy,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
   workGraphActions = null,
@@ -235,11 +238,13 @@ export function ConversationMessageView({
           />
         ) : null}
         {!compact ? <EntrySourceHeader iso={entry.createdAt} source={source} /> : null}
-        {visibleRichBlocks.length ? (
-          <ConversationRichContent blocks={visibleRichBlocks} Icon={Icon} richStyle={entry.richStyle} />
-        ) : (
-          <p>{renderMultilineText(entry.text || "")}</p>
-        )}
+        <div data-quote-message-id={entry.id} data-quote-source={copyText}>
+          {visibleRichBlocks.length ? (
+            <ConversationRichContent blocks={visibleRichBlocks} markdownUrlPolicy={markdownUrlPolicy} Icon={Icon} richStyle={entry.richStyle} />
+          ) : (
+            <p>{renderMultilineText(entry.text || "")}</p>
+          )}
+        </div>
       </article>
     );
   }
@@ -251,7 +256,9 @@ export function ConversationMessageView({
   if (entry.variant === "rich" && visibleRichBlocks.length) {
     return (
       <article className={`${assistantClassName} cc-message--rich`}>
-        <ConversationRichContent blocks={visibleRichBlocks} Icon={Icon} richStyle={entry.richStyle} />
+        <div data-quote-message-id={entry.id} data-quote-source={entry.copyText || entry.text || conversationRichBlocksToText(visibleRichBlocks)}>
+          <ConversationRichContent blocks={visibleRichBlocks} markdownUrlPolicy={markdownUrlPolicy} Icon={Icon} richStyle={entry.richStyle} />
+        </div>
       </article>
     );
   }
@@ -262,7 +269,7 @@ export function ConversationMessageView({
 
   return (
     <article className={assistantClassName}>
-      <p>{entry.text || ""}</p>
+      <p data-quote-message-id={entry.id} data-quote-source={entry.text || ""}>{entry.text || ""}</p>
     </article>
   );
 }

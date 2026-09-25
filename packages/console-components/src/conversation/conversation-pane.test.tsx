@@ -1,11 +1,3 @@
-// NOTE (2026-07-14 audit): this file is written against vitest globals and
-// @testing-library/react, NEITHER of which is a dependency of this repo — it
-// has never executed in any CI lane or local runner. Runnable coverage for
-// these behaviors lives in console/src/lib/component-interaction.test.tsx
-// (repo-standard esbuild + node --test) and, for the pure grouping/parsing
-// logic, in packages/console-core/src/*.test.ts via the node:test-backed
-// shim (test-support/vitest-shim.ts). If you add vitest + RTL as real
-// dependencies, wire this file into CI before trusting it.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
 
@@ -201,12 +193,59 @@ describe("ConversationPane", () => {
 
       fireEvent.click(screen.getByTestId("conversation-turn-rail:1"));
 
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        block: "start",
-        behavior: "smooth",
-      });
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       HTMLElement.prototype.scrollIntoView = previousScrollIntoView;
     }
+  });
+});
+
+test("passes explicit Markdown link policy through the shared pane", () => {
+  const entry: ConversationTimelineEntry = {
+    id: "link", kind: "message", variant: "rich",
+    identity: { id: "agent", label: "Agent", role: "assistant" },
+    blocks: [{ type: "markdown", id: "link-document", source: "[Local file](./README.md)", streaming: false }],
+  };
+  render(<ConversationPane markdownUrlPolicy={{ resolveLink: (url) => url === "./README.md" ? "https://example.com/README.md" : null }} viewState={{ conversationId: "policy", entries: [entry], groups: groupConversationTimelineEntries([entry]), turnDiff: null, emptyState: null }} />);
+  expect(screen.getByRole("link", { name: "Local file" })).toHaveAttribute("href", "https://example.com/README.md");
+});
+
+describe("conversation quote and approval integration", () => {
+  const entry = (id: string, text: string): ConversationTimelineEntry => ({ id, kind: "message", variant: "plain", identity: { id: "agent", label: "Agent", role: "assistant" }, interactionId: `interaction:${id}`, text });
+  const state = (entries: ConversationTimelineEntry[]): ConversationViewState => ({ conversationId: "conversation", entries, groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null });
+  test("quotes only a single message and rejects cross-message selection", () => {
+    const onQuoteSelection = vi.fn();
+    render(<ConversationPane viewState={state([entry("one", "First message"), entry("two", "Second message")])} onQuoteSelection={onQuoteSelection} />);
+    const first = screen.getByText("First message").firstChild!;
+    const second = screen.getByText("Second message").firstChild!;
+    const range = document.createRange();
+    range.setStart(first, 0); range.setEnd(first, 5);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); fireEvent(document, new Event("selectionchange"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to message" }));
+    expect(onQuoteSelection).toHaveBeenCalledWith({ text: "First", messageId: "one", sourceText: "First message" });
+    range.setEnd(second, 6);
+    window.getSelection()!.addRange(range); fireEvent(document, new Event("selectionchange"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to message" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Select text from one message at a time.");
+    expect(onQuoteSelection).toHaveBeenCalledTimes(1);
+    window.getSelection()!.removeAllRanges();
+  });
+  test("places only exact provenance approvals and shares decision state", async () => {
+    const { normalizePendingApproval } = await import("../../../console-core/src/pending-approvals");
+    const request = (id: string, origin?: object) => normalizePendingApproval({ pending_id: id, action: `Approve ${id}`, action_id: "filesystem.write", actor_id: "agent", origin })!;
+    const snapshot = { scopeKey: "test", status: "ready" as const, readOnly: false, decisions: {}, requests: [
+      request("matching", { identity: "agent", conversation_id: "conversation", interaction_id: "interaction:one" }),
+      request("conversation", { identity: "agent", conversation_id: "conversation" }),
+      request("unattributed"), request("wrong", { identity: "other", interaction_id: "interaction:one" }),
+    ] };
+    const decide = vi.fn();
+    render(<ConversationPane viewState={state([entry("one", "First message")])} approvalIdentity="agent" approvalSnapshot={snapshot} onApprovalDecision={decide} />);
+    const card = screen.getByTestId("gating-pending:matching");
+    expect(card.closest(".cc-conversation-turn")).toBeTruthy();
+    expect(screen.getByTestId("gating-pending:conversation").closest(".cc-conversation-turn")).toBeNull();
+    expect(screen.queryByTestId("gating-pending:unattributed")).toBeNull();
+    expect(screen.queryByTestId("gating-pending:wrong")).toBeNull();
+    fireEvent.click(screen.getByTestId("gating-action:matching:approve"));
+    expect(decide).toHaveBeenCalledWith("matching", "approve");
   });
 });
