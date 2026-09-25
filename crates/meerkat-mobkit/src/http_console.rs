@@ -5057,14 +5057,25 @@ fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
     is_recoverable_lifecycle_cleanup_error(error)
 }
 
+/// `carry_idle_retire` is the runtime's opt-in map for a RESPAWN, which keeps
+/// the member (and its idle-retire opt-in); `None` for a RESET, which starts a
+/// fresh member whose old opt-in is released with its retired session.
 async fn respawn_console_member(
     handle: &MobHandle,
+    carry_idle_retire: Option<&crate::mob_handle_runtime::ImplicitDelegateRetirementOverrides>,
     runtime_member_id: &AgentIdentity,
 ) -> Result<Option<Value>, String> {
     // Best-effort repair material: a faulted lookup degrades to None (the
     // respawn itself surfaces real faults).
     let entry_before_respawn = handle.get_member(runtime_member_id).await.ok().flatten();
-    match handle.respawn(runtime_member_id.clone(), None).await {
+    match crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
+        carry_idle_retire,
+        handle,
+        runtime_member_id,
+        handle.respawn(runtime_member_id.clone(), None),
+    )
+    .await
+    {
         Ok(_receipt) => Ok(None),
         Err(err) => {
             if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
@@ -5110,6 +5121,7 @@ async fn respawn_console_member(
 /// session, same configuration) and report the projected member status.
 async fn respawn_live_console_member_response(
     handle: &MobHandle,
+    carry_idle_retire: Option<&crate::mob_handle_runtime::ImplicitDelegateRetirementOverrides>,
     console_events: Option<&ConsoleEventStore>,
     alias: &ConsoleRuntimeIdentityAlias,
     lifecycle_kind: &str,
@@ -5117,7 +5129,7 @@ async fn respawn_live_console_member_response(
     response_id: Value,
 ) -> Value {
     let mid = crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
-    match Box::pin(respawn_console_member(handle, &mid)).await {
+    match Box::pin(respawn_console_member(handle, carry_idle_retire, &mid)).await {
         Ok(topology_restore_warning) => {
             if let Some(store) = console_events {
                 store
@@ -7083,6 +7095,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             Box::pin(respawn_live_console_member_response(
                 &handle,
+                runtime.implicit_delegate_retirement_overrides().as_ref(),
                 console_events.as_ref(),
                 &alias,
                 "identity_respawned",
@@ -7123,6 +7136,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 return Box::pin(respawn_live_console_member_response(
                     &handle,
+                    None,
                     console_events.as_ref(),
                     &alias,
                     "identity_reset",
@@ -7184,6 +7198,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                         }
                         return Box::pin(respawn_live_console_member_response(
                             &handle,
+                            None,
                             console_events.as_ref(),
                             alias,
                             "identity_reset",
@@ -7996,6 +8011,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             // warnings degrade, completed-disposal cleanup misses repair.
             match Box::pin(respawn_console_member(
                 &runtime.handle(),
+                runtime.implicit_delegate_retirement_overrides().as_ref(),
                 &crate::member_comms_id::mob_member_id(&member_id),
             ))
             .await
@@ -10251,6 +10267,7 @@ async fn reset_all_live_console_agents(
             // fresh session under the same configuration.
             match Box::pin(respawn_console_member(
                 &handle,
+                None,
                 &crate::member_comms_id::mob_member_id(runtime_member_id),
             ))
             .await

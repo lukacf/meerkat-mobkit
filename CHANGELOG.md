@@ -48,11 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instance it was set for, by the member's bridge session: the sweep honours
   it only while the member seated under that id still runs that session and
   drops it otherwise, so a member id reused after its member was retired
-  outside the sweep never inherits the old opt-in. Opt-ins for members that
-  are not seated when the call returns (a `delegate` helper is already
-  retired) or that sit in a mob the sweep does not manage are not recorded.
-  The sweep clears an opt-in when it retires its member, and one undecodable
-  row is skipped with a warning instead of aborting the restore.
+  outside the sweep never inherits the old opt-in. A respawn keeps the
+  opt-in: MobKit's operator, RPC and console respawns carry it to the
+  respawned session, and an identity member's continuity rebind (respawn or
+  delivery repair) does the same. Every retirement of a member session,
+  whatever surface caused it (the sweep, `mob_retire_member`, operator or
+  console retire, reset, destroy), releases the opt-in bound to exactly that
+  session, observed on the mob event stream; a reset starts the member fresh
+  without its opt-in. Opt-ins for members that are not seated when the call
+  returns (a `delegate` helper is already retired) or that sit in a mob the
+  sweep does not manage are not recorded, and one undecodable row is skipped
+  with a warning instead of aborting the restore.
   `PersistentMetadataStore` gains `load_member_idle_retire_overrides`,
   `set_member_idle_retire_override` and `clear_member_idle_retire_override`
   with default bodies that keep the old in-process behavior for external

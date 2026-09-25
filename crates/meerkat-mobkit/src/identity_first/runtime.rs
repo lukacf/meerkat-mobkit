@@ -1799,6 +1799,20 @@ impl RawMemberAliasLockTable {
 
 /// The identity-first runtime tracks active identities and enforces delivery,
 /// ownership, and lifecycle invariants.
+/// Observes a live member moving from one session to another while it stays
+/// the same member incarnation: the continuity rebind after a respawn or
+/// after a delivery repair that rotated the member's session.
+#[async_trait::async_trait]
+pub(crate) trait MemberSessionRotationObserver: Send + Sync {
+    /// `member` is the member's mob roster identity.
+    async fn member_session_rotated(
+        &self,
+        member: &meerkat_mob::ids::AgentIdentity,
+        previous: &SessionId,
+        current: &SessionId,
+    );
+}
+
 pub struct IdentityRuntime {
     entries: RwLock<BTreeMap<AgentIdentity, IdentityEntry>>,
     event_channels: RwLock<BTreeMap<AgentIdentity, broadcast::Sender<IdentityEvent>>>,
@@ -1837,6 +1851,9 @@ pub struct IdentityRuntime {
     /// Forwarded to the session bridge so admission fails fast while a stall
     /// is open; read by `member_health`.
     actor_loop_health: StdRwLock<Option<Arc<ActorLoopHealth>>>,
+    /// Told when a live member moves to a new session under the same
+    /// incarnation (a respawn rebind or a delivery-repair rotation).
+    session_rotation_observer: StdRwLock<Option<Arc<dyn MemberSessionRotationObserver>>>,
     bootstrap_status: watch::Sender<IdentityBootstrapStatus>,
     bootstrap_generation: StdMutex<u64>,
     bootstrap_controller: Mutex<()>,
@@ -2021,6 +2038,7 @@ impl IdentityRuntime {
             session_repair_scope: StdRwLock::new(None),
             error_hook: StdRwLock::new(None),
             actor_loop_health: StdRwLock::new(None),
+            session_rotation_observer: StdRwLock::new(None),
             bootstrap_status,
             bootstrap_generation: StdMutex::new(0),
             bootstrap_controller: Mutex::new(()),
@@ -9719,6 +9737,18 @@ impl IdentityRuntime {
     /// Install the unified runtime's actor-loop probe verdict and forward it
     /// to the session bridge, whose admission path fails fast while a stall
     /// is open.
+    /// Install the observer told when a live member's session is rebound
+    /// to a new session id (see [`MemberSessionRotationObserver`]).
+    pub(crate) fn install_session_rotation_observer(
+        &self,
+        observer: Arc<dyn MemberSessionRotationObserver>,
+    ) {
+        *self
+            .session_rotation_observer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+    }
+
     pub fn install_actor_loop_health(&self, health: Arc<ActorLoopHealth>) {
         if let Some(bridge) = self.bridge.as_ref() {
             bridge.observe_actor_loop_health(Arc::clone(&health));
@@ -10273,6 +10303,22 @@ impl IdentityRuntime {
             Some(grant),
         )
         .await;
+        if previous_session_id != record.session_id {
+            let observer = self
+                .session_rotation_observer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(observer) = observer {
+                observer
+                    .member_session_rotated(
+                        &crate::member_comms_id::mob_member_id(record.agent_runtime_id.as_str()),
+                        &previous_session_id,
+                        &record.session_id,
+                    )
+                    .await;
+            }
+        }
         Ok(record)
     }
 
