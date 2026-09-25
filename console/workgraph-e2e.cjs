@@ -230,6 +230,32 @@ async function runBrowserChecks(page, baseUrl, seeded) {
     1,
   );
 
+  // Label legibility: the graph opts out of the global icon stroke (which
+  // used to outline every glyph), and titles render at a real pixel size
+  // instead of shrinking with a viewBox fit.
+  const titleStyle = await page.evaluate(() => {
+    const title = document.querySelector(".workgraph-graph__node-title");
+    const style = getComputedStyle(title);
+    return {
+      stroke: style.stroke,
+      fontFamily: style.fontFamily,
+      renderedHeight: title.getBoundingClientRect().height,
+      consoleFont: getComputedStyle(document.querySelector('[data-testid="workgraph-graph-frame"]'))
+        .fontFamily,
+    };
+  });
+  assert.equal(titleStyle.stroke, "none", "graph titles carry no inherited stroke");
+  assert.ok(
+    titleStyle.renderedHeight >= 10,
+    `graph titles render legibly at fit: ${titleStyle.renderedHeight}px`,
+  );
+  assert.equal(titleStyle.fontFamily, titleStyle.consoleFont, "titles use the console font stack");
+  assert.equal(
+    await page.locator('[data-testid="workgraph-graph-edge-label"]').count(),
+    1,
+    "the blocks edge carries its label",
+  );
+
   // Pan/zoom smoke: both gestures must move the viewport transform.
   const viewport = page.locator('[data-testid="workgraph-graph-viewport"]');
   const initialTransform = await viewport.getAttribute("transform");

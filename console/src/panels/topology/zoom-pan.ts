@@ -5,7 +5,7 @@
 // coordinates to world space so wheel-zoom anchors at the cursor (not
 // the SVG centre). Pan is implemented via pointerdown→move→up; cleanup
 // runs on pointer cancel/leave. State is intentionally transient — no
-// localStorage persistence — so a fresh view always starts at 1:1.
+// localStorage persistence - so a fresh view always starts at the fit view.
 
 import React from "react";
 
@@ -56,21 +56,35 @@ function clientToViewBox(
   };
 }
 
-export function useZoomPan(width: number, height: number): ZoomPan {
-  const [viewport, setViewport] = React.useState<Viewport>({ tx: 0, ty: 0, scale: 1 });
+const IDENTITY_VIEWPORT: Viewport = { tx: 0, ty: 0, scale: 1 };
+
+/// `fit` is the view that `reset` (and a layout-size change) returns to.
+/// It defaults to identity, which is what the topology maps want; the
+/// WorkGraph graph passes a computed fit because its viewBox is the frame
+/// size (one user unit per CSS pixel) rather than the layout size.
+export function useZoomPan(
+  width: number,
+  height: number,
+  fit: Viewport = IDENTITY_VIEWPORT,
+): ZoomPan {
+  const [viewport, setViewport] = React.useState<Viewport>(fit);
+  const fitRef = React.useRef(fit);
+  fitRef.current = fit;
   const dragRef = React.useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
   const svgRef = React.useRef<SVGSVGElement | null>(null);
 
   const reset = React.useCallback(() => {
-    setViewport({ tx: 0, ty: 0, scale: 1 });
+    setViewport(fitRef.current);
   }, []);
 
-  React.useEffect(() => {
-    setViewport({ tx: 0, ty: 0, scale: 1 });
+  // Layout effect so a new fit lands before paint (no identity-transform
+  // frame between measuring the frame and applying its fit).
+  React.useLayoutEffect(() => {
+    setViewport(fitRef.current);
     dragRef.current = null;
     setIsDragging(false);
-  }, [width, height]);
+  }, [width, height, fit.tx, fit.ty, fit.scale]);
 
   // Attach the wheel listener manually with passive=false so we can
   // preventDefault and stop the page from scrolling while zooming.
