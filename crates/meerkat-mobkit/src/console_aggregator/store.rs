@@ -15,6 +15,9 @@ pub type ConsoleLogResult<T> = Result<T, ConsoleLogError>;
 
 pub type ConsoleLogError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Storage retains complete frames, including private member provenance, across
+/// append, lookup, status changes and reopen. Serde frame serialization is the
+/// storage representation; use aggregator projections for transport output.
 #[async_trait::async_trait]
 pub trait ConsoleLogStore: Send + Sync {
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome>;
@@ -50,7 +53,7 @@ pub trait ConsoleLogStore: Send + Sync {
             .await?;
         Ok(ConsoleTimelineWindowPage {
             latest_cursor: page.next_cursor.clone(),
-            exhausted: false,
+            exhausted: page.frames.is_empty(),
             frames: page.frames,
             next_cursor: page.next_cursor,
         })
@@ -460,18 +463,28 @@ pub struct SqliteConsoleLogStore {
 /// ledger. Migration 0001 is the historical two-table + two-index DDL.
 const MOBKIT_CONSOLE_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
     name: "mobkit-console",
-    migrations: &[meerkat_sqlite::Migration {
-        version: 1,
-        name: "base-schema",
-        apply: migration_0001_console_schema,
-    }],
-    initialize_current: migration_0001_console_schema,
-    allowed_existing_versions: &[1],
+    migrations: &[
+        meerkat_sqlite::Migration {
+            version: 1,
+            name: "base-schema",
+            apply: migration_0001_console_schema,
+        },
+        meerkat_sqlite::Migration {
+            version: 2,
+            name: "member-provenance",
+            apply: migration_0002_member_provenance,
+        },
+    ],
+    initialize_current: initialize_current_console_schema,
+    allowed_existing_versions: &[1, 2],
     // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
     // floor) and mobkit never runs the offline bridge, so no source
     // version is inferable.
     bridge_recoverable_versions: &[],
-    released_predecessors: &[],
+    released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
+        version: 1,
+        verify: verify_released_v1_console_schema,
+    }],
     owned_objects: &[
         meerkat_sqlite::SchemaObject {
             kind: meerkat_sqlite::SchemaObjectKind::Table,
@@ -532,6 +545,26 @@ fn migration_0001_console_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), r
     )
 }
 
+fn migration_0002_member_provenance(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
+    tx.execute_batch("ALTER TABLE console_frames ADD COLUMN member_provenance_json TEXT")
+}
+
+fn initialize_current_console_schema(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    migration_0001_console_schema(tx)?;
+    migration_0002_member_provenance(tx)
+}
+
+fn verify_released_v1_console_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    meerkat_sqlite::verify_released_schema_fingerprint(
+        conn,
+        &MOBKIT_CONSOLE_DOMAIN,
+        MOBKIT_CONSOLE_DOMAIN.owned_objects,
+        migration_0001_console_schema,
+    )
+}
+
 impl SqliteConsoleLogStore {
     pub fn open(path: impl AsRef<Path>) -> ConsoleLogResult<Self> {
         let path = path.as_ref().to_path_buf();
@@ -586,13 +619,20 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             .clone()
             .unwrap_or_else(|| stable_frame_id(&frame.dedupe_key));
         let payload_json = serde_json::to_string(&frame.payload).map_err(into_boxed)?;
+        let member_provenance_json = frame
+            .source
+            .member_provenance
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(into_boxed)?;
         conn.execute(
             "INSERT INTO console_frames (
                 id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 id,
                 frame.dedupe_key,
@@ -612,6 +652,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
                 frame.caused_by_frame_id,
                 frame.turn_id,
                 frame.run_id,
+                member_provenance_json,
             ],
         )
         .map_err(into_boxed)?;
@@ -669,7 +710,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                     conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                     source_kind, source_cursor, source_event_id, interaction_id,
-                    parent_frame_id, caused_by_frame_id, turn_id, run_id
+                    parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
              FROM console_frames WHERE cursor_seq > ?1 AND cursor_seq < ?2",
         );
         let mut next_param = 3usize;
@@ -874,7 +915,7 @@ fn select_frame_by_dedupe(
         "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
          FROM console_frames WHERE dedupe_key = ?1",
         params![dedupe_key],
         row_to_frame,
@@ -888,7 +929,7 @@ fn select_frame_by_id(conn: &Connection, id: &str) -> ConsoleLogResult<Option<Co
         "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
          FROM console_frames WHERE id = ?1",
         params![id],
         row_to_frame,
@@ -939,6 +980,18 @@ fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
     let payload_json: String = row.get(12)?;
     let payload = serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
     let source_kind: String = row.get(13)?;
+    let provenance_json: Option<String> = row.get(21)?;
+    let member_provenance = provenance_json
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    21,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })
+        })
+        .transpose()?;
     Ok(ConsoleFrame {
         cursor: ConsoleCursor::from_seq(seq as u64),
         id: row.get(1)?,
@@ -954,6 +1007,7 @@ fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
         updated_at_ms: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
         payload,
         source: ConsoleFrameSource {
+            member_provenance,
             kind: ConsoleFrameSourceKind::from_str(&source_kind),
             source_cursor: row.get(14)?,
         },
@@ -1084,6 +1138,99 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn sqlite_v1_upgrade_preserves_legacy_history_and_roundtrips_member_provenance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("console.sqlite");
+        {
+            let mut conn = meerkat_sqlite::open(&path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+                .expect("sqlite");
+            let legacy_domain = meerkat_sqlite::SchemaDomain {
+                migrations: &[meerkat_sqlite::Migration {
+                    version: 1,
+                    name: "base-schema",
+                    apply: migration_0001_console_schema,
+                }],
+                initialize_current: migration_0001_console_schema,
+                allowed_existing_versions: &[1],
+                released_predecessors: &[],
+                ..MOBKIT_CONSOLE_DOMAIN
+            };
+            meerkat_sqlite::apply_domain_migrations(&mut conn, &legacy_domain)
+                .expect("ledgered released v1");
+            conn.execute("INSERT INTO console_frames (id, dedupe_key, timestamp_ms, runtime_key, identity, kind, status, payload_json, source_kind) VALUES ('legacy', 'legacy', 1, 'runtime-a', 'retired-readable', 'text_complete', 'completed', '{}', 'session_history')", []).expect("legacy row");
+        }
+        let store = SqliteConsoleLogStore::open(&path).expect("v1 upgrades");
+        let legacy = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("retired-readable".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("legacy query");
+        assert_eq!(legacy.frames.len(), 1);
+        assert!(
+            legacy.frames[0].source.member_provenance.is_none(),
+            "missing legacy provenance stays absent"
+        );
+        let mut frame = sample_frame("provenance-roundtrip", "private");
+        let provenance = crate::ConsoleFrameMemberProvenance {
+            identity: crate::ConsoleIdentityRecord {
+                identity: "private".to_string(),
+                display_name: "Private".to_string(),
+                runtime_key: "runtime-a".to_string(),
+                runtime_member_id: "private".to_string(),
+                session_id: Some("session-private".to_string()),
+                visibility: crate::ConsoleVisibility::Addressable,
+                addressable: true,
+                health: "ready".to_string(),
+                topology_peers: vec![],
+                labels: Default::default(),
+            },
+            member: crate::runtime::ConsoleMember {
+                agent_identity: "private".to_string(),
+                role: "delegate".to_string(),
+                state: "running".to_string(),
+                model_capabilities: Default::default(),
+                runtime_mode: None,
+                session_id: Some("session-private".to_string()),
+                wired_to: vec![],
+                labels: Default::default(),
+                progress: None,
+            },
+            primary_mob_id: "primary".to_string(),
+            source_mob_id: "lower".to_string(),
+        };
+        frame.source.member_provenance = Some(provenance.clone());
+        let appended = store
+            .append_if_absent(frame)
+            .await
+            .expect("append provenance");
+        assert_eq!(
+            appended.frame.source.member_provenance,
+            Some(provenance.clone())
+        );
+        drop(store);
+        let reopened = SqliteConsoleLogStore::open(&path).expect("reopen");
+        let read = reopened
+            .frame_by_dedupe_key("provenance-roundtrip")
+            .await
+            .expect("lookup")
+            .expect("stored");
+        assert_eq!(read.source.member_provenance, Some(provenance));
+        {
+            let conn = reopened.conn.lock().expect("connection");
+            conn.execute("UPDATE console_frames SET member_provenance_json = 'broken' WHERE dedupe_key = 'provenance-roundtrip'", []).expect("corrupt typed source");
+        }
+        assert!(
+            reopened
+                .frame_by_dedupe_key("provenance-roundtrip")
+                .await
+                .is_err(),
+            "invalid provenance must fail closed, never become legacy unknown history"
+        );
+    }
+
     fn sample_frame(dedupe_key: &str, identity: &str) -> NewConsoleFrame {
         NewConsoleFrame {
             id: None,
@@ -1097,6 +1244,7 @@ mod tests {
             status: ConsoleFrameStatus::Delivered,
             payload: json!({ "delta": "hello" }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::ConsoleEvent,
                 source_cursor: None,
             },

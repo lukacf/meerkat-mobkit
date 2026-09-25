@@ -1,3 +1,4 @@
+mod query_error;
 mod state;
 mod store;
 mod types;
@@ -27,6 +28,7 @@ use crate::mob_handle_runtime::{
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
 
+pub use query_error::{ConsoleTimelineQueryError, ConsoleTimelineQueryResult};
 pub use state::{
     ReplaySubscriptionEffect, ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect,
     SendState, SendTransition, SourceIngestionEffect, SourceIngestionState,
@@ -37,12 +39,12 @@ pub use store::{
     SqliteConsoleLogStore,
 };
 pub use types::{
-    AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
-    ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
-    ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
-    ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
-    ConsoleTimelineWindowQuery, ConsoleTurnOrigin, ConsoleVisibility, IdentityFirstReservation,
-    NewConsoleFrame,
+    AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameMemberProvenance,
+    ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection,
+    ConsoleIdentityRecord, ConsoleInteractionAccepted, ConsoleReplayUnavailable,
+    ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelinePage,
+    ConsoleTimelineQuery, ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleTurnOrigin,
+    ConsoleVisibility, IdentityFirstReservation, NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -83,6 +85,8 @@ impl Default for ConsoleAggregatorOptions {
 }
 
 struct AggregatorInner {
+    /// Policy views share one canonical projector and publish to its broadcaster.
+    projection_owner: Option<Arc<AggregatorInner>>,
     store: Arc<dyn ConsoleLogStore>,
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
@@ -97,6 +101,8 @@ struct AggregatorInner {
     /// row write, on a fully idle gateway. Entries are dropped with their
     /// runtime; a missing entry or an epoch-less runtime always reads.
     session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    member_provenance:
+        std::sync::Mutex<BTreeMap<(String, String, Option<String>), ConsoleFrameMemberProvenance>>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -253,6 +259,82 @@ fn console_member_for_resolved_member(
     }
 }
 
+fn retain_member_provenance(
+    inner: &AggregatorInner,
+    resolved: &ResolvedConsoleMember,
+    record: &ConsoleIdentityRecord,
+) -> ConsoleFrameMemberProvenance {
+    let provenance = ConsoleFrameMemberProvenance {
+        identity: record.clone(),
+        member: console_member_for_resolved_member(resolved, record),
+        primary_mob_id: resolved.entry.runtime.handle().mob_id().to_string(),
+        source_mob_id: resolved.source_mob_id.clone(),
+    };
+    let mut retained = inner
+        .member_provenance
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    retained.insert(
+        (
+            record.runtime_key.clone(),
+            record.identity.clone(),
+            record.session_id.clone(),
+        ),
+        provenance.clone(),
+    );
+    retained.insert(
+        (record.runtime_key.clone(), record.identity.clone(), None),
+        provenance.clone(),
+    );
+    provenance
+}
+
+async fn member_provenance_for_identity(
+    inner: &AggregatorInner,
+    entry: &RuntimeEntry,
+    identity: &str,
+    session_id: Option<&str>,
+    refresh: bool,
+) -> Option<ConsoleFrameMemberProvenance> {
+    if identity == "__console__" || identity == SYSTEM_EVENT_IDENTITY {
+        return None;
+    }
+    let key = (
+        entry.runtime_key.clone(),
+        identity.to_string(),
+        session_id.map(str::to_string),
+    );
+    let cached = inner
+        .member_provenance
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if !refresh && cached.is_some() {
+        return cached;
+    }
+    for resolved in Box::pin(member_sources_for_entry_including_hidden(entry)).await {
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
+            continue;
+        };
+        if record.identity == identity
+            && session_id.is_none_or(|id| record.session_id.as_deref() == Some(id))
+        {
+            return Some(retain_member_provenance(inner, &resolved, &record));
+        }
+    }
+    cached
+}
+
+fn retained_member_visible(
+    policy: &dyn ConsoleVisibilityPolicy,
+    source: &ConsoleFrameMemberProvenance,
+) -> bool {
+    (policy.include_implicit_delegate_members() || source.primary_mob_id == source.source_mob_id)
+        && policy.identity_visible(&source.identity)
+        && policy.member_visible(&source.member)
+}
+
 async fn resolved_member_visible(
     resolved: &ResolvedConsoleMember,
     record: &ConsoleIdentityRecord,
@@ -270,7 +352,12 @@ fn raw_resolved_member_visible(
     resolved: &ResolvedConsoleMember,
     record: &ConsoleIdentityRecord,
 ) -> bool {
-    resolved.entry.visibility_policy.identity_visible(record)
+    (resolved
+        .entry
+        .visibility_policy
+        .include_implicit_delegate_members()
+        || *resolved.entry.runtime.handle().mob_id() == resolved.source_mob_id)
+        && resolved.entry.visibility_policy.identity_visible(record)
         && resolved
             .entry
             .visibility_policy
@@ -349,6 +436,7 @@ impl MobKitConsoleAggregator {
         let (event_tx, _) = broadcast::channel(TIMELINE_CHANNEL_CAP);
         Self {
             inner: Arc::new(AggregatorInner {
+                projection_owner: None,
                 store,
                 runtimes: RwLock::new(BTreeMap::new()),
                 event_tx,
@@ -358,6 +446,7 @@ impl MobKitConsoleAggregator {
                     options.max_concurrent_session_backfills,
                 )),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                member_provenance: std::sync::Mutex::new(BTreeMap::new()),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
                 live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
@@ -371,6 +460,126 @@ impl MobKitConsoleAggregator {
 
     pub fn in_memory_with_options(options: ConsoleAggregatorOptions) -> Self {
         Self::new_with_options(Arc::new(InMemoryConsoleLogStore::new()), options)
+    }
+
+    pub(crate) fn update_identity_authority(
+        &self,
+        runtime_key: &str,
+        authority: Option<Arc<crate::identity_first::IdentityRuntime>>,
+    ) {
+        if let Ok(mut runtimes) = self.inner.runtimes.write()
+            && let Some(entry) = runtimes.get_mut(runtime_key)
+        {
+            entry.identity_runtime = authority;
+        }
+        self.inner
+            .identity_read_model
+            .refresh_soon(self.inner.clone());
+    }
+
+    /// Build a read/send policy view without starting another source projector.
+    /// The canonical owner retains unredacted frames; each view projects its own
+    /// payload policy only when returning frames to a subscriber.
+    pub(crate) fn policy_view(&self, policy: Arc<dyn ConsoleVisibilityPolicy>) -> Self {
+        let owner = self
+            .inner
+            .projection_owner
+            .as_ref()
+            .unwrap_or(&self.inner)
+            .clone();
+        let runtimes = owner
+            .runtimes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(key, entry)| {
+                let mut entry = entry.clone();
+                entry.visibility_policy = policy.clone();
+                (key.clone(), entry)
+            })
+            .collect();
+        let view = Self {
+            inner: Arc::new(AggregatorInner {
+                projection_owner: Some(owner.clone()),
+                store: owner.store.clone(),
+                runtimes: RwLock::new(runtimes),
+                event_tx: owner.event_tx.clone(),
+                active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                session_backfill_permits: owner.session_backfill_permits.clone(),
+                session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                member_provenance: std::sync::Mutex::new(BTreeMap::new()),
+                identity_read_model: ConsoleIdentityReadModel::default(),
+                options: owner.options,
+                live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
+            }),
+        };
+        view.inner
+            .identity_read_model
+            .refresh_soon(view.inner.clone());
+        view
+    }
+
+    pub(crate) fn project_frame_for_view(&self, mut frame: ConsoleFrame) -> ConsoleFrame {
+        let policy = self.inner.projection_owner.as_ref().and_then(|_| {
+            self.inner.runtimes.read().ok().and_then(|runtimes| {
+                runtimes
+                    .get(&frame.runtime_key)
+                    .map(|entry| entry.visibility_policy.clone())
+            })
+        });
+        if let Some(policy) = policy {
+            let input = NewConsoleFrame {
+                id: Some(frame.id.clone()),
+                dedupe_key: frame.dedupe_key.clone(),
+                timestamp_ms: frame.timestamp_ms,
+                runtime_key: frame.runtime_key.clone(),
+                identity: frame.identity.clone(),
+                conversation_id: frame.conversation_id.clone(),
+                session_id: frame.session_id.clone(),
+                kind: frame.kind.clone(),
+                status: frame.status,
+                payload: frame.payload.clone(),
+                source: frame.source.clone(),
+                source_event_id: frame.source_event_id.clone(),
+                interaction_id: frame.interaction_id.clone(),
+                turn_id: frame.turn_id.clone(),
+                run_id: frame.run_id.clone(),
+                parent_frame_id: frame.parent_frame_id.clone(),
+                caused_by_frame_id: frame.caused_by_frame_id.clone(),
+            };
+            if let Some(payload) = policy.redact_payload(&input) {
+                frame.payload = payload;
+                frame.status = ConsoleFrameStatus::Redacted;
+            }
+        }
+        // Storage and broadcasts keep policy witnesses. Only cloned output is
+        // stripped, after visibility checks and policy redaction have used them.
+        // Status markers contain a complete stored frame and need the same rule.
+        if frame.kind == "frame_updated"
+            && let Some(value) = frame.payload.get("frame")
+            && let Ok(updated) = serde_json::from_value::<ConsoleFrame>(value.clone())
+            && let Ok(projected) = serde_json::to_value(self.project_frame_for_view(updated))
+        {
+            frame.payload["frame"] = projected;
+        }
+        frame.source.member_provenance = None;
+        frame
+    }
+
+    pub(crate) fn project_event_for_view(
+        &self,
+        event: ConsoleTimelineEvent,
+    ) -> ConsoleTimelineEvent {
+        match event {
+            ConsoleTimelineEvent::ConsoleFrame { frame } => ConsoleTimelineEvent::ConsoleFrame {
+                frame: self.project_frame_for_view(frame),
+            },
+            ConsoleTimelineEvent::FrameUpdated { frame } => ConsoleTimelineEvent::FrameUpdated {
+                frame: self.project_frame_for_view(frame),
+            },
+            other => other,
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConsoleTimelineEvent> {
@@ -415,6 +624,11 @@ impl MobKitConsoleAggregator {
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
             runtimes.insert(runtime_key.clone(), entry);
         }
+        self.inner
+            .member_provenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != &runtime_key);
         // Registration replaces any prior runtime under this key, and epoch
         // counters are per-process starting at zero: a witness recorded
         // against the old runtime could coincide with the new counter and
@@ -675,6 +889,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        provenance: None,
                         entry,
                         record: record.clone(),
                         session_id,
@@ -759,6 +974,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        provenance: None,
                         entry: entry.clone(),
                         record: record.clone(),
                         session_id,
@@ -852,6 +1068,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        provenance: Some(retain_member_provenance(&self.inner, &resolved, &record)),
                         entry: resolved.entry.clone(),
                         record: record.clone(),
                         session_id,
@@ -1129,7 +1346,7 @@ impl MobKitConsoleAggregator {
     pub async fn query_timeline_windowed(
         &self,
         query: ConsoleTimelineWindowQuery,
-    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+    ) -> ConsoleTimelineQueryResult<ConsoleTimelineWindowPage> {
         self.reject_after_cursor_beyond_store_frontier(query.after.as_ref())
             .await?;
         if query.after.is_none()
@@ -1149,22 +1366,20 @@ impl MobKitConsoleAggregator {
     async fn reject_after_cursor_beyond_store_frontier(
         &self,
         after: Option<&ConsoleCursor>,
-    ) -> ConsoleLogResult<()> {
+    ) -> ConsoleTimelineQueryResult<()> {
         let Some(after_seq) = after.and_then(ConsoleCursor::seq) else {
             return Ok(());
         };
-        let latest_seq = self
-            .inner
-            .store
-            .latest_cursor()
-            .await?
-            .and_then(|cursor| cursor.seq())
+        let latest_cursor = self.inner.store.latest_cursor().await?;
+        let latest_seq = latest_cursor
+            .as_ref()
+            .and_then(ConsoleCursor::seq)
             .unwrap_or(0);
         if after_seq > latest_seq {
-            return Err(std::io::Error::other(
-                "timeline replay cursor is beyond the current store frontier",
-            )
-            .into());
+            return Err(ConsoleTimelineQueryError::ReplayUnavailable {
+                requested_cursor: after.cloned(),
+                latest_cursor,
+            });
         }
         Ok(())
     }
@@ -1172,7 +1387,7 @@ impl MobKitConsoleAggregator {
     async fn query_timeline_visible(
         &self,
         query: ConsoleTimelineWindowQuery,
-    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+    ) -> ConsoleTimelineQueryResult<ConsoleTimelineWindowPage> {
         let requested_limit = query.limit.clamp(1, TIMELINE_RAW_SCAN_PAGE_LIMIT);
         let mut scan_query = query.clone();
         scan_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
@@ -1194,6 +1409,29 @@ impl MobKitConsoleAggregator {
                 .store
                 .query_windowed_frames(scan_query.clone())
                 .await?;
+            if !page.exhausted {
+                let progressed = match query.mode {
+                    ConsoleTimelineMode::Since => page.next_cursor.as_ref().is_some_and(|next| {
+                        scan_query.after.as_ref().is_none_or(|after| {
+                            match (next.seq(), after.seq()) {
+                                (Some(next), Some(after)) => next > after,
+                                _ => next != after,
+                            }
+                        })
+                    }),
+                    ConsoleTimelineMode::Recent => page.frames.first().is_some_and(|first| {
+                        scan_query.before.as_ref().is_none_or(|before| {
+                            match (first.cursor.seq(), before.seq()) {
+                                (Some(next), Some(before)) => next < before,
+                                _ => &first.cursor != before,
+                            }
+                        })
+                    }),
+                };
+                if !progressed {
+                    return Err(ConsoleTimelineQueryError::PaginationNoProgress);
+                }
+            }
             latest_cursor = latest_cursor.or(page.latest_cursor.clone());
             if page.frames.is_empty() {
                 exhausted = true;
@@ -1322,7 +1560,10 @@ impl MobKitConsoleAggregator {
         }
 
         Ok(ConsoleTimelineWindowPage {
-            frames: visible_frames,
+            frames: visible_frames
+                .into_iter()
+                .map(|frame| self.project_frame_for_view(frame))
+                .collect(),
             next_cursor: match query.mode {
                 ConsoleTimelineMode::Since if since_stopped_at_visible_limit => {
                     since_last_delivered_cursor.or(since_last_scanned_cursor)
@@ -1550,6 +1791,16 @@ impl MobKitConsoleAggregator {
             ))
             .await
             .map(|sid| sid.to_string());
+        let provenance = identity_record_for_resolved_member(&resolved)
+            .await
+            .map(|record| {
+                let owner = self
+                    .inner
+                    .projection_owner
+                    .as_deref()
+                    .unwrap_or(&self.inner);
+                retain_member_provenance(owner, &resolved, &record)
+            });
         let mut new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
@@ -1562,6 +1813,7 @@ impl MobKitConsoleAggregator {
             status: ConsoleFrameStatus::Accepted,
             payload: user_input_payload(&request, &handling_mode_value),
             source: ConsoleFrameSource {
+                member_provenance: provenance,
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: Some(request_fingerprint.clone()),
             },
@@ -1572,7 +1824,9 @@ impl MobKitConsoleAggregator {
             parent_frame_id: None,
             caused_by_frame_id: None,
         };
-        if let Some(redacted) = resolved.entry.visibility_policy.redact_payload(&new_frame) {
+        if self.inner.projection_owner.is_none()
+            && let Some(redacted) = resolved.entry.visibility_policy.redact_payload(&new_frame)
+        {
             new_frame.payload = redacted;
             new_frame.status = ConsoleFrameStatus::Redacted;
         }
@@ -1688,6 +1942,22 @@ impl MobKitConsoleAggregator {
         }
 
         let interaction_id = identity_first_interaction_uuid(&dedupe_key);
+        let owner = self
+            .inner
+            .projection_owner
+            .as_deref()
+            .unwrap_or(&self.inner);
+        let entry = owner
+            .runtimes
+            .read()
+            .ok()
+            .and_then(|entries| entries.get(&runtime_key).cloned());
+        let provenance = if let Some(entry) = entry {
+            member_provenance_for_identity(owner, &entry, &request.identity, session_id, false)
+                .await
+        } else {
+            None
+        };
         let new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
@@ -1700,6 +1970,7 @@ impl MobKitConsoleAggregator {
             status: ConsoleFrameStatus::Accepted,
             payload: user_input_payload(&request, &handling_mode_value),
             source: ConsoleFrameSource {
+                member_provenance: provenance,
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: Some(request_fingerprint.clone()),
             },
@@ -2220,7 +2491,7 @@ async fn console_identity_record_visible(
     }
     let mut bound_live_member_seen = false;
     let mut wrong_live_projection_seen = false;
-    for resolved in Box::pin(member_sources_for_entry(entry)).await {
+    for resolved in Box::pin(member_sources_for_entry_including_hidden(entry)).await {
         // Associate the live row with this durable record by the approved
         // predicate, not by exact equality with the record's runtime_member_id.
         // That field holds the BINDING (an incarnation), while the row is now the
@@ -2306,7 +2577,7 @@ async fn frame_matches_hidden_member(entry: &RuntimeEntry, frame: &ConsoleFrame)
     let frame_session_id = frame.session_id.as_deref();
     let mut saw_hidden = false;
     let mut saw_visible = false;
-    for resolved in Box::pin(member_sources_for_entry(entry)).await {
+    for resolved in Box::pin(member_sources_for_entry_including_hidden(entry)).await {
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             continue;
         };
@@ -2890,10 +3161,11 @@ async fn collect_identity_records(
             Box::pin(member_sources_for_entry(entry)).await
         };
         for resolved in members {
-            if let Some(record) = identity_record_for_resolved_member(&resolved).await
-                && Box::pin(resolved_member_visible(&resolved, &record)).await
-            {
-                identities.push(record);
+            if let Some(record) = identity_record_for_resolved_member(&resolved).await {
+                retain_member_provenance(inner, &resolved, &record);
+                if Box::pin(resolved_member_visible(&resolved, &record)).await {
+                    identities.push(record);
+                }
             }
         }
     }
@@ -2941,6 +3213,7 @@ fn spawn_identity_backfills_for_records(
         spawn_session_history_backfill_target(
             inner.clone(),
             SessionBackfillTarget {
+                provenance: None,
                 entry,
                 record: record.clone(),
                 session_id,
@@ -2951,6 +3224,19 @@ fn spawn_identity_backfills_for_records(
 }
 
 async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMember> {
+    member_sources_for_entry_with_hidden(entry, false).await
+}
+
+async fn member_sources_for_entry_including_hidden(
+    entry: &RuntimeEntry,
+) -> Vec<ResolvedConsoleMember> {
+    member_sources_for_entry_with_hidden(entry, true).await
+}
+
+async fn member_sources_for_entry_with_hidden(
+    entry: &RuntimeEntry,
+    include_hidden: bool,
+) -> Vec<ResolvedConsoleMember> {
     let mut resolved = Vec::new();
     let primary_handle = entry.runtime.handle();
     let primary_mob_id = primary_handle.mob_id().to_string();
@@ -2972,7 +3258,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     let Some(state) = entry.runtime.agent_mob_mcp_state() else {
         return resolved;
     };
-    if !entry.visibility_policy.include_implicit_delegate_members() {
+    if !include_hidden && !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
     for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
@@ -3123,6 +3409,7 @@ fn spawn_console_send_dispatch(
                     status: ConsoleFrameStatus::DeliveryFailed,
                     payload: json!({ "reason": err.to_string(), "data": err.structured_data() }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::Synthetic,
                         source_cursor: None,
                     },
@@ -3166,6 +3453,7 @@ async fn append_steer_delivery_terminal(
                 "handling_mode": "steer",
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::Synthetic,
                 source_cursor: None,
             },
@@ -3267,6 +3555,7 @@ async fn backfill_session_history(
     runtime_key: String,
     force_refresh: bool,
 ) -> ConsoleLogResult<()> {
+    let inner = inner.projection_owner.as_ref().unwrap_or(&inner).clone();
     if !inner.options.session_history_backfill_enabled {
         return Ok(());
     }
@@ -3290,7 +3579,9 @@ async fn backfill_session_history(
         let Some(session_id) = record.session_id.clone() else {
             continue;
         };
+        let provenance = Some(retain_member_provenance(&inner, &resolved, &record));
         targets.push(SessionBackfillTarget {
+            provenance,
             entry: entry.clone(),
             record,
             session_id,
@@ -3301,6 +3592,7 @@ async fn backfill_session_history(
 
 #[derive(Clone)]
 struct SessionBackfillTarget {
+    provenance: Option<ConsoleFrameMemberProvenance>,
     entry: RuntimeEntry,
     record: ConsoleIdentityRecord,
     session_id: String,
@@ -3360,10 +3652,24 @@ async fn backfill_one_session_history(
             )))
         })?;
     let SessionBackfillTarget {
+        provenance,
         entry,
         record,
         session_id,
     } = target;
+    let provenance = match provenance {
+        Some(provenance) => Some(provenance),
+        None => {
+            member_provenance_for_identity(
+                &inner,
+                &entry,
+                &record.identity,
+                Some(&session_id),
+                false,
+            )
+            .await
+        }
+    };
     let watermark_runtime_key =
         session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
     // Steady-state gate: observe the runtime's per-session durable write
@@ -3485,6 +3791,18 @@ async fn backfill_one_session_history(
                 message.clone(),
             );
             for mut frame in frames {
+                frame.source.member_provenance = if frame.identity == record.identity {
+                    provenance.clone()
+                } else {
+                    member_provenance_for_identity(
+                        &inner,
+                        &entry,
+                        &frame.identity,
+                        frame.session_id.as_deref(),
+                        false,
+                    )
+                    .await
+                };
                 if history_frame_has_existing_counterpart(&inner, &frame).await? {
                     continue;
                 }
@@ -3617,6 +3935,19 @@ fn spawn_session_history_backfill_target(
     target: SessionBackfillTarget,
     force_refresh: bool,
 ) {
+    let (inner, target) = if let Some(owner) = inner.projection_owner.as_ref() {
+        let Some(entry) = owner
+            .runtimes
+            .read()
+            .ok()
+            .and_then(|entries| entries.get(&target.entry.runtime_key).cloned())
+        else {
+            return;
+        };
+        (owner.clone(), SessionBackfillTarget { entry, ..target })
+    } else {
+        (inner, target)
+    };
     if !inner.options.session_history_backfill_enabled {
         return;
     }
@@ -3668,6 +3999,7 @@ fn spawn_session_history_backfill_for_identity(
     identity: String,
     force_refresh: bool,
 ) {
+    let inner = inner.projection_owner.as_ref().unwrap_or(&inner).clone();
     if !inner.options.session_history_backfill_enabled {
         return;
     }
@@ -3682,6 +4014,7 @@ fn spawn_opportunistic_session_history_backfill_for_identity(
     inner: Arc<AggregatorInner>,
     identity: String,
 ) {
+    let inner = inner.projection_owner.as_ref().unwrap_or(&inner).clone();
     if !inner.options.session_history_backfill_enabled {
         return;
     }
@@ -3749,7 +4082,9 @@ async fn session_backfill_targets_for_identity(
             let Some(session_id) = record.session_id.clone() else {
                 continue;
             };
+            let provenance = Some(retain_member_provenance(inner, &resolved, &record));
             targets.push(SessionBackfillTarget {
+                provenance,
                 entry: entry.clone(),
                 record,
                 session_id,
@@ -3821,6 +4156,7 @@ async fn append_source_gap(
                 "source_kind": "console_event",
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::Synthetic,
                 source_cursor: None,
             },
@@ -3893,6 +4229,7 @@ async fn append_backfill_gap(
                 "source_kind": "session_history",
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::Synthetic,
                 source_cursor: None,
             },
@@ -3922,6 +4259,14 @@ async fn project_console_event(
         return Ok(());
     };
     let mut frame = frame_from_console_event(&entry, envelope);
+    frame.source.member_provenance = member_provenance_for_identity(
+        &inner,
+        &entry,
+        &frame.identity,
+        frame.session_id.as_deref(),
+        matches!(frame.kind.as_str(), "interaction_started" | "run_started"),
+    )
+    .await;
     if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
         frame.payload = redacted;
         frame.status = ConsoleFrameStatus::Redacted;
@@ -3985,8 +4330,26 @@ fn console_event_should_start_session_history_backfill(frame: &NewConsoleFrame) 
 
 async fn append_and_emit(
     inner: &AggregatorInner,
-    frame: NewConsoleFrame,
+    mut frame: NewConsoleFrame,
 ) -> ConsoleLogResult<AppendOutcome> {
+    if frame.source.member_provenance.is_none() {
+        let owner = inner.projection_owner.as_deref().unwrap_or(inner);
+        let entry = owner
+            .runtimes
+            .read()
+            .ok()
+            .and_then(|entries| entries.get(&frame.runtime_key).cloned());
+        if let Some(entry) = entry {
+            frame.source.member_provenance = member_provenance_for_identity(
+                owner,
+                &entry,
+                &frame.identity,
+                frame.session_id.as_deref(),
+                false,
+            )
+            .await;
+        }
+    }
     let outcome = inner.store.append_if_absent(frame).await?;
     if outcome.disposition == AppendDisposition::Inserted {
         let _ = inner.event_tx.send(ConsoleTimelineEvent::ConsoleFrame {
@@ -4016,6 +4379,7 @@ async fn update_frame_status_and_emit(
         status: updated.status,
         payload: json!({ "frame": updated.clone() }),
         source: ConsoleFrameSource {
+            member_provenance: updated.source.member_provenance.clone(),
             kind: ConsoleFrameSourceKind::Synthetic,
             source_cursor: None,
         },
@@ -4098,6 +4462,7 @@ fn frame_from_console_event(
         status,
         payload,
         source: ConsoleFrameSource {
+            member_provenance: None,
             kind: ConsoleFrameSourceKind::ConsoleEvent,
             source_cursor: None,
         },
@@ -4195,6 +4560,7 @@ fn session_history_assistant_image_frames(
                 "type": "session_history",
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some(format!(
                     "{session_id}:{offset}:{result_idx}:image:{image_idx}"
@@ -4257,6 +4623,7 @@ fn frames_from_session_history_message_with_namespace(
                         "type": "session_history",
                     }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::SessionHistory,
                         source_cursor: Some(format!("{session_id}:{offset}:{idx}")),
                     },
@@ -4400,6 +4767,7 @@ fn frames_from_session_history_message_with_namespace(
         status: ConsoleFrameStatus::Completed,
         payload,
         source: ConsoleFrameSource {
+            member_provenance: None,
             kind: ConsoleFrameSourceKind::SessionHistory,
             source_cursor: Some(format!("{session_id}:{offset}")),
         },
@@ -4565,6 +4933,7 @@ fn history_tool_call_frame(
             "type": "session_history",
         }),
         source: ConsoleFrameSource {
+            member_provenance: None,
             kind: ConsoleFrameSourceKind::SessionHistory,
             source_cursor: Some(format!("{session_id}:{offset}:{cursor_tag}:{tool_idx}")),
         },
@@ -4659,6 +5028,7 @@ fn spawn_initial_message_frames_from_assistant(
                     "via_tool": tool.name,
                 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::SessionHistory,
                     source_cursor: Some(format!(
                         "{session_id}:{offset}:spawn-initial:{tool_idx}:{spawn_idx}"
@@ -4986,6 +5356,26 @@ async fn frame_is_visible_cached(
     identity_visibility_cache: &mut HashMap<(String, String), CachedIdentityVisibility>,
     identity_records: &[ConsoleIdentityRecord],
 ) -> ConsoleLogResult<bool> {
+    // An update marker cannot reveal a frame hidden by the same policy.
+    if frame.kind == "frame_updated" {
+        let Some(value) = frame.payload.get("frame") else {
+            return Ok(false);
+        };
+        let Ok(updated) = serde_json::from_value::<ConsoleFrame>(value.clone()) else {
+            return Ok(false);
+        };
+        if !Box::pin(frame_is_visible_cached(
+            inner,
+            &updated,
+            allow_historical_identity,
+            identity_visibility_cache,
+            identity_records,
+        ))
+        .await?
+        {
+            return Ok(false);
+        }
+    }
     let entry = {
         let entries = inner
             .runtimes
@@ -4999,6 +5389,11 @@ async fn frame_is_visible_cached(
         };
         entry.clone()
     };
+    if let Some(provenance) = &frame.source.member_provenance
+        && !retained_member_visible(entry.visibility_policy.as_ref(), provenance)
+    {
+        return Ok(false);
+    }
     // Runtime-plane frames aren't agent frames: `__console__` (synthetic
     // gap markers) and `_system` (ConsoleMemoryEventSink attributes
     // identity-less §9.3 memory.* events here) have no roster record to
@@ -7656,6 +8051,7 @@ comms = true
                 status: ConsoleFrameStatus::Completed,
                 payload: json!({"delta": "hi"}),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -7777,6 +8173,396 @@ comms = true
         Ok(())
     }
 
+    #[tokio::test]
+    async fn console_transport_omits_member_provenance_from_rest_rpc_and_sse()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use axum::body::{Body, BodyDataStream};
+        use axum::http::{Request, StatusCode};
+        use futures::StreamExt;
+        use tower::ServiceExt;
+
+        async fn receive_until(stream: &mut BodyDataStream, marker: &str) -> String {
+            let mut output = String::new();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while let Some(chunk) = stream.next().await {
+                    output.push_str(
+                        std::str::from_utf8(&chunk.expect("SSE bytes")).expect("SSE utf8"),
+                    );
+                    if output.contains(marker) {
+                        return;
+                    }
+                }
+                panic!("SSE ended before {marker}");
+            })
+            .await
+            .expect("SSE progress");
+            assert!(
+                !output.contains("member_provenance"),
+                "private witness leaked: {output}"
+            );
+            assert!(
+                !output.contains("private-label"),
+                "private label leaked: {output}"
+            );
+            output
+        }
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let mut frame = frame_from_session_history_message(
+            "runtime-a",
+            "member",
+            "session",
+            0,
+            json!({"role": "user", "content": "Exact public content."}),
+        )
+        .expect("frame");
+        frame.source.member_provenance = Some(serde_json::from_value(json!({
+            "identity": {"identity":"member", "display_name":"Member", "runtime_key":"runtime-a",
+                "runtime_member_id":"member", "session_id":"session", "visibility":"addressable",
+                "addressable":true, "health":"ready", "labels":{"private-label":"private"}},
+            "member": {"agent_identity":"member", "role":"delegate", "state":"running",
+                "session_id":"session", "wired_to":[], "labels":{"private-label":"private"}},
+            "primary_mob_id":"primary", "source_mob_id":"lower"
+        }))?);
+        let stored = append_and_emit(&aggregator.inner, frame.clone())
+            .await?
+            .frame;
+        let app = crate::http_console::console_json_router_with_aggregator(
+            crate::RuntimeDecisionState::local_console(
+                crate::ConsolePolicy {
+                    require_app_auth: false,
+                    ..Default::default()
+                },
+                None,
+            ),
+            aggregator.clone(),
+        );
+        for request in [
+            Request::builder()
+                .uri("/console/timeline?identity=member")
+                .body(Body::empty())?,
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(
+                    &json!({"jsonrpc":"2.0", "id":1,
+                    "method":"mobkit/console/query_timeline", "params":{"identity":"member"}}),
+                )?))?,
+        ] {
+            let response = app.clone().oneshot(request).await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+            let body = String::from_utf8(bytes.to_vec())?;
+            assert!(
+                body.contains("Exact public content."),
+                "frame must be present: {body}"
+            );
+            assert!(!body.contains("member_provenance"));
+            assert!(!body.contains("private-label"));
+        }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/console/timeline/stream?identity=member")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        let snapshot = receive_until(&mut stream, "snapshot_complete").await;
+        assert!(snapshot.contains("Exact public content."));
+        frame.dedupe_key = "live-provenance".to_string();
+        frame.payload = json!({"content":"Live public content."});
+        append_and_emit(&aggregator.inner, frame).await?;
+        receive_until(&mut stream, "Live public content.").await;
+        update_frame_status_and_emit(&aggregator.inner, &stored.id, ConsoleFrameStatus::Delivered)
+            .await?;
+        let marker = receive_until(&mut stream, "frame_updated").await;
+        assert!(marker.contains("Exact public content."));
+        let raw = aggregator
+            .store()
+            .query_frames(ConsoleTimelineQuery::default())
+            .await?;
+        assert!(
+            raw.frames
+                .iter()
+                .all(|frame| frame.source.member_provenance.is_some())
+        );
+        let marker = raw
+            .frames
+            .iter()
+            .find(|frame| frame.kind == "frame_updated")
+            .expect("stored marker");
+        assert!(
+            marker.payload["frame"]["source"]
+                .get("member_provenance")
+                .is_some(),
+            "transport stripping must not alter nested storage provenance"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retired_member_history_keeps_policy_provenance_after_store_reopen()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let primary = build_empty_runtime(&unique_console_mob_id("provenance-primary")).await;
+        let delegate = build_empty_runtime(&unique_console_mob_id("provenance-lower")).await;
+        let alias = "history-reviewer";
+        delegate
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                alias.to_string(),
+                Some("Retained private review history.".into()),
+                None,
+                None,
+            ))
+            .await?;
+        primary
+            .mob_runtime()
+            .agent_mob_mcp_state()
+            .expect("mob state")
+            .mob_insert_handle(
+                delegate.mob_handle().mob_id().clone(),
+                delegate.mob_handle().clone(),
+            )
+            .await;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("console.sqlite");
+        let store = Arc::new(SqliteConsoleLogStore::open(&path)?);
+        let options = ConsoleAggregatorOptions {
+            session_history_backfill_enabled: false,
+            ..Default::default()
+        };
+        let owner = MobKitConsoleAggregator::new_with_options(store.clone(), options);
+        let entry = runtime_entry_for_test("runtime-a", &primary);
+        owner
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".to_string(), entry.clone());
+        let identity = format!("test/{alias}");
+        let target = session_backfill_target_for_identity(&owner.inner, &identity)
+            .await
+            .expect("lower member target");
+        wait_for_runtime_session_history_text(
+            &delegate,
+            &target.session_id,
+            "Retained private review history.",
+            Duration::from_secs(5),
+        )
+        .await?;
+        // These independent test runtimes have distinct session services. Supply
+        // the real lower service's history through the canonical admission seam.
+        let page = delegate
+            .mob_runtime()
+            .read_session_history(&target.session_id, 0, Some(100))
+            .await?;
+        let page = serde_json::to_value(page)?;
+        for (offset, message) in page["messages"]
+            .as_array()
+            .expect("history messages")
+            .iter()
+            .enumerate()
+        {
+            for frame in frames_from_session_history_message_with_namespace(
+                "runtime-a",
+                &identity,
+                "test",
+                &target.session_id,
+                offset,
+                message.clone(),
+            ) {
+                append_and_emit(&owner.inner, frame).await?;
+            }
+        }
+        let raw = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some(identity.clone()),
+                limit: 100,
+                ..Default::default()
+            })
+            .await?;
+        assert!(
+            !raw.frames.is_empty(),
+            "real lower member session history was admitted"
+        );
+        assert!(
+            raw.frames
+                .iter()
+                .all(|frame| frame.source.member_provenance.is_some())
+        );
+        assert!(
+            raw.frames
+                .iter()
+                .all(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
+        );
+        let persisted_json = serde_json::to_vec(&raw.frames)?;
+        let restored_json: Vec<ConsoleFrame> = serde_json::from_slice(&persisted_json)?;
+        assert_eq!(
+            restored_json, raw.frames,
+            "custom JSON storage preserves policy inputs"
+        );
+        let projected_frames = raw
+            .frames
+            .iter()
+            .cloned()
+            .map(|frame| owner.project_frame_for_view(frame))
+            .collect::<Vec<_>>();
+        assert!(
+            serde_json::to_value(&projected_frames)?
+                .as_array()
+                .expect("frames")
+                .iter()
+                .all(|frame| frame["source"].get("member_provenance").is_none()),
+            "policy-checked REST/RPC/SSE snapshots must omit private provenance"
+        );
+        for view in [
+            &owner,
+            &owner.policy_view(Arc::new(AllowAllConsoleVisibilityPolicy)),
+        ] {
+            let mut marker = raw.frames[0].clone();
+            marker.kind = "frame_updated".to_string();
+            marker.payload = json!({"frame": raw.frames[0]});
+            let projected =
+                view.project_event_for_view(ConsoleTimelineEvent::ConsoleFrame { frame: marker });
+            let json = serde_json::to_value(projected)?;
+            assert!(json["frame"]["source"].get("member_provenance").is_none());
+            assert!(
+                json["frame"]["payload"]["frame"]["source"]
+                    .get("member_provenance")
+                    .is_none(),
+                "live SSE nested updates also omit private provenance"
+            );
+        }
+        let hidden_lower =
+            owner.policy_view(Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy));
+        let hidden_member = owner.policy_view(Arc::new(HideRuntimeMemberOnly("history-reviewer")));
+        for view in [&hidden_lower, &hidden_member] {
+            assert_retired_history_policy(view, &identity, &raw.frames).await?;
+        }
+        delegate
+            .mob_handle()
+            .retire(crate::member_comms_id::mob_member_id(alias))
+            .await?;
+        assert!(
+            member_sources_for_entry_including_hidden(&entry)
+                .await
+                .into_iter()
+                .all(|source| source.runtime_identity != alias),
+            "actual member removed from live roster"
+        );
+        for view in [&hidden_lower, &hidden_member] {
+            view.list_identities_fresh().await?;
+            assert_retired_history_policy(view, &identity, &raw.frames).await?;
+        }
+        let new_view =
+            owner.policy_view(Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy));
+        assert_retired_history_policy(&new_view, &identity, &raw.frames).await?;
+        let open = owner
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.clone()),
+                limit: 100,
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(
+            open.frames, projected_frames,
+            "open policy retains exact history without private policy inputs"
+        );
+        drop(new_view);
+        drop(hidden_member);
+        drop(hidden_lower);
+        drop(owner);
+        drop(store);
+        let reopened = MobKitConsoleAggregator::new_with_options(
+            Arc::new(SqliteConsoleLogStore::open(&path)?),
+            options,
+        );
+        reopened
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".to_string(), entry);
+        let restricted =
+            reopened.policy_view(Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy));
+        assert_retired_history_policy(&restricted, &identity, &raw.frames).await?;
+        let member_only = reopened.policy_view(Arc::new(HideRuntimeMemberOnly("history-reviewer")));
+        assert_retired_history_policy(&member_only, &identity, &raw.frames).await?;
+        let legacy_frame = frame_from_session_history_message(
+            "runtime-a",
+            "legacy-retired",
+            "legacy-session",
+            0,
+            json!({ "role": "user", "content": "Legacy readable history" }),
+        )
+        .expect("legacy frame");
+        reopened.store().append_if_absent(legacy_frame).await?;
+        let legacy = restricted
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("legacy-retired".to_string()),
+                limit: 100,
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(
+            legacy.frames.len(),
+            1,
+            "pre-provenance unknown historical identities remain readable"
+        );
+        let restored = reopened
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity),
+                limit: 100,
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(
+            restored.frames, projected_frames,
+            "SQLite retains the witness while transport omits private inputs"
+        );
+        let _ = primary.mob_handle().stop().await;
+        let _ = delegate.mob_handle().stop().await;
+        Ok(())
+    }
+
+    async fn assert_retired_history_policy(
+        view: &MobKitConsoleAggregator,
+        identity: &str,
+        frames: &[ConsoleFrame],
+    ) -> ConsoleLogResult<()> {
+        for mode in [ConsoleTimelineMode::Recent, ConsoleTimelineMode::Since] {
+            let page = view
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    identity: Some(identity.to_string()),
+                    mode,
+                    limit: 100,
+                    ..Default::default()
+                })
+                .await?;
+            assert!(
+                page.frames.is_empty(),
+                "restricted recent/since snapshot cannot expose retired history: {page:?}"
+            );
+        }
+        for frame in frames {
+            assert!(
+                !view
+                    .timeline_event_visible_for_subscriber(
+                        &ConsoleTimelineEvent::ConsoleFrame {
+                            frame: frame.clone()
+                        },
+                        Some(identity)
+                    )
+                    .await,
+                "identity-scoped SSE must apply retained source policy"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn member_visibility_policy_hides_live_alias_from_aggregator_controls()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -7880,6 +8666,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "delta": "hidden" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -7913,6 +8700,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "delta": "identity-only-hidden" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -9614,6 +10402,7 @@ comms = true
             status: ConsoleFrameStatus::Delivered,
             payload: json!({ "delta": "hello" }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::ConsoleEvent,
                 source_cursor: None,
             },
@@ -9653,6 +10442,147 @@ comms = true
     /// to `ns/_system`). ABAC is unaffected: under an enforced config the
     /// RPC layer still filters `_system` frames per caller via
     /// `retain_visible_timeline_frames` (covered in tests/access_control.rs).
+    #[tokio::test]
+    async fn policy_views_share_canonical_events_without_redacting_each_others_store() {
+        struct RedactText;
+        impl ConsoleVisibilityPolicy for RedactText {
+            fn redact_payload(&self, frame: &NewConsoleFrame) -> Option<Value> {
+                (frame.kind == "text_delta").then(|| json!({"delta": "[redacted]"}))
+            }
+        }
+        struct HideText;
+        impl ConsoleVisibilityPolicy for HideText {
+            fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
+                frame.kind != "text_delta"
+            }
+        }
+        let runtime = build_empty_runtime("shared-console-projection").await;
+        let owner = MobKitConsoleAggregator::in_memory();
+        let mut entry = runtime_entry_for_test("default", &runtime);
+        entry.identity_namespace.clear();
+        owner
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("default".into(), entry);
+        let open = owner.policy_view(Arc::new(AllowAllConsoleVisibilityPolicy));
+        let redacted = owner.policy_view(Arc::new(RedactText));
+        let hidden = owner.policy_view(Arc::new(HideText));
+        assert!(
+            open.inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("tasks")
+                .is_empty()
+        );
+        assert!(
+            redacted
+                .inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("tasks")
+                .is_empty()
+        );
+        let mut open_rx = open.subscribe();
+        let mut redacted_rx = redacted.subscribe();
+        for index in 0..40 {
+            project_console_event(
+                owner.inner.clone(),
+                "default",
+                crate::console_contracts::ConsoleIdentityEventEnvelope {
+                    event_id: format!("shared-{index}"),
+                    interaction_id: Some("stream".into()),
+                    identity: SYSTEM_EVENT_IDENTITY.into(),
+                    event_type: "text_delta".into(),
+                    timestamp_ms: 1000 + index,
+                    data: json!({"delta": format!("chunk {index}  ")}),
+                },
+            )
+            .await
+            .expect("canonical append");
+            let a = open_rx.recv().await.expect("open event");
+            let b = redacted_rx.recv().await.expect("redacted event");
+            assert_eq!(a, b, "views receive the same canonical event");
+            assert!(open.timeline_event_visible(&a).await);
+            assert!(!hidden.timeline_event_visible(&a).await);
+            let ConsoleTimelineEvent::ConsoleFrame { frame: raw } = open.project_event_for_view(a)
+            else {
+                panic!("frame");
+            };
+            let ConsoleTimelineEvent::ConsoleFrame { frame: safe } =
+                redacted.project_event_for_view(b)
+            else {
+                panic!("frame");
+            };
+            assert_eq!(raw.payload["delta"], format!("chunk {index}  "));
+            assert_eq!(safe.payload["delta"], "[redacted]");
+            assert_eq!(safe.status, ConsoleFrameStatus::Redacted);
+            let stored = owner
+                .store()
+                .frame_by_dedupe_key(&raw.dedupe_key)
+                .await
+                .expect("read")
+                .expect("stored");
+            assert_eq!(stored.payload, raw.payload);
+        }
+        let query = ConsoleTimelineQuery {
+            identity: Some(SYSTEM_EVENT_IDENTITY.into()),
+            limit: 100,
+            ..Default::default()
+        };
+        assert_eq!(
+            open.query_timeline(query.clone())
+                .await
+                .expect("open query")
+                .frames
+                .len(),
+            40
+        );
+        assert!(
+            hidden
+                .query_timeline(query.clone())
+                .await
+                .expect("hidden query")
+                .frames
+                .is_empty()
+        );
+        assert!(
+            redacted
+                .query_timeline(query)
+                .await
+                .expect("redacted query")
+                .frames
+                .iter()
+                .all(|frame| frame.payload["delta"] == "[redacted]")
+        );
+        let sample = open
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(SYSTEM_EVENT_IDENTITY.into()),
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .expect("sample")
+            .frames
+            .remove(0);
+        let mut marker = sample.clone();
+        marker.kind = "frame_updated".into();
+        marker.payload = json!({ "frame": sample });
+        let marker = ConsoleTimelineEvent::ConsoleFrame { frame: marker };
+        assert!(
+            !hidden.timeline_event_visible(&marker).await,
+            "hidden frame stays hidden inside update marker"
+        );
+        let ConsoleTimelineEvent::ConsoleFrame { frame: projected } =
+            redacted.project_event_for_view(marker)
+        else {
+            panic!("marker");
+        };
+        assert_eq!(projected.payload["frame"]["payload"]["delta"], "[redacted]");
+        runtime.shutdown().await;
+    }
+
     #[tokio::test]
     async fn system_identity_frames_are_visible_on_global_timeline_queries() {
         let aggregator = MobKitConsoleAggregator::in_memory();
@@ -9845,6 +10775,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "content": "anchor me" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::Synthetic,
                     source_cursor: None,
                 },
@@ -9872,6 +10803,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -9942,6 +10874,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -9969,6 +10902,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "text": "visible after hidden gap" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -10018,6 +10952,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "text": format!("visible {idx}") }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -10092,6 +11027,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "delta": "hello" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -10172,6 +11108,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "delta": "hello" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -10428,6 +11365,7 @@ comms = true
                     "type": "user_input",
                 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::SessionHistory,
                     source_cursor: Some("stale-session-history-agent-a".to_string()),
                 },
@@ -10663,6 +11601,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -10702,11 +11641,10 @@ comms = true
             .await
             .expect_err("future cursor on empty/reset store must be replay-unavailable");
 
-        assert!(
-            err.to_string()
-                .contains("beyond the current store frontier"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            err,
+            ConsoleTimelineQueryError::ReplayUnavailable { .. }
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10753,6 +11691,7 @@ comms = true
                     "type": "tool_execution_started",
                 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: Some("live-tool-before-history".to_string()),
                 },
@@ -10838,6 +11777,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -11056,6 +11996,7 @@ comms = true
             status: ConsoleFrameStatus::Accepted,
             payload: json!({ "content": "hello" }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: None,
             },
@@ -11120,6 +12061,7 @@ comms = true
                 "handling_mode": "steer",
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: None,
             },
@@ -11206,6 +12148,7 @@ comms = true
                     status: ConsoleFrameStatus::Completed,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -11233,6 +12176,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "content": "already here" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -11258,6 +12202,7 @@ comms = true
             status: ConsoleFrameStatus::Completed,
             payload: json!({ "content": "already here" }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:1006".to_string()),
             },
@@ -11293,6 +12238,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "content": "hello from operator" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -11318,6 +12264,7 @@ comms = true
             status: ConsoleFrameStatus::Completed,
             payload: json!({ "content": "[EVENT via rpc] hello from operator" }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:2".to_string()),
             },
@@ -11353,6 +12300,7 @@ comms = true
                 status: ConsoleFrameStatus::Delivered,
                 payload: json!({ "content": "hello from operator" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -11380,6 +12328,7 @@ comms = true
                 "content": [{ "type": "text", "text": "hello from operator" }]
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:2".to_string()),
             },
@@ -11419,6 +12368,7 @@ comms = true
                     "result": "{ \"count\": 70 }"
                 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -11449,6 +12399,7 @@ comms = true
                 "content": [{ "type": "text", "text": "{ \"count\": 70 }" }]
             }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:3:0".to_string()),
             },
@@ -11485,6 +12436,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": delta }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -11511,6 +12463,7 @@ comms = true
             status: ConsoleFrameStatus::Completed,
             payload: json!({ "result": "Ready and standing by." }),
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:3".to_string()),
             },

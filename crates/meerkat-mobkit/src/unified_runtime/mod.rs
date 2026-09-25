@@ -231,6 +231,7 @@ pub struct UnifiedRuntime {
         tokio::sync::Mutex<Option<crate::mob_handle_runtime::PendingMobActivation>>,
     event_log: Option<event_log::EventLogHandle>,
     console_log_store: Arc<dyn ConsoleLogStore>,
+    console_projection: std::sync::OnceLock<crate::console_aggregator::MobKitConsoleAggregator>,
     /// What the builder asked the live doors to be (console voice and/or
     /// the external `mobkit/live/*` channel) plus the typed inputs retained
     /// from a persistent session service. `None` when the builder registered
@@ -503,6 +504,7 @@ impl UnifiedRuntime {
             pending_mob_activation: tokio::sync::Mutex::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
+            console_projection: std::sync::OnceLock::new(),
             live_plan: None,
             live_composition: tokio::sync::OnceCell::new(),
             console_events,
@@ -1079,6 +1081,9 @@ impl UnifiedRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
         self.identity_first_context = Some(context);
+        if let Some(projection) = self.console_projection.get() {
+            projection.update_identity_authority("default", self.identity_runtime().cloned());
+        }
     }
 
     pub(crate) fn install_identity_first_flow_target_provisioner(
@@ -1469,6 +1474,9 @@ impl UnifiedRuntime {
 
     pub fn set_console_log_store(&mut self, store: Arc<dyn ConsoleLogStore>) {
         self.console_log_store = store;
+        if let Some(projection) = self.console_projection.take() {
+            projection.unregister_runtime("default");
+        }
     }
 
     /// Query structural mob events from the meerkat ledger.

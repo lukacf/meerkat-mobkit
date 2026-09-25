@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -37,6 +37,7 @@ struct ConsoleEventReplayState {
     by_identity: BTreeMap<String, VecDeque<ConsoleIdentityEventEnvelope>>,
     pending_by_identity: BTreeMap<String, VecDeque<PendingInteraction>>,
     active_interaction_by_identity: BTreeMap<String, String>,
+    callback_pending_by_identity: BTreeSet<String>,
     runtime_to_identity: BTreeMap<String, String>,
     response_phase_by_identity: BTreeMap<String, Option<String>>,
     /// Console identity metadata registered by spawn paths (spawn labels,
@@ -101,6 +102,7 @@ impl ConsoleEventStore {
                 by_identity,
                 pending_by_identity: BTreeMap::new(),
                 active_interaction_by_identity: BTreeMap::new(),
+                callback_pending_by_identity: BTreeSet::new(),
                 runtime_to_identity: BTreeMap::new(),
                 response_phase_by_identity: BTreeMap::new(),
                 labels_by_identity: BTreeMap::new(),
@@ -329,6 +331,8 @@ impl ConsoleEventStore {
                 .pending_by_identity
                 .remove(identity)
                 .unwrap_or_default();
+            state.active_interaction_by_identity.remove(identity);
+            state.callback_pending_by_identity.remove(identity);
             state
                 .response_phase_by_identity
                 .insert(identity.to_string(), None);
@@ -392,8 +396,16 @@ impl ConsoleEventStore {
                 .or_insert_with(|| Value::String(event_type.clone()));
         }
 
-        let (identity, interaction_id, superseded_pending) = {
+        let (identity, interaction_id) = {
             let mut state = self.state.write().await;
+            // Replayed boundaries must not mutate the current run association.
+            if state
+                .all_events
+                .iter()
+                .any(|existing| existing.event_id == event.event_id)
+            {
+                return;
+            }
             let registered_identity = state.resolve_identity_for_runtime_event(agent_id);
             let identity = registered_identity
                 .clone()
@@ -417,44 +429,18 @@ impl ConsoleEventStore {
                     .entry(agent_id.clone())
                     .or_insert_with(|| identity.clone());
             }
-            let (interaction_id, superseded_pending) = match event_type.as_str() {
+            let interaction_id = match event_type.as_str() {
                 "run_started" => {
                     select_interaction_for_run_started(&mut state, &identity, &projected_data)
                 }
-                "interaction_complete" | "interaction_failed" | "interaction_callback_pending" => (
-                    select_interaction_for_directed_terminal(&state, &identity, &projected_data),
-                    Vec::new(),
-                ),
-                _ => (
-                    state
-                        .active_interaction_by_identity
-                        .get(&identity)
-                        .cloned()
-                        .or_else(|| {
-                            state
-                                .pending_by_identity
-                                .get(&identity)
-                                .and_then(|queue| queue.front())
-                                .map(|pending| pending.interaction_id.clone())
-                        }),
-                    Vec::new(),
-                ),
+                "interaction_complete" | "interaction_failed" | "interaction_callback_pending" => {
+                    select_interaction_for_directed_terminal(&state, &identity, &projected_data)
+                }
+                // Admission alone cannot identify the run emitting this event.
+                _ => state.active_interaction_by_identity.get(&identity).cloned(),
             };
-            (identity, interaction_id, superseded_pending)
+            (identity, interaction_id)
         };
-        for pending in superseded_pending {
-            self.append(
-                identity.clone(),
-                Some(pending.interaction_id),
-                "interaction_failed",
-                json!({
-                    "reason": "superseded_by_later_run",
-                    "origin": pending.origin,
-                    "content": pending.content,
-                }),
-            )
-            .await;
-        }
 
         let projected_type = match event_type.as_str() {
             "run_completed" => "interaction_complete",
@@ -515,17 +501,18 @@ impl ConsoleEventStore {
                 }
                 "run_completed" | "run_failed" => {
                     state.active_interaction_by_identity.remove(&identity);
+                    state.callback_pending_by_identity.remove(&identity);
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
                 }
-                // `interaction_callback_pending` is deliberately absent here: it
-                // names its interaction (attributed above) but does not end
-                // it. meerkat documents it as a pause at an external callback
-                // boundary, waiting for tool results before the session can
-                // continue, and later publishes the real terminal under the
-                // SAME interaction id. Closing on it left every later frame of
-                // the turn, its own terminal included, unattributed.
+                "interaction_callback_pending" => {
+                    if interaction_id.as_ref().is_some_and(|interaction| {
+                        state.active_interaction_by_identity.get(&identity) == Some(interaction)
+                    }) {
+                        state.callback_pending_by_identity.insert(identity.clone());
+                    }
+                }
                 "interaction_complete" | "interaction_failed" => {
                     if let Some(interaction_id) = interaction_id.as_deref() {
                         close_console_interaction(&mut state, &identity, interaction_id);
@@ -589,30 +576,35 @@ fn select_interaction_for_run_started(
     state: &mut ConsoleEventReplayState,
     identity: &str,
     payload: &Value,
-) -> (Option<String>, Vec<PendingInteraction>) {
-    let Some(queue) = state.pending_by_identity.get_mut(identity) else {
-        return (None, Vec::new());
-    };
+) -> Option<String> {
+    let input = payload
+        .get("input")
+        .cloned()
+        .and_then(|input| serde_json::from_value::<meerkat_core::RunInput>(input).ok());
+    if matches!(input, Some(meerkat_core::RunInput::PendingToolResults))
+        && state.callback_pending_by_identity.remove(identity)
+    {
+        return state.active_interaction_by_identity.get(identity).cloned();
+    }
 
-    let matched_position = queue
+    // Each content start establishes its own association. Unrelated runs and
+    // unassociated continuations preserve pending sends without borrowing one.
+    state.active_interaction_by_identity.remove(identity);
+    state.callback_pending_by_identity.remove(identity);
+    let queue = state.pending_by_identity.get(identity)?;
+    let mut matches = queue
         .iter()
-        .position(|pending| pending_matches_run_started(pending, payload))
-        .unwrap_or(0);
-
-    let mut superseded = Vec::new();
-    for _ in 0..matched_position {
-        if let Some(pending) = queue.pop_front() {
-            superseded.push(pending);
-        }
+        .filter(|pending| pending_matches_run_started(pending, payload));
+    let interaction_id = matches.next()?.interaction_id.clone();
+    // This wire has no general realizing interaction id. Identical inputs are
+    // ambiguous; their exact directed terminal may still settle the reservation.
+    if matches.next().is_some() {
+        return None;
     }
-
-    let interaction_id = queue.front().map(|pending| pending.interaction_id.clone());
-    if let Some(interaction_id) = &interaction_id {
-        state
-            .active_interaction_by_identity
-            .insert(identity.to_string(), interaction_id.clone());
-    }
-    (interaction_id, superseded)
+    state
+        .active_interaction_by_identity
+        .insert(identity.to_string(), interaction_id.clone());
+    Some(interaction_id)
 }
 
 /// Runtime-minted directed interaction events (`interaction_complete`,
@@ -670,69 +662,56 @@ fn close_console_interaction(
         .is_some_and(|active| active == interaction_id)
     {
         state.active_interaction_by_identity.remove(identity);
+        state.callback_pending_by_identity.remove(identity);
     }
-    state
-        .response_phase_by_identity
-        .insert(identity.to_string(), None);
+    // An exact terminal may settle a queued reservation while another run is
+    // generating or paused for a callback. Only clear idle/own-run state.
+    if !state.active_interaction_by_identity.contains_key(identity) {
+        state
+            .response_phase_by_identity
+            .insert(identity.to_string(), None);
+    }
 }
 
-/// meerkat's `RunStarted` carries `input: RunInput`, serialized as
-/// `{"kind": "content", "content": <ContentInput>}` (a string or a block
-/// array) or `{"kind": "pending_tool_results"}`, which has no prompt at all.
-/// There is no `prompt` field; reading one never matched, so every
-/// `run_started` bound to the queue front regardless of which send it
-/// actually started.
+/// Match the canonical model input, including every multimodal block. The
+/// runtime owns projection and inline-image/blob equivalence; text equality
+/// alone would incorrectly bind different images or drop significant spacing.
 fn pending_matches_run_started(pending: &PendingInteraction, payload: &Value) -> bool {
-    let Some(prompt) = run_started_prompt_text(payload) else {
+    let Some(input) = payload.get("input") else {
         return false;
     };
-    content_value_matches_text(&pending.content, &prompt)
-}
-
-fn run_started_prompt_text(payload: &Value) -> Option<String> {
-    match payload.get("input")?.get("content")? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(blocks) => {
-            let combined = blocks
-                .iter()
-                .filter_map(text_from_content_block)
-                .collect::<String>();
-            (!combined.is_empty()).then_some(combined)
-        }
-        _ => None,
-    }
-}
-
-fn content_value_matches_text(value: &Value, expected: &str) -> bool {
-    match value {
-        Value::String(text) => text == expected,
-        Value::Array(items) => {
-            let combined = items
-                .iter()
-                .filter_map(text_from_content_block)
-                .collect::<String>();
-            !combined.is_empty() && combined == expected
-        }
-        Value::Object(map) => {
-            map.get("text")
-                .and_then(Value::as_str)
-                .is_some_and(|text| text == expected)
-                || map
-                    .get("content")
-                    .is_some_and(|content| content_value_matches_text(content, expected))
-                || map
-                    .get("blocks")
-                    .is_some_and(|blocks| content_value_matches_text(blocks, expected))
-        }
+    let Ok(meerkat_core::RunInput::Content { content }) = serde_json::from_value(input.clone())
+    else {
+        return false;
+    };
+    let Ok(pending_content) = serde_json::from_value(pending.content.clone()) else {
+        return false;
+    };
+    match (
+        canonical_run_content_digest(pending_content),
+        canonical_run_content_digest(content),
+    ) {
+        (Some(pending), Some(actual)) => pending == actual,
         _ => false,
     }
 }
 
-fn text_from_content_block(value: &Value) -> Option<&str> {
-    value
-        .get("text")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("content").and_then(Value::as_str))
+fn canonical_run_content_digest(content: meerkat_core::ContentInput) -> Option<String> {
+    use meerkat_core::lifecycle::run_primitive::{
+        ConversationAppend, ConversationAppendRole, CoreRenderable,
+        model_projection_content_input_from_conversation_appends,
+    };
+    let content = match content {
+        meerkat_core::ContentInput::Text(text) => CoreRenderable::Text { text },
+        meerkat_core::ContentInput::Blocks(blocks) => CoreRenderable::Blocks { blocks },
+    };
+    let canonical =
+        model_projection_content_input_from_conversation_appends(&[ConversationAppend {
+            role: ConversationAppendRole::User,
+            content,
+            identity: None,
+        }]);
+    meerkat_runtime::input::run_started_content_digest(&canonical).ok()
 }
 
 /// Whether a `turn_completed` event ends its turn.
@@ -758,6 +737,13 @@ pub(crate) fn payload_stop_reason_is_tool_use(payload: &Value) -> bool {
         .or_else(|| payload.get("stopReason"))
         .and_then(|value| meerkat_core::StopReason::deserialize(value).ok())
         == Some(meerkat_core::StopReason::ToolUse)
+}
+
+fn text_from_content_block(value: &Value) -> Option<&str> {
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("content").and_then(Value::as_str))
 }
 
 fn parse_generate_image_tool_result(
@@ -1024,10 +1010,19 @@ mod tests {
                 Some("rt:worker:1"),
                 "turn-1",
                 "console",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve first interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
+
         store
             .project_unified_event(&EventEnvelope {
                 event_id: "evt-1".to_string(),
@@ -1095,10 +1090,18 @@ mod tests {
                 Some("rt:worker:1"),
                 "turn-1",
                 "console",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
 
         let event = EventEnvelope {
             event_id: "evt-duplicate".to_string(),
@@ -1173,8 +1176,206 @@ mod tests {
         );
     }
 
+    async fn assert_pending_terminal_preserves_active_run(terminal_kind: &str, callback: bool) {
+        let store = ConsoleEventStore::new();
+        for (interaction, content) in [("pending-a", "first"), ("active-b", "second")] {
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    interaction,
+                    "console",
+                    json!(content),
+                )
+                .await
+                .expect("reserve");
+        }
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "active-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "second"}}),
+            ))
+            .await;
+        let expected_phase = if callback {
+            "tool-executing"
+        } else {
+            "generating"
+        };
+        let (event_type, payload) = if callback {
+            (
+                "tool_call_requested",
+                json!({"id": "call-b", "name": "host_tool"}),
+            )
+        } else {
+            ("text_delta", json!({"delta": "still working"}))
+        };
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "active-progress",
+                "rt:worker:1",
+                event_type,
+                payload,
+            ))
+            .await;
+        if callback {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    "active-callback",
+                    "rt:worker:1",
+                    "interaction_callback_pending",
+                    json!({"interaction_id": "active-b", "tool_name": "host_tool", "args": {}}),
+                ))
+                .await;
+        }
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some(expected_phase)
+        );
+
+        if terminal_kind == "dispatch_failure" {
+            store
+                .record_interaction_failure(
+                    "worker",
+                    "pending-a",
+                    json!({"error": "delivery failed"}),
+                )
+                .await;
+        } else {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    "pending-terminal",
+                    "rt:worker:1",
+                    terminal_kind,
+                    json!({"interaction_id": "pending-a", "result": "first settled"}),
+                ))
+                .await;
+        }
+
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some(expected_phase),
+            "another input's terminal must not clear the current run's phase"
+        );
+        {
+            let state = store.state.read().await;
+            assert_eq!(
+                state
+                    .active_interaction_by_identity
+                    .get("worker")
+                    .map(String::as_str),
+                Some("active-b")
+            );
+            assert_eq!(
+                state.callback_pending_by_identity.contains("worker"),
+                callback
+            );
+            assert_eq!(state.pending_by_identity["worker"].len(), 1);
+            assert_eq!(
+                state.pending_by_identity["worker"][0].interaction_id,
+                "active-b"
+            );
+        }
+        let replay = store.replay_all(None).await.expect("replay");
+        assert!(
+            replay
+                .iter()
+                .any(|frame| frame.interaction_id.as_deref() == Some("pending-a")
+                    && matches!(
+                        frame.event_type.as_str(),
+                        "interaction_complete" | "interaction_failed"
+                    ))
+        );
+
+        if callback {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    "active-resume",
+                    "rt:worker:1",
+                    "run_started",
+                    json!({"input": {"kind": "pending_tool_results"}}),
+                ))
+                .await;
+            let replay = store.replay_all(None).await.expect("replay");
+            assert_eq!(
+                replay
+                    .iter()
+                    .find(|frame| frame.event_id == "active-resume")
+                    .expect("resume")
+                    .interaction_id
+                    .as_deref(),
+                Some("active-b")
+            );
+        }
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "active-terminal",
+                "rt:worker:1",
+                "interaction_complete",
+                json!({"interaction_id": "active-b", "result": "second done"}),
+            ))
+            .await;
+        assert_eq!(
+            store.response_phase_for_identity("worker").await,
+            None,
+            "the active interaction's own terminal must still clear its phase"
+        );
+        let state = store.state.read().await;
+        assert!(!state.active_interaction_by_identity.contains_key("worker"));
+        assert!(!state.callback_pending_by_identity.contains("worker"));
+        assert!(!state.pending_by_identity.contains_key("worker"));
+    }
+
     #[tokio::test]
-    async fn run_started_matches_pending_prompt_and_fails_superseded_input() {
+    async fn pending_directed_terminal_preserves_another_active_run_phase_and_callback() {
+        for terminal_kind in ["interaction_complete", "interaction_failed"] {
+            for callback in [false, true] {
+                assert_pending_terminal_preserves_active_run(terminal_kind, callback).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_dispatch_failure_preserves_another_active_run_phase_and_callback() {
+        for callback in [false, true] {
+            assert_pending_terminal_preserves_active_run("dispatch_failure", callback).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn last_pending_failure_without_active_run_clears_waiting_phase() {
+        let store = ConsoleEventStore::new();
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "pending-a",
+                "console",
+                json!("hello"),
+            )
+            .await
+            .expect("reserve");
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("waiting")
+        );
+        store
+            .record_interaction_failure("worker", "pending-a", json!({"error": "delivery failed"}))
+            .await;
+        assert_eq!(store.response_phase_for_identity("worker").await, None);
+        assert!(
+            !store
+                .state
+                .read()
+                .await
+                .pending_by_identity
+                .contains_key("worker")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_started_matches_pending_prompt_and_preserves_other_accepted_inputs() {
         let store = ConsoleEventStore::new();
         store
             .register_runtime_identity("rt:worker:1", "worker")
@@ -1232,12 +1433,15 @@ mod tests {
             .replay_all(None)
             .await
             .expect("all-events replay should succeed");
-        let stale_failed = replay
-            .iter()
-            .find(|event| event.interaction_id.as_deref() == Some("stale-turn"))
-            .expect("stale interaction should be failed");
-        assert_eq!(stale_failed.event_type, "interaction_failed");
-        assert_eq!(stale_failed.data["reason"], "superseded_by_later_run");
+        assert!(
+            !replay
+                .iter()
+                .any(|event| event.interaction_id.as_deref() == Some("stale-turn"))
+        );
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"][0].interaction_id,
+            "stale-turn"
+        );
 
         let run_started = replay
             .iter()
@@ -1263,10 +1467,18 @@ mod tests {
                 Some("rt:review:singleton:0"),
                 "turn-1",
                 "console",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:review:singleton:0:0",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
 
         store
             .project_unified_event(&EventEnvelope {
@@ -1312,10 +1524,19 @@ mod tests {
                 Some("rt:worker:1"),
                 "turn-1",
                 "console",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
+
         store
             .project_unified_event(&EventEnvelope {
                 event_id: "evt-1".to_string(),
@@ -1423,10 +1644,18 @@ mod tests {
                 Some("rt:review:singleton:0"),
                 "turn-1",
                 "mobkit/send_message",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:review:singleton:0:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
 
         store
             .project_unified_event(&agent_event(
@@ -1472,10 +1701,18 @@ mod tests {
                 Some("rt:review:singleton:0"),
                 "turn-1",
                 "mobkit/send_message",
-                json!({}),
+                json!("console prompt"),
             )
             .await
             .expect("reserve interaction");
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:review:singleton:0:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "console prompt"}}),
+            ))
+            .await;
 
         store
             .project_unified_event(&agent_event(
@@ -1572,6 +1809,14 @@ mod tests {
                 "rt:worker:1",
                 "interaction_complete",
                 json!({ "interaction_id": "peer-directed-turn", "result": "" }),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-matching-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "hello"}}),
             ))
             .await;
         store
@@ -1785,5 +2030,374 @@ mod tests {
             .find(|event| event.event_id == "evt-second-run-started")
             .expect("evt-second-run-started");
         assert_eq!(second.interaction_id.as_deref(), Some("console-turn-2"));
+    }
+
+    async fn assert_foreign_run_preserves_queued_console_input(start_before_reservation: bool) {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        let foreign_start = agent_event_with_payload(
+            "foreign-start",
+            "rt:worker:1",
+            "run_started",
+            json!({"input": {"kind": "content", "content": "Peer request: mob.kickoff_started"}}),
+        );
+        if start_before_reservation {
+            store.project_unified_event(&foreign_start).await;
+        }
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "operator-a",
+                "console",
+                json!("Create the WorkGraph"),
+            )
+            .await
+            .expect("reserve operator input");
+        if !start_before_reservation {
+            store.project_unified_event(&foreign_start).await;
+        }
+        for (id, kind, payload) in [
+            (
+                "foreign-tool",
+                "tool_call_requested",
+                json!({"name": "send_response"}),
+            ),
+            (
+                "foreign-text",
+                "text_delta",
+                json!({"delta": "Kickoff acknowledged"}),
+            ),
+            (
+                "foreign-end",
+                "run_completed",
+                json!({"result": "Kickoff acknowledged"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
+                .await;
+        }
+        let replay = store.replay_all(None).await.expect("replay");
+        for frame in replay
+            .iter()
+            .filter(|frame| frame.event_id.starts_with("foreign-"))
+        {
+            assert_eq!(
+                frame.interaction_id, None,
+                "foreign event must not steal the operator reservation: {}",
+                frame.event_id
+            );
+        }
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
+        for (id, kind, payload) in [
+            (
+                "operator-start",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "Create the WorkGraph"}}),
+            ),
+            (
+                "operator-tool",
+                "tool_call_requested",
+                json!({"name": "workgraph_create"}),
+            ),
+            (
+                "operator-end",
+                "run_completed",
+                json!({"result": "WorkGraph created"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
+                .await;
+        }
+        let replay = store.replay_all(None).await.expect("replay");
+        for frame in replay
+            .iter()
+            .filter(|frame| frame.event_id.starts_with("operator-"))
+        {
+            assert_eq!(
+                frame.interaction_id.as_deref(),
+                Some("operator-a"),
+                "{}",
+                frame.event_id
+            );
+        }
+        assert!(
+            !store
+                .state
+                .read()
+                .await
+                .pending_by_identity
+                .contains_key("worker")
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_run_started_after_reservation_does_not_steal_console_interaction() {
+        assert_foreign_run_preserves_queued_console_input(false).await;
+    }
+
+    #[tokio::test]
+    async fn reservation_mid_foreign_run_does_not_reassign_its_remaining_events() {
+        assert_foreign_run_preserves_queued_console_input(true).await;
+    }
+
+    #[tokio::test]
+    async fn unassociated_tool_results_continuation_does_not_select_pending_input() {
+        let store = ConsoleEventStore::new();
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "operator-a",
+                "console",
+                json!("hello"),
+            )
+            .await
+            .expect("reserve");
+        for (id, kind, payload) in [
+            (
+                "unknown-continuation",
+                "run_started",
+                json!({"input": {"kind": "pending_tool_results"}}),
+            ),
+            (
+                "unknown-delta",
+                "text_delta",
+                json!({"delta": "foreign continuation"}),
+            ),
+            (
+                "unknown-end",
+                "run_completed",
+                json!({"result": "foreign continuation"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
+                .await;
+        }
+        assert!(
+            store
+                .replay_all(None)
+                .await
+                .expect("replay")
+                .iter()
+                .all(|frame| frame.interaction_id.is_none())
+        );
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn unrelated_content_start_clears_previous_run_association_without_consuming_reservation()
+    {
+        let store = ConsoleEventStore::new();
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "operator-a",
+                "console",
+                json!("hello"),
+            )
+            .await
+            .expect("reserve");
+        for (id, content) in [("own-start", "hello"), ("foreign-start", "peer work")] {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    id,
+                    "rt:worker:1",
+                    "run_started",
+                    json!({"input": {"kind": "content", "content": content}}),
+                ))
+                .await;
+        }
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "foreign-end",
+                "rt:worker:1",
+                "run_completed",
+                json!({"result": "peer done"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.expect("replay");
+        assert!(
+            replay
+                .iter()
+                .filter(|frame| frame.event_id.starts_with("foreign-"))
+                .all(|frame| frame.interaction_id.is_none())
+        );
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn identical_pending_inputs_require_attribution_instead_of_queue_order_guess() {
+        let store = ConsoleEventStore::new();
+        for id in ["operator-a", "operator-b"] {
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    id,
+                    "console",
+                    json!("same exact input"),
+                )
+                .await
+                .expect("reserve");
+        }
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "ambiguous-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "same exact input"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "ambiguous-end",
+                "rt:worker:1",
+                "run_completed",
+                json!({"result": "done"}),
+            ))
+            .await;
+        assert!(
+            store
+                .replay_all(None)
+                .await
+                .expect("replay")
+                .iter()
+                .all(|frame| frame.interaction_id.is_none())
+        );
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            2
+        );
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "exact-end",
+                "rt:worker:1",
+                "interaction_complete",
+                json!({"interaction_id": "operator-a", "result": "done"}),
+            ))
+            .await;
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"][0].interaction_id,
+            "operator-b"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_start_cannot_rebind_a_new_active_run() {
+        let store = ConsoleEventStore::new();
+        for (id, content) in [("operator-a", "first"), ("operator-b", "second")] {
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    id,
+                    "console",
+                    json!(content),
+                )
+                .await
+                .expect("reserve");
+        }
+        let first_start = agent_event_with_payload(
+            "first-start",
+            "rt:worker:1",
+            "run_started",
+            json!({"input": {"kind": "content", "content": "first"}}),
+        );
+        store.project_unified_event(&first_start).await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "first-end",
+                "rt:worker:1",
+                "run_completed",
+                json!({"result": "first done"}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "second-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "second"}}),
+            ))
+            .await;
+        store.project_unified_event(&first_start).await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "second-delta",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta": "second result"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.expect("replay");
+        assert_eq!(
+            replay
+                .iter()
+                .find(|frame| frame.event_id == "second-delta")
+                .expect("delta")
+                .interaction_id
+                .as_deref(),
+            Some("operator-b")
+        );
+    }
+
+    #[test]
+    fn run_started_matcher_uses_exact_canonical_multimodal_content() {
+        let inline = json!([
+            {"type": "text", "text": "  Exact\nUnicode: A\u{030a} 🚀  "},
+            {"type": "image", "media_type": "image/png", "source": "inline", "data": "aGVsbG8="}
+        ]);
+        let blob_id = meerkat_core::blob::content_blob_id("image/png", "aGVsbG8=");
+        let blob = json!([
+            {"type": "text", "text": "  Exact\nUnicode: A\u{030a} 🚀  "},
+            {"type": "image", "media_type": "image/png", "source": "blob", "blob_id": blob_id}
+        ]);
+        let pending = PendingInteraction {
+            interaction_id: "operator-a".into(),
+            origin: "console".into(),
+            content: inline.clone(),
+        };
+        assert!(pending_matches_run_started(
+            &pending,
+            &json!({"input": {"kind": "content", "content": blob}})
+        ));
+        let mut changed_image = inline.clone();
+        changed_image[1]["data"] = json!("ZGlmZmVyZW50");
+        assert!(!pending_matches_run_started(
+            &pending,
+            &json!({"input": {"kind": "content", "content": changed_image}})
+        ));
+        assert!(!pending_matches_run_started(
+            &pending,
+            &json!({"input": {"kind": "content", "content": inline[0]["text"]}})
+        ));
+        let mut reordered = inline.as_array().expect("blocks").clone();
+        reordered.reverse();
+        assert!(!pending_matches_run_started(
+            &pending,
+            &json!({"input": {"kind": "content", "content": reordered}})
+        ));
+        let mut changed_text = inline.clone();
+        changed_text[0]["text"] = json!("Exact\nUnicode: A\u{030a} 🚀");
+        assert!(!pending_matches_run_started(
+            &pending,
+            &json!({"input": {"kind": "content", "content": changed_text}})
+        ));
     }
 }

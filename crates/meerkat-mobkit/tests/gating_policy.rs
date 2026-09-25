@@ -819,3 +819,307 @@ fn phase12_r3_notification_records_error_when_modules_unavailable() {
         json!("notification_modules_unavailable:router,delivery")
     );
 }
+
+#[test]
+fn gating_origin_is_opt_in_and_preserved_across_serialization_and_escalation() {
+    use meerkat_mobkit::runtime::{
+        GatingDecideRequest, GatingDecision, GatingEvaluateRequest, GatingOrigin,
+        GatingPendingEntry,
+    };
+    let mut runtime = runtime_for_gating();
+    let request: GatingEvaluateRequest = serde_json::from_value(json!({
+        "action": "Deploy the candidate", "actor_id": "worker", "risk_tier": "r3",
+        "rationale": "Release approved changes",
+    }))
+    .expect("request");
+    let origin = GatingOrigin {
+        identity: "identity:release".to_string(),
+        conversation_id: Some("conversation:release".to_string()),
+        interaction_id: Some("interaction:123".to_string()),
+    };
+    let evaluated = runtime.evaluate_gating_action_with_origin(request, Some(origin.clone()));
+    let pending_id = evaluated.pending_id.expect("R3 pending");
+    let entry = runtime.list_gating_pending().remove(0);
+    assert_eq!(entry.origin.as_ref(), Some(&origin));
+    assert_eq!(entry.rationale.as_deref(), Some("Release approved changes"));
+    let persisted = serde_json::to_vec(&entry).expect("serialize pending");
+    let restored: GatingPendingEntry = serde_json::from_slice(&persisted).expect("restore pending");
+    assert_eq!(entry, restored);
+    let result = runtime
+        .decide_gating_action(GatingDecideRequest {
+            pending_id,
+            approver_id: "operator".to_string(),
+            decision: GatingDecision::Escalate,
+            reason: None,
+        })
+        .expect("escalation");
+    let successor = runtime.list_gating_pending().remove(0);
+    assert_eq!(Some(successor.pending_id), result.next_pending_id);
+    assert_eq!(successor.origin.as_ref(), Some(&origin));
+    let audit = runtime.gating_audit_entries(20);
+    assert!(
+        audit
+            .iter()
+            .filter(|entry| entry.event_type == "pending_created")
+            .all(|entry| {
+                entry.detail.get("origin") == Some(&serde_json::to_value(&origin).expect("origin"))
+            })
+    );
+}
+
+#[test]
+fn legacy_gating_records_and_rpc_actor_claims_do_not_mint_origin() {
+    use meerkat_mobkit::runtime::GatingPendingEntry;
+    let legacy: GatingPendingEntry = serde_json::from_value(json!({
+        "pending_id": "old", "action_id": "action", "action": "Legacy request",
+        "actor_id": "identity:release", "risk_tier": "r3", "created_at_ms": 1,
+        "deadline_at_ms": 2,
+    }))
+    .expect("legacy record remains readable");
+    assert!(legacy.origin.is_none());
+    assert!(legacy.rationale.is_none());
+    let mut runtime = runtime_for_gating();
+    let request = json!({
+        "jsonrpc": "2.0", "id": "forged", "method": "mobkit/gating/evaluate",
+        "params": {
+            "action": "Deploy", "actor_id": "identity:release", "risk_tier": "r3",
+            "origin": { "identity": "identity:release", "conversation_id": "c", "interaction_id": "i" },
+        },
+    });
+    let result = handle_mobkit_rpc_json(&mut runtime, &request.to_string(), Duration::from_secs(1));
+    assert!(parse_response(&result).get("result").is_some());
+    assert!(runtime.list_gating_pending()[0].origin.is_none());
+}
+
+#[test]
+fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decisions() {
+    use meerkat_mobkit::runtime::{
+        GatingDecideRequest, GatingDecision, GatingEvaluateRequest, GatingOrigin,
+        GatingStateSnapshot,
+    };
+    let mut source = runtime_for_gating();
+    let request = || {
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Publish release", "actor_id": "worker", "risk_tier": "r3",
+            "rationale": "All required checks passed",
+        }))
+        .expect("request")
+    };
+    let origin = GatingOrigin {
+        identity: "identity:release".to_string(),
+        conversation_id: Some("conversation:release".to_string()),
+        interaction_id: Some("interaction:release".to_string()),
+    };
+    let original_id = source
+        .evaluate_gating_action_with_origin(request(), Some(origin.clone()))
+        .pending_id
+        .expect("pending");
+    let persisted = serde_json::to_vec(&source.gating_state_snapshot()).expect("serialize owner");
+    let snapshot: GatingStateSnapshot =
+        serde_json::from_slice(&persisted).expect("restore owner bytes");
+    let mut restored = runtime_for_gating();
+    restored
+        .restore_gating_state(snapshot.clone())
+        .expect("pristine restore");
+    assert_eq!(restored.gating_state_snapshot(), snapshot);
+    let decision = restored
+        .decide_gating_action(GatingDecideRequest {
+            pending_id: original_id.clone(),
+            approver_id: "operator".to_string(),
+            decision: GatingDecision::Escalate,
+            reason: None,
+        })
+        .expect("escalate after restart");
+    let successor = restored.list_gating_pending().remove(0);
+    assert_ne!(successor.pending_id, original_id);
+    assert_eq!(
+        Some(&successor.pending_id),
+        decision.next_pending_id.as_ref()
+    );
+    assert_eq!(successor.origin, Some(origin));
+
+    let mut restarted = runtime_for_gating();
+    restarted
+        .restore_gating_state(restored.gating_state_snapshot())
+        .expect("successor restore");
+    assert!(
+        restarted
+            .decide_gating_action(GatingDecideRequest {
+                pending_id: original_id,
+                approver_id: "operator".to_string(),
+                decision: GatingDecision::Approve,
+                reason: None,
+            })
+            .is_err()
+    );
+    let later_id = restarted
+        .evaluate_gating_action(request())
+        .pending_id
+        .expect("later request");
+    assert_ne!(later_id, successor.pending_id);
+}
+
+#[test]
+fn gating_snapshot_validation_is_atomic_and_cannot_overwrite_a_live_owner() {
+    use meerkat_mobkit::runtime::{GatingEvaluateRequest, GatingStateRestoreError};
+    let mut source = runtime_for_gating();
+    source.evaluate_gating_action(
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Deploy", "actor_id": "worker", "risk_tier": "r3",
+        }))
+        .expect("request"),
+    );
+    let valid = source.gating_state_snapshot();
+    assert!(matches!(
+        source.restore_gating_state(valid.clone()),
+        Err(GatingStateRestoreError::RuntimeNotPristine)
+    ));
+    let mut corruptions = Vec::new();
+    let mut unsupported = valid.clone();
+    unsupported.version = 99;
+    corruptions.push(unsupported);
+    let mut duplicate = valid.clone();
+    duplicate.pending.push(duplicate.pending[0].clone());
+    corruptions.push(duplicate);
+    let mut frontier = valid.clone();
+    frontier.next_sequence = 1;
+    corruptions.push(frontier);
+    let mut origin = valid.clone();
+    origin.pending[0].origin = Some(meerkat_mobkit::runtime::GatingOrigin {
+        identity: "".to_string(),
+        conversation_id: None,
+        interaction_id: None,
+    });
+    corruptions.push(origin);
+    let mut audit = valid.clone();
+    audit.audit[0].detail["origin"] = json!({ "identity": 12 });
+    corruptions.push(audit);
+    let mut deadline = valid.clone();
+    deadline.pending[0].deadline_at_ms = 0;
+    corruptions.push(deadline);
+    for invalid in corruptions {
+        let mut target = runtime_for_gating();
+        let before = target.gating_state_snapshot();
+        assert!(target.restore_gating_state(invalid).is_err());
+        assert_eq!(target.gating_state_snapshot(), before);
+        target
+            .restore_gating_state(valid.clone())
+            .expect("failed validation leaves owner pristine");
+    }
+}
+
+#[test]
+fn gating_restore_retains_legacy_records_and_applies_owner_expiry() {
+    use meerkat_mobkit::runtime::{GatingEvaluateRequest, GatingStateSnapshot};
+    let mut source = runtime_for_gating();
+    source.evaluate_gating_action(
+        serde_json::from_value::<GatingEvaluateRequest>(json!({
+            "action": "Legacy deploy", "actor_id": "worker", "risk_tier": "r3",
+        }))
+        .expect("request"),
+    );
+    let mut json = serde_json::to_value(source.gating_state_snapshot()).expect("snapshot");
+    let pending = json["pending"][0].as_object_mut().expect("pending record");
+    pending.remove("origin");
+    pending.remove("rationale");
+    pending.insert("created_at_ms".to_string(), json!(1));
+    pending.insert("deadline_at_ms".to_string(), json!(2));
+    let snapshot: GatingStateSnapshot =
+        serde_json::from_value(json).expect("legacy optional fields");
+    let mut restored = runtime_for_gating();
+    restored
+        .restore_gating_state(snapshot)
+        .expect("legacy restore");
+    assert!(restored.list_gating_pending().is_empty());
+    let audit = restored.gating_audit_entries(20);
+    let timeout = audit
+        .iter()
+        .find(|entry| entry.event_type == "timeout_fallback")
+        .expect("canonical timeout");
+    assert_eq!(
+        timeout.outcome,
+        meerkat_mobkit::runtime::GatingOutcome::SafeDraft
+    );
+    assert_eq!(timeout.detail["reason"], json!("approval_timeout"));
+}
+
+#[test]
+fn gating_empty_optional_origin_fields_preserve_identity_authority() {
+    use meerkat_mobkit::runtime::{GatingEvaluateRequest, GatingOrigin};
+    for (conversation_id, interaction_id) in [
+        (Some("  ".to_string()), Some("private-turn".to_string())),
+        (
+            Some("private-conversation".to_string()),
+            Some("\t".to_string()),
+        ),
+        (Some(String::new()), Some(String::new())),
+    ] {
+        let mut runtime = runtime_for_gating();
+        let request: GatingEvaluateRequest = serde_json::from_value(json!({
+            "action": "Private release", "actor_id": "worker", "risk_tier": "r3",
+            "rationale": "Private context",
+        }))
+        .expect("request");
+        let expected = GatingOrigin {
+            identity: "hidden-reviewer".to_string(),
+            conversation_id: conversation_id
+                .clone()
+                .filter(|value| !value.trim().is_empty()),
+            interaction_id: interaction_id
+                .clone()
+                .filter(|value| !value.trim().is_empty()),
+        };
+        let evaluated = runtime.evaluate_gating_action_with_origin(
+            request,
+            Some(GatingOrigin {
+                identity: expected.identity.clone(),
+                conversation_id,
+                interaction_id,
+            }),
+        );
+        assert!(evaluated.pending_id.is_some());
+        assert_eq!(
+            runtime.list_gating_pending()[0].origin,
+            Some(expected.clone())
+        );
+        assert_eq!(
+            runtime.gating_audit_entries(20)[0].detail["origin"],
+            json!(expected)
+        );
+        let snapshot = runtime.gating_state_snapshot();
+        let mut restored = runtime_for_gating();
+        restored
+            .restore_gating_state(snapshot.clone())
+            .expect("normalized snapshot");
+        assert_eq!(restored.gating_state_snapshot(), snapshot);
+    }
+}
+
+#[test]
+fn gating_invalid_supplied_identity_cannot_become_unattributed() {
+    use meerkat_mobkit::runtime::{GatingEvaluateRequest, GatingOrigin, GatingOutcome};
+    for identity in ["", "  ", "\t"] {
+        let mut runtime = runtime_for_gating();
+        let request: GatingEvaluateRequest = serde_json::from_value(json!({
+            "action": "Private release", "actor_id": "worker", "risk_tier": "r3",
+            "rationale": "Private context",
+        }))
+        .expect("request");
+        let evaluated = runtime.evaluate_gating_action_with_origin(
+            request,
+            Some(GatingOrigin {
+                identity: identity.to_string(),
+                conversation_id: None,
+                interaction_id: Some("private-turn".to_string()),
+            }),
+        );
+        assert_eq!(evaluated.outcome, GatingOutcome::SafeDraft);
+        assert_eq!(
+            evaluated.fallback_reason.as_deref(),
+            Some("invalid_gating_origin")
+        );
+        assert!(evaluated.pending_id.is_none());
+        assert!(runtime.list_gating_pending().is_empty());
+        assert!(runtime.gating_audit_entries(20).is_empty());
+    }
+}
