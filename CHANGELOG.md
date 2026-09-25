@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Councils a restart interrupted are recovered after the restart (requires
+  the meerkat release carrying #1190's durable-store council sweep). MobKit
+  built its agent-tool `MobMcpState` with `Arc::new`, so the state could not
+  own a restore task and meerkat's council sweep never ran: councils the
+  previous process left mid-run stayed unfinished, and a detached council's
+  convener never heard back. The state is now shared with `into_shared`;
+  restoring the mob through `mob_insert_handle` with MobKit's durable council
+  store schedules the sweep (recovery, the retry once the dead coordinator's
+  claim lease lapses, and the detached-council re-link).
+
 - A persistent `MobBootstrapSpec` (`MobBootstrapSpec::persistent`, and the
   persistent `UnifiedRuntimeBuilder` path identity-first library hosts use)
   ran two `MeerkatMachine::persistent` instances over one runtime store: the
