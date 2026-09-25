@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `interaction_complete` projected from an assistant step whose stop reason is
   `tool_use` no longer counts. The rule is shared with the console event
   store's response phase and matches the console's
-  `isTerminalTurnCompletedData`.
+  `isTerminalTurnCompletedData`. The incident command center example's
+  TypeScript smoke applies the same rule to its `query_timeline` replay
+  terminal check.
 
 - Console WorkGraph graph view: labels no longer render smeared or tiny. The
   graph SVG inherited the global icon reset (`stroke: currentColor;
