@@ -251,8 +251,22 @@ impl std::fmt::Display for MetadataStoreError {
 
 impl std::error::Error for MetadataStoreError {}
 
+/// One spawned member's durable idle-retirement opt-in.
+///
+/// A member seated in the primary mob is idle-retired only when its spawning
+/// call opted it in (a `fork_off` child always is). The opt-in has to outlive
+/// the process: after a restart the restored child is swept again only if its
+/// opt-in is restored with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberIdleRetireOverrideRecord {
+    pub mob_id: String,
+    pub member_id: String,
+    pub policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
+}
+
 /// Persistent storage for mobkit runtime metadata that must survive a
-/// gateway restart — currently the structural-events subscription cursor.
+/// gateway restart: the structural-events subscription cursor and spawned
+/// members' idle-retirement opt-ins.
 ///
 /// Two impls live in this module: [`InMemoryMetadataStore`] (no
 /// persistence; used when no SQLite mob storage is configured) and
@@ -275,6 +289,34 @@ pub trait PersistentMetadataStore: Send + Sync {
         mob_id: &str,
         cursor: u64,
     ) -> Result<(), MetadataStoreError>;
+
+    /// Every recorded member idle-retirement opt-in, across all mobs.
+    ///
+    /// The default records nothing: a store that predates this seam keeps
+    /// opt-ins for the life of the process only, as before.
+    async fn load_member_idle_retire_overrides(
+        &self,
+    ) -> Result<Vec<MemberIdleRetireOverrideRecord>, MetadataStoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Record (or replace) one member's idle-retirement opt-in.
+    async fn set_member_idle_retire_override(
+        &self,
+        _record: &MemberIdleRetireOverrideRecord,
+    ) -> Result<(), MetadataStoreError> {
+        Ok(())
+    }
+
+    /// Forget one member's idle-retirement opt-in. Clearing an absent one
+    /// is not an error.
+    async fn clear_member_idle_retire_override(
+        &self,
+        _mob_id: &str,
+        _member_id: &str,
+    ) -> Result<(), MetadataStoreError> {
+        Ok(())
+    }
 }
 
 /// In-memory persistent metadata store.
@@ -288,6 +330,8 @@ pub trait PersistentMetadataStore: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InMemoryMetadataStore {
     cursors: RwLock<BTreeMap<String, u64>>,
+    idle_retire_overrides:
+        RwLock<BTreeMap<(String, String), crate::mob_handle_runtime::DelegateIdleRetireOverride>>,
 }
 
 impl InMemoryMetadataStore {
@@ -314,6 +358,47 @@ impl PersistentMetadataStore for InMemoryMetadataStore {
             .write()
             .await
             .insert(mob_id.to_string(), cursor);
+        Ok(())
+    }
+
+    async fn load_member_idle_retire_overrides(
+        &self,
+    ) -> Result<Vec<MemberIdleRetireOverrideRecord>, MetadataStoreError> {
+        Ok(self
+            .idle_retire_overrides
+            .read()
+            .await
+            .iter()
+            .map(
+                |((mob_id, member_id), policy)| MemberIdleRetireOverrideRecord {
+                    mob_id: mob_id.clone(),
+                    member_id: member_id.clone(),
+                    policy: *policy,
+                },
+            )
+            .collect())
+    }
+
+    async fn set_member_idle_retire_override(
+        &self,
+        record: &MemberIdleRetireOverrideRecord,
+    ) -> Result<(), MetadataStoreError> {
+        self.idle_retire_overrides.write().await.insert(
+            (record.mob_id.clone(), record.member_id.clone()),
+            record.policy,
+        );
+        Ok(())
+    }
+
+    async fn clear_member_idle_retire_override(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Result<(), MetadataStoreError> {
+        self.idle_retire_overrides
+            .write()
+            .await
+            .remove(&(mob_id.to_string(), member_id.to_string()));
         Ok(())
     }
 }
@@ -351,6 +436,15 @@ pub struct SqliteMetadataStore {
 }
 
 const SUBSCRIPTION_CURSOR_KEY: &str = "subscription_cursor";
+
+/// Key prefix of a member idle-retirement opt-in row: the member id follows
+/// the prefix and the value is the JSON-serialized
+/// [`crate::mob_handle_runtime::DelegateIdleRetireOverride`].
+const MEMBER_IDLE_RETIRE_KEY_PREFIX: &str = "member_idle_retire/";
+
+fn member_idle_retire_key(member_id: &str) -> String {
+    format!("{MEMBER_IDLE_RETIRE_KEY_PREFIX}{member_id}")
+}
 
 /// The runtime-metadata store's schema domain in the per-file migration
 /// ledger. Migration 0001 is the historical one-table DDL.
@@ -475,6 +569,93 @@ impl PersistentMetadataStore for SqliteMetadataStore {
             rusqlite::params![mob_id, SUBSCRIPTION_CURSOR_KEY, cursor.to_string()],
         )
         .map_err(|err| MetadataStoreError::Io(format!("upsert: {err}")))?;
+        Ok(())
+    }
+
+    async fn load_member_idle_retire_overrides(
+        &self,
+    ) -> Result<Vec<MemberIdleRetireOverrideRecord>, MetadataStoreError> {
+        let _fence = self.operation_fence()?;
+        let conn = self.lock_conn()?;
+        // A prefix compare, not LIKE: member ids may carry `_` and `%`.
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT mob_id, key, value FROM mobkit_metadata \
+                 WHERE substr(key, 1, ?1) = ?2 ORDER BY mob_id, key",
+            )
+            .map_err(|err| MetadataStoreError::Io(format!("prepare: {err}")))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![
+                    MEMBER_IDLE_RETIRE_KEY_PREFIX.len(),
+                    MEMBER_IDLE_RETIRE_KEY_PREFIX
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(|err| MetadataStoreError::Io(format!("query: {err}")))?;
+        let mut records = Vec::new();
+        for row in rows {
+            let (mob_id, key, value) =
+                row.map_err(|err| MetadataStoreError::Io(format!("row: {err}")))?;
+            let member_id = key
+                .strip_prefix(MEMBER_IDLE_RETIRE_KEY_PREFIX)
+                .ok_or_else(|| {
+                    MetadataStoreError::Decode(format!("idle-retire key without prefix: {key}"))
+                })?
+                .to_string();
+            let policy = serde_json::from_str(&value).map_err(|err| {
+                MetadataStoreError::Decode(format!(
+                    "idle-retire policy for {mob_id}/{member_id}: {err}"
+                ))
+            })?;
+            records.push(MemberIdleRetireOverrideRecord {
+                mob_id,
+                member_id,
+                policy,
+            });
+        }
+        Ok(records)
+    }
+
+    async fn set_member_idle_retire_override(
+        &self,
+        record: &MemberIdleRetireOverrideRecord,
+    ) -> Result<(), MetadataStoreError> {
+        let value = serde_json::to_string(&record.policy)
+            .map_err(|err| MetadataStoreError::Io(format!("encode idle-retire policy: {err}")))?;
+        let _fence = self.operation_fence()?;
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO mobkit_metadata (mob_id, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(mob_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![
+                record.mob_id,
+                member_idle_retire_key(&record.member_id),
+                value
+            ],
+        )
+        .map_err(|err| MetadataStoreError::Io(format!("upsert: {err}")))?;
+        Ok(())
+    }
+
+    async fn clear_member_idle_retire_override(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Result<(), MetadataStoreError> {
+        let _fence = self.operation_fence()?;
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "DELETE FROM mobkit_metadata WHERE mob_id = ?1 AND key = ?2",
+            rusqlite::params![mob_id, member_idle_retire_key(member_id)],
+        )
+        .map_err(|err| MetadataStoreError::Io(format!("delete: {err}")))?;
         Ok(())
     }
 }
@@ -750,6 +931,151 @@ mod tests {
                 .get("k")
                 .map(String::as_str),
             Some("b")
+        );
+    }
+
+    fn idle_record(
+        mob_id: &str,
+        member_id: &str,
+        policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
+    ) -> MemberIdleRetireOverrideRecord {
+        MemberIdleRetireOverrideRecord {
+            mob_id: mob_id.to_string(),
+            member_id: member_id.to_string(),
+            policy,
+        }
+    }
+
+    /// Opt-ins written by one process are read back by the next one against
+    /// the same file, member ids with SQL wildcard characters included, and
+    /// other metadata rows (the subscription cursor) never leak in.
+    #[tokio::test]
+    async fn sqlite_member_idle_retire_overrides_survive_reopen() {
+        use crate::mob_handle_runtime::DelegateIdleRetireOverride;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+        {
+            let store = SqliteMetadataStore::open(&path).expect("open metadata store");
+            store
+                .set_subscription_cursor("mob-a", 7)
+                .await
+                .expect("cursor");
+            store
+                .set_member_idle_retire_override(&idle_record(
+                    "mob-a",
+                    "fork_child%1",
+                    DelegateIdleRetireOverride::Seconds(300),
+                ))
+                .await
+                .expect("set seconds");
+            store
+                .set_member_idle_retire_override(&idle_record(
+                    "mob-a",
+                    "fork-2",
+                    DelegateIdleRetireOverride::Seconds(5),
+                ))
+                .await
+                .expect("set fork-2");
+            // A later opt-in for the same member replaces the earlier one.
+            store
+                .set_member_idle_retire_override(&idle_record(
+                    "mob-a",
+                    "fork-2",
+                    DelegateIdleRetireOverride::RuntimeDefault,
+                ))
+                .await
+                .expect("replace fork-2");
+            store
+                .set_member_idle_retire_override(&idle_record(
+                    "mob-b",
+                    "helper",
+                    DelegateIdleRetireOverride::Disabled,
+                ))
+                .await
+                .expect("set disabled");
+            store
+                .set_member_idle_retire_override(&idle_record(
+                    "mob-b",
+                    "gone",
+                    DelegateIdleRetireOverride::Seconds(1),
+                ))
+                .await
+                .expect("set gone");
+            store
+                .clear_member_idle_retire_override("mob-b", "gone")
+                .await
+                .expect("clear gone");
+            store
+                .clear_member_idle_retire_override("mob-b", "never-set")
+                .await
+                .expect("clearing an absent opt-in is not an error");
+        }
+
+        let reopened = SqliteMetadataStore::open(&path).expect("reopen metadata store");
+        assert_eq!(
+            reopened
+                .load_member_idle_retire_overrides()
+                .await
+                .expect("load"),
+            vec![
+                idle_record(
+                    "mob-a",
+                    "fork-2",
+                    DelegateIdleRetireOverride::RuntimeDefault
+                ),
+                idle_record(
+                    "mob-a",
+                    "fork_child%1",
+                    DelegateIdleRetireOverride::Seconds(300)
+                ),
+                idle_record("mob-b", "helper", DelegateIdleRetireOverride::Disabled),
+            ]
+        );
+        assert_eq!(
+            reopened
+                .get_subscription_cursor("mob-a")
+                .await
+                .expect("cursor"),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_member_idle_retire_overrides_set_replace_and_clear() {
+        use crate::mob_handle_runtime::DelegateIdleRetireOverride;
+
+        let store = InMemoryMetadataStore::new();
+        store
+            .set_member_idle_retire_override(&idle_record(
+                "mob-a",
+                "fork-1",
+                DelegateIdleRetireOverride::Seconds(300),
+            ))
+            .await
+            .expect("set");
+        store
+            .set_member_idle_retire_override(&idle_record(
+                "mob-a",
+                "fork-2",
+                DelegateIdleRetireOverride::RuntimeDefault,
+            ))
+            .await
+            .expect("set");
+        store
+            .clear_member_idle_retire_override("mob-a", "fork-2")
+            .await
+            .expect("clear");
+        assert_eq!(
+            store
+                .load_member_idle_retire_overrides()
+                .await
+                .expect("load"),
+            vec![idle_record(
+                "mob-a",
+                "fork-1",
+                DelegateIdleRetireOverride::Seconds(300)
+            )]
         );
     }
 }

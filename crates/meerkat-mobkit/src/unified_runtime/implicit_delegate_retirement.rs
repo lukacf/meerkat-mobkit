@@ -23,10 +23,29 @@ impl UnifiedRuntime {
         };
         let sweep_interval =
             Duration::from_millis(options.implicit_delegate_idle_sweep_interval_ms.max(1_000));
+        let overrides = self.mob_runtime.implicit_delegate_retirement_overrides();
+        // Re-arm the sweep for members restored across a restart: their
+        // opt-ins live in the durable metadata store, not in the roster.
+        if let Some(overrides) = overrides.as_ref() {
+            match overrides
+                .attach_durable_store(Arc::clone(&self.persistent_metadata))
+                .await
+            {
+                Ok(restored) if restored > 0 => {
+                    tracing::info!(restored, "restored idle-retire opt-ins for spawned members");
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "idle-retire opt-ins could not be restored; members restored from a \
+                     previous process are not idle-retired until retired by hand"
+                ),
+            }
+        }
         let task = tokio::spawn(run_implicit_delegate_retirement(
             self.mob_runtime.clone(),
             state,
-            self.mob_runtime.implicit_delegate_retirement_overrides(),
+            overrides,
             options
                 .implicit_delegate_idle_retire_secs
                 .map(Duration::from_secs),
@@ -169,6 +188,9 @@ async fn run_implicit_delegate_retirement(
                 };
                 match retire_result {
                     Ok(()) => {
+                        if let Some(overrides) = per_delegate_overrides.as_ref() {
+                            overrides.clear(mob_id.as_str(), &identity).await;
+                        }
                         tracing::info!(
                             mob_id = %mob_id,
                             agent_identity = %identity,
@@ -591,6 +613,218 @@ comms = true
         })
         .await
         .expect("late-bound sweeper never retired through identity authority");
+
+        runtime.shutdown().await;
+    }
+
+    /// The opt-in map outlives the process through the durable store: a
+    /// fresh map attached to the reopened store restores every opt-in, an
+    /// opt-in set before the attach is persisted by it, and a cleared opt-in
+    /// stays gone.
+    #[tokio::test]
+    async fn idle_retire_opt_ins_survive_a_simulated_restart() {
+        use crate::SqliteMetadataStore;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+
+        // First process: one opt-in lands before the store is attached (the
+        // attach must persist it), the rest after (they write through).
+        let first = ImplicitDelegateRetirementOverrides::default();
+        first
+            .set(
+                "mob-a",
+                "early-fork",
+                DelegateIdleRetireOverride::RuntimeDefault,
+            )
+            .await;
+        let restored = first
+            .attach_durable_store(Arc::new(
+                SqliteMetadataStore::open(&path).expect("open metadata store"),
+            ))
+            .await
+            .expect("attach");
+        assert_eq!(restored, 0, "a fresh store restores nothing");
+        first
+            .set(
+                "mob-a",
+                "fork-child",
+                DelegateIdleRetireOverride::Seconds(300),
+            )
+            .await;
+        first
+            .set(
+                "mob-a",
+                "retired-fork",
+                DelegateIdleRetireOverride::Seconds(1),
+            )
+            .await;
+        first.clear("mob-a", "retired-fork").await;
+        drop(first);
+
+        // Second process: nothing in memory until the attach restores it.
+        let second = ImplicitDelegateRetirementOverrides::default();
+        assert_eq!(second.get("mob-a", "fork-child").await, None);
+        let restored = second
+            .attach_durable_store(Arc::new(
+                SqliteMetadataStore::open(&path).expect("reopen metadata store"),
+            ))
+            .await
+            .expect("attach");
+        assert_eq!(restored, 2);
+        let fork_child = second.get("mob-a", "fork-child").await;
+        assert_eq!(fork_child, Some(DelegateIdleRetireOverride::Seconds(300)));
+        assert_eq!(
+            second.get("mob-a", "early-fork").await,
+            Some(DelegateIdleRetireOverride::RuntimeDefault)
+        );
+        assert_eq!(second.get("mob-a", "retired-fork").await, None);
+
+        // The restored opt-in re-arms the sweep's decision for an unlabeled
+        // primary-mob member.
+        let no_labels = std::collections::BTreeMap::new();
+        assert!(idle_retirement_candidate(
+            true, false, &no_labels, fork_child
+        ));
+        assert_eq!(
+            delegate_member_idle_retire_after(&no_labels, fork_child, None),
+            Some(Duration::from_mins(5))
+        );
+    }
+
+    /// End to end across a simulated restart: a previous process recorded a
+    /// fork child's opt-in and exited. A fresh runtime on the same metadata
+    /// store restores it at bootstrap, so the sweep retires the unlabeled
+    /// child, clears its opt-in, and leaves a member nobody opted in alone.
+    #[tokio::test]
+    async fn sweep_retires_a_fork_child_whose_opt_in_was_restored_at_bootstrap() {
+        use crate::{
+            DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+            PersistentMetadataStore, SqliteMetadataStore,
+        };
+
+        const MOB_ID: &str = "restart-retirement";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metadata_path = temp.path().join("metadata.sqlite3");
+
+        // The previous process: the fork child was opted in, then the
+        // process went away.
+        {
+            let previous = ImplicitDelegateRetirementOverrides::default();
+            previous
+                .attach_durable_store(Arc::new(
+                    SqliteMetadataStore::open(&metadata_path).expect("open metadata store"),
+                ))
+                .await
+                .expect("attach");
+            previous
+                .set(MOB_ID, "fork-child", DelegateIdleRetireOverride::Seconds(0))
+                .await;
+        }
+
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "{MOB_ID}"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+comms = true
+"#
+        ))
+        .expect("mob definition");
+        let mob_spec = MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            temp.path().join("state"),
+            4,
+            None,
+        )
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = UnifiedRuntime::bootstrap_with_options(
+            mob_spec,
+            MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: MOB_ID.to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            },
+            Vec::new(),
+            Duration::from_secs(2),
+            RuntimeOptions {
+                // No runtime default: only a recorded opt-in makes a
+                // primary-mob member a candidate.
+                implicit_delegate_idle_retire_secs: None,
+                implicit_delegate_idle_sweep_interval_ms: 1_000,
+                ..RuntimeOptions::default()
+            },
+            Arc::new(SqliteMetadataStore::open(&metadata_path).expect("reopen metadata store")),
+        )
+        .await
+        .expect("bootstrap runtime");
+
+        // Stand-ins for the members the restarted mob restores: plain
+        // primary-mob members without labels.
+        let handle = runtime.mob_handle();
+        for member in ["fork-child", "bystander"] {
+            handle
+                .ensure_member(meerkat_mob::SpawnMemberSpec::new(
+                    meerkat_mob::ProfileName::from("worker"),
+                    AgentIdentity::from(member),
+                ))
+                .await
+                .expect("seat member");
+        }
+
+        async fn is_live(handle: &meerkat_mob::MobHandle, id: &str) -> bool {
+            handle
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|member| {
+                    member.agent_identity.as_str() == id
+                        && member.status != MobMemberStatus::Retiring
+                })
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !is_live(&handle, "fork-child").await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the sweep never retired the fork child whose opt-in was restored");
+        assert!(
+            is_live(&handle, "bystander").await,
+            "a member nobody opted in must not be idle-retired"
+        );
+
+        // Retirement cleared the durable opt-in too.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let remaining = SqliteMetadataStore::open(&metadata_path)
+                    .expect("probe metadata store")
+                    .load_member_idle_retire_overrides()
+                    .await
+                    .expect("load opt-ins");
+                if remaining.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the retired fork child's opt-in was not cleared");
 
         runtime.shutdown().await;
     }

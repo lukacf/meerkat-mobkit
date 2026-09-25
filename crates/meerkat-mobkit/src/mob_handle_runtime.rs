@@ -830,9 +830,18 @@ fn no_op_pre_build_hook() -> PreBuildHook {
     Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DelegateIdleRetireOverride {
+/// A spawned member's idle-retirement policy, chosen by the spawning call
+/// (`delegate`, `mob_spawn_member` or `fork_off` with `idle_retire_secs`, or
+/// an RPC/console fork).
+///
+/// Persisted through [`crate::PersistentMetadataStore`] so the opt-in
+/// survives a gateway restart; the serialized form is stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegateIdleRetireOverride {
+    /// Never idle-retire the member.
     Disabled,
+    /// Idle-retire the member after this many idle seconds.
     Seconds(u64),
     /// Opt the member into idle retirement on the runtime default timeout.
     ///
@@ -842,9 +851,17 @@ pub(crate) enum DelegateIdleRetireOverride {
     RuntimeDefault,
 }
 
+/// Per-member idle-retirement opt-ins, keyed by `(mob_id, member_id)`.
+///
+/// The idle sweep reads this map on every pass. Once a durable store is
+/// attached ([`Self::attach_durable_store`]), every change writes through to
+/// it and the attach restores the opt-ins a previous process recorded, so a
+/// restored `fork_off` child is swept again after a restart instead of
+/// holding its session until retired by hand.
 #[derive(Clone, Default)]
 pub(crate) struct ImplicitDelegateRetirementOverrides {
     inner: Arc<tokio::sync::RwLock<BTreeMap<(String, String), DelegateIdleRetireOverride>>>,
+    durable: Arc<std::sync::RwLock<Option<Arc<dyn crate::PersistentMetadataStore>>>>,
 }
 
 impl ImplicitDelegateRetirementOverrides {
@@ -854,10 +871,94 @@ impl ImplicitDelegateRetirementOverrides {
         member_id: impl Into<String>,
         override_policy: DelegateIdleRetireOverride,
     ) {
+        let record = crate::MemberIdleRetireOverrideRecord {
+            mob_id: mob_id.into(),
+            member_id: member_id.into(),
+            policy: override_policy,
+        };
+        self.inner.write().await.insert(
+            (record.mob_id.clone(), record.member_id.clone()),
+            override_policy,
+        );
+        if let Some(store) = self.durable_store()
+            && let Err(error) = store.set_member_idle_retire_override(&record).await
+        {
+            tracing::warn!(
+                mob_id = %record.mob_id,
+                member_id = %record.member_id,
+                error = %error,
+                "idle-retire opt-in was not persisted; it lasts until the next restart"
+            );
+        }
+    }
+
+    /// Forget a member's opt-in, in memory and durably. Called once the
+    /// member is retired, so a later member reusing the id starts clean.
+    pub(crate) async fn clear(&self, mob_id: &str, member_id: &str) {
         self.inner
             .write()
             .await
-            .insert((mob_id.into(), member_id.into()), override_policy);
+            .remove(&(mob_id.to_string(), member_id.to_string()));
+        if let Some(store) = self.durable_store()
+            && let Err(error) = store
+                .clear_member_idle_retire_override(mob_id, member_id)
+                .await
+        {
+            tracing::warn!(
+                mob_id,
+                member_id,
+                error = %error,
+                "retired member's idle-retire opt-in could not be cleared durably"
+            );
+        }
+    }
+
+    /// Attach the durable store: restore the opt-ins it holds (an opt-in set
+    /// earlier in this process wins over a persisted one), then persist every
+    /// in-memory opt-in, so none set before the attach is lost. Returns how
+    /// many opt-ins were restored.
+    pub(crate) async fn attach_durable_store(
+        &self,
+        store: Arc<dyn crate::PersistentMetadataStore>,
+    ) -> Result<usize, crate::MetadataStoreError> {
+        // Install first: a `set` racing the attach then writes through
+        // itself, and the flush below rewrites the same value.
+        *self
+            .durable
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&store));
+        let persisted = store.load_member_idle_retire_overrides().await?;
+        let (restored, set_before_attach) = {
+            let mut inner = self.inner.write().await;
+            let set_before_attach = inner.clone();
+            let mut restored = 0;
+            for record in persisted {
+                if let std::collections::btree_map::Entry::Vacant(slot) =
+                    inner.entry((record.mob_id, record.member_id))
+                {
+                    slot.insert(record.policy);
+                    restored += 1;
+                }
+            }
+            (restored, set_before_attach)
+        };
+        for ((mob_id, member_id), policy) in set_before_attach {
+            store
+                .set_member_idle_retire_override(&crate::MemberIdleRetireOverrideRecord {
+                    mob_id,
+                    member_id,
+                    policy,
+                })
+                .await?;
+        }
+        Ok(restored)
+    }
+
+    fn durable_store(&self) -> Option<Arc<dyn crate::PersistentMetadataStore>> {
+        self.durable
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) async fn get(
@@ -1294,15 +1395,25 @@ impl AutoWireParentMobToolDispatcher {
         if outcome.result.is_error {
             return;
         }
-        let Some(override_policy) = idle_retire_override else {
-            return;
-        };
         for target in
             idle_retire_targets_from_outcome_text(&outcome.result.text_content(), fallback_targets)
         {
-            self.implicit_delegate_retirement_overrides
-                .set(&target.mob_id, &target.member_id, override_policy)
-                .await;
+            match idle_retire_override {
+                Some(override_policy) => {
+                    self.implicit_delegate_retirement_overrides
+                        .set(&target.mob_id, &target.member_id, override_policy)
+                        .await;
+                }
+                // A freshly seated member without an opt-in starts clean: an
+                // opt-in left by an earlier member with the same id (retired
+                // outside the idle sweep) persists across restarts and must
+                // not carry over.
+                None => {
+                    self.implicit_delegate_retirement_overrides
+                        .clear(&target.mob_id, &target.member_id)
+                        .await;
+                }
+            }
         }
     }
 }
@@ -10655,6 +10766,47 @@ mod tests {
             overrides.get("ob3", "review-worker-vibe-forward").await,
             Some(DelegateIdleRetireOverride::Seconds(900))
         );
+    }
+
+    /// Opt-ins persist across restarts, so a member retired outside the idle
+    /// sweep leaves one behind. A later spawn that reuses the id without
+    /// opting in must start clean; a failed spawn changes nothing.
+    #[tokio::test]
+    async fn spawn_without_opt_in_clears_a_stale_opt_in_for_the_same_member() {
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let dispatcher = wrapper_with_overrides(overrides.clone());
+        let fallback_targets = idle_retire_targets_from_spawn_args(&serde_json::json!({
+            "mob_id": "ob3",
+            "member_id": "reused-worker",
+        }));
+        let spawned = |is_error| {
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "spawn-1".to_string(),
+                r#"{"agent_identity":"reused-worker"}"#.to_string(),
+                is_error,
+            ))
+        };
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &spawned(false),
+                Some(DelegateIdleRetireOverride::Seconds(900)),
+                &fallback_targets,
+            )
+            .await;
+
+        dispatcher
+            .register_idle_retire_override_from_outcome(&spawned(true), None, &fallback_targets)
+            .await;
+        assert_eq!(
+            overrides.get("ob3", "reused-worker").await,
+            Some(DelegateIdleRetireOverride::Seconds(900)),
+            "a failed spawn seats nobody and must not touch the opt-in"
+        );
+
+        dispatcher
+            .register_idle_retire_override_from_outcome(&spawned(false), None, &fallback_targets)
+            .await;
+        assert_eq!(overrides.get("ob3", "reused-worker").await, None);
     }
 
     /// A `fork_off` result carries `mob_id` and `agent_identity` (upstream
