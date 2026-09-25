@@ -15453,6 +15453,7 @@ comms = true
                 origin: "test".to_string(),
                 idempotency_key: "idem-1".to_string(),
                 handling_mode: None,
+                origin_kind: None,
             },
         )
         .await?;
@@ -15473,6 +15474,121 @@ comms = true
         assert_eq!(
             page.frames[0].session_id,
             Some(record.session_id.to_string())
+        );
+        let _ = mob_runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_first_console_send_persists_typed_origin_kind()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, mob_runtime) =
+            build_empty_console_test_runtime("identity-send-origin-kind-test").await?;
+        let identity = AgentIdentity::parse("agent:console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-origin-kind-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let events = ConsoleEventStore::new();
+        let runtime = Arc::new(runtime);
+        aggregator.register_runtime_handles_with_policy(
+            "default",
+            "",
+            mob_runtime.clone(),
+            Some(runtime.clone()),
+            events.clone(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        let probe = crate::console_aggregator::ConsoleSendRequest {
+            identity: identity.as_str().to_string(),
+            content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                "Reply with the proof token.".to_string(),
+            ))?,
+            origin: "homecore:gate".to_string(),
+            idempotency_key: "idem-probe".to_string(),
+            handling_mode: None,
+            origin_kind: Some(crate::console_aggregator::ConsoleTurnOrigin::OperatorProbe),
+        };
+        let accepted =
+            console_send_identity_first(&aggregator, runtime.clone(), Some(&events), probe.clone())
+                .await?;
+
+        // The typed kind is persisted on the user_input frame the transcript
+        // renders from; the free-form origin is kept alongside it.
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.as_str().to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].kind, "user_input");
+        assert_eq!(page.frames[0].payload["origin_kind"], "operator_probe");
+        assert_eq!(page.frames[0].payload["origin"], "homecore:gate");
+
+        // An identical retry replays the original acceptance.
+        let replay =
+            console_send_identity_first(&aggregator, runtime.clone(), Some(&events), probe.clone())
+                .await?;
+        assert_eq!(replay.interaction_id, accepted.interaction_id);
+
+        // The same idempotency key with a different declared kind is a
+        // different request, not a replay.
+        let conflict = console_send_identity_first(
+            &aggregator,
+            runtime.clone(),
+            Some(&events),
+            crate::console_aggregator::ConsoleSendRequest {
+                origin_kind: Some(crate::console_aggregator::ConsoleTurnOrigin::Operator),
+                ..probe
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                conflict,
+                Err(super::ConsoleSendError::IdempotencyConflict(ref key)) if key == "idem-probe"
+            ),
+            "{conflict:?}"
         );
         let _ = mob_runtime.handle().stop().await;
         Ok(())
@@ -15529,6 +15645,7 @@ comms = true
                 origin: "test".to_string(),
                 idempotency_key: "member-only-idem-1".to_string(),
                 handling_mode: None,
+                origin_kind: None,
             },
         )
         .await?;
@@ -15615,6 +15732,7 @@ comms = true
                     origin: "test".to_string(),
                     idempotency_key: "idem-slow-bridge".to_string(),
                     handling_mode: None,
+                    origin_kind: None,
                 },
             ),
         )
@@ -15707,6 +15825,7 @@ comms = true
                     origin: "test".to_string(),
                     idempotency_key: "idem-slow-steer-bridge".to_string(),
                     handling_mode: Some("steer".to_string()),
+                    origin_kind: None,
                 },
             ),
         )
@@ -15789,6 +15908,7 @@ comms = true
             origin: "test".to_string(),
             idempotency_key: "idem-replay".to_string(),
             handling_mode: None,
+            origin_kind: None,
         };
         let first = console_send_identity_first(
             &aggregator,
@@ -15936,6 +16056,7 @@ comms = true
                 origin: "test".to_string(),
                 idempotency_key: "idem-steer-bridge".to_string(),
                 handling_mode: Some("steer".to_string()),
+                origin_kind: None,
             },
         )
         .await?;

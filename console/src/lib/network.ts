@@ -371,6 +371,8 @@ export async function sendConsoleMultipart(
       identity,
       content,
       origin,
+      // Typed caller kind: this console's composer is a human operator.
+      origin_kind: "operator",
       idempotency_key: idempotencyKey,
       handling_mode: handlingMode,
     },
@@ -747,6 +749,8 @@ export async function sendConsole(
     identity,
     content,
     origin,
+    // Typed caller kind: this console's composer is a human operator.
+    origin_kind: "operator",
     idempotency_key: idempotencyKey,
     handling_mode: handlingMode,
   }, timeoutMs);

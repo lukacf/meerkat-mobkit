@@ -18,6 +18,8 @@ import type {
 export type ConversationEntrySourceKind =
   | "assistant"
   | "operator"
+  | "operator_probe"
+  | "scheduled"
   | "user"
   | "peer_message"
   | "external_event"
@@ -71,6 +73,17 @@ const RENDER_CLASS_SOURCES: Record<string, { kind: ConversationEntrySourceKind; 
   system_notice: { kind: "system_notice", label: "System notice" },
   tool_scope_notice: { kind: "system_notice", label: "Tool scope notice" },
   ops_progress: { kind: "system_notice", label: "Progress update" },
+};
+
+/** MobKit `ConsoleTurnOrigin` (snake_case wire form) to a header label. */
+const TURN_ORIGIN_SOURCES: Record<string, { kind: ConversationEntrySourceKind; label: string }> = {
+  operator: { kind: "operator", label: "Operator" },
+  operator_probe: { kind: "operator_probe", label: "Operator probe" },
+  connector: { kind: "external_event", label: "Connector" },
+  scheduler: { kind: "scheduled", label: "Scheduled turn" },
+  policy: { kind: "system", label: "Policy turn" },
+  flow: { kind: "flow_step", label: "Flow step" },
+  system: { kind: "system", label: "System turn" },
 };
 
 /** Payload `kind` of a peer ingestion event to the noun used in the sentence. */
@@ -207,17 +220,20 @@ export function runtimeEventFromFrame(eventType: string, data: unknown): Convers
 }
 
 /**
- * Typed provenance of a user-lane frame: the console send `origin` and the
- * persisted meerkat `render_metadata.class`. Null when neither is present.
+ * Typed provenance of a user-lane frame: the console send `origin` and
+ * typed `origin_kind`, and the persisted meerkat `render_metadata.class`.
+ * Null when none is present.
  */
 export function entryOriginFromFrameData(data: unknown): ConversationEntryOrigin | null {
   const record = recordOf(data);
   const sendOrigin = trimmedString(record?.origin);
+  const originKind = trimmedString(record?.origin_kind);
   const renderMetadata = recordOf(recordOf(record?.message)?.render_metadata);
   const renderClass = trimmedString(renderMetadata?.class);
-  if (!sendOrigin && !renderClass) return null;
+  if (!sendOrigin && !originKind && !renderClass) return null;
   return {
     ...(sendOrigin ? { sendOrigin } : {}),
+    ...(originKind ? { originKind } : {}),
     ...(renderClass ? { renderClass } : {}),
   };
 }
@@ -279,10 +295,24 @@ function describeUserOrigin(origin: ConversationEntryOrigin | null | undefined):
     return { ...byClass, detail: null, sentence: null, untrusted: false };
   }
   const sendOrigin = origin?.sendOrigin?.trim();
+  const separator = sendOrigin ? sendOrigin.indexOf(":") : -1;
+  const namespace = sendOrigin && separator >= 0 ? sendOrigin.slice(0, separator) : sendOrigin;
+  const fromThisConsole = namespace === CONSOLE_SEND_ORIGIN_NAMESPACE;
+  // The typed caller kind wins. The free-form origin only adds "via ..."
+  // detail for callers other than this console.
+  const byKind = origin?.originKind ? TURN_ORIGIN_SOURCES[origin.originKind.trim()] : undefined;
+  if (byKind) {
+    return {
+      ...byKind,
+      detail: byKind.kind === "operator" && fromThisConsole
+        ? "sent from the console"
+        : sendOrigin && !fromThisConsole ? `via ${sendOrigin}` : null,
+      sentence: null,
+      untrusted: false,
+    };
+  }
   if (sendOrigin) {
-    const separator = sendOrigin.indexOf(":");
-    const namespace = separator >= 0 ? sendOrigin.slice(0, separator) : sendOrigin;
-    if (namespace === CONSOLE_SEND_ORIGIN_NAMESPACE) {
+    if (fromThisConsole) {
       return { kind: "operator", label: "Operator", detail: "sent from the console", sentence: null, untrusted: false };
     }
     return { kind: "user", label: "User message", detail: `via ${sendOrigin}`, sentence: null, untrusted: false };

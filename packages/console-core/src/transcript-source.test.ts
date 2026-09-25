@@ -69,6 +69,48 @@ describe("transcript entry source classification", () => {
     expect(source.detail).toBe("via homecore-gate");
   });
 
+  test("the typed console-send origin kind labels the turn", () => {
+    const cases: Array<[string, string, string]> = [
+      ["operator", "operator", "Operator"],
+      ["operator_probe", "operator_probe", "Operator probe"],
+      ["connector", "external_event", "Connector"],
+      ["scheduler", "scheduled", "Scheduled turn"],
+      ["policy", "system", "Policy turn"],
+      ["flow", "flow_step", "Flow step"],
+      ["system", "system", "System turn"],
+    ];
+    for (const [originKind, kind, label] of cases) {
+      const source = describeConversationEntrySource(message({
+        text: "Reply with exactly the token and nothing else.",
+        origin: { originKind, sendOrigin: "homecore:gate" },
+      }));
+      expect(source.kind).toBe(kind);
+      expect(source.label).toBe(label);
+      expect(source.detail).toBe("via homecore:gate");
+    }
+  });
+
+  test("the typed kind wins over the send-origin namespace", () => {
+    const probe = describeConversationEntrySource(message({
+      origin: { originKind: "operator_probe", sendOrigin: "console:panel-1" },
+    }));
+    expect(probe.label).toBe("Operator probe");
+    expect(probe.detail).toBe(null);
+    const operator = describeConversationEntrySource(message({
+      origin: { originKind: "operator", sendOrigin: "console:panel-1" },
+    }));
+    expect(operator.label).toBe("Operator");
+    expect(operator.detail).toBe("sent from the console");
+  });
+
+  test("an origin kind this console does not know falls back to the send origin", () => {
+    const source = describeConversationEntrySource(message({
+      origin: { originKind: "future_kind", sendOrigin: "homecore:gate" },
+    }));
+    expect(source.label).toBe("User message");
+    expect(source.detail).toBe("via homecore:gate");
+  });
+
   test("a persisted render class labels history user messages", () => {
     const cases: Array<[string, string, string]> = [
       ["external_event", "external_event", "External event"],
@@ -159,6 +201,8 @@ describe("typed provenance from frame payloads", () => {
       message: { role: "user", render_metadata: { class: "external_event", salience: "normal" } },
     })).toEqual({ renderClass: "external_event" });
     expect(entryOriginFromFrameData({ content: "hi" })).toBe(null);
+    expect(entryOriginFromFrameData({ content: "hi", origin: "homecore:gate", origin_kind: "operator_probe" }))
+      .toEqual({ sendOrigin: "homecore:gate", originKind: "operator_probe" });
   });
 });
 

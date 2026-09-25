@@ -1654,9 +1654,31 @@ export function ChatPane({
     return () => observer.disconnect();
   }, [turns.length > 1]);
 
+  // The rail is a scrubber for a transcript taller than its pane. When every
+  // turn already fits there is nothing to navigate, and a column of ticks
+  // floating beside the conversation reads as a rendering glitch, so it is
+  // hidden (kept mounted: hidden buttons are neither painted nor focusable).
+  // `null` until measured, so layout-free renders keep the rail.
+  const [transcriptOverflows, setTranscriptOverflows] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const measure = () => setTranscriptOverflows(body.scrollHeight > body.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [messages, liveSpeech, phase]);
+
   const railWindow = windowTurnRail(turns.length, railHeight);
   const turnRail = turns.length > 1 ? (
-    <nav className="conv-turn-rail" aria-label="Conversation turns" ref={railRef}>
+    <nav
+      className="conv-turn-rail"
+      aria-label="Conversation turns"
+      data-overflowing={transcriptOverflows === false ? "false" : undefined}
+      ref={railRef}
+    >
       <ol className="conv-turn-rail__list">
         {railWindow.overflow > 0 && (
           <li className="conv-turn-rail__item" key="rail-overflow">
