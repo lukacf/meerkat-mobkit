@@ -66,10 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   respawn in flight is skipped); a member retired and then resumed onto its
   exact session gets its opt-in back (in the same process); and a release
   deletes a row by key and bound session, so rows written by other versions
-  stay deletable. Limit: a respawn's carry runs in the respawning request
-  after the respawn commits, so a crash or a dropped request in between
-  loses that member's opt-in (it is then not idle-retired); it never makes a
-  different member retirable.
+  stay deletable. A respawn carries the opt-in only when it succeeded and
+  the member now under the id is the immediate successor (next roster
+  generation) of the incarnation read before it; if another surface retired
+  the member and seated a new one, reset it, or respawned it meanwhile,
+  nothing is carried. Limit: every doubt errs toward a leak: a failed or
+  degraded respawn, an interleaved change of the member, or a crash or
+  dropped request between the respawn and its carry loses that member's
+  opt-in (it is then not idle-retired); it never makes a different member
+  retirable.
   `PersistentMetadataStore` gains `load_member_idle_retire_overrides`,
   `set_member_idle_retire_override` and `clear_member_idle_retire_override`
   with default bodies that keep the old in-process behavior for external

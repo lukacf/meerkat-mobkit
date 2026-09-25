@@ -905,41 +905,85 @@ impl BoundIdleRetireOverride {
 /// bound to the old session would read as belonging to a gone member and be
 /// dropped. Every MobKit surface that respawns a member (operator RPC,
 /// console, the agent `mob_respawn` tool) goes through here: it reads the
-/// member's session before the respawn and, once the respawn returns, rebinds
-/// exactly the opt-in bound to that session to the session the member came
-/// back on. The old session's retirement usually releases the opt-in first;
-/// the rebind then takes it from the bounded released record.
+/// member's incarnation (roster generation and session) before the respawn
+/// and, once the respawn returns, rebinds exactly the opt-in bound to that
+/// session to the session the member came back on. The old session's
+/// retirement usually releases the opt-in first; the rebind then takes it
+/// from the bounded released record.
 ///
-/// Limit: the rebind runs in this future after the respawn. A crash, or this
-/// future being dropped, between the respawn and the rebind loses the
-/// respawned member's opt-in. That errs toward a leak (the member is not
-/// idle-retired), never toward retiring the wrong member.
+/// The rebind runs only when `respawned` says the respawn succeeded AND the
+/// member now under the id is the immediate successor of the incarnation read
+/// before (see [`MemberIncarnation::is_followed_by`]). If another surface
+/// retired the member and seated a new one under the id meanwhile, or reset
+/// or respawned it, the member under the id is further on and keeps no
+/// opt-in.
+///
+/// Limit: every doubt (a failed or degraded respawn, an interleaved change of
+/// the member, a crash, or this future being dropped between the respawn and
+/// the rebind) loses the respawned member's opt-in. That errs toward a leak
+/// (the member is not idle-retired), never toward retiring the wrong member.
 pub(crate) async fn respawn_carrying_idle_retire_opt_in<T>(
     overrides: Option<&ImplicitDelegateRetirementOverrides>,
     handle: &MobHandle,
     member: &meerkat_mob::AgentIdentity,
     respawn: impl std::future::Future<Output = T>,
+    respawned: impl FnOnce(&T) -> bool,
 ) -> T {
     let Some(overrides) = overrides else {
         return respawn.await;
     };
-    let _in_flight = overrides.respawn_in_flight(handle.mob_id().as_str(), member.as_str());
-    let previous = handle.resolve_bridge_session_id(member).await;
+    let mob_id = handle.mob_id();
+    let _in_flight = overrides.respawn_in_flight(mob_id.as_str(), member.as_str());
+    let before = MemberIncarnation::read(handle, member).await;
     let outcome = respawn.await;
-    if let Some(previous) = previous
-        && let Some(current) = handle.resolve_bridge_session_id(member).await
-        && current != previous
+    if respawned(&outcome)
+        && let Some(before) = before
+        && let Some(after) = MemberIncarnation::read(handle, member).await
+        && before.is_followed_by(&after)
     {
         overrides
             .rebind(
-                handle.mob_id().as_str(),
+                mob_id.as_str(),
                 member.as_str(),
-                &previous,
-                current,
+                &before.session_id,
+                after.session_id,
             )
             .await;
     }
     outcome
+}
+
+/// One incarnation of a mob member: its roster generation and the bridge
+/// session it runs.
+struct MemberIncarnation {
+    generation: meerkat_mob::Generation,
+    session_id: meerkat_core::types::SessionId,
+}
+
+impl MemberIncarnation {
+    /// The incarnation now under `member`, if it has a session. The session
+    /// is read between two roster reads that agree on the runtime id, so it
+    /// belongs to that incarnation. Any failed lookup reads as `None`.
+    async fn read(handle: &MobHandle, member: &meerkat_mob::AgentIdentity) -> Option<Self> {
+        let entry = handle.get_member(member).await.ok().flatten()?;
+        let session_id = handle.resolve_bridge_session_id(member).await?;
+        let confirmed = handle.get_member(member).await.ok().flatten()?;
+        (confirmed.agent_runtime_id == entry.agent_runtime_id).then_some(Self {
+            generation: entry.generation,
+            session_id,
+        })
+    }
+
+    /// Whether `next` is the incarnation that immediately follows this one.
+    ///
+    /// meerkat mints a member id's generations strictly in order and keeps
+    /// the count through a retire (only destroying the mob clears it): a new
+    /// member seated under a retired id, a reset, and a respawn each take the
+    /// next generation. So when anything else changed the member between the
+    /// two reads, the member now under the id sits further on than one step.
+    fn is_followed_by(&self, next: &Self) -> bool {
+        self.generation.next() == Some(next.generation) && self.session_id != next.session_id
+    }
 }
 
 /// A respawn of one member in flight, for as long as this guard lives
@@ -1295,7 +1339,7 @@ impl ImplicitDelegateRetirementOverrides {
             mob_id,
             member_id,
             &carried,
-            "rotated member's idle-retire opt-in",
+            "idle-retire opt-in carried to a respawned or rotated member's new session",
         )
         .await;
         true
@@ -1960,6 +2004,7 @@ impl AutoWireParentMobToolDispatcher {
                     &handle,
                     &member,
                     self.inner.dispatch_with_context(call, context),
+                    |outcome| matches!(outcome, Ok(outcome) if !outcome.result.is_error),
                 )
                 .await
             }

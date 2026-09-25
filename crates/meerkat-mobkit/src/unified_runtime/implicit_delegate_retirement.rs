@@ -89,9 +89,9 @@ async fn run_implicit_delegate_retirement(
                     continue;
                 }
                 // An opt-in holds only for the member instance it was set
-                // for; the overrides settle a stale binding (another
-                // member's), an open respawn carry, or a resume onto the
-                // exact released session against the member's session now.
+                // for; the overrides drop a stale binding (another member's)
+                // and restore an opt-in released with the exact session the
+                // member resumed onto, against the member's session now.
                 let member_session = handle
                     .resolve_bridge_session_id(&member.agent_identity)
                     .await;
@@ -1193,6 +1193,7 @@ comms = true
             &handle,
             &member,
             handle.respawn(member.clone(), None),
+            Result::is_ok,
         )
         .await
         .expect("respawn");
@@ -1261,6 +1262,7 @@ comms = true
             &handle,
             &reset,
             handle.respawn(reset.clone(), None),
+            Result::is_ok,
         )
         .await
         .expect("reset respawn");
@@ -1763,12 +1765,14 @@ comms = true
                     &handle,
                     &member,
                     handle.respawn(member.clone(), None),
+                    Result::is_ok,
                 ),
                 crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
                     Some(&overrides),
                     &handle,
                     &member,
                     handle.respawn(member.clone(), None),
+                    Result::is_ok,
                 ),
             );
             assert!(
@@ -1835,6 +1839,7 @@ comms = true
                     &handle,
                     &member,
                     handle.respawn(member.clone(), None),
+                    Result::is_ok,
                 ),
             )
             .await;
@@ -2013,5 +2018,135 @@ comms = true
         );
         assert_eq!(overrides.get_bound(MOB_ID, "fork-child").await, None);
         let _ = handle.shutdown().await;
+    }
+
+    /// Review of #447: another surface retires x and seats a new x (which
+    /// never opted in) after a MobKit respawn read x's incarnation, ahead of
+    /// the respawn in the actor queue. The respawn then succeeds on the new
+    /// x. The member now under the id is not the successor of the one read
+    /// before, so the opt-in is not carried and the new x is never
+    /// idle-retired.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_retire_and_reseat_queued_ahead_of_a_respawn_never_carry_the_opt_in() {
+        const MOB_ID: &str = "staged-reseat-respawn";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metadata_path = temp.path().join("metadata.sqlite3");
+        let runtime =
+            boot_sweeping_runtime(MOB_ID, &temp.path().join("state"), &metadata_path, 1_000).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let member = AgentIdentity::from("x");
+        let original = seat(&handle, "x").await;
+        overrides
+            .set(MOB_ID, "x", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+
+        let staged = handle.clone();
+        let staged_member = member.clone();
+        let respawned = crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
+            Some(&overrides),
+            &handle,
+            &member,
+            async move {
+                // Ahead of the respawn in the actor queue: another surface
+                // retires x and seats a new x.
+                staged.retire(staged_member.clone()).await.expect("retire");
+                seat(&staged, staged_member.as_str()).await;
+                staged.respawn(staged_member, None).await
+            },
+            Result::is_ok,
+        )
+        .await;
+        respawned.expect("the respawn of the new x succeeds");
+        let current = handle
+            .resolve_bridge_session_id(&member)
+            .await
+            .expect("the new x is seated");
+        assert_ne!(current, original);
+        assert!(
+            overrides
+                .get_bound(MOB_ID, "x")
+                .await
+                .is_none_or(|bound| bound.session_id.as_ref() != Some(&current)),
+            "the new x must not hold the old x's opt-in"
+        );
+        assert!(
+            !persisted_sessions(&metadata_path)
+                .await
+                .iter()
+                .any(|(_, session)| session == &current),
+            "no durable opt-in row for the new x"
+        );
+        // Several sweep passes: the new x stays.
+        tokio::time::sleep(Duration::from_millis(3_500)).await;
+        assert!(is_live(&handle, "x").await, "the new x was idle-retired");
+        assert_eq!(
+            handle.resolve_bridge_session_id(&member).await,
+            Some(current)
+        );
+        runtime.shutdown().await;
+    }
+
+    /// A respawn that fails carries nothing, even when the member under the
+    /// id changed while it ran (here another surface retired x and seated a
+    /// new x first).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_respawn_never_carries_the_opt_in() {
+        const MOB_ID: &str = "staged-failed-respawn";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metadata_path = temp.path().join("metadata.sqlite3");
+        let runtime =
+            boot_sweeping_runtime(MOB_ID, &temp.path().join("state"), &metadata_path, 1_000).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let member = AgentIdentity::from("x");
+        seat(&handle, "x").await;
+        overrides
+            .set(MOB_ID, "x", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+
+        let staged = handle.clone();
+        let staged_member = member.clone();
+        let outcome: Result<(), &str> =
+            crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
+                Some(&overrides),
+                &handle,
+                &member,
+                async move {
+                    staged.retire(staged_member.clone()).await.expect("retire");
+                    seat(&staged, staged_member.as_str()).await;
+                    Err("respawn rejected")
+                },
+                Result::is_ok,
+            )
+            .await;
+        assert!(outcome.is_err());
+        let fresh = handle
+            .resolve_bridge_session_id(&member)
+            .await
+            .expect("the new x is seated");
+        assert!(
+            overrides
+                .get_bound(MOB_ID, "x")
+                .await
+                .is_none_or(|bound| bound.session_id.as_ref() != Some(&fresh)),
+            "the new x must not hold the old x's opt-in"
+        );
+        assert!(
+            !persisted_sessions(&metadata_path)
+                .await
+                .iter()
+                .any(|(_, session)| session == &fresh),
+            "no durable opt-in row for the new x"
+        );
+        tokio::time::sleep(Duration::from_millis(3_500)).await;
+        assert!(is_live(&handle, "x").await, "the new x was idle-retired");
+        runtime.shutdown().await;
     }
 }
