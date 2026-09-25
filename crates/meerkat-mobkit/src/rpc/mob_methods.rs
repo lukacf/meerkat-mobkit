@@ -1447,6 +1447,7 @@ pub(super) async fn handle_respawn_member(
                 &handle,
                 &identity,
                 handle.respawn(identity.clone(), None),
+                Result::is_ok,
             )
             .await
             {
