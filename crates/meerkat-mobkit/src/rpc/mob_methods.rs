@@ -1439,7 +1439,17 @@ pub(super) async fn handle_respawn_member(
             // (the respawn itself surfaces real faults).
             let entry_before_respawn = handle.get_member(&identity).await.ok().flatten();
             let mut topology_restore_warning = None;
-            match handle.respawn(identity.clone(), None).await {
+            let idle_retire_overrides = runtime
+                .mob_runtime()
+                .implicit_delegate_retirement_overrides();
+            match crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
+                idle_retire_overrides.as_ref(),
+                &handle,
+                &identity,
+                handle.respawn(identity.clone(), None),
+            )
+            .await
+            {
                 Ok(_receipt) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

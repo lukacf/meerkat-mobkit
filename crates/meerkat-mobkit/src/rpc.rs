@@ -5484,11 +5484,20 @@ async fn respawn_rpc_runtime_member_id(
     runtime: &UnifiedRuntime,
     runtime_member_id: &str,
 ) -> Result<Value, String> {
-    respawn_rpc_runtime_member_id_with_handle(&runtime.mob_handle(), runtime_member_id).await
+    respawn_rpc_runtime_member_id_with_handle(
+        &runtime.mob_handle(),
+        runtime
+            .mob_runtime()
+            .implicit_delegate_retirement_overrides()
+            .as_ref(),
+        runtime_member_id,
+    )
+    .await
 }
 
 async fn respawn_rpc_runtime_member_id_with_handle(
     handle: &meerkat_mob::MobHandle,
+    idle_retire_overrides: Option<&crate::mob_handle_runtime::ImplicitDelegateRetirementOverrides>,
     runtime_member_id: &str,
 ) -> Result<Value, String> {
     let member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
@@ -5496,7 +5505,14 @@ async fn respawn_rpc_runtime_member_id_with_handle(
     // respawn itself surfaces real faults).
     let entry_before_respawn = handle.get_member(&member_id).await.ok().flatten();
     let mut topology_restore_warning = None;
-    match handle.respawn(member_id.clone(), None).await {
+    match crate::mob_handle_runtime::respawn_carrying_idle_retire_opt_in(
+        idle_retire_overrides,
+        handle,
+        &member_id,
+        handle.respawn(member_id.clone(), None),
+    )
+    .await
+    {
         Ok(_receipt) => {}
         Err(err) => {
             if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {

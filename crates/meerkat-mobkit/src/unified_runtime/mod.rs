@@ -445,6 +445,7 @@ impl UnifiedRuntime {
             mob_runtime.handle(),
             mob_events_store.clone(),
             persistent_metadata.clone(),
+            mob_runtime.implicit_delegate_retirement_overrides(),
         );
         // The probe starts at construction while the error hook is installed
         // later (`set_error_hook`), so it holds the late-bound slot and reads
@@ -560,12 +561,16 @@ impl UnifiedRuntime {
         handle: MobHandle,
         store: MobEventsStore,
         persistent_metadata: Arc<dyn PersistentMetadataStore>,
+        idle_retire_overrides: Option<
+            crate::mob_handle_runtime::ImplicitDelegateRetirementOverrides,
+        >,
     ) -> Option<JoinHandle<()>> {
         let runtime_handle = tokio::runtime::Handle::try_current().ok()?;
         Some(runtime_handle.spawn(run_mob_events_subscription(
             handle,
             store,
             persistent_metadata,
+            idle_retire_overrides,
         )))
     }
 
@@ -1075,6 +1080,17 @@ impl UnifiedRuntime {
             .install_actor_loop_health(Arc::clone(&self.actor_loop_health));
         self.mob_runtime
             .install_identity_runtime_authority(Arc::clone(&context.runtime));
+        // A respawned or delivery-repaired identity member keeps its
+        // idle-retire opt-in: the continuity rebind carries it to the new
+        // session.
+        if let Some(overrides) = self.mob_runtime.implicit_delegate_retirement_overrides() {
+            context.runtime.install_session_rotation_observer(Arc::new(
+                crate::mob_handle_runtime::IdleRetireRotationObserver::new(
+                    overrides,
+                    self.mob_runtime.handle().mob_id().to_string(),
+                ),
+            ));
+        }
         *self
             .implicit_delegate_identity_runtime
             .write()
@@ -2374,6 +2390,7 @@ async fn run_mob_events_subscription(
     handle: MobHandle,
     store: MobEventsStore,
     persistent_metadata: Arc<dyn PersistentMetadataStore>,
+    idle_retire_overrides: Option<crate::mob_handle_runtime::ImplicitDelegateRetirementOverrides>,
 ) {
     let mob_id = handle.mob_id().as_str().to_string();
     let resume_cursor = match persistent_metadata.get_subscription_cursor(&mob_id).await {
@@ -2438,6 +2455,12 @@ async fn run_mob_events_subscription(
 
     while let Some(event) = subscription.event_rx.recv().await {
         let envelope = store.project_mob_event(&event).await;
+        // Idle-retire opt-ins follow the members they were set for: a
+        // retirement from ANY surface (hand retire, operator retire, reset,
+        // destroy) releases the opt-in bound to exactly the retired session.
+        if let Some(overrides) = idle_retire_overrides.as_ref() {
+            overrides.observe_mob_event(&mob_id, &event.kind).await;
+        }
         if let Err(err) = persistent_metadata
             .set_subscription_cursor(&mob_id, envelope.cursor)
             .await

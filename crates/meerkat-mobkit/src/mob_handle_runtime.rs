@@ -830,9 +830,18 @@ fn no_op_pre_build_hook() -> PreBuildHook {
     Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DelegateIdleRetireOverride {
+/// A spawned member's idle-retirement policy, chosen by the spawning call
+/// (`delegate`, `mob_spawn_member` or `fork_off` with `idle_retire_secs`, or
+/// an RPC/console fork).
+///
+/// Persisted through [`crate::PersistentMetadataStore`] so the opt-in
+/// survives a gateway restart; the serialized form is stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegateIdleRetireOverride {
+    /// Never idle-retire the member.
     Disabled,
+    /// Idle-retire the member after this many idle seconds.
     Seconds(u64),
     /// Opt the member into idle retirement on the runtime default timeout.
     ///
@@ -842,34 +851,513 @@ pub(crate) enum DelegateIdleRetireOverride {
     RuntimeDefault,
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct ImplicitDelegateRetirementOverrides {
-    inner: Arc<tokio::sync::RwLock<BTreeMap<(String, String), DelegateIdleRetireOverride>>>,
+/// One member's idle-retirement opt-in, bound to the member instance it was
+/// set for.
+///
+/// `session_id` is the member's bridge session when the opt-in was recorded.
+/// A member id can be reused once its member is retired, so the opt-in holds
+/// only while the member seated under that id still runs that session; for
+/// any other session it belongs to a member that is gone. `None` only in
+/// standalone wiring without a seat resolver (unit tests): such an opt-in is
+/// honoured for whatever member holds the id and is never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundIdleRetireOverride {
+    pub(crate) policy: DelegateIdleRetireOverride,
+    pub(crate) session_id: Option<meerkat_core::types::SessionId>,
 }
 
+/// Respawn `member` through `respawn` and carry its idle-retire opt-in to the
+/// session it comes back on.
+///
+/// A respawn keeps the member id but mints a new bridge session; an opt-in
+/// bound to the old session would read as belonging to a gone member and be
+/// dropped. Every MobKit surface that respawns a member goes through here, so
+/// the respawned member keeps the opt-in it had. The rebind is exact: only an
+/// opt-in bound to the session the member had right before the respawn moves.
+pub(crate) async fn respawn_carrying_idle_retire_opt_in<T>(
+    overrides: Option<&ImplicitDelegateRetirementOverrides>,
+    handle: &MobHandle,
+    member: &meerkat_mob::AgentIdentity,
+    respawn: impl std::future::Future<Output = T>,
+) -> T {
+    let Some(overrides) = overrides else {
+        return respawn.await;
+    };
+    let previous = handle.resolve_bridge_session_id(member).await;
+    let outcome = respawn.await;
+    if let Some(previous) = previous
+        && let Some(current) = handle.resolve_bridge_session_id(member).await
+        && current != previous
+    {
+        overrides
+            .rebind(
+                handle.mob_id().as_str(),
+                member.as_str(),
+                &previous,
+                current,
+            )
+            .await;
+    }
+    outcome
+}
+
+/// Carries an identity member's idle-retire opt-in across a continuity
+/// rebind to a new session (respawn or delivery repair).
+pub(crate) struct IdleRetireRotationObserver {
+    overrides: ImplicitDelegateRetirementOverrides,
+    mob_id: String,
+}
+
+impl IdleRetireRotationObserver {
+    pub(crate) fn new(overrides: ImplicitDelegateRetirementOverrides, mob_id: String) -> Self {
+        Self { overrides, mob_id }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::identity_first::runtime::MemberSessionRotationObserver for IdleRetireRotationObserver {
+    async fn member_session_rotated(
+        &self,
+        member: &meerkat_mob::ids::AgentIdentity,
+        previous: &meerkat_core::types::SessionId,
+        current: &meerkat_core::types::SessionId,
+    ) {
+        self.overrides
+            .rebind(&self.mob_id, member.as_str(), previous, current.clone())
+            .await;
+    }
+}
+
+/// Resolves the member instance an opt-in is recorded for: the bridge
+/// session of a member seated in a mob the idle sweep manages (the primary
+/// mob or an implicit delegation mob).
+#[derive(Clone)]
+pub(crate) struct IdleRetireSeatResolver {
+    // Weak: the tools factory holding these overrides is reachable from the
+    // state's session service, so a strong reference would be a cycle.
+    state: std::sync::Weak<meerkat_mob_mcp::MobMcpState>,
+    primary_mob_id: String,
+}
+
+impl IdleRetireSeatResolver {
+    pub(crate) fn new(state: &Arc<meerkat_mob_mcp::MobMcpState>, primary_mob_id: String) -> Self {
+        Self {
+            state: Arc::downgrade(state),
+            primary_mob_id,
+        }
+    }
+
+    /// The seated member's bridge session, or `None` when the member is not
+    /// seated or its mob is not swept.
+    async fn seated_session(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Option<meerkat_core::types::SessionId> {
+        let state = self.state.upgrade()?;
+        let mob = meerkat_mob::MobId::from(mob_id);
+        if mob_id != self.primary_mob_id && !state.is_implicit_mob(&mob).await {
+            return None;
+        }
+        let handle = state.handle_for(&mob).await.ok()?;
+        handle
+            .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from(member_id))
+            .await
+    }
+}
+
+/// Per-member idle-retirement opt-ins, keyed by `(mob_id, member_id)` and
+/// bound to the member instance (see [`BoundIdleRetireOverride`]).
+///
+/// The idle sweep reads this map on every pass. Once a durable store is
+/// attached ([`Self::attach_durable_store`]), every bound opt-in writes
+/// through to it and the attach restores the opt-ins a previous process
+/// recorded, so a restored `fork_off` child is swept again after a restart
+/// instead of holding its session until retired by hand.
+#[derive(Clone, Default)]
+pub(crate) struct ImplicitDelegateRetirementOverrides {
+    inner: Arc<tokio::sync::RwLock<BTreeMap<(String, String), BoundIdleRetireOverride>>>,
+    durable: Arc<std::sync::RwLock<Option<Arc<dyn crate::PersistentMetadataStore>>>>,
+    seats: Arc<std::sync::RwLock<Option<IdleRetireSeatResolver>>>,
+    released: Arc<std::sync::Mutex<std::collections::VecDeque<ReleasedIdleRetireOptIn>>>,
+}
+
+/// An opt-in cleared because the session it was bound to was retired or
+/// replaced, kept so that a respawn of that exact session can carry it to
+/// the replacement ([`ImplicitDelegateRetirementOverrides::rebind`]).
+#[derive(Debug, Clone)]
+struct ReleasedIdleRetireOptIn {
+    mob_id: String,
+    member_id: String,
+    session_id: meerkat_core::types::SessionId,
+    policy: DelegateIdleRetireOverride,
+}
+
+/// Released opt-ins kept for a later respawn rebind. Only the most recent
+/// ones matter: a rebind follows its respawn within one call.
+const RELEASED_IDLE_RETIRE_OPT_INS_CAP: usize = 1024;
+
 impl ImplicitDelegateRetirementOverrides {
+    /// Overrides whose opt-ins bind to the member instance `seats` resolves.
+    pub(crate) fn with_seat_resolver(seats: IdleRetireSeatResolver) -> Self {
+        let overrides = Self::default();
+        *overrides
+            .seats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(seats);
+        overrides
+    }
+
+    /// Record a member's opt-in, bound to its current session.
+    ///
+    /// With a seat resolver installed, a member that is not seated (a
+    /// delegate helper is retired before its call returns) or not in a swept
+    /// mob is not recorded at all: the sweep would never act on it.
     pub(crate) async fn set(
         &self,
         mob_id: impl Into<String>,
         member_id: impl Into<String>,
         override_policy: DelegateIdleRetireOverride,
     ) {
+        let (mob_id, member_id) = (mob_id.into(), member_id.into());
+        let seats = self
+            .seats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let session_id = match seats {
+            Some(seats) => match seats.seated_session(&mob_id, &member_id).await {
+                Some(session_id) => Some(session_id),
+                None => {
+                    tracing::debug!(
+                        mob_id,
+                        member_id,
+                        "idle-retire opt-in not recorded: the member is not seated in a swept mob"
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.inner.write().await.insert(
+            (mob_id.clone(), member_id.clone()),
+            BoundIdleRetireOverride {
+                policy: override_policy,
+                session_id: session_id.clone(),
+            },
+        );
+        if let Some(session_id) = session_id
+            && let Some(store) = self.durable_store()
+        {
+            let record = crate::MemberIdleRetireOverrideRecord {
+                mob_id,
+                member_id,
+                session_id,
+                policy: override_policy,
+            };
+            if let Err(error) = store.set_member_idle_retire_override(&record).await {
+                tracing::warn!(
+                    mob_id = %record.mob_id,
+                    member_id = %record.member_id,
+                    error = %error,
+                    "idle-retire opt-in was not persisted; it lasts until the next restart"
+                );
+            }
+        }
+    }
+
+    /// Forget exactly this opt-in, in memory and durably. An opt-in recorded
+    /// for the member id since (a newer member instance) is kept. A bound
+    /// opt-in is remembered as released, so a respawn of its session can
+    /// still carry it over.
+    pub(crate) async fn clear(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        bound: &BoundIdleRetireOverride,
+    ) {
+        let key = (mob_id.to_string(), member_id.to_string());
+        let removed = {
+            let mut inner = self.inner.write().await;
+            if inner.get(&key) == Some(bound) {
+                inner.remove(&key);
+                true
+            } else {
+                false
+            }
+        };
+        if removed && let Some(session_id) = bound.session_id.clone() {
+            let mut released = self
+                .released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            released.push_back(ReleasedIdleRetireOptIn {
+                mob_id: mob_id.to_string(),
+                member_id: member_id.to_string(),
+                session_id,
+                policy: bound.policy,
+            });
+            while released.len() > RELEASED_IDLE_RETIRE_OPT_INS_CAP {
+                released.pop_front();
+            }
+        }
+        if let Some(session_id) = bound.session_id.clone()
+            && let Some(store) = self.durable_store()
+        {
+            let record = crate::MemberIdleRetireOverrideRecord {
+                mob_id: mob_id.to_string(),
+                member_id: member_id.to_string(),
+                session_id,
+                policy: bound.policy,
+            };
+            if let Err(error) = store.clear_member_idle_retire_override(&record).await {
+                tracing::warn!(
+                    mob_id,
+                    member_id,
+                    error = %error,
+                    "a stale idle-retire opt-in could not be cleared durably"
+                );
+            }
+        }
+    }
+
+    /// The member instance bound to `session_id` is being retired: forget its
+    /// opt-in. An opt-in bound to any other session is untouched.
+    pub(crate) async fn release_session(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        session_id: &meerkat_core::types::SessionId,
+    ) {
+        if let Some(bound) = self.get_bound(mob_id, member_id).await
+            && bound.session_id.as_ref() == Some(session_id)
+        {
+            self.clear(mob_id, member_id, &bound).await;
+        }
+    }
+
+    /// The member was reset to a new instance: forget whatever opt-in it
+    /// held.
+    pub(crate) async fn release_member(&self, mob_id: &str, member_id: &str) {
+        if let Some(bound) = self.get_bound(mob_id, member_id).await {
+            self.clear(mob_id, member_id, &bound).await;
+        }
+    }
+
+    /// The mob was destroyed or reset: forget every opt-in it held.
+    pub(crate) async fn release_mob(&self, mob_id: &str) {
+        let held: Vec<(String, BoundIdleRetireOverride)> = self
+            .inner
+            .read()
+            .await
+            .iter()
+            .filter(|((mob, _), _)| mob == mob_id)
+            .map(|((_, member), bound)| (member.clone(), bound.clone()))
+            .collect();
+        for (member_id, bound) in held {
+            self.clear(mob_id, &member_id, &bound).await;
+        }
+    }
+
+    /// Carry the opt-in bound to `from` over to `to`: the same member was
+    /// respawned (or its session rotated) onto a new session. Applies to a
+    /// live opt-in bound to `from` or to one released with `from` since (the
+    /// retirement of the old session can be observed before the rebind).
+    /// Returns whether an opt-in was carried.
+    pub(crate) async fn rebind(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        from: &meerkat_core::types::SessionId,
+        to: meerkat_core::types::SessionId,
+    ) -> bool {
+        let key = (mob_id.to_string(), member_id.to_string());
+        let policy = {
+            let mut inner = self.inner.write().await;
+            let live = inner
+                .get(&key)
+                .filter(|bound| bound.session_id.as_ref() == Some(from))
+                .map(|bound| bound.policy);
+            let policy = live.or_else(|| {
+                let mut released = self
+                    .released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                released
+                    .iter()
+                    .rposition(|opt_in| {
+                        opt_in.mob_id == mob_id
+                            && opt_in.member_id == member_id
+                            && &opt_in.session_id == from
+                    })
+                    .and_then(|position| released.remove(position))
+                    .map(|opt_in| opt_in.policy)
+            });
+            let Some(policy) = policy else {
+                return false;
+            };
+            inner.insert(
+                key,
+                BoundIdleRetireOverride {
+                    policy,
+                    session_id: Some(to.clone()),
+                },
+            );
+            policy
+        };
+        if let Some(store) = self.durable_store() {
+            let record = crate::MemberIdleRetireOverrideRecord {
+                mob_id: mob_id.to_string(),
+                member_id: member_id.to_string(),
+                session_id: to,
+                policy,
+            };
+            if let Err(error) = store.set_member_idle_retire_override(&record).await {
+                tracing::warn!(
+                    mob_id,
+                    member_id,
+                    error = %error,
+                    "respawned member's idle-retire opt-in was not persisted; it lasts until \
+                     the next restart"
+                );
+            }
+        }
+        true
+    }
+
+    /// Apply a mob event to the recorded opt-ins: every retirement of a
+    /// member session (whatever surface retired it) releases the opt-in
+    /// bound to exactly that session, a member reset releases the member's
+    /// opt-in, and a mob destroy or reset releases the mob's.
+    pub(crate) async fn observe_mob_event(&self, mob_id: &str, kind: &meerkat_mob::MobEventKind) {
+        match kind {
+            meerkat_mob::MobEventKind::MemberRetirementStarted {
+                agent_identity,
+                session_id: Some(session_id),
+                ..
+            } => {
+                self.release_session(mob_id, agent_identity.as_str(), session_id)
+                    .await;
+            }
+            meerkat_mob::MobEventKind::MemberReset { agent_identity, .. } => {
+                self.release_member(mob_id, agent_identity.as_str()).await;
+            }
+            meerkat_mob::MobEventKind::MobDestroying | meerkat_mob::MobEventKind::MobReset => {
+                self.release_mob(mob_id).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Attach the durable store: restore the opt-ins it holds (an opt-in set
+    /// earlier in this process wins over a persisted one), then persist every
+    /// bound opt-in set before the attach, so none is lost. A store that
+    /// cannot be read restores nothing but still receives those opt-ins.
+    /// Returns how many opt-ins were restored.
+    pub(crate) async fn attach_durable_store(
+        &self,
+        store: Arc<dyn crate::PersistentMetadataStore>,
+    ) -> usize {
+        // Install first: a `set` racing the attach then writes through
+        // itself, and the flush below rewrites the same value.
+        *self
+            .durable
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&store));
+        let persisted = match store.load_member_idle_retire_overrides().await {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "idle-retire opt-ins could not be restored; members restored from a \
+                     previous process are not idle-retired until retired by hand"
+                );
+                Vec::new()
+            }
+        };
+        let (restored, set_before_attach) = {
+            let mut inner = self.inner.write().await;
+            let set_before_attach = inner.clone();
+            let mut restored = 0;
+            for record in persisted {
+                if let std::collections::btree_map::Entry::Vacant(slot) =
+                    inner.entry((record.mob_id, record.member_id))
+                {
+                    slot.insert(BoundIdleRetireOverride {
+                        policy: record.policy,
+                        session_id: Some(record.session_id),
+                    });
+                    restored += 1;
+                }
+            }
+            (restored, set_before_attach)
+        };
+        for ((mob_id, member_id), bound) in set_before_attach {
+            let Some(session_id) = bound.session_id else {
+                continue;
+            };
+            let record = crate::MemberIdleRetireOverrideRecord {
+                mob_id,
+                member_id,
+                session_id,
+                policy: bound.policy,
+            };
+            if let Err(error) = store.set_member_idle_retire_override(&record).await {
+                tracing::warn!(
+                    mob_id = %record.mob_id,
+                    member_id = %record.member_id,
+                    error = %error,
+                    "idle-retire opt-in was not persisted; it lasts until the next restart"
+                );
+            }
+        }
+        restored
+    }
+
+    fn durable_store(&self) -> Option<Arc<dyn crate::PersistentMetadataStore>> {
+        self.durable
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Test seam: place an opt-in in memory as `set` would, bypassing the
+    /// seat resolver.
+    #[cfg(test)]
+    pub(crate) async fn insert_for_test(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        bound: BoundIdleRetireOverride,
+    ) {
         self.inner
             .write()
             .await
-            .insert((mob_id.into(), member_id.into()), override_policy);
+            .insert((mob_id.to_string(), member_id.to_string()), bound);
     }
 
+    /// The recorded opt-in for a member id, with its binding.
+    pub(crate) async fn get_bound(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Option<BoundIdleRetireOverride> {
+        self.inner
+            .read()
+            .await
+            .get(&(mob_id.to_string(), member_id.to_string()))
+            .cloned()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn get(
         &self,
         mob_id: &str,
         member_id: &str,
     ) -> Option<DelegateIdleRetireOverride> {
-        self.inner
-            .read()
+        self.get_bound(mob_id, member_id)
             .await
-            .get(&(mob_id.to_string(), member_id.to_string()))
-            .copied()
+            .map(|bound| bound.policy)
     }
 }
 
@@ -1669,7 +2157,11 @@ fn install_agent_mob_tools(
                 .clone()
         })));
     let state = Arc::new(state);
-    let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
+    let implicit_delegate_retirement_overrides =
+        ImplicitDelegateRetirementOverrides::with_seat_resolver(IdleRetireSeatResolver::new(
+            &state,
+            definition.id.to_string(),
+        ));
     let console_spawn_sink = new_console_spawn_sink_slot();
     let identity_runtime = Arc::new(std::sync::RwLock::new(None));
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
