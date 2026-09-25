@@ -263,20 +263,32 @@ impl std::error::Error for MetadataStoreError {}
 /// after its member is retired; the sweep honours the record only while the
 /// member seated under the id still runs `session_id`, and drops it
 /// otherwise.
+///
+/// `recorded_at` orders the opt-in against mob events (a reset or destroy
+/// releases only opt-ins recorded before it). `carrying` is set while a
+/// respawn of the member is moving the opt-in to the respawned session; a
+/// restored runtime finishes a carry a crash left open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberIdleRetireOverrideRecord {
     pub mob_id: String,
     pub member_id: String,
     pub session_id: meerkat_core::types::SessionId,
     pub policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+    pub carrying: bool,
 }
 
 /// Stored value of a member idle-retirement row (the key carries the member
-/// id, the row's `mob_id` column the mob).
+/// id, the row's `mob_id` column the mob). Rows written before `recorded_at`
+/// and `carrying` existed decode as recorded at the epoch, not carrying.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredMemberIdleRetireOverride {
     session_id: meerkat_core::types::SessionId,
     policy: crate::mob_handle_runtime::DelegateIdleRetireOverride,
+    #[serde(default)]
+    recorded_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    carrying: bool,
 }
 
 impl StoredMemberIdleRetireOverride {
@@ -284,6 +296,8 @@ impl StoredMemberIdleRetireOverride {
         serde_json::to_string(&Self {
             session_id: record.session_id.clone(),
             policy: record.policy,
+            recorded_at: record.recorded_at,
+            carrying: record.carrying,
         })
         .map_err(|err| MetadataStoreError::Io(format!("encode idle-retire opt-in: {err}")))
     }
@@ -634,6 +648,8 @@ impl PersistentMetadataStore for SqliteMetadataStore {
                     member_id: member_id.to_string(),
                     session_id: stored.session_id,
                     policy: stored.policy,
+                    recorded_at: stored.recorded_at,
+                    carrying: stored.carrying,
                 }),
                 Err(error) => tracing::warn!(
                     mob_id,
@@ -973,6 +989,9 @@ mod tests {
             member_id: member_id.to_string(),
             session_id: session_id.clone(),
             policy,
+            recorded_at: chrono::DateTime::from_timestamp(1_790_000_000, 0)
+                .expect("fixed timestamp"),
+            carrying: false,
         }
     }
 

@@ -58,7 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without its opt-in. Opt-ins for members that are not seated when the call
   returns (a `delegate` helper is already retired) or that sit in a mob the
   sweep does not manage are not recorded, and one undecodable row is skipped
-  with a warning instead of aborting the restore.
+  with a warning instead of aborting the restore. Hardening: the agent-facing
+  `mob_respawn` tool carries the opt-in like the other respawn surfaces; a
+  respawn durably marks the opt-in as carrying before it starts, so the old
+  session's retirement neither drops it nor deletes its row and one write
+  moves it to the new session (a dropped request, the respawned member's
+  spawn event, the next sweep or, after a crash, the restored runtime finish
+  an open carry); member reset, mob reset and mob destroy release only
+  opt-ins recorded before the event; opt-ins of implicit delegation mobs are
+  released when the sweep no longer finds their member or mob; and a member
+  retired and then resumed onto its exact session gets its opt-in back (in
+  the same process).
   `PersistentMetadataStore` gains `load_member_idle_retire_overrides`,
   `set_member_idle_retire_override` and `clear_member_idle_retire_override`
   with default bodies that keep the old in-process behavior for external

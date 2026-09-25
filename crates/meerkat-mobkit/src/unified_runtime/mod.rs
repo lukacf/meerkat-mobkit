@@ -2451,7 +2451,7 @@ async fn run_mob_events_subscription(
         // retirement from ANY surface (hand retire, operator retire, reset,
         // destroy) releases the opt-in bound to exactly the retired session.
         if let Some(overrides) = idle_retire_overrides.as_ref() {
-            overrides.observe_mob_event(&mob_id, &event.kind).await;
+            overrides.observe_mob_event(&mob_id, &event).await;
         }
         if let Err(err) = persistent_metadata
             .set_subscription_cursor(&mob_id, envelope.cursor)

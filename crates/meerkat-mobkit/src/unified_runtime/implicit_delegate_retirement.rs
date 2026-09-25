@@ -63,10 +63,18 @@ async fn run_implicit_delegate_retirement(
     loop {
         tokio::time::sleep(sweep_interval).await;
         let mut seen = BTreeSet::new();
-        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
-            .await
-            .unwrap_or_default()
-        {
+        // Opt-ins for members of implicit delegation mobs, as held before
+        // this pass looked at any roster. Their mobs are not on the primary
+        // event stream, so a hand retire or a destroy there is settled here:
+        // an opt-in recorded before the pass whose member the pass did not
+        // find is released.
+        let implicit_opt_ins_at_start = match per_delegate_overrides.as_ref() {
+            Some(overrides) => overrides.bindings_outside(&primary_mob_id).await,
+            None => Vec::new(),
+        };
+        let mob_handles = Box::pin(state.mob_handles_snapshot()).await.ok();
+        let rosters_observed = mob_handles.is_some();
+        for (mob_id, handle) in mob_handles.unwrap_or_default() {
             let is_primary_mob = mob_id.as_str() == primary_mob_id;
             let is_implicit_mob = Box::pin(state.is_implicit_mob(&mob_id)).await;
             if !is_primary_mob && !is_implicit_mob {
@@ -80,39 +88,20 @@ async fn run_implicit_delegate_retirement(
                     idle_since.remove(&key);
                     continue;
                 }
-                let bound_override = match per_delegate_overrides.as_ref() {
-                    Some(overrides) => overrides.get_bound(mob_id.as_str(), &identity).await,
-                    None => None,
-                };
                 // An opt-in holds only for the member instance it was set
-                // for. A member id can be reused after its member is retired
-                // (outside this sweep, or before a restart); an opt-in bound
-                // to another session belongs to that gone member and is
-                // dropped instead of applying to this one.
-                let mut member_session = None;
-                let per_delegate_override = match bound_override.as_ref() {
+                // for; the overrides settle a stale binding (another
+                // member's), an open respawn carry, or a resume onto the
+                // exact released session against the member's session now.
+                let member_session = handle
+                    .resolve_bridge_session_id(&member.agent_identity)
+                    .await;
+                let per_delegate_override = match per_delegate_overrides.as_ref() {
+                    Some(overrides) => {
+                        overrides
+                            .reconcile_seated(mob_id.as_str(), &identity, member_session.as_ref())
+                            .await
+                    }
                     None => None,
-                    Some(bound) => match bound.session_id.as_ref() {
-                        None => Some(bound.policy),
-                        Some(bound_session) => {
-                            member_session = handle
-                                .resolve_bridge_session_id(&member.agent_identity)
-                                .await;
-                            match member_session.as_ref() {
-                                Some(current) if current == bound_session => Some(bound.policy),
-                                Some(_) => {
-                                    if let Some(overrides) = per_delegate_overrides.as_ref() {
-                                        overrides.clear(mob_id.as_str(), &identity, bound).await;
-                                    }
-                                    None
-                                }
-                                // Not resolvable right now (for instance
-                                // before a resumed mob activates): keep the
-                                // opt-in and decide on a later pass.
-                                None => None,
-                            }
-                        }
-                    },
                 };
                 if !idle_retirement_candidate(
                     is_primary_mob,
@@ -131,15 +120,7 @@ async fn run_implicit_delegate_retirement(
                     idle_since.remove(&key);
                     continue;
                 };
-                let session_id = match member_session {
-                    Some(session_id) => Some(session_id),
-                    None => {
-                        handle
-                            .resolve_bridge_session_id(&member.agent_identity)
-                            .await
-                    }
-                };
-                let Some(session_id) = session_id else {
+                let Some(session_id) = member_session else {
                     idle_since.remove(&key);
                     continue;
                 };
@@ -215,10 +196,12 @@ async fn run_implicit_delegate_retirement(
                 };
                 match retire_result {
                     Ok(()) => {
-                        if let (Some(overrides), Some(bound)) =
-                            (per_delegate_overrides.as_ref(), bound_override.as_ref())
-                        {
-                            overrides.clear(mob_id.as_str(), &identity, bound).await;
+                        // Exact on the session just retired; covers implicit
+                        // mobs, whose events this runtime does not observe.
+                        if let Some(overrides) = per_delegate_overrides.as_ref() {
+                            overrides
+                                .release_session(mob_id.as_str(), &identity, &session_id)
+                                .await;
                         }
                         tracing::info!(
                             mob_id = %mob_id,
@@ -240,6 +223,13 @@ async fn run_implicit_delegate_retirement(
             }
         }
         idle_since.retain(|key, _| seen.contains(key));
+        if rosters_observed && let Some(overrides) = per_delegate_overrides.as_ref() {
+            for ((mob_id, member_id), bound) in implicit_opt_ins_at_start {
+                if !seen.contains(&(mob_id.clone(), member_id.clone())) {
+                    overrides.clear(&mob_id, &member_id, &bound).await;
+                }
+            }
+        }
     }
 }
 
@@ -653,6 +643,35 @@ comms = true
         crate::mob_handle_runtime::BoundIdleRetireOverride {
             policy,
             session_id: session_id.cloned(),
+            recorded_at: chrono::Utc::now(),
+            carrying: false,
+        }
+    }
+
+    /// The policy and session an opt-in holds, for comparisons that do not
+    /// care when it was recorded.
+    fn view(
+        bound: Option<crate::mob_handle_runtime::BoundIdleRetireOverride>,
+    ) -> Option<(
+        DelegateIdleRetireOverride,
+        Option<meerkat_core::types::SessionId>,
+    )> {
+        bound.map(|bound| (bound.policy, bound.session_id))
+    }
+
+    fn record(
+        mob_id: &str,
+        member_id: &str,
+        session_id: meerkat_core::types::SessionId,
+        policy: DelegateIdleRetireOverride,
+    ) -> crate::MemberIdleRetireOverrideRecord {
+        crate::MemberIdleRetireOverrideRecord {
+            mob_id: mob_id.to_string(),
+            member_id: member_id.to_string(),
+            session_id,
+            policy,
+            recorded_at: chrono::Utc::now(),
+            carrying: false,
         }
     }
 
@@ -661,7 +680,7 @@ comms = true
     /// standalone wiring produces, are never persisted).
     #[tokio::test]
     async fn attach_restores_bound_opt_ins_and_persists_earlier_ones() {
-        use crate::{MemberIdleRetireOverrideRecord, PersistentMetadataStore, SqliteMetadataStore};
+        use crate::{PersistentMetadataStore, SqliteMetadataStore};
         use meerkat_core::types::SessionId;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -669,12 +688,12 @@ comms = true
         let (previous, early) = (SessionId::new(), SessionId::new());
         SqliteMetadataStore::open(&path)
             .expect("open metadata store")
-            .set_member_idle_retire_override(&MemberIdleRetireOverrideRecord {
-                mob_id: "mob-a".to_string(),
-                member_id: "fork-child".to_string(),
-                session_id: previous.clone(),
-                policy: DelegateIdleRetireOverride::Seconds(300),
-            })
+            .set_member_idle_retire_override(&record(
+                "mob-a",
+                "fork-child",
+                previous.clone(),
+                DelegateIdleRetireOverride::Seconds(300),
+            ))
             .await
             .expect("previous process row");
 
@@ -700,10 +719,10 @@ comms = true
             .await;
         assert_eq!(restored, 1);
         assert_eq!(
-            overrides.get_bound("mob-a", "fork-child").await,
-            Some(bound(
+            view(overrides.get_bound("mob-a", "fork-child").await),
+            Some((
                 DelegateIdleRetireOverride::Seconds(300),
-                Some(&previous)
+                Some(previous.clone())
             ))
         );
 
@@ -779,14 +798,25 @@ comms = true
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let written: Vec<_> = written
+            .into_iter()
+            .map(|record| {
+                (
+                    record.mob_id,
+                    record.member_id,
+                    record.session_id,
+                    record.policy,
+                )
+            })
+            .collect();
         assert_eq!(
             written,
-            vec![MemberIdleRetireOverrideRecord {
-                mob_id: "mob-a".to_string(),
-                member_id: "early-fork".to_string(),
-                session_id: early,
-                policy: DelegateIdleRetireOverride::Seconds(60),
-            }]
+            vec![(
+                "mob-a".to_string(),
+                "early-fork".to_string(),
+                early,
+                DelegateIdleRetireOverride::Seconds(60),
+            )]
         );
     }
 
@@ -920,10 +950,10 @@ comms = true
             .set(MOB_ID, "helper", DelegateIdleRetireOverride::Seconds(0))
             .await;
         assert_eq!(
-            overrides.get_bound(MOB_ID, "helper").await,
-            Some(bound(
+            view(overrides.get_bound(MOB_ID, "helper").await),
+            Some((
                 DelegateIdleRetireOverride::Seconds(0),
-                Some(&first_session)
+                Some(first_session.clone())
             )),
             "the opt-in binds to the member's session"
         );
@@ -946,15 +976,15 @@ comms = true
         drop(first);
         // What a crash between the retire and the release leaves behind.
         {
-            use crate::{MemberIdleRetireOverrideRecord, PersistentMetadataStore};
+            use crate::PersistentMetadataStore;
             crate::SqliteMetadataStore::open(&metadata_path)
                 .expect("reopen metadata store")
-                .set_member_idle_retire_override(&MemberIdleRetireOverrideRecord {
-                    mob_id: MOB_ID.to_string(),
-                    member_id: "helper".to_string(),
-                    session_id: first_session.clone(),
-                    policy: DelegateIdleRetireOverride::Seconds(0),
-                })
+                .set_member_idle_retire_override(&record(
+                    MOB_ID,
+                    "helper",
+                    first_session.clone(),
+                    DelegateIdleRetireOverride::Seconds(0),
+                ))
                 .await
                 .expect("crash leftover row");
         }
@@ -997,7 +1027,7 @@ comms = true
     /// for a member that is not seated or not in a swept mob.
     #[tokio::test]
     async fn sweep_retires_a_restored_member_whose_session_still_matches() {
-        use crate::{MemberIdleRetireOverrideRecord, PersistentMetadataStore, SqliteMetadataStore};
+        use crate::{PersistentMetadataStore, SqliteMetadataStore};
 
         const MOB_ID: &str = "restored-member";
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1033,12 +1063,12 @@ comms = true
         seat(&handle, "bystander").await;
         SqliteMetadataStore::open(&metadata_path)
             .expect("previous process store")
-            .set_member_idle_retire_override(&MemberIdleRetireOverrideRecord {
-                mob_id: MOB_ID.to_string(),
-                member_id: "fork-child".to_string(),
-                session_id: fork_session,
-                policy: DelegateIdleRetireOverride::Seconds(0),
-            })
+            .set_member_idle_retire_override(&record(
+                MOB_ID,
+                "fork-child",
+                fork_session,
+                DelegateIdleRetireOverride::Seconds(0),
+            ))
             .await
             .expect("row for the seated member");
         let restored = overrides
@@ -1086,8 +1116,8 @@ comms = true
         assert!(overrides.rebind("mob-a", "fork", &old, new.clone()).await);
         overrides.release_session("mob-a", "fork", &old).await;
         assert_eq!(
-            overrides.get_bound("mob-a", "fork").await,
-            Some(bound(policy, Some(&new)))
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(new.clone())))
         );
 
         // The old session's retirement first, then the rebind.
@@ -1099,8 +1129,8 @@ comms = true
         assert_eq!(overrides.get_bound("mob-a", "fork").await, None);
         assert!(overrides.rebind("mob-a", "fork", &old, new.clone()).await);
         assert_eq!(
-            overrides.get_bound("mob-a", "fork").await,
-            Some(bound(policy, Some(&new)))
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(new.clone())))
         );
 
         // A rebind from a session the opt-in never belonged to (a reused id
@@ -1111,8 +1141,8 @@ comms = true
             .await;
         assert!(!overrides.rebind("mob-a", "fork", &unrelated, new).await);
         assert_eq!(
-            overrides.get_bound("mob-a", "fork").await,
-            Some(bound(policy, Some(&old)))
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(old.clone())))
         );
     }
 
@@ -1176,8 +1206,8 @@ comms = true
             .release_session(MOB_ID, "fork-child", &before)
             .await;
         assert_eq!(
-            overrides.get_bound(MOB_ID, "fork-child").await,
-            Some(bound(policy, Some(&after)))
+            view(overrides.get_bound(MOB_ID, "fork-child").await),
+            Some((policy, Some(after.clone())))
         );
         tokio::time::timeout(Duration::from_secs(5), async {
             while persisted_sessions(&metadata_path).await
@@ -1371,8 +1401,8 @@ comms = true
         let policy = DelegateIdleRetireOverride::Seconds(3600);
         overrides.set(MOB_ID, roster_member.as_str(), policy).await;
         assert_eq!(
-            overrides.get_bound(MOB_ID, roster_member.as_str()).await,
-            Some(bound(policy, Some(&before)))
+            view(overrides.get_bound(MOB_ID, roster_member.as_str()).await),
+            Some((policy, Some(before.clone())))
         );
 
         // A lower-level respawn, then the continuity rebind the control
@@ -1392,9 +1422,447 @@ comms = true
             .expect("continuity rebind");
 
         assert_eq!(
-            overrides.get_bound(MOB_ID, roster_member.as_str()).await,
-            Some(bound(policy, Some(&after)))
+            view(overrides.get_bound(MOB_ID, roster_member.as_str()).await),
+            Some((policy, Some(after.clone())))
         );
+        runtime.shutdown().await;
+    }
+
+    async fn persisted_records(
+        metadata_path: &std::path::Path,
+    ) -> Vec<crate::MemberIdleRetireOverrideRecord> {
+        use crate::{PersistentMetadataStore, SqliteMetadataStore};
+
+        SqliteMetadataStore::open(metadata_path)
+            .expect("probe metadata store")
+            .load_member_idle_retire_overrides()
+            .await
+            .expect("load opt-ins")
+    }
+
+    fn mob_event(
+        kind: meerkat_mob::MobEventKind,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> meerkat_mob::MobEvent {
+        meerkat_mob::MobEvent {
+            cursor: 1,
+            timestamp: at,
+            mob_id: meerkat_mob::MobId::from("mob-a"),
+            kind,
+        }
+    }
+
+    /// Review of #442 (hardening): a carry never leaves the durable row
+    /// missing. Before the respawn the row is marked carrying; the old
+    /// session's retirement arriving mid-respawn neither drops the opt-in
+    /// nor deletes the row; finishing moves the row to the new session in
+    /// one write.
+    #[tokio::test]
+    async fn carry_keeps_the_durable_row_through_the_old_sessions_retirement() {
+        use crate::SqliteMetadataStore;
+        use meerkat_core::types::SessionId;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+        let (old, new) = (SessionId::new(), SessionId::new());
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        overrides
+            .insert_for_test("mob-a", "fork", bound(policy, Some(&old)))
+            .await;
+        overrides
+            .attach_durable_store(Arc::new(
+                SqliteMetadataStore::open(&path).expect("metadata store"),
+            ))
+            .await;
+
+        assert!(overrides.begin_carry("mob-a", "fork", &old).await);
+        let marked = persisted_records(&path).await;
+        assert_eq!(marked.len(), 1);
+        assert!(marked[0].carrying && marked[0].session_id == old);
+
+        // The respawn retires the old session first.
+        overrides.release_session("mob-a", "fork", &old).await;
+        assert_eq!(
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(old.clone())))
+        );
+        assert_eq!(
+            persisted_records(&path).await.len(),
+            1,
+            "the row is never deleted"
+        );
+
+        overrides
+            .finish_carry("mob-a", "fork", &old, Some(new.clone()))
+            .await;
+        assert_eq!(
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(new.clone())))
+        );
+        let carried = persisted_records(&path).await;
+        assert_eq!(carried.len(), 1);
+        assert!(!carried[0].carrying && carried[0].session_id == new);
+
+        // A finish for an already finished carry is a no-op; a failed respawn
+        // (same session) keeps the opt-in; a respawn that seated nobody
+        // releases it.
+        overrides
+            .finish_carry("mob-a", "fork", &old, Some(SessionId::new()))
+            .await;
+        assert_eq!(
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(new.clone())))
+        );
+        assert!(overrides.begin_carry("mob-a", "fork", &new).await);
+        overrides
+            .finish_carry("mob-a", "fork", &new, Some(new.clone()))
+            .await;
+        let kept = overrides.get_bound("mob-a", "fork").await.expect("kept");
+        assert!(!kept.carrying && kept.session_id.as_ref() == Some(&new));
+        assert!(overrides.begin_carry("mob-a", "fork", &new).await);
+        overrides.finish_carry("mob-a", "fork", &new, None).await;
+        assert_eq!(overrides.get_bound("mob-a", "fork").await, None);
+        assert!(persisted_records(&path).await.is_empty());
+    }
+
+    /// A crash in the middle of a carry leaves the durable carrying mark; the
+    /// restored runtime finishes the carry onto the session the respawned
+    /// member runs, instead of reading the opt-in as a gone member's.
+    #[tokio::test]
+    async fn a_carry_left_open_by_a_crash_finishes_after_restore() {
+        use crate::SqliteMetadataStore;
+        use meerkat_core::types::SessionId;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+        let (old, new) = (SessionId::new(), SessionId::new());
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        {
+            let crashed = ImplicitDelegateRetirementOverrides::default();
+            crashed
+                .insert_for_test("mob-a", "fork", bound(policy, Some(&old)))
+                .await;
+            crashed
+                .attach_durable_store(Arc::new(
+                    SqliteMetadataStore::open(&path).expect("metadata store"),
+                ))
+                .await;
+            assert!(crashed.begin_carry("mob-a", "fork", &old).await);
+        }
+
+        let restored = ImplicitDelegateRetirementOverrides::default();
+        restored
+            .attach_durable_store(Arc::new(
+                SqliteMetadataStore::open(&path).expect("reopen metadata store"),
+            ))
+            .await;
+        assert!(
+            restored
+                .get_bound("mob-a", "fork")
+                .await
+                .is_some_and(|bound| bound.carrying)
+        );
+        assert_eq!(
+            restored.reconcile_seated("mob-a", "fork", Some(&new)).await,
+            Some(policy)
+        );
+        let finished = persisted_records(&path).await;
+        assert_eq!(finished.len(), 1);
+        assert!(!finished[0].carrying && finished[0].session_id == new);
+    }
+
+    /// Reset and destroy events release exactly the opt-ins recorded before
+    /// them: an opt-in recorded after the event (the event stream lagging a
+    /// quick re-seat) is kept.
+    #[tokio::test]
+    async fn reset_and_destroy_release_only_opt_ins_recorded_before_them() {
+        use meerkat_core::types::SessionId;
+
+        let before = chrono::Utc::now() - chrono::Duration::seconds(60);
+        let after = chrono::Utc::now() + chrono::Duration::seconds(60);
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let at = |at: chrono::DateTime<chrono::Utc>| {
+            crate::mob_handle_runtime::BoundIdleRetireOverride {
+                recorded_at: at,
+                ..bound(policy, Some(&SessionId::new()))
+            }
+        };
+        overrides
+            .insert_for_test("mob-a", "old-1", at(before))
+            .await;
+        overrides.insert_for_test("mob-a", "new-1", at(after)).await;
+        overrides
+            .insert_for_test("mob-b", "old-2", at(before))
+            .await;
+        let now = chrono::Utc::now();
+
+        overrides
+            .observe_mob_event(
+                "mob-a",
+                &mob_event(meerkat_mob::MobEventKind::MobDestroying, now),
+            )
+            .await;
+        assert_eq!(overrides.get("mob-a", "old-1").await, None);
+        assert_eq!(
+            overrides.get("mob-a", "new-1").await,
+            Some(policy),
+            "an opt-in recorded after the destroy belongs to a later member"
+        );
+        assert_eq!(
+            overrides.get("mob-b", "old-2").await,
+            Some(policy),
+            "another mob is untouched"
+        );
+
+        overrides
+            .insert_for_test("mob-a", "reset-me", at(before))
+            .await;
+        overrides
+            .insert_for_test("mob-a", "reseated", at(after))
+            .await;
+        let reset = |member: &str| {
+            mob_event(
+                meerkat_mob::MobEventKind::MemberReset {
+                    agent_identity: AgentIdentity::from(member),
+                    previous_generation: meerkat_mob::ids::Generation::new(0),
+                    new_generation: meerkat_mob::ids::Generation::new(1),
+                    fence_token: meerkat_mob::ids::FenceToken::new(1),
+                    agent_runtime_id: meerkat_mob::ids::AgentRuntimeId::new(
+                        AgentIdentity::from(member),
+                        meerkat_mob::ids::Generation::new(1),
+                    ),
+                },
+                now,
+            )
+        };
+        overrides
+            .observe_mob_event("mob-a", &reset("reset-me"))
+            .await;
+        overrides
+            .observe_mob_event("mob-a", &reset("reseated"))
+            .await;
+        assert_eq!(overrides.get("mob-a", "reset-me").await, None);
+        assert_eq!(overrides.get("mob-a", "reseated").await, Some(policy));
+    }
+
+    /// A member retired and then resumed onto the exact same session (an
+    /// operator re-attach, a repair's retire-then-resume) gets its opt-in
+    /// back; a different session does not.
+    #[tokio::test]
+    async fn resuming_onto_the_same_session_restores_the_released_opt_in() {
+        use meerkat_core::types::SessionId;
+
+        let (session, other) = (SessionId::new(), SessionId::new());
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        overrides
+            .insert_for_test("mob-a", "fork", bound(policy, Some(&session)))
+            .await;
+        overrides.release_session("mob-a", "fork", &session).await;
+        assert_eq!(overrides.get("mob-a", "fork").await, None);
+
+        assert_eq!(
+            overrides
+                .reconcile_seated("mob-a", "fork", Some(&other))
+                .await,
+            None,
+            "a member on another session is another instance"
+        );
+        assert_eq!(
+            overrides
+                .reconcile_seated("mob-a", "fork", Some(&session))
+                .await,
+            Some(policy)
+        );
+        assert_eq!(
+            view(overrides.get_bound("mob-a", "fork").await),
+            Some((policy, Some(session)))
+        );
+    }
+
+    /// Review of #442 (hardening): opt-ins recorded for members of implicit
+    /// delegation mobs are released when their member is retired by hand or
+    /// their mob is destroyed. Those mobs are not on the primary event
+    /// stream; the sweep settles them.
+    #[tokio::test]
+    async fn implicit_mob_retire_and_destroy_release_their_opt_ins() {
+        const MOB_ID: &str = "implicit-mob-release";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metadata_path = temp.path().join("metadata.sqlite3");
+        let runtime =
+            boot_sweeping_runtime(MOB_ID, &temp.path().join("state"), &metadata_path, 1_000).await;
+        let state = runtime
+            .mob_runtime
+            .agent_mob_mcp_state()
+            .expect("agent mob state");
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let owner = meerkat_core::types::SessionId::new().to_string();
+        let (implicit, _) = state
+            .ensure_implicit_mob_for_model(&owner, "gpt-5.5", None)
+            .await
+            .expect("implicit mob");
+        for helper in ["helper-a", "helper-b"] {
+            state
+                .mob_spawn(
+                    &implicit,
+                    meerkat_mob::ProfileName::from("delegate"),
+                    AgentIdentity::from(helper),
+                    Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+                    None,
+                    None,
+                )
+                .await
+                .expect("seat helper");
+            overrides
+                .set(
+                    implicit.as_str(),
+                    helper,
+                    DelegateIdleRetireOverride::Seconds(3600),
+                )
+                .await;
+        }
+        assert_eq!(
+            persisted_members(&metadata_path).await,
+            vec!["helper-a", "helper-b"]
+        );
+
+        state
+            .handle_for(&implicit)
+            .await
+            .expect("implicit handle")
+            .retire(AgentIdentity::from("helper-a"))
+            .await
+            .expect("hand retire");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while persisted_members(&metadata_path).await != vec!["helper-b"] {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the hand-retired helper's opt-in was not released");
+
+        state
+            .destroy_bridge_session_mobs(&owner)
+            .await
+            .expect("destroy the implicit mob");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !persisted_members(&metadata_path).await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the destroyed implicit mob's opt-ins were not released");
+        runtime.shutdown().await;
+    }
+
+    /// A member retired by hand and then resumed onto its exact session gets
+    /// its opt-in back (the retirement released it; the resume restores it),
+    /// as `mobkit/attach_existing_session` does on a persistent runtime.
+    #[tokio::test]
+    async fn retire_then_resume_onto_the_same_session_keeps_the_opt_in() {
+        use crate::{DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig};
+
+        const MOB_ID: &str = "resume-same-session";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metadata_path = temp.path().join("metadata.sqlite3");
+        let state_root = temp.path().join("state");
+        std::fs::create_dir_all(&state_root).expect("state root");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(state_root.join("sessions.sqlite3"))
+                .expect("session store"),
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{MOB_ID}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\n\
+             [profiles.worker.tools]\ncomms = true\n"
+        ))
+        .expect("mob definition");
+        let spec = MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            state_root,
+            4,
+            session_store,
+        )
+        .expect("persistent spec")
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = UnifiedRuntime::bootstrap_with_options(
+            spec,
+            MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: MOB_ID.to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            },
+            Vec::new(),
+            Duration::from_secs(2),
+            RuntimeOptions {
+                implicit_delegate_idle_retire_secs: None,
+                implicit_delegate_idle_sweep_interval_ms: 1_000,
+                ..RuntimeOptions::default()
+            },
+            Arc::new(crate::SqliteMetadataStore::open(&metadata_path).expect("metadata store")),
+        )
+        .await
+        .expect("bootstrap persistent runtime");
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let session = seat(&handle, "fork-child").await;
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        overrides.set(MOB_ID, "fork-child", policy).await;
+
+        let member = AgentIdentity::from("fork-child");
+        handle.retire(member.clone()).await.expect("hand retire");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !persisted_members(&metadata_path).await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the retirement did not release the opt-in");
+
+        Box::pin(
+            handle.spawn_spec(
+                meerkat_mob::SpawnMemberSpec::new(
+                    meerkat_mob::ProfileName::from("worker"),
+                    member.clone(),
+                )
+                .with_launch_mode(meerkat_mob::launch::MemberLaunchMode::Resume {
+                    bridge_session_id: session.clone(),
+                    resume_from_role: None,
+                }),
+            ),
+        )
+        .await
+        .expect("resume onto the same session");
+        assert_eq!(
+            handle.resolve_bridge_session_id(&member).await,
+            Some(session.clone()),
+            "the member is back on its exact session"
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while persisted_sessions(&metadata_path).await
+                != vec![("fork-child".to_string(), session.clone())]
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the resumed member's opt-in was not restored");
+        assert_eq!(overrides.get(MOB_ID, "fork-child").await, Some(policy));
         runtime.shutdown().await;
     }
 }

@@ -854,26 +854,68 @@ pub enum DelegateIdleRetireOverride {
 /// One member's idle-retirement opt-in, bound to the member instance it was
 /// set for.
 ///
-/// `session_id` is the member's bridge session when the opt-in was recorded.
-/// A member id can be reused once its member is retired, so the opt-in holds
-/// only while the member seated under that id still runs that session; for
-/// any other session it belongs to a member that is gone. `None` only in
-/// standalone wiring without a seat resolver (unit tests): such an opt-in is
-/// honoured for whatever member holds the id and is never persisted.
+/// `session_id` is the member's bridge session when the opt-in was recorded
+/// (or carried to by a respawn). A member id can be reused once its member is
+/// retired, so the opt-in holds only while the member seated under that id
+/// still runs that session. `None` only in standalone wiring without a seat
+/// resolver (unit tests): such an opt-in is honoured for whatever member holds
+/// the id and is never persisted.
+///
+/// `recorded_at` orders the opt-in against mob events: a member reset, mob
+/// reset or mob destroy releases only opt-ins recorded before it. `carrying`
+/// marks a respawn in flight from `session_id`: the retirement of that session
+/// does not release the opt-in, and the respawned session takes it over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoundIdleRetireOverride {
     pub(crate) policy: DelegateIdleRetireOverride,
     pub(crate) session_id: Option<meerkat_core::types::SessionId>,
+    pub(crate) recorded_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) carrying: bool,
+}
+
+impl BoundIdleRetireOverride {
+    fn new(
+        policy: DelegateIdleRetireOverride,
+        session_id: Option<meerkat_core::types::SessionId>,
+    ) -> Self {
+        Self {
+            policy,
+            session_id,
+            recorded_at: chrono::Utc::now(),
+            carrying: false,
+        }
+    }
+
+    /// The durable form; `None` for an unbound (standalone) opt-in.
+    fn record(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Option<crate::MemberIdleRetireOverrideRecord> {
+        Some(crate::MemberIdleRetireOverrideRecord {
+            mob_id: mob_id.to_string(),
+            member_id: member_id.to_string(),
+            session_id: self.session_id.clone()?,
+            policy: self.policy,
+            recorded_at: self.recorded_at,
+            carrying: self.carrying,
+        })
+    }
 }
 
 /// Respawn `member` through `respawn` and carry its idle-retire opt-in to the
 /// session it comes back on.
 ///
 /// A respawn keeps the member id but mints a new bridge session; an opt-in
-/// bound to the old session would read as belonging to a gone member and be
-/// dropped. Every MobKit surface that respawns a member goes through here, so
-/// the respawned member keeps the opt-in it had. The rebind is exact: only an
-/// opt-in bound to the session the member had right before the respawn moves.
+/// bound to the old session would read as belonging to a gone member. Every
+/// MobKit surface that respawns a member (operator RPC, console, the agent
+/// `mob_respawn` tool) goes through here. Before the respawn the opt-in bound
+/// to the member's current session is durably marked as carrying, so the old
+/// session's retirement neither drops it nor deletes its row; afterwards one
+/// write moves it to the new session. If this future is dropped mid-respawn
+/// the carry still finishes (on a spawned task), and the respawned member's
+/// spawn event or the next sweep finish it too; a crash leaves the durable
+/// carrying mark for the restored runtime to finish.
 pub(crate) async fn respawn_carrying_idle_retire_opt_in<T>(
     overrides: Option<&ImplicitDelegateRetirementOverrides>,
     handle: &MobHandle,
@@ -883,22 +925,78 @@ pub(crate) async fn respawn_carrying_idle_retire_opt_in<T>(
     let Some(overrides) = overrides else {
         return respawn.await;
     };
-    let previous = handle.resolve_bridge_session_id(member).await;
+    let carry = IdleRetireCarryGuard::begin(overrides, handle, member).await;
     let outcome = respawn.await;
-    if let Some(previous) = previous
-        && let Some(current) = handle.resolve_bridge_session_id(member).await
-        && current != previous
-    {
-        overrides
-            .rebind(
-                handle.mob_id().as_str(),
-                member.as_str(),
-                &previous,
+    carry.finish().await;
+    outcome
+}
+
+/// A respawn's opt-in carry, finished even when the respawning request is
+/// dropped before it returns.
+struct IdleRetireCarryGuard {
+    pending: Option<IdleRetireCarry>,
+}
+
+struct IdleRetireCarry {
+    overrides: ImplicitDelegateRetirementOverrides,
+    handle: MobHandle,
+    member: meerkat_mob::AgentIdentity,
+    from: meerkat_core::types::SessionId,
+}
+
+impl IdleRetireCarry {
+    async fn finish(self) {
+        let current = self.handle.resolve_bridge_session_id(&self.member).await;
+        self.overrides
+            .finish_carry(
+                self.handle.mob_id().as_str(),
+                self.member.as_str(),
+                &self.from,
                 current,
             )
             .await;
     }
-    outcome
+}
+
+impl IdleRetireCarryGuard {
+    async fn begin(
+        overrides: &ImplicitDelegateRetirementOverrides,
+        handle: &MobHandle,
+        member: &meerkat_mob::AgentIdentity,
+    ) -> Self {
+        let pending = match handle.resolve_bridge_session_id(member).await {
+            Some(from)
+                if overrides
+                    .begin_carry(handle.mob_id().as_str(), member.as_str(), &from)
+                    .await =>
+            {
+                Some(IdleRetireCarry {
+                    overrides: overrides.clone(),
+                    handle: handle.clone(),
+                    member: member.clone(),
+                    from,
+                })
+            }
+            _ => None,
+        };
+        Self { pending }
+    }
+
+    async fn finish(mut self) {
+        if let Some(carry) = self.pending.take() {
+            carry.finish().await;
+        }
+    }
+}
+
+impl Drop for IdleRetireCarryGuard {
+    fn drop(&mut self) {
+        if let Some(carry) = self.pending.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(carry.finish());
+        }
+    }
 }
 
 /// Carries an identity member's idle-retire opt-in across a continuity
@@ -964,6 +1062,14 @@ impl IdleRetireSeatResolver {
             .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from(member_id))
             .await
     }
+
+    async fn mob_handle(&self, mob_id: &str) -> Option<MobHandle> {
+        let state = self.state.upgrade()?;
+        state
+            .handle_for(&meerkat_mob::MobId::from(mob_id))
+            .await
+            .ok()
+    }
 }
 
 /// Per-member idle-retirement opt-ins, keyed by `(mob_id, member_id)` and
@@ -983,8 +1089,9 @@ pub(crate) struct ImplicitDelegateRetirementOverrides {
 }
 
 /// An opt-in cleared because the session it was bound to was retired or
-/// replaced, kept so that a respawn of that exact session can carry it to
-/// the replacement ([`ImplicitDelegateRetirementOverrides::rebind`]).
+/// replaced. Kept so that a rotation of that exact session (an identity
+/// member's continuity rebind) can carry it on, and so that the member
+/// resuming onto that exact session gets it back.
 #[derive(Debug, Clone)]
 struct ReleasedIdleRetireOptIn {
     mob_id: String,
@@ -993,8 +1100,8 @@ struct ReleasedIdleRetireOptIn {
     policy: DelegateIdleRetireOverride,
 }
 
-/// Released opt-ins kept for a later respawn rebind. Only the most recent
-/// ones matter: a rebind follows its respawn within one call.
+/// Released opt-ins kept in memory. Only the most recent ones matter: a
+/// rotation or resume follows its retirement closely.
 const RELEASED_IDLE_RETIRE_OPT_INS_CAP: usize = 1024;
 
 impl ImplicitDelegateRetirementOverrides {
@@ -1006,6 +1113,18 @@ impl ImplicitDelegateRetirementOverrides {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(seats);
         overrides
+    }
+
+    fn seat_resolver(&self) -> Option<IdleRetireSeatResolver> {
+        self.seats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The handle of `mob_id`, when a seat resolver is installed.
+    pub(crate) async fn mob_handle(&self, mob_id: &str) -> Option<MobHandle> {
+        self.seat_resolver()?.mob_handle(mob_id).await
     }
 
     /// Record a member's opt-in, bound to its current session.
@@ -1020,12 +1139,7 @@ impl ImplicitDelegateRetirementOverrides {
         override_policy: DelegateIdleRetireOverride,
     ) {
         let (mob_id, member_id) = (mob_id.into(), member_id.into());
-        let seats = self
-            .seats
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let session_id = match seats {
+        let session_id = match self.seat_resolver() {
             Some(seats) => match seats.seated_session(&mob_id, &member_id).await {
                 Some(session_id) => Some(session_id),
                 None => {
@@ -1039,37 +1153,40 @@ impl ImplicitDelegateRetirementOverrides {
             },
             None => None,
         };
-        self.inner.write().await.insert(
-            (mob_id.clone(), member_id.clone()),
-            BoundIdleRetireOverride {
-                policy: override_policy,
-                session_id: session_id.clone(),
-            },
-        );
-        if let Some(session_id) = session_id
-            && let Some(store) = self.durable_store()
-        {
-            let record = crate::MemberIdleRetireOverrideRecord {
+        let bound = BoundIdleRetireOverride::new(override_policy, session_id);
+        self.inner
+            .write()
+            .await
+            .insert((mob_id.clone(), member_id.clone()), bound.clone());
+        self.persist(&mob_id, &member_id, &bound, "idle-retire opt-in")
+            .await;
+    }
+
+    /// Write a bound opt-in through to the durable store, if attached.
+    async fn persist(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        bound: &BoundIdleRetireOverride,
+        what: &str,
+    ) {
+        let (Some(record), Some(store)) = (bound.record(mob_id, member_id), self.durable_store())
+        else {
+            return;
+        };
+        if let Err(error) = store.set_member_idle_retire_override(&record).await {
+            tracing::warn!(
                 mob_id,
                 member_id,
-                session_id,
-                policy: override_policy,
-            };
-            if let Err(error) = store.set_member_idle_retire_override(&record).await {
-                tracing::warn!(
-                    mob_id = %record.mob_id,
-                    member_id = %record.member_id,
-                    error = %error,
-                    "idle-retire opt-in was not persisted; it lasts until the next restart"
-                );
-            }
+                error = %error,
+                "{what} was not persisted; it lasts until the next restart"
+            );
         }
     }
 
     /// Forget exactly this opt-in, in memory and durably. An opt-in recorded
     /// for the member id since (a newer member instance) is kept. A bound
-    /// opt-in is remembered as released, so a respawn of its session can
-    /// still carry it over.
+    /// opt-in is remembered as released (see [`ReleasedIdleRetireOptIn`]).
     pub(crate) async fn clear(
         &self,
         mob_id: &str,
@@ -1086,7 +1203,10 @@ impl ImplicitDelegateRetirementOverrides {
                 false
             }
         };
-        if removed && let Some(session_id) = bound.session_id.clone() {
+        if !removed {
+            return;
+        }
+        if let Some(session_id) = bound.session_id.clone() {
             let mut released = self
                 .released
                 .lock()
@@ -1101,28 +1221,21 @@ impl ImplicitDelegateRetirementOverrides {
                 released.pop_front();
             }
         }
-        if let Some(session_id) = bound.session_id.clone()
-            && let Some(store) = self.durable_store()
+        if let (Some(record), Some(store)) = (bound.record(mob_id, member_id), self.durable_store())
+            && let Err(error) = store.clear_member_idle_retire_override(&record).await
         {
-            let record = crate::MemberIdleRetireOverrideRecord {
-                mob_id: mob_id.to_string(),
-                member_id: member_id.to_string(),
-                session_id,
-                policy: bound.policy,
-            };
-            if let Err(error) = store.clear_member_idle_retire_override(&record).await {
-                tracing::warn!(
-                    mob_id,
-                    member_id,
-                    error = %error,
-                    "a stale idle-retire opt-in could not be cleared durably"
-                );
-            }
+            tracing::warn!(
+                mob_id,
+                member_id,
+                error = %error,
+                "a stale idle-retire opt-in could not be cleared durably"
+            );
         }
     }
 
     /// The member instance bound to `session_id` is being retired: forget its
-    /// opt-in. An opt-in bound to any other session is untouched.
+    /// opt-in. An opt-in bound to any other session, or one a respawn of this
+    /// session is carrying, is untouched.
     pub(crate) async fn release_session(
         &self,
         mob_id: &str,
@@ -1131,38 +1244,120 @@ impl ImplicitDelegateRetirementOverrides {
     ) {
         if let Some(bound) = self.get_bound(mob_id, member_id).await
             && bound.session_id.as_ref() == Some(session_id)
+            && !bound.carrying
         {
             self.clear(mob_id, member_id, &bound).await;
         }
     }
 
-    /// The member was reset to a new instance: forget whatever opt-in it
-    /// held.
-    pub(crate) async fn release_member(&self, mob_id: &str, member_id: &str) {
-        if let Some(bound) = self.get_bound(mob_id, member_id).await {
-            self.clear(mob_id, member_id, &bound).await;
-        }
-    }
-
-    /// The mob was destroyed or reset: forget every opt-in it held.
-    pub(crate) async fn release_mob(&self, mob_id: &str) {
+    /// A reset or destroy at `at`: forget the opt-ins it applies to, which
+    /// are exactly those recorded before it (`member_id` narrows it to one
+    /// member). An opt-in recorded after the event, which a lagging event
+    /// stream can deliver late, belongs to a member seated after it and is
+    /// kept.
+    pub(crate) async fn release_recorded_before(
+        &self,
+        mob_id: &str,
+        member_id: Option<&str>,
+        at: chrono::DateTime<chrono::Utc>,
+    ) {
         let held: Vec<(String, BoundIdleRetireOverride)> = self
             .inner
             .read()
             .await
             .iter()
-            .filter(|((mob, _), _)| mob == mob_id)
+            .filter(|((mob, member), bound)| {
+                mob == mob_id
+                    && member_id.is_none_or(|only| only == member)
+                    && bound.recorded_at < at
+            })
             .map(|((_, member), bound)| (member.clone(), bound.clone()))
             .collect();
-        for (member_id, bound) in held {
-            self.clear(mob_id, &member_id, &bound).await;
+        for (member, bound) in held {
+            self.clear(mob_id, &member, &bound).await;
         }
     }
 
-    /// Carry the opt-in bound to `from` over to `to`: the same member was
-    /// respawned (or its session rotated) onto a new session. Applies to a
-    /// live opt-in bound to `from` or to one released with `from` since (the
-    /// retirement of the old session can be observed before the rebind).
+    /// A respawn of the member bound to `from` is about to start: durably
+    /// mark its opt-in as carrying. Returns whether there was one to carry.
+    pub(crate) async fn begin_carry(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        from: &meerkat_core::types::SessionId,
+    ) -> bool {
+        let key = (mob_id.to_string(), member_id.to_string());
+        let carrying = {
+            let mut inner = self.inner.write().await;
+            match inner.get_mut(&key) {
+                Some(bound) if bound.session_id.as_ref() == Some(from) => {
+                    bound.carrying = true;
+                    bound.clone()
+                }
+                _ => return false,
+            }
+        };
+        self.persist(
+            mob_id,
+            member_id,
+            &carrying,
+            "idle-retire opt-in carry mark",
+        )
+        .await;
+        true
+    }
+
+    /// Finish a carry begun from `from`, now that the member runs `current`:
+    /// a new session takes the opt-in over in one write; the same session
+    /// (the respawn failed) keeps it; no session (the member is gone)
+    /// releases it. A carry already finished, or superseded by a newer
+    /// opt-in, is left alone.
+    pub(crate) async fn finish_carry(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        from: &meerkat_core::types::SessionId,
+        current: Option<meerkat_core::types::SessionId>,
+    ) {
+        let key = (mob_id.to_string(), member_id.to_string());
+        let Some(carrying) = self
+            .get_bound(mob_id, member_id)
+            .await
+            .filter(|bound| bound.carrying && bound.session_id.as_ref() == Some(from))
+        else {
+            return;
+        };
+        let Some(current) = current else {
+            self.clear(mob_id, member_id, &carrying).await;
+            return;
+        };
+        let carried = if &current == from {
+            BoundIdleRetireOverride {
+                carrying: false,
+                ..carrying.clone()
+            }
+        } else {
+            BoundIdleRetireOverride::new(carrying.policy, Some(current))
+        };
+        {
+            let mut inner = self.inner.write().await;
+            if inner.get(&key) != Some(&carrying) {
+                return;
+            }
+            inner.insert(key, carried.clone());
+        }
+        self.persist(
+            mob_id,
+            member_id,
+            &carried,
+            "respawned member's idle-retire opt-in",
+        )
+        .await;
+    }
+
+    /// Carry the opt-in bound to `from` over to `to`: the same member's
+    /// session was rotated (an identity member's continuity rebind). Applies
+    /// to a live opt-in bound to `from` or to one released with `from` since.
     /// Returns whether an opt-in was carried.
     pub(crate) async fn rebind(
         &self,
@@ -1172,65 +1367,146 @@ impl ImplicitDelegateRetirementOverrides {
         to: meerkat_core::types::SessionId,
     ) -> bool {
         let key = (mob_id.to_string(), member_id.to_string());
-        let policy = {
+        let carried = {
             let mut inner = self.inner.write().await;
             let live = inner
                 .get(&key)
                 .filter(|bound| bound.session_id.as_ref() == Some(from))
                 .map(|bound| bound.policy);
-            let policy = live.or_else(|| {
-                let mut released = self
-                    .released
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                released
-                    .iter()
-                    .rposition(|opt_in| {
-                        opt_in.mob_id == mob_id
-                            && opt_in.member_id == member_id
-                            && &opt_in.session_id == from
-                    })
-                    .and_then(|position| released.remove(position))
-                    .map(|opt_in| opt_in.policy)
-            });
-            let Some(policy) = policy else {
+            let Some(policy) = live.or_else(|| self.take_released(mob_id, member_id, from)) else {
                 return false;
             };
-            inner.insert(
-                key,
-                BoundIdleRetireOverride {
-                    policy,
-                    session_id: Some(to.clone()),
-                },
-            );
-            policy
+            let carried = BoundIdleRetireOverride::new(policy, Some(to));
+            inner.insert(key, carried.clone());
+            carried
         };
-        if let Some(store) = self.durable_store() {
-            let record = crate::MemberIdleRetireOverrideRecord {
-                mob_id: mob_id.to_string(),
-                member_id: member_id.to_string(),
-                session_id: to,
-                policy,
-            };
-            if let Err(error) = store.set_member_idle_retire_override(&record).await {
-                tracing::warn!(
-                    mob_id,
-                    member_id,
-                    error = %error,
-                    "respawned member's idle-retire opt-in was not persisted; it lasts until \
-                     the next restart"
-                );
-            }
-        }
+        self.persist(
+            mob_id,
+            member_id,
+            &carried,
+            "rotated member's idle-retire opt-in",
+        )
+        .await;
         true
     }
 
-    /// Apply a mob event to the recorded opt-ins: every retirement of a
-    /// member session (whatever surface retired it) releases the opt-in
-    /// bound to exactly that session, a member reset releases the member's
-    /// opt-in, and a mob destroy or reset releases the mob's.
-    pub(crate) async fn observe_mob_event(&self, mob_id: &str, kind: &meerkat_mob::MobEventKind) {
-        match kind {
+    fn take_released(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Option<DelegateIdleRetireOverride> {
+        let mut released = self
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let position = released.iter().rposition(|opt_in| {
+            opt_in.mob_id == mob_id
+                && opt_in.member_id == member_id
+                && &opt_in.session_id == session_id
+        })?;
+        released.remove(position).map(|opt_in| opt_in.policy)
+    }
+
+    fn has_released(&self, mob_id: &str, member_id: &str) -> bool {
+        self.released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|opt_in| opt_in.mob_id == mob_id && opt_in.member_id == member_id)
+    }
+
+    /// The member runs `current`, with no recorded opt-in: if it resumed onto
+    /// the exact session its opt-in was just released with (retired, then
+    /// re-attached or repaired onto the same session), that opt-in is
+    /// restored. Returns the restored policy.
+    async fn restore_resumed(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        current: &meerkat_core::types::SessionId,
+    ) -> Option<DelegateIdleRetireOverride> {
+        let key = (mob_id.to_string(), member_id.to_string());
+        let restored = {
+            let mut inner = self.inner.write().await;
+            if inner.contains_key(&key) {
+                return None;
+            }
+            let policy = self.take_released(mob_id, member_id, current)?;
+            let restored = BoundIdleRetireOverride::new(policy, Some(current.clone()));
+            inner.insert(key, restored.clone());
+            restored
+        };
+        self.persist(
+            mob_id,
+            member_id,
+            &restored,
+            "resumed member's idle-retire opt-in",
+        )
+        .await;
+        Some(restored.policy)
+    }
+
+    /// Decide the opt-in that applies to the member seated under `member_id`
+    /// running `current` (as the sweep sees it), settling the bookkeeping on
+    /// the way: a carry left open (a dropped request, a crash) finishes onto
+    /// `current`; an opt-in bound to another session belongs to a gone member
+    /// and is dropped; a just-released opt-in is restored when the member
+    /// resumed onto its exact session. `None` when nothing applies or the
+    /// member's session is not resolvable yet.
+    pub(crate) async fn reconcile_seated(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+        current: Option<&meerkat_core::types::SessionId>,
+    ) -> Option<DelegateIdleRetireOverride> {
+        let Some(bound) = self.get_bound(mob_id, member_id).await else {
+            let current = current?;
+            if !self.has_released(mob_id, member_id) {
+                return None;
+            }
+            return self.restore_resumed(mob_id, member_id, current).await;
+        };
+        let Some(bound_session) = bound.session_id.clone() else {
+            return Some(bound.policy);
+        };
+        let current = current?;
+        if bound.carrying {
+            self.finish_carry(mob_id, member_id, &bound_session, Some(current.clone()))
+                .await;
+            return Some(bound.policy);
+        }
+        if current == &bound_session {
+            return Some(bound.policy);
+        }
+        self.clear(mob_id, member_id, &bound).await;
+        None
+    }
+
+    /// Opt-ins held for members of mobs other than `primary_mob_id`.
+    pub(crate) async fn bindings_outside(
+        &self,
+        primary_mob_id: &str,
+    ) -> Vec<((String, String), BoundIdleRetireOverride)> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .filter(|((mob, _), _)| mob != primary_mob_id)
+            .map(|(key, bound)| (key.clone(), bound.clone()))
+            .collect()
+    }
+
+    /// Apply a mob event to the recorded opt-ins:
+    /// - every retirement of a member session, whatever surface caused it,
+    ///   releases the opt-in bound to exactly that session (unless a respawn
+    ///   of it is carrying the opt-in);
+    /// - a member (re)seated finishes an open carry onto its new session, or
+    ///   gets back an opt-in released with the exact session it resumed on;
+    /// - a member reset, mob reset or mob destroy releases the opt-ins
+    ///   recorded before the event.
+    pub(crate) async fn observe_mob_event(&self, mob_id: &str, event: &meerkat_mob::MobEvent) {
+        match &event.kind {
             meerkat_mob::MobEventKind::MemberRetirementStarted {
                 agent_identity,
                 session_id: Some(session_id),
@@ -1239,11 +1515,26 @@ impl ImplicitDelegateRetirementOverrides {
                 self.release_session(mob_id, agent_identity.as_str(), session_id)
                     .await;
             }
+            meerkat_mob::MobEventKind::MemberSpawned(spawned) => {
+                let member_id = spawned.agent_identity.as_str();
+                if let Some(seats) = self.seat_resolver()
+                    && let Some(current) = seats.seated_session(mob_id, member_id).await
+                {
+                    self.reconcile_seated(mob_id, member_id, Some(&current))
+                        .await;
+                }
+            }
             meerkat_mob::MobEventKind::MemberReset { agent_identity, .. } => {
-                self.release_member(mob_id, agent_identity.as_str()).await;
+                self.release_recorded_before(
+                    mob_id,
+                    Some(agent_identity.as_str()),
+                    event.timestamp,
+                )
+                .await;
             }
             meerkat_mob::MobEventKind::MobDestroying | meerkat_mob::MobEventKind::MobReset => {
-                self.release_mob(mob_id).await;
+                self.release_recorded_before(mob_id, None, event.timestamp)
+                    .await;
             }
             _ => {}
         }
@@ -1253,7 +1544,8 @@ impl ImplicitDelegateRetirementOverrides {
     /// earlier in this process wins over a persisted one), then persist every
     /// bound opt-in set before the attach, so none is lost. A store that
     /// cannot be read restores nothing but still receives those opt-ins.
-    /// Returns how many opt-ins were restored.
+    /// Restored carrying marks stay open for the spawn event or the sweep to
+    /// finish. Returns how many opt-ins were restored.
     pub(crate) async fn attach_durable_store(
         &self,
         store: Arc<dyn crate::PersistentMetadataStore>,
@@ -1286,6 +1578,8 @@ impl ImplicitDelegateRetirementOverrides {
                     slot.insert(BoundIdleRetireOverride {
                         policy: record.policy,
                         session_id: Some(record.session_id),
+                        recorded_at: record.recorded_at,
+                        carrying: record.carrying,
                     });
                     restored += 1;
                 }
@@ -1293,23 +1587,8 @@ impl ImplicitDelegateRetirementOverrides {
             (restored, set_before_attach)
         };
         for ((mob_id, member_id), bound) in set_before_attach {
-            let Some(session_id) = bound.session_id else {
-                continue;
-            };
-            let record = crate::MemberIdleRetireOverrideRecord {
-                mob_id,
-                member_id,
-                session_id,
-                policy: bound.policy,
-            };
-            if let Err(error) = store.set_member_idle_retire_override(&record).await {
-                tracing::warn!(
-                    mob_id = %record.mob_id,
-                    member_id = %record.member_id,
-                    error = %error,
-                    "idle-retire opt-in was not persisted; it lasts until the next restart"
-                );
-            }
+            self.persist(&mob_id, &member_id, &bound, "idle-retire opt-in")
+                .await;
         }
         restored
     }
@@ -1525,6 +1804,9 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         if call.name == "fork_off" {
             return self.dispatch_fork_off(call, context).await;
         }
+        if call.name == "mob_respawn" {
+            return self.dispatch_mob_respawn(call, context).await;
+        }
         if crate::console_spawn::is_console_spawn_tool(call.name) {
             // Spawn variants this wrapper does not otherwise intercept
             // (e.g. spawn_member/spawn_many_members surfaces) still get
@@ -1739,6 +2021,45 @@ impl AutoWireParentMobToolDispatcher {
             .await;
 
         Ok(outcome)
+    }
+
+    /// `mob_respawn` keeps the member (a forker respawning its own child), so
+    /// the child keeps its idle-retire opt-in: the respawn goes through the
+    /// same carry as every other MobKit respawn surface.
+    async fn dispatch_mob_respawn(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let target = serde_json::from_str::<Value>(call.args.get())
+            .ok()
+            .and_then(|args| {
+                Some((
+                    args.get("mob_id")?.as_str()?.to_string(),
+                    args.get("agent_identity")?.as_str()?.to_string(),
+                ))
+            });
+        let handle = match target.as_ref() {
+            Some((mob_id, _)) => {
+                self.implicit_delegate_retirement_overrides
+                    .mob_handle(mob_id)
+                    .await
+            }
+            None => None,
+        };
+        match (target, handle) {
+            (Some((_, member_id)), Some(handle)) => {
+                let member = meerkat_mob::AgentIdentity::from(member_id.as_str());
+                respawn_carrying_idle_retire_opt_in(
+                    Some(&self.implicit_delegate_retirement_overrides),
+                    &handle,
+                    &member,
+                    self.inner.dispatch_with_context(call, context),
+                )
+                .await
+            }
+            _ => self.inner.dispatch_with_context(call, context).await,
+        }
     }
 
     /// Project a successful spawn into the console, when a console-bearing
@@ -11147,6 +11468,167 @@ mod tests {
             overrides.get("ob3", "review-worker-vibe-forward").await,
             Some(DelegateIdleRetireOverride::Seconds(900))
         );
+    }
+
+    async fn bootstrap_opt_in_runtime(mob_id: &str, dir: &std::path::Path) -> MobRuntime {
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\n\
+             [profiles.worker.tools]\ncomms = true\n"
+        ))
+        .expect("mob definition");
+        let spec = MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.to_path_buf(),
+            4,
+            None,
+        )
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap runtime")
+    }
+
+    async fn seat_worker(handle: &MobHandle, member: &str) -> meerkat_core::types::SessionId {
+        handle
+            .ensure_member(meerkat_mob::SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("worker"),
+                meerkat_mob::AgentIdentity::from(member),
+            ))
+            .await
+            .expect("seat member");
+        handle
+            .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from(member))
+            .await
+            .expect("member session")
+    }
+
+    /// Review of #442 (hardening): a forker respawning its own child with the
+    /// agent-facing `mob_respawn` tool keeps the child's idle-retire opt-in,
+    /// like every other MobKit respawn surface.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_mob_respawn_tool_carries_the_childs_opt_in() {
+        use meerkat_core::AgentToolDispatcher as _;
+
+        /// Stands in for meerkat's `mob_respawn`: respawns the named member.
+        struct RespawningTools(MobHandle);
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for RespawningTools {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Arc::from(Vec::new())
+            }
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                let args: Value = serde_json::from_str(call.args.get()).expect("args");
+                let member = args["agent_identity"].as_str().expect("agent_identity");
+                self.0
+                    .respawn(meerkat_mob::AgentIdentity::from(member), None)
+                    .await
+                    .map_err(|error| {
+                        meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+                    })?;
+                Ok(meerkat_core::ToolDispatchOutcome::sync_result(
+                    meerkat_core::types::ToolResult::new(
+                        call.id.to_string(),
+                        "{}".to_string(),
+                        false,
+                    ),
+                ))
+            }
+        }
+
+        const MOB: &str = "agent-respawn-carry";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = bootstrap_opt_in_runtime(MOB, dir.path()).await;
+        let handle = runtime.handle();
+        let before = seat_worker(&handle, "fork-child").await;
+        let overrides = runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        overrides.set(MOB, "fork-child", policy).await;
+
+        let dispatcher = AutoWireParentMobToolDispatcher {
+            inner: Arc::new(RespawningTools(handle.clone())),
+            ..wrapper_with_overrides(overrides.clone())
+        };
+        let args = serde_json::value::RawValue::from_string(
+            serde_json::json!({"mob_id": MOB, "agent_identity": "fork-child"}).to_string(),
+        )
+        .expect("raw args");
+        dispatcher
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "respawn-1",
+                    name: "mob_respawn",
+                    args: &args,
+                },
+                &meerkat_core::ToolDispatchContext::default(),
+            )
+            .await
+            .expect("mob_respawn");
+        let after = handle
+            .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("fork-child"))
+            .await
+            .expect("respawned session");
+        assert_ne!(after, before);
+        let carried = overrides
+            .get_bound(MOB, "fork-child")
+            .await
+            .expect("the opt-in survives the respawn");
+        assert_eq!(carried.policy, policy);
+        assert_eq!(carried.session_id, Some(after));
+        assert!(!carried.carrying);
+        let _ = runtime.handle().shutdown().await;
+    }
+
+    /// A respawning request dropped before it finishes (a client
+    /// disconnect) still carries the opt-in: the carry finishes on its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dropped_respawn_request_still_carries_the_opt_in() {
+        const MOB: &str = "dropped-respawn-carry";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = bootstrap_opt_in_runtime(MOB, dir.path()).await;
+        let handle = runtime.handle();
+        let member = meerkat_mob::AgentIdentity::from("fork-child");
+        let before = seat_worker(&handle, "fork-child").await;
+        let overrides = runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let policy = DelegateIdleRetireOverride::Seconds(3600);
+        overrides.set(MOB, "fork-child", policy).await;
+
+        let carry = IdleRetireCarryGuard::begin(&overrides, &handle, &member).await;
+        handle.respawn(member.clone(), None).await.expect("respawn");
+        drop(carry);
+        let after = handle
+            .resolve_bridge_session_id(&member)
+            .await
+            .expect("respawned session");
+        assert_ne!(after, before);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if overrides
+                    .get_bound(MOB, "fork-child")
+                    .await
+                    .is_some_and(|bound| {
+                        bound.session_id.as_ref() == Some(&after) && !bound.carrying
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the dropped request's carry never finished");
+        let _ = runtime.handle().shutdown().await;
     }
 
     /// A `fork_off` result carries `mob_id` and `agent_identity` (upstream
