@@ -488,56 +488,113 @@ async function olderHistory(host) {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const monitor = browserErrors(page);
-  const result = { host, turns: 0, errors: monitor.errors, expectedFailures: monitor.expected };
+  const result = { host, turns: 0, pages: [], prepends: [], errors: monitor.errors, expectedFailures: monitor.expected };
   try {
-    // Cross the owner's 1000-frame raw scan window as well as the hosts' 200
-    // frame pages. Otherwise retained early user anchors make the only older
-    // frame a startup terminal, which does not prove older message paging.
-    let history;
-    for (let index = 0; index < 160; index += 1) {
+    // Cross the owner's 1000-frame raw scan window as well as each host's
+    // 200-frame recent page, then prove every actual turn remains reachable.
+    const expected = [];
+    for (let index = 0; index < 127; index += 1) {
+      const input = `Review history checkpoint ${index}.`;
       const source = `History checkpoint ${index}: source, peer receipt and release decision retained.`;
       await fixture.control("model", { source, delay_ms: 0, chunk_chars: 4096 });
-      await sendApi(fixture, `Review history checkpoint ${index}.`);
-      await completed(fixture, source);
+      const accepted = await sendApi(fixture, input);
+      const complete = await completed(fixture, source);
+      expected.push({ input, source, inputFrameId: accepted.input_frame_id, completeFrameId: complete.id });
       result.turns = index + 1;
-      history = await timeline(fixture);
-      if (history.frames.length >= 1000 && Number(history.latest_cursor.split(":").at(-1)) > 1200) break;
     }
-    assert(history.frames.length >= 1000 && Number(history.latest_cursor.split(":").at(-1)) > 1200,
+    const history = await timeline(fixture);
+    assert(history.frames.length >= 1000 && Number(history.latest_cursor.split(":").at(-1)) > 1000,
       "actual owner history crosses both the recent-page and raw-scan boundaries");
     await open(page, fixture, host, monitor);
     const viewport = transcript(page, host);
-    const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
-    await older.waitFor({ state: "attached", timeout: 5000 });
-    const firstId = await viewport.locator("[data-conversation-row-id]").first().getAttribute("data-conversation-row-id");
+    const ownerPages = () => fixture.observations.flatMap(item => {
+      if (!item.request || !item.response) return [];
+      try {
+        const request = JSON.parse(item.request);
+        if (request.method !== "mobkit/console/query_timeline" || request.params?.identity !== "router:main"
+          || request.params?.mode !== "recent" || request.params?.limit !== 200) return [];
+        return [{ observation: item, request, response: JSON.parse(item.response) }];
+      } catch { return []; }
+    });
+    const seed = ownerPages().filter(item => !item.request.params.before).at(-1);
+    assert(seed && seed.observation.status === 200 && seed.response.result?.frames.length > 0,
+      "host seeds the actual authorized recent page");
+    const ownerFrames = new Map(seed.response.result.frames.map(frame => [frame.id, frame]));
+    const recordPage = (item, precedingBoundary) => {
+      assert.equal(item.observation.status, 200);
+      assert(Array.isArray(item.response.result?.frames), "older history request succeeds");
+      const frames = item.response.result.frames;
+      const before = item.request.params.before;
+      const beforeSeq = Number(before.split(":").at(-1));
+      assert(Number.isFinite(beforeSeq), "history request uses an owner cursor");
+      assert.equal(before, precedingBoundary, "next page starts at the oldest retained owner cursor");
+      assert(frames.every(frame => Number(frame.cursor.split(":").at(-1)) < beforeSeq),
+        "every older frame is strictly before the requested owner boundary");
+      for (const frame of frames) {
+        assert(!ownerFrames.has(frame.id), `older pages do not repeat owner frame ${frame.id}`);
+        ownerFrames.set(frame.id, frame);
+      }
+      result.pages.push({ request: item.request.params, exhausted: item.response.result.exhausted === true,
+        frames: frames.map(frame => ({ id: frame.id, cursor: frame.cursor, kind: frame.kind })) });
+      return frames[0]?.cursor ?? before;
+    };
     const anchorRow = viewport.locator("[data-conversation-row-id]").nth(2);
     const anchor = await anchorAt(viewport, anchorRow, -10);
-    const beforeQueries = fixture.observations.filter(item => item.request.includes('"before":')).length;
-    result.prepend = await measureAnchor(viewport, anchor, async () => {
-      await older.dispatchEvent("click");
-      await eventually(() => fixture.observations.filter(item => item.request.includes('"before":') && item.response).length > beforeQueries, "actual owner older-history request");
-      await eventually(async () => await viewport.locator("[data-conversation-row-id]").first().getAttribute("data-conversation-row-id") !== firstId, "older actual rows prepend");
-    }, `${host} actual history prepend`);
-    assert(result.prepend.after.rows >= result.prepend.before.rows + 10, "multiple actual older messages prepend");
-    const olderRequest = fixture.observations.filter(item => item.request.includes('"before":') && item.response).at(-1);
-    const request = JSON.parse(olderRequest.request);
-    const response = JSON.parse(olderRequest.response);
-    assert.equal(olderRequest.status, 200);
-    assert.equal(request.method, "mobkit/console/query_timeline");
-    assert.equal(request.params.identity, "router:main");
-    assert.equal(request.params.mode, "recent");
-    assert.equal(request.params.limit, 200);
-    assert(response.result.frames.some(frame => frame.kind === "user_input" && frame.payload.content === "Review history checkpoint 0."),
-      "older page restores the exact first operator message");
-    assert(response.result.frames.some(frame => frame.kind === "text_complete" && JSON.stringify(frame.payload).includes("History checkpoint 0:")),
-      "older page restores the first actual model reply");
-    const beforeSeq = Number(request.params.before.split(":").at(-1));
-    assert(Number.isFinite(beforeSeq), "history request uses an owner cursor");
-    assert(response.result.frames.every(frame => Number(frame.cursor.split(":").at(-1)) < beforeSeq),
-      "every prepended frame is strictly older than the requested owner boundary");
-    result.ownerPage = { request: request.params, exhausted: response.result.exhausted,
-      frames: response.result.frames.map(frame => ({ id: frame.id, cursor: frame.cursor, kind: frame.kind })) };
+    let boundary = seed.response.result.frames[0].cursor;
+    let exhausted = seed.response.result.exhausted === true;
+    for (let index = 0; !exhausted && index < 16; index += 1) {
+      const beforePages = ownerPages().filter(item => item.request.params.before).length;
+      result.prepends.push(await measureAnchor(viewport, anchor, async () => {
+        // Stock may first need to reveal its already-loaded virtual window.
+        const reveal = viewport.getByRole("button", { name: "Show earlier messages", exact: true });
+        if (await reveal.count()) await reveal.dispatchEvent("click");
+        const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
+        await older.waitFor({ state: "attached", timeout: 5000 });
+        await eventually(() => older.isEnabled(), "history action leaves its previous loading state");
+        await older.dispatchEvent("click");
+        await eventually(() => ownerPages().filter(item => item.request.params.before).length > beforePages,
+          "actual owner older-history request completes");
+        await eventually(async () => !(await page.getByRole("button", { name: "Loading history", exact: true }).count()),
+          "host applies the completed older page");
+      }, `${host} actual history prepend ${index + 1}`));
+      const newPages = ownerPages().filter(item => item.request.params.before).slice(beforePages);
+      assert(newPages.length > 0);
+      for (const item of newPages) {
+        boundary = recordPage(item, boundary);
+        exhausted = item.response.result.exhausted === true;
+      }
+    }
+    assert(exhausted, "repeated older-page loads reach the owner's history beginning");
+    assert(result.pages.length > 1, "acceptance crosses multiple actual owner pages");
+    const finalReveal = viewport.getByRole("button", { name: "Show earlier messages", exact: true });
+    if (await finalReveal.count()) {
+      result.prepends.push(await measureAnchor(viewport, anchor, () => finalReveal.dispatchEvent("click"),
+        `${host} reveal retained first messages`));
+    }
+    await settle(page);
+    const quotedSources = await viewport.locator("[data-quote-source]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-quote-source")));
+    for (let index = 0; index < expected.length; index += 1) {
+      const turn = expected[index];
+      assert.equal(ownerFrames.get(turn.inputFrameId)?.payload.content, turn.input,
+        `${host} all older pages retain exact operator checkpoint ${index}`);
+      assert(JSON.stringify(ownerFrames.get(turn.completeFrameId)?.payload).includes(turn.source),
+        `${host} all older pages retain exact actual reply checkpoint ${index}`);
+      assert.equal(quotedSources.filter(source => source === turn.input).length, 1,
+        `${host} operator checkpoint ${index} is reachable exactly once in the actual transcript`);
+      assert.equal(quotedSources.filter(source => source === turn.source).length, 1,
+        `${host} reply checkpoint ${index} is reachable exactly once in the actual transcript`);
+    }
+    const rowIds = await viewport.locator("[data-conversation-row-id]").evaluateAll(nodes => nodes.map(node => node.dataset.conversationRowId));
+    assert.equal(new Set(rowIds).size, rowIds.length, "retained transcript has no duplicate canonical rows");
+    result.completeHistory = { operatorMessages: expected.length, modelReplies: expected.length,
+      ownerFrames: ownerFrames.size, renderedRows: rowIds.length, pages: result.pages.length };
+    assert(result.prepends.at(-1).after.rows >= result.prepends[0].before.rows + 10,
+      "multiple actual older messages prepend");
     await capture(page, `${host}-real-history-prepend`);
+    // Also inspect the recovered beginning, instead of only the retained recent anchor.
+    await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+    await settle(page);
+    await capture(page, `${host}-real-history-complete-start`);
     assert.deepEqual(monitor.errors, []);
   } catch (error) {
     result.failure = error.stack || String(error); await capture(page, `${host}-history-prepend-failure`).catch(() => {}); throw error;

@@ -155,7 +155,7 @@ image_generation = {live_images}
             Ok(bytes) => {
                 runtime
                     .restore_gating_state(serde_json::from_slice(&bytes)?)
-                    .await?
+                    .await?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),

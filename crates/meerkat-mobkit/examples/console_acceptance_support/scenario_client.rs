@@ -74,7 +74,7 @@ impl ModelBarrier {
                 }));
                 Ok(current.as_ref().unwrap().snapshot())
             }
-            Some("status") | Some("release") => {
+            Some("status" | "release") => {
                 let current = self
                     .current
                     .lock()
@@ -383,22 +383,19 @@ impl RecordedTurn<'_> {
     fn result(&self, step: &str) -> Result<Option<Value>, String> {
         let id = self.scenario.call_id(step);
         for message in self.messages.iter().rev() {
-            if let Message::ToolResults { results, .. } = message {
-                if let Some(result) = results.iter().find(|result| result.tool_use_id == id) {
-                    let text = result.text_content();
-                    if result.is_error {
-                        return Err(format!("{step}: {text}"));
-                    }
-                    let value: Value = serde_json::from_str(&text).map_err(|error| {
-                        format!("{step} returned invalid JSON: {error}; {text}")
-                    })?;
-                    if !value.is_object()
-                        || value.get("error").is_some_and(|error| !error.is_null())
-                    {
-                        return Err(format!("{step} returned an unexpected result: {value}"));
-                    }
-                    return Ok(Some(value));
+            if let Message::ToolResults { results, .. } = message
+                && let Some(result) = results.iter().find(|result| result.tool_use_id == id)
+            {
+                let text = result.text_content();
+                if result.is_error {
+                    return Err(format!("{step}: {text}"));
                 }
+                let value: Value = serde_json::from_str(&text)
+                    .map_err(|error| format!("{step} returned invalid JSON: {error}; {text}"))?;
+                if !value.is_object() || value.get("error").is_some_and(|error| !error.is_null()) {
+                    return Err(format!("{step} returned an unexpected result: {value}"));
+                }
+                return Ok(Some(value));
             }
         }
         if self.messages.iter().any(|message| {

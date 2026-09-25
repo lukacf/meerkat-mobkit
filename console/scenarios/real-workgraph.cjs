@@ -370,12 +370,18 @@ async function composedGraphAndPeer(host) {
       assert.equal(await page.locator('[data-testid="workgraph-graph-node"][data-status="completed"]').count(), 3);
       assert.equal(await page.locator('[data-testid="workgraph-graph-edge"][data-kind="blocks"]').count(), 2);
       await page.locator(`[data-testid="workgraph-graph-node"][data-item-id="${graph.itemIds.publish}"]`).click();
+      const selection = page.getByTestId("workgraph-graph-detail");
       await eventually(async () => {
-        const detail = await page.getByTestId("workgraph-graph-detail").textContent();
-        return detail.includes(graph.itemIds.publish) && detail.includes("completed") && detail.includes("Both review prerequisites");
+        return await selection.locator('[data-status="completed"]').count() === 1
+          && (await selection.locator(".workgraph-graph__detail-description").textContent()).includes("Both review prerequisites");
       }, "selected node exposes canonical item status and description");
+      assert.equal(await selection.getByRole("heading").textContent(), "Publish release candidate", "selected title is readable in full");
+      assert.equal(await selection.locator("details").getAttribute("open"), null, "internal metadata starts collapsed");
       await page.setViewportSize({ width: 1440, height: 900 });
       await capture(page, "stock-real-workgraph-graph-1440");
+      await selection.getByText("Item details", { exact: true }).click();
+      assert.equal(await selection.locator("code").textContent(), graph.itemIds.publish, "exact owner ID remains available");
+      await selection.getByRole("button", { name: "Copy work item ID", exact: true }).waitFor();
       await selectIdentity(page, host, sender, monitor);
     } else {
       await page.getByRole("button", { name: "Toggle second pane", exact: true }).click();

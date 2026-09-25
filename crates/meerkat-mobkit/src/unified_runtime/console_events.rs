@@ -2393,7 +2393,7 @@ mod tests {
             &pending,
             &json!({"input": {"kind": "content", "content": reordered}})
         ));
-        let mut changed_text = inline.clone();
+        let mut changed_text = inline;
         changed_text[0]["text"] = json!("Exact\nUnicode: A\u{030a} 🚀");
         assert!(!pending_matches_run_started(
             &pending,

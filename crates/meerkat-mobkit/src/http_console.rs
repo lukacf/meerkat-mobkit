@@ -10894,8 +10894,9 @@ mod tests {
     };
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
-        ConsoleTimelineQuery, ConsoleTimelineQueryError, ConsoleTimelineWindowQuery,
-        ConsoleVisibilityPolicy, MobKitConsoleAggregator, NewConsoleFrame,
+        ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineQueryError,
+        ConsoleTimelineWindowQuery, ConsoleVisibilityPolicy, MobKitConsoleAggregator,
+        NewConsoleFrame,
     };
     use crate::identity_first::contracts::{ContinuityStore, LeaseProvider};
     use crate::identity_first::{
@@ -16755,7 +16756,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn fresh_identity_snapshot_keeps_user_input_anchor_before_noisy_tail()
+    async fn fresh_identity_snapshot_pages_contiguous_history_before_noisy_tail()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
@@ -16831,17 +16832,73 @@ comms = true
         )
         .await?;
 
-        assert!(
-            frames.iter().any(|frame| {
-                frame.kind == "user_input"
-                    && frame.payload.to_string().contains("Console chat smoke")
-            }),
-            "identity chat snapshot must keep the worker kickoff prompt before a noisy tail: {frames:#?}",
-        );
         assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1_501));
         assert_eq!(
-            frames.last().and_then(|frame| frame.cursor.seq()),
-            Some(1_501)
+            frames
+                .iter()
+                .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                .collect::<Vec<_>>(),
+            (1_302u64..=1_501).collect::<Vec<_>>(),
+            "the snapshot must contain the latest contiguous 200 frames"
+        );
+
+        let mut recovered = frames;
+        let mut reached_start = false;
+        for _ in 0..8 {
+            let before = recovered.first().expect("nonempty history").cursor.clone();
+            let before_seq = before.seq().expect("canonical cursor");
+            let page = aggregator
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    identity: Some("review-worker-a".to_string()),
+                    mode: ConsoleTimelineMode::Recent,
+                    before: Some(before),
+                    limit: 200,
+                    ..ConsoleTimelineWindowQuery::default()
+                })
+                .await?;
+            assert_eq!(
+                page.frames
+                    .iter()
+                    .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                    .collect::<Vec<_>>(),
+                (before_seq.saturating_sub(200).max(1)..before_seq).collect::<Vec<_>>(),
+                "each older page must immediately precede the retained history"
+            );
+            let exhausted = page.exhausted;
+            let mut older = page.frames;
+            older.extend(recovered);
+            recovered = older;
+            if exhausted {
+                reached_start = true;
+                break;
+            }
+        }
+        assert!(
+            reached_start,
+            "bounded older paging must reach the history start"
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                .collect::<Vec<_>>(),
+            (1u64..=1_501).collect::<Vec<_>>(),
+            "all owner frames must be reachable exactly once in order"
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|frame| frame.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1_501,
+            "paging must not duplicate frame identities"
+        );
+        assert_eq!(recovered[0].dedupe_key, "worker-kickoff");
+        assert_eq!(recovered[0].kind, "user_input");
+        assert_eq!(
+            recovered[0].payload["content"][0]["text"],
+            "Console chat smoke: review this initiative"
         );
         Ok(())
     }

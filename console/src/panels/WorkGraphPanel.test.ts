@@ -246,6 +246,32 @@ test("workgraph graph view draws nodes with status classes and typed edges", () 
   assert.ok(html.includes("child-run"));
 });
 
+test("selected work item exposes its full title and description before collapsed exact identifiers", () => {
+  const selected = item("work_01a0daba-4ca1-7073-8471-02f7df3d923e", "2026-07-08T08:00:00Z", {
+    title: "Publish the release candidate after both independent reviews have completed",
+    description: "Verify the source review and release badge.\nPreserve both reviewers' evidence before publishing the report.",
+    status: "in_progress",
+    owner: { display_name: "Release coordinator" },
+    labels: ["release:2026-09", "evidence:required"],
+  });
+  const html = renderToStaticMarkup(React.createElement(WorkGraphGraphView, {
+    items: [selected], edges: [], attention: [], selectedId: selected.id,
+  }));
+  const detail = html.slice(html.indexOf('data-testid="workgraph-graph-detail"'));
+  assert.ok(detail.includes(`<h4 class="workgraph-graph__detail-title">${selected.title}</h4>`), "selection has a full heading, independent of truncated node text");
+  assert.ok(detail.includes("Verify the source review and release badge.\nPreserve both reviewers&#x27; evidence before publishing the report."), "description keeps every source line");
+  assert.ok(detail.includes("In progress"));
+  assert.ok(detail.includes("Release coordinator"));
+  const disclosureStart = detail.indexOf("<details");
+  assert.ok(disclosureStart > detail.indexOf("workgraph-graph__detail-description"), "identifiers remain secondary to readable description");
+  const disclosure = detail.slice(disclosureStart);
+  assert.match(disclosure, /^<details[^>]*>/);
+  assert.doesNotMatch(disclosure.match(/^<details[^>]*>/)![0], /\bopen(?:=|\s|>)/, "metadata starts collapsed");
+  assert.ok(disclosure.includes(`<code>${selected.id}</code>`), "exact canonical id remains selectable");
+  assert.ok(disclosure.includes('aria-label="Copy work item ID"'), "exact id has a discoverable copy action");
+  assert.ok(disclosure.includes("release:2026-09") && disclosure.includes("evidence:required"));
+});
+
 test("workgraph tree view caps rendered rows with the graph's overflow honesty", () => {
   // The snapshot includes terminal rows, so it tracks the store's full
   // history; the tree must stay render-bounded like the graph is.

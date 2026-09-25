@@ -55,8 +55,6 @@ const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
 const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
 const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
-const TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT: usize = 5_000;
-const IDENTITY_RECENT_ANCHOR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityCollectionMode {
@@ -84,6 +82,9 @@ impl Default for ConsoleAggregatorOptions {
     }
 }
 
+type MemberProvenanceCache =
+    BTreeMap<(String, String, Option<String>), ConsoleFrameMemberProvenance>;
+
 struct AggregatorInner {
     /// Policy views share one canonical projector and publish to its broadcaster.
     projection_owner: Option<Arc<AggregatorInner>>,
@@ -101,8 +102,7 @@ struct AggregatorInner {
     /// row write, on a fully idle gateway. Entries are dropped with their
     /// runtime; a missing entry or an epoch-less runtime always reads.
     session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
-    member_provenance:
-        std::sync::Mutex<BTreeMap<(String, String, Option<String>), ConsoleFrameMemberProvenance>>,
+    member_provenance: std::sync::Mutex<MemberProvenanceCache>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -1392,7 +1392,6 @@ impl MobKitConsoleAggregator {
         let mut scan_query = query.clone();
         scan_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
         let mut visible_frames = Vec::with_capacity(requested_limit);
-        let mut anchor_frames = Vec::new();
         let mut identity_visibility_cache = HashMap::new();
         let identity_records = self.inner.identity_read_model.current().await;
         let mut next_cursor = query.after.clone();
@@ -1467,13 +1466,6 @@ impl MobKitConsoleAggregator {
                 .await
                 .unwrap_or(false)
                 {
-                    if query.mode == ConsoleTimelineMode::Recent
-                        && query.identity.is_some()
-                        && is_identity_timeline_anchor_frame(&frame)
-                        && anchor_frames.len() < IDENTITY_RECENT_ANCHOR_LIMIT
-                    {
-                        anchor_frames.push(frame.clone());
-                    }
                     match query.mode {
                         ConsoleTimelineMode::Since => {
                             if visible_frames.len() >= requested_limit {
@@ -1494,21 +1486,28 @@ impl MobKitConsoleAggregator {
                     }
                 }
             }
-            let needs_identity_anchor = query.mode == ConsoleTimelineMode::Recent
-                && query.identity.is_some()
-                && anchor_frames.is_empty()
-                && scanned < TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT;
-            if visible_frames.len() >= requested_limit && !needs_identity_anchor {
-                break;
-            }
             if since_stopped_at_visible_limit {
                 break;
             }
-            if page.exhausted || raw_len < TIMELINE_RAW_SCAN_PAGE_LIMIT {
+            // Store exhaustion is authoritative even when custom stores return
+            // shorter pages than requested. Retain it only if no visible older
+            // frames are omitted from the bounded recent result below.
+            if page.exhausted {
                 exhausted = true;
                 break;
             }
+            if visible_frames.len() >= requested_limit {
+                break;
+            }
             if scanned >= TIMELINE_MAX_RAW_SCAN_FRAMES {
+                if query.mode == ConsoleTimelineMode::Recent && visible_frames.is_empty() {
+                    // An empty recent response gives callers no before cursor
+                    // with which to continue. Report a failed query instead of
+                    // making older visible history silently unreachable.
+                    return Err(ConsoleTimelineQueryError::Operational(
+                        "timeline visibility scan exceeded its bounded budget".into(),
+                    ));
+                }
                 break;
             }
         }
@@ -1516,46 +1515,10 @@ impl MobKitConsoleAggregator {
         if query.mode == ConsoleTimelineMode::Recent {
             visible_frames.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
             if visible_frames.len() > requested_limit {
+                // Keep one contiguous suffix. Mixing early turn anchors into a
+                // recent tail makes before-oldest paging skip the middle.
                 visible_frames = visible_frames.split_off(visible_frames.len() - requested_limit);
-            }
-            if !anchor_frames.is_empty() {
-                let anchor_cursors = anchor_frames
-                    .iter()
-                    .map(|frame| frame.cursor.clone())
-                    .collect::<Vec<_>>();
-                let mut merged = anchor_frames;
-                for frame in visible_frames {
-                    if !merged
-                        .iter()
-                        .any(|existing| existing.cursor == frame.cursor || existing.id == frame.id)
-                    {
-                        merged.push(frame);
-                    }
-                }
-                merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
-                visible_frames = merged;
-                if visible_frames.len() > requested_limit {
-                    let mut anchors = Vec::new();
-                    let mut tail = Vec::new();
-                    for frame in visible_frames {
-                        if anchor_cursors.contains(&frame.cursor) {
-                            anchors.push(frame);
-                        } else {
-                            tail.push(frame);
-                        }
-                    }
-                    visible_frames = if anchors.len() >= requested_limit {
-                        anchors.split_off(anchors.len() - requested_limit)
-                    } else {
-                        let keep_tail = requested_limit.saturating_sub(anchors.len());
-                        if tail.len() > keep_tail {
-                            tail = tail.split_off(tail.len() - keep_tail);
-                        }
-                        anchors.extend(tail);
-                        anchors.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
-                        anchors
-                    };
-                }
+                exhausted = false;
             }
         }
 
@@ -3039,18 +3002,6 @@ fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame
                 | "tool_result_received"
         )
     })
-}
-
-fn is_identity_timeline_anchor_frame(frame: &ConsoleFrame) -> bool {
-    match frame.kind.as_str() {
-        "user_input" | "run_started" => true,
-        "interaction_started" => frame
-            .payload
-            .get("content")
-            .or_else(|| frame.payload.get("prompt"))
-            .is_some(),
-        _ => false,
-    }
 }
 
 fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleIdentityRecord> {
@@ -6039,6 +5990,7 @@ mod tests {
         inner: InMemoryConsoleLogStore,
         source_watermark_calls: AtomicUsize,
         record_watermark_calls: AtomicUsize,
+        window_page_limit: usize,
     }
 
     impl CountingConsoleLogStore {
@@ -6047,6 +5999,7 @@ mod tests {
                 inner: InMemoryConsoleLogStore::new(),
                 source_watermark_calls: AtomicUsize::new(0),
                 record_watermark_calls: AtomicUsize::new(0),
+                window_page_limit: usize::MAX,
             }
         }
 
@@ -6936,8 +6889,9 @@ mod tests {
 
         async fn query_windowed_frames(
             &self,
-            query: ConsoleTimelineWindowQuery,
+            mut query: ConsoleTimelineWindowQuery,
         ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+            query.limit = query.limit.min(self.window_page_limit);
             self.inner.query_windowed_frames(query).await
         }
 
@@ -10759,7 +10713,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn identity_recent_anchor_respects_query_limit() {
+    async fn identity_recent_pages_keep_all_history_reachable_within_query_limit() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
             .store()
@@ -10831,19 +10785,188 @@ comms = true
         assert_eq!(
             page.frames.len(),
             5,
-            "identity anchor merge must not exceed the requested limit"
+            "recent identity pages must respect the requested limit"
         );
-        assert!(
+        assert_eq!(
             page.frames
                 .iter()
-                .any(|frame| frame.dedupe_key == "anchored-user-input"),
-            "the bounded result should still retain the useful turn anchor: {:#?}",
-            page.frames
+                .filter_map(|frame| frame.cursor.seq())
+                .collect::<Vec<_>>(),
+            vec![36, 37, 38, 39, 40],
+            "a recent page must be contiguous so before-oldest paging cannot skip history"
         );
         assert_eq!(
             page.frames.last().and_then(|frame| frame.cursor.seq()),
             Some(40)
         );
+
+        let mut seen = page.frames;
+        let mut exhausted = page.exhausted;
+        while !exhausted {
+            let before = seen.first().expect("nonempty history").cursor.clone();
+            let older = aggregator
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    identity: Some("agent-a".to_string()),
+                    mode: ConsoleTimelineMode::Recent,
+                    before: Some(before.clone()),
+                    limit: 5,
+                    ..ConsoleTimelineWindowQuery::default()
+                })
+                .await
+                .expect("query older identity history");
+            assert!(older.frames.len() <= 5);
+            assert!(
+                older
+                    .frames
+                    .iter()
+                    .all(|frame| frame.cursor.seq() < before.seq())
+            );
+            assert!(older.exhausted || !older.frames.is_empty());
+            exhausted = older.exhausted;
+            let mut frames = older.frames;
+            frames.extend(seen);
+            seen = frames;
+            assert!(seen.len() <= 40, "history paging must not duplicate frames");
+        }
+        assert_eq!(
+            seen.iter()
+                .filter_map(|frame| frame.cursor.seq())
+                .collect::<Vec<_>>(),
+            (1..=40).collect::<Vec<_>>(),
+            "all history, including the original turn anchor, must remain reachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_timeline_recent_pages_cross_hidden_and_short_store_pages() {
+        let mut store = CountingConsoleLogStore::new();
+        store.window_page_limit = 77;
+        let aggregator = MobKitConsoleAggregator::new_with_options(
+            Arc::new(store),
+            ConsoleAggregatorOptions {
+                session_history_backfill_enabled: false,
+                ..ConsoleAggregatorOptions::default()
+            },
+        );
+        let runtime = build_single_member_runtime().await;
+        let mut entry = runtime_entry_for_test("runtime-a", &runtime);
+        entry.visibility_policy = Arc::new(HideHiddenNoiseFrames);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+        for idx in 1..=2_505 {
+            let visible = [1, 1_005, 2_005].contains(&idx);
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("recent-hidden-gap-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: if visible {
+                        "user_input"
+                    } else {
+                        "hidden_noise"
+                    }
+                    .to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "content": idx }),
+                    source: ConsoleFrameSource {
+                        member_provenance: None,
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("recent-hidden-gap-{idx}")),
+                    interaction_id: Some(format!("turn-{idx}")),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append sparse visible history");
+        }
+        let query = ConsoleTimelineWindowQuery {
+            identity: Some("agent-a".to_string()),
+            mode: ConsoleTimelineMode::Recent,
+            limit: 2,
+            ..ConsoleTimelineWindowQuery::default()
+        };
+        let first = aggregator
+            .query_timeline_windowed(query.clone())
+            .await
+            .expect("recent page");
+        assert_eq!(
+            first
+                .frames
+                .iter()
+                .filter_map(|frame| frame.cursor.seq())
+                .collect::<Vec<_>>(),
+            vec![1_005, 2_005]
+        );
+        assert!(
+            !first.exhausted,
+            "the first visible frame remains on an older page"
+        );
+        assert_eq!(
+            first.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(2_505),
+            "resume keeps the newest raw frontier across filtered pages"
+        );
+        let older = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                before: Some(first.frames[0].cursor.clone()),
+                ..query.clone()
+            })
+            .await
+            .expect("older page");
+        assert_eq!(
+            older
+                .frames
+                .iter()
+                .filter_map(|frame| frame.cursor.seq())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(older.exhausted);
+        let exact = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                before: Some(ConsoleCursor::from("console:2006")),
+                after: Some(ConsoleCursor::from("console:1")),
+                ..query
+            })
+            .await
+            .expect("bounded exact final page");
+        assert_eq!(
+            exact
+                .frames
+                .iter()
+                .filter_map(|frame| frame.cursor.seq())
+                .collect::<Vec<_>>(),
+            vec![1_005, 2_005]
+        );
+        if !exact.exhausted {
+            let final_page = aggregator
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    identity: Some("agent-a".to_string()),
+                    mode: ConsoleTimelineMode::Recent,
+                    before: Some(exact.frames[0].cursor.clone()),
+                    after: Some(ConsoleCursor::from("console:1")),
+                    limit: 2,
+                    ..ConsoleTimelineWindowQuery::default()
+                })
+                .await
+                .expect("remaining hidden bounded history");
+            assert!(final_page.frames.is_empty());
+            assert!(final_page.exhausted);
+        }
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test]

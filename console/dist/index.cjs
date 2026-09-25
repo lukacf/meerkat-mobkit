@@ -32660,16 +32660,44 @@ function nodeHoverText(node2, item) {
   if (item?.description) lines.push(item.description);
   return lines.join("\n");
 }
-function selectionSummary(itemId, items, attention2) {
-  const item = items.find((candidate) => candidate.id === itemId);
-  if (!item) return itemId;
-  const parts = [itemId, item.status || "open"];
-  const owner = workGraphItemOwnerLabel(item);
-  if (owner) parts.push(owner);
-  if (item.labels && item.labels.length > 0) parts.push(item.labels.join(", "));
-  if (attention2.some((binding) => binding.work_ref?.item_id === itemId)) parts.push("attention-bound");
-  if (item.description) parts.push(item.description);
-  return parts.join(" \xB7 ");
+function ItemCopyIcon({ name: name2 }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(CopyGlyph, { state: name2 === "i-check" ? "copied" : "idle" });
+}
+function WorkItemDetails({ itemId, item, hasAttention }) {
+  const owner = item ? workGraphItemOwnerLabel(item) : "";
+  const status = item?.status?.replaceAll("_", " ");
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "workgraph-graph__detail-heading", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("h4", { className: "workgraph-graph__detail-title", children: item?.title || (item ? "Untitled work item" : "Work item unavailable in this snapshot") }),
+      status ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "workgraph-graph__detail-status", "data-status": item?.status, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: `workgraph__dot is-${item?.status}`, "aria-hidden": "true" }),
+        status[0].toUpperCase() + status.slice(1)
+      ] }) : null
+    ] }),
+    item?.description ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("p", { className: "workgraph-graph__detail-description", children: item.description }) : null,
+    owner ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("p", { className: "workgraph-graph__detail-owner", children: [
+      "Owner ",
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: owner })
+    ] }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("details", { className: "workgraph-graph__metadata", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("summary", { children: "Item details" }),
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("dl", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "ID" }),
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("dd", { className: "workgraph-graph__detail-id", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("code", { children: itemId }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(CopyButton, { text: itemId, label: "Copy work item ID", copiedLabel: "Work item ID copied", Icon: ItemCopyIcon })
+        ] }),
+        item?.labels?.length ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Labels" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: item.labels.join(", ") })
+        ] }) : null,
+        hasAttention ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Attention" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: "Bound to this item" })
+        ] }) : null
+      ] })
+    ] })
+  ] });
 }
 function WorkGraphGraphView({
   items,
@@ -32866,7 +32894,7 @@ function WorkGraphGraphView({
         ]
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "workgraph-graph__detail", "data-testid": "workgraph-graph-detail", children: selectedId ? selectionSummary(selectedId, items, attention2) : "Click a node to inspect it." })
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "workgraph-graph__detail", "data-testid": "workgraph-graph-detail", children: selectedId ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(WorkItemDetails, { itemId: selectedId, item: itemById.get(selectedId), hasAttention: boundItemIds.has(selectedId) }, selectedId) : "Click a node to inspect it." })
   ] });
 }
 
