@@ -15,7 +15,20 @@ type ConsoleFrame = {
   cursor?: string;
   status?: string;
   data: unknown;
+  // query_timeline replay frames carry the typed event body as `payload`.
+  payload?: unknown;
 };
+
+// meerkat emits `turn_completed` with `stop_reason: tool_use` after every
+// tool-loop call, not only when the turn ends. A `turn_completed` is terminal
+// only when its typed stop reason is anything other than `tool_use` (or
+// absent, the older one-event-per-turn shape). Same rule as the console's
+// `isTerminalTurnCompletedData`.
+function isTerminalTurnCompletedPayload(payload: unknown): boolean {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const stopReason = record.stop_reason ?? record.stopReason;
+  return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+}
 
 const scenario = YAML.parse(
   fs.readFileSync(path.join(repoRoot, "examples", "001-incident-command-center-pack", "scenario.yaml"), "utf8"),
@@ -249,7 +262,9 @@ async function main() {
       );
       if (
         timelinePage.frames.some(
-          (frame) => frame.kind === "interaction_complete" || frame.kind === "turn_completed",
+          (frame) =>
+            frame.kind === "interaction_complete" ||
+            (frame.kind === "turn_completed" && isTerminalTurnCompletedPayload(frame.payload)),
         )
       ) {
         replayHasTerminal = true;

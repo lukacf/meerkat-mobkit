@@ -735,15 +735,29 @@ fn text_from_content_block(value: &Value) -> Option<&str> {
         .or_else(|| value.get("content").and_then(Value::as_str))
 }
 
-fn is_terminal_turn_completed_event(event_type: &str, payload: &Value) -> bool {
-    if event_type != "turn_completed" {
-        return false;
-    }
-    let stop_reason = payload
+/// Whether a `turn_completed` event ends its turn.
+///
+/// meerkat publishes `turn_completed` with `stop_reason: tool_use` after every
+/// tool-loop model call, not only at the end of the turn, so the event kind
+/// alone does not prove terminality. Only the typed `stop_reason` decides:
+/// `tool_use` means the turn continues with tool results; any other reason
+/// ends it. A payload without a decodable stop reason is terminal, which keeps
+/// the older one-event-per-turn shape working. This is the same rule as the
+/// console's `isTerminalTurnCompletedData`.
+pub(crate) fn is_terminal_turn_completed_event(event_type: &str, payload: &Value) -> bool {
+    event_type == "turn_completed" && !payload_stop_reason_is_tool_use(payload)
+}
+
+/// Whether a payload carries the typed stop reason `tool_use`, the model
+/// stopping to run tools inside a turn that continues.
+pub(crate) fn payload_stop_reason_is_tool_use(payload: &Value) -> bool {
+    use serde::Deserialize as _;
+
+    payload
         .get("stop_reason")
         .or_else(|| payload.get("stopReason"))
-        .and_then(Value::as_str);
-    !matches!(stop_reason, Some("tool_use"))
+        .and_then(|value| meerkat_core::StopReason::deserialize(value).ok())
+        == Some(meerkat_core::StopReason::ToolUse)
 }
 
 fn parse_generate_image_tool_result(
@@ -863,6 +877,50 @@ fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_completed_terminality_reads_the_typed_stop_reason() {
+        // Newer meerkat emits a `tool_use` turn_completed after each tool-loop call.
+        assert!(!is_terminal_turn_completed_event(
+            "turn_completed",
+            &json!({ "type": "turn_completed", "stop_reason": "tool_use" })
+        ));
+        assert!(!is_terminal_turn_completed_event(
+            "turn_completed",
+            &json!({ "stopReason": "tool_use" })
+        ));
+        // Every other typed stop reason ends the turn.
+        for stop_reason in [
+            "end_turn",
+            "max_tokens",
+            "stop_sequence",
+            "content_filter",
+            "cancelled",
+        ] {
+            assert!(
+                is_terminal_turn_completed_event(
+                    "turn_completed",
+                    &json!({ "type": "turn_completed", "stop_reason": stop_reason })
+                ),
+                "{stop_reason} must be terminal"
+            );
+        }
+        // A payload without a decodable stop reason keeps the older
+        // one-event-per-turn shape terminal.
+        assert!(is_terminal_turn_completed_event(
+            "turn_completed",
+            &json!({})
+        ));
+        assert!(is_terminal_turn_completed_event(
+            "turn_completed",
+            &json!({ "stop_reason": 7 })
+        ));
+        // Only `turn_completed` is judged here.
+        assert!(!is_terminal_turn_completed_event(
+            "text_complete",
+            &json!({ "stop_reason": "end_turn" })
+        ));
+    }
 
     #[tokio::test]
     async fn replay_all_retains_latest_4096_events() {

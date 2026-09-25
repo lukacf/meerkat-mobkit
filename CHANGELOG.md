@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `reset_all` startup readiness (`startup_history`) now waits for the startup
+  turn to really end. It counted any `turn_completed` frame as the end, but
+  upcoming Meerkat emits `turn_completed` with `stop_reason: tool_use` after
+  every tool-loop call, so a tool-using startup turn read as ready after its
+  first tool round. Terminality now comes from typed data only: a
+  `turn_completed` ends the turn unless its typed stop reason is `tool_use`
+  (a payload without one stays terminal, the Meerkat 0.8.42 shape), the run's
+  own `interaction_complete`/`run_completed` ends it, and a session-history
+  `interaction_complete` projected from an assistant step whose stop reason is
+  `tool_use` no longer counts. The rule is shared with the console event
+  store's response phase and matches the console's
+  `isTerminalTurnCompletedData`. The incident command center example's
+  TypeScript smoke applies the same rule to its `query_timeline` replay
+  terminal check.
+
 - Console WorkGraph graph view: labels no longer render smeared or tiny. The
   graph SVG inherited the global icon reset (`stroke: currentColor;
   stroke-width: 2`), which outlined every glyph, status dot and arrowhead, and
