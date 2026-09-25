@@ -4016,6 +4016,19 @@ svg[data-svg="fit"],
   background: var(--bg-sunken);
   cursor: grab;
   touch-action: none;
+  /* The viewBox is the frame size (1 user unit = 1 CSS px), so the label
+     sizes below are real pixel sizes at the fit scale. Labels use the
+     console's own font tokens, and geometricPrecision keeps glyph advances
+     linear under the zoom transform (hinted advances collapse word gaps
+     at fractional scales). */
+  font-family: var(--sans);
+  text-rendering: geometricPrecision;
+  /* Opt out of the global icon reset (svg { stroke: currentColor;
+     stroke-width: 2 }). Inherited, it outlined every label, status dot
+     and arrowhead with a 2-unit currentColor stroke, which smeared the
+     glyphs. Shapes that want a stroke set their own below. */
+  stroke: none;
+  stroke-width: 1;
 }
 .workgraph-graph__svg.is-dragging { cursor: grabbing; }
 .workgraph-graph__arrow path { fill: var(--ink-dim); }
@@ -4033,8 +4046,14 @@ svg[data-svg="fit"],
 .workgraph-graph__edge:not(.is-parent):not(.is-blocks) { stroke-dasharray: 2 3; }
 .workgraph-graph__edge-label {
   font-family: var(--mono);
-  font-size: 9px;
-  fill: var(--ink-faint);
+  font-size: 10px;
+  fill: var(--ink-dim);
+  /* Halo in the canvas colour so the label stays readable where it
+     crosses an edge or a node border. */
+  paint-order: stroke;
+  stroke: var(--bg-sunken);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 .workgraph-graph__node { cursor: pointer; }
 .workgraph-graph__node-box {
@@ -4049,13 +4068,18 @@ svg[data-svg="fit"],
   stroke-width: 1;
   opacity: 0.7;
 }
+/* Keep in sync with TITLE_FONT / META_FONT in WorkGraphGraphView.tsx,
+   which measure these labels for truncation. */
 .workgraph-graph__node-title {
-  font-size: 11.5px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
   fill: var(--ink);
 }
 .workgraph-graph__node-meta {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 400;
   fill: var(--ink-dim);
 }
 .workgraph-graph__node.is-in_progress .workgraph-graph__node-box {

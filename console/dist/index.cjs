@@ -15664,19 +15664,22 @@ function clientToViewBox(el, clientX, clientY, viewBoxW, viewBoxH) {
     y: (clientY - offsetY) / renderScale
   };
 }
-function useZoomPan(width, height) {
-  const [viewport, setViewport] = import_react24.default.useState({ tx: 0, ty: 0, scale: 1 });
+var IDENTITY_VIEWPORT = { tx: 0, ty: 0, scale: 1 };
+function useZoomPan(width, height, fit = IDENTITY_VIEWPORT) {
+  const [viewport, setViewport] = import_react24.default.useState(fit);
+  const fitRef = import_react24.default.useRef(fit);
+  fitRef.current = fit;
   const dragRef = import_react24.default.useRef(null);
   const [isDragging, setIsDragging] = import_react24.default.useState(false);
   const svgRef = import_react24.default.useRef(null);
   const reset = import_react24.default.useCallback(() => {
-    setViewport({ tx: 0, ty: 0, scale: 1 });
+    setViewport(fitRef.current);
   }, []);
-  import_react24.default.useEffect(() => {
-    setViewport({ tx: 0, ty: 0, scale: 1 });
+  import_react24.default.useLayoutEffect(() => {
+    setViewport(fitRef.current);
     dragRef.current = null;
     setIsDragging(false);
-  }, [width, height]);
+  }, [width, height, fit.tx, fit.ty, fit.scale]);
   import_react24.default.useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
@@ -15737,16 +15740,118 @@ function viewportTransform(v) {
 var import_jsx_runtime35 = require("react/jsx-runtime");
 var TITLE_MAX_CHARS = 21;
 var META_MAX_CHARS = 24;
+var LABEL_X = 26;
+var LABEL_RIGHT_PAD = 10;
+var TITLE_FONT = { size: 12, weight: 500, family: "--sans" };
+var META_FONT = { size: 10, weight: 400, family: "--mono" };
+var FIT_MIN_SCALE = 0.85;
 function truncate(text, max) {
   return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
 }
-function nodeMetaLine(node) {
+function fitLabel(text, maxWidth, measure, fallbackChars) {
+  if (!measure) return truncate(text, fallbackChars);
+  if (measure(text) <= maxWidth) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(`${text.slice(0, mid).trimEnd()}\u2026`) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, lo).trimEnd()}\u2026`;
+}
+function fitViewport(frameWidth, frameHeight, layoutWidth, layoutHeight) {
+  if (frameWidth <= 0 || frameHeight <= 0 || layoutWidth <= 0 || layoutHeight <= 0) {
+    return { tx: 0, ty: 0, scale: 1 };
+  }
+  const contain = Math.min(1, frameWidth / layoutWidth, frameHeight / layoutHeight);
+  const scale = Math.max(FIT_MIN_SCALE, contain);
+  const slackX = frameWidth - layoutWidth * scale;
+  const slackY = frameHeight - layoutHeight * scale;
+  return {
+    tx: slackX > 0 ? slackX / 2 : 0,
+    ty: slackY > 0 ? slackY / 2 : 0,
+    scale
+  };
+}
+function useFrameSize(ref, mounted) {
+  const [size, setSize] = import_react25.default.useState({ width: 0, height: 0 });
+  import_react25.default.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!mounted || !el) return;
+    const apply = (width, height) => {
+      const next = { width: Math.round(width), height: Math.round(height) };
+      setSize((prev) => prev.width === next.width && prev.height === next.height ? prev : next);
+    };
+    apply(el.clientWidth, el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1]?.contentRect;
+      if (rect) apply(rect.width, rect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, mounted]);
+  return size;
+}
+function useLabelMeasurers(ref, mounted) {
+  const [fontsEpoch, setFontsEpoch] = import_react25.default.useState(0);
+  const [families, setFamilies] = import_react25.default.useState(null);
+  import_react25.default.useEffect(() => {
+    if (typeof document === "undefined" || !document.fonts?.ready) return;
+    let live = true;
+    void document.fonts.ready.then(() => {
+      if (live) setFontsEpoch((epoch) => epoch + 1);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  import_react25.default.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!mounted || !el || typeof getComputedStyle !== "function") return;
+    const style = getComputedStyle(el);
+    const sans = style.getPropertyValue("--sans").trim() || style.fontFamily;
+    const mono = style.getPropertyValue("--mono").trim() || "monospace";
+    setFamilies((prev) => prev && prev.sans === sans && prev.mono === mono ? prev : { sans, mono });
+  });
+  return import_react25.default.useMemo(() => {
+    if (!families || typeof document === "undefined") return null;
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) return null;
+    const measurer = (font) => {
+      const family = font.family === "--mono" ? families.mono : families.sans;
+      const spec = `${font.weight} ${font.size}px ${family}`;
+      const cache = /* @__PURE__ */ new Map();
+      return (text) => {
+        const hit = cache.get(text);
+        if (hit !== void 0) return hit;
+        ctx.font = spec;
+        const width = ctx.measureText(text).width;
+        cache.set(text, width);
+        return width;
+      };
+    };
+    return { title: measurer(TITLE_FONT), meta: measurer(META_FONT) };
+  }, [families, fontsEpoch]);
+}
+function nodeMetaText(node) {
   const parts = [];
   if (node.priority && node.priority !== "medium") parts.push(node.priority);
   if (node.blocked) parts.push("blocked");
   if (node.ownerLabel) parts.push(node.ownerLabel);
   if (node.alsoUnder.length > 0) parts.push(`also under ${node.alsoUnder.join(", ")}`);
-  return truncate(parts.join(" \xB7 "), META_MAX_CHARS);
+  return parts.join(" \xB7 ");
+}
+function edgeLabelPlacement(edge) {
+  const [start, , , end] = edge.points;
+  if (Math.abs(end.x - start.x) < 12) {
+    const toward = Math.sign(start.y - end.y) || 1;
+    const gap = WORKGRAPH_GRAPH_ROW_HEIGHT - WORKGRAPH_GRAPH_NODE_HEIGHT;
+    return { x: end.x + 7, y: end.y + toward * (gap / 2), anchor: "start" };
+  }
+  const mid = workGraphEdgeMidpoint(edge);
+  return { x: mid.x, y: mid.y, anchor: "middle" };
 }
 function nodeHoverText(node, item) {
   const lines = [node.title, `status: ${node.status}`];
@@ -15781,7 +15886,22 @@ function WorkGraphGraphView({
     }
     return map;
   }, [items]);
-  const zoom = useZoomPan(layout.width, layout.height);
+  const hasNodes = layout.nodes.length > 0;
+  const svgRef = import_react25.default.useRef(null);
+  const frame = useFrameSize(svgRef, hasNodes);
+  const measured = frame.width > 0 && frame.height > 0;
+  const fit = import_react25.default.useMemo(
+    () => measured ? fitViewport(frame.width, frame.height, layout.width, layout.height) : { tx: 0, ty: 0, scale: 1 },
+    [measured, frame.width, frame.height, layout.width, layout.height]
+  );
+  const viewBoxWidth = measured ? frame.width : layout.width;
+  const viewBoxHeight = measured ? frame.height : layout.height;
+  const zoom = useZoomPan(viewBoxWidth, viewBoxHeight, fit);
+  const measure = useLabelMeasurers(svgRef, hasNodes);
+  const setSvgRef = import_react25.default.useCallback((el) => {
+    svgRef.current = el;
+    zoom.svgRef.current = el;
+  }, [zoom.svgRef]);
   const boundItemIds = import_react25.default.useMemo(() => {
     const bound = /* @__PURE__ */ new Set();
     for (const binding of attention) {
@@ -15824,11 +15944,12 @@ function WorkGraphGraphView({
       {
         "data-testid": "workgraph-graph",
         className: `workgraph-graph__svg${zoom.isDragging ? " is-dragging" : ""}`,
-        viewBox: `0 0 ${layout.width} ${layout.height}`,
+        viewBox: `0 0 ${viewBoxWidth} ${viewBoxHeight}`,
         preserveAspectRatio: "xMidYMid meet",
+        "data-scale": zoom.viewport.scale.toFixed(3),
         role: "img",
         "aria-label": "Work item dependency graph",
-        ref: zoom.svgRef,
+        ref: setSvgRef,
         onPointerDown: zoom.onPointerDown,
         onPointerMove: zoom.onPointerMove,
         onPointerUp: zoom.onPointerUp,
@@ -15866,33 +15987,23 @@ function WorkGraphGraphView({
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("g", { "data-testid": "workgraph-graph-viewport", transform: viewportTransform(zoom.viewport), children: [
             layout.edges.map((edge, index) => {
-              const mid = workGraphEdgeMidpoint(edge);
               const marker = edge.kind === "blocks" ? "url(#workgraph-graph-arrow-blocks)" : "url(#workgraph-graph-arrow)";
-              return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("g", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
-                  "path",
-                  {
-                    "data-testid": "workgraph-graph-edge",
-                    "data-kind": edge.kind,
-                    className: `workgraph-graph__edge is-${edge.kind}`,
-                    d: workGraphEdgePath(edge),
-                    markerEnd: marker
-                  }
-                ),
-                edge.kind !== "parent" ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
-                  "text",
-                  {
-                    className: "workgraph-graph__edge-label",
-                    x: mid.x,
-                    y: mid.y - 4,
-                    textAnchor: "middle",
-                    children: edge.kind
-                  }
-                ) : null
-              ] }, `${edge.kind}:${edge.fromId}:${edge.toId}:${index}`);
+              return /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("g", { children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+                "path",
+                {
+                  "data-testid": "workgraph-graph-edge",
+                  "data-kind": edge.kind,
+                  className: `workgraph-graph__edge is-${edge.kind}`,
+                  d: workGraphEdgePath(edge),
+                  markerEnd: marker
+                }
+              ) }, `${edge.kind}:${edge.fromId}:${edge.toId}:${index}`);
             }),
             layout.nodes.map((node) => {
-              const meta = nodeMetaLine(node);
+              const labelWidth = node.w - LABEL_X - LABEL_RIGHT_PAD;
+              const metaText = nodeMetaText(node);
+              const meta = metaText ? fitLabel(metaText, labelWidth, measure?.meta ?? null, META_MAX_CHARS) : "";
+              const title = fitLabel(node.title, labelWidth, measure?.title ?? null, TITLE_MAX_CHARS);
               const selected = node.itemId === selectedId;
               return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
                 "g",
@@ -15923,15 +16034,32 @@ function WorkGraphGraphView({
                       "text",
                       {
                         className: "workgraph-graph__node-title",
-                        x: 26,
+                        x: LABEL_X,
                         y: meta ? 19 : node.h / 2 + 4,
-                        children: truncate(node.title, TITLE_MAX_CHARS)
+                        children: title
                       }
                     ),
-                    meta ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("text", { className: "workgraph-graph__node-meta", x: 26, y: 34, children: meta }) : null
+                    meta ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("text", { className: "workgraph-graph__node-meta", x: LABEL_X, y: 34, children: meta }) : null
                   ]
                 },
                 node.itemId
+              );
+            }),
+            layout.edges.map((edge, index) => {
+              if (edge.kind === "parent") return null;
+              const label = edgeLabelPlacement(edge);
+              return /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+                "text",
+                {
+                  className: "workgraph-graph__edge-label",
+                  "data-testid": "workgraph-graph-edge-label",
+                  x: label.x,
+                  y: label.y,
+                  textAnchor: label.anchor,
+                  dominantBaseline: "central",
+                  children: edge.kind
+                },
+                `label:${edge.kind}:${edge.fromId}:${edge.toId}:${index}`
               );
             })
           ] })

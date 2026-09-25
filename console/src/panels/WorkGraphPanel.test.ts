@@ -5,7 +5,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { WorkGraphPanel, __workGraphPanelTest } from "./WorkGraphPanel";
-import { WorkGraphGraphView } from "./WorkGraphGraphView";
+import { WorkGraphGraphView, __workGraphGraphViewTest } from "./WorkGraphGraphView";
 import type { WorkGraphPanelData } from "./WorkGraphPanel";
 import type { WorkGraphWireBinding, WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 
@@ -288,4 +288,39 @@ test("workgraph owner labels prefer display names, then key ids, then claim owne
     "sess-42",
   );
   assert.equal(workGraphOwnerLabelOf({}), "");
+});
+
+test("workgraph graph fit never enlarges and never shrinks below the legibility floor", () => {
+  const { fitViewport, FIT_MIN_SCALE } = __workGraphGraphViewTest;
+  // Small graph: 1:1, centred in the frame.
+  assert.deepEqual(fitViewport(800, 380, 400, 200), { tx: 200, ty: 90, scale: 1 });
+  // Slightly too big: scaled down to fit, centred on the slack axis.
+  const snug = fitViewport(800, 380, 880, 200);
+  assert.ok(Math.abs(snug.scale - 800 / 880) < 1e-9);
+  assert.equal(snug.tx, 0);
+  assert.ok(snug.ty > 0);
+  // Much too big: floored, pinned top-left so the user pans from the start.
+  const tall = fitViewport(800, 380, 488, 1400);
+  assert.equal(tall.scale, FIT_MIN_SCALE);
+  assert.equal(tall.ty, 0);
+  assert.ok(tall.tx > 0, "narrow axis still centres");
+  // Unmeasured frame falls back to identity.
+  assert.deepEqual(fitViewport(0, 0, 400, 200), { tx: 0, ty: 0, scale: 1 });
+});
+
+test("workgraph graph labels truncate by measured width with a character fallback", () => {
+  const { fitLabel } = __workGraphGraphViewTest;
+  const mono: (text: string) => number = (text) => text.length * 7;
+  assert.equal(fitLabel("Docs", 132, mono, 21), "Docs");
+  const long = "Make the semver readiness gate declare breaking changes";
+  const fitted = fitLabel(long, 132, mono, 21);
+  assert.ok(fitted.endsWith("…"));
+  assert.ok(mono(fitted) <= 132, `fits: ${fitted}`);
+  // No trailing space before the ellipsis.
+  assert.ok(!/\s…$/.test(fitted));
+  // A wider face (the terminal variant's monospace) keeps fewer characters.
+  const wide: (text: string) => number = (text) => text.length * 8;
+  assert.ok(fitLabel(long, 132, wide, 21).length < fitted.length);
+  // Without a measurer (server render) the character cap applies.
+  assert.equal(fitLabel(long, 132, null, 21), `${long.slice(0, 20)}…`);
 });

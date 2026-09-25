@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console WorkGraph graph view: labels no longer render smeared or tiny. The
+  graph SVG inherited the global icon reset (`stroke: currentColor;
+  stroke-width: 2`), which outlined every glyph, status dot and arrowhead, and
+  its viewBox was the layout size, so `preserveAspectRatio` scaled all text with
+  the graph (about 6px for a dozen items). The viewBox is now the measured frame
+  (one user unit per CSS pixel), the initial and Fit view scale the layout down
+  to fit but never below 0.85, labels use the console font tokens with
+  geometric text rendering, titles and meta lines truncate by measured width
+  for the active theme variant (full text stays in the hover tooltip), and
+  `blocks` edge labels sit above the nodes beside their arrowhead.
+
 - The console voice context status maps Meerkat 0.8.41's
   `LiveContextPreparationFailure::AuthorityRejected` (the generated authority
   refused the initial context, no fallback attempted) instead of failing to
