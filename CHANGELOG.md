@@ -145,9 +145,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recomputes MobKit's raw-bytes recipe over the payload it returned and attests
   only an exact match, so Meerkat's durable-fork preflight re-homes the child's
   reference to the Meerkat content address and realtime history hydration
-  accepts it. The source transcript and its stored object are unchanged; any
-  other reference stays unattested and is refused as before. Requires the
-  Meerkat release that adds `BlobStore::attest_address`.
+  accepts it. Meerkat asks only when the stored media type matches the image
+  block's and the bytes are a valid image of that type, so a non-image
+  MobKit object cannot pass as an image. The source transcript and its stored
+  object are unchanged; any other reference stays unattested and is refused as
+  before. Requires the Meerkat release that adds `BlobStore::attest_address`.
 
 - Console WorkGraph graph view: labels no longer render smeared or tiny. The
   graph SVG inherited the global icon reset (`stroke: currentColor;

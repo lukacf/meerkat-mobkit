@@ -371,6 +371,11 @@ impl BlobStore for Base64BlobStoreAdapter {
     /// it refuses such a reference. The adapter recomputes MobKit's recipe
     /// over the returned payload and attests only an exact match; every other
     /// reference, and a payload that is not valid base64, stays unattested.
+    ///
+    /// The attestation binds the reference to the payload's stored media type
+    /// and bytes only. The adapter never sees the media type a transcript
+    /// block declares for the reference, so checking that declaration against
+    /// `payload.media_type` is the caller's side of the gate.
     async fn attest_address(
         &self,
         blob_id: &BlobId,
