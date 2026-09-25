@@ -26,7 +26,10 @@
 //!   The service refuses live/running sessions with `SessionError::Busy`
 //!   (`TranscriptEditRunningBehavior` has only `Reject`); that surfaces as
 //!   this verb's typed refusal — quiesce the member first (retire/park), then
-//!   retry.
+//!   retry. The cut knowingly drops EVERYTHING before it, the system prompt
+//!   and any detached `fork_off`/council completion entries included; the
+//!   response reports how many completion entries went
+//!   (`dropped_completion_entries`) so that loss is never silent.
 //!
 //! Both verbs resolve their target through the same identity-control gate the
 //! neighboring destructive verbs (`mobkit/respawn`, `mobkit/reset`,
@@ -112,6 +115,16 @@ pub(crate) fn pair_safe_cut_index(messages: &[Message], keep_last: usize) -> usi
         cut -= 1;
     }
     cut
+}
+
+/// How many detached job completion entries lie before `cut`, the rows a
+/// keep-last-N bound drops. Recognized by the typed completion marker only.
+pub(crate) fn completion_entries_before_cut(messages: &[Message], cut: usize) -> usize {
+    messages
+        .iter()
+        .take(cut)
+        .filter(|message| crate::detached_completion::is_detached_completion_entry(message))
+        .count()
 }
 
 struct ResolvedOperatorTarget {
@@ -796,6 +809,11 @@ async fn rebuild_member_for_fresh_build(
 
 /// `mobkit/bound_member_transcript`: one audited keep-last-N transcript
 /// rewrite on a quiesced member session.
+///
+/// The conversation continues from the N most recent messages; everything
+/// before the cut is dropped, the system prompt and detached job completion
+/// entries included. `dropped_completion_entries` in the response counts the
+/// completion entries that went with it.
 pub(super) async fn handle_bound_member_transcript(
     runtime: &UnifiedRuntime,
     ctx: &IdentityFirstContext,
@@ -900,11 +918,13 @@ pub(super) async fn handle_bound_member_transcript(
                 "session_id": session_id.to_string(),
                 "bounded": false,
                 "removed": 0,
+                "dropped_completion_entries": 0,
                 "message_count": messages.len(),
             }),
         );
     }
 
+    let dropped_completion_entries = completion_entries_before_cut(&messages, cut);
     let marker = Message::SystemNotice(SystemNoticeMessage::new(
         SystemNoticeKind::Generic,
         format!(
@@ -937,6 +957,7 @@ pub(super) async fn handle_bound_member_transcript(
                 "session_id": result.session_id.to_string(),
                 "bounded": true,
                 "removed": cut,
+                "dropped_completion_entries": dropped_completion_entries,
                 "kept": messages.len() - cut,
                 "message_count": result.message_count,
                 "parent_revision": result.parent_revision,
@@ -992,6 +1013,43 @@ mod tests {
         let messages = vec![user("a"), user("b")];
         assert_eq!(pair_safe_cut_index(&messages, 2), 0);
         assert_eq!(pair_safe_cut_index(&messages, 10), 0);
+    }
+
+    /// A detached job's durable completion entry, exactly as meerkat's
+    /// detached delivery builds it.
+    fn completion_entry(job_id: &str) -> Message {
+        Message::SystemNotice(
+            meerkat_mob_mcp::detached_delivery::detached_completion_notice(
+                "fork_off",
+                job_id,
+                meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+                &serde_json::json!({ "text": "done" }),
+            )
+            .expect("meerkat builds the completion notice"),
+        )
+    }
+
+    /// Only completion entries before the cut count; ones in the kept window
+    /// and ordinary notices do not.
+    #[test]
+    fn dropped_completion_entries_count_only_rows_before_the_cut() {
+        let messages = vec![
+            completion_entry("job-a"),
+            user("a"),
+            Message::SystemNotice(SystemNoticeMessage::new(
+                SystemNoticeKind::Generic,
+                "Background fork_off job job-x finished",
+            )),
+            completion_entry("job-b"),
+            user("b"),
+            completion_entry("job-c"),
+            user("tail"),
+        ];
+        let cut = pair_safe_cut_index(&messages, 3);
+        assert_eq!(cut, 4);
+        assert_eq!(completion_entries_before_cut(&messages, cut), 2);
+        assert_eq!(completion_entries_before_cut(&messages, 0), 0);
+        assert_eq!(completion_entries_before_cut(&messages, messages.len()), 3);
     }
 
     #[test]
@@ -2521,7 +2579,13 @@ comms = true
         // full-suite runs). Quiesce on the durable surface instead.
         let seeded_len = settled_transcript_len(&service, &session_id).await;
         let (assistant, results) = tool_use_pair("call-straddle");
-        let fixture = vec![user("older"), assistant, results, user("tail")];
+        let fixture = vec![
+            completion_entry("job-before-cut"),
+            user("older"),
+            assistant,
+            results,
+            user("tail"),
+        ];
         let fixture_len = fixture.len();
         // The turn just finished, so a still-draining runtime admission can
         // answer Busy briefly; that is the documented posture, retried here
@@ -2553,11 +2617,12 @@ comms = true
             }
         }
 
-        // Transcript is now [..seeded_len ordinary rows, older, assistant,
-        // results, tail] with the results row at index seeded_len + 2.
-        // keep_last = 2 naively cuts at len - 2 = seeded_len + 2, which IS
-        // the tool_results row; the pair-safe cut walks back one to keep the
-        // pair whole (removed = seeded_len + 1, kept = 3).
+        // Transcript is now [..seeded_len ordinary rows, completion entry,
+        // older, assistant, results, tail] with the results row at index
+        // seeded_len + 3. keep_last = 2 naively cuts at len - 2 = seeded_len
+        // + 3, which IS the tool_results row; the pair-safe cut walks back
+        // one to keep the pair whole (removed = seeded_len + 2, kept = 3),
+        // dropping the completion entry with the rest.
         //
         // Pin that premise before spending it on `removed` below. If anything
         // else reached the transcript, this fails naming the race rather than
@@ -2588,8 +2653,13 @@ comms = true
         assert_eq!(result["bounded"], Value::Bool(true), "{result:#?}");
         assert_eq!(
             result["removed"],
-            serde_json::json!(seeded_len + 1),
+            serde_json::json!(seeded_len + 2),
             "the cut must walk back off the tool_results row: {result:#?}"
+        );
+        assert_eq!(
+            result["dropped_completion_entries"],
+            serde_json::json!(1),
+            "the dropped completion entry must be reported, never silent: {result:#?}"
         );
         assert!(result["revision"].as_str().is_some(), "{result:#?}");
 

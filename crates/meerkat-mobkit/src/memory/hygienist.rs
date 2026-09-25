@@ -27,7 +27,8 @@
 //! `collapse` replaces a contiguous run of non-tool messages with one typed
 //! system notice. Deleting arbitrary messages is not expressible — the
 //! validator, not the prompt, is what makes tool-pairing breakage
-//! impossible.
+//! impossible. The system prompt and a detached job's completion entry
+//! (`HygieneRole::BackgroundJobResult`) are untouchable by the same law.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -827,10 +828,18 @@ pub enum HygieneRole {
     /// orphan the paired tool results, so it is untouchable.
     AssistantToolUse,
     ToolResults,
+    /// A detached `fork_off`/council job's durable completion entry. It
+    /// records an outcome the agent refers back to on later turns, not
+    /// scaffolding, so it is untouchable: collapsing it would erase that
+    /// outcome from the working view.
+    BackgroundJobResult,
 }
 
 impl HygieneRole {
     pub fn of(message: &Message) -> Self {
+        if crate::detached_completion::is_detached_completion_entry(message) {
+            return Self::BackgroundJobResult;
+        }
         match message {
             Message::System(_) => Self::System,
             Message::SystemNotice(_) => Self::SystemNotice,
@@ -854,6 +863,7 @@ impl HygieneRole {
             Self::Assistant => "assistant",
             Self::AssistantToolUse => "assistant (tool call)",
             Self::ToolResults => "tool results",
+            Self::BackgroundJobResult => "background job result",
         }
     }
 }
@@ -865,7 +875,7 @@ pub enum RevisionReject {
     /// Malformed ranges: out of bounds, empty, overlapping.
     InvalidRange { detail: String },
     /// Role law: prune targets non-tool messages, collapse touches tool
-    /// activity or the system prompt.
+    /// activity, the system prompt or a background job result.
     IllegalRole { detail: String },
     /// §8.6 hard-block: the revision touches a span referenced by a
     /// quarantined record whose steward review has not completed.
@@ -1826,6 +1836,20 @@ mod tests {
         messages.iter().map(HygieneRole::of).collect()
     }
 
+    /// A detached `fork_off` job's durable completion entry, exactly as
+    /// meerkat's detached delivery builds it.
+    fn completion_entry() -> Message {
+        Message::SystemNotice(
+            meerkat_mob_mcp::detached_delivery::detached_completion_notice(
+                "fork_off",
+                "job-a",
+                meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+                &serde_json::json!({ "text": "done" }),
+            )
+            .expect("meerkat builds the completion notice"),
+        )
+    }
+
     fn prune(start: usize, end: usize) -> RevisionOp {
         RevisionOp {
             action: RevisionAction::PruneToolResults,
@@ -1957,6 +1981,46 @@ mod tests {
             OrderingContext::SequencedAfterHarvest,
         );
         assert!(matches!(result, Err(RevisionReject::IllegalRole { .. })));
+    }
+
+    /// A background job result is an outcome the agent refers back to, not
+    /// scaffolding: a collapse covering it is refused wholesale, while the
+    /// scaffolding beside it still collapses.
+    #[test]
+    fn validator_never_collapses_a_background_job_result() {
+        let messages = vec![
+            user("scaffold notice"), // 0
+            completion_entry(),      // 1
+            user("scaffold notice"), // 2
+            user("scaffold notice"), // 3
+        ];
+        let roles = roles(&messages);
+        assert_eq!(roles[1], HygieneRole::BackgroundJobResult);
+        let result = validate_revision(
+            &RevisionProposal {
+                ops: vec![collapse(0, 3)],
+            },
+            &roles,
+            &[],
+            OrderingContext::SequencedAfterHarvest,
+        );
+        assert!(
+            matches!(result, Err(RevisionReject::IllegalRole { .. })),
+            "{result:?}"
+        );
+        let result = validate_revision(
+            &RevisionProposal {
+                ops: vec![collapse(2, 4)],
+            },
+            &roles,
+            &[],
+            OrderingContext::SequencedAfterHarvest,
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            render_transcript(&messages).contains("[1] background job result: "),
+            "the hygienist sees the entry under its own role"
+        );
     }
 
     #[test]

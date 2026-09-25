@@ -122,6 +122,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   implementations; `MemberIdleRetireOverrideRecord` and
   `DelegateIdleRetireOverride` are now public.
 
+- Detached `fork_off`/council completion entries are protected from MobKit's
+  transcript curation (requires the meerkat release carrying #1190). Meerkat
+  records a detached job's outcome in the owner's transcript as a durable
+  `BackgroundJob` system notice whose `SystemNoticeBlock::BackgroundJob`
+  blocks are `persisted`; `meerkat_mobkit::detached_completion::
+  is_detached_completion_entry` recognizes exactly that typed shape
+  (non-persisted `BackgroundJob` notices, such as shell job progress, stay
+  ordinary refresh projections). The hygienist's `collapse` op could fold
+  such a notice into a one-line summary like any other system notice; the
+  entry now classifies as the new `HygieneRole::BackgroundJobResult`, which
+  the validator treats as untouchable like the system prompt (a new variant
+  on the public `HygieneRole` enum). `mobkit/bound_member_transcript` keeps
+  its keep-last-N contract and still drops everything before the cut, but
+  its response now reports `dropped_completion_entries` so losing completion
+  entries is never silent.
+
 - `reset_all` startup readiness (`startup_history`) now waits for the startup
   turn to really end. It counted any `turn_completed` frame as the end, but
   upcoming Meerkat emits `turn_completed` with `stop_reason: tool_use` after
