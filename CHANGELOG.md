@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A persistent `MobBootstrapSpec` (`MobBootstrapSpec::persistent`, and the
+  persistent `UnifiedRuntimeBuilder` path identity-first library hosts use)
+  ran two `MeerkatMachine::persistent` instances over one runtime store: the
+  spec's own machine, which `MobRuntime` hands to `MobBuilder` and which
+  therefore hosts member sessions, and the persistent session service's
+  internally cached one, which the wrapped session service served from
+  `runtime_adapter()`. Consumers of the session service's adapter, among them
+  the agent mob tools' `MobMcpState`, acted on a machine that never
+  registered the member sessions. The session service now serves the spec's
+  machine, as the gateway and runtime-backed ephemeral compositions already
+  did.
+
 - `reset_all` startup readiness (`startup_history`) now waits for the startup
   turn to really end. It counted any `turn_completed` frame as the end, but
   upcoming Meerkat emits `turn_completed` with `stop_reason: tool_use` after

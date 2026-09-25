@@ -7713,7 +7713,15 @@ impl MobBootstrapSpec {
             hook,
             dispatch_taint: None,
             after_create_hook,
-            runtime_adapter_override: None,
+            // ONE machine for the whole spec. Without the override the
+            // wrapped service answers `runtime_adapter()` with the persistent
+            // service's own cached `MeerkatMachine::persistent` over the same
+            // runtime store: a second machine next to `runtime_adapter`, which
+            // `MobRuntime` hands to `MobBuilder` and which therefore hosts the
+            // member sessions. Every consumer of the session service's
+            // adapter (the agent mob tools' `MobMcpState`, among others) would
+            // then act on a machine that never registered those sessions.
+            runtime_adapter_override: Some(Arc::clone(&runtime_adapter)),
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
                 &session_read_epochs,
             )))),
@@ -16784,6 +16792,41 @@ comms = true
                 "{domain} must be a declared ephemeral choice"
             );
         }
+    }
+
+    /// Persistent builds run on ONE machine: the session service's runtime
+    /// adapter (what the agent mob tools and every other adapter consumer
+    /// use) is the exact machine the runtime hands to `MobBuilder`, not a
+    /// second `MeerkatMachine::persistent` over the same runtime store.
+    #[test]
+    fn persistent_spec_session_service_uses_the_spec_runtime_machine() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+        let spec = MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().join("state"),
+            4,
+            session_store,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let runtime = spec
+            .runtime_adapter
+            .clone()
+            .unwrap_or_else(|| panic!("persistent spec carries its runtime machine"));
+        let served = spec
+            .session_service
+            .runtime_adapter()
+            .unwrap_or_else(|| panic!("persistent session service exposes a runtime machine"));
+        assert!(
+            Arc::ptr_eq(&served, &runtime),
+            "the session service must serve the runtime's own machine, not a second one"
+        );
     }
 
     /// Ephemeral counterpart: runtime-backed ephemeral builds must use a
