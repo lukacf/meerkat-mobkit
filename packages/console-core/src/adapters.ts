@@ -3194,6 +3194,15 @@ export function mapFramesToTimelineEntries(
   const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
   const emittedImages = new Set<string>();
   const emittedUserInputs = new Set<string>();
+  // First-emitted user entry per dedupe key. A later twin of the same input
+  // (live send frame vs persisted history vs run_started prompt) may be the
+  // only one carrying the typed origin; fold it onto the kept entry.
+  const emittedUserEntries = new Map<string, ConversationTimelineEntry>();
+  const foldUserOrigin = (userKey: string, twin: ConversationTimelineEntry) => {
+    const kept = emittedUserEntries.get(userKey);
+    if (!kept || kept.kind !== "message" || twin.kind !== "message" || !twin.origin) return;
+    kept.origin = { ...twin.origin, ...(kept.origin ?? {}) };
+  };
   const emittedCommsNotices = new Map<string, { sourceKind?: string; timestampMs?: number }>();
 
   let pendingText = "";
@@ -3484,9 +3493,13 @@ export function mapFramesToTimelineEntries(
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
         if (userKey && emittedUserInputs.has(userKey)) {
+          foldUserOrigin(userKey, userEntry);
           continue;
         }
-        if (userKey) emittedUserInputs.add(userKey);
+        if (userKey) {
+          emittedUserInputs.add(userKey);
+          emittedUserEntries.set(userKey, userEntry);
+        }
         entries.push(userEntry);
       }
       continue;
@@ -3504,9 +3517,13 @@ export function mapFramesToTimelineEntries(
         for (const promptEntry of promptEntries) {
           const userKey = userPromptDedupeKey(frame, promptEntry);
           if (userKey && emittedUserInputs.has(userKey)) {
+            foldUserOrigin(userKey, promptEntry);
             continue;
           }
-          if (userKey) emittedUserInputs.add(userKey);
+          if (userKey) {
+            emittedUserInputs.add(userKey);
+            emittedUserEntries.set(userKey, promptEntry);
+          }
           entries.push(promptEntry);
         }
         continue;

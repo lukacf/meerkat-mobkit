@@ -9515,6 +9515,22 @@ svg[data-svg=fit],
   display: grid;
   align-content: center;
 }
+.conv-turn-rail[data-overflowing=false] {
+  visibility: hidden;
+}
+.conv-turn-rail__list {
+  position: relative;
+}
+.conv-turn-rail__list::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  left: -4px;
+  width: 1px;
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  pointer-events: none;
+}
 .conv-turn-rail__list {
   display: grid;
   gap: 3px;
@@ -9895,8 +9911,9 @@ svg[data-svg=fit],
   gap: 6px;
   align-self: flex-start;
   color: var(--ink-faint);
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--disp);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .msg--event .msg__bubble,
 .msg--origin .msg__bubble {

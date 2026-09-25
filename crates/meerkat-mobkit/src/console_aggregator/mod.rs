@@ -41,7 +41,8 @@ pub use types::{
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
     ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
-    ConsoleTimelineWindowQuery, ConsoleVisibility, IdentityFirstReservation, NewConsoleFrame,
+    ConsoleTimelineWindowQuery, ConsoleTurnOrigin, ConsoleVisibility, IdentityFirstReservation,
+    NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -1483,8 +1484,12 @@ impl MobKitConsoleAggregator {
             .as_deref()
             .unwrap_or("queue")
             .to_string();
-        let request_fingerprint =
-            send_request_fingerprint(&request.origin, &request.content, &handling_mode_value);
+        let request_fingerprint = send_request_fingerprint(
+            &request.origin,
+            request.origin_kind,
+            &request.content,
+            &handling_mode_value,
+        );
         if let Some(existing) = self
             .inner
             .store
@@ -1502,7 +1507,9 @@ impl MobKitConsoleAggregator {
                         .payload
                         .get("handling_mode")
                         .and_then(Value::as_str)
-                        == Some(handling_mode_value.as_str());
+                        == Some(handling_mode_value.as_str())
+                    && existing.payload.get("origin_kind").and_then(Value::as_str)
+                        == request.origin_kind.map(ConsoleTurnOrigin::as_str);
             if !same_request {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
@@ -1553,12 +1560,7 @@ impl MobKitConsoleAggregator {
             session_id: session_id.clone(),
             kind: "user_input".to_string(),
             status: ConsoleFrameStatus::Accepted,
-            payload: json!({
-                "content": request.content,
-                "origin": request.origin,
-                "idempotency_key": request.idempotency_key,
-                "handling_mode": handling_mode_value,
-            }),
+            payload: user_input_payload(&request, &handling_mode_value),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: Some(request_fingerprint.clone()),
@@ -1649,8 +1651,12 @@ impl MobKitConsoleAggregator {
             &request.origin,
             &request.idempotency_key,
         );
-        let request_fingerprint =
-            send_request_fingerprint(&request.origin, &request.content, &handling_mode_value);
+        let request_fingerprint = send_request_fingerprint(
+            &request.origin,
+            request.origin_kind,
+            &request.content,
+            &handling_mode_value,
+        );
         if let Some(existing) = self
             .inner
             .store
@@ -1668,7 +1674,9 @@ impl MobKitConsoleAggregator {
                         .payload
                         .get("handling_mode")
                         .and_then(Value::as_str)
-                        == Some(handling_mode_value.as_str());
+                        == Some(handling_mode_value.as_str())
+                    && existing.payload.get("origin_kind").and_then(Value::as_str)
+                        == request.origin_kind.map(ConsoleTurnOrigin::as_str);
             if !same_request {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
@@ -1690,12 +1698,7 @@ impl MobKitConsoleAggregator {
             session_id: session_id.map(ToString::to_string),
             kind: "user_input".to_string(),
             status: ConsoleFrameStatus::Accepted,
-            payload: json!({
-                "content": request.content,
-                "origin": request.origin,
-                "idempotency_key": request.idempotency_key,
-                "handling_mode": handling_mode_value,
-            }),
+            payload: user_input_payload(&request, &handling_mode_value),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
                 source_cursor: Some(request_fingerprint.clone()),
@@ -5464,9 +5467,38 @@ fn send_dedupe_key(
     format!("send:{runtime_key}:{identity}:{origin}:{idempotency_key}")
 }
 
-fn send_request_fingerprint(origin: &str, content: &Value, handling_mode: &str) -> String {
+/// Request fingerprint for idempotent replay. A declared `origin_kind` is
+/// part of the request; an undeclared one leaves the fingerprint exactly as
+/// it was before the field existed, so stored replays keep matching.
+fn send_request_fingerprint(
+    origin: &str,
+    origin_kind: Option<ConsoleTurnOrigin>,
+    content: &Value,
+    handling_mode: &str,
+) -> String {
     let content_json = serde_json::to_string(content).unwrap_or_default();
-    hash_short(&format!("{origin}\n{handling_mode}\n{content_json}"))
+    match origin_kind {
+        None => hash_short(&format!("{origin}\n{handling_mode}\n{content_json}")),
+        Some(kind) => hash_short(&format!(
+            "{origin}\n{}\n{handling_mode}\n{content_json}",
+            kind.as_str()
+        )),
+    }
+}
+
+/// The `user_input` frame payload for a console send. `origin_kind` is
+/// written only when the caller declared one.
+fn user_input_payload(request: &ConsoleSendRequest, handling_mode: &str) -> Value {
+    let mut payload = json!({
+        "content": request.content,
+        "origin": request.origin,
+        "idempotency_key": request.idempotency_key,
+        "handling_mode": handling_mode,
+    });
+    if let (Some(kind), Some(object)) = (request.origin_kind, payload.as_object_mut()) {
+        object.insert("origin_kind".to_string(), Value::from(kind.as_str()));
+    }
+    payload
 }
 
 /// Namespace for identity-first console interaction ids (UUIDv5 over the
@@ -6743,6 +6775,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "dispatch-mirroring-1".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect("console send accepted");
@@ -6844,6 +6877,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "scheduled-mirroring-1".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect("console send accepted");
@@ -7352,6 +7386,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "rt-shadow-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -7370,6 +7405,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "rt-shadow-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect_err(
@@ -7919,6 +7955,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "member-hidden-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -7935,6 +7972,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "member-hidden-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect_err("member-hidden live alias must not receive sends");
@@ -8113,6 +8151,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "stale-durable-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect_err("stale durable binding must not send to the wrong live member");
@@ -8130,6 +8169,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "stale-durable-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -8277,6 +8317,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "session-rebind-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -8447,6 +8488,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "session-read-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -8574,6 +8616,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "wrong-projection-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await
             .expect_err("wrong projected live identity must not send as unknown");
@@ -8591,6 +8634,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "wrong-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -8742,6 +8786,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "hidden-wrong-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -9128,6 +9173,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "respawn-bound-generation-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             })
             .await?;
         assert_eq!(accepted.session_id, Some(bound_session_id.to_string()));
@@ -9283,6 +9329,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "duplicate-live-alias-durable-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -9388,6 +9435,7 @@ comms = true
                     origin: "console:test".to_string(),
                     idempotency_key: "visible-after-hidden-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    origin_kind: None,
                 },
                 None,
             )
@@ -10184,6 +10232,7 @@ comms = true
                 origin: "console:test".to_string(),
                 idempotency_key: "nonblocking-send".to_string(),
                 handling_mode: Some("queue".to_string()),
+                origin_kind: None,
             }),
         )
         .await

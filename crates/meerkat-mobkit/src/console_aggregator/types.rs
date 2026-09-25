@@ -324,6 +324,49 @@ pub struct ConsoleIdentityInspection {
     pub peers: Vec<String>,
 }
 
+/// Typed kind of the caller behind a console send.
+///
+/// `origin` stays the caller's free-form identifier for audit and routing;
+/// this is the closed, typed classification a transcript renders from
+/// ("Operator probe", "Scheduled turn", ...). Absent means the caller did not
+/// declare one. Unknown values are refused at deserialization rather than
+/// guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ConsoleTurnOrigin {
+    /// A human operator typing into a console or client.
+    Operator,
+    /// An automated operator check that asks the agent for a proof reply
+    /// (release gates, health probes).
+    OperatorProbe,
+    /// An external connector delivering an event as a turn.
+    Connector,
+    /// A scheduled job.
+    Scheduler,
+    /// A policy-driven turn.
+    Policy,
+    /// A flow step.
+    Flow,
+    /// Host-internal system work.
+    System,
+}
+
+impl ConsoleTurnOrigin {
+    /// The snake_case wire value, as persisted on the `user_input` frame.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::OperatorProbe => "operator_probe",
+            Self::Connector => "connector",
+            Self::Scheduler => "scheduler",
+            Self::Policy => "policy",
+            Self::Flow => "flow",
+            Self::System => "system",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConsoleSendRequest {
     pub identity: String,
@@ -332,6 +375,10 @@ pub struct ConsoleSendRequest {
     pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handling_mode: Option<String>,
+    /// Typed caller kind; persisted on the `user_input` frame as
+    /// `origin_kind` so the transcript labels the turn from data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_kind: Option<ConsoleTurnOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -425,5 +472,47 @@ mod timeline_window_query_defaults {
         let q: ConsoleTimelineWindowQuery =
             serde_json::from_str(r#"{"limit": 7}"#).expect("explicit limit");
         assert_eq!(q.limit, 7);
+    }
+}
+
+#[cfg(test)]
+mod console_turn_origin_tests {
+    use super::{ConsoleSendRequest, ConsoleTurnOrigin};
+
+    #[test]
+    fn origin_kind_is_optional_typed_and_fail_closed() -> Result<(), serde_json::Error> {
+        let absent: ConsoleSendRequest = serde_json::from_value(serde_json::json!({
+            "identity": "agent:a", "content": "hi", "origin": "console:p", "idempotency_key": "k"
+        }))?;
+        assert_eq!(absent.origin_kind, None);
+        assert!(serde_json::to_value(&absent)?.get("origin_kind").is_none());
+
+        let probe: ConsoleSendRequest = serde_json::from_value(serde_json::json!({
+            "identity": "agent:a", "content": "hi", "origin": "homecore:gate",
+            "idempotency_key": "k", "origin_kind": "operator_probe"
+        }))?;
+        assert_eq!(probe.origin_kind, Some(ConsoleTurnOrigin::OperatorProbe));
+
+        let unknown = serde_json::from_value::<ConsoleSendRequest>(serde_json::json!({
+            "identity": "agent:a", "content": "hi", "origin": "x",
+            "idempotency_key": "k", "origin_kind": "gate_probe"
+        }));
+        assert!(
+            unknown.is_err(),
+            "unknown origin kinds are refused, not guessed"
+        );
+
+        for kind in [
+            ConsoleTurnOrigin::Operator,
+            ConsoleTurnOrigin::OperatorProbe,
+            ConsoleTurnOrigin::Connector,
+            ConsoleTurnOrigin::Scheduler,
+            ConsoleTurnOrigin::Policy,
+            ConsoleTurnOrigin::Flow,
+            ConsoleTurnOrigin::System,
+        ] {
+            assert_eq!(serde_json::to_value(kind)?, kind.as_str());
+        }
+        Ok(())
     }
 }

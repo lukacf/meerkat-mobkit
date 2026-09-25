@@ -113,6 +113,12 @@ export interface ConversationEntryOrigin {
    * their own identifier.
    */
   sendOrigin?: string | null;
+  /**
+   * Typed caller kind from a console send (`user_input.origin_kind`, MobKit
+   * `ConsoleTurnOrigin`): `operator`, `operator_probe`, `connector`,
+   * `scheduler`, `policy`, `flow`, `system`.
+   */
+  originKind?: string | null;
   /** meerkat `render_metadata.class` persisted on the transcript message. */
   renderClass?: string | null;
 }

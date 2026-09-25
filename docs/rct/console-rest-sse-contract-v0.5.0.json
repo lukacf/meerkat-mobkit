@@ -167,9 +167,10 @@
             "idempotency_key"
           ],
           "optional_fields": [
-            "handling_mode"
+            "handling_mode",
+            "origin_kind"
           ],
-          "validation": "origin and idempotency_key must be non-empty after trimming. Missing-field HTTP extraction errors are distinct from JSON-RPC invalid-params responses."
+          "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused. Missing-field HTTP extraction errors are distinct from JSON-RPC invalid-params responses."
         },
         "success": {
           "type_ref": "TYPE-023"
@@ -411,9 +412,10 @@
               "idempotency_key"
             ],
             "optional_fields": [
-              "handling_mode"
+              "handling_mode",
+              "origin_kind"
             ],
-            "validation": "origin and idempotency_key must be non-empty after trimming."
+            "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused."
           },
           "success": {
             "type_ref": "TYPE-023"

@@ -205,6 +205,7 @@ comms = true
             origin: "console".to_string(),
             idempotency_key: key.to_string(),
             handling_mode: None,
+            origin_kind: None,
         }
     }
 
@@ -794,6 +795,7 @@ async fn console_human_active_steer_stays_steer_and_commits_once() {
     .unwrap();
     let request = ConsoleSendRequest {
         handling_mode: Some("steer".to_string()),
+        origin_kind: None,
         ..h.request("steer", HUMAN)
     };
     let steer = tokio::time::timeout(WAIT, h.send(request.clone()))

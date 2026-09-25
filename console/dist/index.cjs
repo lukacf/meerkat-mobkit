@@ -1167,6 +1167,15 @@ var RENDER_CLASS_SOURCES = {
   tool_scope_notice: { kind: "system_notice", label: "Tool scope notice" },
   ops_progress: { kind: "system_notice", label: "Progress update" }
 };
+var TURN_ORIGIN_SOURCES = {
+  operator: { kind: "operator", label: "Operator" },
+  operator_probe: { kind: "operator_probe", label: "Operator probe" },
+  connector: { kind: "external_event", label: "Connector" },
+  scheduler: { kind: "scheduled", label: "Scheduled turn" },
+  policy: { kind: "system", label: "Policy turn" },
+  flow: { kind: "flow_step", label: "Flow step" },
+  system: { kind: "system", label: "System turn" }
+};
 var PEER_CONTENT_NOUNS = {
   message: "a message",
   request: "a request",
@@ -1253,11 +1262,13 @@ function runtimeEventFromFrame(eventType, data) {
 function entryOriginFromFrameData(data) {
   const record2 = recordOf(data);
   const sendOrigin = trimmedString(record2?.origin);
+  const originKind = trimmedString(record2?.origin_kind);
   const renderMetadata = recordOf(recordOf(record2?.message)?.render_metadata);
   const renderClass = trimmedString(renderMetadata?.class);
-  if (!sendOrigin && !renderClass) return null;
+  if (!sendOrigin && !originKind && !renderClass) return null;
   return {
     ...sendOrigin ? { sendOrigin } : {},
+    ...originKind ? { originKind } : {},
     ...renderClass ? { renderClass } : {}
   };
 }
@@ -1298,10 +1309,20 @@ function describeUserOrigin(origin) {
     return { ...byClass, detail: null, sentence: null, untrusted: false };
   }
   const sendOrigin = origin?.sendOrigin?.trim();
+  const separator = sendOrigin ? sendOrigin.indexOf(":") : -1;
+  const namespace = sendOrigin && separator >= 0 ? sendOrigin.slice(0, separator) : sendOrigin;
+  const fromThisConsole = namespace === CONSOLE_SEND_ORIGIN_NAMESPACE;
+  const byKind = origin?.originKind ? TURN_ORIGIN_SOURCES[origin.originKind.trim()] : void 0;
+  if (byKind) {
+    return {
+      ...byKind,
+      detail: byKind.kind === "operator" && fromThisConsole ? "sent from the console" : sendOrigin && !fromThisConsole ? `via ${sendOrigin}` : null,
+      sentence: null,
+      untrusted: false
+    };
+  }
   if (sendOrigin) {
-    const separator = sendOrigin.indexOf(":");
-    const namespace = separator >= 0 ? sendOrigin.slice(0, separator) : sendOrigin;
-    if (namespace === CONSOLE_SEND_ORIGIN_NAMESPACE) {
+    if (fromThisConsole) {
       return { kind: "operator", label: "Operator", detail: "sent from the console", sentence: null, untrusted: false };
     }
     return { kind: "user", label: "User message", detail: `via ${sendOrigin}`, sentence: null, untrusted: false };
@@ -9666,6 +9687,12 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const liveInteractionIds = liveInteractionIdSet(orderedFrames);
   const emittedImages = /* @__PURE__ */ new Set();
   const emittedUserInputs = /* @__PURE__ */ new Set();
+  const emittedUserEntries = /* @__PURE__ */ new Map();
+  const foldUserOrigin = (userKey, twin) => {
+    const kept = emittedUserEntries.get(userKey);
+    if (!kept || kept.kind !== "message" || twin.kind !== "message" || !twin.origin) return;
+    kept.origin = { ...twin.origin, ...kept.origin ?? {} };
+  };
   const emittedCommsNotices = /* @__PURE__ */ new Map();
   let pendingText = "";
   let pendingId = "";
@@ -9936,9 +9963,13 @@ ${text.trimStart()}`;
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
         if (userKey && emittedUserInputs.has(userKey)) {
+          foldUserOrigin(userKey, userEntry);
           continue;
         }
-        if (userKey) emittedUserInputs.add(userKey);
+        if (userKey) {
+          emittedUserInputs.add(userKey);
+          emittedUserEntries.set(userKey, userEntry);
+        }
         entries.push(userEntry);
       }
       continue;
@@ -9955,9 +9986,13 @@ ${text.trimStart()}`;
         for (const promptEntry of promptEntries) {
           const userKey = userPromptDedupeKey(frame, promptEntry);
           if (userKey && emittedUserInputs.has(userKey)) {
+            foldUserOrigin(userKey, promptEntry);
             continue;
           }
-          if (userKey) emittedUserInputs.add(userKey);
+          if (userKey) {
+            emittedUserInputs.add(userKey);
+            emittedUserEntries.set(userKey, promptEntry);
+          }
           entries.push(promptEntry);
         }
         continue;
@@ -10126,7 +10161,7 @@ ${text.trimStart()}`;
   flushPendingText(false);
   return entries;
 }
-var LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console" };
+var LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console", originKind: "operator" };
 function createUserEntry2(message, images = []) {
   if (images.length > 0) {
     const blocks = [
@@ -10668,6 +10703,8 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
       identity,
       content,
       origin,
+      // Typed caller kind: this console's composer is a human operator.
+      origin_kind: "operator",
       idempotency_key: idempotencyKey,
       handling_mode: handlingMode
     }
@@ -10941,6 +10978,8 @@ async function sendConsole2(baseUrl, identity, content, origin, idempotencyKey, 
     identity,
     content,
     origin,
+    // Typed caller kind: this console's composer is a human operator.
+    origin_kind: "operator",
     idempotency_key: idempotencyKey,
     handling_mode: handlingMode
   }, timeoutMs);
@@ -20353,68 +20392,88 @@ function ChatPane({
     observer.observe(nav);
     return () => observer.disconnect();
   }, [turns.length > 1]);
+  const [transcriptOverflows, setTranscriptOverflows] = import_react33.default.useState(null);
+  import_react33.default.useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const measure = () => setTranscriptOverflows(body.scrollHeight > body.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [messages, liveSpeech, phase]);
   const railWindow = windowTurnRail(turns.length, railHeight);
-  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("ol", { className: "conv-turn-rail__list", children: [
-    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("li", { className: "conv-turn-rail__item", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
-        "button",
-        {
-          "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
-          className: "conv-turn-rail__button",
-          "data-testid": `chat-turn-rail:${identity}:overflow`,
-          onClick: (event) => {
-            scrollToTurn(0);
-            if (event.detail > 0) {
-              event.currentTarget.blur();
-            }
-          },
-          type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
-            "span",
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+    "nav",
+    {
+      className: "conv-turn-rail",
+      "aria-label": "Conversation turns",
+      "data-overflowing": transcriptOverflows === false ? "false" : void 0,
+      ref: railRef,
+      children: /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("ol", { className: "conv-turn-rail__list", children: [
+        railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("li", { className: "conv-turn-rail__item", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+            "button",
             {
-              className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
-              "aria-hidden": "true"
+              "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
+              className: "conv-turn-rail__button",
+              "data-testid": `chat-turn-rail:${identity}:overflow`,
+              onClick: (event) => {
+                scrollToTurn(0);
+                if (event.detail > 0) {
+                  event.currentTarget.blur();
+                }
+              },
+              type: "button",
+              children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+                "span",
+                {
+                  className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
+                  "aria-hidden": "true"
+                }
+              )
             }
-          )
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview__title", children: [
-          railWindow.overflow,
-          " earlier turns"
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
-      ] })
-    ] }, "rail-overflow"),
-    turns.slice(railWindow.start).map((turn, railIndex) => {
-      const turnIndex = railWindow.start + railIndex;
-      const preview = chatTurnPreview(turn);
-      const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
-      return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("li", { className: "conv-turn-rail__item", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
-          "button",
-          {
-            "aria-current": isVisibleTurn ? "true" : void 0,
-            "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
-            className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
-            "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
-            onClick: (event) => {
-              scrollToTurn(turnIndex);
-              if (event.detail > 0) {
-                event.currentTarget.blur();
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview__title", children: [
+              railWindow.overflow,
+              " earlier turns"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
+          ] })
+        ] }, "rail-overflow"),
+        turns.slice(railWindow.start).map((turn, railIndex) => {
+          const turnIndex = railWindow.start + railIndex;
+          const preview = chatTurnPreview(turn);
+          const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
+          return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("li", { className: "conv-turn-rail__item", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+              "button",
+              {
+                "aria-current": isVisibleTurn ? "true" : void 0,
+                "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
+                className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
+                "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
+                onClick: (event) => {
+                  scrollToTurn(turnIndex);
+                  if (event.detail > 0) {
+                    event.currentTarget.blur();
+                  }
+                },
+                type: "button",
+                children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
               }
-            },
-            type: "button",
-            children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
-          }
-        ),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
-        ] })
-      ] }, turn.id);
-    })
-  ] }) }) : null;
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+            ] })
+          ] }, turn.id);
+        })
+      ] })
+    }
+  ) : null;
   function addFiles(fileList) {
     if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));

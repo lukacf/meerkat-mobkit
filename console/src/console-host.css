@@ -2396,6 +2396,27 @@ svg[data-svg="fit"],
   align-content: center;
 }
 
+/* Nothing to scrub when the whole transcript fits in the pane. */
+.conv-turn-rail[data-overflowing="false"] {
+  visibility: hidden;
+}
+
+/* A faint track behind the ticks so the rail reads as a scrubber control,
+   not as stray dashes. */
+.conv-turn-rail__list {
+  position: relative;
+}
+.conv-turn-rail__list::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  left: -4px;
+  width: 1px;
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  pointer-events: none;
+}
+
 .conv-turn-rail__list {
   display: grid;
   gap: 3px;
@@ -2777,8 +2798,9 @@ svg[data-svg="fit"],
   gap: 6px;
   align-self: flex-start;
   color: var(--ink-faint);
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--disp);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Compact runtime-event / system-notice rows. */

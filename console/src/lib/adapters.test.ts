@@ -8568,3 +8568,34 @@ test("mapFramesToTimelineEntries on a head-trimmed log equals the suffix of the 
     "partially retained interaction still renders",
   );
 });
+
+test("a deduped user input keeps the typed origin carried by any of its twins", () => {
+  const agent = { agent_id: "triage", member_id: "triage", label: "Triage", kind: "identity" as const };
+  const interactionId = "5b0f6c1e-2f4a-4d6e-9a51-3c1d2e4f5a6b";
+  const frames = [
+    {
+      id: "history-1",
+      event: "user_input",
+      interactionId,
+      sourceKind: "session_history",
+      timestampMs: 1_000,
+      cursor: "console:1",
+      data: { content: "Reply with the proof token.", message: { role: "user", content: "Reply with the proof token." } },
+    },
+    {
+      id: "send-1",
+      event: "user_input",
+      interactionId,
+      timestampMs: 1_000,
+      cursor: "console:2",
+      data: { content: "Reply with the proof token.", origin: "homecore:gate", origin_kind: "operator_probe" },
+    },
+  ];
+  for (const map of [mapFramesToTimelineEntries, mapFramesToTimelineEntriesShared]) {
+    const entries = map(agent as never, frames as never, { renderInteractionStartsAsUser: true } as never);
+    const users = entries.filter((entry) => entry.kind === "message" && entry.identity.role === "user");
+    assert.equal(users.length, 1);
+    const origin = users[0].kind === "message" ? users[0].origin : null;
+    assert.deepEqual(origin, { sendOrigin: "homecore:gate", originKind: "operator_probe" });
+  }
+});
