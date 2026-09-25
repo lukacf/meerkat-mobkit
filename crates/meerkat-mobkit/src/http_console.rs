@@ -5073,6 +5073,7 @@ async fn respawn_console_member(
         handle,
         runtime_member_id,
         handle.respawn(runtime_member_id.clone(), None),
+        Result::is_ok,
     )
     .await
     {

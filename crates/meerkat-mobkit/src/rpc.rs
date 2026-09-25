@@ -5510,6 +5510,7 @@ async fn respawn_rpc_runtime_member_id_with_handle(
         handle,
         &member_id,
         handle.respawn(member_id.clone(), None),
+        Result::is_ok,
     )
     .await
     {
