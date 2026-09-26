@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   roster's `spawned_by` tree is live (anything not retiring counts as live).
   Once its descendants are retired, its idle window starts over.
 
+- The idle sweep never waits for a member's running turn. It read each
+  candidate's execution snapshot, which a session answers only between turns,
+  so one opted-in member mid-turn held the whole pass (every idle member
+  behind it waited) until that turn ended. The sweep now asks the runtime
+  machine, which answers without queueing behind the turn, and reads the
+  snapshot with a 250 ms bound: a member with a run open, or whose session
+  does not answer in time, counts as busy and is left for a later pass.
+
 - Councils a restart interrupted are recovered after the restart (requires
   the meerkat release carrying #1190's durable-store council sweep). MobKit
   built its agent-tool `MobMcpState` with `Arc::new`, so the state could not
