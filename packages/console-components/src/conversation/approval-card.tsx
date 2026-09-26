@@ -50,8 +50,9 @@ export function ApprovalAttention({ snapshot, onOpen }: {
   snapshot: PendingApprovalSnapshot;
   onOpen(pendingId?: string): void;
 }) {
+  if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
   const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
-  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "forbidden" ? "Access denied" : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return (
     <section className="cc-approval-attention" aria-label="Needs you" data-testid="approval-attention">
       <button type="button" onClick={() => onOpen()}><strong>Needs you</strong><span role="status">{count}</span></button>

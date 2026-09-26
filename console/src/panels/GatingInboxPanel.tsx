@@ -161,7 +161,7 @@ export function GatingInboxPanel({
       <div className="gating__list" ref={listRef}>
         {tab === "pending" && resource ? (
           <div>
-            {resource.status !== "ready" ? <p role="status">{resource.status === "forbidden" ? "Approval access denied" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable"}</p> : null}
+            {resource.status !== "ready" ? <p role="status">{resource.status === "forbidden" ? "Approval access denied" : resource.status === "unsupported" ? "Approvals are not available for this connection" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable"}</p> : null}
             {onRefresh ? <button type="button" onClick={onRefresh}>Refresh approvals</button> : null}
             {resource.status === "ready" && pendingRequests?.length === 0 ? <p>No pending approvals.</p> : null}
             {resource.requests.map((request) => <div key={request.pendingId} tabIndex={-1} data-approval-id={request.pendingId} data-selected={selectedId === request.pendingId} className={selectedId === request.pendingId ? "is-selected" : undefined}>

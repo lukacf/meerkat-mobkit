@@ -30,7 +30,8 @@ export interface ApprovalDecisionState {
 }
 export interface PendingApprovalSnapshot {
   scopeKey: string;
-  status: "loading" | "ready" | "stale" | "unavailable" | "forbidden";
+  /** Unsupported comes from absent capability; unavailable is a transient read failure. */
+  status: "loading" | "ready" | "stale" | "unavailable" | "forbidden" | "unsupported";
   requests: readonly PendingApproval[];
   decisions: Readonly<Record<string, ApprovalDecisionState>>;
   readOnly: boolean;
@@ -181,9 +182,10 @@ export function createPendingApprovalResource(input: {
         publish({ requests, status: "ready", updatedAtMs: env.now(), error: undefined });
       } catch (error) {
         if (disposed || denied) return;
-        if (isDenied(error) || unavailableCapability(error)?.method === CONSOLE_RPC_METHODS.gatingPending) {
+        const unsupported = unavailableCapability(error)?.method === CONSOLE_RPC_METHODS.gatingPending;
+        if (isDenied(error) || unsupported) {
           denied = true;
-          publish({ requests: [], decisions: {}, status: "forbidden", readOnly: true, error: errorText(error) });
+          publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
           lifetime.abort();
         } else if (generation === decisionGeneration) {
           publish({ status: snapshot.updatedAtMs === undefined ? "unavailable" : "stale", error: errorText(error) });
@@ -250,7 +252,7 @@ export function createPendingApprovalResource(input: {
             setDecision(pendingId, { phase: "failed", action, error: "Approval decisions are unavailable with current access" });
           } else if (isDenied(error) || capability?.method === CONSOLE_RPC_METHODS.gatingDecide) {
             denied = true;
-            publish({ requests: [], decisions: {}, status: "forbidden", readOnly: true, error: errorText(error) });
+            publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
             lifetime.abort();
           } else setDecision(pendingId, { phase: "failed", action, error: errorText(error) });
         } finally {

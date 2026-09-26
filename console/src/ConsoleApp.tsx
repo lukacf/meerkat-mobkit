@@ -1,3 +1,4 @@
+import { withConsoleSendStorageLock } from "./lib/send-storage-lock";
 import React from "react";
 import "@console-components/styles";
 import "./console-host.css";
@@ -614,10 +615,27 @@ export function ConsoleApp(props: ConsoleAppProps): React.JSX.Element {
   // All authorized state belongs to one host authority and transport lifetime.
   // A keyed instance clears it in the same commit as the host scope change.
   const instanceKey = React.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace]);
-  return <ConsoleAppInstance key={instanceKey} {...props} />;
+  return <ConsoleAppAuthority key={instanceKey} {...props} />;
 }
 
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy }: ConsoleAppProps): React.JSX.Element {
+function ConsoleAppAuthority(props: ConsoleAppProps): React.JSX.Element {
+  const observedScope = React.useRef<{ value: string | undefined } | null>(null);
+  const [generation, setGeneration] = React.useState(0);
+  const observeScope = React.useCallback((value: string | undefined): boolean => {
+    const previous = observedScope.current;
+    observedScope.current = { value };
+    if (previous && previous.value !== value) {
+      // A same-URL account switch ends all old subscriptions, locks, drafts
+      // and transcript state before the replacement authority loads.
+      setGeneration(current => current + 1);
+      return false;
+    }
+    return true;
+  }, []);
+  return <ConsoleAppInstance key={generation} {...props} observeScope={observeScope} />;
+}
+
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, observeScope }: ConsoleAppProps & { observeScope: (scope: string | undefined) => boolean }): React.JSX.Element {
   countRender("ConsoleApp");
   const lifetimeRef = React.useRef({ active: true, generation: 0 });
   React.useLayoutEffect(() => {
@@ -1666,14 +1684,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const sendControllerRef = React.useRef(consoleController);
   sendControllerRef.current = consoleController;
   const transientSendScope = React.useMemo(() => `transient:${createIdempotencyKey()}`, [consoleController]);
-  const sendScope = storageNamespace?.trim() || `${transientSendScope}:${baseUrl}`;
+  const persistentSendScope = storageNamespace?.trim() || (experience?.storage_scope?.trim()
+    ? JSON.stringify([baseUrl, experience.storage_scope]) : null);
+  const sendScope = persistentSendScope || `${transientSendScope}:${baseUrl}`;
   const [composerTabId] = React.useState(() => {
     try { return consoleComposerTabId(window.sessionStorage, createIdempotencyKey); }
     catch { return createIdempotencyKey(); }
   });
   const composerIdFor = (panelKey: string) => JSON.stringify([composerTabId, panelKey]);
   const sendScopeRef = React.useRef(sendScope);
-  const persistentSendScopeRef = React.useRef(storageNamespace?.trim() || null);
+  const persistentSendScopeRef = React.useRef(persistentSendScope);
   const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
   const autoDrainRequestedRef = React.useRef(new Map<string, { inFlight: boolean; token: string }>());
   const sendRetryEpochRef = React.useRef(0);
@@ -1732,7 +1752,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setSubmittedFrames({});
     setSendingPanels(new Set());
   }, [sendScope]);
-  persistentSendScopeRef.current = storageNamespace?.trim() || null;
+  persistentSendScopeRef.current = persistentSendScope;
   const scopedDraftKey = (panelKey: string) => `${sendScopeRef.current}:${panelKey}`;
 
   function loadPendingStack(identity: string): PendingItem[] {
@@ -1789,11 +1809,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const controller = sendControllerRef.current;
     const namespace = persistentSendScopeRef.current;
     if (!namespace) return commitPendingStack(identity, update, legacyImported);
-    if (!navigator.locks) {
-      setActionError("This browser cannot coordinate saved queues across tabs. Your message remains in the composer.");
-      return false;
-    }
-    return navigator.locks.request(consoleSendStorageKey(namespace, identity), () => {
+    return withConsoleSendStorageLock(consoleSendStorageKey(namespace, identity), () => {
       if (!lifetimeRef.current.active || generation !== lifetimeRef.current.generation || scope !== sendScopeRef.current || controller !== sendControllerRef.current) return false;
       // Every durable writer shares this lock, including enqueue/edit/discard.
       const visible = getPendingStack(identity);
@@ -1801,7 +1817,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         ...visible.find((item) => item.id === attempt.id), ...attempt,
       }));
       return commitPendingStack(identity, update, legacyImported);
-    });
+    }).catch((error) => { setActionError(errorMessage(error)); return false; });
   }
 
   React.useEffect(() => {
@@ -2150,6 +2166,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         consoleTransport.loadExperience(),
         consoleTransport.loadModules?.() ?? Promise.resolve({ modules: [] }),
       ]);
+      if (!observeScope(experienceJson.storage_scope?.trim() || undefined)) return [];
       const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
       if (
         typeof configuredTimeoutMs === "number" &&
@@ -3380,7 +3397,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           attachments,
         },
       )).accepted.value;
-      if (!result.interaction_id || result.identity !== identity) throw new Error("Server response did not prove acceptance for this destination.");
+      if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
       if (pendingAttempt) {
         // Save acceptance before removing the row; if storage fails, retain the attempt.
@@ -3551,11 +3568,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!commitPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
       return { attempting, target };
     };
-    if (namespace && !navigator.locks) {
-      setActionError("This browser cannot coordinate a persisted send across tabs. The message remains queued.");
-      return;
-    }
-    const frozen = namespace ? await navigator.locks.request(consoleSendStorageKey(namespace, identity), freeze) : freeze();
+    const frozen = namespace ? await withConsoleSendStorageLock(consoleSendStorageKey(namespace, identity), freeze)
+      .catch((error) => { setActionError(errorMessage(error)); return null; }) : freeze();
     if (frozen && lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
       await submitMessageNow(frozen.target.panelId, frozen.target.target, frozen.attempting.text, handlingMode, [], frozen.attempting, dispatchController);
     }
@@ -3567,11 +3581,33 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
   async function onStackReconcile(identity: string, id: string) {
     const scope = sendScopeRef.current;
-    try { await refreshIdentityTimelineNow(identity); } catch (error) { setActionError(errorMessage(error)); return; }
-    if (scope !== sendScopeRef.current) return;
+    const generation = lifetimeRef.current.generation;
+    const controller = sendControllerRef.current;
+    const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation
+      && scope === sendScopeRef.current && controller === sendControllerRef.current;
+    const original = getPendingStack(identity).find((candidate) => candidate.id === id);
+    if (!original?.envelopeJson) return;
+    let page: ConsoleTimelinePage;
+    let canonicalIdentity: string;
+    try {
+      const inspection = await inspectIdentityViaHeadless(original.destination);
+      if (!active()) return;
+      const record = inspection && typeof inspection === "object" ? inspection as Record<string, unknown> : null;
+      const owner = record?.identity && typeof record.identity === "object"
+        ? record.identity as Record<string, unknown> : record;
+      if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
+        throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
+      }
+      canonicalIdentity = owner.identity;
+      // The inspection supplies the alias correspondence. Timeline stores
+      // filter exact canonical identities; querying the alias cannot find it.
+      ({ page } = await queryIdentityTimelinePage(canonicalIdentity, { mode: "recent", limit: 200 }));
+    } catch (error) { if (active()) setActionError(errorMessage(error)); return; }
+    if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!item) return;
-    const accepted = getOrCreateLog(identity).events.map((frame) => reconcileConsoleSendReceipt(item, frame)).find(Boolean);
+    if (!item || item.envelopeJson !== original.envelopeJson) return;
+    const resolution = { requestedIdentity: original.destination, canonicalIdentity };
+    const accepted = page.frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
     if (!accepted) { setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically."); return; }
     if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
       await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));
@@ -3647,7 +3683,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         if (!autoDrainRequestedRef.current.get(key)?.inFlight) autoDrainRequestedRef.current.delete(key);
         return;
       }
-      const tokenFor = () => JSON.stringify([findChatTargetFor(identity)?.panelId ?? null, sendRetryEpochRef.current, Boolean(navigator.locks), head.text, head.contexts]);
+      const tokenFor = () => JSON.stringify([findChatTargetFor(identity)?.panelId ?? null, sendRetryEpochRef.current, Boolean(navigator.locks || globalThis.indexedDB), head.text, head.contexts]);
       const token = tokenFor();
       const previous = autoDrainRequestedRef.current.get(key);
       if (previous?.inFlight || previous?.token === token) return;

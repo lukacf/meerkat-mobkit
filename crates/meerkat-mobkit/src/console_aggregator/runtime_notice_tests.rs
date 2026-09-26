@@ -134,15 +134,16 @@ async fn notice_scan_rejects_conflicting_source_scope_and_typed_attempt_identity
             6 => invalid.payload["run_id"] = json!(uuid::Uuid::from_u128(31)),
             7 => invalid.payload["input_id"] = json!(uuid::Uuid::from_u128(99)),
             8 => {
-                invalid.payload["notices"][0]["runtime_origin"]["session_id"] = json!(other_session)
+                invalid.payload["notices"][0]["runtime_origin"]["session_id"] =
+                    json!(other_session);
             }
             9 => {
                 invalid.payload["notices"][0]["runtime_origin"]["run_id"] =
-                    json!(uuid::Uuid::from_u128(31))
+                    json!(uuid::Uuid::from_u128(31));
             }
             10 => {
                 invalid.payload["notices"][0]["runtime_origin"]["input_id"] =
-                    json!(uuid::Uuid::from_u128(99))
+                    json!(uuid::Uuid::from_u128(99));
             }
             _ => invalid.payload["notices"][0]["runtime_origin"] = Value::Null,
         }
@@ -475,7 +476,7 @@ async fn notice_snapshot_rescan_publishes_changed_origin_offset_and_body_but_coa
         );
         assert_eq!(
             snapshot.payload["notices"][0]["offset"],
-            if index < 2 { 0 } else { 1 }
+            usize::from(index >= 2)
         );
         previous_payload = Some(snapshot.payload["notices"].clone());
         let saved = aggregator.store().append_if_absent(snapshot).await?;
@@ -540,6 +541,227 @@ fn assistant_message(text: &str) -> ConsoleLogResult<Message> {
         "stop_reason": "end_turn",
         "created_at": "1970-01-01T00:00:00.100Z",
     }))?)
+}
+
+#[tokio::test]
+async fn notice_snapshot_append_only_history_does_not_repeat_full_images() -> ConsoleLogResult<()> {
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    let session = SessionId::new();
+    let mut messages = vec![Message::SystemNotice(notice(&session, 10, 20))];
+    let observed = observe(&aggregator, &session).await?;
+    let snapshot = runtime_notice_snapshot_frame(
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &observed,
+        &BTreeSet::new(),
+        &messages,
+    )
+    .ok_or("initial snapshot missing")?;
+    aggregator.store().append_if_absent(snapshot).await?;
+    for index in 0..32 {
+        let message = assistant_message(&format!("Completed answer {index}."))?;
+        append_canonical_message(&aggregator, &session, messages.len(), &message).await?;
+        messages.push(message);
+        let observed = observe(&aggregator, &session).await?;
+        assert!(
+            runtime_notice_snapshot_frame(
+                RUNTIME,
+                IDENTITY,
+                &session.to_string(),
+                &observed,
+                &BTreeSet::new(),
+                &messages,
+            )
+            .is_none(),
+            "append-only history must not republish old notices and positions"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn redacted_append_only_history_keeps_exact_dedupe_coordinates() -> ConsoleLogResult<()> {
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    let session = SessionId::new();
+    let mut messages = vec![Message::SystemNotice(notice(&session, 10, 20))];
+    let first = runtime_notice_snapshot_frame(
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &observe(&aggregator, &session).await?,
+        &BTreeSet::new(),
+        &messages,
+    )
+    .ok_or("initial snapshot")?;
+    aggregator.store().append_if_absent(first).await?;
+    for _ in 0..8 {
+        let message = assistant_message("Repeated private answer.")?;
+        for mut row in frames_from_session_history_message_with_namespace(
+            RUNTIME,
+            IDENTITY,
+            "",
+            &session.to_string(),
+            messages.len(),
+            serde_json::to_value(&message)?,
+        ) {
+            row.payload = json!({"text":"[host redacted]"});
+            row.status = ConsoleFrameStatus::Redacted;
+            aggregator.store().append_if_absent(row).await?;
+        }
+        messages.push(message);
+        assert!(
+            runtime_notice_snapshot_frame(
+                RUNTIME,
+                IDENTITY,
+                &session.to_string(),
+                &observe(&aggregator, &session).await?,
+                &BTreeSet::new(),
+                &messages
+            )
+            .is_none(),
+            "redacted unchanged source rows need no removal snapshots"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_survivor_cannot_lend_its_coordinate_to_earlier_repeated_row() -> ConsoleLogResult<()>
+{
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    let session = SessionId::new();
+    let message = assistant_message("Repeated answer.")?;
+    let older = append_canonical_message(&aggregator, &session, 0, &message)
+        .await?
+        .remove(0);
+    let survivor = append_canonical_message(&aggregator, &session, 2, &message)
+        .await?
+        .remove(0);
+    let filler = Message::SystemNotice(SystemNoticeMessage::new(
+        SystemNoticeKind::Generic,
+        "Context.",
+    ));
+    let (positions, removed) = current_history_position_changes(
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &observe(&aggregator, &session).await?,
+        &[filler.clone(), filler, message],
+    );
+    assert!(
+        positions.is_empty(),
+        "exact survivor stays at its original coordinate"
+    );
+    assert_eq!(removed, vec![older.id]);
+    assert!(!removed.contains(&survivor.id));
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_notice_positions_remove_and_restore_original_coordinates() -> ConsoleLogResult<()> {
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    let session = SessionId::new();
+    let durable = Message::SystemNotice(notice(&session, 10, 20));
+    let answer = assistant_message("Retained answer.")?;
+    let original = append_canonical_message(&aggregator, &session, 1, &answer)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("answer frame")?;
+    let observed = observe(&aggregator, &session).await?;
+    let snapshot = runtime_notice_snapshot_frame(
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &observed,
+        &BTreeSet::new(),
+        std::slice::from_ref(&durable),
+    )
+    .ok_or("removal snapshot")?;
+    assert_eq!(snapshot.payload["history_positions_mode"], "sparse");
+    assert_eq!(snapshot.payload["history_positions"], json!([]));
+    assert_eq!(
+        snapshot.payload["removed_history_frame_ids"],
+        json!([original.id])
+    );
+    aggregator.store().append_if_absent(snapshot).await?;
+    let observed = observe(&aggregator, &session).await?;
+    let restored = runtime_notice_snapshot_frame(
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &observed,
+        &BTreeSet::new(),
+        &[durable, answer],
+    )
+    .ok_or("restoration snapshot")?;
+    assert_eq!(
+        restored.payload["history_positions"],
+        json!([]),
+        "original coordinate needs no override"
+    );
+    assert_eq!(
+        restored.payload["removed_history_frame_ids"],
+        json!([]),
+        "restoration clears coordinate removal"
+    );
+    assert_eq!(
+        aggregator
+            .store()
+            .frame_by_dedupe_key(&original.dedupe_key)
+            .await?
+            .expect("immutable frame"),
+        original
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn notice_scan_reuses_complete_frontier_and_only_reads_new_rows() -> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    for index in 0..2_005 {
+        store
+            .append_if_absent(frame(
+                &format!("noise-{index}"),
+                &session,
+                "text_delta",
+                json!({"delta":"."}),
+            ))
+            .await?;
+    }
+    let first = observe(&aggregator, &session).await?;
+    let initial_queries = store.query_count.load(Ordering::SeqCst);
+    assert_eq!(initial_queries, 3);
+    assert_eq!(
+        observe(&aggregator, &session).await?.observed_through,
+        first.observed_through
+    );
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        initial_queries,
+        "unchanged frontier must not deserialize old identity frames again"
+    );
+    store
+        .append_if_absent(applied("new-application", &session, 10, 20))
+        .await?;
+    assert_eq!(
+        observe(&aggregator, &session).await?.attempts,
+        BTreeSet::from([attempt(10, 20)])
+    );
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        initial_queries + 1,
+        "new frontier must scan only the appended suffix"
+    );
+    aggregator.clear_timeline_frames().await?;
+    assert!(
+        observe(&aggregator, &session).await?.attempts.is_empty(),
+        "clearing the store must invalidate cached observations"
+    );
+    Ok(())
 }
 
 #[tokio::test]

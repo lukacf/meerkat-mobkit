@@ -4692,9 +4692,30 @@ export function mapFramesToTimelineEntries(
     if (streams.length) streamedTextByOwner.set(key, streams);
     else streamedTextByOwner.delete(key);
   }
+  const completedTextByOwner = new Map<string, { owner: AssistantFrameOwner; text: string }[]>();
+  function completedStream(frame: AssistantFrameOwner) {
+    return completedTextByOwner.get(assistantOwnerKey(frame))?.find((stream) => sameTextStreamOwner(stream.owner, frame));
+  }
+  function forgetCompletedStream(frame: AssistantFrameOwner) {
+    const key = assistantOwnerKey(frame);
+    const streams = completedTextByOwner.get(key)?.filter((stream) => !sameTextStreamOwner(stream.owner, frame)) || [];
+    if (streams.length) completedTextByOwner.set(key, streams);
+    else completedTextByOwner.delete(key);
+  }
+  function completeOwnedStream(frame: AssistantFrameOwner, text = ownedStream(frame)?.text || "") {
+    if (text) {
+      forgetCompletedStream(frame);
+      const key = assistantOwnerKey(frame);
+      const streams = completedTextByOwner.get(key) || [];
+      streams.push({ owner: frame, text });
+      completedTextByOwner.set(key, streams);
+    }
+    forgetOwnedStream(frame);
+  }
   function forgetUnscopedStream() {
     if (streamedOwner && !streamedOwner.runId?.trim() && !streamedOwner.interactionId?.trim()) {
       forgetOwnedStream(streamedOwner);
+      forgetCompletedStream(streamedOwner);
     }
   }
 
@@ -4766,6 +4787,19 @@ export function mapFramesToTimelineEntries(
     // Canonical frame identity must survive insertion of older history.
     const entryId = frame.id || `${frame.event || "frame"}:${i}`;
 
+    // These events bound the assistant response's tool/turn lifecycle.
+    // They also close a message when TextComplete was omitted; user/steer inputs,
+    // reasoning, server tools and image blocks are not message boundaries.
+    if (frame.runId?.trim() && frame.sourceKind !== "session_history" && (
+      frame.event === "tool_call_requested" || frame.event === "tool_call"
+      || frame.event === "tool_execution_started" || frame.event === "tool_result_received"
+      || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out"
+      || frame.event === "turn_completed" || frame.event === "turn_started"
+    )) {
+      if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
+      completeOwnedStream(frame);
+    }
+
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
       if (!delta) continue;
@@ -4812,6 +4846,7 @@ export function mapFramesToTimelineEntries(
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += delta;
+      forgetCompletedStream(frame);
       appendOwnedStream(frame, delta);
       continue;
     }
@@ -5067,7 +5102,7 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    if (frame.event === "text_complete") {
+    if (!frame.runId?.trim() && frame.event === "text_complete") {
       flushPendingReasoning(true);
       if (frame.sourceKind !== "session_history") {
         const text = terminalFrameVisibleText(frame).trim();
@@ -5108,10 +5143,15 @@ export function mapFramesToTimelineEntries(
       // Replayed completion can arrive before the final live chunk. Ignored
       // history must not flush or reset that still-streaming document.
       const ownsStream = sameTextStreamOwner(streamedOwner, frame);
-      const streamedText = ownedStream(frame)?.text || (ownsStream ? pendingText : "");
+      const streamedText = ownedStream(frame)?.text
+        || (frame.event !== "text_complete" ? completedStream(frame)?.text : "")
+        || (ownsStream ? pendingText : "");
       flushPendingReasoning(true);
       flushPendingText();
-      forgetOwnedStream(frame);
+      // RunCompleted.result is the last assistant message. Keep its typed
+      // completion evidence until another message starts for this owner.
+      if (frame.runId?.trim()) completeOwnedStream(frame, terminalFrameVisibleText(frame));
+      else forgetOwnedStream(frame);
       if (ownsStream) streamedOwner = undefined;
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {

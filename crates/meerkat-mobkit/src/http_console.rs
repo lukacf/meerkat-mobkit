@@ -576,6 +576,12 @@ pub async fn console_json_handler(
     );
     if response.status == 200
         && uri.path() == "/console/experience"
+        && let Some(auth) = console_request_auth_context(&state, &headers, &uri)
+    {
+        attach_console_storage_scope(&mut response.body, auth.principal.as_deref());
+    }
+    if response.status == 200
+        && uri.path() == "/console/experience"
         && !state.decisions.console.read_only
         && let Some(voice) = voice
     {
@@ -589,6 +595,23 @@ pub async fn console_json_handler(
     }
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
+}
+
+/// Storage keys are opaque projections of the authenticated runtime/principal.
+/// Anonymous consoles form an explicit shared local account. The browser also
+/// includes its gateway base URL, and custom hosts can supply a stricter scope.
+fn attach_console_storage_scope(experience: &mut Value, principal: Option<&str>) {
+    use sha2::{Digest, Sha256};
+    let Some(runtime_id) = experience
+        .get("runtime_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return;
+    };
+    let owner = json!(["mobkit-console-storage-v1", runtime_id, principal]);
+    let digest = Sha256::digest(owner.to_string().as_bytes());
+    experience["storage_scope"] = json!(format!("console-storage:v1:{digest:x}"));
 }
 
 pub async fn console_rpc_handler(
@@ -11289,6 +11312,30 @@ comms = true
             )
             .await;
         Ok(())
+    }
+
+    #[test]
+    fn console_storage_scope_is_stable_and_separates_runtime_and_principal() {
+        let project = |runtime: &str, principal: Option<&str>| {
+            let mut body = json!({ "runtime_id": runtime });
+            super::attach_console_storage_scope(&mut body, principal);
+            body["storage_scope"].as_str().expect("scope").to_string()
+        };
+        let first = project("runtime-a", Some("principal-a"));
+        assert_eq!(first, project("runtime-a", Some("principal-a")));
+        assert_ne!(first, project("runtime-a", Some("principal-b")));
+        assert_ne!(first, project("runtime-b", Some("principal-a")));
+        assert_ne!(first, project("runtime-a", None));
+        assert_ne!(
+            project("runtime-a", None),
+            project("runtime-a", Some("anonymous"))
+        );
+        assert!(!first.contains("principal-a"));
+        for runtime in [Value::Null, json!(""), json!(" ")] {
+            let mut body = json!({ "runtime_id": runtime });
+            super::attach_console_storage_scope(&mut body, None);
+            assert!(body.get("storage_scope").is_none());
+        }
     }
 
     fn rpc_request(method: &str) -> JsonRpcRequest {

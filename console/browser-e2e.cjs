@@ -1140,7 +1140,7 @@ async function runImageRenderingBrowserProof() {
 
   try {
     browser = await launchBrowser();
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
     await gotoConsole(page, `${server.baseUrl}/console`);
 
     await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
@@ -1177,23 +1177,34 @@ async function runImageRenderingBrowserProof() {
       return {
         hasImage: Boolean(image),
         hasToolCall: Boolean(toolCall),
+        incoming: Boolean(toolCall?.classList.contains("cc-tool-call--incoming")),
+        displayLabel: toolCall?.querySelector(".cc-tool-call__name")?.textContent,
+        canonicalIdentity: toolCall?.querySelector(".cc-tool-call__name")?.getAttribute("title"),
+        body: toolCall?.querySelector(".cc-tool-call__peer-body")?.textContent,
         standalonePeerImageCount: Array.from(document.querySelectorAll('img[src$="/blobs/sha256%3Apeer-image"]'))
           .filter((candidate) => !candidate.closest(".cc-tool-call")).length,
       };
     });
+    const evidenceDir = path.join(repoRoot, "output/playwright/console-acceptance");
+    fs.mkdirSync(evidenceDir, { recursive: true });
+    await page.screenshot({ path: path.join(evidenceDir, "image-rendering.png"), fullPage: true });
     assert.deepEqual(
       peerImagePlacement,
-      { hasImage: true, hasToolCall: true, standalonePeerImageCount: 0 },
-      "peer image should be inline within the peer tool call",
+      {
+        hasImage: true,
+        hasToolCall: true,
+        incoming: true,
+        displayLabel: "Received from scribe",
+        canonicalIdentity: "incident-command-center/scribe/scribe",
+        body: "Forwarded generated image.",
+        standalonePeerImageCount: 0,
+      },
+      "peer image should remain inside its incoming message with friendly display label and exact canonical identity",
     );
 
     const bodyText = await page.locator("body").innerText();
     assert(bodyText.includes("Operator attached image:"), "missing user image prompt text");
     assert(bodyText.includes("Forwarded generated image."), "missing peer image comms text");
-    assert(
-      bodyText.includes("Received from incident-command-center/scribe/scribe"),
-      "missing peer comms row",
-    );
     assert(!bodyText.includes("image_ref"), "raw image_ref leaked into visible transcript");
     assert(!bodyText.includes("blob_id"), "raw blob_id leaked into visible transcript");
 
@@ -3224,6 +3235,7 @@ const scenarios = [
 
 const allScenarios = [
     ...scenarios,
+    ...require("./scenarios/storage-lock.cjs").scenarios,
     ...require("./scenarios/real-conversation.cjs").scenarios,
     ...require("./scenarios/real-markdown-url-policy.cjs").scenarios,
     ...require("./scenarios/real-reasoning.cjs").scenarios,

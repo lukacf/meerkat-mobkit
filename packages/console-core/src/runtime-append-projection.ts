@@ -20,6 +20,8 @@ type NoticeSnapshot = {
   notices: Array<{ offset: number; message: RecordValue; origin: Origin }>;
   settled: Set<string>;
   historyPositions?: Map<string, Position>;
+  sparseHistoryPositions: boolean;
+  removedHistoryFrameIds: Set<string>;
 };
 
 function record(value: unknown): RecordValue | null {
@@ -203,7 +205,18 @@ function noticeSnapshot(frame: ConsoleFrame): NoticeSnapshot | null {
       historyPositions.set(row.frame_id, position);
     }
   }
-  return { frame, cursor, observedThrough, notices, settled, historyPositions };
+  const sparseHistoryPositions = data.history_positions_mode === "sparse";
+  const removedHistoryFrameIds = new Set<string>();
+  if (data.history_positions_mode !== undefined && !sparseHistoryPositions) return null;
+  if (sparseHistoryPositions) {
+    if (!historyPositions || !Array.isArray(data.removed_history_frame_ids)) return null;
+    for (const id of data.removed_history_frame_ids) {
+      if (!identifier(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
+      removedHistoryFrameIds.add(id);
+    }
+  } else if (data.removed_history_frame_ids !== undefined) return null;
+  return { frame, cursor, observedThrough, notices, settled, historyPositions,
+    sparseHistoryPositions, removedHistoryFrameIds };
 }
 
 function positionFromCursor(sessionId: string, sourceCursor: unknown): Position | undefined {
@@ -392,7 +405,10 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
     const snapshot = scope ? snapshots.get(scope) : undefined;
     const cursor = consoleCursor(frame.cursor);
     const observed = snapshot && cursor !== null && cursor <= snapshot.observedThrough;
-    if (frame.event === "boundary_append_applied" && Array.isArray(data?.notices) && data.notices.length) {
+    if (frame.event === "boundary_append_applied") {
+      // Meerkat omits an empty notices vector for ordinary user appends.
+      // The transport acknowledgement itself is never a transcript row.
+      if (!Array.isArray(data?.notices) || !data.notices.length) continue;
       if (frame.sourceKind !== "console_event" || !scope || !identifier(frame.runId)
         || data.run_id !== frame.runId || !identifier(data.input_id)
         || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
@@ -415,7 +431,13 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
     }
     const node = projected(frame);
     if (observed && snapshot.historyPositions && frame.sourceKind === "session_history") {
-      node.position = snapshot.historyPositions.get(frame.id);
+      // Sparse images override moved rows and explicitly invalidate removed
+      // coordinates. Unlisted rows retain their own canonical source cursor.
+      // Older full maps retain their existing omission semantics.
+      node.position = snapshot.sparseHistoryPositions
+        ? snapshot.removedHistoryFrameIds.has(frame.id) ? undefined
+          : snapshot.historyPositions.get(frame.id) ?? node.position
+        : snapshot.historyPositions.get(frame.id);
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
       const message = record(data?.message), origin = originOf(message);

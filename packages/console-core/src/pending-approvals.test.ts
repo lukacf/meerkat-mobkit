@@ -188,7 +188,7 @@ for (const [name, create] of [["shared", sharedController], ["stock", stockContr
     assert.equal(resource.getSnapshot().status, "ready"); assert.equal(resource.getSnapshot().requests.length, 1);
     await resource.decide("p1", "approve"); assert.equal(writes, 0);
     methods = [];
-    await resource.refresh(); assert.equal(resource.getSnapshot().status, "forbidden");
+    await resource.refresh(); assert.equal(resource.getSnapshot().status, "unsupported");
     assert.equal(resource.getSnapshot().requests.length, 0); assert.deepEqual(resource.getSnapshot().decisions, {});
     resource.dispose();
   });
@@ -210,3 +210,18 @@ for (const [name, create] of [["shared", sharedController], ["stock", stockContr
     assert.equal(resource.getSnapshot().requests.length, 1); resource.dispose();
   });
 }
+
+test("unadvertised gating is unsupported, stops polling and cannot accept a decision", async () => {
+  const c = clock(); let calls = 0, writes = 0;
+  const resource = createPendingApprovalResource({ scopeKey: "no-gating", environment: c.environment,
+    load: async () => { calls++; throw Object.assign(new Error("method unavailable"), { kind: "console-capability-unavailable", method: CONSOLE_RPC_METHODS.gatingPending, availableMethods: [] }); },
+    decide: async () => { writes++; return accepted(); },
+  });
+  await tick();
+  assert.equal(resource.getSnapshot().status, "unsupported");
+  assert.equal(resource.getSnapshot().readOnly, true);
+  assert.deepEqual(resource.getSnapshot().requests, []);
+  c.advance(60_000); await tick(); await resource.refresh(); await resource.decide("p1", "approve");
+  assert.equal(calls, 1); assert.equal(writes, 0);
+  resource.dispose();
+});

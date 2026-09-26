@@ -258,6 +258,8 @@ export interface RuntimeCapabilities {
 }
 
 export interface ConsoleExperience {
+  /** Opaque server-owned runtime and principal scope for browser persistence. */
+  storage_scope?: string;
   contract_version?: string;
   runtime_id?: string;
   console_config?: ConsoleUiConfig;

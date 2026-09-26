@@ -12,6 +12,7 @@ import {
   isCanonicalVoiceRowDuringCall,
   windowTurnRail,
 } from "./ChatPane";
+import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 import type { LiveSpeechItem } from "../lib/voice-session";
 
 const USER = { id: "user", label: "You", role: "user" as const };
@@ -296,6 +297,7 @@ function renderChat(args: {
   isLoadingHistory?: boolean;
   liveSpeech?: readonly LiveSpeechItem[];
   voiceCallStartedAt?: number | null;
+  approvalSnapshot?: PendingApprovalSnapshot;
 }): string {
   return renderToStaticMarkup(
     React.createElement(ChatPane, {
@@ -312,6 +314,7 @@ function renderChat(args: {
       agentLabel: "Agent",
       identity: "agent",
       entries: args.entries,
+      approvalSnapshot: args.approvalSnapshot,
       phase: args.phase,
       isLoadingHistory: args.isLoadingHistory ?? false,
       draft: "",
@@ -768,4 +771,18 @@ test("stock folds consecutive proven generic completion but keeps unknown visibl
   assert.match(html, /Completion unknown/);
   assert.match(html, /data-conversation-row-id="one"/);
   assert.match(html, /data-conversation-row-id="two"/);
+});
+
+test("stock chat renders one approval for a run continued after a user steer", () => {
+  const entries = [
+    { ...message({ id: "ask", role: "user", createdAt: "2026-09-26T05:00:00Z", text: "Start review" }), interactionId: "original" },
+    { ...message({ id: "work", role: "assistant", createdAt: "2026-09-26T05:00:01Z", text: "Reviewing" }), interactionId: "original" },
+    { ...message({ id: "steer", role: "user", createdAt: "2026-09-26T05:00:02Z", text: "Include deployment" }), interactionId: "steer" },
+    { ...message({ id: "continue", role: "assistant", createdAt: "2026-09-26T05:00:03Z", text: "Deployment needs approval" }), interactionId: "original" },
+  ];
+  const request = normalizePendingApproval({ pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", interaction_id: "original" } })!;
+  const html = renderChat({ entries, phase: null, approvalSnapshot: { scopeKey: "scope", status: "ready", requests: [request], decisions: {}, readOnly: false } });
+  assert.equal((html.match(/data-testid="gating-pending:deployment"/g) || []).length, 1);
+  const turnStart = html.indexOf('data-testid="chat-turn:agent:1"');
+  assert.ok(turnStart >= 0 && html.indexOf('data-testid="gating-pending:deployment"') > turnStart);
 });

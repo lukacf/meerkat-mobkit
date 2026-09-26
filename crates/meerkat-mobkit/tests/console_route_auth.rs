@@ -159,6 +159,82 @@ async fn voice_rpc_with_params(
 }
 
 #[tokio::test]
+async fn console_experience_storage_scope_tracks_authenticated_principal() {
+    use tower::ServiceExt;
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    state.auth.email_allowlist.push("bob@example.com".into());
+    state.trusted_oidc.discovery_json = json!({
+        "issuer": "https://trusted.mobkit.localhost",
+        "jwks_uri": "https://trusted.mobkit.localhost/.well-known/jwks.json"
+    })
+    .to_string();
+    let app = meerkat_mobkit::console_json_router_with_aggregator_and_access(
+        state,
+        meerkat_mobkit::MobKitConsoleAggregator::new(std::sync::Arc::new(
+            meerkat_mobkit::InMemoryConsoleLogStore::default(),
+        )),
+        None,
+    );
+    let mut scopes = Vec::new();
+    for principal in [
+        Some("alice@example.com"),
+        Some("alice@example.com"),
+        Some("bob@example.com"),
+        None,
+    ] {
+        let mut request = axum::http::Request::builder().uri("/console/experience");
+        if let Some(principal) = principal {
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+            header.kid = Some("kid-current".into());
+            let token = jsonwebtoken::encode(
+                &header,
+                &json!({
+                    "iss":"https://trusted.mobkit.localhost", "aud":"meerkat-console",
+                    "sub":principal, "email":principal, "provider":"google_oauth",
+                    "exp":chrono::Utc::now().timestamp()+300
+                }),
+                &jsonwebtoken::EncodingKey::from_secret(b"phase8-trusted-current-secret"),
+            )
+            .expect("token");
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(axum::body::Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 128 * 1024)
+            .await
+            .expect("body");
+        let body: Value = serde_json::from_slice(&bytes).expect("JSON");
+        if principal.is_none() {
+            assert!(!status.is_success());
+            assert!(
+                body.get("storage_scope").is_none(),
+                "unauthorized responses have no persistence authority"
+            );
+        } else {
+            assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+            scopes.push(
+                body["storage_scope"]
+                    .as_str()
+                    .expect("authorized scope")
+                    .to_owned(),
+            );
+        }
+    }
+    assert_eq!(scopes[0], scopes[1]);
+    assert_ne!(scopes[0], scopes[2]);
+    assert!(
+        scopes
+            .iter()
+            .all(|scope| scope.starts_with("console-storage:v1:") && !scope.contains('@'))
+    );
+}
+
+#[tokio::test]
 async fn console_voice_readiness_is_target_scoped_and_false_without_a_host() {
     let contract: Value = serde_json::from_str(include_str!("fixtures/console_voice_v1.json"))
         .expect("shared voice contract");

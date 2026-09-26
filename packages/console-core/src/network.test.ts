@@ -10,7 +10,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 for (const [name, send, multipart] of [
   ["shared", sharedSend, sharedMultipart], ["stock", stockSend, stockMultipart],
 ] as const) {
-  test(`${name}: JSON and multipart sends require an explicit matching owner receipt`, async () => {
+  test(`${name}: JSON and multipart sends require an explicit owner receipt and preserve canonical alias resolution`, async () => {
     const original = globalThis.fetch;
     let receipt: unknown;
     const sent: Array<Record<string, unknown>> = [];
@@ -31,7 +31,7 @@ for (const [name, send, multipart] of [
           null, {}, { interaction_id: 123 }, { interaction_id: "real-id" },
           { interaction_id: 123, identity: "reviewer" },
           { interaction_id: "  ", identity: "reviewer" },
-          { interaction_id: "real-id", identity: "other-agent" },
+          { interaction_id: "real-id", identity: " " },
           { interaction_id: "real-id", identity: "reviewer", input_frame_id: 123 },
           { interaction_id: "real-id", identity: "reviewer", input_frame_id: " " },
         ]) await assert.rejects(call, /invalid acceptance payload/);
@@ -40,6 +40,10 @@ for (const [name, send, multipart] of [
         assert.equal(accepted.interaction_id, "owner-interaction");
         assert.equal(accepted.identity, "reviewer");
         assert.equal(accepted.input_frame_id, "owner-frame");
+        receipt = { interaction_id: "canonical-interaction", identity: "mob/canonical-reviewer", input_frame_id: "canonical-frame" };
+        const canonical = await call();
+        assert.equal(canonical.identity, "mob/canonical-reviewer");
+        assert.equal(canonical.input_frame_id, "canonical-frame");
       }
       assert.ok(sent.every(params => params.origin_kind === "operator"));
       assert.ok(sent.every(params => params.idempotency_key === "stable-key"));

@@ -2,7 +2,7 @@ import { QuoteSelectionAction } from "../../../packages/console-components/src/c
 import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
 import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import { JumpToLatest } from "../../../packages/console-components/src/conversation/jump-to-latest";
-import { ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
+import { approvalInteractionIdsByTurn, ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
 import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
 import type { MarkdownUrlPolicy } from "../../../packages/console-components/src/conversation/conversation-markdown";
 import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
@@ -1112,6 +1112,8 @@ const TranscriptView = React.memo(function TranscriptView({
     () => (windowStart > 0 ? turns.slice(windowStart) : turns),
     [turns, windowStart],
   );
+  const approvalInteractions = React.useMemo(() => approvalInteractionIdsByTurn(windowedTurns.map((turn) =>
+    turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []))), [windowedTurns]);
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
@@ -1203,7 +1205,7 @@ const TranscriptView = React.memo(function TranscriptView({
             </React.Fragment>);
             return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
           })}
-          <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])} />
+          <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractions[offset]} />
         </div>
         );
       });

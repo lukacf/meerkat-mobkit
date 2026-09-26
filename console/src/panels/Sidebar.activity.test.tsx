@@ -58,3 +58,11 @@ describe("Roster activity filters", () => {
   });
 
 });
+
+describe("approval attention availability", () => {
+  it.each(["forbidden", "unsupported"] as const)("does not turn %s approval access into an operator task", (status) => {
+    const view = render(<Sidebar {...props} approvals={{ scopeKey: "scope", status, requests: [], decisions: {}, readOnly: true }} />);
+    expect(view.queryByTestId("approval-attention")).toBeNull();
+    expect(view.getByText("Roster")).toBeTruthy();
+  });
+});

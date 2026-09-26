@@ -79,3 +79,15 @@ it("keeps authoritative acceptance terminal across late failures", () => {
   expect(finishConsoleSendAttempt(accepted, { state: "outcome-unknown", error: "late timeout" })).toBe(accepted);
   expect(finishConsoleSendAttempt(accepted, { state: "definitely-rejected", error: "late refusal" })).toBe(accepted);
 });
+
+it("reconciles a canonical alias receipt only with exact owner-proven correspondence", () => {
+  const attempt = beginConsoleSendAttempt(draft(), { owner: "tab", now: 2, handlingMode: "queue" });
+  const frame = { id: "canonical-input", event: "user_input", identity: "mob/canonical-agent", interactionId: "alias-turn", data: JSON.parse(attempt.envelopeJson!) };
+  const resolution = { requestedIdentity: attempt.destination, canonicalIdentity: frame.identity };
+  expect(reconcileConsoleSendReceipt(attempt, frame)).toBeNull();
+  expect(reconcileConsoleSendReceipt(attempt, frame, { ...resolution, requestedIdentity: "wrong-alias" })).toBeNull();
+  expect(reconcileConsoleSendReceipt(attempt, frame, { ...resolution, canonicalIdentity: "different-canonical" })).toBeNull();
+  expect(reconcileConsoleSendReceipt(attempt, frame, resolution)?.accepted?.inputFrameId).toBe("canonical-input");
+  expect(reconcileConsoleSendReceipt(attempt, { ...frame, data: { ...frame.data, idempotency_key: "other" } }, resolution)).toBeNull();
+  expect(reconcileConsoleSendReceipt(attempt, { ...frame, identity: "other" }, resolution)).toBeNull();
+});

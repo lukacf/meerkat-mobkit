@@ -548,6 +548,38 @@ async def _send_console_and_wait(runtime, identity, session_id, content, key, *,
     )
 
 
+async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *, timeout):
+    """Exercise the public SDK waiter and verify its output against committed history.
+
+    These scenario inputs are unique authored fixtures. Content locates the test
+    input only; typed interaction/run lineage selects its completion. A peer
+    reply returned by the SDK is an assertion failure, never a substitute result.
+    """
+    deadline = _timeline_time() + timeout
+    sdk_output = await asyncio.wait_for(agent.send_and_wait(content, timeout=timeout), timeout=timeout)
+
+    def committed(frames):
+        inputs = [frame for frame in frames if (
+            frame.get("identity") == identity and frame.get("session_id") == session_id
+            and frame.get("kind") == "user_input"
+            and frame.get("source", {}).get("kind") == "session_history"
+            and _content_text(frame.get("payload", {}).get("content")) == content
+            and frame.get("interaction_id")
+        )]
+        interactions = {frame["interaction_id"] for frame in inputs}
+        assert len(interactions) <= 1, "scenario input was admitted more than once"
+        if not interactions:
+            return None
+        return _conversation_result(frames, identity, session_id, next(iter(interactions)), content)
+
+    result = await _wait_for_timeline(runtime, identity, committed, deadline=deadline)
+    assert sdk_output == result["output"], (
+        f"SDK send_and_wait returned another turn for {identity}: "
+        f"{sdk_output!r}; committed requested run {result['run_id']}: {result['output']!r}"
+    )
+    return result
+
+
 def _school_history_fixture():
     return {
         "identity": "domain:school",
@@ -915,6 +947,38 @@ async def test_kitchen_console_send_uses_acceptance_id_and_original_deadline(mon
     assert timeout == 10
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_output", ["incident processed", "unrelated peer reply"])
+async def test_kitchen_sdk_completion_must_match_the_requested_committed_run(monkeypatch, sdk_output):
+    from types import SimpleNamespace
+    calls = []
+    clock = [0.0]
+
+    async def send_and_wait(content, timeout):
+        calls.append((content, timeout))
+        clock[0] = 5
+        return sdk_output
+
+    async def read_page(runtime, params, remaining):
+        assert remaining == 55
+        frames = _interaction_fixture("identity:luka", "luka-session", "sdk-input")
+        frames.append({"id": "sdk-user", "identity": "identity:luka", "session_id": "luka-session",
+                       "interaction_id": "sdk-input", "kind": "user_input", "source": {"kind": "session_history"},
+                       "payload": {"content": "Unique SDK input"}})
+        return {"frames": frames, "exhausted": True}
+
+    monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    operation = _send_sdk_and_verify(object(), SimpleNamespace(send_and_wait=send_and_wait),
+                                    "identity:luka", "luka-session", "Unique SDK input", timeout=60)
+    if sdk_output == "unrelated peer reply":
+        with pytest.raises(AssertionError, match="returned another turn"):
+            await operation
+    else:
+        assert (await operation)["run_id"] == "incident-run"
+    assert calls == [("Unique SDK input", 60)]
+
+
 # ===========================================================================
 # THE KITCHEN SINK
 # ===========================================================================
@@ -994,7 +1058,9 @@ class TestHouseholdIncident:
             print("\n--- Phase 2: School closure + autonomous fan-out ---")
 
             triage_deadline = _timeline_time() + 90
-            await asyncio.wait_for(triage.dispatch(DispatchInput(
+            school_baseline = (await school.inspect()).completion_cursor
+            assert school_baseline is not None
+            triage_admission = await asyncio.wait_for(triage.dispatch(DispatchInput(
                 content=(
                     "URGENT from school connector: Hillside Elementary closed tomorrow "
                     "due to pipe burst. All students must stay home. This affects the "
@@ -1005,8 +1071,12 @@ class TestHouseholdIncident:
                 idempotency_key="school:school-closure-1",
             )), timeout=max(0, triage_deadline - _timeline_time()))
 
-            # Startup peer replies can advance identity-wide completion cursors.
-            # Require this dispatch's committed run and its accepted school send.
+            triage_sdk_output = await triage.wait_for_output(
+                after=triage_admission.completion_baseline,
+                timeout=max(0, triage_deadline - _timeline_time()),
+            )
+            # Independently require this dispatch's committed run and accepted
+            # school send. Another completion returned by the SDK must fail.
             fanout = await _wait_for_timeline(
                 rt, "triage:main",
                 lambda frames: _school_fanout(
@@ -1014,26 +1084,30 @@ class TestHouseholdIncident:
                 ),
                 deadline=triage_deadline,
             )
+            assert triage_sdk_output == fanout["output"], "SDK triage waiter returned an unrelated turn"
             print(f"[Phase 2] triage output: {fanout['output']}")
 
             # Match the accepted envelope's interaction, then insist the exact
             # incident and assistant output are committed within the same budget.
+            school_deadline = _timeline_time() + 60
+            school_sdk_output = await school.wait_for_output(after=school_baseline, timeout=60)
             school_result = await _wait_for_timeline(
                 rt, "domain:school",
                 lambda frames: _school_incident_result(
                     frames, school_session, triage_peer["peer_id"], fanout["interaction_id"],
                 ),
-                deadline=_timeline_time() + 60,
+                deadline=school_deadline,
             )
+            assert school_sdk_output == school_result["output"], "SDK school waiter returned an unrelated turn"
             received = school_result["incident_history"]
             print(f"[Phase 2] school accepted triage incident in history frame {received['id']}")
             print(f"[Phase 2] domain:school received comms: {school_result['output']}")
 
             # Deliver closure notice to luka (simulates end of triage→domain→gate→identity chain).
-            # Console acceptance names the exact conversational interaction.
-            luka_notice = await _send_console_and_wait(
-                rt, "identity:luka", luka_session, _LUKA_CLOSURE_NOTICE,
-                "school:luka-notice-1", timeout=60,
+            # Exercise HomeCore's actual SDK completion path and verify its run.
+            luka_notice = await _send_sdk_and_verify(
+                rt, luka, "identity:luka", luka_session, _LUKA_CLOSURE_NOTICE,
+                timeout=60,
             )
             closure_history = luka_notice["input_history"]
             print("[Phase 2] identity:luka notified about school closure")
@@ -1045,7 +1119,7 @@ class TestHouseholdIncident:
 
             # Dispatch to gate for policy evaluation
             gate_deadline = _timeline_time() + 60
-            await asyncio.wait_for(gate.dispatch_text(
+            gate_admission = await asyncio.wait_for(gate.dispatch_text(
                 "Proposed action: notify family group that school is closed tomorrow "
                 "and Luka's dentist at 09:00 conflicts with childcare. "
                 "Evaluate whether this notification is appropriate to send.",
@@ -1053,6 +1127,10 @@ class TestHouseholdIncident:
                 correlation_id=_GATE_DISPATCH_ID,
                 idempotency_key="school:gate-evaluation-1",
             ), timeout=max(0, gate_deadline - _timeline_time()))
+            gate_sdk_output = await gate.wait_for_output(
+                after=gate_admission.completion_baseline,
+                timeout=max(0, gate_deadline - _timeline_time()),
+            )
             gate_result = await _wait_for_timeline(
                 rt, "gate:main",
                 lambda frames: _completed_interaction(
@@ -1060,6 +1138,7 @@ class TestHouseholdIncident:
                 ),
                 deadline=gate_deadline,
             )
+            assert gate_sdk_output == gate_result["output"], "SDK gate waiter returned an unrelated turn"
             print(f"[Phase 3] gate evaluated: {gate_result['output']}")
 
             # =============================================================
@@ -1134,10 +1213,10 @@ class TestHouseholdIncident:
             # After restore, asking about school should reference the closure.
             # Correlate this question's accepted interaction and committed answer;
             # a resumed peer reply must not satisfy the continuity assertion.
-            luka_result = await _send_console_and_wait(
-                rt2, "identity:luka", luka_session,
+            luka_result = await _send_sdk_and_verify(
+                rt2, luka2, "identity:luka", luka_session,
                 "Is school open or closed tomorrow, and why? Answer in one sentence only.",
-                "school:luka-recall-1", timeout=90,
+                timeout=90,
             )
             luka_output = luka_result["output"]
             assert _remembers_school_closure(luka_output), (

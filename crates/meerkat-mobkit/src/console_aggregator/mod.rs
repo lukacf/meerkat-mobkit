@@ -5,7 +5,7 @@ mod state;
 mod store;
 mod types;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -84,14 +84,54 @@ impl Default for ConsoleAggregatorOptions {
     }
 }
 
+const MEMBER_PROVENANCE_CACHE_LIMIT: usize = 2_048;
+const NOTICE_OBSERVATION_CACHE_LIMIT: usize = 16;
+const NOTICE_OBSERVATION_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+struct BoundedProjectionCache<K, V> {
+    entries: BTreeMap<K, V>,
+    order: VecDeque<K>,
+    limit: usize,
+}
+
+impl<K: Ord + Clone, V> BoundedProjectionCache<K, V> {
+    fn new(limit: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+            limit,
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if !self.entries.contains_key(&key) {
+            self.order.push_back(key.clone());
+        }
+        self.entries.insert(key, value);
+        while self.entries.len() > self.limit {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
+        self.entries.retain(|key, value| keep(key, value));
+        self.order.retain(|key| self.entries.contains_key(key));
+    }
+}
+
 type MemberProvenanceCache =
-    BTreeMap<(String, String, Option<String>), ConsoleFrameMemberProvenance>;
+    BoundedProjectionCache<(String, String, Option<String>), Arc<ConsoleFrameMemberProvenance>>;
+type NoticeObservationCache =
+    BoundedProjectionCache<(String, String, String), RuntimeNoticeObservation>;
 
 struct AggregatorInner {
     /// Policy views share one canonical projector and publish to its broadcaster.
     projection_owner: Option<Arc<AggregatorInner>>,
     store: Arc<dyn ConsoleLogStore>,
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
+    has_registered_runtime: AtomicBool,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     // Each targeted worker owns one key and at most one pending forced read.
@@ -112,6 +152,7 @@ struct AggregatorInner {
     /// runtime; a missing entry or an epoch-less runtime always reads.
     session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
     member_provenance: std::sync::Mutex<MemberProvenanceCache>,
+    notice_observations: std::sync::Mutex<NoticeObservationCache>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -280,6 +321,18 @@ fn retain_member_provenance(
         primary_mob_id: resolved.entry.runtime.handle().mob_id().to_string(),
         source_mob_id: resolved.source_mob_id.clone(),
     };
+    // A stale identity refresh must not restore a predecessor's witnesses.
+    let entries = inner
+        .runtimes
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if entries
+        .get(&resolved.entry.runtime_key)
+        .is_none_or(|entry| entry.registration_id != resolved.entry.registration_id)
+    {
+        return provenance;
+    }
+    let shared = Arc::new(provenance.clone());
     let mut retained = inner
         .member_provenance
         .lock()
@@ -290,11 +343,11 @@ fn retain_member_provenance(
             record.identity.clone(),
             record.session_id.clone(),
         ),
-        provenance.clone(),
+        shared.clone(),
     );
     retained.insert(
         (record.runtime_key.clone(), record.identity.clone(), None),
-        provenance.clone(),
+        shared,
     );
     provenance
 }
@@ -318,8 +371,9 @@ async fn member_provenance_for_identity(
         .member_provenance
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
         .get(&key)
-        .cloned();
+        .map(|value| value.as_ref().clone());
     if !refresh && cached.is_some() {
         return cached;
     }
@@ -333,7 +387,64 @@ async fn member_provenance_for_identity(
             return Some(retain_member_provenance(inner, &resolved, &record));
         }
     }
-    cached
+    if cached.is_some() {
+        return cached;
+    }
+    // Cache eviction cannot remove the durable policy witness of a retired
+    // member. Recover only the exact runtime/identity/session from stored rows.
+    let mut after = None;
+    let mut recovered = None;
+    loop {
+        let Ok(page) = inner
+            .store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some(identity.to_string()),
+                after: after.clone(),
+                limit: 1_000,
+                ..Default::default()
+            })
+            .await
+        else {
+            return None;
+        };
+        let Some(last) = page.frames.last() else {
+            break;
+        };
+        if last.cursor.seq().is_none_or(|seq| {
+            after
+                .as_ref()
+                .and_then(ConsoleCursor::seq)
+                .is_some_and(|previous| seq <= previous)
+        }) {
+            return None;
+        }
+        after = Some(last.cursor.clone());
+        for frame in page.frames {
+            if frame.runtime_key == entry.runtime_key
+                && session_id.is_none_or(|id| frame.session_id.as_deref() == Some(id))
+                && let Some(provenance) = frame.source.member_provenance
+            {
+                recovered = Some(provenance);
+            }
+        }
+    }
+    if let Some(provenance) = &recovered {
+        let entries = inner
+            .runtimes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries
+            .get(&entry.runtime_key)
+            .is_some_and(|current| current.registration_id == entry.registration_id)
+        {
+            inner
+                .member_provenance
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, Arc::new(provenance.clone()));
+        }
+    }
+    recovered
 }
 
 fn retained_member_visible(
@@ -449,6 +560,7 @@ impl MobKitConsoleAggregator {
                 projection_owner: None,
                 store,
                 runtimes: RwLock::new(BTreeMap::new()),
+                has_registered_runtime: AtomicBool::new(false),
                 event_tx,
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
@@ -458,7 +570,12 @@ impl MobKitConsoleAggregator {
                 )),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
-                member_provenance: std::sync::Mutex::new(BTreeMap::new()),
+                member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
+                    MEMBER_PROVENANCE_CACHE_LIMIT,
+                )),
+                notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
+                    NOTICE_OBSERVATION_CACHE_LIMIT,
+                )),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
                 live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
@@ -490,8 +607,8 @@ impl MobKitConsoleAggregator {
     }
 
     /// Build a read/send policy view without starting another source projector.
-    /// The canonical owner retains unredacted frames; each view projects its own
-    /// payload policy only when returning frames to a subscriber.
+    /// The canonical owner retains host-redacted frames; each view applies its
+    /// additional payload policy only when returning frames to a subscriber.
     pub(crate) fn policy_view(&self, policy: Arc<dyn ConsoleVisibilityPolicy>) -> Self {
         let owner = self
             .inner
@@ -515,6 +632,9 @@ impl MobKitConsoleAggregator {
                 projection_owner: Some(owner.clone()),
                 store: owner.store.clone(),
                 runtimes: RwLock::new(runtimes),
+                has_registered_runtime: AtomicBool::new(
+                    owner.has_registered_runtime.load(Ordering::Acquire),
+                ),
                 event_tx: owner.event_tx.clone(),
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
@@ -522,7 +642,12 @@ impl MobKitConsoleAggregator {
                 session_backfill_permits: owner.session_backfill_permits.clone(),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
-                member_provenance: std::sync::Mutex::new(BTreeMap::new()),
+                member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
+                    MEMBER_PROVENANCE_CACHE_LIMIT,
+                )),
+                notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
+                    NOTICE_OBSERVATION_CACHE_LIMIT,
+                )),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options: owner.options,
                 live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
@@ -637,10 +762,18 @@ impl MobKitConsoleAggregator {
             visibility_policy,
         };
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
+            self.inner
+                .has_registered_runtime
+                .store(true, Ordering::Release);
             runtimes.insert(runtime_key.clone(), entry);
         }
         self.inner
             .member_provenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != &runtime_key);
+        self.inner
+            .notice_observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(key, _, _), _| key != &runtime_key);
@@ -753,6 +886,16 @@ impl MobKitConsoleAggregator {
             .ok()
             .and_then(|mut runtimes| runtimes.remove(runtime_key))
             .is_some();
+        self.inner
+            .member_provenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != runtime_key);
+        self.inner
+            .notice_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != runtime_key);
         if let Ok(mut shutdowns) = self.inner.live_projection_shutdowns.lock()
             && let Some(shutdown) = shutdowns.remove(runtime_key)
         {
@@ -1378,7 +1521,18 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn clear_timeline_frames(&self) -> ConsoleLogResult<()> {
-        self.inner.store.clear_frames().await
+        let owner = self
+            .inner
+            .projection_owner
+            .as_deref()
+            .unwrap_or(&self.inner);
+        owner.store.clear_frames().await?;
+        owner
+            .notice_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, _| false);
+        Ok(())
     }
 
     pub async fn query_timeline(
@@ -1457,6 +1611,13 @@ impl MobKitConsoleAggregator {
                 .store
                 .query_windowed_frames(scan_query.clone())
                 .await?;
+            latest_cursor = latest_cursor.or(page.latest_cursor.clone());
+            // Older custom stores leave exhausted at its default even at the
+            // frontier. An empty page is terminal; nonempty repeats still fail.
+            if page.frames.is_empty() {
+                exhausted = true;
+                break;
+            }
             if !page.exhausted {
                 let progressed = match query.mode {
                     ConsoleTimelineMode::Since => page.next_cursor.as_ref().is_some_and(|next| {
@@ -1479,11 +1640,6 @@ impl MobKitConsoleAggregator {
                 if !progressed {
                     return Err(ConsoleTimelineQueryError::PaginationNoProgress);
                 }
-            }
-            latest_cursor = latest_cursor.or(page.latest_cursor.clone());
-            if page.frames.is_empty() {
-                exhausted = true;
-                break;
             }
             let raw_len = page.frames.len();
             scanned = scanned.saturating_add(raw_len);
@@ -1702,6 +1858,12 @@ impl MobKitConsoleAggregator {
         let Some(resolved) = Box::pin(self.resolve_send_member(&request.identity)).await? else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
+        let host_policy = capture_host_payload_policy(
+            &self.inner,
+            &resolved.entry.runtime_key,
+            Some(resolved.entry.registration_id),
+        )
+        .map_err(ConsoleSendError::Log)?;
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
@@ -1836,12 +1998,7 @@ impl MobKitConsoleAggregator {
             parent_frame_id: None,
             caused_by_frame_id: None,
         };
-        if self.inner.projection_owner.is_none()
-            && let Some(redacted) = resolved.entry.visibility_policy.redact_payload(&new_frame)
-        {
-            new_frame.payload = redacted;
-            new_frame.status = ConsoleFrameStatus::Redacted;
-        }
+        redact_frame(host_policy.as_ref(), &mut new_frame);
 
         let _ = SendState::Requested
             .apply(SendTransition::PersistAccepted)
@@ -1881,7 +2038,7 @@ impl MobKitConsoleAggregator {
 
         spawn_console_send_dispatch(
             self.inner.clone(),
-            resolved,
+            (resolved, host_policy),
             content,
             handling_mode,
             dispatching,
@@ -1904,7 +2061,7 @@ impl MobKitConsoleAggregator {
     ) -> Result<IdentityFirstReservation, ConsoleSendError> {
         validate_send_request(&request)?;
         let _content = content_input_from_value(&request.content)?;
-        let runtime_key =
+        let (runtime_key, host_policy) =
             Box::pin(self.runtime_key_for_identity_first_send(&request.identity)).await?;
         let handling_mode_value = request
             .handling_mode
@@ -1970,7 +2127,7 @@ impl MobKitConsoleAggregator {
         } else {
             None
         };
-        let new_frame = NewConsoleFrame {
+        let mut new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
             timestamp_ms: current_time_ms(),
@@ -1993,6 +2150,7 @@ impl MobKitConsoleAggregator {
             parent_frame_id: None,
             caused_by_frame_id: None,
         };
+        redact_frame(host_policy.as_ref(), &mut new_frame);
         let outcome = self
             .inner
             .store
@@ -2025,7 +2183,7 @@ impl MobKitConsoleAggregator {
     async fn runtime_key_for_identity_first_send(
         &self,
         identity: &str,
-    ) -> Result<String, ConsoleSendError> {
+    ) -> Result<(String, Arc<dyn ConsoleVisibilityPolicy>), ConsoleSendError> {
         let entries = self
             .inner
             .runtimes
@@ -2033,8 +2191,22 @@ impl MobKitConsoleAggregator {
             .map_err(|_| ConsoleSendError::Log(runtime_registry_lock_error()))?
             .clone();
         if entries.is_empty() {
-            return Ok("identity-first".to_string());
+            let policy = capture_host_payload_policy(&self.inner, "identity-first", None)
+                .map_err(ConsoleSendError::Log)?;
+            return Ok(("identity-first".to_string(), policy));
         }
+        let host_policies: BTreeMap<_, _> = entries
+            .values()
+            .map(|entry| {
+                capture_host_payload_policy(
+                    &self.inner,
+                    &entry.runtime_key,
+                    Some(entry.registration_id),
+                )
+                .map(|policy| (entry.runtime_key.clone(), policy))
+            })
+            .collect::<ConsoleLogResult<_>>()
+            .map_err(ConsoleSendError::Log)?;
 
         let mut identity_runtime_keys = Vec::new();
         let mut hidden_durable_match = false;
@@ -2108,7 +2280,10 @@ impl MobKitConsoleAggregator {
             {
                 return Err(ConsoleSendError::InvalidRequest(stale_error));
             }
-            return Ok(entry.runtime_key);
+            return Ok((
+                entry.runtime_key.clone(),
+                host_policies[&entry.runtime_key].clone(),
+            ));
         }
         if entries.values().any(|entry| {
             requested_identity_is_runtime_member_alias(identity, &entry.identity_namespace)
@@ -2121,7 +2296,7 @@ impl MobKitConsoleAggregator {
 
         match identity_runtime_keys.as_slice() {
             [] => Err(ConsoleSendError::UnknownIdentity(identity.to_string())),
-            [runtime_key] => Ok(runtime_key.clone()),
+            [runtime_key] => Ok((runtime_key.clone(), host_policies[runtime_key].clone())),
             _ => Err(ConsoleSendError::InvalidRequest(format!(
                 "identity-first send for '{identity}' did not match exactly one registered runtime"
             ))),
@@ -3339,13 +3514,14 @@ async fn dispatch_message_to_resolved_member(
 
 fn spawn_console_send_dispatch(
     inner: Arc<AggregatorInner>,
-    resolved: ResolvedConsoleMember,
+    producer: (ResolvedConsoleMember, Arc<dyn ConsoleVisibilityPolicy>),
     content: ContentInput,
     handling_mode: meerkat_core::types::HandlingMode,
     dispatching: SendState,
     user_frame: ConsoleFrame,
     interaction_id: String,
 ) {
+    let (resolved, host_policy) = producer;
     tokio::spawn(async move {
         match dispatch_message_to_resolved_member(
             &resolved,
@@ -3420,7 +3596,9 @@ fn spawn_console_send_dispatch(
                     parent_frame_id: Some(user_frame.id.clone()),
                     caused_by_frame_id: Some(user_frame.id),
                 };
-                if let Err(append_err) = append_and_emit(&inner, failure_frame).await {
+                if let Err(append_err) =
+                    append_and_emit_with_policy(&inner, failure_frame, host_policy).await
+                {
                     tracing::warn!(
                         error = %append_err,
                         "failed to append console send failure frame"
@@ -3636,14 +3814,16 @@ async fn backfill_session_history_targets(
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RuntimeNoticeObservation {
     observed_through: u64,
     relevant_frontier: u64,
     attempts: BTreeSet<(String, String)>,
     previous_snapshot: Option<ConsoleFrame>,
     has_notice_history: bool,
-    canonical_frames: Vec<ConsoleFrame>,
+    canonical_frames: Vec<Arc<ConsoleFrame>>,
+    retained_bytes: usize,
+    frontier_anchor: Option<(String, String)>,
 }
 
 async fn observe_runtime_notice_attempts(
@@ -3652,22 +3832,49 @@ async fn observe_runtime_notice_attempts(
     identity: &str,
     session_id: &str,
 ) -> ConsoleLogResult<RuntimeNoticeObservation> {
-    let mut observation = RuntimeNoticeObservation {
-        observed_through: inner
+    let key = (
+        runtime_key.to_string(),
+        identity.to_string(),
+        session_id.to_string(),
+    );
+    let observed_through = inner
+        .store
+        .latest_cursor()
+        .await?
+        .and_then(|cursor| cursor.seq())
+        .unwrap_or(0);
+    let mut observation = inner
+        .notice_observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+    let anchor_valid = if let Some((dedupe, id)) = &observation.frontier_anchor {
+        inner
             .store
-            .latest_cursor()
+            .frame_by_dedupe_key(dedupe)
             .await?
-            .and_then(|cursor| cursor.seq())
-            .unwrap_or(0),
-        ..Default::default()
+            .is_some_and(|frame| frame.id == *id)
+    } else {
+        observation.observed_through == 0
     };
-    let mut after = None;
+    if observation.observed_through > observed_through || !anchor_valid {
+        observation = RuntimeNoticeObservation::default();
+    }
+    if observation.observed_through == observed_through {
+        return Ok(observation);
+    }
+    let mut after = (observation.observed_through > 0)
+        .then(|| ConsoleCursor::from_seq(observation.observed_through));
+    observation.observed_through = observed_through;
     loop {
         let page = inner
             .store
             .query_frames(ConsoleTimelineQuery {
                 identity: Some(identity.to_string()),
-                after,
+                after: after.clone(),
                 limit: 1_000,
                 ..Default::default()
             })
@@ -3676,7 +3883,24 @@ async fn observe_runtime_notice_attempts(
             break;
         };
         let last_cursor = last.cursor.clone();
+        if last_cursor.seq().is_none_or(|seq| {
+            after
+                .as_ref()
+                .and_then(ConsoleCursor::seq)
+                .is_some_and(|previous| seq <= previous)
+        }) {
+            return Err(Box::new(std::io::Error::other(
+                "runtime notice scan made no cursor progress",
+            )));
+        }
         for frame in page.frames {
+            if frame
+                .cursor
+                .seq()
+                .is_some_and(|seq| seq <= observed_through)
+            {
+                observation.frontier_anchor = Some((frame.dedupe_key.clone(), frame.id.clone()));
+            }
             if frame
                 .cursor
                 .seq()
@@ -3713,7 +3937,12 @@ async fn observe_runtime_notice_attempts(
                         .and_then(|message| message.get("runtime_origin"))
                         .is_some_and(Value::is_object))
             {
-                observation.canonical_frames.push(frame.clone());
+                let mut retained = frame.clone();
+                retained.source.member_provenance = None;
+                observation.retained_bytes = observation
+                    .retained_bytes
+                    .saturating_add(serde_json::to_vec(&retained)?.len());
+                observation.canonical_frames.push(Arc::new(retained));
             }
             if frame.kind != "boundary_append_applied"
                 || frame.source.kind != ConsoleFrameSourceKind::ConsoleEvent
@@ -3755,6 +3984,32 @@ async fn observe_runtime_notice_attempts(
         }
         after = Some(last_cursor);
     }
+    let mut cache = inner
+        .notice_observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let retained_bytes = observation
+        .retained_bytes
+        .saturating_add(
+            observation
+                .attempts
+                .iter()
+                .map(|(run, input)| run.len() + input.len())
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            observation
+                .previous_snapshot
+                .as_ref()
+                .map(serde_json::to_vec)
+                .transpose()?
+                .map_or(0, |bytes| bytes.len()),
+        );
+    if retained_bytes <= NOTICE_OBSERVATION_MAX_BYTES {
+        cache.insert(key, observation.clone());
+    } else {
+        cache.retain(|candidate, _| candidate != &key);
+    }
     Ok(observation)
 }
 
@@ -3769,6 +4024,7 @@ fn complete_current_history_page(
         .then_some(page)
 }
 
+#[cfg(test)]
 fn current_history_positions(
     runtime_key: &str,
     identity: &str,
@@ -3776,10 +4032,20 @@ fn current_history_positions(
     observation: &RuntimeNoticeObservation,
     messages: &[Message],
 ) -> Vec<Value> {
+    current_history_position_changes(runtime_key, identity, session_id, observation, messages).0
+}
+
+fn current_history_position_changes(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> (Vec<Value>, Vec<String>) {
     fn key(kind: &str, payload: &Value, run: Option<&str>, input: Option<&str>) -> String {
         serde_json::to_string(&(kind, payload, run, input)).unwrap_or_default()
     }
-    let mut current = BTreeMap::<String, std::collections::VecDeque<String>>::new();
+    let mut current = BTreeMap::<String, std::collections::VecDeque<(String, String)>>::new();
     for (offset, message) in messages.iter().enumerate() {
         let Ok(message) = serde_json::to_value(message) else {
             continue;
@@ -3811,7 +4077,7 @@ fn current_history_positions(
                         frame.interaction_id.as_deref(),
                     ))
                     .or_default()
-                    .push_back(cursor);
+                    .push_back((frame.dedupe_key, cursor));
             }
         }
     }
@@ -3834,19 +4100,50 @@ fn current_history_positions(
             .collect();
         (position, frame.cursor.seq().unwrap_or(u64::MAX))
     });
-    old.into_iter()
+    // Dedupe keys are minted from the canonical source before host redaction.
+    // Reserve exact unchanged occurrences first, so an older repeated row
+    // cannot borrow the coordinate of a later exact survivor after compaction.
+    let mut exact = BTreeMap::<String, String>::new();
+    let by_dedupe: BTreeMap<_, _> = old
+        .iter()
+        .map(|frame| (frame.dedupe_key.as_str(), frame.id.as_str()))
+        .collect();
+    for candidates in current.values_mut() {
+        candidates.retain(|(dedupe, cursor)| {
+            if let Some(id) = by_dedupe.get(dedupe.as_str()) {
+                exact.insert((*id).to_string(), cursor.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+    let mut removed = Vec::new();
+    let positions = old
+        .into_iter()
         .filter_map(|frame| {
-            let cursor = current
-                .get_mut(&key(
-                    &frame.kind,
-                    &frame.payload,
-                    frame.run_id.as_deref(),
-                    frame.interaction_id.as_deref(),
-                ))?
-                .pop_front()?;
+            let cursor = exact.remove(&frame.id).or_else(|| {
+                current
+                    .get_mut(&key(
+                        &frame.kind,
+                        &frame.payload,
+                        frame.run_id.as_deref(),
+                        frame.interaction_id.as_deref(),
+                    ))
+                    .and_then(std::collections::VecDeque::pop_front)
+                    .map(|(_, cursor)| cursor)
+            });
+            let Some(cursor) = cursor else {
+                removed.push(frame.id.clone());
+                return None;
+            };
+            if frame.source.source_cursor.as_deref() == Some(cursor.as_str()) {
+                return None;
+            }
             Some(json!({ "frame_id": frame.id, "source_cursor": cursor }))
         })
-        .collect()
+        .collect();
+    (positions, removed)
 }
 
 fn runtime_entry_is_current(inner: &AggregatorInner, entry: &RuntimeEntry) -> bool {
@@ -3887,8 +4184,8 @@ fn runtime_notice_snapshot_frame(
         .iter()
         .map(|(run_id, input_id)| json!({ "run_id": run_id, "input_id": input_id }))
         .collect();
-    let history_positions =
-        current_history_positions(runtime_key, identity, session_id, observation, messages);
+    let (history_positions, removed_history_frame_ids) =
+        current_history_position_changes(runtime_key, identity, session_id, observation, messages);
     let previous = observation.previous_snapshot.as_ref();
     // A repeated observation needs no new row. A later A -> B -> A image does:
     // key it by the previous observation, not the content digest alone.
@@ -3896,6 +4193,8 @@ fn runtime_notice_snapshot_frame(
         frame.payload.get("notices") == Some(&json!(notices))
             && frame.payload.get("settled_attempts") == Some(&json!(settled))
             && frame.payload.get("history_positions") == Some(&json!(history_positions))
+            && frame.payload.get("removed_history_frame_ids")
+                == Some(&json!(removed_history_frame_ids))
             && frame
                 .payload
                 .get("observed_through")
@@ -3909,6 +4208,7 @@ fn runtime_notice_snapshot_frame(
         "session_id": session_id, "complete": true,
         "observed_through": ConsoleCursor::from_seq(observation.observed_through),
         "notices": notices, "settled_attempts": settled, "history_positions": history_positions,
+        "history_positions_mode": "sparse", "removed_history_frame_ids": removed_history_frame_ids,
     });
     let digest = hash_short(&serde_json::to_string(&payload).ok()?);
     Some(NewConsoleFrame {
@@ -4058,7 +4358,7 @@ async fn backfill_one_session_history(
                 record_session_history_backfill_failure(
                     &inner,
                     &watermark_runtime_key,
-                    &entry.runtime_key,
+                    &entry,
                     &record.identity,
                     &session_id,
                     offset,
@@ -4073,7 +4373,7 @@ async fn backfill_one_session_history(
             record_session_history_backfill_failure(
                 &inner,
                 &watermark_runtime_key,
-                &entry.runtime_key,
+                &entry,
                 &record.identity,
                 &session_id,
                 offset,
@@ -4095,11 +4395,7 @@ async fn backfill_one_session_history(
             &page.messages,
         ) {
             snapshot.source.member_provenance = provenance.clone();
-            if let Some(redacted) = entry.visibility_policy.redact_payload(&snapshot) {
-                snapshot.payload = redacted;
-                snapshot.status = ConsoleFrameStatus::Redacted;
-            }
-            append_and_emit(&inner, snapshot).await?;
+            append_and_emit_with_policy(&inner, snapshot, entry.visibility_policy.clone()).await?;
         }
         // The snapshot observes the complete image, while ordinary append-only
         // backfill still skips the already-published prefix.
@@ -4112,7 +4408,7 @@ async fn backfill_one_session_history(
                 record_session_history_backfill_failure(
                     &inner,
                     &watermark_runtime_key,
-                    &entry.runtime_key,
+                    &entry,
                     &record.identity,
                     &session_id,
                     offset,
@@ -4131,7 +4427,7 @@ async fn backfill_one_session_history(
             record_session_history_backfill_failure(
                 &inner,
                 &watermark_runtime_key,
-                &entry.runtime_key,
+                &entry,
                 &record.identity,
                 &session_id,
                 offset,
@@ -4179,11 +4475,7 @@ async fn backfill_one_session_history(
                 if history_frame_has_existing_counterpart(&inner, &frame).await? {
                     continue;
                 }
-                if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
-                    frame.payload = redacted;
-                    frame.status = ConsoleFrameStatus::Redacted;
-                }
-                append_and_emit(&inner, frame).await?;
+                append_and_emit_with_policy(&inner, frame, entry.visibility_policy.clone()).await?;
             }
         }
         let Some(next_offset) = advance_backfill_offset(offset, base_offset, messages.len()) else {
@@ -4218,9 +4510,9 @@ async fn backfill_one_session_history(
             .runtimes
             .read()
             .map_err(|_| runtime_registry_lock_error())?;
-        if !registrations
+        if registrations
             .get(&entry.runtime_key)
-            .is_some_and(|current| current.registration_id == entry.registration_id)
+            .is_none_or(|current| current.registration_id != entry.registration_id)
         {
             return Ok(());
         }
@@ -4362,9 +4654,9 @@ async fn run_targeted_session_history_backfill(
             .runtimes
             .read()
             .map_err(|_| runtime_registry_lock_error())?;
-        if !registrations
+        if registrations
             .get(&target.entry.runtime_key)
-            .is_some_and(|entry| entry.registration_id == target.entry.registration_id)
+            .is_none_or(|entry| entry.registration_id != target.entry.registration_id)
         {
             return Ok(());
         }
@@ -4527,6 +4819,7 @@ async fn recover_lagged_source_events(
     runtime_key: &str,
     console_events: &ConsoleEventStore,
 ) -> ConsoleLogResult<()> {
+    let policy = capture_host_payload_policy(&inner, runtime_key, None)?;
     let watermark = inner
         .store
         .source_watermark(runtime_key, ConsoleFrameSourceKind::ConsoleEvent)
@@ -4545,6 +4838,7 @@ async fn recover_lagged_source_events(
                     "{}:{}:{}",
                     err.error, err.stream, err.requested_last_event_id
                 ),
+                policy,
             )
             .await?;
         }
@@ -4556,8 +4850,9 @@ async fn append_source_gap(
     inner: &AggregatorInner,
     runtime_key: &str,
     reason: String,
+    policy: Arc<dyn ConsoleVisibilityPolicy>,
 ) -> ConsoleLogResult<()> {
-    append_and_emit(
+    append_and_emit_with_policy(
         inner,
         NewConsoleFrame {
             id: None,
@@ -4585,6 +4880,7 @@ async fn append_source_gap(
             parent_frame_id: None,
             caused_by_frame_id: None,
         },
+        policy,
     )
     .await?;
     let _ = inner
@@ -4603,14 +4899,14 @@ async fn append_source_gap(
 async fn record_session_history_backfill_failure(
     inner: &AggregatorInner,
     watermark_runtime_key: &str,
-    runtime_key: &str,
+    entry: &RuntimeEntry,
     identity: &str,
     session_id: &str,
     offset: usize,
     reason: String,
 ) -> ConsoleLogResult<()> {
     record_session_history_watermark(inner, watermark_runtime_key, session_id, offset).await?;
-    append_backfill_gap(inner, runtime_key, identity, session_id, reason).await
+    append_backfill_gap(inner, entry, identity, session_id, reason).await
 }
 
 /// Stable dedupe key for a session-history backfill gap frame: a persistently
@@ -4621,12 +4917,13 @@ fn backfill_gap_dedupe_key(runtime_key: &str, identity: &str, session_id: &str) 
 
 async fn append_backfill_gap(
     inner: &AggregatorInner,
-    runtime_key: &str,
+    entry: &RuntimeEntry,
     identity: &str,
     session_id: &str,
     reason: String,
 ) -> ConsoleLogResult<()> {
-    append_and_emit(
+    let runtime_key = &entry.runtime_key;
+    append_and_emit_with_policy(
         inner,
         NewConsoleFrame {
             id: None,
@@ -4658,6 +4955,7 @@ async fn append_backfill_gap(
             parent_frame_id: None,
             caused_by_frame_id: None,
         },
+        entry.visibility_policy.clone(),
     )
     .await?;
     Ok(())
@@ -4686,10 +4984,6 @@ async fn project_console_event(
         matches!(frame.kind.as_str(), "interaction_started" | "run_started"),
     )
     .await;
-    if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
-        frame.payload = redacted;
-        frame.status = ConsoleFrameStatus::Redacted;
-    }
     let source_cursor = frame
         .source_event_id
         .clone()
@@ -4706,7 +5000,7 @@ async fn project_console_event(
     } else {
         None
     };
-    append_and_emit(&inner, frame).await?;
+    append_and_emit_with_policy(&inner, frame, entry.visibility_policy.clone()).await?;
     inner
         .store
         .record_source_watermark(
@@ -4756,9 +5050,50 @@ fn console_event_should_start_session_history_backfill(frame: &NewConsoleFrame) 
     )
 }
 
+fn capture_host_payload_policy(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    expected_registration: Option<uuid::Uuid>,
+) -> ConsoleLogResult<Arc<dyn ConsoleVisibilityPolicy>> {
+    let owner = inner.projection_owner.as_deref().unwrap_or(inner);
+    let entries = owner
+        .runtimes
+        .read()
+        .map_err(|_| runtime_registry_lock_error())?;
+    if let Some(entry) = entries.get(runtime_key) {
+        owner.has_registered_runtime.store(true, Ordering::Release);
+        if expected_registration.is_none_or(|id| entry.registration_id == id) {
+            return Ok(entry.visibility_policy.clone());
+        }
+    } else if entries.is_empty() && !owner.has_registered_runtime.load(Ordering::Acquire) {
+        // Standalone aggregators can reserve identity-first sends before any
+        // runtime is attached. Unregistered producers never use this fallback.
+        return Ok(Arc::new(AllowAllConsoleVisibilityPolicy));
+    }
+    Err(Box::new(std::io::Error::other(
+        "console producer registration is no longer current",
+    )))
+}
+
+fn redact_frame(policy: &dyn ConsoleVisibilityPolicy, frame: &mut NewConsoleFrame) {
+    if let Some(payload) = policy.redact_payload(frame) {
+        frame.payload = payload;
+        frame.status = ConsoleFrameStatus::Redacted;
+    }
+}
+
 async fn append_and_emit(
     inner: &AggregatorInner,
+    frame: NewConsoleFrame,
+) -> ConsoleLogResult<AppendOutcome> {
+    let policy = capture_host_payload_policy(inner, &frame.runtime_key, None)?;
+    append_and_emit_with_policy(inner, frame, policy).await
+}
+
+async fn append_and_emit_with_policy(
+    inner: &AggregatorInner,
     mut frame: NewConsoleFrame,
+    policy: Arc<dyn ConsoleVisibilityPolicy>,
 ) -> ConsoleLogResult<AppendOutcome> {
     if frame.source.member_provenance.is_none() {
         let owner = inner.projection_owner.as_deref().unwrap_or(inner);
@@ -4778,6 +5113,7 @@ async fn append_and_emit(
             .await;
         }
     }
+    redact_frame(policy.as_ref(), &mut frame);
     let outcome = inner.store.append_if_absent(frame).await?;
     if outcome.disposition == AppendDisposition::Inserted {
         let _ = inner.event_tx.send(ConsoleTimelineEvent::ConsoleFrame {
@@ -6687,6 +7023,7 @@ mod tests {
         source_watermark_calls: AtomicUsize,
         record_watermark_calls: AtomicUsize,
         window_page_limit: usize,
+        legacy_empty_page: bool,
         snapshot_append_gate: std::sync::Mutex<Option<Arc<HistoryReadGate>>>,
     }
 
@@ -6697,6 +7034,7 @@ mod tests {
                 source_watermark_calls: AtomicUsize::new(0),
                 record_watermark_calls: AtomicUsize::new(0),
                 window_page_limit: usize::MAX,
+                legacy_empty_page: false,
                 snapshot_append_gate: std::sync::Mutex::new(None),
             }
         }
@@ -7660,7 +7998,11 @@ mod tests {
             mut query: ConsoleTimelineWindowQuery,
         ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
             query.limit = query.limit.min(self.window_page_limit);
-            self.inner.query_windowed_frames(query).await
+            let mut page = self.inner.query_windowed_frames(query).await?;
+            if self.legacy_empty_page {
+                page.exhausted = false;
+            }
+            Ok(page)
         }
 
         async fn frame_by_dedupe_key(
@@ -11152,6 +11494,56 @@ comms = true
     }
 
     #[tokio::test]
+    async fn legacy_empty_timeline_pages_finish_since_and_recent_scans() {
+        let mut store = CountingConsoleLogStore::new();
+        store.legacy_empty_page = true;
+        let aggregator = MobKitConsoleAggregator::new(Arc::new(store));
+        for mode in [ConsoleTimelineMode::Since, ConsoleTimelineMode::Recent] {
+            let page = aggregator
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    mode,
+                    ..Default::default()
+                })
+                .await
+                .expect("empty legacy frontier is valid");
+            assert!(page.frames.is_empty());
+            assert!(page.exhausted);
+        }
+        let frame =
+            counterpart_lineage_frame("short-page", "text_delta", json!({"delta":"visible"}));
+        aggregator
+            .store()
+            .append_if_absent(frame)
+            .await
+            .expect("fixture");
+        let recent = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                mode: ConsoleTimelineMode::Recent,
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .expect("short page followed by empty legacy page");
+        assert_eq!(recent.frames.len(), 1);
+        assert!(recent.exhausted);
+    }
+
+    #[test]
+    fn projection_caches_evict_without_retaining_duplicate_order_entries() {
+        let mut cache = BoundedProjectionCache::new(2);
+        cache.insert("first", 1);
+        cache.insert("first", 2);
+        cache.insert("second", 3);
+        cache.insert("third", 4);
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.order.len(), 2);
+        assert!(!cache.entries.contains_key("first"));
+        cache.retain(|key, _| *key != "second");
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.order.len(), 1);
+    }
+
+    #[tokio::test]
     async fn query_timeline_reads_from_aggregate_store() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         let frame = NewConsoleFrame {
@@ -11206,6 +11598,288 @@ comms = true
     /// to `ns/_system`). ABAC is unaffected: under an enforced config the
     /// RPC layer still filters `_system` frames per caller via
     /// `retain_visible_timeline_frames` (covered in tests/access_control.rs).
+    #[tokio::test]
+    async fn host_redaction_precedes_store_broadcast_and_view_send_reservation() {
+        struct RedactSecret;
+        impl ConsoleVisibilityPolicy for RedactSecret {
+            fn redact_payload(&self, frame: &NewConsoleFrame) -> Option<Value> {
+                matches!(frame.kind.as_str(), "text_delta" | "user_input")
+                    .then(|| json!({"content":"[host redacted]"}))
+            }
+        }
+        let runtime = build_empty_runtime("host-redaction-owner").await;
+        let owner = MobKitConsoleAggregator::in_memory();
+        let mut entry = runtime_entry_for_test("default", &runtime);
+        entry.identity_namespace.clear();
+        entry.visibility_policy = Arc::new(RedactSecret);
+        entry.identity_runtime = Some(
+            identity_runtime_for_test(&["agent-a"])
+                .await
+                .expect("durable identity"),
+        );
+        owner
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("default".into(), entry);
+        let view = owner.policy_view(Arc::new(AllowAllConsoleVisibilityPolicy));
+        let mut receiver = owner.subscribe();
+        let mut frame = counterpart_lineage_frame(
+            "host-secret",
+            "text_delta",
+            json!({"delta":"private-token"}),
+        );
+        frame.runtime_key = "default".into();
+        frame.identity = SYSTEM_EVENT_IDENTITY.into();
+        let stored = append_and_emit(&view.inner, frame)
+            .await
+            .expect("append")
+            .frame;
+        assert_eq!(stored.payload["content"], "[host redacted]");
+        assert_eq!(stored.status, ConsoleFrameStatus::Redacted);
+        let ConsoleTimelineEvent::ConsoleFrame { frame } =
+            receiver.recv().await.expect("broadcast")
+        else {
+            panic!("frame event");
+        };
+        assert_eq!(frame.payload, stored.payload);
+        let raw = owner
+            .store()
+            .frame_by_dedupe_key("host-secret")
+            .await
+            .expect("read")
+            .expect("stored");
+        assert_eq!(raw.payload, stored.payload);
+        let request = ConsoleSendRequest {
+            identity: "agent-a".into(),
+            content: json!("private-token"),
+            origin: "console:host-policy-test".into(),
+            idempotency_key: "send-secret".into(),
+            handling_mode: Some("queue".into()),
+            origin_kind: None,
+        };
+        view.reserve_identity_first_interaction(request.clone(), None)
+            .await
+            .expect("reservation");
+        let key = send_dedupe_key(
+            "default",
+            &request.identity,
+            &request.origin,
+            &request.idempotency_key,
+        );
+        let send = owner
+            .store()
+            .frame_by_dedupe_key(&key)
+            .await
+            .expect("raw send")
+            .expect("reserved");
+        assert_eq!(
+            send.payload, stored.payload,
+            "view send must use host policy before persistence"
+        );
+        let ConsoleTimelineEvent::ConsoleFrame { frame } =
+            receiver.recv().await.expect("send broadcast")
+        else {
+            panic!("send frame event");
+        };
+        assert_eq!(frame.payload, send.payload);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn captured_host_policy_survives_unregister_and_replacement_before_append() {
+        struct RedactHost;
+        impl ConsoleVisibilityPolicy for RedactHost {
+            fn redact_payload(&self, _: &NewConsoleFrame) -> Option<Value> {
+                Some(json!({"content":"[host redacted]"}))
+            }
+        }
+        let runtime = build_empty_runtime("captured-host-policy").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let mut entry = runtime_entry_for_test("runtime-a", &runtime);
+        entry.visibility_policy = Arc::new(RedactHost);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".into(), entry.clone());
+        let policy = capture_host_payload_policy(
+            &aggregator.inner,
+            "runtime-a",
+            Some(entry.registration_id),
+        )
+        .expect("admit producer");
+        let mut receiver = aggregator.subscribe();
+        aggregator.unregister_runtime("runtime-a");
+        let mut frame = counterpart_lineage_frame(
+            "unregistered-source",
+            "text_delta",
+            json!({"delta":"private-token"}),
+        );
+        frame.identity = SYSTEM_EVENT_IDENTITY.into();
+        assert!(
+            append_and_emit(&aggregator.inner, frame.clone())
+                .await
+                .is_err(),
+            "missing producer cannot silently use AllowAll"
+        );
+        let first = append_and_emit_with_policy(&aggregator.inner, frame.clone(), policy.clone())
+            .await
+            .expect("already admitted source")
+            .frame;
+        let mut replacement = entry;
+        replacement.registration_id = uuid::Uuid::new_v4();
+        replacement.visibility_policy = Arc::new(AllowAllConsoleVisibilityPolicy);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".into(), replacement);
+        frame.dedupe_key = "replaced-source".into();
+        let second = append_and_emit_with_policy(&aggregator.inner, frame, policy)
+            .await
+            .expect("captured policy")
+            .frame;
+        for stored in [first, second] {
+            assert_eq!(stored.payload, json!({"content":"[host redacted]"}));
+            let ConsoleTimelineEvent::ConsoleFrame { frame } =
+                receiver.recv().await.expect("broadcast")
+            else {
+                panic!("frame");
+            };
+            assert_eq!(frame.payload, stored.payload);
+            assert_eq!(
+                aggregator
+                    .store()
+                    .frame_by_dedupe_key(&stored.dedupe_key)
+                    .await
+                    .expect("raw store")
+                    .expect("row")
+                    .payload,
+                stored.payload
+            );
+        }
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_registration_cannot_replace_current_provenance_cache() {
+        let runtime = build_single_member_runtime().await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".into(), entry.clone());
+        let resolved = member_sources_for_entry_including_hidden(&entry)
+            .await
+            .into_iter()
+            .next()
+            .expect("member");
+        let mut old_record = identity_record_for_resolved_member(&resolved)
+            .await
+            .expect("identity");
+        old_record.labels.insert("generation".into(), "old".into());
+        retain_member_provenance(&aggregator.inner, &resolved, &old_record);
+        let mut replacement = entry;
+        replacement.registration_id = uuid::Uuid::new_v4();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".into(), replacement.clone());
+        let replacement_resolved = member_sources_for_entry_including_hidden(&replacement)
+            .await
+            .into_iter()
+            .next()
+            .expect("replacement member");
+        let mut new_record = old_record.clone();
+        new_record.labels.insert("generation".into(), "new".into());
+        let current =
+            retain_member_provenance(&aggregator.inner, &replacement_resolved, &new_record);
+        retain_member_provenance(&aggregator.inner, &resolved, &old_record);
+        let cached = member_provenance_for_identity(
+            &aggregator.inner,
+            &replacement,
+            &new_record.identity,
+            new_record.session_id.as_deref(),
+            false,
+        )
+        .await;
+        assert_eq!(
+            cached,
+            Some(current),
+            "stale refresh cannot overwrite the replacement's witness"
+        );
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn evicted_provenance_recovers_exact_retired_session_witness() {
+        let runtime = build_empty_runtime("retired-provenance-cache").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert("runtime-a".into(), entry.clone());
+        let provenance: ConsoleFrameMemberProvenance = serde_json::from_value(json!({
+            "identity": {"identity":"agent-a", "display_name":"Agent", "runtime_key":"runtime-a",
+                "runtime_member_id":"agent-a", "session_id":"session-a", "visibility":"retired_readable",
+                "addressable":false, "health":"retired", "labels":{"private-label":"private"}},
+            "member": {"agent_identity":"agent-a", "role":"delegate", "state":"retired",
+                "session_id":"session-a", "wired_to":[], "labels":{"private-label":"private"}},
+            "primary_mob_id":"primary", "source_mob_id":"lower"
+        })).expect("provenance");
+        let mut frame =
+            counterpart_lineage_frame("retired-witness", "text_delta", json!({"delta":"private"}));
+        frame.source.member_provenance = Some(provenance.clone());
+        aggregator
+            .store()
+            .append_if_absent(frame)
+            .await
+            .expect("durable witness");
+        {
+            let mut cache = aggregator.inner.member_provenance.lock().expect("cache");
+            for index in 0..MEMBER_PROVENANCE_CACHE_LIMIT + 10 {
+                cache.insert(
+                    ("runtime-a".into(), format!("temporary-{index}"), None),
+                    Arc::new(provenance.clone()),
+                );
+            }
+            assert_eq!(cache.entries.len(), MEMBER_PROVENANCE_CACHE_LIMIT);
+        }
+        let recovered = member_provenance_for_identity(
+            &aggregator.inner,
+            &entry,
+            "agent-a",
+            Some("session-a"),
+            false,
+        )
+        .await;
+        assert_eq!(recovered, Some(provenance));
+        assert!(
+            member_provenance_for_identity(
+                &aggregator.inner,
+                &entry,
+                "agent-a",
+                Some("other-session"),
+                false
+            )
+            .await
+            .is_none()
+        );
+        runtime.shutdown().await;
+    }
+
     #[tokio::test]
     async fn policy_views_share_canonical_events_without_redacting_each_others_store() {
         struct RedactText;
@@ -13785,9 +14459,9 @@ comms = true
             &viewed,
             &observation,
             &BTreeSet::new(),
-            &[message.clone()],
+            std::slice::from_ref(&message),
         )
-        .unwrap();
+        .expect("initial snapshot must be emitted");
         assert_eq!(first.payload["notices"][0]["offset"], 0);
         assert_eq!(
             first.payload["notices"][0]["message"]["runtime_origin"]["session_id"],
@@ -13797,7 +14471,7 @@ comms = true
             .store()
             .append_if_absent(first)
             .await
-            .unwrap()
+            .expect("initial snapshot append succeeds")
             .frame;
         observation.previous_snapshot = Some(first);
         assert!(
@@ -13807,7 +14481,7 @@ comms = true
                 &viewed,
                 &observation,
                 &BTreeSet::new(),
-                &[message.clone()]
+                std::slice::from_ref(&message)
             )
             .is_none()
         );
@@ -13819,9 +14493,13 @@ comms = true
             &BTreeSet::new(),
             &[],
         )
-        .unwrap();
+        .expect("removal snapshot must be emitted");
         assert_eq!(removed.payload["notices"], json!([]));
-        let removed = aggregator.store().append_if_absent(removed).await.unwrap();
+        let removed = aggregator
+            .store()
+            .append_if_absent(removed)
+            .await
+            .expect("removal snapshot append succeeds");
         assert_eq!(removed.disposition, AppendDisposition::Inserted);
         observation.previous_snapshot = Some(removed.frame);
         let restored = runtime_notice_snapshot_frame(
@@ -13832,13 +14510,13 @@ comms = true
             &BTreeSet::new(),
             &[message],
         )
-        .unwrap();
+        .expect("restored snapshot must be emitted");
         assert_eq!(
             aggregator
                 .store()
                 .append_if_absent(restored)
                 .await
-                .unwrap()
+                .expect("restored snapshot append succeeds")
                 .disposition,
             AppendDisposition::Inserted
         );
@@ -13866,13 +14544,13 @@ comms = true
             &settled,
             &[],
         )
-        .unwrap();
+        .expect("settled snapshot must be emitted");
         observation.previous_snapshot = Some(
             aggregator
                 .store()
                 .append_if_absent(first)
                 .await
-                .unwrap()
+                .expect("settled snapshot append succeeds")
                 .frame,
         );
         observation.observed_through = 12;
@@ -13885,13 +14563,40 @@ comms = true
             &settled,
             &[],
         )
-        .unwrap();
+        .expect("new live application must emit a snapshot");
         assert_eq!(next.payload["observed_through"], "console:12");
     }
 
     #[tokio::test]
-    async fn history_counterpart_retains_committed_user_and_tool_rows_once_for_public_queries() {
-        let aggregator = MobKitConsoleAggregator::in_memory();
+    async fn public_timeline_preserves_distinct_live_and_committed_rows_and_applies_visibility() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        struct HideTools;
+        impl ConsoleVisibilityPolicy for HideTools {
+            fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
+                frame.kind != "tool_execution_completed"
+            }
+        }
+        let runtime = build_empty_runtime("public-canonical-counterparts").await;
+        let aggregator =
+            MobKitConsoleAggregator::in_memory_with_options(ConsoleAggregatorOptions {
+                session_history_backfill_enabled: false,
+                ..Default::default()
+            });
+        aggregator.inner.runtimes.write().expect("registry").insert(
+            "runtime-a".into(),
+            runtime_entry_for_test("runtime-a", &runtime),
+        );
+        let provenance: ConsoleFrameMemberProvenance = serde_json::from_value(json!({
+            "identity": {"identity":"agent-a", "display_name":"Agent", "runtime_key":"runtime-a",
+                "runtime_member_id":"agent-a", "session_id":"session-a", "visibility":"addressable",
+                "addressable":true, "health":"ready", "labels":{"private-label":"private"}},
+            "member": {"agent_identity":"agent-a", "role":"worker", "state":"running",
+                "session_id":"session-a", "wired_to":[], "labels":{"private-label":"private"}},
+            "primary_mob_id":"primary", "source_mob_id":"primary"
+        }))
+        .expect("provenance");
         for (kind, payload, owner) in [
             (
                 "user_input",
@@ -13906,6 +14611,7 @@ comms = true
         ] {
             let mut live =
                 counterpart_lineage_frame(&format!("live-{kind}"), kind, payload.clone());
+            live.source.member_provenance = Some(provenance.clone());
             live.interaction_id = owner.then(|| uuid::Uuid::from_u128(0x9301).to_string());
             live.source.kind = if owner {
                 ConsoleFrameSourceKind::Send
@@ -13919,7 +14625,7 @@ comms = true
                 .store()
                 .append_if_absent(live.clone())
                 .await
-                .unwrap();
+                .expect("live counterpart append succeeds");
             let mut history = live;
             history.dedupe_key = format!("canonical-{kind}");
             history.source.kind = ConsoleFrameSourceKind::SessionHistory;
@@ -13928,14 +14634,14 @@ comms = true
             assert!(
                 !history_frame_has_existing_counterpart(&aggregator.inner, &history)
                     .await
-                    .unwrap()
+                    .expect("counterpart lookup succeeds")
             );
             assert_eq!(
                 aggregator
                     .store()
                     .append_if_absent(history.clone())
                     .await
-                    .unwrap()
+                    .expect("canonical counterpart append succeeds")
                     .disposition,
                 AppendDisposition::Inserted
             );
@@ -13944,20 +14650,24 @@ comms = true
                     .store()
                     .append_if_absent(history)
                     .await
-                    .unwrap()
+                    .expect("duplicate canonical append succeeds")
                     .disposition,
                 AppendDisposition::Existing
             );
         }
         let page = aggregator
-            .store()
-            .query_frames(ConsoleTimelineQuery {
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".into()),
                 ..Default::default()
             })
             .await
-            .unwrap();
+            .expect("public timeline query succeeds");
         assert_eq!(page.frames.len(), 4);
+        assert!(
+            page.frames
+                .iter()
+                .all(|frame| frame.source.member_provenance.is_none())
+        );
         assert_eq!(
             page.frames
                 .iter()
@@ -13965,6 +14675,52 @@ comms = true
                 .count(),
             2
         );
+        let hidden = aggregator.policy_view(Arc::new(HideTools));
+        let app = crate::http_console::console_json_router_with_aggregator(
+            crate::RuntimeDecisionState::local_console(
+                crate::ConsolePolicy {
+                    require_app_auth: false,
+                    ..Default::default()
+                },
+                None,
+            ),
+            hidden,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/console/timeline?identity=agent-a")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("HTTP query");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let response: Value = serde_json::from_slice(&bytes).expect("JSON");
+        let frames = response["frames"].as_array().expect("timeline frames");
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|frame| frame["kind"] == "user_input"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("member_provenance"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("private-label"));
+        let stored = aggregator
+            .store()
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("raw provenance remains");
+        assert_eq!(stored.frames.len(), 4);
+        assert!(
+            stored
+                .frames
+                .iter()
+                .all(|frame| frame.source.member_provenance.as_ref() == Some(&provenance))
+        );
+        runtime.shutdown().await;
     }
 
     fn counterpart_lineage_frame(key: &str, kind: &str, payload: Value) -> NewConsoleFrame {

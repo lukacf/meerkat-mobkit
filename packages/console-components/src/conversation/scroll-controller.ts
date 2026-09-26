@@ -299,14 +299,16 @@ export function useConversationScrollController(options: ConversationScrollContr
       session.anchor = captureConversationAnchor(rowGeometry(viewport));
       publish();
     };
+    const canLeaveLiveEdge = (delta: number) => sessionRef.current?.mode !== "following-end"
+      || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
     const onWheel = (event: WheelEvent) => {
-      if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX)) readHistory();
+      if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey) ? -1
         : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
-      if (isConversationScrollTarget(event.target, viewport, delta)) readHistory();
+      if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
       const selection = viewport.ownerDocument.getSelection();
@@ -315,7 +317,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     // A browser reveal or focus scroll can precede its scroll event. Capture
     // the visible position before a pointer-triggered render applies layout,
     // otherwise the old anchor can move a button between mouse down and up.
-    const onPointerDown = () => readHistory();
+    const onPointerDown = () => {
+      // Clicking a tool or copy control at the live edge does not request
+      // history. Actual scrolling and selection retain their own handlers.
+      if (sessionRef.current?.mode !== "following-end"
+        || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
+    };
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointerdown", onPointerDown, true);
     viewport.addEventListener("wheel", onWheel, { passive: true });

@@ -222,7 +222,14 @@ async fn get_console_experience(app: &Router) -> Value {
     let body = to_bytes(response.into_body(), 1024 * 1024)
         .await
         .expect("console body");
-    serde_json::from_slice(&body).expect("console json")
+    let experience: Value = serde_json::from_slice(&body).expect("console json");
+    assert!(
+        experience["storage_scope"]
+            .as_str()
+            .is_some_and(|scope| scope.starts_with("console-storage:v1:")),
+        "default embedded experience must provide its authorized draft scope"
+    );
+    experience
 }
 
 async fn query_console_timeline_frames(app: &Router, identity: &str) -> Vec<Value> {

@@ -409,7 +409,7 @@ export async function sendConsoleMultipart(
   if (result.error) {
     throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-  return normalizeConsoleTimelineAccepted(result.result, identity);
+  return normalizeConsoleTimelineAccepted(result.result);
 }
 
 export async function uploadConsoleBlobMultipart(
@@ -631,18 +631,18 @@ export async function sendConsole(
     throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
   const record = accepted as Record<string, unknown>;
-  return normalizeConsoleTimelineAccepted(record, identity);
+  return normalizeConsoleTimelineAccepted(record);
 }
 
 function normalizeConsoleTimelineAccepted(
   accepted: unknown,
-  expectedIdentity: string,
 ): ConsoleTimelineAccepted {
   const record = accepted && typeof accepted === "object" ? accepted as Record<string, unknown> : {};
   // Only explicit owner receipts can settle a send. A malformed success is
   // still an unknown outcome; never synthesize destination or interaction IDs.
+  // The owner resolves aliases and returns its canonical identity.
   if (typeof record.interaction_id !== "string" || !record.interaction_id.trim()
-    || typeof record.identity !== "string" || record.identity !== expectedIdentity
+    || typeof record.identity !== "string" || !record.identity.trim()
     || ("input_frame_id" in record && record.input_frame_id != null
       && (typeof record.input_frame_id !== "string" || !record.input_frame_id.trim()))) {
     throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);

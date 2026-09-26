@@ -258,6 +258,8 @@ export interface RuntimeCapabilities {
 }
 
 export interface ConsoleExperience {
+  /** Opaque server-owned runtime and authenticated principal scope for local drafts. */
+  storage_scope?: string;
   contract_version?: string;
   runtime_id?: string;
   console_config?: ConsoleUiConfig;

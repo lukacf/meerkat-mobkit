@@ -61,4 +61,14 @@ describe("ApprovalCard", () => {
     fireEvent.click(view.getByText("Publish release artifacts"));
     expect(onOpen).toHaveBeenCalledWith("request:1");
   });
+  it.each(["forbidden", "unsupported"] as const)("omits global attention when approval access is %s", (status) => {
+    const view = render(<ApprovalAttention snapshot={snapshot(status)} onOpen={vi.fn()} />);
+    expect(view.queryByTestId("approval-attention")).toBeNull();
+  });
+  it("retains global attention for an authorized stale request and unconfirmed decision", () => {
+    const view = render(<ApprovalAttention snapshot={{ ...snapshot("stale"), decisions: { "request:1": { phase: "failed", action: "approve", error: "Network response lost" } } }} onOpen={vi.fn()} />);
+    expect(view.getByTestId("approval-attention")).toBeTruthy();
+    expect(view.getByText("Approvals may be out of date")).toBeTruthy();
+    expect(view.getByText("Publish release artifacts")).toBeTruthy();
+  });
 });

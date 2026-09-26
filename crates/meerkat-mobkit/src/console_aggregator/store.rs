@@ -474,17 +474,28 @@ const MOBKIT_CONSOLE_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Sche
             name: "member-provenance",
             apply: migration_0002_member_provenance,
         },
+        meerkat_sqlite::Migration {
+            version: 3,
+            name: "normalized-member-provenance",
+            apply: migration_0003_normalized_member_provenance,
+        },
     ],
     initialize_current: initialize_current_console_schema,
-    allowed_existing_versions: &[1, 2],
+    allowed_existing_versions: &[1, 2, 3],
     // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
     // floor) and mobkit never runs the offline bridge, so no source
     // version is inferable.
     bridge_recoverable_versions: &[],
-    released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
-        version: 1,
-        verify: verify_released_v1_console_schema,
-    }],
+    released_predecessors: &[
+        meerkat_sqlite::SchemaPredecessor {
+            version: 1,
+            verify: verify_released_v1_console_schema,
+        },
+        meerkat_sqlite::SchemaPredecessor {
+            version: 2,
+            verify: verify_development_v2_console_schema,
+        },
+    ],
     owned_objects: &[
         meerkat_sqlite::SchemaObject {
             kind: meerkat_sqlite::SchemaObjectKind::Table,
@@ -501,6 +512,10 @@ const MOBKIT_CONSOLE_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Sche
         meerkat_sqlite::SchemaObject {
             kind: meerkat_sqlite::SchemaObjectKind::Index,
             name: "idx_console_frames_conversation_cursor",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "console_member_provenance",
         },
     ],
     retired_objects: &[],
@@ -552,16 +567,40 @@ fn migration_0002_member_provenance(tx: &rusqlite::Transaction<'_>) -> Result<()
 fn initialize_current_console_schema(
     tx: &rusqlite::Transaction<'_>,
 ) -> Result<(), rusqlite::Error> {
+    initialize_v2_console_schema(tx)?;
+    migration_0003_normalized_member_provenance(tx)
+}
+
+fn initialize_v2_console_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
     migration_0001_console_schema(tx)?;
     migration_0002_member_provenance(tx)
+}
+
+fn migration_0003_normalized_member_provenance(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    tx.execute_batch("CREATE TABLE console_member_provenance (
+        id INTEGER PRIMARY KEY, payload_json TEXT NOT NULL UNIQUE
+    );
+    ALTER TABLE console_frames ADD COLUMN member_provenance_id INTEGER;
+    ALTER TABLE console_frames ADD COLUMN update_marker_shares_provenance INTEGER NOT NULL DEFAULT 0;")
 }
 
 fn verify_released_v1_console_schema(conn: &rusqlite::Connection) -> Result<(), String> {
     meerkat_sqlite::verify_released_schema_fingerprint(
         conn,
         &MOBKIT_CONSOLE_DOMAIN,
-        MOBKIT_CONSOLE_DOMAIN.owned_objects,
+        &MOBKIT_CONSOLE_DOMAIN.owned_objects[..4],
         migration_0001_console_schema,
+    )
+}
+
+fn verify_development_v2_console_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    meerkat_sqlite::verify_released_schema_fingerprint(
+        conn,
+        &MOBKIT_CONSOLE_DOMAIN,
+        &MOBKIT_CONSOLE_DOMAIN.owned_objects[..4],
+        initialize_v2_console_schema,
     )
 }
 
@@ -603,7 +642,7 @@ impl SqliteConsoleLogStore {
 impl ConsoleLogStore for SqliteConsoleLogStore {
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
         let _fence = self.operation_fence()?;
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| boxed_error("console log lock poisoned"))?;
@@ -618,7 +657,28 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             .id
             .clone()
             .unwrap_or_else(|| stable_frame_id(&frame.dedupe_key));
-        let payload_json = serde_json::to_string(&frame.payload).map_err(into_boxed)?;
+        let mut payload = frame.payload.clone();
+        let mut update_marker_shares_provenance = false;
+        // Update markers share the outer witness. Hydrate the complete nested
+        // frame on read, keeping the public store contract unchanged.
+        if frame.kind == "frame_updated"
+            && frame.source.member_provenance.is_some()
+            && let Some(source) = payload
+                .get_mut("frame")
+                .and_then(|value| value.get_mut("source"))
+            && source.get("member_provenance")
+                == frame
+                    .source
+                    .member_provenance
+                    .as_ref()
+                    .and_then(|provenance| serde_json::to_value(provenance).ok())
+                    .as_ref()
+            && let Some(source) = source.as_object_mut()
+        {
+            source.remove("member_provenance");
+            update_marker_shares_provenance = true;
+        }
+        let payload_json = serde_json::to_string(&payload).map_err(into_boxed)?;
         let member_provenance_json = frame
             .source
             .member_provenance
@@ -626,13 +686,31 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             .map(serde_json::to_string)
             .transpose()
             .map_err(into_boxed)?;
-        conn.execute(
+        let tx = conn.transaction().map_err(into_boxed)?;
+        let member_provenance_id = if let Some(provenance) = member_provenance_json {
+            tx.execute(
+                "INSERT OR IGNORE INTO console_member_provenance(payload_json) VALUES (?1)",
+                params![provenance],
+            )
+            .map_err(into_boxed)?;
+            Some(
+                tx.query_row(
+                    "SELECT id FROM console_member_provenance WHERE payload_json = ?1",
+                    params![provenance],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(into_boxed)?,
+            )
+        } else {
+            None
+        };
+        tx.execute(
             "INSERT INTO console_frames (
                 id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_id, update_marker_shares_provenance
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 id,
                 frame.dedupe_key,
@@ -652,10 +730,12 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
                 frame.caused_by_frame_id,
                 frame.turn_id,
                 frame.run_id,
-                member_provenance_json,
+                member_provenance_id,
+                update_marker_shares_provenance,
             ],
         )
         .map_err(into_boxed)?;
+        tx.commit().map_err(into_boxed)?;
         let inserted = select_frame_by_dedupe(&conn, &frame.dedupe_key)?
             .ok_or_else(|| boxed_error("inserted console frame was not readable"))?;
         Ok(AppendOutcome {
@@ -710,7 +790,8 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                     conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                     source_kind, source_cursor, source_event_id, interaction_id,
-                    parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
+                    parent_frame_id, caused_by_frame_id, turn_id, run_id, COALESCE(member_provenance_json,
+                    (SELECT payload_json FROM console_member_provenance WHERE id = member_provenance_id)), member_provenance_id, update_marker_shares_provenance
              FROM console_frames WHERE cursor_seq > ?1 AND cursor_seq < ?2",
         );
         let mut next_param = 3usize;
@@ -803,17 +884,21 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
 
     async fn clear_frames(&self) -> ConsoleLogResult<()> {
         let _fence = self.operation_fence()?;
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| boxed_error("console log lock poisoned"))?;
-        conn.execute("DELETE FROM console_frames", [])
+        let tx = conn.transaction().map_err(into_boxed)?;
+        tx.execute("DELETE FROM console_frames", [])
             .map_err(into_boxed)?;
-        conn.execute(
+        tx.execute("DELETE FROM console_member_provenance", [])
+            .map_err(into_boxed)?;
+        tx.execute(
             "DELETE FROM sqlite_sequence WHERE name = 'console_frames'",
             [],
         )
         .ok();
+        tx.commit().map_err(into_boxed)?;
         Ok(())
     }
 
@@ -915,7 +1000,8 @@ fn select_frame_by_dedupe(
         "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, COALESCE(member_provenance_json,
+                    (SELECT payload_json FROM console_member_provenance WHERE id = member_provenance_id)), member_provenance_id, update_marker_shares_provenance
          FROM console_frames WHERE dedupe_key = ?1",
         params![dedupe_key],
         row_to_frame,
@@ -929,7 +1015,8 @@ fn select_frame_by_id(conn: &Connection, id: &str) -> ConsoleLogResult<Option<Co
         "SELECT cursor_seq, id, dedupe_key, timestamp_ms, runtime_key, identity,
                 conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                 source_kind, source_cursor, source_event_id, interaction_id,
-                parent_frame_id, caused_by_frame_id, turn_id, run_id, member_provenance_json
+                parent_frame_id, caused_by_frame_id, turn_id, run_id, COALESCE(member_provenance_json,
+                    (SELECT payload_json FROM console_member_provenance WHERE id = member_provenance_id)), member_provenance_id, update_marker_shares_provenance
          FROM console_frames WHERE id = ?1",
         params![id],
         row_to_frame,
@@ -978,10 +1065,20 @@ fn latest_matching_cursor(
 fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
     let seq: i64 = row.get(0)?;
     let payload_json: String = row.get(12)?;
-    let payload = serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
+    let mut payload = serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
     let source_kind: String = row.get(13)?;
     let provenance_json: Option<String> = row.get(21)?;
-    let member_provenance = provenance_json
+    let provenance_id: Option<i64> = row.get(22)?;
+    if provenance_id.is_some() && provenance_json.is_none() {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            22,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::other(
+                "console member provenance reference is missing",
+            )),
+        ));
+    }
+    let member_provenance: Option<super::types::ConsoleFrameMemberProvenance> = provenance_json
         .map(|json| {
             serde_json::from_str(&json).map_err(|err| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -992,6 +1089,41 @@ fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
             })
         })
         .transpose()?;
+    let kind: String = row.get(8)?;
+    let update_marker_shares_provenance: bool = row.get(23)?;
+    if update_marker_shares_provenance {
+        let invalid_marker = || {
+            rusqlite::Error::FromSqlConversionFailure(
+                23,
+                rusqlite::types::Type::Integer,
+                Box::new(std::io::Error::other(
+                    "invalid normalized console update marker provenance",
+                )),
+            )
+        };
+        if kind != "frame_updated" || provenance_id.is_none() {
+            return Err(invalid_marker());
+        }
+        let provenance = member_provenance.as_ref().ok_or_else(invalid_marker)?;
+        let source = payload
+            .get_mut("frame")
+            .and_then(|frame| frame.get_mut("source"))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(invalid_marker)?;
+        if source.contains_key("member_provenance") {
+            return Err(invalid_marker());
+        }
+        source.insert(
+            "member_provenance".into(),
+            serde_json::to_value(provenance).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    21,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?,
+        );
+    }
     Ok(ConsoleFrame {
         cursor: ConsoleCursor::from_seq(seq as u64),
         id: row.get(1)?,
@@ -1001,7 +1133,7 @@ fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
         identity: row.get(5)?,
         conversation_id: row.get(6)?,
         session_id: row.get(7)?,
-        kind: row.get(8)?,
+        kind,
         status: ConsoleFrameStatus::from_str(row.get::<_, String>(9)?.as_str()),
         frame_version: row.get::<_, i64>(10)? as u64,
         updated_at_ms: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
@@ -1139,6 +1271,249 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_repeated_provenance_is_normalized_and_missing_references_fail_closed() {
+        let store = SqliteConsoleLogStore::in_memory().expect("store");
+        let witness: crate::ConsoleFrameMemberProvenance = serde_json::from_value(serde_json::json!({
+            "identity": {"identity":"private", "display_name":"Private", "runtime_key":"runtime-a",
+                "runtime_member_id":"private", "session_id":"session-private", "visibility":"addressable",
+                "addressable":true, "health":"ready", "labels":{"private-label":"large private label"}},
+            "member": {"agent_identity":"private", "role":"worker", "state":"running",
+                "session_id":"session-private", "wired_to":[], "labels":{"private-label":"large private label"}},
+            "primary_mob_id":"primary", "source_mob_id":"primary"
+        })).expect("witness");
+        for index in 0..128 {
+            let mut frame = sample_frame(&format!("delta-{index}"), "private");
+            frame.source.member_provenance = Some(witness.clone());
+            let stored = store.append_if_absent(frame).await.expect("append").frame;
+            assert_eq!(stored.source.member_provenance, Some(witness.clone()));
+        }
+        let original = store
+            .frame_by_dedupe_key("delta-0")
+            .await
+            .expect("lookup")
+            .expect("original");
+        let mut update = sample_frame("update", "private");
+        update.kind = "frame_updated".into();
+        update.payload = serde_json::json!({"frame":original});
+        update.source.member_provenance = Some(witness.clone());
+        let marker = store.append_if_absent(update).await.expect("marker").frame;
+        assert_eq!(
+            marker.payload["frame"]["source"]["member_provenance"],
+            serde_json::json!(witness)
+        );
+        for (key, source) in [
+            ("absent", serde_json::json!({})),
+            ("null", serde_json::json!({"member_provenance":null})),
+        ] {
+            let mut custom = sample_frame(key, "private");
+            custom.kind = "frame_updated".into();
+            custom.source.member_provenance = Some(witness.clone());
+            custom.payload = serde_json::json!({"frame":{"source":source}});
+            let expected = custom.payload.clone();
+            assert_eq!(
+                store
+                    .append_if_absent(custom)
+                    .await
+                    .expect("custom marker")
+                    .frame
+                    .payload,
+                expected,
+                "hydration must not invent an intentionally absent nested witness"
+            );
+        }
+        let mut changed = witness.clone();
+        changed
+            .identity
+            .labels
+            .insert("generation".into(), "replacement".into());
+        let mut collision = sample_frame("delta-0", "private");
+        collision.source.member_provenance = Some(changed.clone());
+        assert_eq!(
+            store
+                .append_if_absent(collision)
+                .await
+                .expect("dedupe collision")
+                .frame
+                .source
+                .member_provenance,
+            Some(witness.clone()),
+            "duplicate arrival cannot overwrite original provenance"
+        );
+        let mut failed = sample_frame("failed-unique-id", "private");
+        failed.id = Some(original.id.clone());
+        failed.source.member_provenance = Some(changed.clone());
+        assert!(
+            store.append_if_absent(failed).await.is_err(),
+            "failed frame insert must roll back its new witness"
+        );
+        {
+            let conn = store.conn.lock().expect("connection");
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM console_member_provenance",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("witness count");
+            assert_eq!(count, 1, "one immutable witness for all identical deltas");
+            let inline: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM console_frames WHERE member_provenance_json IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("inline count");
+            assert_eq!(inline, 0);
+            let marker_payload: String = conn
+                .query_row(
+                    "SELECT payload_json FROM console_frames WHERE dedupe_key = 'update'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("marker payload");
+            assert!(
+                !marker_payload.contains("member_provenance"),
+                "nested marker shares outer immutable witness on disk"
+            );
+        }
+        let mut replacement = sample_frame("new-witness", "private");
+        replacement.source.member_provenance = Some(changed.clone());
+        assert_eq!(
+            store
+                .append_if_absent(replacement)
+                .await
+                .expect("new witness")
+                .frame
+                .source
+                .member_provenance,
+            Some(changed)
+        );
+        {
+            let conn = store.conn.lock().expect("connection");
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM console_member_provenance",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("witness count");
+            assert_eq!(
+                count, 2,
+                "a changed witness retains its own immutable record"
+            );
+            conn.execute("DELETE FROM console_member_provenance", [])
+                .expect("corrupt missing reference");
+        }
+        assert!(store.frame_by_dedupe_key("delta-0").await.is_err());
+        store.clear_frames().await.expect("clear corrupted store");
+        assert!(
+            store
+                .query_frames(Default::default())
+                .await
+                .expect("cleared store")
+                .frames
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_normalized_marker_corruption_never_returns_partial_provenance() {
+        let store = SqliteConsoleLogStore::in_memory().expect("store");
+        let witness: crate::ConsoleFrameMemberProvenance = serde_json::from_value(serde_json::json!({
+            "identity": {"identity":"private", "display_name":"Private", "runtime_key":"runtime-a",
+                "runtime_member_id":"private", "visibility":"addressable", "addressable":true, "health":"ready"},
+            "member": {"agent_identity":"private", "role":"worker", "state":"running", "wired_to":[], "labels":{}},
+            "primary_mob_id":"primary", "source_mob_id":"primary"
+        })).expect("witness");
+        for (index, corruption) in [
+            "member_provenance_id = NULL",
+            "payload_json = '{}'",
+            "payload_json = '{\"frame\":{\"source\":null}}'",
+            "payload_json = '{\"frame\":{\"source\":{\"member_provenance\":null}}}'",
+            "kind = 'text_delta'",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = format!("corrupt-marker-{index}");
+            let mut marker = sample_frame(&key, "private");
+            marker.kind = "frame_updated".into();
+            marker.source.member_provenance = Some(witness.clone());
+            marker.payload = serde_json::json!({"frame":{"source":{"member_provenance":witness}}});
+            store.append_if_absent(marker).await.expect("valid marker");
+            store
+                .conn
+                .lock()
+                .expect("connection")
+                .execute(
+                    &format!("UPDATE console_frames SET {corruption} WHERE dedupe_key = ?1"),
+                    params![key],
+                )
+                .expect("corrupt normalized marker");
+            assert!(
+                store.frame_by_dedupe_key(&key).await.is_err(),
+                "partial provenance must fail for {corruption}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_v2_upgrade_preserves_inline_provenance_and_normalizes_new_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("console.sqlite");
+        let witness: crate::ConsoleFrameMemberProvenance = serde_json::from_value(serde_json::json!({
+            "identity": {"identity":"private", "display_name":"Private", "runtime_key":"runtime-a",
+                "runtime_member_id":"private", "session_id":"session-private", "visibility":"addressable",
+                "addressable":true, "health":"ready", "labels":{}},
+            "member": {"agent_identity":"private", "role":"worker", "state":"running",
+                "session_id":"session-private", "wired_to":[], "labels":{}},
+            "primary_mob_id":"primary", "source_mob_id":"primary"
+        })).expect("witness");
+        {
+            let mut conn = meerkat_sqlite::open(&path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+                .expect("sqlite");
+            let domain = meerkat_sqlite::SchemaDomain {
+                migrations: &MOBKIT_CONSOLE_DOMAIN.migrations[..2],
+                initialize_current: initialize_v2_console_schema,
+                allowed_existing_versions: &[2],
+                owned_objects: &MOBKIT_CONSOLE_DOMAIN.owned_objects[..4],
+                released_predecessors: &[],
+                ..MOBKIT_CONSOLE_DOMAIN
+            };
+            meerkat_sqlite::apply_domain_migrations(&mut conn, &domain).expect("development v2");
+            conn.execute("INSERT INTO console_frames(id,dedupe_key,timestamp_ms,runtime_key,identity,kind,status,payload_json,source_kind,member_provenance_json) VALUES ('v2','v2',1,'runtime-a','private','text_delta','completed','{}','console_event',?1)", params![serde_json::to_string(&witness).expect("JSON")]).expect("v2 row");
+        }
+        let store = SqliteConsoleLogStore::open(&path).expect("v2 upgrades to v3");
+        assert_eq!(
+            store
+                .frame_by_dedupe_key("v2")
+                .await
+                .expect("lookup")
+                .expect("v2 row")
+                .source
+                .member_provenance,
+            Some(witness.clone())
+        );
+        let mut new = sample_frame("v3", "private");
+        new.source.member_provenance = Some(witness.clone());
+        store.append_if_absent(new).await.expect("v3 write");
+        drop(store);
+        let reopened = SqliteConsoleLogStore::open(&path).expect("v3 reopen");
+        for key in ["v2", "v3"] {
+            assert_eq!(
+                reopened
+                    .frame_by_dedupe_key(key)
+                    .await
+                    .expect("lookup")
+                    .expect("row")
+                    .source
+                    .member_provenance,
+                Some(witness.clone())
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn sqlite_v1_upgrade_preserves_legacy_history_and_roundtrips_member_provenance() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("console.sqlite");
@@ -1153,6 +1528,7 @@ mod tests {
                 }],
                 initialize_current: migration_0001_console_schema,
                 allowed_existing_versions: &[1],
+                owned_objects: &MOBKIT_CONSOLE_DOMAIN.owned_objects[..4],
                 released_predecessors: &[],
                 ..MOBKIT_CONSOLE_DOMAIN
             };
@@ -1294,7 +1670,7 @@ mod tests {
         let probe = Connection::open(&path).expect("probe");
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-console").expect("ledger"),
-            Some(2)
+            Some(3)
         );
         let journal: String = probe
             .pragma_query_value(None, "journal_mode", |row| row.get(0))

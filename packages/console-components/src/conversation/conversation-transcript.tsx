@@ -1,4 +1,4 @@
-import { ConversationApprovals, type ConversationApprovalProps } from "./conversation-approvals";
+import { approvalInteractionIdsByTurn, ConversationApprovals, type ConversationApprovalProps } from "./conversation-approvals";
 import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import clsx from "clsx";
 import { Fragment } from "react";
@@ -63,6 +63,8 @@ export function ConversationTranscript({
     ? viewState.groups.slice(-maxGroups)
     : viewState.groups;
   const turns = groupConversationTranscriptTurns(groups);
+  const approvalInteractions = approvalInteractionIdsByTurn(turns.map((turn) =>
+    turn.groups.flatMap((group) => group.entries.flatMap((entry) => entry.interactionId ? [entry.interactionId] : []))));
 
   if (!groups.length && !renderableTurnDiff && !approvalSnapshot?.requests.length) {
     return null;
@@ -112,7 +114,7 @@ export function ConversationTranscript({
                 />
               </Fragment>
             ))}
-            <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={approvalIdentity} onApprovalDecision={onApprovalDecision} conversationId={viewState.conversationId} interactionIds={turn.groups.flatMap((group) => group.entries.flatMap((entry) => entry.interactionId ? [entry.interactionId] : []))} />
+            <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={approvalIdentity} onApprovalDecision={onApprovalDecision} conversationId={viewState.conversationId} interactionIds={approvalInteractions[turnIndex]} />
             {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (
               <TurnDiffCard
                 expandedFile={expandedDiffFile}

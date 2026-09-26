@@ -8,6 +8,13 @@ export type ConversationApprovalProps = {
   onApprovalDecision?: (pendingId: string, action: ApprovalAction) => void | Promise<void>;
 };
 
+/** A continued interaction belongs beside its latest matching visible turn. */
+export function approvalInteractionIdsByTurn(turns: readonly (readonly string[])[]): string[][] {
+  const latest = new Map<string, number>();
+  turns.forEach((ids, index) => ids.forEach((id) => latest.set(id, index)));
+  return turns.map((ids, index) => [...new Set(ids)].filter((id) => latest.get(id) === index));
+}
+
 export function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }: ConversationApprovalProps & {
   conversationId?: string;
   /** Omit for conversation-only provenance, supply exact IDs for turn placement. */

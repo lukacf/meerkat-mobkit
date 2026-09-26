@@ -21,4 +21,10 @@ describe("GatingInboxPanel shared resource", () => {
     expect(document.activeElement).toBe(selected);
     expect(view.getByText("Publish reviewed changes")).toBeTruthy();
   });
+  it("explains an unsupported approval capability without claiming access was denied", () => {
+    const view = render(<GatingInboxPanel pending={[]} audit={[]} onDecide={vi.fn()} resource={{ ...snapshot("unsupported"), requests: [], readOnly: true }} />);
+    expect(view.getByText("Approvals are not available for this connection")).toBeTruthy();
+    expect(view.queryByText("Approval access denied")).toBeNull();
+    expect(view.queryByText("No pending approvals.")).toBeNull();
+  });
 });

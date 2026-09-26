@@ -136,8 +136,11 @@ function sameFrozenContent(actual: unknown, expected: ConsoleFrozenSendEnvelope[
 /** Reconcile only an exact owner user_input receipt from an authorized timeline. */
 export function reconcileConsoleSendReceipt(attempt: ConsoleSendAttempt, frame: {
   id: string; event: string; identity?: string; interactionId?: string; data: unknown;
-}): ConsoleSendAttempt | null {
-  if (!attempt.envelopeJson || frame.event !== "user_input" || frame.identity !== attempt.destination || !frame.interactionId || !frame.id) return null;
+}, resolution?: { requestedIdentity: string; canonicalIdentity: string }): ConsoleSendAttempt | null {
+  const destinationResolved = frame.identity === attempt.destination ||
+    (resolution?.requestedIdentity === attempt.destination
+      && nonemptyString(resolution.canonicalIdentity) && frame.identity === resolution.canonicalIdentity);
+  if (!attempt.envelopeJson || frame.event !== "user_input" || !destinationResolved || !frame.interactionId || !frame.id) return null;
   const envelope = JSON.parse(attempt.envelopeJson) as ConsoleFrozenSendEnvelope;
   const payload = frame.data as Partial<ConsoleFrozenSendEnvelope> | null;
   if (!payload || payload.origin !== envelope.origin || payload.origin_kind !== envelope.origin_kind ||

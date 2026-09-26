@@ -15,6 +15,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   existing string phase and now preserves explicit null separately from a
   missing field. Update Rust constructors that set an active phase accordingly.
 
+- `ConsoleFrameSource` adds `member_provenance`; `GatingPendingEntry` adds
+  `rationale` and `origin`. Update Rust struct literals for these fields.
+- `MobKitConsoleAggregator::query_timeline_windowed` returns
+  `ConsoleTimelineQueryResult<ConsoleTimelineWindowPage>`. Custom
+  `ConsoleLogStore` implementations must preserve member provenance when
+  storing and reading frames so retired-member visibility remains enforceable.
+- Hosts can initialize the shared console projection with a fixed ingestion
+  redaction policy before creating request views. Later view policies cannot
+  replace that host policy or change another view's authorized data.
+
+### Storage and wire compatibility
+
+- The console SQLite store migrates to schema v3, including normalized member
+  provenance. Migration accepts v1 and development v2 stores. This is a
+  one-way upgrade: MobKit 0.8.42 cannot open the upgraded store. Keep a backup
+  before upgrading if rollback to that release is required.
+- Timeline storage faults now return HTTP 500 / RPC `-32000` with
+  `timeline_unavailable`. Cursor replay loss remains HTTP 409 / RPC `-32013`
+  with `replay_unavailable`; consumers must distinguish recovery from failure.
+- Public timelines retain both live and canonical history rows with typed
+  lineage. Consumers reconcile their message ownership using the typed
+  source/run/interaction identity; authored text is not a deduplication key.
+- Authorized `/console/experience` responses provide an opaque `storage_scope`
+  for runtime/principal-separated browser drafts and queues. Explicit host
+  `storageNamespace` values continue to take precedence.
+
 ### Changed
 
 - Improve console reading and composition in the stock and reusable hosts:
@@ -30,8 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   create synthetic run-completion events. Fold only routine tool activity with
   matched successful outcomes, and keep failures and unknown outcomes visible.
 
-
-- Bind the Meerkat family to published 0.8.43: `fork_off` and council
+- Bind the Meerkat family to published 0.8.44, including durable runtime-notice
+  origin and transcript lineage. The 0.8.43 lifecycle changes remain included:
+  `fork_off` and council
   completions arrive in the owner's transcript as a persisted `BackgroundJob`
   notice delivered in-turn (MobKit's callers are all mob members, so no
   `DetachedOwnerHost` is needed), with the typed `no_owner_revival_host`

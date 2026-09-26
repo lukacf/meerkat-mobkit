@@ -499,6 +499,18 @@ async function readingIntent(host) {
   const result = { host, checks: [], errors: monitor.errors, expectedFailures: monitor.expected };
   try {
     result.turns = await seedReadingHistory(fixture);
+    const toolSeed = { id: `reading-tools-${host}`, instruction: "Check the real WorkGraph before the next streaming review.",
+      source: "Ready for the next streaming review." };
+    await fixture.control("model-barrier", { action: "arm", plan: { id: toolSeed.id, match_text: toolSeed.instruction, source: toolSeed.source } });
+    await fixture.control("model-barrier", { action: "release", id: toolSeed.id });
+    toolSeed.accepted = await sendApi(fixture, toolSeed.instruction, toolSeed.id);
+    toolSeed.terminal = await completed(fixture, toolSeed.source);
+    assert.equal(toolSeed.terminal.interaction_id, toolSeed.accepted.interaction_id);
+    const seededFrames = (await timeline(fixture)).frames;
+    toolSeed.tool = seededFrames.find(frame => frame.kind === "tool_result_received"
+      && frame.payload?.id === `fixture-${toolSeed.id}-peer-ready` && frame.payload?.is_error === false);
+    assert(toolSeed.tool, "reading controls exercise an actual completed WorkGraph tool");
+    result.toolSeed = toolSeed;
     const awaySource = "Delivery reviewer is checking the independent image branch.";
     await fixture.control("model", { source: awaySource, delay_ms: 0, chunk_chars: 4096 });
     const away = await rpc(fixture.baseUrl, "mobkit/console/send", { identity: "domain:delivery", content: "Review the image branch independently.",
@@ -561,6 +573,32 @@ async function readingIntent(host) {
       await eventually(() => secondViewport.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight <= 48), "second pane reaches actual live edge");
     }, `${host} second-pane latest action leaves first reading anchor`));
 
+    await browser.contexts()[0].grantPermissions(["clipboard-read", "clipboard-write"], { origin: fixture.baseUrl });
+    const liveGeometry = () => secondViewport.evaluate(node => ({ top: node.scrollTop, height: node.scrollHeight,
+      remaining: node.scrollHeight - node.scrollTop - node.clientHeight }));
+    result.liveEdgeGestures = { before: await liveGeometry(), actions: [] };
+    await secondViewport.hover({ position: { x: 20, y: 100 } });
+    await page.mouse.wheel(0, 350); await settle(page);
+    result.liveEdgeGestures.actions.push({ action: "down-wheel", geometry: await liveGeometry() });
+    await secondViewport.focus(); await page.keyboard.press("End"); await settle(page);
+    result.liveEdgeGestures.actions.push({ action: "End", geometry: await liveGeometry() });
+    await secondViewport.getByRole("button", { name: host === "stock" ? "Copy reply" : "Copy response", exact: true }).last().click();
+    result.liveEdgeGestures.copied = await page.evaluate(() => navigator.clipboard.readText());
+    assert.equal(result.liveEdgeGestures.copied, toolSeed.source, "actual copy control preserves the exact latest reply");
+    result.liveEdgeGestures.actions.push({ action: "copy", geometry: await liveGeometry() });
+    const completedTool = secondViewport.locator(".cc-tool-call").filter({
+      has: page.locator('.cc-tool-call__name[title="workgraph_ready"]'),
+    }).last();
+    await completedTool.locator(".cc-tool-call__header").click();
+    await completedTool.locator(".cc-tool-call__section").first().waitFor();
+    await eventually(async () => (await liveGeometry()).remaining <= 48, "opening the actual tool at live edge remains following");
+    result.liveEdgeGestures.actions.push({ action: "tool-open", geometry: await liveGeometry() });
+    await completedTool.locator(".cc-tool-call__header").click(); await settle(page);
+    result.liveEdgeGestures.actions.push({ action: "tool-close", geometry: await liveGeometry() });
+    for (const action of result.liveEdgeGestures.actions) assert(action.geometry.remaining <= 48,
+      `${host} ${action.action} stays at the live edge: ${JSON.stringify(action)}`);
+    await capture(page, `${host}-live-edge-controls-1600`);
+
     const streamSource = `## New review arrived\n\n${Array.from({ length: 10 }, (_, index) => `Progress ${index}: a new peer review finishes while the first pane retains its older checkpoint.`).join("\n\n")}\n\nCompleted independent reading check.`;
     await fixture.control("model", { source: streamSource, delay_ms: 12, chunk_chars: 64 });
     const beforeSecond = await secondViewport.evaluate(node => ({ top: node.scrollTop, height: node.scrollHeight }));
@@ -576,6 +614,31 @@ async function readingIntent(host) {
     result.panes = { firstReading, secondReading, beforeSecond, afterSecond };
     if (host === "stock") result.headers.push(await inspectStockHeader(firstPane, "first split pane 1600"), await inspectStockHeader(secondPane, "second split pane 1600"));
     await capture(page, `${host}-independent-reading-panes-1600`);
+
+    await secondViewport.hover({ position: { x: 20, y: 100 } });
+    await page.mouse.wheel(0, -450);
+    await eventually(async () => (await liveGeometry()).remaining > 120, "actual upward wheel leaves the live edge");
+    await settle(page);
+    const wheelAnchor = await secondViewport.evaluate(node => {
+      const viewport = node.getBoundingClientRect();
+      const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => {
+        const rect = item.getBoundingClientRect(); return rect.bottom > viewport.top + 30 && rect.top < viewport.bottom;
+      });
+      if (!row) throw new Error("upward reading needs an actual visible transcript row");
+      return { id: row.dataset.conversationRowId, offset: row.getBoundingClientRect().top - viewport.top };
+    });
+    const laterSource = `## Final reviewer update\n\n${Array.from({ length: 8 }, (_, index) => `Update ${index}: both readers keep their chosen evidence while another result streams.`).join("\n\n")}\n\nCompleted upward intent check.`;
+    await fixture.control("model", { source: laterSource, delay_ms: 12, chunk_chars: 64 });
+    result.checks.push(await measureAnchor(viewport, firstReading, async () => {
+      result.checks.push(await measureAnchor(secondViewport, wheelAnchor, async () => {
+        result.upwardAccepted = await sendApi(fixture, "Finish the review while both panes read earlier evidence.", "reading-upward-stream");
+        result.upwardTerminal = await completed(fixture, "Completed upward intent check.");
+        await secondViewport.getByText("Completed upward intent check.", { exact: true }).waitFor();
+      }, `${host} actual upward wheel preserves the chosen reading row during real streaming`));
+    }, `${host} both reading panes remain independent during the next stream`));
+    assert.equal(result.upwardTerminal.interaction_id, result.upwardAccepted.interaction_id);
+    result.liveEdgeGestures.upwardAnchor = wheelAnchor;
+    await capture(page, `${host}-upward-intent-reading-1600`);
     await page.setViewportSize({ width: 1440, height: 900 }); await settle(page);
     result.clearance.push(await inspectJumpTextClearance(viewport, firstPane.getByRole("button", { name: "Jump to latest", exact: true }), `${host} split pane 1440`));
     if (host === "stock") result.headers.push(await inspectStockHeader(firstPane, "first split pane 1440"), await inspectStockHeader(secondPane, "second split pane 1440"));

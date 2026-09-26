@@ -1,6 +1,7 @@
 import { groupConversationTimelineEntries, type ConversationTimelineEntry, type ConversationViewState } from "@console-core";
 import { fireEvent, render, screen } from "@testing-library/react";
 
+import { normalizePendingApproval } from "../../../console-core/src/pending-approvals";
 import { ConversationTranscript } from "./conversation-transcript";
 
 function Icon({ name }: { name: string; className?: string }) {
@@ -171,5 +172,20 @@ describe("ConversationTranscript", () => {
     expect(turns[0]).toHaveTextContent("First response.");
     expect(turns[1]).toHaveTextContent("Second request.");
     expect(turns[1]).toHaveTextContent("Second response.");
+  });
+  test("one interaction spanning a steer renders its approval only beside its latest turn", () => {
+    const entries: ConversationTimelineEntry[] = [
+      { id: "ask", kind: "message", variant: "plain", identity: { id: "operator", label: "You", role: "user" }, interactionId: "original", text: "Start review" },
+      { id: "work", kind: "message", variant: "plain", identity: { id: "agent", label: "Agent", role: "assistant" }, interactionId: "original", text: "Reviewing" },
+      { id: "steer", kind: "message", variant: "plain", identity: { id: "operator", label: "You", role: "user" }, interactionId: "steer", text: "Include deployment" },
+      { id: "continue", kind: "message", variant: "plain", identity: { id: "agent", label: "Agent", role: "assistant" }, interactionId: "original", text: "Deployment needs approval" },
+    ];
+    const request = normalizePendingApproval({ pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", conversation_id: "review", interaction_id: "original" } })!;
+    const viewState = { conversationId: "review", entries, groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null };
+    const view = render(<ConversationTranscript viewState={viewState} approvalIdentity="agent" approvalSnapshot={{ scopeKey: "scope", status: "ready", requests: [request], decisions: {}, readOnly: false }} onApprovalDecision={() => {}} />);
+    expect(screen.getAllByTestId("gating-pending:deployment")).toHaveLength(1);
+    expect(screen.getByTestId("gating-pending:deployment").closest("section.cc-conversation-turn")).toBe(screen.getByTestId("conversation-turn:1"));
+    view.rerender(<ConversationTranscript viewState={viewState} maxGroups={2} approvalIdentity="agent" approvalSnapshot={{ scopeKey: "scope", status: "ready", requests: [request], decisions: {}, readOnly: false }} onApprovalDecision={() => {}} />);
+    expect(screen.getAllByTestId("gating-pending:deployment")).toHaveLength(1);
   });
 });

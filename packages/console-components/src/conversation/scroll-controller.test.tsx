@@ -91,6 +91,42 @@ function userScroll(viewport: HTMLElement, top: number) { viewport.scrollTop = t
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("conversation scroll intent", () => {
+  test.each(["wheel-down", "ArrowDown", "PageDown", "End", " ", "pointer"])("a no-op %s at the live edge keeps following content growth", (gesture) => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    const lastRow = viewport.querySelector('[data-conversation-row-id="row-9"]')!;
+    if (gesture === "wheel-down") fireEvent.wheel(lastRow, { deltaY: 100 });
+    else if (gesture === "pointer") fireEvent.pointerDown(lastRow);
+    else fireEvent.keyDown(viewport, { key: gesture });
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={[...baseRows, { id: "streamed", height: 160 }]} />);
+    expect(viewport.scrollTop).toBe(960);
+  });
+  test("a no-op upward gesture in a short transcript keeps following", () => {
+    const view = render(<Harness rows={[{ id: "one", height: 100 }]} />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport, { deltaY: -100 });
+    fireEvent.keyDown(viewport, { key: "Home" });
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    view.rerender(<Harness rows={[{ id: "one", height: 450 }]} />);
+    expect(viewport.scrollTop).toBe(250);
+  });
+  test("upward reading intent and text selection still pause at the live edge", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport, { deltaY: -100 });
+    userScroll(viewport, 600);
+    view.rerender(<Harness rows={[...baseRows, { id: "streamed", height: 160 }]} />);
+    expect(viewport.scrollTop).toBe(600);
+    fireEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+    const text = viewport.querySelector('[data-conversation-row-id="row-9"]')!.firstChild!;
+    const selection = window.getSelection()!;
+    const range = document.createRange(); range.selectNodeContents(text);
+    selection.removeAllRanges(); selection.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    selection.removeAllRanges();
+  });
   test("pointer interaction captures a browser-revealed position before a focus render can restore the old anchor", () => {
     const view = render(<Harness />);
     const viewport = screen.getByTestId("viewport");

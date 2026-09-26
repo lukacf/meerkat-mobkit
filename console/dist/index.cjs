@@ -370,6 +370,51 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
+// src/lib/send-storage-lock.ts
+async function withConsoleSendStorageLock(key, update) {
+  if (navigator.locks) return navigator.locks.request(key, update);
+  if (!globalThis.indexedDB) throw new Error("This browser cannot coordinate saved queues. Your message remains in the composer.");
+  const database = await new Promise((resolve, reject) => {
+    let abandoned = false;
+    const request = indexedDB.open("mobkit-console-queue-locks", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("locks");
+    };
+    request.onsuccess = () => {
+      if (abandoned) request.result.close();
+      else resolve(request.result);
+    };
+    request.onerror = () => reject(request.error ?? new Error("Queue coordination is unavailable."));
+    request.onblocked = () => {
+      abandoned = true;
+      reject(new Error("Queue coordination is blocked by another tab."));
+    };
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction("locks", "readwrite");
+      let result;
+      let failure;
+      transaction.oncomplete = () => resolve(result);
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error("Queue coordination was interrupted."));
+      transaction.onerror = () => {
+        failure ?? (failure = transaction.error);
+      };
+      const request = transaction.objectStore("locks").get(key);
+      request.onsuccess = () => {
+        try {
+          result = update();
+        } catch (error) {
+          failure = error;
+          transaction.abort();
+        }
+      };
+    });
+  } finally {
+    database.close();
+  }
+}
+
 // src/ConsoleApp.tsx
 var import_react45 = __toESM(require("react"));
 
@@ -3068,7 +3113,26 @@ function noticeSnapshot(frame) {
       historyPositions.set(row.frame_id, position3);
     }
   }
-  return { frame, cursor, observedThrough, notices, settled, historyPositions };
+  const sparseHistoryPositions = data.history_positions_mode === "sparse";
+  const removedHistoryFrameIds = /* @__PURE__ */ new Set();
+  if (data.history_positions_mode !== void 0 && !sparseHistoryPositions) return null;
+  if (sparseHistoryPositions) {
+    if (!historyPositions || !Array.isArray(data.removed_history_frame_ids)) return null;
+    for (const id of data.removed_history_frame_ids) {
+      if (!identifier(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
+      removedHistoryFrameIds.add(id);
+    }
+  } else if (data.removed_history_frame_ids !== void 0) return null;
+  return {
+    frame,
+    cursor,
+    observedThrough,
+    notices,
+    settled,
+    historyPositions,
+    sparseHistoryPositions,
+    removedHistoryFrameIds
+  };
 }
 function positionFromCursor(sessionId, sourceCursor) {
   if (!string(sourceCursor) || !sourceCursor.startsWith(`${sessionId}:`)) return void 0;
@@ -3228,7 +3292,8 @@ function reconcileRuntimeAppendFrames(frames) {
     const snapshot = scope ? snapshots.get(scope) : void 0;
     const cursor = consoleCursor(frame.cursor);
     const observed = snapshot && cursor !== null && cursor <= snapshot.observedThrough;
-    if (frame.event === "boundary_append_applied" && Array.isArray(data?.notices) && data.notices.length) {
+    if (frame.event === "boundary_append_applied") {
+      if (!Array.isArray(data?.notices) || !data.notices.length) continue;
       if (frame.sourceKind !== "console_event" || !scope || !identifier(frame.runId) || data.run_id !== frame.runId || !identifier(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
       for (const value of data.notices) {
         const message = record(value), origin = originOf(message);
@@ -3254,7 +3319,7 @@ function reconcileRuntimeAppendFrames(frames) {
     }
     const node2 = projected(frame);
     if (observed && snapshot.historyPositions && frame.sourceKind === "session_history") {
-      node2.position = snapshot.historyPositions.get(frame.id);
+      node2.position = snapshot.sparseHistoryPositions ? snapshot.removedHistoryFrameIds.has(frame.id) ? void 0 : snapshot.historyPositions.get(frame.id) ?? node2.position : snapshot.historyPositions.get(frame.id);
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
       const message = record(data?.message), origin = originOf(message);
@@ -4435,9 +4500,10 @@ function createPendingApprovalResource(input) {
         publish({ requests, status: "ready", updatedAtMs: env2.now(), error: void 0 });
       } catch (error) {
         if (disposed || denied) return;
-        if (isDenied(error) || unavailableCapability(error)?.method === CONSOLE_RPC_METHODS.gatingPending) {
+        const unsupported = unavailableCapability(error)?.method === CONSOLE_RPC_METHODS.gatingPending;
+        if (isDenied(error) || unsupported) {
           denied = true;
-          publish({ requests: [], decisions: {}, status: "forbidden", readOnly: true, error: errorText(error) });
+          publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
           lifetime.abort();
         } else if (generation === decisionGeneration) {
           publish({ status: snapshot.updatedAtMs === void 0 ? "unavailable" : "stale", error: errorText(error) });
@@ -4511,7 +4577,7 @@ function createPendingApprovalResource(input) {
             setDecision(pendingId, { phase: "failed", action, error: "Approval decisions are unavailable with current access" });
           } else if (isDenied(error) || capability?.method === CONSOLE_RPC_METHODS.gatingDecide) {
             denied = true;
-            publish({ requests: [], decisions: {}, status: "forbidden", readOnly: true, error: errorText(error) });
+            publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
             lifetime.abort();
           } else setDecision(pendingId, { phase: "failed", action, error: errorText(error) });
         } finally {
@@ -4638,8 +4704,9 @@ function sameFrozenContent(actual, expected) {
   if (!Array.isArray(actual) || actual.length !== expected.length) return false;
   return actual.every((block, index2) => block !== null && typeof block === "object" && Object.keys(block).length === 2 && block.type === expected[index2].type && block.text === expected[index2].text);
 }
-function reconcileConsoleSendReceipt(attempt, frame) {
-  if (!attempt.envelopeJson || frame.event !== "user_input" || frame.identity !== attempt.destination || !frame.interactionId || !frame.id) return null;
+function reconcileConsoleSendReceipt(attempt, frame, resolution) {
+  const destinationResolved = frame.identity === attempt.destination || resolution?.requestedIdentity === attempt.destination && nonemptyString(resolution.canonicalIdentity) && frame.identity === resolution.canonicalIdentity;
+  if (!attempt.envelopeJson || frame.event !== "user_input" || !destinationResolved || !frame.interactionId || !frame.id) return null;
   const envelope = JSON.parse(attempt.envelopeJson);
   const payload = frame.data;
   if (!payload || payload.origin !== envelope.origin || payload.origin_kind !== envelope.origin_kind || payload.idempotency_key !== envelope.idempotency_key || payload.handling_mode !== envelope.handling_mode || !sameFrozenContent(payload.content, envelope.content)) return null;
@@ -4823,8 +4890,9 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
   ] });
 }
 function ApprovalAttention({ snapshot, onOpen }) {
+  if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
   const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
-  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "forbidden" ? "Access denied" : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", children: [
     /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { type: "button", onClick: () => onOpen(), children: [
       /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: "Needs you" }),
@@ -4836,6 +4904,11 @@ function ApprovalAttention({ snapshot, onOpen }) {
 
 // ../packages/console-components/src/conversation/conversation-approvals.tsx
 var import_jsx_runtime9 = require("react/jsx-runtime");
+function approvalInteractionIdsByTurn(turns) {
+  const latest = /* @__PURE__ */ new Map();
+  turns.forEach((ids, index2) => ids.forEach((id) => latest.set(id, index2)));
+  return turns.map((ids, index2) => [...new Set(ids)].filter((id) => latest.get(id) === index2));
+}
 function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }) {
   if (!approvalSnapshot || !approvalIdentity) return null;
   const requests = approvalSnapshot.requests.filter((request) => Boolean(request.origin?.interactionId) === Boolean(interactionIds) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
@@ -5221,19 +5294,22 @@ function useConversationScrollController(options) {
       session.anchor = captureConversationAnchor(rowGeometry(viewport));
       publish();
     };
+    const canLeaveLiveEdge = (delta) => sessionRef.current?.mode !== "following-end" || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
     const onWheel = (event) => {
-      if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX)) readHistory();
+      if (isConversationScrollTarget(event.target, viewport, event.deltaY, event.deltaX) && canLeaveLiveEdge(event.deltaY)) readHistory();
     };
     const onKey = (event) => {
       if (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
       const delta = ["ArrowUp", "PageUp", "Home"].includes(event.key) || event.key === " " && event.shiftKey ? -1 : ["ArrowDown", "PageDown", "End", " "].includes(event.key) ? 1 : 0;
-      if (isConversationScrollTarget(event.target, viewport, delta)) readHistory();
+      if (isConversationScrollTarget(event.target, viewport, delta) && canLeaveLiveEdge(delta)) readHistory();
     };
     const onSelection = () => {
       const selection = viewport.ownerDocument.getSelection();
       if (selection && !selection.isCollapsed && selection.anchorNode && viewport.contains(selection.anchorNode)) readHistory();
     };
-    const onPointerDown = () => readHistory();
+    const onPointerDown = () => {
+      if (sessionRef.current?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
+    };
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointerdown", onPointerDown, true);
     viewport.addEventListener("wheel", onWheel, { passive: true });
@@ -27416,9 +27492,30 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     if (streams.length) streamedTextByOwner.set(key, streams);
     else streamedTextByOwner.delete(key);
   }
+  const completedTextByOwner = /* @__PURE__ */ new Map();
+  function completedStream(frame) {
+    return completedTextByOwner.get(assistantOwnerKey(frame))?.find((stream) => sameTextStreamOwner(stream.owner, frame));
+  }
+  function forgetCompletedStream(frame) {
+    const key = assistantOwnerKey(frame);
+    const streams = completedTextByOwner.get(key)?.filter((stream) => !sameTextStreamOwner(stream.owner, frame)) || [];
+    if (streams.length) completedTextByOwner.set(key, streams);
+    else completedTextByOwner.delete(key);
+  }
+  function completeOwnedStream(frame, text8 = ownedStream(frame)?.text || "") {
+    if (text8) {
+      forgetCompletedStream(frame);
+      const key = assistantOwnerKey(frame);
+      const streams = completedTextByOwner.get(key) || [];
+      streams.push({ owner: frame, text: text8 });
+      completedTextByOwner.set(key, streams);
+    }
+    forgetOwnedStream(frame);
+  }
   function forgetUnscopedStream() {
     if (streamedOwner && !streamedOwner.runId?.trim() && !streamedOwner.interactionId?.trim()) {
       forgetOwnedStream(streamedOwner);
+      forgetCompletedStream(streamedOwner);
     }
   }
   function reasoningScope(frame) {
@@ -27486,6 +27583,10 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   for (let i = 0; i < orderedFrames.length; i++) {
     const frame = orderedFrames[i];
     const entryId = frame.id || `${frame.event || "frame"}:${i}`;
+    if (frame.runId?.trim() && frame.sourceKind !== "session_history" && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out" || frame.event === "turn_completed" || frame.event === "turn_started")) {
+      if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
+      completeOwnedStream(frame);
+    }
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
       if (!delta) continue;
@@ -27530,6 +27631,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += delta;
+      forgetCompletedStream(frame);
       appendOwnedStream(frame, delta);
       continue;
     }
@@ -27721,7 +27823,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       }
       continue;
     }
-    if (frame.event === "text_complete") {
+    if (!frame.runId?.trim() && frame.event === "text_complete") {
       flushPendingReasoning(true);
       if (frame.sourceKind !== "session_history") {
         const text8 = terminalFrameVisibleText(frame).trim();
@@ -27744,10 +27846,11 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     }
     if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
       const ownsStream = sameTextStreamOwner(streamedOwner, frame);
-      const streamedText = ownedStream(frame)?.text || (ownsStream ? pendingText : "");
+      const streamedText = ownedStream(frame)?.text || (frame.event !== "text_complete" ? completedStream(frame)?.text : "") || (ownsStream ? pendingText : "");
       flushPendingReasoning(true);
       flushPendingText();
-      forgetOwnedStream(frame);
+      if (frame.runId?.trim()) completeOwnedStream(frame, terminalFrameVisibleText(frame));
+      else forgetOwnedStream(frame);
       if (ownsStream) streamedOwner = void 0;
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {
@@ -28436,7 +28539,7 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
   if (result.error) {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-  return normalizeConsoleTimelineAccepted(result.result, identity);
+  return normalizeConsoleTimelineAccepted(result.result);
 }
 async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
   const file = input.file;
@@ -28599,11 +28702,11 @@ async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey,
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
   const record3 = accepted;
-  return normalizeConsoleTimelineAccepted(record3, identity);
+  return normalizeConsoleTimelineAccepted(record3);
 }
-function normalizeConsoleTimelineAccepted(accepted, expectedIdentity) {
+function normalizeConsoleTimelineAccepted(accepted) {
   const record3 = accepted && typeof accepted === "object" ? accepted : {};
-  if (typeof record3.interaction_id !== "string" || !record3.interaction_id.trim() || typeof record3.identity !== "string" || record3.identity !== expectedIdentity || "input_frame_id" in record3 && record3.input_frame_id != null && (typeof record3.input_frame_id !== "string" || !record3.input_frame_id.trim())) {
+  if (typeof record3.interaction_id !== "string" || !record3.interaction_id.trim() || typeof record3.identity !== "string" || !record3.identity.trim() || "input_frame_id" in record3 && record3.input_frame_id != null && (typeof record3.input_frame_id !== "string" || !record3.input_frame_id.trim())) {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
   return {
@@ -30315,7 +30418,7 @@ function GatingInboxPanel({
       )
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gating__list", ref: listRef, children: tab2 === "pending" && resource ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { children: [
-      resource.status !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { role: "status", children: resource.status === "forbidden" ? "Approval access denied" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable" }) : null,
+      resource.status !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { role: "status", children: resource.status === "forbidden" ? "Approval access denied" : resource.status === "unsupported" ? "Approvals are not available for this connection" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable" }) : null,
       onRefresh ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { type: "button", onClick: onRefresh, children: "Refresh approvals" }) : null,
       resource.status === "ready" && pendingRequests?.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { children: "No pending approvals." }) : null,
       resource.requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { tabIndex: -1, "data-approval-id": request.pendingId, "data-selected": selectedId === request.pendingId, className: selectedId === request.pendingId ? "is-selected" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ApprovalCard, { request, resourceStatus: resource.status, decision: resource.decisions[request.pendingId], readOnly: readOnly || resource.readOnly, onDecide }) }, request.pendingId))
@@ -37507,6 +37610,7 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
     () => windowStart > 0 ? turns.slice(windowStart) : turns,
     [turns, windowStart]
   );
+  const approvalInteractions = import_react40.default.useMemo(() => approvalInteractionIdsByTurn(windowedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []))), [windowedTurns]);
   const getTranscriptText = import_react40.default.useCallback(() => transcriptCopyText(messages), [messages]);
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__body", onScroll, ref: bodyRef, tabIndex: 0, "aria-label": "Conversation transcript", children: [
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
@@ -37596,7 +37700,7 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
                 ] }, m.scrollRowId ?? m.id));
                 return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(import_react40.default.Fragment, { children: run.tools.length >= 2 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: rows }) : rows }, run.rows[0].scrollRowId ?? run.rows[0].id);
               }),
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []) })
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractions[offset] })
             ]
           },
           turn.id
@@ -40922,9 +41026,23 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
 ]);
 function ConsoleApp(props) {
   const instanceKey = import_react45.default.useMemo(() => createConsoleId("console-instance"), [props.baseUrl, props.transport, props.storageNamespace]);
-  return /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(ConsoleAppInstance, { ...props }, instanceKey);
+  return /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(ConsoleAppAuthority, { ...props }, instanceKey);
 }
-function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy }) {
+function ConsoleAppAuthority(props) {
+  const observedScope = import_react45.default.useRef(null);
+  const [generation, setGeneration] = import_react45.default.useState(0);
+  const observeScope = import_react45.default.useCallback((value) => {
+    const previous3 = observedScope.current;
+    observedScope.current = { value };
+    if (previous3 && previous3.value !== value) {
+      setGeneration((current) => current + 1);
+      return false;
+    }
+    return true;
+  }, []);
+  return /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(ConsoleAppInstance, { ...props, observeScope }, generation);
+}
+function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlPolicy, observeScope }) {
   countRender("ConsoleApp");
   const lifetimeRef = import_react45.default.useRef({ active: true, generation: 0 });
   import_react45.default.useLayoutEffect(() => {
@@ -41704,7 +41822,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const sendControllerRef = import_react45.default.useRef(consoleController);
   sendControllerRef.current = consoleController;
   const transientSendScope = import_react45.default.useMemo(() => `transient:${createIdempotencyKey()}`, [consoleController]);
-  const sendScope = storageNamespace?.trim() || `${transientSendScope}:${baseUrl}`;
+  const persistentSendScope = storageNamespace?.trim() || (experience?.storage_scope?.trim() ? JSON.stringify([baseUrl, experience.storage_scope]) : null);
+  const sendScope = persistentSendScope || `${transientSendScope}:${baseUrl}`;
   const [composerTabId] = import_react45.default.useState(() => {
     try {
       return consoleComposerTabId(window.sessionStorage, createIdempotencyKey);
@@ -41714,7 +41833,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   });
   const composerIdFor = (panelKey) => JSON.stringify([composerTabId, panelKey]);
   const sendScopeRef = import_react45.default.useRef(sendScope);
-  const persistentSendScopeRef = import_react45.default.useRef(storageNamespace?.trim() || null);
+  const persistentSendScopeRef = import_react45.default.useRef(persistentSendScope);
   const pendingStackRef = import_react45.default.useRef({});
   const autoDrainRequestedRef = import_react45.default.useRef(/* @__PURE__ */ new Map());
   const sendRetryEpochRef = import_react45.default.useRef(0);
@@ -41769,7 +41888,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setSubmittedFrames({});
     setSendingPanels(/* @__PURE__ */ new Set());
   }, [sendScope]);
-  persistentSendScopeRef.current = storageNamespace?.trim() || null;
+  persistentSendScopeRef.current = persistentSendScope;
   const scopedDraftKey = (panelKey) => `${sendScopeRef.current}:${panelKey}`;
   function loadPendingStack(identity) {
     const namespace = persistentSendScopeRef.current;
@@ -41822,11 +41941,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const controller = sendControllerRef.current;
     const namespace = persistentSendScopeRef.current;
     if (!namespace) return commitPendingStack(identity, update, legacyImported);
-    if (!navigator.locks) {
-      setActionError("This browser cannot coordinate saved queues across tabs. Your message remains in the composer.");
-      return false;
-    }
-    return navigator.locks.request(consoleSendStorageKey(namespace, identity), () => {
+    return withConsoleSendStorageLock(consoleSendStorageKey(namespace, identity), () => {
       if (!lifetimeRef.current.active || generation !== lifetimeRef.current.generation || scope !== sendScopeRef.current || controller !== sendControllerRef.current) return false;
       const visible = getPendingStack(identity);
       pendingStackRef.current[identity] = loadPendingStack(identity).map((attempt) => ({
@@ -41834,6 +41949,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         ...attempt
       }));
       return commitPendingStack(identity, update, legacyImported);
+    }).catch((error2) => {
+      setActionError(errorMessage(error2));
+      return false;
     });
   }
   import_react45.default.useEffect(() => {
@@ -42105,6 +42223,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         consoleTransport.loadExperience(),
         consoleTransport.loadModules?.() ?? Promise.resolve({ modules: [] })
       ]);
+      if (!observeScope(experienceJson.storage_scope?.trim() || void 0)) return [];
       const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
       if (typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0) {
         consoleFetchTimeoutMsRef.current = configuredTimeoutMs;
@@ -43033,7 +43152,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           attachments
         }
       )).accepted.value;
-      if (!result.interaction_id || result.identity !== identity) throw new Error("Server response did not prove acceptance for this destination.");
+      if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
       if (pendingAttempt) {
         if (await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
@@ -43173,11 +43292,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!commitPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
       return { attempting, target };
     };
-    if (namespace && !navigator.locks) {
-      setActionError("This browser cannot coordinate a persisted send across tabs. The message remains queued.");
-      return;
-    }
-    const frozen = namespace ? await navigator.locks.request(consoleSendStorageKey(namespace, identity), freeze) : freeze();
+    const frozen = namespace ? await withConsoleSendStorageLock(consoleSendStorageKey(namespace, identity), freeze).catch((error2) => {
+      setActionError(errorMessage(error2));
+      return null;
+    }) : freeze();
     if (frozen && lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && dispatchController === sendControllerRef.current) {
       await submitMessageNow(frozen.target.panelId, frozen.target.target, frozen.attempting.text, handlingMode, [], frozen.attempting, dispatchController);
     }
@@ -43187,16 +43305,32 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
   async function onStackReconcile(identity, id) {
     const scope = sendScopeRef.current;
+    const generation = lifetimeRef.current.generation;
+    const controller = sendControllerRef.current;
+    const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && controller === sendControllerRef.current;
+    const original = getPendingStack(identity).find((candidate) => candidate.id === id);
+    if (!original?.envelopeJson) return;
+    let page;
+    let canonicalIdentity;
     try {
-      await refreshIdentityTimelineNow(identity);
+      const inspection = await inspectIdentityViaHeadless(original.destination);
+      if (!active()) return;
+      const record3 = inspection && typeof inspection === "object" ? inspection : null;
+      const owner = record3?.identity && typeof record3.identity === "object" ? record3.identity : record3;
+      if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
+        throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
+      }
+      canonicalIdentity = owner.identity;
+      ({ page } = await queryIdentityTimelinePage(canonicalIdentity, { mode: "recent", limit: 200 }));
     } catch (error2) {
-      setActionError(errorMessage(error2));
+      if (active()) setActionError(errorMessage(error2));
       return;
     }
-    if (scope !== sendScopeRef.current) return;
+    if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!item) return;
-    const accepted = getOrCreateLog(identity).events.map((frame) => reconcileConsoleSendReceipt(item, frame)).find(Boolean);
+    if (!item || item.envelopeJson !== original.envelopeJson) return;
+    const resolution = { requestedIdentity: original.destination, canonicalIdentity };
+    const accepted = page.frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
     if (!accepted) {
       setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically.");
       return;
@@ -43272,7 +43406,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         if (!autoDrainRequestedRef.current.get(key)?.inFlight) autoDrainRequestedRef.current.delete(key);
         return;
       }
-      const tokenFor = () => JSON.stringify([findChatTargetFor(identity)?.panelId ?? null, sendRetryEpochRef.current, Boolean(navigator.locks), head.text, head.contexts]);
+      const tokenFor = () => JSON.stringify([findChatTargetFor(identity)?.panelId ?? null, sendRetryEpochRef.current, Boolean(navigator.locks || globalThis.indexedDB), head.text, head.contexts]);
       const token = tokenFor();
       const previous3 = autoDrainRequestedRef.current.get(key);
       if (previous3?.inFlight || previous3?.token === token) return;

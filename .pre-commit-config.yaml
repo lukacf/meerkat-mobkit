@@ -94,8 +94,9 @@ repos:
         name: cargo clippy (changed crates)
         entry: scripts/pre-push-clippy.sh
         language: script
-        types: [rust]
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$)
         pass_filenames: false
+        verbose: true
         stages: [pre-push]
 
   # On push: unit tests only (integration tests run in CI)

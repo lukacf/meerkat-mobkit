@@ -93,6 +93,115 @@ describe("owner activity refresh", () => {
 });
 
 describe("stock durable queue integration", () => {
+  it("persists default embedded drafts and legacy queues in the server-owned scope", async () => {
+    const send = vi.fn(async (input) => ({ interaction_id: "accepted", identity: input.identity }));
+    const fake = transport(send);
+    const experience = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...experience, storage_scope: "console-storage:v1:owner-a" });
+    fake.queryTimeline = async () => ({ available: true, frames: [{ id: "busy", event: "interaction_started", identity, interactionId: "busy", timestampMs: 1, data: { content: "working" } }] });
+    const legacy = JSON.stringify([{ id: "pre-upgrade", text: "Preserve old queued instruction", addedAt: 1 }]);
+    window.localStorage.setItem(`mobkit-pending-stack:${identity}`, legacy);
+    const props = { baseUrl: "", transport: fake };
+    const view = render(<ConsoleApp {...props} />);
+    const composer = await screen.findByTestId(`chat-composer:${identity}`);
+    fireEvent.change(composer, { target: { value: "Unsent default embedded draft" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Import legacy queue into this account" }));
+    await screen.findByTestId("pending-stack");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 160)); });
+    view.unmount();
+    render(<ConsoleApp {...props} />);
+    await waitFor(() => expect((screen.getByTestId(`chat-composer:${identity}`) as HTMLTextAreaElement).value).toBe("Unsent default embedded draft"));
+    await screen.findByTestId("pending-stack");
+    expect(screen.queryByRole("button", { name: "Import legacy queue into this account" })).toBeNull();
+    expect(window.localStorage.getItem(`mobkit-pending-stack:${identity}`)).toBe(legacy);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("clears old authorized content when the server principal scope changes at the same URL", async () => {
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    let serverScope = "principal-a";
+    fake.loadExperience = vi.fn(async () => ({ ...initial, storage_scope: serverScope }));
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    render(<ConsoleApp baseUrl="" transport={fake} />);
+    const composer = await screen.findByTestId(`chat-composer:${identity}`);
+    fireEvent.change(composer, { target: { value: "Principal A private draft" } });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 160)); });
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    serverScope = "principal-b";
+    await act(async () => { receive?.({ id: "scope-refresh", event: "interaction_started", identity, interactionId: "refresh", timestampMs: 2, data: { content: "Trigger scope refresh" } } as never); });
+    await waitFor(() => expect(fake.loadExperience).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect((screen.getByTestId(`chat-composer:${identity}`) as HTMLTextAreaElement).value).toBe(""));
+    expect(screen.queryByText("Trigger scope refresh")).toBeNull();
+  });
+
+  it("reconciles a lost alias send receipt only after fresh owner resolution and exact canonical query", async () => {
+    const canonical = "canonical/queue-agent";
+    const scope = "alias-recovery-scope";
+    const attempted = beginConsoleSendAttempt(createConsoleSendAttempt({ id: "lost-alias", scope, destination: identity,
+      origin: "console:old-pane", idempotencyKey: "lost-key", text: "Keep exact alias intent", now: 1 }), { owner: "old-tab", now: 2, handlingMode: "steer" });
+    const unknown = { ...attempted, state: "outcome-unknown" as const, lease: undefined };
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [unknown]);
+    const send = vi.fn();
+    const fake = transport(send);
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] }) as never;
+    const calls: string[] = [];
+    const receipt = { id: "canonical-receipt", event: "user_input", identity: canonical, interactionId: "canonical-turn", timestampMs: 2, data: { ...JSON.parse(attempted.envelopeJson!), identity: canonical } };
+    fake.executeCommand = vi.fn(async input => {
+      if (input.command !== "inspectIdentity") throw new Error("Unexpected command");
+      if (!("identity" in input.target)) throw new Error("Inspection needs an identity target");
+      calls.push(`inspect:${input.target.identity}`);
+      return { command: input.command, accepted: true, result: { identity: { identity: canonical, runtime_key: "runtime", runtime_member_id: identity, addressable: true }, peers: [] } };
+    });
+    fake.queryTimeline = vi.fn(async input => {
+      calls.push(`query:${input.identity}`);
+      // Real store filtering is exact: querying the alias cannot find C's row.
+      return { available: true, frames: input.identity === canonical ? [receipt] : [] };
+    });
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
+    await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+    expect(calls).toContain(`inspect:${identity}`);
+    expect(calls.indexOf(`inspect:${identity}`)).toBeLessThan(calls.indexOf(`query:${canonical}`));
+    expect(send).not.toHaveBeenCalled();
+    expect(unknown.envelopeJson).toBe(attempted.envelopeJson);
+    expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts).toEqual([]);
+  });
+
+  it.each(["denied", "missing identity"])("keeps the frozen alias attempt after %s owner resolution without resending", async failure => {
+    const scope = "alias-resolution-failure";
+    const attempted = beginConsoleSendAttempt(createConsoleSendAttempt({ id: "unresolved-alias", scope, destination: identity,
+      origin: "console:old-pane", idempotencyKey: "unresolved-key", text: "Preserve this attempt", now: 1 }), { owner: "old-tab", now: 2, handlingMode: "queue" });
+    const unknown = { ...attempted, state: "outcome-unknown" as const, lease: undefined };
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [unknown]);
+    const fake = transport(vi.fn());
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      if (failure === "denied") throw new Error("Owner resolution denied");
+      return { command: input.command, accepted: true, result: { identity: { display_name: "Not canonical identity" } } };
+    });
+    fake.queryTimeline = vi.fn(async () => ({ available: true, frames: [] }));
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
+    const action = await screen.findByRole("button", { name: "Check acceptance" });
+    const previousQueries = vi.mocked(fake.queryTimeline).mock.calls.length;
+    fireEvent.click(action);
+    await waitFor(() => expect(fake.executeCommand).toHaveBeenCalled());
+    expect(screen.getByTestId("pending-stack")).toBeTruthy();
+    expect(fake.send).not.toHaveBeenCalled();
+    expect(vi.mocked(fake.queryTimeline).mock.calls.length).toBe(previousQueries);
+    expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts[0].envelopeJson).toBe(attempted.envelopeJson);
+  });
+
+  it("accepts canonical destination receipts for an alias without retrying", async () => {
+    const send = vi.fn(async () => ({ interaction_id: "alias-accepted", identity: "canonical/queue-agent", input_frame_id: "canonical-input" }));
+    render(<ConsoleApp baseUrl="" storageNamespace="alias-scope" transport={transport(send)} />);
+    await compose("Address through an alias");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+    expect(screen.queryByText(/did not prove acceptance/)).toBeNull();
+  });
+
   it.each(["namespace", "transport", "baseUrl"] as const)("clears the entire authorized console immediately when %s changes", async (change) => {
     const send = vi.fn(async (input) => ({ interaction_id: "unused", identity: input.identity }));
     const old = transport(send);

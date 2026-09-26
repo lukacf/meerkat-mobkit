@@ -408,9 +408,7 @@ for (const [surface, map, merge, parse, query, subscribe] of [
     delete oldEvent.payload.notices;
     delete oldEvent.payload.transcript_start;
     const oldEntries = project([oldEvent]);
-    assert.equal(oldEntries.length, 1);
-    assert.match(conversationEntryText(oldEntries[0]), /Boundary append applied/i);
-    assert.equal(conversationEntryText(oldEntries[0]).includes(MODEL_ONLY), false);
+    assert.deepEqual(oldEntries, [], "origin-free transport acknowledgements have no display notice");
   });
 
   test(`${surface}: whole canonical positions order tool, notice, answer even with inverted timestamps`, () => {
@@ -550,6 +548,53 @@ for (const [surface, map, merge, parse, query, subscribe] of [
     image.payload.history_positions = [{ frame_id: answer.id, source_cursor: `${SESSION_A}:3` }];
     const unmatched = reconcileRuntimeAppendFrames(parse(sse([ordinary, durable, answer, image])));
     assert.equal(unmatched[0].id, ordinary.id, "an unmapped ordinary audit notice has no remaining old-position constraint");
+  });
+
+  test(`${surface}: sparse history positions preserve unchanged coordinates and restore removed coordinates`, () => {
+    const unchanged = wire("unchanged-row", "user_input", 100, { content: "Unchanged input." }, {
+      source: { kind: "session_history", source_cursor: `${SESSION_A}:1` },
+    });
+    const moved = wire("moved-row", "user_input", 200, { content: "Moved input." }, {
+      source: { kind: "session_history", source_cursor: `${SESSION_A}:10` },
+    });
+    const removed = wire("removed-row", "user_input", 300, { content: "Retained audit input." }, {
+      source: { kind: "session_history", source_cursor: `${SESSION_A}:0` },
+    });
+    const image = snapshot("sparse-image", [{ offset: 3, message: notice() }]);
+    image.payload.history_positions_mode = "sparse";
+    image.payload.history_positions = [{ frame_id: moved.id, source_cursor: `${SESSION_A}:2` }];
+    image.payload.removed_history_frame_ids = [removed.id];
+    for (const input of permutations([image, moved, unchanged])) {
+      assert.deepEqual(project(input).map(conversationEntryText), ["Unchanged input.", "Moved input.", BODY]);
+    }
+    const projected = reconcileRuntimeAppendFrames(parse(sse([image, moved, unchanged, removed])));
+    assert.deepEqual(projected.filter(frame => frame.id !== removed.id).map(frame => frame.id),
+      [unchanged.id, moved.id, rows([saved("n", notice())])[0].id]);
+    assert.ok(projected.findIndex(frame => frame.id === removed.id) > projected.findIndex(frame => frame.id === moved.id),
+      "explicit removal drops its old zero coordinate while preserving audit content in source order");
+    const restored = snapshot("restored-image", [{ offset: 3, message: notice() }], [], { cursor: "console:9000" });
+    restored.payload.history_positions_mode = "sparse";
+    restored.payload.history_positions = [];
+    restored.payload.removed_history_frame_ids = [];
+    assert.deepEqual(reconcileRuntimeAppendFrames(parse(sse([image, unchanged, removed, restored])))
+      .map(frame => frame.id), [removed.id, unchanged.id, rows([saved("n", notice())])[0].id],
+      "the latest sparse image restores an unchanged original coordinate");
+    assert.equal(projected.find(frame => frame.id === moved.id)?.sourceCursor, `${SESSION_A}:10`);
+  });
+
+  test(`${surface}: malformed sparse position metadata cannot invalidate current notice evidence`, () => {
+    for (const fields of [
+      { history_positions_mode: "future", removed_history_frame_ids: [] },
+      { history_positions_mode: "sparse" },
+      { history_positions_mode: "sparse", removed_history_frame_ids: [""] },
+      { history_positions_mode: "sparse", removed_history_frame_ids: ["row", "row"] },
+      { history_positions_mode: "sparse", removed_history_frame_ids: ["row"], history_positions: [{ frame_id: "row", source_cursor: `${SESSION_A}:2` }] },
+      { removed_history_frame_ids: ["row"] },
+    ]) {
+      const image = snapshot("invalid-sparse", [], [{ run_id: RUN_A, input_id: INPUT_A }]);
+      Object.assign(image.payload, { history_positions: [] }, fields);
+      assert.equal(rows([applied("live-sparse"), image]).length, 1, JSON.stringify(fields));
+    }
   });
 
   test(`${surface}: malformed current history positions cannot authorize snapshot replacement`, () => {

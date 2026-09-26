@@ -166,3 +166,65 @@ for (const [name, mapper] of [["stock", stock], ["shared", shared]] as const) {
     assert.deepEqual(distinct.map(conversationEntryText), [source, source]);
   });
 }
+
+// Meerkat 0.8.44 TextComplete closes one provider message; RunCompleted
+// repeats the last assistant message, not all of the run's text.
+for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const) {
+  const runId = "01900000-0000-7000-8000-000000000410";
+  const interactionId = "01900000-0000-7000-8000-000000000411";
+  const sessionId = "01900000-0000-7000-8000-000000000412";
+  const owner = { runId, interactionId, sessionId, runtimeKey: "runtime", identity: "router:main" };
+  const options = { renderInteractionStartsAsUser: true, renderTextDeltas: true, textMode: "markdown" as const };
+  let sequence = 0;
+  const live = (id: string, event: string, data: unknown) => frame(id, event, data, {
+    ...owner, sourceKind: "console_event", cursor: `console:${++sequence}`, timestampMs: sequence,
+  });
+  const assistantText = (frames: ConsoleFrame[]) => mapper(null, frames, options)
+    .filter(entry => entry.kind === "message" && entry.identity.role === "assistant")
+    .flatMap(entry => entry.kind === "message" ? entry.blocks?.flatMap(block => block.type === "markdown" ? [block.source] : []) || [] : []);
+  for (const textComplete of [true, false]) {
+    for (const finalText of ["The answer is 42.", "Let me check."]) {
+      test(`${surface}: multi-turn terminal joins the last occurrence with text_complete=${textComplete} and final=${finalText}`, () => {
+        const frames = [
+          live("preamble", "text_delta", { delta: "Let me check." }),
+          ...(textComplete ? [live("preamble-complete", "text_complete", { content: "Let me check." })] : []),
+          live("lookup", "tool_call_requested", { id: "lookup-1", name: "lookup", args: {} }),
+          live("lookup-result", "tool_execution_completed", { id: "lookup-1", name: "lookup", content: [{ type: "text", text: "42" }], is_error: false, duration_ms: 10 }),
+          live("answer", "text_delta", { delta: finalText }),
+          ...(textComplete ? [live("answer-complete", "text_complete", { content: finalText })] : []),
+          live("terminal", "interaction_complete", { result: finalText }),
+        ];
+        assert.deepEqual(assistantText(frames), ["Let me check.", finalText]);
+        const saved = frame("saved-final", "text_complete", { text: finalText, result: finalText, message: {
+          role: "block_assistant", identity: { run_id: runId, interaction_id: interactionId },
+          stop_reason: "end_turn", blocks: [{ block_type: "text", data: { text: finalText } }],
+        } }, { ...owner, sourceKind: "session_history", sourceCursor: `${sessionId}:4`, cursor: `console:${++sequence}`, timestampMs: sequence });
+        assert.deepEqual(assistantText([...frames, saved]), ["Let me check.", finalText]);
+      });
+    }
+  }
+  test(`${surface}: two equal message completions without deltas remain separate occurrences`, () => {
+    const frames = [
+      live("first-complete", "text_complete", { content: "Ready." }),
+      live("read", "tool_call_requested", { id: "read-1", name: "read_file", args: {} }),
+      live("read-result", "tool_execution_completed", { id: "read-1", name: "read_file", content: [], is_error: false }),
+      live("second-complete", "text_complete", { content: "Ready." }),
+      live("last-terminal", "interaction_complete", { result: "Ready." }),
+    ];
+    assert.deepEqual(assistantText(frames), ["Ready.", "Ready."]);
+  });
+  for (const notices of [undefined, []]) {
+    test(`${surface}: durable user append with notices=${JSON.stringify(notices)} has no transport system row`, () => {
+      const entries = mapper(null, [
+        live("steer", "user_input", { content: "Check the second source too." }),
+        live("applied", "boundary_append_applied", { run_id: runId,
+          input_id: "01900000-0000-7000-8000-000000000413", content: "Check the second source too.",
+          append_count: 1, transcript_start: 3, ...(notices ? { notices } : {}),
+        }),
+      ], options);
+      assert.deepEqual(entries.map(entry => [entry.identity.role, conversationEntryText(entry)]), [
+        ["user", "Check the second source too."],
+      ]);
+    });
+  }
+}

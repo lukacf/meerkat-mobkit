@@ -251,6 +251,24 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     result.durationViews[label] = view;
     return view;
   }
+  async function inspectApproval(label) {
+    const card = viewport().getByTestId(`gating-pending:${result.approval.pending_id}`);
+    await eventually(async () => await card.count() === 1, `${host} ${label}: one exact approval in this transcript`);
+    const view = await card.evaluate(node => ({ pendingId: node.dataset.testid,
+      turnId: node.closest("[data-conversation-turn-id]")?.dataset.conversationTurnId,
+      text: node.textContent }));
+    assert(view.turnId, "correlated approval belongs to a concrete visible conversation turn");
+    assert(view.text.includes("Review this exact background-check interaction"));
+    const pending = await rpc(fixture.baseUrl, "mobkit/gating/pending");
+    const owner = pending.body.result?.pending.find(item => item.pending_id === result.approval.pending_id);
+    assert.equal(owner?.origin?.interaction_id, result.started.interaction_id,
+      "the runtime approval owner retains the exact active interaction");
+    assert.equal(fixture.observations.filter(item => item.request.includes('"method":"mobkit/gating/decide"')).length, 0,
+      "reading the correlated approval never decides it");
+    result.approvalViews ||= {};
+    result.approvalViews[label] = view;
+    return view;
+  }
   try {
     // Kickoff can finish before the fixture wires members. Establish an
     // explicit delivery after wiring instead of relying on lifecycle timing.
@@ -317,6 +335,10 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     }, "the intended model request reaches its explicit barrier");
     result.runStart = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "run_started" && frame.interaction_id === result.started.interaction_id), "the running turn has canonical run and session ownership");
     assert(result.runStart.run_id && result.runStart.session_id);
+    result.approval = await fixture.control("approval", { identity, interaction_id: result.started.interaction_id,
+      action: "Review this exact background-check interaction" });
+    assert(result.approval.pending_id);
+    await inspectApproval("waiting");
     await composer().fill(draft);
     await composer().evaluate(node => node.setSelectionRange(3, 17));
     await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).scrollIntoViewIfNeeded();
@@ -357,6 +379,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     result.duringRun = await state();
     assert.equal(result.duringRun.current_run_id, result.runStart.run_id, "the append is visible before the same run completes");
     const duringView = await inspectNotice("during-run", true);
+    await inspectApproval("during-run");
     await assertDraftAndReading();
     result.afterLiveReading = await state();
     assert(inputStillRunning(result.afterLiveReading), "live notice and preserved typing/reading were observed before the original run completed");
@@ -410,6 +433,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     assert.equal(assistantText(answer), finalSource);
     await assertDraftAndReading();
     const completedView = await inspectNotice("completed");
+    await inspectApproval("completed");
     assert.deepEqual(completedView.rows, duringView.rows, "the exact live notice row and content survive the committed history reconciliation");
     const completedDuration = await inspectAssistantDuration("completed");
     await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
@@ -429,10 +453,12 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     allowance = null;
     const reconnected = await inspectNotice("reconnected");
+    await inspectApproval("reconnected");
     assert.deepEqual(reconnected.rows, completedView.rows, "reconnect preserves the exact notice row");
     assert.equal(await composer().inputValue(), draft);
     await open(true);
     const reloaded = await inspectNotice("reloaded");
+    await inspectApproval("reloaded");
     assert.deepEqual(reloaded.rows, completedView.rows, "history reconciliation and reload preserve the exact notice row");
     assert.deepEqual(await inspectAssistantDuration("reloaded"), completedDuration, "reload preserves the final assistant row and proven duration exactly");
     assert.deepEqual((await history()).messages, result.history.messages, "reload does not alter committed history");

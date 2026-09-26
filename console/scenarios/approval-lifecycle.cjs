@@ -305,6 +305,8 @@ async function accessRevocation(host) {
     await fixture.control("access", { mode: "denied" });
     await refreshApprovals(page, host);
     await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_id}`).count() === 0, "revoked content clears from every copy");
+    await eventually(async () => await page.getByTestId("approval-attention").count() === 0,
+      "permanently denied approvals do not leave a global Needs you control");
     assert.equal(decisions(fixture, created.pending_id).length, 0, "read revocation never submits a decision");
     if (host === "stock") {
       await page.getByText("Approval access denied", { exact: true }).waitFor();

@@ -32,6 +32,7 @@ jobs:
       - run: python3 scripts/test_verify_session_service_decorators.py
       - run: python3 scripts/test_ci_workflow.py
       - run: python3 scripts/test_repo_cargo.py
+      - run: python3 scripts/test_pre_push_clippy.py
       - run: python3 scripts/test_release_version_scripts.py
       - run: python3 scripts/test_release_workflow.py
       - run: python3 scripts/test_release_candidate.py
