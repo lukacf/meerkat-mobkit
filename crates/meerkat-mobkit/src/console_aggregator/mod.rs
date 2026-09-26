@@ -6392,18 +6392,18 @@ mod tests {
                 .await
         }
 
-        async fn prepare_transient_turn_context_for_active_turn(
+        async fn prepare_turn_boundary_delivery_for_active_turn(
             &self,
             session_id: &SessionId,
             expected_run_id: &meerkat_core::RunId,
-            contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+            delivery: meerkat_core::TurnBoundaryDelivery,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
             self.inner
-                .prepare_transient_turn_context_for_active_turn(
+                .prepare_turn_boundary_delivery_for_active_turn(
                     session_id,
                     expected_run_id,
-                    contexts,
+                    delivery,
                 )
                 .await
         }

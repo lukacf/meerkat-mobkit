@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Bind the Meerkat family to published 0.8.43: `fork_off` and council
+  completions arrive in the owner's transcript as a persisted `BackgroundJob`
+  notice delivered in-turn (MobKit's callers are all mob members, so no
+  `DetachedOwnerHost` is needed), with the typed `no_owner_revival_host`
+  in-turn fallback; retiring a member retires everything it spawned
+  (`spawned_by`); member status never waits for a running turn; legacy
+  `model_fallback` tables load as no fallback policy with a warning (the
+  gateway's host config file included, now with fallback off and a warning
+  naming the file instead of a startup refusal); a whole-crew stop and resume
+  keeps coordinator-owned workers.
 - Bind the Meerkat family to published 0.8.42 (Claude Opus 5.5 as the default
   Anthropic model, GPT-6 Sol and Luna in the model catalog, upstream crates/
   repository layout).
@@ -23,6 +33,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Fixed
+
+- The idle sweep no longer retires a member that still owns a live member it
+  spawned. meerkat 0.8.43 retires everything a member spawned, directly or
+  transitively, along with it (the roster's `spawned_by` provenance). The
+  sweep judged a member idle by its own turn alone, so a `fork_off` child C
+  that forked D for long work and then went idle was retired after its idle
+  window, and the cascade killed the still-running D, whose outcome reached
+  nobody. A member now counts as idle only while no member it spawned is
+  still in the roster, retiring or not (the cascade reaches deeper members
+  only through such a child). No member status is consulted, so a child seen
+  retiring and then forked or respawned again under the same identity is
+  never mistaken for a gone one. Once its children are gone, its idle window
+  starts over.
+
+- The idle sweep never waits for a member's running turn. It read each
+  candidate's execution snapshot, which a session answers only between turns,
+  so one opted-in member mid-turn held the whole pass (every idle member
+  behind it waited) until that turn ended. The sweep now asks the runtime
+  machine, which answers without queueing behind the turn, and reads the
+  snapshot with a 250 ms bound: a member with a run open, or whose session
+  does not answer in time, counts as busy and is left for a later pass.
+
+- Councils a restart interrupted are recovered after the restart (requires
+  the meerkat release carrying #1190's durable-store council sweep). MobKit
+  built its agent-tool `MobMcpState` with `Arc::new`, so the state could not
+  own a restore task and meerkat's council sweep never ran: councils the
+  previous process left mid-run stayed unfinished, and a detached council's
+  convener never heard back. The state is now shared with `into_shared`;
+  restoring the mob through `mob_insert_handle` with MobKit's durable council
+  store schedules the sweep (recovery, the retry once the dead coordinator's
+  claim lease lapses, and the detached-council re-link).
 
 - A persistent `MobBootstrapSpec` (`MobBootstrapSpec::persistent`, and the
   persistent `UnifiedRuntimeBuilder` path identity-first library hosts use)

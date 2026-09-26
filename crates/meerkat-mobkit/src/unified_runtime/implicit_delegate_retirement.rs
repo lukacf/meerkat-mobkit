@@ -80,7 +80,10 @@ async fn run_implicit_delegate_retirement(
             if !is_primary_mob && !is_implicit_mob {
                 continue;
             }
-            for member in handle.list_members_observation_snapshot().await {
+            let members = handle.list_members_observation_snapshot().await;
+            #[cfg(test)]
+            tests::pause_after_member_snapshot(mob_id.as_str()).await;
+            for member in members {
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
                 seen.insert(key.clone());
@@ -124,21 +127,42 @@ async fn run_implicit_delegate_retirement(
                     idle_since.remove(&key);
                     continue;
                 };
-                let idle = match session_service.execution_snapshot(&session_id).await {
-                    Ok(Some(snapshot)) => delegate_execution_is_idle(&snapshot),
-                    Ok(None) => true,
-                    Err(error) => {
-                        tracing::debug!(
-                            mob_id = %mob_id,
-                            agent_identity = %identity,
-                            session_id = %session_id,
-                            error = %error,
-                            "implicit delegate idle sweep skipped member after snapshot error"
-                        );
-                        false
-                    }
-                };
+                let idle =
+                    match observe_member_execution(session_service.as_ref(), &session_id).await {
+                        MemberExecution::Idle => true,
+                        MemberExecution::Busy => false,
+                        MemberExecution::Unreadable(error) => {
+                            tracing::debug!(
+                                mob_id = %mob_id,
+                                agent_identity = %identity,
+                                session_id = %session_id,
+                                error = %error,
+                                "implicit delegate idle sweep skipped member after snapshot error"
+                            );
+                            false
+                        }
+                    };
                 if !idle {
+                    idle_since.remove(&key);
+                    continue;
+                }
+                // Retiring a member retires every member it spawned: meerkat
+                // cascades along roster `spawned_by`, through members still in
+                // the roster. So a member that still has a member it spawned
+                // in the roster, retiring or not, is not idle: a fork it
+                // started may still be running, and retiring it would kill
+                // that fork with its outcome reaching nobody. A direct child
+                // is enough to check, since the cascade reaches deeper members
+                // only through a child still in the roster. No member status
+                // is consulted: a stale observation (a child seen retiring,
+                // then seated again under the same identity) cannot exempt a
+                // live child.
+                if handle
+                    .list_all_members()
+                    .await
+                    .iter()
+                    .any(|entry| entry.spawned_by.as_ref() == Some(&member.agent_identity))
+                {
                     idle_since.remove(&key);
                     continue;
                 }
@@ -234,6 +258,54 @@ async fn run_implicit_delegate_retirement(
                 }
             }
         }
+    }
+}
+
+/// How long the sweep waits for one read of a member's execution. A session
+/// answers its execution snapshot only between turns, so a member mid-turn
+/// does not answer in time: it counts as busy, and the sweep moves on instead
+/// of waiting for the turn to end.
+const MEMBER_EXECUTION_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A member's execution as the idle sweep sees it.
+enum MemberExecution {
+    Idle,
+    /// Mid-turn: the runtime machine has a run open for the session, or the
+    /// session did not answer within [`MEMBER_EXECUTION_OBSERVATION_TIMEOUT`].
+    Busy,
+    Unreadable(meerkat_core::service::SessionError),
+}
+
+/// Read whether the member running `session_id` is idle, never waiting for a
+/// running turn to end. The runtime machine the member runs on answers
+/// without queueing behind the turn; a member it reports running is busy.
+/// Otherwise the session's execution snapshot decides, bounded: a session
+/// busy with a turn does not answer, which reads as busy too.
+async fn observe_member_execution(
+    session_service: &dyn meerkat_mob::MobSessionService,
+    session_id: &meerkat_core::types::SessionId,
+) -> MemberExecution {
+    use meerkat_runtime::SessionServiceRuntimeExt as _;
+
+    if let Some(runtime) = session_service.runtime_adapter()
+        && let Ok(Ok(meerkat_runtime::RuntimeState::Running)) = tokio::time::timeout(
+            MEMBER_EXECUTION_OBSERVATION_TIMEOUT,
+            runtime.runtime_state(session_id),
+        )
+        .await
+    {
+        return MemberExecution::Busy;
+    }
+    match tokio::time::timeout(
+        MEMBER_EXECUTION_OBSERVATION_TIMEOUT,
+        session_service.execution_snapshot(session_id),
+    )
+    .await
+    {
+        Ok(Ok(Some(snapshot))) if delegate_execution_is_idle(&snapshot) => MemberExecution::Idle,
+        Ok(Ok(Some(_))) | Err(_) => MemberExecution::Busy,
+        Ok(Ok(None)) => MemberExecution::Idle,
+        Ok(Err(error)) => MemberExecution::Unreadable(error),
     }
 }
 
@@ -2147,6 +2219,469 @@ comms = true
         );
         tokio::time::sleep(Duration::from_millis(3_500)).await;
         assert!(is_live(&handle, "x").await, "the new x was idle-retired");
+        runtime.shutdown().await;
+    }
+
+    /// An LLM whose turns hold until the gate opens: a member's turn stays
+    /// running until then.
+    struct GatedLlmClient {
+        gate: tokio::sync::watch::Receiver<bool>,
+    }
+
+    impl meerkat_client::LlmClient for GatedLlmClient {
+        fn project_replay_messages(
+            &self,
+            messages: &[meerkat_core::Message],
+        ) -> Result<Vec<meerkat_core::Message>, meerkat_client::LlmError> {
+            Ok(messages.to_vec())
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: &'a meerkat_client::LlmRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures::Stream<
+                        Item = Result<meerkat_client::LlmEvent, meerkat_client::LlmError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            use futures::StreamExt as _;
+
+            let [usage, done] = crate::mob_handle_runtime::test_llm_usage::usage_then_done(
+                request,
+                meerkat_core::Provider::OpenAI,
+                meerkat_core::types::StopReason::EndTurn,
+            );
+            let events = vec![
+                Ok(meerkat_client::LlmEvent::TextDelta {
+                    delta: "done".to_string(),
+                    meta: None,
+                }),
+                Ok(usage),
+                Ok(done),
+            ];
+            let mut gate = self.gate.clone();
+            Box::pin(
+                futures::stream::once(async move {
+                    let _ = gate.wait_for(|open| *open).await;
+                    futures::stream::iter(events)
+                })
+                .flatten(),
+            )
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
+        }
+
+        fn health_check<'life0, 'async_trait>(
+            &'life0 self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), meerkat_client::LlmError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A persistent runtime (forks need durable transcript authority) whose
+    /// members all run on a [`GatedLlmClient`] behind `gate`, with a 1s idle
+    /// sweep and no runtime default opt-in.
+    async fn boot_gated_persistent_runtime(
+        mob_id: &str,
+        root: &std::path::Path,
+        gate: tokio::sync::watch::Receiver<bool>,
+    ) -> UnifiedRuntime {
+        use crate::{DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig};
+
+        let state_root = root.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(state_root.join("sessions.sqlite3"))
+                .expect("session store"),
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\n\
+             [profiles.worker.tools]\ncomms = true\n"
+        ))
+        .expect("mob definition");
+        let spec = MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            state_root,
+            4,
+            session_store,
+        )
+        .expect("persistent spec")
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(GatedLlmClient { gate })),
+        });
+        UnifiedRuntime::bootstrap_with_options(
+            spec,
+            MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: mob_id.to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            },
+            Vec::new(),
+            Duration::from_secs(2),
+            RuntimeOptions {
+                implicit_delegate_idle_retire_secs: None,
+                implicit_delegate_idle_sweep_interval_ms: 1_000,
+                ..RuntimeOptions::default()
+            },
+            Arc::new(
+                crate::SqliteMetadataStore::open(root.join("metadata.sqlite3"))
+                    .expect("metadata store"),
+            ),
+        )
+        .await
+        .expect("bootstrap persistent runtime")
+    }
+
+    /// Seat `member` turn-driven: it runs no kickoff turn, so it is idle from
+    /// the start.
+    async fn seat_turn_driven(handle: &meerkat_mob::MobHandle, member: &str) {
+        let mut spec = meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("worker"),
+            AgentIdentity::from(member),
+        );
+        spec.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+        handle
+            .ensure_member(spec)
+            .await
+            .expect("seat turn-driven member");
+    }
+
+    /// meerkat #1190 cascades a retire to everything the member spawned. A
+    /// member C that is idle while its own fork D still runs must not be
+    /// idle-retired: that would kill D with its outcome reaching nobody. Once
+    /// D finishes and is idle-retired itself, C is idle-retired.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_member_whose_fork_still_runs_is_not_idle_retired() {
+        const MOB_ID: &str = "idle-forker";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (open_gate, gate) = tokio::sync::watch::channel(false);
+        let runtime = boot_gated_persistent_runtime(MOB_ID, temp.path(), gate).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let c = AgentIdentity::from("c");
+        let d = AgentIdentity::from("d");
+        // Turn-driven, so C runs no kickoff turn (the gate would hold it).
+        seat_turn_driven(&handle, "c").await;
+
+        // C forks D from its own turn; D's turn holds until the gate opens.
+        let mut fork =
+            meerkat_mob::SpawnMemberSpec::new(meerkat_mob::ProfileName::from("worker"), d.clone());
+        fork.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+        fork.initial_message = Some(meerkat_core::ContentInput::Text("long work".to_string()));
+        let (_forked, run) = handle
+            .fork_member_then_run_detached(
+                &c,
+                fork,
+                None,
+                "fork_result",
+                256,
+                meerkat_core::DurableForkSourceAdmission::CallerTurn,
+                None,
+                None,
+            )
+            .await
+            .expect("c forks d");
+        assert_eq!(
+            handle
+                .get_member(&d)
+                .await
+                .expect("roster read")
+                .expect("d is seated")
+                .spawned_by,
+            Some(c.clone())
+        );
+        // Both opted in, as fork children are: D's opt-in must not retire it
+        // while it runs, and C's must not while it owns D.
+        overrides
+            .set(MOB_ID, "c", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+        overrides
+            .set(MOB_ID, "d", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+
+        // Several sweep passes past both idle windows while D runs.
+        tokio::time::sleep(Duration::from_millis(3_500)).await;
+        assert!(is_live(&handle, "d").await, "d was retired while running");
+        assert!(
+            is_live(&handle, "c").await,
+            "c was idle-retired while its fork still runs"
+        );
+
+        // D finishes and is idle-retired first; then C, which no longer owns
+        // a live member, is idle-retired too.
+        open_gate.send(true).expect("open the gate");
+        tokio::time::timeout(Duration::from_secs(10), run.outcome())
+            .await
+            .expect("d finishes")
+            .expect("d reached an outcome");
+        let order = tokio::time::timeout(Duration::from_secs(15), async {
+            let mut d_gone_while_c_live = false;
+            loop {
+                let (c_live, d_live) = (is_live(&handle, "c").await, is_live(&handle, "d").await);
+                d_gone_while_c_live |= !d_live && c_live;
+                if !c_live && !d_live {
+                    return d_gone_while_c_live;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("c and d are idle-retired once d finishes");
+        assert!(
+            order,
+            "d must go first: retiring c would have cascaded to it"
+        );
+        runtime.shutdown().await;
+    }
+
+    /// Checks steer, they do not queue: a member mid-turn does not hold up
+    /// the sweep. The busy member comes first in the roster and its turn
+    /// never ends here; the idle member behind it is still idle-retired on
+    /// time, and the busy one is left alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_member_mid_turn_does_not_hold_up_the_sweep() {
+        const MOB_ID: &str = "sweep-busy-member";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (open_gate, gate) = tokio::sync::watch::channel(false);
+        let runtime = boot_gated_persistent_runtime(MOB_ID, temp.path(), gate).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        // Autonomous: its kickoff turn starts at once and holds on the gate.
+        seat(&handle, "a-busy").await;
+        seat_turn_driven(&handle, "b-idle").await;
+        overrides
+            .set(MOB_ID, "a-busy", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+        overrides
+            .set(MOB_ID, "b-idle", DelegateIdleRetireOverride::Seconds(1))
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while is_live(&handle, "b-idle").await {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the idle member waited behind the busy member's turn");
+        assert!(
+            is_live(&handle, "a-busy").await,
+            "a member mid-turn was idle-retired"
+        );
+        open_gate.send(true).expect("open the gate");
+        runtime.shutdown().await;
+    }
+
+    /// Holds sweep passes over one mob right after their member snapshot.
+    struct SweepPause {
+        reached: tokio::sync::mpsc::UnboundedSender<()>,
+        release: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>>,
+    }
+
+    static SWEEP_PAUSES: std::sync::Mutex<BTreeMap<String, SweepPause>> =
+        std::sync::Mutex::new(BTreeMap::new());
+
+    /// Called by the sweep once it has taken `mob_id`'s member snapshot: when
+    /// a test paused that mob, report the pass and wait for its release.
+    pub(super) async fn pause_after_member_snapshot(mob_id: &str) {
+        let pause = SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(mob_id)
+            .map(|pause| (pause.reached.clone(), Arc::clone(&pause.release)));
+        let Some((reached, release)) = pause else {
+            return;
+        };
+        if reached.send(()).is_ok() {
+            let _ = release.lock().await.recv().await;
+        }
+    }
+
+    /// Hold every sweep pass over `mob_id` right after its member snapshot:
+    /// each pass reports on the returned receiver and waits for one release
+    /// on the returned sender. [`unpause_sweep`] plus dropping the sender
+    /// lets passes run freely again.
+    fn pause_sweep(
+        mob_id: &str,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedSender<()>,
+    ) {
+        let (reached, reached_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release) = tokio::sync::mpsc::unbounded_channel();
+        SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                mob_id.to_string(),
+                SweepPause {
+                    reached,
+                    release: Arc::new(tokio::sync::Mutex::new(release)),
+                },
+            );
+        (reached_rx, release_tx)
+    }
+
+    fn unpause_sweep(mob_id: &str) {
+        SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(mob_id);
+    }
+
+    /// `source` forks turn-driven `child` from its own turn; the child's
+    /// turn holds on the runtime's gate.
+    async fn fork_held_child(
+        handle: &meerkat_mob::MobHandle,
+        source: &AgentIdentity,
+        child: &AgentIdentity,
+    ) -> meerkat_mob::ForkChildRun {
+        let mut fork = meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("worker"),
+            child.clone(),
+        );
+        fork.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+        fork.initial_message = Some(meerkat_core::ContentInput::Text("long work".to_string()));
+        let (_forked, run) = handle
+            .fork_member_then_run_detached(
+                source,
+                fork,
+                None,
+                "fork_result",
+                256,
+                meerkat_core::DurableForkSourceAdmission::CallerTurn,
+                None,
+                None,
+            )
+            .await
+            .expect("fork the child");
+        run
+    }
+
+    /// Review of #448: the sweep once exempted a child it saw retiring in the
+    /// pass's member snapshot, by identity, while it checked the forker
+    /// against a fresh roster. An admitted respawn of the child shows its
+    /// predecessor as retiring to that snapshot, then seats the successor
+    /// under the same identity and `spawned_by` before the forker is
+    /// checked: the live successor was exempted, and retiring the forker
+    /// cascaded into it. Here the pass is held right after its snapshot
+    /// while the respawn completes: the forker and the successor both stay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_child_respawned_mid_pass_keeps_its_forker() {
+        const MOB_ID: &str = "respawned-mid-pass";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (open_gate, gate) = tokio::sync::watch::channel(false);
+        let runtime = boot_gated_persistent_runtime(MOB_ID, temp.path(), gate).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let c = AgentIdentity::from("c");
+        let d = AgentIdentity::from("d");
+        seat_turn_driven(&handle, "c").await;
+
+        // C forks D, whose turn holds; a respawn of D is admitted and waits
+        // out meerkat's cooperative grace (about 2s) with the predecessor
+        // retiring.
+        let _run = fork_held_child(&handle, &c, &d).await;
+        let predecessor = handle
+            .get_member(&d)
+            .await
+            .expect("roster read")
+            .expect("d is seated")
+            .agent_runtime_id;
+        let (mut reached, release) = pause_sweep(MOB_ID);
+        let respawn = tokio::spawn({
+            let handle = handle.clone();
+            let d = d.clone();
+            async move { handle.respawn(d, None).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !handle
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|member| {
+                    member.agent_identity == d && member.status == MobMemberStatus::Retiring
+                })
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("d's predecessor is retiring");
+
+        // Passes already held took their snapshot before D was seen retiring:
+        // let them go (they found D live and left C alone). The next pass
+        // takes its snapshot with the predecessor retiring. While it is held,
+        // the respawn seats the successor, and C falls due at once.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        while reached.try_recv().is_ok() {
+            release.send(()).expect("release an earlier pass");
+        }
+        reached
+            .recv()
+            .await
+            .expect("a pass after d was seen retiring");
+        assert!(
+            !respawn.is_finished(),
+            "the respawn must still be retiring d when the held pass takes its snapshot"
+        );
+        respawn
+            .await
+            .expect("respawn task")
+            .expect("the respawn seats d's successor");
+        let successor = handle
+            .get_member(&d)
+            .await
+            .expect("roster read")
+            .expect("d's successor is seated");
+        assert_ne!(successor.agent_runtime_id, predecessor);
+        assert_eq!(successor.spawned_by, Some(c.clone()));
+        overrides
+            .set(MOB_ID, "c", DelegateIdleRetireOverride::Seconds(0))
+            .await;
+        unpause_sweep(MOB_ID);
+        drop(release);
+
+        // The held pass resumes, then later passes run.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        assert!(
+            is_live(&handle, "d").await,
+            "d's successor was killed by retiring c"
+        );
+        assert!(
+            is_live(&handle, "c").await,
+            "c was idle-retired while it owns d's successor"
+        );
+        open_gate.send(true).expect("open the gate");
         runtime.shutdown().await;
     }
 }
