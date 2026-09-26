@@ -2623,6 +2623,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_background_job_completion_preserves_owner_until_matching_run_terminal() {
+        use meerkat_core::{AgentEvent, event::BackgroundJobTerminalStatus};
+
+        let store = ConsoleEventStore::new();
+        let owner = typed_lineage(171, 271);
+        let session_id = meerkat_core::types::SessionId::new();
+        let interaction = owner["interaction_id"].as_str().expect("owner interaction");
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                interaction,
+                "console",
+                json!("review"),
+            )
+            .await
+            .expect("reserve owner interaction");
+        for (id, kind, payload) in [
+            (
+                "owner-start",
+                "run_started",
+                json!({
+                    "session_id": session_id, "identity": owner,
+                    "input": {"kind": "content", "content": "review"},
+                }),
+            ),
+            (
+                "owner-delta",
+                "text_delta",
+                json!({"delta": "Review in progress"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
+                .await;
+        }
+        let phase = store.response_phase_for_identity("worker").await;
+        assert_eq!(phase.as_deref(), Some("generating"));
+        let active = store.state.read().await.active_run_by_identity["worker"].clone();
+        let project_typed = |id: &str, event: &AgentEvent| {
+            agent_event_with_payload(
+                id,
+                "rt:worker:1",
+                meerkat_core::event::agent_event_type(event),
+                crate::mob_handle_runtime::console_agent_event_payload(event),
+            )
+        };
+        let completion = AgentEvent::background_job_completed(
+            "review-job-7",
+            "background review",
+            BackgroundJobTerminalStatus::Completed,
+            "Exact result A\u{030a}, \u{00e5} and \u{1f680}.\nSecond paragraph.",
+        );
+        let job_event = project_typed("job-completed", &completion);
+        store.project_unified_event(&job_event).await;
+        assert_eq!(store.response_phase_for_identity("worker").await, phase);
+        {
+            let state = store.state.read().await;
+            assert_eq!(state.active_run_by_identity.get("worker"), Some(&active));
+            assert_eq!(state.pending_by_identity["worker"].len(), 1);
+            assert_eq!(
+                state.pending_by_identity["worker"][0].interaction_id,
+                interaction
+            );
+        }
+        let terminals = |events: &[ConsoleIdentityEventEnvelope]| {
+            events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.event_type.as_str(),
+                        "interaction_complete" | "interaction_failed"
+                    )
+                })
+                .count()
+        };
+        let replay = store.replay_all(None).await.expect("job replay");
+        assert_eq!(
+            terminals(&replay),
+            0,
+            "a job outcome must not mint any owner terminal"
+        );
+        let job = replay
+            .iter()
+            .find(|event| event.event_id == "job-completed")
+            .expect("job outcome stays available");
+        assert_eq!(job.identity, "worker");
+        assert_eq!(job.event_type, "background_job_completed");
+        assert_eq!(job.data["terminal_status"], "completed");
+        assert_eq!(job.data["source_event_type"], "background_job_completed");
+        for (key, value) in crate::mob_handle_runtime::console_agent_event_payload(&completion)
+            .as_object()
+            .expect("typed job payload")
+        {
+            assert_eq!(
+                job.data.get(key),
+                Some(value),
+                "job field {key} stays exact"
+            );
+        }
+
+        let terminal = AgentEvent::RunCompleted {
+            session_id,
+            identity: active.clone(),
+            result: "Owner review finished".into(),
+            structured_output: None,
+            extraction_required: false,
+            usage: Default::default(),
+            terminal_cause_kind: None,
+        };
+        store
+            .project_unified_event(&project_typed("owner-completed", &terminal))
+            .await;
+        assert_eq!(store.response_phase_for_identity("worker").await, None);
+        {
+            let state = store.state.read().await;
+            assert!(!state.active_run_by_identity.contains_key("worker"));
+            assert!(
+                !state
+                    .pending_by_identity
+                    .get("worker")
+                    .is_some_and(|queue| queue
+                        .iter()
+                        .any(|pending| pending.interaction_id == interaction))
+            );
+        }
+        let replay = store.replay_all(None).await.expect("owner terminal replay");
+        assert_eq!(terminals(&replay), 1);
+        let finished = replay
+            .iter()
+            .find(|event| event.event_id == "owner-completed")
+            .expect("actual owner terminal");
+        assert_eq!(finished.event_type, "interaction_complete");
+        assert_eq!(finished.interaction_id.as_deref(), Some(interaction));
+        assert_eq!(finished.data["source_event_type"], "run_completed");
+        assert_eq!(finished.data["identity"], owner);
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|event| event.event_id == "job-completed")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn typed_peer_start_preserves_canonical_lineage_without_consuming_equal_console_input() {
         let store = ConsoleEventStore::new();
         let operator = uuid::Uuid::from_u128(101).to_string();

@@ -2427,7 +2427,14 @@ fn install_agent_mob_tools(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         })));
-    let state = Arc::new(state);
+    // `into_shared`, not `Arc::new`: the shared state owns its restore
+    // sweeps. With a durable council store (supplied above for persistent
+    // mobs), restoring a mob through `mob_insert_handle` schedules meerkat's
+    // council sweep: recovery of councils a restart interrupted, the retry
+    // once the dead coordinator's claim lease lapses, and the re-link that
+    // tells a detached council's convener the outcome. A state shared with
+    // `Arc::new` cannot own that task, so the sweep never ran for MobKit.
+    let state = state.into_shared();
     let implicit_delegate_retirement_overrides =
         ImplicitDelegateRetirementOverrides::with_seat_resolver(IdleRetireSeatResolver::new(
             &state,

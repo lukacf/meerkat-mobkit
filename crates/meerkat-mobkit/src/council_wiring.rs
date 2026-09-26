@@ -124,3 +124,133 @@ pub fn council_db_for_store_path(store_path: &Path) -> PathBuf {
     crate::MobKitStorageLayout::standalone_from_store_path(store_path, store_path.to_path_buf())
         .council_db()
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use meerkat_mob::machines::temporary_council_lifecycle::{
+        TemporaryCouncilLifecycleInput, TemporaryCouncilLifecycleMachineAuthority,
+        TemporaryCouncilLifecycleMachineMutator,
+    };
+    use meerkat_mob::store::{
+        SqliteTemporaryCouncilStore, TemporaryCouncilRecord, TemporaryCouncilStore,
+    };
+    use meerkat_mob::temporary_council::{
+        TemporaryCouncilDurability, TemporaryCouncilExitReason, TemporaryCouncilId,
+    };
+
+    /// The shape a crashed coordinator leaves: a council opened and claimed by
+    /// the previous process, no result, and a claim lease that has already
+    /// lapsed (so the first recovery pass may take it over).
+    async fn write_interrupted_council(
+        store: &dyn TemporaryCouncilStore,
+        council_id: &TemporaryCouncilId,
+    ) {
+        let fingerprint = format!("tcf1:sha256:{council_id}");
+        let mut authority = TemporaryCouncilLifecycleMachineAuthority::new();
+        TemporaryCouncilLifecycleMachineMutator::apply(
+            &mut authority,
+            TemporaryCouncilLifecycleInput::Open {
+                request_fingerprint: fingerprint.clone(),
+            },
+        )
+        .expect("open the council record");
+        TemporaryCouncilLifecycleMachineMutator::apply(
+            &mut authority,
+            TemporaryCouncilLifecycleInput::Claim {
+                claim_id: "coordinator-of-the-dead-process".to_string(),
+                lease_expired: false,
+            },
+        )
+        .expect("the previous process's coordinator claims it");
+        let created = chrono::Utc::now() - chrono::Duration::seconds(600);
+        store
+            .insert_new(&TemporaryCouncilRecord {
+                council_id: council_id.clone(),
+                request_fingerprint: fingerprint,
+                temporary_mob_id: council_id.temporary_mob_id(),
+                deadline: created + chrono::Duration::seconds(1200),
+                machine_state: authority.state().clone(),
+                durability: TemporaryCouncilDurability::Durable,
+                claim_lease_expires_at: created + chrono::Duration::seconds(120),
+                participants: Vec::new(),
+                exchanges: Vec::new(),
+                result: None,
+                cleanup: None,
+                detached_job: None,
+                revision: 0,
+                created_at: created,
+                updated_at: created,
+            })
+            .await
+            .expect("write the interrupted council record");
+    }
+
+    /// MobKit's persistent composition supplies a durable council store and
+    /// restores its mob through `mob_insert_handle`. With the state shared via
+    /// `into_shared`, that restore runs meerkat's council sweep: a council the
+    /// previous process left mid-run is sealed as coordinator-interrupted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persistent_restore_recovers_councils_a_restart_interrupted() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store_path = temp.path().join("state");
+        std::fs::create_dir_all(&store_path).expect("state dir");
+        let council_db = super::council_db_for_store_path(&store_path);
+        let council_id = TemporaryCouncilId::new("interrupted-by-restart").expect("council id");
+        {
+            let previous = SqliteTemporaryCouncilStore::open(&council_db).expect("council store");
+            write_interrupted_council(&previous, &council_id).await;
+        }
+
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"council-restore\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\n\
+             [profiles.worker.tools]\ncomms = true\n",
+        )
+        .expect("mob definition");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(temp.path().join("sessions.db"))
+                .expect("session store"),
+        );
+        let spec = crate::MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            session_store,
+        )
+        .expect("persistent spec")
+        .with_options(crate::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = crate::mob_handle_runtime::MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap the restored runtime");
+
+        let probe = SqliteTemporaryCouncilStore::open(&council_db).expect("probe council store");
+        let record = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let record = probe
+                    .load(&council_id)
+                    .await
+                    .expect("load council")
+                    .expect("council record");
+                if record.result.is_some() {
+                    return record;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the restored runtime never recovered the interrupted council");
+        assert_eq!(
+            record.result.expect("sealed result").exit_reason,
+            TemporaryCouncilExitReason::CoordinatorInterrupted
+        );
+        let _ = runtime.handle().shutdown().await;
+    }
+}

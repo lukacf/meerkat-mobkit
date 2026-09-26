@@ -28,14 +28,21 @@ function expectedNavigationCancellation(request) {
   } catch { return false; }
 }
 
-async function durableSteer(host) {
+async function durableSteer(host, persistedBackgroundJob = false) {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator's prebuilt durable-steer fixture; never invoke Cargo from this browser case.");
   const fixture = await startFixture();
   const browser = await chromium.launch({ headless: process.env.MOBKIT_HEADED !== "1" });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   page.setDefaultTimeout(20_000);
-  const result = { host, notice, finalSource, draft, errors: [], expectedCancellations: [], views: {} };
   const barrierId = `durable-${host}-${randomUUID().slice(0, 8)}`;
+  const backgroundJob = persistedBackgroundJob ? { job_id: barrierId, display_name: "release review" } : null;
+  const expectedBody = backgroundJob
+    ? `Background ${backgroundJob.display_name} job ${backgroundJob.job_id} finished (completed):` : notice;
+  const expectedBlocks = backgroundJob
+    ? [{ type: "background_job", ...backgroundJob, status: "completed", detail: notice, persisted: true }] : [];
+  const modelProjection = backgroundJob ? `${expectedBody}\n${notice}` : notice;
+  const evidenceName = `${host}-${backgroundJob ? "persisted-background-job" : "durable-steer"}`;
+  const result = { host, backgroundJob, notice, finalSource, draft, errors: [], expectedCancellations: [], views: {} };
   const instruction = `Review this release while the background check runs. Exact turn marker ${barrierId}.`;
   let allowance = "navigation";
   let armed = false;
@@ -83,7 +90,24 @@ async function durableSteer(host) {
   }
   async function capture(label) {
     await fs.mkdir(evidenceDir, { recursive: true });
-    await page.screenshot({ path: path.join(evidenceDir, `${host}-durable-steer-${label}.png`), fullPage: true });
+    await page.screenshot({ path: path.join(evidenceDir, `${evidenceName}-${label}.png`), fullPage: true });
+  }
+  const matchesNotice = message => message.role === "system_notice" && (backgroundJob
+    ? (message.blocks || []).some(block => block.type === "background_job" && block.job_id === backgroundJob.job_id)
+    : message.body === notice);
+  function assertTypedNotice(message, label) {
+    assert.equal(message.kind, backgroundJob ? "background_job" : "generic", `${label}: exact typed notice kind`);
+    assert.equal(message.body, expectedBody, `${label}: exact notice body`);
+    assert.deepEqual(message.blocks || [], expectedBlocks, `${label}: exact persisted job block and result bytes`);
+    assert.deepEqual(message.runtime_origin, {
+      session_id: result.runStart.session_id, run_id: result.runStart.run_id,
+      input_id: result.accepted.input_id, append_ordinal: 0,
+    }, `${label}: the real application retains its exact session, run, input and ordinal`);
+    assert(Number.isFinite(Date.parse(message.created_at)), `${label}: owner timestamp is present`);
+    if (result.noticeRecord) {
+      assert.deepEqual(message, { role: "system_notice", ...result.noticeRecord },
+        `${label}: every typed notice field equals the actual boundary event`);
+    }
   }
   const inputStillRunning = current => current.current_run_id === result.runStart.run_id
     && current.terminal_outcome === null && current.completion === null;
@@ -125,6 +149,7 @@ async function durableSteer(host) {
         assert(!view.text.includes("boundary_append_applied") && !view.text.includes('"input_id"') && !view.text.includes('"append_count"'),
           "the transcript renders the instruction without raw transport envelopes");
         assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
+        assert.equal(view.rows[0].id, result.noticeRowId, "the rendered row belongs to the exact runtime notice source");
         assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
         assert.doesNotMatch(view.rows[0].text, /Worked for/);
         for (const peer of result.expectedPeers) {
@@ -225,19 +250,34 @@ async function durableSteer(host) {
     assert(result.readingBefore);
     await capture("waiting-with-draft");
 
-    result.accepted = await fixture.control("durable-steer", { identity, session_id: result.runStart.session_id, content: notice });
+    result.accepted = await fixture.control("durable-steer", {
+      identity, session_id: result.runStart.session_id, content: notice,
+      ...(backgroundJob ? { background_job: backgroundJob } : {}),
+    });
     assert.equal(result.accepted.accepted, true);
     assert.equal(result.accepted.session_id, result.runStart.session_id);
     assert(result.accepted.input_id);
     result.admitted = await state();
     assert.equal(result.admitted.current_run_id, result.runStart.run_id, "durable admission preserves the currently running turn");
     assert.equal(result.admitted.terminal_outcome, null, "admission alone does not consume the durable input");
+    assert.equal(result.admitted.completion, null, "a completed background job does not complete the receiving run");
     result.released = await fixture.control("model-barrier", { action: "release", id: barrierId });
     result.applied = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "boundary_append_applied" && frame.payload?.input_id === result.accepted.input_id), "the actual runtime applies the exact durable input at its next boundary");
     assert.equal(result.applied.run_id, result.runStart.run_id);
     assert.equal(result.applied.payload.run_id, result.runStart.run_id);
     assert.equal(result.applied.payload.append_count, 1);
-    assert.equal(textContent(result.applied.payload.content), notice);
+    assert.equal(textContent(result.applied.payload.content), modelProjection, "the model projection includes the outcome exactly once");
+    assert.equal(result.applied.session_id, result.runStart.session_id);
+    assert.equal(result.applied.runtime_key, result.runStart.runtime_key);
+    assert.equal(result.applied.identity, identity);
+    assert.equal(result.applied.source_event_id, result.applied.id, "the boundary event retains its canonical source identity");
+    assert.equal(result.applied.payload.notices.length, 1, "one actual typed notice was applied");
+    assertTypedNotice(result.applied.payload.notices[0], "boundary");
+    result.noticeRecord = result.applied.payload.notices[0];
+    result.noticeRowId = `runtime-notice:${JSON.stringify([
+      result.applied.runtime_key, result.applied.session_id, result.noticeRecord.runtime_origin.session_id,
+      result.noticeRecord.runtime_origin.input_id, result.noticeRecord.runtime_origin.append_ordinal,
+    ])}`;
     result.duringRun = await state();
     assert.equal(result.duringRun.current_run_id, result.runStart.run_id, "the append is visible before the same run completes");
     const duringView = await inspectNotice("during-run", true);
@@ -253,14 +293,19 @@ async function durableSteer(host) {
     }, "the durable input and the original run converge without a follow-up", 30_000);
     assert.equal(result.completed.run_id, result.runStart.run_id, "the durable input is consumed by the original run");
     assert.equal(result.completed.completion.completion_type, "completed", "the retained input shares its run's successful result receipt");
-    result.finalFrames = await frames();
+    const isOwnerCompletion = frame => liveEvent(frame)
+      && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
+      && ["runtime_key", "identity", "session_id", "run_id", "interaction_id"].every(key => frame[key] === result.runStart[key]);
+    // The owner's durable receipt can precede asynchronous timeline publication.
+    result.finalFrames = await eventually(async () => {
+      const current = await frames();
+      return current.some(isOwnerCompletion) ? current : null;
+    }, "the exact original-run completion reaches the console timeline");
     assert.equal(result.finalFrames.filter(frame => liveEvent(frame) && frame.kind === "boundary_append_applied" && frame.payload?.input_id === result.accepted.input_id).length, 1);
+    const completions = result.finalFrames.filter(isOwnerCompletion);
+    assert.equal(completions.length, 1, "the original run has one completion with exact runtime, agent, session, run and interaction ownership");
+    result.runCompletion = completions[0];
     if (host === "stock") {
-      const completions = result.finalFrames.filter(frame => liveEvent(frame)
-        && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
-        && ["runtime_key", "identity", "session_id", "run_id", "interaction_id"].every(key => frame[key] === result.runStart[key]));
-      assert.equal(completions.length, 1, "the original run has one completion with exact runtime, agent, session, run and interaction ownership");
-      result.runCompletion = completions[0];
       assert(Number.isSafeInteger(result.runStart.timestamp_ms) && Number.isSafeInteger(result.runCompletion.timestamp_ms));
       const elapsedMs = result.runCompletion.timestamp_ms - result.runStart.timestamp_ms;
       assert(elapsedMs >= 1000 && elapsedMs < 60_000, "this paced fixture provides a measurable run duration within one minute");
@@ -268,15 +313,20 @@ async function durableSteer(host) {
     }
     const turnRequests = (await requests()).filter(request => request.messages.some(message => message.role === "user" && textContent(message.content) === instruction));
     assert.equal(turnRequests.length, 2, "only the blocked request and one post-tool request execute; no follow-up turn");
-    assert.equal(turnRequests[0].messages.filter(message => message.role === "system_notice" && message.body === notice).length, 0);
-    assert.equal(turnRequests[1].messages.filter(message => message.role === "system_notice" && message.body === notice).length, 1, "the next actual model request carries the durable notice once");
+    assert.equal(turnRequests[0].messages.filter(matchesNotice).length, 0);
+    const modelNotices = turnRequests[1].messages.filter(matchesNotice);
+    assert.equal(modelNotices.length, 1, "the next actual model request carries the durable notice once");
+    assertTypedNotice(modelNotices[0], "next model request");
+    assert.equal(JSON.stringify(turnRequests[1].messages).split(JSON.stringify(notice).slice(1, -1)).length - 1, 1,
+      "the actual model request contains the exact result bytes once across all message roles");
     assert(turnRequests[1].messages.some(message => message.role === "tool_results" && message.results.some(tool => tool.tool_use_id === `fixture-${barrierId}-peer-ready` && !tool.is_error)), "a real WorkGraph tool result establishes the cooperative boundary");
     result.turnRequests = turnRequests;
     result.history = await history();
     assert.equal(result.history.has_more, false);
-    const positions = result.history.messages.flatMap((message, index) => message.role === "system_notice" && message.body === notice ? [index] : []);
+    const positions = result.history.messages.flatMap((message, index) => matchesNotice(message) ? [index] : []);
     assert.equal(positions.length, 1, "the committed session has exactly one durable instruction");
     const at = positions[0];
+    assertTypedNotice(result.history.messages[at], "committed history");
     assert.equal(result.history.messages[at - 1].role, "tool_results");
     const answer = result.history.messages[at + 1];
     assert.equal(answer.role, "block_assistant");
@@ -329,11 +379,14 @@ async function durableSteer(host) {
     result.observations = fixture.observations;
     result.logs = fixture.logs();
     await fs.mkdir(evidenceDir, { recursive: true });
-    await fs.writeFile(path.join(evidenceDir, `${host}-durable-steer.json`), JSON.stringify(result, null, 2));
+    await fs.writeFile(path.join(evidenceDir, `${evidenceName}.json`), JSON.stringify(result, null, 2));
     await browser.close(); await fixture.close();
   }
 }
 
-const scenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-durable-steer`, family: "real-runtime", backend: "real", run: () => durableSteer(host) }));
+const scenarios = ["stock", "shared"].flatMap(host => [
+  { id: `real-${host}-durable-steer`, family: "real-runtime", backend: "real", run: () => durableSteer(host) },
+  { id: `real-${host}-persisted-background-job`, family: "real-runtime", backend: "real", run: () => durableSteer(host, true) },
+]);
 module.exports = { scenarios };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

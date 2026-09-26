@@ -14,7 +14,7 @@ use meerkat_core::lifecycle::core_executor::{
     CoreExecutorInterruptHandle, CoreExecutorPostStopCleanupHandle, CoreExecutorPublicationHandle,
     CoreExecutorTurnFinalizationBoundaryHandle,
 };
-use meerkat_core::lifecycle::run_primitive::{RunApplyBoundary, RunPrimitive, TurnRequestContext};
+use meerkat_core::lifecycle::run_primitive::{RunApplyBoundary, RunPrimitive};
 use meerkat_core::service::{
     CreateSessionRequest, InitialTurnPolicy, SessionBuildOptions, SessionError, SessionService,
     StartTurnRequest, StartTurnRuntimeSemantics,
@@ -180,16 +180,16 @@ impl CoreExecutorBoundaryHandle for TargetCoreBoundaryHandle {
             .map_err(|error| CoreExecutorError::control_failed_runtime(error.to_string()))
     }
 
-    async fn prepare_transient_turn_context_at_boundary(
+    async fn prepare_turn_boundary_delivery(
         &self,
         expected_run_id: &RunId,
-        contexts: Vec<TurnRequestContext>,
+        delivery: meerkat_core::TurnBoundaryDelivery,
     ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
         self.service
             .prepare_live_transient_turn_context_boundary(
                 &self.session_id,
                 expected_run_id,
-                contexts,
+                delivery,
             )
             .await
     }

@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   create synthetic run-completion events. Fold only routine tool activity with
   matched successful outcomes, and keep failures and unknown outcomes visible.
 
+
+- Bind the Meerkat family to published 0.8.43: `fork_off` and council
+  completions arrive in the owner's transcript as a persisted `BackgroundJob`
+  notice delivered in-turn (MobKit's callers are all mob members, so no
+  `DetachedOwnerHost` is needed), with the typed `no_owner_revival_host`
+  in-turn fallback; retiring a member retires everything it spawned
+  (`spawned_by`); member status never waits for a running turn; legacy
+  `model_fallback` tables load as no fallback policy with a warning (the
+  gateway's host config file included, now with fallback off and a warning
+  naming the file instead of a startup refusal); a whole-crew stop and resume
+  keeps coordinator-owned workers.
 - Bind the Meerkat family to published 0.8.42 (Claude Opus 5.5 as the default
   Anthropic model, GPT-6 Sol and Luna in the model catalog, upstream crates/
   repository layout).
@@ -69,6 +80,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   its exact source and the subsequent reply's assistant header.
 - Let Python text-dispatch helpers carry caller-supplied idempotency keys with
   correlation IDs, including the completion-waiting helper.
+
+- A detached job's completion entry that shares its notice with a refresh
+  block (a persisted `BackgroundJob` block and a non-persisted one, in either
+  order) now counts as a completion entry. `is_detached_completion_entry`
+  required every `BackgroundJob` block of the notice to be persisted, so the
+  hygienist could collapse such a row and `mobkit/bound_member_transcript` did
+  not count it in `dropped_completion_entries`. It now uses meerkat 0.8.43's
+  typed `SystemNoticeMessage::persisted_background_job_id`: a `BackgroundJob`
+  notice with at least one persisted background-job block. Refresh-only
+  notices and text lookalikes are still not completion entries, and a row
+  carrying several completions still counts once.
+
+- The idle sweep no longer retires a member that still owns a live member it
+  spawned. meerkat 0.8.43 retires everything a member spawned, directly or
+  transitively, along with it (the roster's `spawned_by` provenance). The
+  sweep judged a member idle by its own turn alone, so a `fork_off` child C
+  that forked D for long work and then went idle was retired after its idle
+  window, and the cascade killed the still-running D, whose outcome reached
+  nobody. A member now counts as idle only while no member it spawned is
+  still in the roster, retiring or not (the cascade reaches deeper members
+  only through such a child). No member status is consulted, so a child seen
+  retiring and then forked or respawned again under the same identity is
+  never mistaken for a gone one. Once its children are gone, its idle window
+  starts over.
+
+- The idle sweep never waits for a member's running turn. It read each
+  candidate's execution snapshot, which a session answers only between turns,
+  so one opted-in member mid-turn held the whole pass (every idle member
+  behind it waited) until that turn ended. The sweep now asks the runtime
+  machine, which answers without queueing behind the turn, and reads the
+  snapshot with a 250 ms bound: a member with a run open, or whose session
+  does not answer in time, counts as busy and is left for a later pass.
+
+- Councils a restart interrupted are recovered after the restart (requires
+  the meerkat release carrying #1190's durable-store council sweep). MobKit
+  built its agent-tool `MobMcpState` with `Arc::new`, so the state could not
+  own a restore task and meerkat's council sweep never ran: councils the
+  previous process left mid-run stayed unfinished, and a detached council's
+  convener never heard back. The state is now shared with `into_shared`;
+  restoring the mob through `mob_insert_handle` with MobKit's durable council
+  store schedules the sweep (recovery, the retry once the dead coordinator's
+  claim lease lapses, and the detached-council re-link).
 
 - A persistent `MobBootstrapSpec` (`MobBootstrapSpec::persistent`, and the
   persistent `UnifiedRuntimeBuilder` path identity-first library hosts use)
@@ -127,6 +180,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   implementations; `MemberIdleRetireOverrideRecord` and
   `DelegateIdleRetireOverride` are now public.
 
+- Detached `fork_off`/council completion entries are protected from MobKit's
+  transcript curation (requires the meerkat release carrying #1190). Meerkat
+  records a detached job's outcome in the owner's transcript as a durable
+  `BackgroundJob` system notice whose `SystemNoticeBlock::BackgroundJob`
+  blocks are `persisted`; `meerkat_mobkit::detached_completion::
+  is_detached_completion_entry` recognizes exactly that typed shape
+  (non-persisted `BackgroundJob` notices, such as shell job progress, stay
+  ordinary refresh projections). The hygienist's `collapse` op could fold
+  such a notice into a one-line summary like any other system notice; the
+  entry now classifies as the new `HygieneRole::BackgroundJobResult`, which
+  the validator treats as untouchable like the system prompt (a new variant
+  on the public `HygieneRole` enum). `mobkit/bound_member_transcript` keeps
+  its keep-last-N contract and still drops everything before the cut, but
+  its response now reports `dropped_completion_entries` so losing completion
+  entries is never silent.
+
 - `reset_all` startup readiness (`startup_history`) now waits for the startup
   turn to really end. It counted any `turn_completed` frame as the end, but
   upcoming Meerkat emits `turn_completed` with `stop_reason: tool_use` after
@@ -141,6 +210,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `isTerminalTurnCompletedData`. The incident command center example's
   TypeScript smoke applies the same rule to its `query_timeline` replay
   terminal check.
+
+- Forks of transcripts holding an image written before MobKit 0.8.41 no longer
+  fail with "blob identity mismatch". Those references carry MobKit's raw-bytes
+  address, `sha256(media_type || 0x00 || decoded_bytes)`, while Meerkat
+  recomputes `content_blob_id(canonical_media_type, base64)` on read-back.
+  `Base64BlobStoreAdapter` implements Meerkat's `BlobStore::attest_address`: it
+  recomputes MobKit's raw-bytes recipe over the payload it returned and attests
+  only an exact match, so Meerkat's durable-fork preflight re-homes the child's
+  reference to the Meerkat content address and realtime history hydration
+  accepts it. Meerkat asks only when the stored media type matches the image
+  block's and the bytes are a valid image of that type, so a non-image
+  MobKit object cannot pass as an image. The source transcript and its stored
+  object are unchanged; any other reference stays unattested and is refused as
+  before. Requires the Meerkat release that adds `BlobStore::attest_address`.
 
 - Console WorkGraph graph view: labels no longer render smeared or tiny. The
   graph SVG inherited the global icon reset (`stroke: currentColor;
