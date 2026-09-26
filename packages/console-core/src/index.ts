@@ -282,6 +282,7 @@ export type {
   ConversationParsedSummary,
   ConversationParsedSummaryFile,
   ConversationRichBlock,
+  ConversationRichBackgroundJobBlock,
   ConversationRichMarkdownBlock,
   ConversationTextMode,
   ConversationRichCodeBlock,
