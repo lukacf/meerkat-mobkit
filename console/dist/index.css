@@ -1623,7 +1623,6 @@ span.cc-conversation-turn-preview__file-icon::after {
   font-size: 12px;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s;
 }
 .cc-tool-call__header:hover {
   background: var(--_cc-surface-hover, rgba(255,255,255,0.06));
