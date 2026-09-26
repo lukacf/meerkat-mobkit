@@ -3,10 +3,13 @@
 //! `mobkit/inspect_identity` and `wait_for_output`, shares its bridge read.
 //!
 //! The bridge's inspection is a full meerkat member-status read, and a mob
-//! admits one such read at a time (the rest are refused as
-//! `observation_lane_saturated`). A once-a-second `inspect_identity` poller
-//! kept that lane busy. Concurrent inspections of one member incarnation now
-//! share one read, and a successful result is reused for about a second.
+//! admits one such read at a time (before meerkat 0.8.45 the rest were
+//! refused as `observation_lane_saturated`). Concurrent inspections of one
+//! member incarnation now join one read in flight. A settled read is never
+//! reused, and a caller never joins a read that started before a completion
+//! it already counts: `mobkit/inspect_identity` returns the completion
+//! cursor next to the output, and SDK completion waits take the output as
+//! soon as the cursor moves.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,18 +20,20 @@ use async_trait::async_trait;
 use meerkat_mobkit::identity_first::contracts::{ContinuityStore, LeaseProvider};
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeDelivery,
-    BridgeError, CheckpointVersion, ContinuityGeneration, ContinuityRecord, DurabilityPolicy,
-    DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
-    LeaseGrant, LocalContinuityStore, LocalLeaseProvider, MemberInspection, ResumeSessionOutcome,
-    SessionBridge, SessionSnapshot,
+    BridgeError, CheckpointVersion, CompletionCursor, ContinuityGeneration, ContinuityRecord,
+    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
+    IdentityRuntimeConfig, LeaseGrant, LocalContinuityStore, LocalLeaseProvider, MemberInspection,
+    ResumeSessionOutcome, SessionBridge, SessionSnapshot,
 };
 
-/// Stands in for the bridge's member-status read: counts reads and takes
-/// `delay` per read, the way a busy member's status read does.
+/// Stands in for the bridge's member-status read: counts reads, takes
+/// `delay` per read (the way a busy member's status read does), and reports
+/// the output that was committed when the read started.
 struct CountingInspectBridge {
     reads: AtomicUsize,
     delay: Duration,
     fail_next: AtomicBool,
+    committed_output: std::sync::Mutex<Option<String>>,
 }
 
 impl CountingInspectBridge {
@@ -37,11 +42,16 @@ impl CountingInspectBridge {
             reads: AtomicUsize::new(0),
             delay,
             fail_next: AtomicBool::new(false),
+            committed_output: std::sync::Mutex::new(None),
         }
     }
 
     fn reads(&self) -> usize {
         self.reads.load(Ordering::SeqCst)
+    }
+
+    fn commit_output(&self, output: &str) {
+        *self.committed_output.lock().unwrap() = Some(output.to_string());
     }
 }
 
@@ -97,6 +107,7 @@ impl SessionBridge for CountingInspectBridge {
         runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
         let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+        let committed = self.committed_output.lock().unwrap().clone();
         tokio::time::sleep(self.delay).await;
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Err(BridgeError::Mob(
@@ -106,7 +117,7 @@ impl SessionBridge for CountingInspectBridge {
             ));
         }
         Ok(MemberInspection {
-            output_preview: Some(format!("{runtime_id} read {read}")),
+            output_preview: committed.or_else(|| Some(format!("{runtime_id} read {read}"))),
             is_final: false,
             peer_reachable_count: 0,
         })
@@ -177,18 +188,94 @@ async fn concurrent_inspections_of_one_identity_share_one_read() {
     assert_eq!(first.output_preview, second.output_preview);
 }
 
-/// A successful inspection is reused for about a second, then read again.
+/// A settled inspection is never reused: the next caller reads afresh.
 #[tokio::test]
-async fn a_successful_inspection_is_reused_briefly_then_read_again() {
+async fn a_settled_inspection_is_never_reused() {
     let bridge = Arc::new(CountingInspectBridge::new(Duration::ZERO));
     let runtime = make_runtime(Arc::clone(&bridge));
     let calendar = register_active(&runtime, "calendar").await;
 
     runtime.inspect(&calendar).await.expect("first read");
-    runtime.inspect(&calendar).await.expect("reused");
-    assert_eq!(bridge.reads(), 1);
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
-    runtime.inspect(&calendar).await.expect("fresh read");
+    runtime.inspect(&calendar).await.expect("second read");
+    assert_eq!(bridge.reads(), 2);
+}
+
+/// What an SDK completion wait does against `mobkit/inspect_identity`:
+/// read the cursor, then the inspection, and return the output as soon as
+/// the cursor has moved past `baseline`.
+async fn sdk_wait_for_completion(
+    runtime: &IdentityRuntime,
+    identity: &AgentIdentity,
+    baseline: CompletionCursor,
+) -> Option<String> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let cursor = runtime.completion_cursor(identity).await;
+            let inspection = runtime.inspect(identity).await.expect("inspect");
+            if cursor > baseline {
+                return inspection.output_preview;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the turn completes")
+}
+
+/// Review of #451 (P1): an inspection of turn A must not go out next to
+/// the cursor of a later turn B. With the old one-second reuse, an
+/// inspection primed with A was returned after B completed, and an SDK
+/// completion wait returned A's text for turn B.
+#[tokio::test]
+async fn an_inspection_after_a_completion_reports_the_new_output() {
+    let bridge = Arc::new(CountingInspectBridge::new(Duration::ZERO));
+    let runtime = make_runtime(Arc::clone(&bridge));
+    let calendar = register_active(&runtime, "calendar").await;
+
+    bridge.commit_output("A");
+    let baseline = runtime.completion_cursor(&calendar).await;
+    let primed = runtime.inspect(&calendar).await.expect("prime with A");
+    assert_eq!(primed.output_preview.as_deref(), Some("A"));
+
+    // Turn B completes well within the old reuse window.
+    bridge.commit_output("B");
+    let completed = runtime.record_turn_completed(&calendar).await;
+    assert!(completed > baseline);
+
+    assert_eq!(
+        sdk_wait_for_completion(&runtime, &calendar, baseline)
+            .await
+            .as_deref(),
+        Some("B")
+    );
+    let inspection = runtime.inspect(&calendar).await.expect("inspect");
+    assert_eq!(inspection.output_preview.as_deref(), Some("B"));
+    assert_eq!(runtime.completion_cursor(&calendar).await, completed);
+}
+
+/// A read still in flight when a turn completes may report the previous
+/// output; a caller that already counts the new turn starts its own read
+/// instead of joining it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_in_flight_across_a_completion_is_not_joined_by_a_later_caller() {
+    let bridge = Arc::new(CountingInspectBridge::new(Duration::from_millis(300)));
+    let runtime = make_runtime(Arc::clone(&bridge));
+    let calendar = register_active(&runtime, "calendar").await;
+
+    bridge.commit_output("A");
+    let before = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        let calendar = calendar.clone();
+        async move { runtime.inspect(&calendar).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    bridge.commit_output("B");
+    runtime.record_turn_completed(&calendar).await;
+
+    let after = runtime.inspect(&calendar).await.expect("after the turn");
+    assert_eq!(after.output_preview.as_deref(), Some("B"));
+    let before = before.await.expect("join").expect("before the turn");
+    assert_eq!(before.output_preview.as_deref(), Some("A"));
     assert_eq!(bridge.reads(), 2);
 }
 

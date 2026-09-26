@@ -1881,27 +1881,35 @@ pub struct IdentityRuntime {
     inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
 }
 
-/// How long a successful member inspection is reused. Pollers (the SDK's
-/// `inspect_identity`, `wait_for_output`) ask about once a second or more.
-const INSPECTION_REUSE_WINDOW: Duration = Duration::from_secs(1);
-
-/// One bridge inspection of a member incarnation, shared by every caller
-/// asking about that incarnation while it runs and, once it succeeded, for
-/// [`INSPECTION_REUSE_WINDOW`].
-#[derive(Clone, Default)]
+/// One bridge inspection of a member incarnation in flight, shared by the
+/// callers that join it (see [`IdentityRuntime::inspect`]). A settled read
+/// is never reused.
+#[derive(Clone)]
 struct SharedInspection {
-    read: Arc<tokio::sync::OnceCell<(Instant, Result<super::bridge::MemberInspection, String>)>>,
+    /// The identity's completion cursor when this read started. The read
+    /// reflects at least every turn counted there.
+    started_at: CompletionCursor,
+    read: Arc<tokio::sync::OnceCell<Result<super::bridge::MemberInspection, String>>>,
 }
 
 impl SharedInspection {
-    /// Still running, or succeeded within the reuse window. A failed read is
-    /// shared only with the callers that were waiting on it.
-    fn reusable(&self) -> bool {
-        match self.read.get() {
-            None => true,
-            Some((finished, Ok(_))) => finished.elapsed() < INSPECTION_REUSE_WINDOW,
-            Some((_, Err(_))) => false,
+    fn start(started_at: CompletionCursor) -> Self {
+        Self {
+            started_at,
+            read: Arc::default(),
         }
+    }
+
+    fn in_flight(&self) -> bool {
+        self.read.get().is_none()
+    }
+
+    /// A caller that has seen completion cursor `seen` may join only a read
+    /// still in flight that started at or after it. A read started before a
+    /// turn the caller already counts could report the previous turn's
+    /// output next to the new cursor.
+    fn joinable_at(&self, seen: CompletionCursor) -> bool {
+        self.in_flight() && self.started_at >= seen
     }
 }
 
@@ -11877,12 +11885,15 @@ impl IdentityRuntime {
 
     /// Inspect the current execution state of an identity via the bridge.
     ///
-    /// The bridge's inspection is a full meerkat member-status read, and a
-    /// mob admits only one such read at a time (the rest are refused as
-    /// `observation_lane_saturated`). So concurrent callers asking about the
-    /// same member incarnation share one read, and a successful result is
-    /// reused for [`INSPECTION_REUSE_WINDOW`]: an `inspect_identity` poller
-    /// costs at most one read per window. A new incarnation (respawn, reset)
+    /// The bridge's inspection is a full meerkat member-status read, which
+    /// the mob admits one at a time. So concurrent callers asking about the
+    /// same member incarnation join one read in flight instead of each
+    /// starting their own. A settled read is never reused: the next caller
+    /// reads afresh. A caller joins only a read that started at or after the
+    /// identity's completion cursor as the caller sees it, so an inspection
+    /// never reports an older turn's output than the cursor read before it
+    /// (`mobkit/inspect_identity` returns both, and SDK completion waits take
+    /// the output once the cursor moves). A new incarnation (respawn, reset)
     /// has a new runtime id and is always read afresh.
     pub async fn inspect(
         &self,
@@ -11893,25 +11904,33 @@ impl IdentityRuntime {
             .bridge
             .as_ref()
             .ok_or_else(|| IdentityRuntimeError::Internal("no bridge configured".to_string()))?;
+        let seen = self.completion_cursor(identity).await;
         let shared = {
             let mut inspections = self
                 .inspections
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inspections.retain(|_, shared| shared.reusable());
-            inspections.entry(runtime_id.clone()).or_default().clone()
+            inspections.retain(|_, shared| shared.in_flight());
+            match inspections.get(&runtime_id) {
+                Some(shared) if shared.joinable_at(seen) => shared.clone(),
+                _ => {
+                    let shared = SharedInspection::start(seen);
+                    inspections.insert(runtime_id.clone(), shared.clone());
+                    shared
+                }
+            }
         };
-        let (_, result) = shared
+        shared
             .read
             .get_or_init(|| async {
-                let result = bridge
+                bridge
                     .inspect_member(&runtime_id)
                     .await
-                    .map_err(|e| format!("inspect: {e}"));
-                (Instant::now(), result)
+                    .map_err(|e| format!("inspect: {e}"))
             })
-            .await;
-        result.clone().map_err(IdentityRuntimeError::Internal)
+            .await
+            .clone()
+            .map_err(IdentityRuntimeError::Internal)
     }
 
     // -----------------------------------------------------------------------
