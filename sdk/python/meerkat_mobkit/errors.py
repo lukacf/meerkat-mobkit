@@ -279,3 +279,34 @@ class ContractMismatchError(MobKitError):
 
 class NotConnectedError(MobKitError):
     """Raised when an operation requires a connected runtime but none is available."""
+
+
+class TurnFailedError(MobKitError):
+    """The turn a ticket names ran and failed (``mobkit/turn_result`` state
+    ``failed``). ``reason`` carries the runtime's typed detail."""
+
+    def __init__(self, identity: str, ticket: str, reason: str):
+        super().__init__(f"turn {ticket} of identity {identity!r} failed: {reason}")
+        self.identity = identity
+        self.ticket = ticket
+        self.reason = reason
+
+
+class TurnUnknownError(MobKitError):
+    """The gateway knows no turn with this ticket for this identity: it was
+    never admitted there, belongs to another identity, aged out, or the
+    gateway restarted since. Never guessed in either direction."""
+
+    def __init__(self, identity: str, ticket: str):
+        super().__init__(
+            f"no turn {ticket} is known for identity {identity!r} (never admitted "
+            "there, aged out, or the gateway restarted)"
+        )
+        self.identity = identity
+        self.ticket = ticket
+
+
+class TurnTrackingUnavailableWarning(RuntimeWarning):
+    """A ``*_and_wait`` call could not track its own turn and fell back to the
+    identity-wide completion cursor, which another delivery's completion can
+    also satisfy (so the returned output is not request-correlated)."""

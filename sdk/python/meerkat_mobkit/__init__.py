@@ -60,6 +60,8 @@ from .identity_first_models import (
     CompletionCursor,
     CompletionProgress,
     ConsoleIdentityRecord,
+    TurnResult,
+    TurnState,
     DurableAgentSpec,
     ExternalToolDef,
     IdentityBootstrapCounts,
@@ -102,6 +104,9 @@ from .errors import (
     RpcError,
     StorageResolutionError,
     TransportError,
+    TurnFailedError,
+    TurnTrackingUnavailableWarning,
+    TurnUnknownError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
 )
@@ -267,6 +272,8 @@ __all__ = [
     # Turn-completion identity
     "CompletionCursor",
     "CompletionProgress",
+    "TurnResult",
+    "TurnState",
     # Tool-result content blocks
     "text_block",
     "image_block",
@@ -303,6 +310,9 @@ __all__ = [
     "WorkGraphUnavailableError",
     "ContractMismatchError",
     "NotConnectedError",
+    "TurnFailedError",
+    "TurnUnknownError",
+    "TurnTrackingUnavailableWarning",
     # Typed return models
     "StatusResult",
     "CapabilitiesResult",

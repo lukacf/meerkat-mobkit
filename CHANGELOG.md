@@ -32,7 +32,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   flow-editor build scripts, the Bazel labels and the docs point at the new
   paths.
 
+### Added
+
+- Turn tickets: per-admission completion for identity deliveries.
+  `mobkit/send`, `mobkit/interact` and `mobkit/dispatch` accept
+  `"track_turn": true` and then return `"turn": {"ticket": ...}`, the
+  interaction id the delivery carries into meerkat's runtime admission (or
+  `"turn": null` plus `"turn_unavailable"` with the reason when the turn
+  cannot be tracked, for example a remotely hosted member; it is still
+  delivered). The new `mobkit/turn_result {identity, ticket}` reports that
+  turn as `pending`, `completed` (with its own `output`, from the turn's
+  committed run result via meerkat's exact-turn `wait_bounded`, bounded to
+  256 KiB), `failed` (with `error`) or a typed `unknown`. Rust:
+  `IdentityRuntime::send_with_turn_ticket`, `dispatch_with_turn_ticket`,
+  `turn_outcome` and `wait_for_turn`, with `TurnTicket`, `TurnOutput`,
+  `TurnOutcome`, `TurnTracking` and `Ticketed`; `SessionBridge` gains
+  `tracks_turn_output` and `begin_delivery_with_output` (default: untracked)
+  and `BridgeTurnReceipt` gains `with_output` / `wait_with_output` (the
+  existing `new` / `wait` are unchanged). Python: `send` / `dispatch` /
+  `dispatch_text` take `track_turn=`, results carry `turn_ticket` and
+  `turn_unavailable`, and handles gain `turn_result`, `wait_for_turn` and
+  `wait_for_output(turn=...)`, with `TurnResult`, `TurnState`,
+  `TurnFailedError`, `TurnUnknownError` and
+  `TurnTrackingUnavailableWarning`. TypeScript: `send` / `dispatch` take
+  `{ trackTurn }`, results carry `turnTicket` and `turnUnavailable`, plus
+  `turnResult`, `waitForTurn`, `TurnResult`, `TurnFailedError` and
+  `TurnUnknownError`.
+
 ### Fixed
+
+- `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
+  and `sendAndWait` / `dispatchAndWait` (TypeScript) return the output of the
+  turn they started. They waited until the identity-wide completion cursor
+  passed the send's baseline and returned the session's latest
+  `output_preview`, so a concurrent delivery to the same identity (a peer
+  message, a scheduled turn, a fork completion wake) could satisfy the wait
+  and hand the caller someone else's output. They now send with
+  `track_turn` and wait on the turn ticket through `mobkit/turn_result`;
+  signatures and return types are unchanged. A failed turn raises
+  `TurnFailedError`, and an unknown ticket (for example after a gateway
+  restart) raises `TurnUnknownError`. Only when a delivery returns no ticket
+  (a gateway that predates turn tickets, a remotely hosted member) do they
+  fall back to the cursor wait, with a `TurnTrackingUnavailableWarning` in
+  Python and a `console.warn` in TypeScript.
+  `wait_for_completion(baseline)` / `waitForCompletion` and
+  `wait_for_output(after=cursor)` remain identity-wide primitives: any
+  completion on the identity after the baseline satisfies them and the
+  returned preview is the session's latest output, not necessarily a given
+  send's answer; use `wait_for_turn` / `waitForTurn` for one specific turn.
 
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either

@@ -40,6 +40,8 @@ import {
   RpcError,
   StorageResolutionError,
   TransportError,
+  TurnFailedError,
+  TurnUnknownError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
   isRpcError,
@@ -142,6 +144,7 @@ import {
   parseIdentityInspection,
   parseSendResult,
   parseDispatchResult,
+  parseTurnResult,
   completionProgressSince,
   parseBlobGetResult,
   parseBlobUploadResult,
@@ -230,6 +233,7 @@ import {
   type IdentityInspection,
   type SendResult,
   type DispatchResult,
+  type TurnResult,
   type CompletionCursor,
   type BlobGetResult,
   type BlobUploadResult,
@@ -1019,13 +1023,16 @@ export class MobKitRuntime {
   /**
    * Send content to an identity. Content can be a string or content blocks.
    *
-   * The returned `completionBaseline` is what {@link waitForCompletion} needs
-   * to wait for THIS turn. Never wait by comparing `outputPreview` text —
-   * consecutive turns may emit identical output.
+   * With `{ trackTurn: true }` the admitted turn is tracked by ticket: the
+   * result's `turnTicket` names THIS turn (see {@link waitForTurn}), or
+   * `turnUnavailable` says why it could not be tracked. The returned
+   * `completionBaseline` is an identity-wide barrier for
+   * {@link waitForCompletion}. Never wait by comparing `outputPreview` text.
    */
   async send(
     identity: string,
     content: string | DispatchContentBlock[],
+    options: { trackTurn?: boolean } = {},
   ): Promise<SendResult> {
     const params: Record<string, unknown> = { identity };
     if (typeof content === "string") {
@@ -1033,20 +1040,75 @@ export class MobKitRuntime {
     } else {
       params.content = content.map(contentBlockToDict);
     }
+    if (options.trackTurn) params.track_turn = true;
     return parseSendResult(await this._rpc("mobkit/send", params));
   }
 
-  /** Dispatch structured input to an identity. */
+  /** Dispatch structured input to an identity (`trackTurn` as for {@link send}). */
   async dispatch(
     identity: string,
     input: DispatchInput,
+    options: { trackTurn?: boolean } = {},
   ): Promise<DispatchResult> {
-    return parseDispatchResult(
-      await this._rpc("mobkit/dispatch", {
-        identity,
-        dispatch_input: dispatchInputToDict(input),
-      }),
+    const params: Record<string, unknown> = {
+      identity,
+      dispatch_input: dispatchInputToDict(input),
+    };
+    if (options.trackTurn) params.track_turn = true;
+    return parseDispatchResult(await this._rpc("mobkit/dispatch", params));
+  }
+
+  /**
+   * Read one ticketed turn (`mobkit/turn_result`): its state and, once
+   * completed, its OWN output.
+   */
+  async turnResult(identity: string, ticket: string): Promise<TurnResult> {
+    return parseTurnResult(
+      await this._rpc("mobkit/turn_result", { identity, ticket }),
     );
+  }
+
+  /**
+   * Wait for the turn `ticket` names and return ITS output.
+   *
+   * `ticket` is the `turnTicket` of a send/dispatch made with
+   * `{ trackTurn: true }`. Unlike {@link waitForCompletion}, no other delivery
+   * to this identity (a peer message, a scheduled turn, a fork completion
+   * wake) can satisfy this wait, and the output is the turn's own.
+   *
+   * Resolves `null` when the turn committed no text. Throws
+   * {@link TurnFailedError} when the turn failed, {@link TurnUnknownError}
+   * when the gateway knows no such turn for this identity, and a timeout
+   * error.
+   */
+  async waitForTurn(
+    identity: string,
+    ticket: string,
+    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<string | null> {
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    const pollIntervalMs = options.pollIntervalMs ?? 500;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const result = await this.turnResult(identity, ticket);
+      if (result.state === "completed") return result.output;
+      if (result.state === "failed") {
+        throw new TurnFailedError(identity, ticket, result.error ?? "");
+      }
+      if (result.state === "unknown") {
+        throw new TurnUnknownError(identity, ticket);
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(
+          `turn ${ticket} of identity ${identity} did not complete within ` +
+            `${timeoutMs}ms`,
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(pollIntervalMs, remaining)),
+      );
+    }
   }
 
   /**
@@ -1056,6 +1118,12 @@ export class MobKitRuntime {
    * `baseline` is the `completionBaseline` from {@link send} or
    * {@link dispatch}. This compares cursors, so two consecutive turns emitting
    * byte-identical text are still two distinct completions.
+   *
+   * IDENTITY-WIDE: any completion on this identity after `baseline`
+   * satisfies the wait (a peer message, a scheduled turn, a fork completion
+   * wake), and the returned preview is the session's latest output, not
+   * necessarily your turn's. To wait for one specific turn, use
+   * {@link waitForTurn} with a ticket, as {@link sendAndWait} does.
    *
    * Throws if the wait times out, if the identity exposes no cursor, or if the
    * runtime incarnation changed — turn counts do not carry across
@@ -1102,32 +1170,57 @@ export class MobKitRuntime {
     }
   }
 
-  /** Send, then wait for the completion of the turn that send started. */
+  /**
+   * Send, then wait for the turn that send started and return ITS output.
+   *
+   * The send is tracked by ticket, so the wait is per-admission: another
+   * delivery to this identity cannot satisfy it. When the gateway cannot
+   * track the turn (an older gateway, a remotely hosted member), this falls
+   * back to the identity-wide cursor wait and says so with `console.warn`.
+   */
   async sendAndWait(
     identity: string,
     content: string | DispatchContentBlock[],
     options: { timeoutMs?: number; pollIntervalMs?: number } = {},
   ): Promise<string | null> {
-    const result = await this.send(identity, content);
-    return this._waitForAdmission(
-      identity,
-      result.completionBaseline,
-      "send",
-      options,
-    );
+    const result = await this.send(identity, content, { trackTurn: true });
+    return this._waitForTicketOrAdmission(identity, result, "send", options);
   }
 
-  /** Dispatch, then wait for the completion of the turn it started. */
+  /**
+   * Dispatch, then wait for the turn it started and return ITS output
+   * (per-admission, as {@link sendAndWait}).
+   */
   async dispatchAndWait(
     identity: string,
     input: DispatchInput,
     options: { timeoutMs?: number; pollIntervalMs?: number } = {},
   ): Promise<string | null> {
-    const result = await this.dispatch(identity, input);
+    const result = await this.dispatch(identity, input, { trackTurn: true });
+    return this._waitForTicketOrAdmission(identity, result, "dispatch", options);
+  }
+
+  private async _waitForTicketOrAdmission(
+    identity: string,
+    result: SendResult | DispatchResult,
+    operation: string,
+    options: { timeoutMs?: number; pollIntervalMs?: number },
+  ): Promise<string | null> {
+    if (result.turnTicket != null) {
+      return this.waitForTurn(identity, result.turnTicket, options);
+    }
+    const reason =
+      result.turnUnavailable ??
+      "the gateway returned no turn ticket (it predates turn tickets)";
+    console.warn(
+      `${operation} for identity ${identity} could not track its own turn ` +
+        `(${reason}); waiting on the identity-wide completion cursor ` +
+        `instead, which another delivery's completion can also satisfy`,
+    );
     return this._waitForAdmission(
       identity,
       result.completionBaseline,
-      "dispatch",
+      operation,
       options,
     );
   }

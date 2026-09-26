@@ -799,26 +799,49 @@ class MobKitRuntime:
         """Return an identity-scoped agent handle."""
         return IdentityAgentHandle(self, identity)
 
-    async def send(self, identity: str, content: "str | list") -> Any:
-        """Send conversational content to an addressable identity."""
+    async def send(
+        self,
+        identity: str,
+        content: "str | list",
+        *,
+        track_turn: bool = False,
+    ) -> Any:
+        """Send conversational content to an addressable identity.
+
+        With ``track_turn=True`` the admitted turn is tracked by ticket: the
+        result's ``turn_ticket`` names THIS turn (see :meth:`turn_result`),
+        or ``turn_unavailable`` says why it could not be tracked.
+        """
         from .identity_first_models import SendResult
         if isinstance(content, str):
             wire_content = content
         else:
             wire_content = [b.to_dict() for b in content]
-        raw = await self._rpc("mobkit/send", {
-            "identity": identity,
-            "content": wire_content,
-        })
+        params: dict[str, Any] = {"identity": identity, "content": wire_content}
+        if track_turn:
+            params["track_turn"] = True
+        raw = await self._rpc("mobkit/send", params)
         return SendResult.from_dict(raw) if isinstance(raw, dict) else raw
 
-    async def dispatch(self, identity: str, dispatch_input: Any) -> Any:
-        """Dispatch content to any identity (addressable or internal)."""
+    async def dispatch(
+        self,
+        identity: str,
+        dispatch_input: Any,
+        *,
+        track_turn: bool = False,
+    ) -> Any:
+        """Dispatch content to any identity (addressable or internal).
+
+        ``track_turn`` as for :meth:`send`.
+        """
         from .identity_first_models import DispatchResult
-        raw = await self._rpc("mobkit/dispatch", {
+        params: dict[str, Any] = {
             "identity": identity,
             "dispatch_input": dispatch_input.to_dict(),
-        })
+        }
+        if track_turn:
+            params["track_turn"] = True
+        raw = await self._rpc("mobkit/dispatch", params)
         return DispatchResult.from_dict(raw) if isinstance(raw, dict) else raw
 
     async def dispatch_text(
@@ -828,11 +851,21 @@ class MobKitRuntime:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        track_turn: bool = False,
     ) -> Any:
         """Dispatch plain text without constructing DispatchInput manually."""
         from .identity_first_models import DispatchInput
         di = DispatchInput(content=text, origin=origin, correlation_id=correlation_id)
-        return await self.dispatch(identity, di)
+        return await self.dispatch(identity, di, track_turn=track_turn)
+
+    async def turn_result(self, identity: str, ticket: str) -> Any:
+        """Read one ticketed turn (``mobkit/turn_result``): its state and,
+        once completed, its OWN output."""
+        from .identity_first_models import TurnResult
+        raw = await self._rpc(
+            "mobkit/turn_result", {"identity": identity, "ticket": ticket}
+        )
+        return TurnResult.from_dict(raw) if isinstance(raw, dict) else raw
 
     async def list_identities(self) -> list[Any]:
         """Typed roster listing via ``mobkit/console/list_identities``.
@@ -1060,13 +1093,15 @@ class IdentityAgentHandle:
     def identity(self) -> str:
         return self._identity
 
-    async def send(self, content: Any) -> Any:
+    async def send(self, content: Any, *, track_turn: bool = False) -> Any:
         """Send conversational content (Addressable only)."""
-        return await self._runtime.send(self._identity, content)
+        return await self._runtime.send(self._identity, content, track_turn=track_turn)
 
-    async def dispatch(self, dispatch_input: Any) -> Any:
+    async def dispatch(self, dispatch_input: Any, *, track_turn: bool = False) -> Any:
         """Dispatch with a DispatchInput object."""
-        return await self._runtime.dispatch(self._identity, dispatch_input)
+        return await self._runtime.dispatch(
+            self._identity, dispatch_input, track_turn=track_turn,
+        )
 
     async def dispatch_text(
         self,
@@ -1074,11 +1109,63 @@ class IdentityAgentHandle:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        track_turn: bool = False,
     ) -> Any:
         """Dispatch plain text without constructing DispatchInput."""
         return await self._runtime.dispatch_text(
-            self._identity, text, origin=origin, correlation_id=correlation_id,
+            self._identity,
+            text,
+            origin=origin,
+            correlation_id=correlation_id,
+            track_turn=track_turn,
         )
+
+    async def turn_result(self, ticket: str) -> Any:
+        """Read the ticketed turn ``ticket`` of this identity."""
+        return await self._runtime.turn_result(self._identity, ticket)
+
+    async def wait_for_turn(
+        self,
+        ticket: str,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Wait for the turn ``ticket`` names and return ITS output.
+
+        ``ticket`` is the ``turn_ticket`` of a send/dispatch made with
+        ``track_turn=True``. Unlike :meth:`wait_for_completion`, no other
+        delivery to this identity (a peer message, a scheduled turn, a fork
+        completion wake) can satisfy this wait, and the output is the turn's
+        own, from its committed run result.
+
+        Returns ``None`` when the turn committed no text (or, rarely, when the
+        gateway's session bridge cannot report per-turn output; see
+        :attr:`TurnResult.output_available`).
+
+        Raises :class:`~meerkat_mobkit.errors.TurnFailedError` when the turn
+        failed, :class:`~meerkat_mobkit.errors.TurnUnknownError` when the
+        gateway knows no such turn for this identity, and ``TimeoutError``.
+        """
+        import time
+        from .errors import TurnFailedError, TurnUnknownError
+        from .identity_first_models import TurnState
+        deadline = time.monotonic() + timeout
+        while True:
+            result = await self.turn_result(ticket)
+            if result.state is TurnState.COMPLETED:
+                return result.output
+            if result.state is TurnState.FAILED:
+                raise TurnFailedError(self._identity, ticket, result.error or "")
+            if result.state is TurnState.UNKNOWN:
+                raise TurnUnknownError(self._identity, ticket)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"turn {ticket} of identity {self._identity!r} did not "
+                    f"complete within {timeout}s"
+                )
+            await asyncio.sleep(min(poll_interval, remaining))
 
     async def status(self) -> Any:
         """Return IdentityStatus."""
@@ -1107,6 +1194,13 @@ class IdentityAgentHandle:
         :meth:`dispatch`, or :meth:`dispatch_text`. This compares cursors, so
         two consecutive turns emitting byte-identical text are still two
         distinct completions.
+
+        IDENTITY-WIDE: any completion on this identity after ``baseline``
+        satisfies the wait (a peer message, a scheduled turn, a fork
+        completion wake), and the returned preview is the session's latest
+        output, not necessarily your turn's. To wait for one specific turn,
+        use :meth:`wait_for_turn` with a ticket (``track_turn=True``), as
+        :meth:`send_and_wait` does.
 
         Returns the ``output_preview`` observed at completion (``None`` if the
         turn committed no assistant text).
@@ -1151,14 +1245,17 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
     ) -> str | None:
-        """Send, then wait for the completion of the turn that send started.
+        """Send, then wait for the turn that send started and return ITS output.
 
-        The correct one-call shape: the baseline is captured by the gateway
-        before delivery and threaded here, so nothing in the caller's code can
-        reintroduce a text comparison.
+        The send is tracked by ticket (``track_turn=True``), so the wait is
+        per-admission: another delivery to this identity cannot satisfy it,
+        and the output comes from this turn's own committed run result.
+        When the gateway cannot track the turn (an older gateway, a remotely
+        hosted member), this falls back to the identity-wide cursor wait and
+        emits :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning`.
         """
-        result = await self.send(content)
-        return await self._wait_for_admission(
+        result = await self.send(content, track_turn=True)
+        return await self._wait_for_ticket_or_admission(
             result, "send", timeout=timeout, poll_interval=poll_interval,
         )
 
@@ -1169,9 +1266,10 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
     ) -> str | None:
-        """Dispatch, then wait for the completion of the turn it started."""
-        result = await self.dispatch(dispatch_input)
-        return await self._wait_for_admission(
+        """Dispatch, then wait for the turn it started and return ITS output
+        (per-admission, as :meth:`send_and_wait`)."""
+        result = await self.dispatch(dispatch_input, track_turn=True)
+        return await self._wait_for_ticket_or_admission(
             result, "dispatch", timeout=timeout, poll_interval=poll_interval,
         )
 
@@ -1184,12 +1282,41 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
     ) -> str | None:
-        """:meth:`dispatch_text` plus the completion wait, in one call."""
+        """:meth:`dispatch_text` plus the per-admission wait, in one call."""
         result = await self.dispatch_text(
-            text, origin=origin, correlation_id=correlation_id,
+            text, origin=origin, correlation_id=correlation_id, track_turn=True,
+        )
+        return await self._wait_for_ticket_or_admission(
+            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+        )
+
+    async def _wait_for_ticket_or_admission(
+        self,
+        result: Any,
+        operation: str,
+        *,
+        timeout: float,
+        poll_interval: float,
+    ) -> str | None:
+        ticket = getattr(result, "turn_ticket", None)
+        if ticket is not None:
+            return await self.wait_for_turn(
+                ticket, timeout=timeout, poll_interval=poll_interval,
+            )
+        from .errors import TurnTrackingUnavailableWarning
+        reason = getattr(result, "turn_unavailable", None) or (
+            "the gateway returned no turn ticket (it predates turn tickets)"
+        )
+        warnings.warn(
+            f"{operation} for identity {self._identity!r} could not track its "
+            f"own turn ({reason}); waiting on the identity-wide completion "
+            "cursor instead, which another delivery's completion can also "
+            "satisfy",
+            TurnTrackingUnavailableWarning,
+            stacklevel=3,
         )
         return await self._wait_for_admission(
-            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+            result, operation, timeout=timeout, poll_interval=poll_interval,
         )
 
     async def _wait_for_admission(
@@ -1219,13 +1346,20 @@ class IdentityAgentHandle:
         poll_interval: float = 1.5,
         after: CompletionCursor | None = None,
         baseline: str | None = None,
+        turn: str | None = None,
     ) -> str:
         """Poll until this identity produces an output_preview.
 
+        Pass ``turn`` (the ``turn_ticket`` of a send/dispatch made with
+        ``track_turn=True``) to wait for that exact turn and return ITS
+        output; this is the per-admission path. It raises ``RuntimeError`` if
+        that turn committed no text.
+
         Pass ``after`` (a :class:`CompletionCursor` from a send/dispatch
-        result) to wait for a specific turn — that is the correct path, and
-        equivalent to :meth:`wait_for_completion` except that it also requires
-        non-empty output.
+        result) to wait past a baseline, equivalent to
+        :meth:`wait_for_completion` except that it also requires non-empty
+        output. That is IDENTITY-WIDE: another delivery's completion also
+        satisfies it, and the output is the session's latest.
 
         ``baseline`` (a str) is DEPRECATED and UNSOUND: it waits until
         ``output_preview`` differs from the text you passed, so two
@@ -1240,6 +1374,18 @@ class IdentityAgentHandle:
         Raises TimeoutError if timeout expires.
         """
         import time
+        if turn is not None:
+            if after is not None or baseline is not None:
+                raise ValueError("pass 'turn' alone, not with 'after' or 'baseline'")
+            output = await self.wait_for_turn(
+                turn, timeout=timeout, poll_interval=poll_interval,
+            )
+            if not output:
+                raise RuntimeError(
+                    f"turn {turn} of identity {self._identity!r} completed "
+                    "without committing any text"
+                )
+            return output
         if baseline is not None:
             if after is not None:
                 raise ValueError("pass either 'after' or the deprecated 'baseline', not both")

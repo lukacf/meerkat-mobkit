@@ -2908,14 +2908,44 @@ export function completionProgressSince(
 
 // -- Identity delivery + inspection results -------------------------------
 
+/** The `turn.ticket` a tracked delivery returned, if any. */
+function parseTurnTicket(d: Record<string, unknown>): string | null {
+  const turn = d.turn;
+  if (typeof turn !== "object" || turn === null) return null;
+  const ticket = (turn as Record<string, unknown>).ticket;
+  return typeof ticket === "string" ? ticket : null;
+}
+
+function turnTrackingToDict(
+  out: Record<string, unknown>,
+  turnTicket: string | null | undefined,
+  turnUnavailable: string | null | undefined,
+): void {
+  if (turnTicket != null) {
+    out.turn = { ticket: turnTicket };
+  } else if (turnUnavailable != null) {
+    out.turn = null;
+    out.turn_unavailable = turnUnavailable;
+  }
+}
+
 /** Typed result from identity-first `send()`. */
 export interface SendResult {
   readonly fencingToken: number;
   /**
-   * Cursor read before delivery. Wait for an inspection cursor that reports
-   * `completed` against this. `null` when the gateway predates the field.
+   * Cursor read before delivery: an IDENTITY-WIDE barrier. Another
+   * delivery's completion also passes it, so it does not name this turn; use
+   * {@link SendResult.turnTicket} for that. `null` when the gateway predates
+   * the field.
    */
   readonly completionBaseline: CompletionCursor | null;
+  /**
+   * The ticket naming THIS turn, when the send asked for `trackTurn` and the
+   * gateway could track it. Wait on it with `waitForTurn`.
+   */
+  readonly turnTicket?: string | null;
+  /** Why a requested ticket is unavailable (the turn was still delivered). */
+  readonly turnUnavailable?: string | null;
 }
 
 export function parseSendResult(raw: unknown): SendResult {
@@ -2923,6 +2953,9 @@ export function parseSendResult(raw: unknown): SendResult {
   return {
     fencingToken: Number(d.fencing_token ?? 0),
     completionBaseline: parseOptionalCompletionCursor(d.completion_baseline),
+    turnTicket: parseTurnTicket(d),
+    turnUnavailable:
+      typeof d.turn_unavailable === "string" ? d.turn_unavailable : null,
   };
 }
 
@@ -2931,6 +2964,7 @@ export function sendResultToDict(result: SendResult): Record<string, unknown> {
   if (result.completionBaseline !== null) {
     out.completion_baseline = completionCursorToDict(result.completionBaseline);
   }
+  turnTrackingToDict(out, result.turnTicket, result.turnUnavailable);
   return out;
 }
 
@@ -2940,6 +2974,10 @@ export interface DispatchResult {
   readonly durable: boolean;
   /** See {@link SendResult.completionBaseline}. */
   readonly completionBaseline: CompletionCursor | null;
+  /** See {@link SendResult.turnTicket}. */
+  readonly turnTicket?: string | null;
+  /** See {@link SendResult.turnUnavailable}. */
+  readonly turnUnavailable?: string | null;
 }
 
 export function parseDispatchResult(raw: unknown): DispatchResult {
@@ -2948,6 +2986,9 @@ export function parseDispatchResult(raw: unknown): DispatchResult {
     fencingToken: Number(d.fencing_token ?? 0),
     durable: Boolean(d.durable ?? false),
     completionBaseline: parseOptionalCompletionCursor(d.completion_baseline),
+    turnTicket: parseTurnTicket(d),
+    turnUnavailable:
+      typeof d.turn_unavailable === "string" ? d.turn_unavailable : null,
   };
 }
 
@@ -2961,7 +3002,55 @@ export function dispatchResultToDict(
   if (result.completionBaseline !== null) {
     out.completion_baseline = completionCursorToDict(result.completionBaseline);
   }
+  turnTrackingToDict(out, result.turnTicket, result.turnUnavailable);
   return out;
+}
+
+/** Where a ticketed turn stands (`mobkit/turn_result`). */
+export type TurnState = "pending" | "completed" | "failed" | "unknown";
+
+/**
+ * `mobkit/turn_result`: one ticketed turn's state and its OWN output, from
+ * that turn's committed run result (never the session's latest text).
+ */
+export interface TurnResult {
+  readonly identity: string;
+  readonly ticket: string;
+  readonly state: TurnState;
+  /** The turn's final assistant text; `null` when it committed no text. */
+  readonly output: string | null;
+  /**
+   * `false` only when the gateway's session bridge cannot report a turn's
+   * own output (`output` is then `null` regardless).
+   */
+  readonly outputAvailable: boolean;
+  readonly outputTruncated: boolean;
+  /** The failure detail when `state` is `failed`. */
+  readonly error: string | null;
+  /** The identity-wide cursor at read time (diagnostic only). */
+  readonly completionCursor: CompletionCursor | null;
+}
+
+const TURN_STATES: readonly TurnState[] = [
+  "pending",
+  "completed",
+  "failed",
+  "unknown",
+];
+
+export function parseTurnResult(raw: unknown): TurnResult {
+  const d = asRecord(raw);
+  const state = TURN_STATES.find((known) => known === d.state) ?? "unknown";
+  return {
+    identity: String(d.identity ?? ""),
+    ticket: String(d.ticket ?? ""),
+    state,
+    output: typeof d.output === "string" ? d.output : null,
+    outputAvailable: d.output_available !== false,
+    outputTruncated: d.output_truncated === true,
+    error: typeof d.error === "string" ? d.error : null,
+    completionCursor: parseOptionalCompletionCursor(d.completion_cursor),
+  };
 }
 
 /** Execution-level inspection of an identity (`mobkit/inspect_identity`). */

@@ -2046,6 +2046,7 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/reset",
                     "mobkit/delete_identity",
                     "mobkit/inspect_identity",
+                    "mobkit/turn_result",
                     "mobkit/compact_member",
                     "mobkit/bound_member_transcript",
                     "mobkit/reconcile_identity",
@@ -3585,29 +3586,47 @@ async fn handle_unified_rpc_json_inner(
             };
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
-            let send_result = identity_rt
-                .send_admission_tracked(
-                    &identity,
-                    expected_alias,
-                    &content,
-                    meerkat_core::types::HandlingMode::Queue,
-                    None,
-                )
-                .await;
+            let send_result = if rpc_track_turn_requested(&request.params) {
+                identity_rt
+                    .send_with_turn_ticket(
+                        &identity,
+                        expected_alias,
+                        &content,
+                        meerkat_core::types::HandlingMode::Queue,
+                        None,
+                    )
+                    .await
+                    .map(|ticketed| (ticketed.admission, Some(ticketed.turn)))
+            } else {
+                identity_rt
+                    .send_admission_tracked(
+                        &identity,
+                        expected_alias,
+                        &content,
+                        meerkat_core::types::HandlingMode::Queue,
+                        None,
+                    )
+                    .await
+                    .map(|admission| (admission, None))
+            };
             match send_result {
-                Ok(admission) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
+                Ok((admission, turn)) => {
+                    let mut result = serde_json::json!({
                         "fencing_token": admission.fencing_token.get(),
-                        // Cursor read before delivery. Wait for an
-                        // inspect_identity completion_cursor that is ahead of
-                        // this within the same epoch; never compare output
-                        // text, which repeats.
+                        // Cursor read before delivery: an identity-wide
+                        // barrier (another delivery's completion also passes
+                        // it). Wait on `turn.ticket` with mobkit/turn_result
+                        // for THIS turn; never compare output text.
                         "completion_baseline": completion_cursor_json(admission.completion_baseline),
-                    })),
-                    error: None,
-                },
+                    });
+                    insert_turn_tracking(&mut result, turn.as_ref());
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
@@ -3698,20 +3717,34 @@ async fn handle_unified_rpc_json_inner(
 
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
-            let send_result = identity_rt
-                .send_admission_tracked(
-                    &identity,
-                    expected_alias,
-                    &content,
-                    meerkat_core::types::HandlingMode::Queue,
-                    None,
-                )
-                .await;
+            let send_result = if rpc_track_turn_requested(&request.params) {
+                // The reserved interaction id is the ticket: it rides the
+                // admission as the turn's interaction id.
+                identity_rt
+                    .send_with_turn_ticket(
+                        &identity,
+                        expected_alias,
+                        &content,
+                        meerkat_core::types::HandlingMode::Queue,
+                        Some(&interaction_id),
+                    )
+                    .await
+                    .map(|ticketed| (ticketed.admission, Some(ticketed.turn)))
+            } else {
+                identity_rt
+                    .send_admission_tracked(
+                        &identity,
+                        expected_alias,
+                        &content,
+                        meerkat_core::types::HandlingMode::Queue,
+                        None,
+                    )
+                    .await
+                    .map(|admission| (admission, None))
+            };
             match send_result {
-                Ok(admission) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
+                Ok((admission, turn)) => {
+                    let mut result = serde_json::json!({
                         "interaction_id": interaction_id,
                         "fencing_token": admission.fencing_token.get(),
                         "completion_baseline": completion_cursor_json(admission.completion_baseline),
@@ -3719,9 +3752,15 @@ async fn handle_unified_rpc_json_inner(
                             "route": format!("/console/identity/{}/stream", identity.as_str()),
                             "identity": identity.as_str(),
                         }
-                    })),
-                    error: None,
-                },
+                    });
+                    insert_turn_tracking(&mut result, turn.as_ref());
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
                 Err(e) => {
                     runtime
                         .record_console_lifecycle(
@@ -3818,23 +3857,101 @@ async fn handle_unified_rpc_json_inner(
             };
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
-            let dispatch_result = identity_rt
-                .dispatch_admission_tracked(&identity, expected_alias, &dispatch_input)
-                .await;
+            let dispatch_result = if rpc_track_turn_requested(&request.params) {
+                identity_rt
+                    .dispatch_with_turn_ticket(&identity, expected_alias, &dispatch_input)
+                    .await
+                    .map(|ticketed| (ticketed.admission, Some(ticketed.turn)))
+            } else {
+                identity_rt
+                    .dispatch_admission_tracked(&identity, expected_alias, &dispatch_input)
+                    .await
+                    .map(|admission| (admission, None))
+            };
             match dispatch_result {
-                Ok(admission) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
+                Ok((admission, turn)) => {
+                    let mut result = serde_json::json!({
                         "fencing_token": admission.fencing_token.get(),
                         "durable": admission.durable,
-                        // See mobkit/send: the correlation atom for "wait for
-                        // the turn I just submitted".
+                        // See mobkit/send: an identity-wide barrier; wait on
+                        // `turn.ticket` for the turn this dispatch started.
                         "completion_baseline": completion_cursor_json(admission.completion_baseline),
-                    })),
-                    error: None,
-                },
+                    });
+                    insert_turn_tracking(&mut result, turn.as_ref());
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/turn_result" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &ctx.runtime,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let target =
+                match resolve_rpc_identity_control_target(runtime, identity_rt, identity_str).await
+                {
+                    Ok(target) => target,
+                    Err(e) => {
+                        return maybe_error_response(
+                            is_notification,
+                            response_id,
+                            -32602,
+                            format!("invalid identity: {e}"),
+                        );
+                    }
+                };
+            let identity = target.identity.clone();
+            let ticket = match request
+                .params
+                .get("ticket")
+                .and_then(|v| v.as_str())
+                .map(crate::identity_first::TurnTicket::parse)
+            {
+                Some(Ok(ticket)) => ticket,
+                Some(Err(err)) => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32602,
+                        format!("invalid ticket: {err}"),
+                    );
+                }
+                None => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32602,
+                        "missing ticket".to_string(),
+                    );
+                }
+            };
+            let outcome = identity_rt.turn_outcome(&identity, ticket);
+            let completion_cursor = identity_rt.completion_cursor(&identity).await;
+            let mut result = turn_outcome_json(&outcome);
+            if let Value::Object(fields) = &mut result {
+                fields.insert("identity".to_string(), Value::from(identity.as_str()));
+                fields.insert("ticket".to_string(), Value::from(ticket.to_string()));
+                fields.insert(
+                    "completion_cursor".to_string(),
+                    completion_cursor_json(completion_cursor),
+                );
+            }
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(result),
+                error: None,
             }
         }
         "mobkit/subscribe" => {
@@ -5598,6 +5715,65 @@ fn identity_lifecycle_state_json(
     state: crate::identity_first::IdentityLifecycleState,
 ) -> &'static str {
     state.wire_str()
+}
+
+/// `track_turn: true` on `mobkit/send`, `mobkit/interact` or
+/// `mobkit/dispatch` asks for the admitted turn to be tracked by ticket.
+fn rpc_track_turn_requested(params: &Value) -> bool {
+    params
+        .get("track_turn")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Add a delivery's turn tracking to its result: `turn: {ticket}` when the
+/// turn is tracked, `turn: null` plus `turn_unavailable` (the reason) when it
+/// was admitted but cannot be. Nothing when tracking was not requested.
+fn insert_turn_tracking(result: &mut Value, turn: Option<&crate::identity_first::TurnTracking>) {
+    let (Some(turn), Value::Object(fields)) = (turn, result) else {
+        return;
+    };
+    match turn {
+        crate::identity_first::TurnTracking::Tracked(ticket) => {
+            fields.insert(
+                "turn".to_string(),
+                serde_json::json!({ "ticket": ticket.to_string() }),
+            );
+        }
+        crate::identity_first::TurnTracking::Unavailable { reason } => {
+            fields.insert("turn".to_string(), Value::Null);
+            fields.insert("turn_unavailable".to_string(), Value::from(reason.as_str()));
+        }
+    }
+}
+
+/// `mobkit/turn_result`'s typed outcome: `state` is `pending`, `completed`,
+/// `failed` or `unknown`. A completed turn carries its own `output`
+/// (`output_available: false` when the bridge cannot report per-turn output).
+fn turn_outcome_json(outcome: &crate::identity_first::TurnOutcome) -> Value {
+    use crate::identity_first::TurnOutcome;
+    match outcome {
+        TurnOutcome::Pending => serde_json::json!({ "state": "pending" }),
+        TurnOutcome::Completed {
+            output: Some(output),
+        } => serde_json::json!({
+            "state": "completed",
+            "output_available": true,
+            "output": output.text,
+            "output_truncated": output.truncated,
+        }),
+        TurnOutcome::Completed { output: None } => serde_json::json!({
+            "state": "completed",
+            "output_available": false,
+            "output": Value::Null,
+            "output_truncated": false,
+        }),
+        TurnOutcome::Failed { reason } => serde_json::json!({
+            "state": "failed",
+            "error": reason,
+        }),
+        TurnOutcome::Unknown => serde_json::json!({ "state": "unknown" }),
+    }
 }
 
 fn identity_error_response(

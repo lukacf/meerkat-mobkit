@@ -31,8 +31,8 @@ triage = rt.agent("triage:main")
 luka = rt.agent("identity:luka")
 
 await triage.dispatch_text("New event", origin="connector")
-# send_and_wait waits on the turn's completion cursor, so it is correct even
-# when the agent answers the same thing twice.
+# send_and_wait waits for THIS send's turn by its ticket and returns that
+# turn's own output, whatever else the identity is doing.
 output = await luka.send_and_wait("What's happening?", timeout=60)
 ```
 

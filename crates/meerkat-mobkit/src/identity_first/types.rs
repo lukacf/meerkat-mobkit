@@ -359,6 +359,97 @@ pub struct SendAdmission {
 }
 
 // ---------------------------------------------------------------------------
+// Turn tickets: per-admission completion
+// ---------------------------------------------------------------------------
+
+/// Names one admitted turn so a caller can wait for THAT turn and read ITS
+/// output, however much other traffic the identity receives.
+///
+/// The ticket is the interaction id the delivery carries into meerkat's
+/// runtime admission (`WorkSpec::interaction_id`), so it is typed state the
+/// turn itself holds, never a correlation by output text or by completion
+/// count. The identity-wide [`CompletionCursor`] cannot name one turn: a peer
+/// message, a scheduled turn or a fork completion wake advances it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TurnTicket(uuid::Uuid);
+
+impl TurnTicket {
+    /// A fresh ticket for a delivery that carries no interaction id yet.
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    /// Parse a ticket, which is an interaction id in UUID form.
+    pub fn parse(raw: &str) -> Result<Self, uuid::Error> {
+        raw.parse().map(Self)
+    }
+
+    #[must_use]
+    pub const fn as_uuid(&self) -> uuid::Uuid {
+        self.0
+    }
+}
+
+impl fmt::Display for TurnTicket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// What one admitted turn produced, projected from that turn's own committed
+/// run result (meerkat's exact-turn completion, never the session's latest
+/// output).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnOutput {
+    /// The run's final assistant text, bounded to [`TURN_OUTPUT_MAX_BYTES`];
+    /// `None` when the run committed no text.
+    pub text: Option<String>,
+    /// Whether `text` was cut at [`TURN_OUTPUT_MAX_BYTES`].
+    pub truncated: bool,
+}
+
+/// Byte bound on one tracked turn's output text.
+pub const TURN_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+
+/// Where a ticketed turn stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// Admitted; the turn has not reached its terminal yet.
+    Pending,
+    /// The turn committed. `output` is `None` only when the session bridge
+    /// cannot report per-turn output (a bridge built with
+    /// [`BridgeTurnReceipt::new`](super::bridge::BridgeTurnReceipt::new)).
+    Completed { output: Option<TurnOutput> },
+    /// The turn ran and failed, or its terminal could not be observed.
+    Failed { reason: String },
+    /// No turn with this ticket is known for this identity: it was never
+    /// admitted here, it belongs to another identity, its record aged out, or
+    /// the runtime restarted since. Never a guess in either direction.
+    Unknown,
+}
+
+/// Whether a delivery can be awaited by ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnTracking {
+    /// The turn is tracked under this ticket.
+    Tracked(TurnTicket),
+    /// The delivery was admitted but its turn cannot be tracked (for example
+    /// a remotely hosted member, whose turns carry no interaction id). A
+    /// caller that needs a completion falls back to the identity-wide
+    /// [`CompletionCursor`], knowing it is not request-correlated.
+    Unavailable { reason: String },
+}
+
+/// An admission receipt plus the ticket that names the admitted turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ticketed<A> {
+    pub admission: A,
+    pub turn: TurnTracking,
+}
+
+// ---------------------------------------------------------------------------
 // Lightweight string newtypes (no validation beyond serde)
 // ---------------------------------------------------------------------------
 

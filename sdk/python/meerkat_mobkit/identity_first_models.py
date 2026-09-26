@@ -985,26 +985,54 @@ def _completion_cursor_from(data: dict[str, Any], key: str) -> CompletionCursor 
     return CompletionCursor.from_dict(raw) if isinstance(raw, dict) else None
 
 
+def _turn_ticket_from(data: dict[str, Any]) -> str | None:
+    """Read the ``turn.ticket`` a tracked delivery returned, if any."""
+    turn = data.get("turn")
+    ticket = turn.get("ticket") if isinstance(turn, dict) else None
+    return ticket if isinstance(ticket, str) else None
+
+
+def _turn_tracking_to_dict(
+    result: dict[str, Any], turn_ticket: str | None, turn_unavailable: str | None
+) -> None:
+    if turn_ticket is not None:
+        result["turn"] = {"ticket": turn_ticket}
+    elif turn_unavailable is not None:
+        result["turn"] = None
+        result["turn_unavailable"] = turn_unavailable
+
+
 @dataclass(frozen=True)
 class SendResult:
     """Typed result from identity-first send()."""
 
     fencing_token: int
-    #: Cursor read before delivery. Wait for an inspection cursor that reports
-    #: COMPLETED against this. ``None`` when the gateway predates the field.
+    #: Cursor read before delivery: an IDENTITY-WIDE barrier. Another
+    #: delivery's completion also passes it, so it does not name this turn;
+    #: use :attr:`turn_ticket` for that. ``None`` when the gateway predates
+    #: the field.
     completion_baseline: CompletionCursor | None = None
+    #: The ticket naming THIS turn, when the send asked for ``track_turn`` and
+    #: the gateway could track it. Wait on it with ``wait_for_turn``.
+    turn_ticket: str | None = None
+    #: Why a requested ticket is unavailable (the turn was still delivered).
+    turn_unavailable: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"fencing_token": self.fencing_token}
         if self.completion_baseline is not None:
             result["completion_baseline"] = self.completion_baseline.to_dict()
+        _turn_tracking_to_dict(result, self.turn_ticket, self.turn_unavailable)
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SendResult:
+        unavailable = data.get("turn_unavailable")
         return cls(
             fencing_token=int(data.get("fencing_token", 0)),
             completion_baseline=_completion_cursor_from(data, "completion_baseline"),
+            turn_ticket=_turn_ticket_from(data),
+            turn_unavailable=unavailable if isinstance(unavailable, str) else None,
         )
 
 
@@ -1016,6 +1044,10 @@ class DispatchResult:
     durable: bool
     #: See :attr:`SendResult.completion_baseline`.
     completion_baseline: CompletionCursor | None = None
+    #: See :attr:`SendResult.turn_ticket`.
+    turn_ticket: str | None = None
+    #: See :attr:`SendResult.turn_unavailable`.
+    turn_unavailable: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -1024,14 +1056,84 @@ class DispatchResult:
         }
         if self.completion_baseline is not None:
             result["completion_baseline"] = self.completion_baseline.to_dict()
+        _turn_tracking_to_dict(result, self.turn_ticket, self.turn_unavailable)
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DispatchResult:
+        unavailable = data.get("turn_unavailable")
         return cls(
             fencing_token=int(data.get("fencing_token", 0)),
             durable=bool(data.get("durable", False)),
             completion_baseline=_completion_cursor_from(data, "completion_baseline"),
+            turn_ticket=_turn_ticket_from(data),
+            turn_unavailable=unavailable if isinstance(unavailable, str) else None,
+        )
+
+
+class TurnState(str, Enum):
+    """Where a ticketed turn stands (``mobkit/turn_result``)."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    #: No turn with this ticket is known for this identity.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """``mobkit/turn_result``: one ticketed turn's state and its OWN output,
+    from that turn's committed run result (never the session's latest text)."""
+
+    identity: str
+    ticket: str
+    state: TurnState
+    #: The turn's final assistant text; ``None`` when it committed no text.
+    output: str | None = None
+    #: ``False`` only when the gateway's session bridge cannot report a
+    #: turn's own output (``output`` is then ``None`` regardless).
+    output_available: bool = True
+    output_truncated: bool = False
+    #: The failure detail when ``state`` is FAILED.
+    error: str | None = None
+    #: The identity-wide cursor at read time (diagnostic only).
+    completion_cursor: CompletionCursor | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "identity": self.identity,
+            "ticket": self.ticket,
+            "state": self.state.value,
+        }
+        if self.state is TurnState.COMPLETED:
+            result["output"] = self.output
+            result["output_available"] = self.output_available
+            result["output_truncated"] = self.output_truncated
+        if self.error is not None:
+            result["error"] = self.error
+        if self.completion_cursor is not None:
+            result["completion_cursor"] = self.completion_cursor.to_dict()
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TurnResult:
+        raw_state = data.get("state")
+        try:
+            state = TurnState(raw_state)
+        except ValueError:
+            state = TurnState.UNKNOWN
+        output = data.get("output")
+        error = data.get("error")
+        return cls(
+            identity=str(data.get("identity", "")),
+            ticket=str(data.get("ticket", "")),
+            state=state,
+            output=output if isinstance(output, str) else None,
+            output_available=bool(data.get("output_available", True)),
+            output_truncated=bool(data.get("output_truncated", False)),
+            error=error if isinstance(error, str) else None,
+            completion_cursor=_completion_cursor_from(data, "completion_cursor"),
         )
 
 

@@ -1035,6 +1035,52 @@ Neither surface supports `cursor` pagination.
 
 ---
 
+## Identity delivery and turn tickets
+
+`mobkit/send`, `mobkit/interact` and `mobkit/dispatch` deliver to an identity
+and return `completion_baseline`, the identity's completion cursor read before
+delivery. That cursor is an identity-wide barrier: any completion on the
+identity after it (a peer message, a scheduled turn, a fork completion wake)
+passes it, so it does not name one turn.
+
+Pass `"track_turn": true` to name the admitted turn with a ticket. The result
+then also carries `"turn": {"ticket": "<uuid>"}`. The ticket is the interaction
+id the delivery carries into the runtime's admission: a fresh one for
+`mobkit/send`, the reserved `interaction_id` for `mobkit/interact`, and the
+canonical `correlation_id` for a correlated `mobkit/dispatch` (so a
+deduplicated re-dispatch names the same turn). When the turn cannot be tracked
+(a remotely hosted member, a session bridge that cannot report per-turn
+output, a non-UUID interaction id), it is still delivered, and the result
+carries `"turn": null` plus `"turn_unavailable": "<reason>"`.
+
+### `mobkit/turn_result`
+
+Report one ticketed turn: `{identity, ticket, state, completion_cursor, ...}`.
+`state` is `pending`, `completed`, `failed` or `unknown`.
+
+- `completed` adds `output` (the turn's own final assistant text from its
+  committed run result, `null` when it committed none), `output_truncated`
+  (cut at 256 KiB), and `output_available` (`false` only when the gateway's
+  session bridge cannot report per-turn output).
+- `failed` adds `error`.
+- `unknown` means the gateway knows no such turn for this identity: never
+  admitted there, another identity's ticket, aged out (settled turns are kept
+  for 10 minutes, at most 4096 tracked turns), or the gateway restarted since.
+  It is never a guess in either direction.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | The identity the turn was delivered to |
+| `ticket` | `string` | yes | The `turn.ticket` of a delivery made with `track_turn` |
+</Accordion>
+
+The SDKs' `send_and_wait` / `sendAndWait` and `dispatch*_and_wait` send with
+`track_turn` and poll `mobkit/turn_result`, falling back to the identity-wide
+cursor (with a warning) only when a delivery returns no ticket.
+
+---
+
 ## WorkGraph methods
 
 The `mobkit/workgraph/*` group exposes meerkat's WorkGraph (the shared-work
