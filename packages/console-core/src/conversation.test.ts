@@ -454,3 +454,103 @@ describe("group id contract (PRs #281-#290 audit regressions)", () => {
     expect(finalized[1]?.id).toBe(streaming[1]?.id);
   });
 });
+
+describe("assistant response ownership boundaries", () => {
+  const response = (id: string, owner: { interactionId?: string; runId?: string; groupReconciliationKey?: string } = {}): ConversationTimelineEntry => ({
+    id, kind: "message", variant: "plain",
+    identity: { id: "router:main", label: "Router", role: "assistant" },
+    text: "The checks passed.", ...owner,
+  });
+
+  test("separates identical substantive replies from distinct typed interactions", () => {
+    const first = response("first", { interactionId: "review-1" });
+    const next = response("next", { interactionId: "review-2" });
+    const groups = groupConversationTimelineEntries([first, next]);
+    expect(groups.map(group => group.entries.map(entry => entry.id))).toEqual([["first"], ["next"]]);
+    expect(groups.map(group => group.copyText)).toEqual(["The checks passed.", "The checks passed."]);
+    expect(new Set(groups.map(group => group.id)).size).toBe(2);
+  });
+
+  test("separates typed runs even when they share one interaction", () => {
+    const first = response("first", { interactionId: "review", runId: "run-1" });
+    const next = response("next", { interactionId: "review", runId: "run-2" });
+    const groups = groupConversationTimelineEntries([first, next]);
+    expect(groups.map(group => group.entries.map(entry => entry.id))).toEqual([["first"], ["next"]]);
+    expect(new Set(groups.map(group => group.id)).size).toBe(2);
+    const later = response("next-final", { interactionId: "review", runId: "run-2" });
+    const peerTool: ConversationTimelineEntry = {
+      ...response("late-peer", { interactionId: "peer", runId: "peer-run" }),
+      kind: "message", variant: "rich", blocks: [{ type: "tool-call", name: "send_request", status: "success" }],
+    };
+    expect(groupConversationTimelineEntries([peerTool, first, next, later]).map(group => group.id))
+      .toEqual(groups.map(group => group.id));
+    const durable = groupConversationTimelineEntries([
+      { ...first, id: "durable-first" },
+      { ...next, id: "durable-next" },
+    ]);
+    expect(durable.map(group => group.id)).toEqual(groups.map(group => group.id));
+  });
+
+  test("keeps same-run chunks and unscoped compatibility entries without bridging distinct owners", () => {
+    const groups = groupConversationTimelineEntries([
+      response("first", { interactionId: "review-1", runId: "run-1" }),
+      response("same-run", { interactionId: "review-1", runId: "run-1" }),
+      response("unscoped"),
+      response("next", { interactionId: "review-2", runId: "run-2" }),
+    ]);
+    expect(groups.map(group => group.entries.map(entry => entry.id))).toEqual([["first", "same-run", "unscoped"], ["next"]]);
+    expect(groupConversationTimelineEntries([response("legacy-a"), response("legacy-b")])).toHaveLength(1);
+  });
+
+  test("late run metadata cannot change a stable interaction group anchor", () => {
+    const initial = response("live", { interactionId: "review" });
+    const durable = response("durable", { interactionId: "review", runId: "run-1" });
+    expect(groupConversationTimelineEntries([durable])[0]?.id)
+      .toBe(groupConversationTimelineEntries([initial])[0]?.id);
+  });
+
+  test("distinct interactions sharing a run retain stable independent group identities", () => {
+    const entries = [
+      response("first", { interactionId: "review-1", runId: "run-1" }),
+      response("next", { interactionId: "review-2", runId: "run-1" }),
+    ];
+    const live = groupConversationTimelineEntries(entries);
+    const durable = groupConversationTimelineEntries(entries.map(entry => ({ ...entry, id: `durable-${entry.id}` })));
+    expect(new Set(live.map(group => group.id)).size).toBe(2);
+    expect(durable.map(group => group.id)).toEqual(live.map(group => group.id));
+  });
+
+  test("late tool and meta owners cannot split or re-key their substantive response", () => {
+    const first = response("first", { interactionId: "review-1", runId: "run-1", groupReconciliationKey: "response-1" });
+    const final = response("final", { interactionId: "review-1", runId: "run-1", groupReconciliationKey: "response-1" });
+    const next = response("next", { interactionId: "review-2", runId: "run-2", groupReconciliationKey: "response-2" });
+    const tool: ConversationTimelineEntry = {
+      ...response("peer-tool", { interactionId: "peer", runId: "peer-run", groupReconciliationKey: "peer-group" }),
+      kind: "message", variant: "rich", blocks: [{ type: "tool-call", name: "send_message", status: "success" }],
+    };
+    const meta: ConversationTimelineEntry = { ...response("meta", { interactionId: "meta-owner", runId: "meta-run" }), kind: "message", variant: "meta" };
+    const before = groupConversationTimelineEntries([first, final, next]);
+    const after = groupConversationTimelineEntries([tool, first, meta, final, next]);
+    expect(after.map(group => group.entries.map(entry => entry.id))).toEqual([["peer-tool", "first", "meta", "final"], ["next"]]);
+    expect(after.map(group => group.id)).toEqual(before.map(group => group.id));
+  });
+
+  test("explicit shared host group keys keep provisional and durable response ownership together", () => {
+    const provisional = response("activity", { interactionId: "provisional", runId: "provisional-run", groupReconciliationKey: "host-response" });
+    const durable = response("response", { interactionId: "canonical", runId: "canonical-run", groupReconciliationKey: "host-response" });
+    const groups = groupConversationTimelineEntries([provisional, durable]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.id).toBe(groupConversationTimelineEntries([provisional])[0]?.id);
+    expect(groups[0]?.id).toContain("group-reconciliation-host-response");
+  });
+
+  test("a host group anchor covers intervening unkeyed chunks during durable owner reconciliation", () => {
+    const provisional = response("activity", { interactionId: "provisional", runId: "provisional-run", groupReconciliationKey: "host-response" });
+    const chunk = response("chunk", { interactionId: "provisional", runId: "provisional-run" });
+    const durable = response("response", { interactionId: "canonical", runId: "canonical-run", groupReconciliationKey: "host-response" });
+    const before = groupConversationTimelineEntries([provisional, chunk]);
+    const after = groupConversationTimelineEntries([provisional, chunk, durable]);
+    expect(after.map(group => group.entries.map(entry => entry.id))).toEqual([["activity", "chunk", "response"]]);
+    expect(after.map(group => group.id)).toEqual(before.map(group => group.id));
+  });
+});

@@ -427,6 +427,76 @@ async function queuedSteer() {
   });
 }
 
+async function sharedQueuedSteer() {
+  return inBrowser("real-shared-queued-steer", async ({ fixture, page }) => {
+    const firstAnswer = "The workgraph review is still in progress. ".repeat(80);
+    const acknowledgementText = "Steering acknowledged by the next model turn.";
+    const queued = "Steer the active review toward the blocked dependency. A\u030A \ud83d\ude80";
+    await open(page, fixture, "shared");
+    await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption(identity);
+    const transcript = viewport(page, "shared");
+    await fixture.control("model", { source: firstAnswer, delay_ms: 20, chunk_chars: 8 });
+    const first = await sendApi(fixture, "Begin the long workgraph review.", "shared-steer-first");
+    await transcript.getByText(/The workgraph review is still/).first().waitFor();
+    await fixture.control("model", { source: acknowledgementText, delay_ms: 0, chunk_chars: 4096 });
+    // The reusable host receives the same real queued/steer API timeline as
+    // stock. Its response grouping and copy controls are exercised in-browser.
+    const response = await rpc(fixture.baseUrl, "mobkit/console/send", {
+      identity, content: queued, handling_mode: "steer", idempotency_key: "shared-steer-second",
+      origin: "console:shared-steer-acceptance", origin_kind: "operator",
+    });
+    const acceptance = response.body.result;
+    assert(acceptance?.interaction_id && acceptance.input_frame_id, JSON.stringify(response));
+    const acknowledgement = transcript.getByText(acknowledgementText, { exact: true });
+    await acknowledgement.waitFor();
+    await exactModelContent(fixture, queued, "shared steer");
+    const latest = pane(page, "shared").getByRole("button", { name: "Jump to latest", exact: true });
+    if (await latest.isVisible()) await latest.click();
+    await acknowledgement.scrollIntoViewIfNeeded();
+    const frames = (await timeline(fixture)).frames;
+    const canonical = frames.find(frame => frame.id === acceptance.input_frame_id);
+    assert.equal(canonical?.payload.content, queued);
+    assert.equal(canonical?.payload.handling_mode, "steer");
+    const groups = await transcript.locator(".cc-message-group").evaluateAll(nodes => nodes.map(node => ({
+      sources: [...node.querySelectorAll("[data-quote-source]")].map(quote => ({
+        id: quote.getAttribute("data-quote-message-id"), source: quote.getAttribute("data-quote-source"),
+      })),
+    })));
+    const rows = groups.flatMap(group => group.sources);
+    const sourceRows = rows.filter(row => row.source.includes("workgraph review") || row.source.length > 0 && firstAnswer.includes(row.source));
+    assert.equal(sourceRows.map(row => row.source).join(""), firstAnswer, "shared original answer appears exactly once");
+    assert.equal(rows.filter(row => row.source === acknowledgementText).length, 1, "shared steering reply appears once");
+    const acknowledgementGroup = transcript.locator(".cc-message-group").filter({ hasText: acknowledgementText });
+    await acknowledgementGroup.getByRole("button", { name: "Copy response", exact: true }).click();
+    await acknowledgementGroup.getByRole("button", { name: "Copied response", exact: true }).waitFor();
+    const copiedAcknowledgement = await page.evaluate(() => navigator.clipboard.readText());
+    await capture(page, "shared-steer-response-copy");
+    await saveEvidence(fixture, "shared-steer-response-copy", { first, acceptance, canonical, frames, groups, copiedAcknowledgement });
+    assert.equal(copiedAcknowledgement, acknowledgementText, "Copy response contains only the actual steering reply");
+    const acknowledgementRows = groups.find(group => group.sources.some(row => row.source === acknowledgementText)).sources;
+    assert.deepEqual(acknowledgementRows.map(row => row.source), [acknowledgementText], "separate runs have separate response groups");
+    for (const row of acknowledgementRows) {
+      assert.equal(frames.find(frame => frame.id === row.id)?.interaction_id, acceptance.interaction_id, "acknowledgement group retains exact source ownership");
+    }
+    const originalGroups = transcript.locator(".cc-message-group").filter({ hasText: "The workgraph review is still in progress." });
+    const copiedOriginalGroups = [];
+    for (const group of await originalGroups.all()) {
+      const expected = await group.locator("[data-quote-source]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-quote-source")).join("\n\n"));
+      const copy = group.getByRole("button", { name: "Copy response", exact: true });
+      await copy.scrollIntoViewIfNeeded(); await copy.click();
+      await group.getByRole("button", { name: "Copied response", exact: true }).waitFor();
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      assert.equal(copied, expected, "original response copy retains its exact chronological source chunks");
+      assert(!copied.includes(acknowledgementText), "original response copy excludes the independent steering reply");
+      copiedOriginalGroups.push(copied);
+    }
+    assert(copiedOriginalGroups.length > 0);
+    await acknowledgement.scrollIntoViewIfNeeded();
+    await capture(page, "shared-steer-separate-responses");
+    await saveEvidence(fixture, "shared-steer-separate-responses", { first, acceptance, canonical, frames, groups, copiedAcknowledgement, copiedOriginalGroups });
+  });
+}
+
 async function twoPaneDrafts() {
   return inBrowser("real-scoped-two-pane-drafts", async ({ fixture, page }) => {
     await seedQuote(fixture); await open(page, fixture);
@@ -532,6 +602,7 @@ const scenarios = [
   { id: "real-scoped-lost-ack", family: "real-send", backend: "real", run: lostAcknowledgement },
   { id: "real-scoped-quoted-lost-ack", family: "real-send", backend: "real", run: () => lostAcknowledgement(true) },
   { id: "real-scoped-queued-steer", family: "real-send", backend: "real", run: queuedSteer },
+  { id: "real-shared-queued-steer", family: "real-send", backend: "real", run: sharedQueuedSteer },
   { id: "real-scoped-two-pane-drafts", family: "real-send", backend: "real", run: twoPaneDrafts },
   { id: "real-scoped-new-draft-during-enqueue", family: "real-send", backend: "real", run: newerDraftDuringEnqueue },
 ];
