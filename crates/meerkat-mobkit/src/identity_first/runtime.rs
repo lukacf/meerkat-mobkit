@@ -1877,6 +1877,32 @@ pub struct IdentityRuntime {
     /// cursor must never do. The map is bounded by the identities this process
     /// has seen, i.e. by roster size.
     completion_cursors: StdMutex<BTreeMap<AgentIdentity, CompletionCursor>>,
+    /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
+    inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
+}
+
+/// How long a successful member inspection is reused. Pollers (the SDK's
+/// `inspect_identity`, `wait_for_output`) ask about once a second or more.
+const INSPECTION_REUSE_WINDOW: Duration = Duration::from_secs(1);
+
+/// One bridge inspection of a member incarnation, shared by every caller
+/// asking about that incarnation while it runs and, once it succeeded, for
+/// [`INSPECTION_REUSE_WINDOW`].
+#[derive(Clone, Default)]
+struct SharedInspection {
+    read: Arc<tokio::sync::OnceCell<(Instant, Result<super::bridge::MemberInspection, String>)>>,
+}
+
+impl SharedInspection {
+    /// Still running, or succeeded within the reuse window. A failed read is
+    /// shared only with the callers that were waiting on it.
+    fn reusable(&self) -> bool {
+        match self.read.get() {
+            None => true,
+            Some((finished, Ok(_))) => finished.elapsed() < INSPECTION_REUSE_WINDOW,
+            Some((_, Err(_))) => false,
+        }
+    }
 }
 
 /// One generated member alias plus the lifecycle lock owned by its durable
@@ -2051,6 +2077,7 @@ impl IdentityRuntime {
             pending_reset_bridge_cleanups: Arc::new(RwLock::new(BTreeMap::new())),
             reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
             completion_cursors: StdMutex::new(BTreeMap::new()),
+            inspections: StdMutex::new(BTreeMap::new()),
         }
     }
 
@@ -11849,6 +11876,14 @@ impl IdentityRuntime {
     }
 
     /// Inspect the current execution state of an identity via the bridge.
+    ///
+    /// The bridge's inspection is a full meerkat member-status read, and a
+    /// mob admits only one such read at a time (the rest are refused as
+    /// `observation_lane_saturated`). So concurrent callers asking about the
+    /// same member incarnation share one read, and a successful result is
+    /// reused for [`INSPECTION_REUSE_WINDOW`]: an `inspect_identity` poller
+    /// costs at most one read per window. A new incarnation (respawn, reset)
+    /// has a new runtime id and is always read afresh.
     pub async fn inspect(
         &self,
         identity: &AgentIdentity,
@@ -11858,10 +11893,25 @@ impl IdentityRuntime {
             .bridge
             .as_ref()
             .ok_or_else(|| IdentityRuntimeError::Internal("no bridge configured".to_string()))?;
-        bridge
-            .inspect_member(&runtime_id)
-            .await
-            .map_err(|e| IdentityRuntimeError::Internal(format!("inspect: {e}")))
+        let shared = {
+            let mut inspections = self
+                .inspections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inspections.retain(|_, shared| shared.reusable());
+            inspections.entry(runtime_id.clone()).or_default().clone()
+        };
+        let (_, result) = shared
+            .read
+            .get_or_init(|| async {
+                let result = bridge
+                    .inspect_member(&runtime_id)
+                    .await
+                    .map_err(|e| format!("inspect: {e}"));
+                (Instant::now(), result)
+            })
+            .await;
+        result.clone().map_err(IdentityRuntimeError::Internal)
     }
 
     // -----------------------------------------------------------------------
