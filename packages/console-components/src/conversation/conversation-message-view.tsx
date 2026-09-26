@@ -12,6 +12,7 @@ import {
 } from "@console-core";
 
 import { ConversationRichContent } from "./conversation-rich-content";
+import { DeliveredContextMessage } from "./delivered-context-message";
 import { ConversationConnectionEventView } from "./conversation-connection-event";
 import { FlowRunCard, type FlowRunRestoreHandler } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
@@ -239,7 +240,7 @@ export function ConversationMessageView({
         ) : null}
         {!compact ? <EntrySourceHeader iso={entry.createdAt} source={source} /> : null}
         <div data-quote-message-id={entry.id} data-quote-source={copyText}>
-          {visibleRichBlocks.length ? (
+          {entry.contextMessage ? <DeliveredContextMessage message={entry.contextMessage} /> : visibleRichBlocks.length ? (
             <ConversationRichContent blocks={visibleRichBlocks} markdownUrlPolicy={markdownUrlPolicy} Icon={Icon} richStyle={entry.richStyle} />
           ) : (
             <p>{renderMultilineText(entry.text || "")}</p>

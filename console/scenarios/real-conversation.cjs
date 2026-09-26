@@ -96,6 +96,81 @@ async function open(page, fixture, host, monitor) {
 const transcript = (page, host) => page.locator(host === "shared" ? '[data-testid="shared-pane-0"] .cc-conversation-pane__scroll' : ".conv__body").first();
 const conversationPane = (page, host) => page.locator(host === "shared" ? '[data-testid="shared-pane-0"]' : ".conv").first();
 
+async function inspectJumpTextClearance(viewport, jump, label) {
+  const button = await jump.boundingBox();
+  assert(button, `${label} latest control has rendered bounds`);
+  const result = await viewport.evaluate((node, button) => {
+    const viewport = node.getBoundingClientRect();
+    const control = { left: button.x, right: button.x + button.width, top: button.y, bottom: button.y + button.height };
+    const overlaps = [];
+    let visibleTextRects = 0;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      if (!text.textContent.trim()) continue;
+      const element = text.parentElement;
+      if (!element || element.closest("script, style, [aria-hidden=true]")) continue;
+      const style = getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) continue;
+      const range = document.createRange(); range.selectNodeContents(text);
+      for (const rect of range.getClientRects()) {
+        const left = Math.max(rect.left, viewport.left), right = Math.min(rect.right, viewport.right);
+        const top = Math.max(rect.top, viewport.top), bottom = Math.min(rect.bottom, viewport.bottom);
+        if (right <= left || bottom <= top) continue;
+        visibleTextRects += 1;
+        if (Math.min(right, control.right) > Math.max(left, control.left) + .5
+          && Math.min(bottom, control.bottom) > Math.max(top, control.top) + .5) {
+          overlaps.push({ text: text.textContent.slice(0, 100), rect: { left, right, top, bottom } });
+        }
+      }
+    }
+    const rail = node.parentElement.querySelector(".conv-turn-rail, .cc-conversation-turn-rail");
+    const railBounds = rail && getComputedStyle(rail).visibility !== "hidden" ? rail.getBoundingClientRect().toJSON() : null;
+    return { control, visibleTextRects, overlaps, railBounds };
+  }, button);
+  assert(result.visibleTextRects > 0, `${label} checks actual visible transcript text`);
+  assert.deepEqual(result.overlaps, [], `${label} latest control covers readable text: ${JSON.stringify(result)}`);
+  if (result.railBounds) assert(result.railBounds.bottom <= result.control.top,
+    `${label} turn navigation leaves a separate slot for the latest control: ${JSON.stringify(result)}`);
+  return result;
+}
+
+async function transcriptGeometry(viewport) {
+  return viewport.evaluate(node => ({ width: node.clientWidth, height: node.clientHeight, scrollHeight: node.scrollHeight }));
+}
+
+async function inspectStockHeader(pane, label) {
+  const result = await pane.locator(".conv__head").evaluate(head => {
+    const box = node => node.getBoundingClientRect().toJSON();
+    const title = head.querySelector(".conv__title");
+    return { agentLabel: title.textContent, identity: title.title, head: box(head), title: box(title), actions: box(head.querySelector(".conv__actions")),
+      buttons: [...head.querySelectorAll(".conv__action")].map(button => {
+        const bounds = box(button), hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        return { name: button.getAttribute("aria-label") || button.textContent.trim(), tooltip: button.title, bounds,
+          visible: getComputedStyle(button).visibility !== "hidden", unobstructed: button === hit || button.contains(hit),
+          icon: button.querySelector("use")?.getAttribute("href"), textDisplay: button.querySelector(".conv__action-label") && getComputedStyle(button.querySelector(".conv__action-label")).display };
+      }) };
+  });
+  assert(result.agentLabel && result.identity && result.title.width > 24, `${label} retains the agent target: ${JSON.stringify(result)}`);
+  assert(result.title.right <= result.actions.left - 4, `${label} target does not overlap actions: ${JSON.stringify(result)}`);
+  assert.equal(result.buttons.length, 3, `${label} retains all three permitted actions`);
+  for (const button of result.buttons) {
+    assert(button.visible && button.unobstructed, `${label} ${button.name} is unobstructed: ${JSON.stringify(result)}`);
+    assert(button.bounds.left >= result.head.left + 2 && button.bounds.right <= result.head.right - 2
+      && button.bounds.top >= result.head.top + 2 && button.bounds.bottom <= result.head.bottom - 2,
+    `${label} ${button.name} stays inside the header: ${JSON.stringify(result)}`);
+    assert(button.bounds.width >= 28 && button.bounds.height >= 28, `${label} ${button.name} remains a usable control`);
+    assert(button.icon && button.tooltip.includes(result.identity), `${label} ${button.name} has an icon and explicit target tooltip`);
+    if (result.head.width <= 440) assert.equal(button.textDisplay, "none", `${label} switches to compact icon actions`);
+  }
+  const buttons = pane.locator(".conv__head .conv__action");
+  await buttons.first().focus();
+  for (let index = 0; index < result.buttons.length; index += 1) {
+    assert(await buttons.nth(index).evaluate(button => document.activeElement === button), `${label} keyboard reaches ${result.buttons[index].name} in order`);
+    if (index + 1 < result.buttons.length) await pane.page().keyboard.press("Tab");
+  }
+  return { label, ...result };
+}
+
 async function inspectJump(page, host, working) {
   const viewport = transcript(page, host);
   const jump = conversationPane(page, host).getByRole("button", { name: "Jump to latest", exact: true });
@@ -125,6 +200,7 @@ async function inspectJump(page, host, working) {
   assert(result.width >= 32 && result.width <= 44 && Math.abs(result.width - result.height) <= 1, `${host} jump remains a compact circle`);
   assert(result.left >= bounds.x && result.right <= bounds.x + bounds.width && result.top >= bounds.y && result.bottom <= bounds.y + bounds.height + 2,
     `${host} jump is inside the transcript above its footer: ${JSON.stringify({ result, bounds })}`);
+  result.textClearance = await inspectJumpTextClearance(viewport, jump, `${host} working=${working}`);
   if (working) {
     assert(result.animations > 0 && result.playState === "running" && result.advanced, `${host} actual active perimeter animation advances`);
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -217,8 +293,21 @@ async function presentation(host) {
     await capture(page, `${host}-1600-initial`);
 
     // Reading intent must survive a new, long stream through the real runtime.
+    const beforeLatestAppears = await transcriptGeometry(viewport);
     await viewport.evaluate(node => { node.scrollTop = Math.min(350, node.scrollHeight / 3); node.dispatchEvent(new Event("scroll")); });
     const controls = { idle: await inspectJump(page, host, false), quote: await inspectQuoteAction(page, host) };
+    controls.appearanceGeometry = { before: beforeLatestAppears, after: await transcriptGeometry(viewport) };
+    assert.deepEqual(controls.appearanceGeometry.after, controls.appearanceGeometry.before,
+      `${host} latest appearance changes neither transcript size nor text wrapping`);
+    const initialJump = conversationPane(page, host).getByRole("button", { name: "Jump to latest", exact: true });
+    const beforeLatestDisappears = await transcriptGeometry(viewport);
+    await initialJump.click();
+    await initialJump.waitFor({ state: "detached" });
+    controls.disappearanceGeometry = { before: beforeLatestDisappears, after: await transcriptGeometry(viewport) };
+    assert.deepEqual(controls.disappearanceGeometry.after, controls.disappearanceGeometry.before,
+      `${host} latest disappearance changes neither transcript size nor text wrapping`);
+    await viewport.evaluate(node => { node.scrollTop = Math.min(350, node.scrollHeight / 3); node.dispatchEvent(new Event("scroll")); });
+    await initialJump.waitFor();
     const anchor = await viewport.evaluate(node => {
       const top = node.getBoundingClientRect().top;
       const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.getBoundingClientRect().bottom > top + 20);
@@ -266,6 +355,7 @@ async function presentation(host) {
     controls.completed = await inspectJump(page, host, false);
     geometry.controls = controls;
     geometry.resize = await measureAnchor(viewport, anchor, () => page.setViewportSize({ width: 1440, height: 900 }), `${host} viewport resize while reading`);
+    controls.reading1440 = await inspectJump(page, host, false);
     await capture(page, `${host}-1440-reading`);
     const completedDocument = viewport.locator(".cc-markdown-document").filter({ hasText: selectedText }).last();
     const copy = host === "stock"
@@ -291,13 +381,18 @@ async function presentation(host) {
     geometry.clipboardExact = true;
     const jumpAfterCopy = conversationPane(page, host).getByRole("button", { name: "Jump to latest", exact: true });
     if (await jumpAfterCopy.count()) await jumpAfterCopy.click();
+    await settle(page);
     const endDistance = await viewport.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight);
     assert(endDistance <= 48, `${host} copy target reveal or jump reaches the transcript end, remaining ${endDistance}px`);
     await page.setViewportSize({ width: 1024, height: 768 });
+    await viewport.evaluate(node => { node.scrollTop = Math.min(350, node.scrollHeight / 3); node.dispatchEvent(new Event("scroll")); });
+    controls.reading1024 = await inspectJump(page, host, false);
     await capture(page, `${host}-1024-containment`);
     if (host === "shared") {
       await page.getByRole("button", { name: "Toggle second pane" }).click();
       await page.setViewportSize({ width: 1600, height: 1000 });
+      await settle(page);
+      controls.twoPanes = await inspectJump(page, host, false);
       await capture(page, `${host}-two-panes`);
     }
     await monitor.during("explicit presentation reload", async () => {
@@ -305,8 +400,52 @@ async function presentation(host) {
       if (host === "stock" && !await page.locator(".conv__body").count()) await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     }, initializationCancellation);
-    await transcript(page, host).getByText("Review the workgraph and prepare peer-review evidence.", { exact: true }).waitFor();
-    assert(first.input_frame_id);
+    const reloadedViewport = transcript(page, host);
+    const originalInstruction = "Review the workgraph and prepare peer-review evidence.";
+    const ownerInput = (await timeline(fixture)).frames.find(frame => frame.id === first.input_frame_id);
+    assert(ownerInput, `${host} owner retains the original accepted input frame`);
+    assert.equal(ownerInput.kind, "user_input");
+    assert.equal(ownerInput.interaction_id, first.interaction_id);
+    assert.equal(ownerInput.payload.content, originalInstruction);
+    geometry.reloadOwnerInput = ownerInput;
+    const originalPrompt = reloadedViewport.getByText(originalInstruction, { exact: true });
+    geometry.reloadPages = [];
+    // The long stream can push the first turn outside the recent 200-frame
+    // seed. Recover it through the same bounded history action as a reader.
+    for (let index = 0; await originalPrompt.count() === 0 && index < 16; index += 1) {
+      const reveal = reloadedViewport.getByRole("button", { name: "Show earlier messages", exact: true });
+      if (await reveal.count()) await reveal.dispatchEvent("click");
+      await settle(page);
+      if (await originalPrompt.count()) break;
+      const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
+      await older.waitFor({ state: "attached", timeout: 5000 });
+      await eventually(() => older.isEnabled(), "reload history action is ready");
+      const responsePromise = page.waitForResponse(response => {
+        if (!response.url().endsWith("/console/rpc")) return false;
+        const request = response.request().postDataJSON();
+        return request?.method === "mobkit/console/query_timeline" && Boolean(request.params?.before);
+      });
+      await older.dispatchEvent("click");
+      const response = await responsePromise;
+      const body = await response.json();
+      assert.equal(response.status(), 200, "reload older-history request succeeds");
+      assert(Array.isArray(body.result?.frames), "reload receives an owner history page");
+      geometry.reloadPages.push({ request: response.request().postDataJSON().params, frameCount: body.result.frames.length, exhausted: body.result.exhausted === true });
+      await eventually(async () => !(await page.getByRole("button", { name: "Loading history", exact: true }).count()), "reload applies the older page");
+      await settle(page);
+    }
+    await originalPrompt.waitFor();
+    const originalRow = reloadedViewport.locator(`[data-conversation-row-id="${first.input_frame_id}"]`);
+    assert.equal(await originalRow.count(), 1, `${host} accepted input retains one exact rendered row identity after history paging`);
+    assert.equal(await originalRow.getByText(originalInstruction, { exact: true }).count(), 1);
+    geometry.reloadRenderedInput = await originalRow.evaluate(node => ({
+      id: node.dataset.conversationRowId,
+      source: (node.matches("[data-quote-source]") ? node : node.querySelector("[data-quote-source]"))?.dataset.quoteSource,
+    }));
+    assert.equal(geometry.reloadRenderedInput.source, originalInstruction, `${host} reloaded input preserves the exact authored source`);
+    await originalPrompt.scrollIntoViewIfNeeded();
+    await settle(page);
+    await capture(page, `${host}-presentation-reloaded-original`);
     assert.deepEqual(monitor.errors, []);
     await fs.writeFile(path.join(evidence, `${host}-geometry.json`), JSON.stringify({ geometry, errors: monitor.errors, expectedFailures: monitor.expected, observations: fixture.observations }, null, 2));
   } catch (error) {
@@ -314,6 +453,148 @@ async function presentation(host) {
     await fs.writeFile(path.join(evidence, `${host}-presentation-failure.json`), JSON.stringify({ error: error.stack, html: await page.content(), clipboard: await page.evaluate(() => ({ ...window.__clipboardEvidence, focused: document.hasFocus() })), frames: (await timeline(fixture)).frames, observations: fixture.observations, logs: fixture.logs() }, null, 2));
     throw error;
   } finally { await browser.close(); await fixture.close(); }
+}
+
+async function seedReadingHistory(fixture) {
+  const turns = [];
+  for (let index = 0; index < 6; index += 1) {
+    const instruction = `Review checkpoint ${index}: preserve this release evidence.`;
+    const source = `## Reading checkpoint ${index}\n\n${Array.from({ length: 6 }, (_, paragraph) => `Evidence ${index}.${paragraph}: the release reviewer checks the dependency graph, verifies the previous agent reply, and keeps the exact decision available while new work arrives.`).join("\n\n")}\n`;
+    await fixture.control("model", { source, delay_ms: 0, chunk_chars: 4096 });
+    const accepted = await sendApi(fixture, instruction, `reading-checkpoint-${index}`);
+    const terminal = await completed(fixture, `Reading checkpoint ${index}`);
+    assert.equal(terminal.interaction_id, accepted.interaction_id, "reading history belongs to its actual accepted turn");
+    turns.push({ instruction, source, accepted, terminal });
+  }
+  return turns;
+}
+
+function identitySwitchCancellation(request) {
+  if (!request.failure()?.errorText?.includes("ERR_ABORTED")) return false;
+  const url = new URL(request.url());
+  if (url.pathname.endsWith("/timeline/stream")) return true;
+  try {
+    const body = JSON.parse(request.postData() || "{}");
+    return body.method === "mobkit/console/query_timeline" && body.params?.mode === "recent"
+      && ["router:main", "domain:delivery"].includes(body.params?.identity);
+  } catch { return false; }
+}
+
+async function retargetReadingPane(page, host, identity, pane) {
+  if (host === "shared") await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption(identity);
+  else {
+    await pane.getByTestId(/^pane-title:/).click();
+    await pane.getByTestId(/^pane-menu-agent:/).filter({ hasText: identity }).click();
+    await pane.getByTestId(`chat-composer:${identity}`).waitFor();
+  }
+  await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+  await settle(page);
+}
+
+async function readingIntent(host) {
+  const fixture = await startFixture();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const monitor = browserErrors(page);
+  const result = { host, checks: [], errors: monitor.errors, expectedFailures: monitor.expected };
+  try {
+    result.turns = await seedReadingHistory(fixture);
+    const awaySource = "Delivery reviewer is checking the independent image branch.";
+    await fixture.control("model", { source: awaySource, delay_ms: 0, chunk_chars: 4096 });
+    const away = await rpc(fixture.baseUrl, "mobkit/console/send", { identity: "domain:delivery", content: "Review the image branch independently.",
+      origin: "console:reading-intent", origin_kind: "operator", idempotency_key: "reading-away" });
+    assert(away.body.result?.interaction_id, JSON.stringify(away));
+    await eventually(async () => {
+      const response = await fetch(`${fixture.baseUrl}/console/timeline?identity=domain%3Adelivery&mode=recent&limit=200`);
+      const body = await response.json();
+      return body.frames?.some(frame => frame.kind === "text_complete" && frame.interaction_id === away.body.result.interaction_id);
+    }, "real alternate identity completion");
+    await open(page, fixture, host, monitor);
+    const firstPane = host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(/^pane:panel-/).first();
+    const viewport = transcript(page, host);
+    const anchorRow = viewport.locator("[data-conversation-row-id]").filter({ hasText: result.turns[1].instruction }).last();
+    await anchorRow.waitFor();
+    if (host === "stock") {
+      result.headers = [];
+      for (const size of [{ width: 1600, height: 1000 }, { width: 1440, height: 900 }, { width: 1024, height: 768 }]) {
+        await page.setViewportSize(size); await settle(page);
+        result.headers.push(await inspectStockHeader(firstPane, `single pane ${size.width}`));
+        await capture(page, `stock-header-single-${size.width}`);
+      }
+      await page.setViewportSize({ width: 1600, height: 1000 }); await settle(page);
+    }
+    const anchor = await anchorAt(viewport, anchorRow, -10);
+    try {
+      result.checks.push(await measureAnchor(viewport, anchor, () => monitor.during("deliberate identity away and return", async () => {
+        await retargetReadingPane(page, host, "domain:delivery", firstPane);
+        await transcript(page, host).getByText(awaySource, { exact: true }).waitFor();
+        await retargetReadingPane(page, host, "router:main", firstPane);
+        await anchorRow.waitFor();
+      }, identitySwitchCancellation), `${host} identity return restores its reading row`));
+    } catch (error) {
+      // Retain this failure while collecting independent pane evidence. The
+      // scenario still fails at its end; later success cannot conceal it.
+      result.identityFailure = error.stack || String(error);
+    }
+    await capture(page, `${host}-reading-identity-${result.identityFailure ? "failure" : "restored"}-1600`);
+
+    if (host === "shared") await page.getByRole("button", { name: "Toggle second pane", exact: true }).click();
+    else await firstPane.getByTestId(/^pane-split-right:/).click();
+    const secondPane = host === "shared" ? page.getByTestId("shared-pane-1") : page.getByTestId(/^pane:panel-/).nth(1);
+    await secondPane.waitFor();
+    if (host === "stock" && !await secondPane.getByTestId("chat-composer:router:main").count()) {
+      await retargetReadingPane(page, host, "router:main", secondPane);
+    }
+    const secondViewport = secondPane.locator(host === "shared" ? ".cc-conversation-pane__scroll" : ".conv__body");
+    await secondViewport.locator("[data-conversation-row-id]").filter({ hasText: result.turns[5].instruction }).last().waitFor();
+    // Each pane receives its own explicit scroll intent before background work.
+    const firstReading = await anchorAt(viewport, anchorRow, -10);
+    const secondAnchorRow = secondViewport.locator("[data-conversation-row-id]").filter({ hasText: result.turns[3].instruction }).last();
+    const secondReading = await anchorAt(secondViewport, secondAnchorRow, -10);
+    assert.notEqual(firstReading.id, secondReading.id, "same-agent panes intentionally read different retained rows");
+    result.clearance = [
+      await inspectJumpTextClearance(viewport, firstPane.getByRole("button", { name: "Jump to latest", exact: true }), `${host} first split pane 1600`),
+      await inspectJumpTextClearance(secondViewport, secondPane.getByRole("button", { name: "Jump to latest", exact: true }), `${host} second split pane 1600`),
+    ];
+    result.checks.push(await measureAnchor(viewport, firstReading, async () => {
+      await secondPane.getByRole("button", { name: "Jump to latest", exact: true }).click();
+      await eventually(() => secondViewport.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight <= 48), "second pane reaches actual live edge");
+    }, `${host} second-pane latest action leaves first reading anchor`));
+
+    const streamSource = `## New review arrived\n\n${Array.from({ length: 10 }, (_, index) => `Progress ${index}: a new peer review finishes while the first pane retains its older checkpoint.`).join("\n\n")}\n\nCompleted independent reading check.`;
+    await fixture.control("model", { source: streamSource, delay_ms: 12, chunk_chars: 64 });
+    const beforeSecond = await secondViewport.evaluate(node => ({ top: node.scrollTop, height: node.scrollHeight }));
+    result.checks.push(await measureAnchor(viewport, firstReading, async () => {
+      result.streamAccepted = await sendApi(fixture, "Continue the release review while I read an older checkpoint.", "reading-two-pane-stream");
+      result.streamTerminal = await completed(fixture, "Completed independent reading check.");
+      await secondViewport.getByText("Completed independent reading check.", { exact: true }).waitFor();
+      await eventually(() => secondViewport.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight <= 48), "following pane tracks new live text");
+    }, `${host} background stream preserves independent reading pane`));
+    const afterSecond = await secondViewport.evaluate(node => ({ top: node.scrollTop, height: node.scrollHeight, remaining: node.scrollHeight - node.scrollTop - node.clientHeight }));
+    assert(afterSecond.top > beforeSecond.top + 200, "following pane actually moved with new content");
+    assert.equal(result.streamTerminal.interaction_id, result.streamAccepted.interaction_id);
+    result.panes = { firstReading, secondReading, beforeSecond, afterSecond };
+    if (host === "stock") result.headers.push(await inspectStockHeader(firstPane, "first split pane 1600"), await inspectStockHeader(secondPane, "second split pane 1600"));
+    await capture(page, `${host}-independent-reading-panes-1600`);
+    await page.setViewportSize({ width: 1440, height: 900 }); await settle(page);
+    result.clearance.push(await inspectJumpTextClearance(viewport, firstPane.getByRole("button", { name: "Jump to latest", exact: true }), `${host} split pane 1440`));
+    if (host === "stock") result.headers.push(await inspectStockHeader(firstPane, "first split pane 1440"), await inspectStockHeader(secondPane, "second split pane 1440"));
+    await capture(page, `${host}-independent-reading-panes-1440`);
+    await page.setViewportSize({ width: 1024, height: 768 }); await settle(page);
+    result.clearance.push(await inspectJumpTextClearance(viewport, firstPane.getByRole("button", { name: "Jump to latest", exact: true }), `${host} split pane 1024`));
+    if (host === "stock") result.headers.push(await inspectStockHeader(firstPane, "first split pane 1024"), await inspectStockHeader(secondPane, "second split pane 1024"));
+    await capture(page, `${host}-independent-reading-panes-1024`);
+    assert.deepEqual(monitor.errors, []);
+    assert(!result.identityFailure, result.identityFailure);
+  } catch (error) {
+    result.failure = error.stack || String(error); await capture(page, `${host}-reading-intent-failure`).catch(() => {}); throw error;
+  } finally {
+    result.html = result.failure ? await page.content() : undefined;
+    result.observations = fixture.observations; result.logs = fixture.logs();
+    await fs.mkdir(evidence, { recursive: true });
+    await fs.writeFile(path.join(evidence, `${host}-reading-intent.json`), JSON.stringify(result, null, 2));
+    await browser.close(); await fixture.close();
+  }
 }
 
 async function recovery(host) {
@@ -328,6 +609,19 @@ async function recovery(host) {
     await open(page, fixture, host, monitor);
     await transcript(page, host).getByText("Keep this history through recovery.", { exact: true }).waitFor();
     const baselineRecent = () => fixture.observations.filter(item => item.request.includes('"mode":"recent"')).length;
+    // The initial replay schedules per-identity terminal refreshes after
+    // 200 ms. Let those finish before measuring reconnect-only requests.
+    let recentCount = baselineRecent();
+    let quietSince = Date.now();
+    await eventually(() => {
+      const count = baselineRecent();
+      const pending = fixture.observations.some(item => item.request.includes('"mode":"recent"') && item.status === null);
+      if (count !== recentCount || pending) {
+        recentCount = count;
+        quietSince = Date.now();
+      }
+      return !pending && Date.now() - quietSince >= 500;
+    }, "initial timeline and terminal refresh requests settle");
     const before = baselineRecent();
     await monitor.during("deliberate SSE disconnect and one 503", async () => {
       fixture.rejectNextStreams(1); fixture.disconnectStreams();
@@ -516,9 +810,10 @@ async function olderHistory(host) {
         return [{ observation: item, request, response: JSON.parse(item.response) }];
       } catch { return []; }
     });
-    const seed = ownerPages().filter(item => !item.request.params.before).at(-1);
-    assert(seed && seed.observation.status === 200 && seed.response.result?.frames.length > 0,
-      "host seeds the actual authorized recent page");
+    const seed = await eventually(() => {
+      const item = ownerPages().filter(item => !item.request.params.before).at(-1);
+      return item?.observation.status === 200 && item.response.result?.frames.length > 0 ? item : null;
+    }, "host completes its actual authorized recent page after stream readiness");
     const ownerFrames = new Map(seed.response.result.frames.map(frame => [frame.id, frame]));
     const recordPage = (item, precedingBoundary) => {
       assert.equal(item.observation.status, 200);
@@ -590,6 +885,49 @@ async function olderHistory(host) {
       ownerFrames: ownerFrames.size, renderedRows: rowIds.length, pages: result.pages.length };
     assert(result.prepends.at(-1).after.rows >= result.prepends[0].before.rows + 10,
       "multiple actual older messages prepend");
+    if (host === "shared") {
+      const rail = page.getByRole("navigation", { name: "Conversation turns" });
+      const railIndexes = async () => rail.locator('[data-testid^="conversation-turn-rail:"]').evaluateAll(nodes =>
+        nodes.map(node => Number(node.dataset.testid.split(":").at(-1))));
+      const railGeometry = async () => rail.evaluate(node => {
+        const viewport = document.querySelector('.cc-conversation-pane__scroll').getBoundingClientRect();
+        const buttons = [...node.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+        return { top: Math.min(...buttons.map(rect => rect.top)), bottom: Math.max(...buttons.map(rect => rect.bottom)),
+          viewportTop: viewport.top, viewportBottom: viewport.bottom,
+          documentHeight: document.documentElement.scrollHeight, windowHeight: innerHeight, buttons: buttons.length };
+      });
+      const assertRailFits = async () => {
+        const geometry = await railGeometry();
+        assert(geometry.top >= geometry.viewportTop && geometry.bottom <= geometry.viewportBottom,
+          `shared turn controls stay in the transcript band: ${JSON.stringify(geometry)}`);
+        assert(geometry.documentHeight <= geometry.windowHeight + 1,
+          `shared history rail does not expand document height: ${JSON.stringify(geometry)}`);
+        assert(geometry.buttons <= 48);
+        return geometry;
+      };
+      result.rail = { geometry: await assertRailFits() };
+      const expectedTurns = await viewport.locator('[data-cc-conversation-turn-index]').count();
+      const reached = new Set(await railIndexes());
+      let railPages = 0;
+      result.rail.anchor = await measureAnchor(viewport, anchor, async () => {
+        while (await rail.getByRole("button", { name: "Show earlier turns", exact: true }).count()) {
+          await rail.getByRole("button", { name: "Show earlier turns", exact: true }).click();
+          (await railIndexes()).forEach(index => reached.add(index));
+          await assertRailFits();
+          assert(++railPages < 30, "rail earlier controls make progress");
+        }
+        while (await rail.getByRole("button", { name: "Show later turns", exact: true }).count()) {
+          await rail.getByRole("button", { name: "Show later turns", exact: true }).click();
+          (await railIndexes()).forEach(index => reached.add(index));
+          await assertRailFits();
+          assert(++railPages < 60, "rail later controls make progress");
+        }
+      }, "shared turn rail pages preserve reading position");
+      assert.deepEqual([...reached].sort((a, b) => a - b), Array.from({ length: expectedTurns }, (_, index) => index),
+        "every retained turn remains individually reachable through bounded rail controls");
+      result.rail.reachableTurns = reached.size;
+      result.rail.pages = railPages;
+    }
     await capture(page, `${host}-real-history-prepend`);
     // Also inspect the recovered beginning, instead of only the retained recent anchor.
     await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
@@ -606,12 +944,13 @@ async function olderHistory(host) {
 }
 
 const scenarios = [
+  ...["stock", "shared"].map(host => ({ id: `real-${host}-reading-intent`, family: "real-presentation", backend: "real", run: () => readingIntent(host) })),
   ...["stock", "shared"].map(host => ({ id: `real-${host}-presentation`, family: "real-presentation", backend: "real", run: () => presentation(host) })),
   ...["stock", "shared"].map(host => ({ id: `real-${host}-layout-mutations`, family: "real-presentation", backend: "real", run: () => layoutMutations(host) })),
   ...["stock", "shared"].map(host => ({ id: `real-${host}-history-prepend`, family: "real-presentation", backend: "real", run: () => olderHistory(host) })),
   ...["stock", "shared"].map(host => ({ id: `real-${host}-recovery`, family: "real-transport", backend: "real", run: () => recovery(host) })),
 ];
-module.exports = { scenarios };
+module.exports = { scenarios, geometry: { browserErrors, initializationCancellation, settle, timeline, completed, anchorAt, measureAnchor, open, transcript, conversationPane, seedReadingHistory } };
 
 if (require.main === module) {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator prebuilt fixture; this lane must not run Cargo.");

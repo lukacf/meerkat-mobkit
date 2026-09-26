@@ -42,7 +42,7 @@ async function stop(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function startFixture({ mode = "member", stateDir, liveImages = false, liveModel = false, sharedAssets = path.join(__dirname, ".tmp/acceptance") } = {}) {
+async function startFixture({ mode = "member", stateDir, liveImages = false, liveModel = false, routineTools = false, sharedAssets = path.join(__dirname, ".tmp/acceptance") } = {}) {
   // Freeze the built production UI for this fixture lifetime. UI-only iterations
   // reuse the real Rust backend without recompiling its embedded asset bytes.
   const consoleAssets = new Map(await Promise.all([
@@ -57,6 +57,7 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
     cwd: repoRoot,
     env: { ...process.env, MOBKIT_FIXTURE_ADDR: `127.0.0.1:${backendPort}`, MOBKIT_FIXTURE_MODE: mode,
       MOBKIT_FIXTURE_LIVE_IMAGES: liveImages ? "1" : "0", MOBKIT_FIXTURE_LIVE_MODEL: liveModel ? "1" : "0",
+      MOBKIT_FIXTURE_ROUTINE_TOOLS: routineTools ? "1" : "0",
       ...(stateDir ? { MOBKIT_FIXTURE_STATE: stateDir } : {}) },
     stdio: ["ignore", "pipe", "pipe"],
   });

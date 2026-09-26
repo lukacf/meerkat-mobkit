@@ -76,7 +76,7 @@ function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormal
       )}
       open={!collapsedByDefault}
     >
-      <summary className="cc-rich-thinking__label">{block.label}</summary>
+      <summary className="cc-rich-thinking__label">{block.label?.trim() ? block.label : "Thinking"}</summary>
       <p className="cc-rich-paragraph cc-rich-thinking__body" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} />
     </details>
   );

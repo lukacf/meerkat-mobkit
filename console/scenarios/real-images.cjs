@@ -131,6 +131,17 @@ function imageToolEvidence(requests, callId, blobId) {
   assert(matches.length, "real image tool result reaches a following model request");
   return matches;
 }
+const schedulingFields = ["due_at", "not_before", "snoozed_until"];
+
+function assertUnscheduledGraphCalls(calls) {
+  for (const { payload } of calls) {
+    if (!["workgraph_create", "workgraph_update"].includes(payload?.name)) continue;
+    for (const field of schedulingFields) {
+      assert(payload.args?.[field] == null, `unscheduled task must not receive ${field} in ${payload.name}: ${JSON.stringify(payload.args)}`);
+    }
+  }
+}
+
 function assertOpenGraph(graph, ready) {
   const titles = ["Review diagram", "Review badge", "Publish report"];
   assert.equal(graph.items?.length, 3, "only the three requested tasks exist");
@@ -139,6 +150,10 @@ function assertOpenGraph(graph, ready) {
     assert.equal(matches.length, 1, `one exact task named ${title}`);
     assert.equal(matches[0].status, "open", `${title} remains open`);
     assert.equal(matches[0].machine_state?.claim_owner_key, null, `${title} remains unclaimed`);
+    for (const field of schedulingFields) {
+      assert(matches[0][field] == null && matches[0].machine_state?.[`${field}_utc_ms`] == null,
+        `${title} remains unscheduled: ${field}=${JSON.stringify(matches[0][field])}, machine=${JSON.stringify(matches[0].machine_state?.[`${field}_utc_ms`])}`);
+    }
     return matches[0];
   });
   assert.equal(graph.edges?.length, 2, "only the two requested dependencies exist");
@@ -169,9 +184,15 @@ async function exactReply(page, source, current, accepted) {
   return candidates.nth(index.value);
 }
 async function show(page, locator) {
+  // Viewport resize first reflows rows, then the reading anchor is restored by
+  // ResizeObserver on the next frame. Navigate only after that layout settles.
+  const settleLayout = () => page.evaluate(() => new Promise(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  await settleLayout();
   const jump = pane(page).getByRole("button", { name: "Jump to latest", exact: true });
   if (await jump.isVisible()) await jump.click();
   await locator.scrollIntoViewIfNeeded();
+  await settleLayout();
   const rect = await locator.evaluate(node => {
     const visible = node.closest(".conv__body").getBoundingClientRect(), rect = node.getBoundingClientRect();
     return { width: Math.max(0, Math.min(visible.right, rect.right, innerWidth) - Math.max(visible.left, rect.left, 0)), height: Math.max(0, Math.min(visible.bottom, rect.bottom, innerHeight) - Math.max(visible.top, rect.top, 0)) };
@@ -317,7 +338,7 @@ async function liveModel() {
   const monitor = browserErrors(page);
   try {
     await openStock(page, fixture, monitor);
-    const prompt = "Use the WorkGraph tools in the authorized realm mob.console-acceptance to create exactly two independent tasks called Review diagram and Review badge, plus a third called Publish report. Omit scheduling and timing fields: these are immediately available, unscheduled tasks. Link each review as a blocking prerequisite of Publish report. Read the ready set after creating both links. End with one Markdown table containing exactly these columns: Task, ID, Ready. Include all three tasks with exact tool-returned IDs; the Ready cells must be Yes or No from the ready set. Leave the tasks open; do not claim or close them. No other work is needed.";
+    const prompt = 'Use the WorkGraph tools in the authorized realm mob.console-acceptance to create exactly two independent tasks called Review diagram and Review badge, plus a third called Publish report. These are immediately available, unscheduled tasks. For each create call send only realm_id and title, for example {"realm_id":"mob.console-acceptance","title":"Review diagram"}. Do not send due_at, not_before or snoozed_until; absent scheduling is distinct from an epoch date or a distant-future date. Do not call workgraph_update. Link each review as a blocking prerequisite of Publish report. Read the ready set after creating both links. End with one Markdown table containing exactly these columns: Task, ID, Ready. Include all three tasks with exact tool-returned IDs; the Ready cells must be Yes or No from the ready set. Leave the tasks open; do not claim or close them. No other work is needed.';
     const accepted = await send(page, fixture, prompt);
     const terminal = await completed(fixture, accepted, "Publish report", 180_000);
     const graph = await ownerRpc(fixture, "mobkit/workgraph/snapshot", { include_terminal: true });
@@ -325,6 +346,7 @@ async function liveModel() {
     const items = assertOpenGraph(graph.snapshot || graph, ready);
     const current = await frames(fixture), scoped = interactionFrames(current, accepted);
     const calls = scoped.filter(frame => frame.kind === "tool_call_requested");
+    assertUnscheduledGraphCalls(calls);
     assert(!calls.some(frame => /^workgraph_(claim|close|release|reopen|abandon)$/.test(frame.payload?.name)), "model must not claim or close requested tasks");
     const readyCalls = calls.filter(frame => frame.payload?.name === "workgraph_ready");
     assert(readyCalls.length, "live model actually reads ready set");
@@ -354,7 +376,7 @@ async function liveModel() {
   finally { await browser.close(); await fixture.close(); }
 }
 module.exports = {
-  _oracles: { interactionCompletion, modelImageIngress, imageToolEvidence, assertOpenGraph },
+  _oracles: { interactionCompletion, modelImageIngress, imageToolEvidence, assertOpenGraph, assertUnscheduledGraphCalls },
   browserScenarios: [{ id: "real-stock-image-upload", family: "real-images", backend: "real", run: uploadImage }],
   liveScenarios: [
     { id: "live-stock-image-generation", family: "live-provider", backend: "real-provider", run: liveImage },

@@ -11,7 +11,7 @@ const entries = [
 ];
 (async () => {
   const outdir = path.join(__dirname, ".tmp/conversation-contracts");
-  const files = [path.join(__dirname, "scenarios/real-images.test.cjs")];
+  const files = ["real-images", "real-reasoning", "real-routine-tools", "real-startup-lineage"].map(name => path.join(__dirname, `scenarios/${name}.test.cjs`));
   for (const [index, entry] of entries.entries()) {
     const outfile = path.join(outdir, `${index}-${path.basename(entry, ".ts")}.mjs`);
     await build({ entryPoints: [path.join(__dirname, entry)], outfile, bundle: true, platform: "node", format: "esm",

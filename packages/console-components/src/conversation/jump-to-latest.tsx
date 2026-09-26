@@ -1,4 +1,4 @@
-/** Floating transcript navigation; live activity comes from the owning host. */
+/** Gutter navigation; live activity comes from the owning host. */
 export function JumpToLatest({ onClick, working = false }: { onClick: () => void; working?: boolean }) {
   return <div className="cc-conversation-jump-anchor">
     <button type="button" className="cc-conversation-jump-latest" data-working={working}

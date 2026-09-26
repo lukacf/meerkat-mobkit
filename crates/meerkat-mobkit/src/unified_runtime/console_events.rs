@@ -662,21 +662,15 @@ impl ConsoleEventStore {
             .flatten()
     }
 
-    /// Snapshot every identity's current response phase under a single read
-    /// lock. Identities whose phase has been cleared (`None`) are omitted, so
-    /// a lookup in the returned map is equivalent to
-    /// `response_phase_for_identity` for that identity.
-    pub(crate) async fn response_phases_snapshot(&self) -> HashMap<String, String> {
+    /// Snapshot known activity under one read lock. A present null phase is
+    /// known quiet; an absent identity has no recorded activity observation.
+    pub(crate) async fn response_phases_snapshot(&self) -> HashMap<String, Option<String>> {
         self.state
             .read()
             .await
             .response_phase_by_identity
             .iter()
-            .filter_map(|(identity, phase)| {
-                phase
-                    .as_ref()
-                    .map(|phase| (identity.clone(), phase.clone()))
-            })
+            .map(|(identity, phase)| (identity.clone(), phase.clone()))
             .collect()
     }
 }
@@ -1189,15 +1183,20 @@ mod tests {
         let snapshot = store.response_phases_snapshot().await;
 
         assert_eq!(
-            snapshot.get("waiting-worker").map(String::as_str),
+            snapshot
+                .get("waiting-worker")
+                .and_then(|phase| phase.as_deref()),
             Some("waiting")
         );
         assert_eq!(
-            snapshot.get("generating-worker").map(String::as_str),
+            snapshot
+                .get("generating-worker")
+                .and_then(|phase| phase.as_deref()),
             Some("generating")
         );
-        assert_eq!(snapshot.get("idle-worker"), None);
-        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot.get("idle-worker"), Some(&None));
+        assert_eq!(snapshot.get("unknown"), None);
+        assert_eq!(snapshot.len(), 3);
         for identity in [
             "waiting-worker",
             "generating-worker",
@@ -1205,7 +1204,7 @@ mod tests {
             "unknown",
         ] {
             assert_eq!(
-                snapshot.get(identity).cloned(),
+                snapshot.get(identity).cloned().flatten(),
                 store.response_phase_for_identity(identity).await,
                 "snapshot diverges from per-identity lookup for {identity}"
             );

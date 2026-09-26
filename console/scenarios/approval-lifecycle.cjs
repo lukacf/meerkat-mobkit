@@ -111,6 +111,58 @@ async function ownerRestart() {
   } finally { await fixture.close(); await fs.rm(stateDir, { recursive: true, force: true }); }
 }
 
+async function lateApprovalGeometry(host) {
+  requirePrebuilt();
+  const geometry = require("./real-conversation.cjs").geometry;
+  const fixture = await startFixture();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const monitor = geometry.browserErrors(page);
+  const result = { host, errors: monitor.errors, expectedFailures: monitor.expected };
+  try {
+    result.turns = await geometry.seedReadingHistory(fixture);
+    await geometry.open(page, fixture, host, monitor);
+    const viewport = geometry.transcript(page, host);
+    const retained = viewport.locator("[data-conversation-row-id]").filter({ hasText: result.turns[3].instruction }).last();
+    await retained.waitFor();
+    const anchor = await geometry.anchorAt(viewport, retained, -10);
+    const beforeHeight = await viewport.evaluate(node => node.scrollHeight);
+    result.geometry = await geometry.measureAnchor(viewport, anchor, async () => {
+      result.created = await fixture.control("approval", { identity: "router:main", interaction_id: result.turns[1].accepted.interaction_id,
+        action: "Approve the earlier dependency review before publishing", timeout_ms: 300000 });
+      assert(result.created.pending_id);
+      const owner = (await pending(fixture)).find(item => item.pending_id === result.created.pending_id);
+      assert.equal(owner.origin.interaction_id, result.turns[1].accepted.interaction_id);
+      result.owner = owner;
+      // Let the actual subscribed resource discover the owner request while the inbox stays closed.
+      await viewport.getByTestId(`gating-pending:${result.created.pending_id}`).waitFor({ state: "attached", timeout: 25_000 });
+      await geometry.settle(page);
+      const relative = await viewport.evaluate((node, id) => {
+        const card = node.querySelector(`[data-testid="gating-pending:${id}"]`);
+        return { bottom: card.getBoundingClientRect().bottom - node.getBoundingClientRect().top, height: card.getBoundingClientRect().height, scrollHeight: node.scrollHeight };
+      }, result.created.pending_id);
+      assert(relative.height > 100, "real inline approval occupies layout space");
+      assert(relative.bottom < 0, "late correlated approval is inserted above the retained reading viewport");
+      assert(relative.scrollHeight > beforeHeight + 100, "late card grows the real transcript above the reader");
+      result.card = relative;
+    }, `${host} late correlated approval preserves reading position`);
+    await capture(page, `${host}-late-approval-reading-1600`);
+    assert.equal(decisions(fixture, result.created.pending_id).length, 0, "merely receiving a late approval never decides it");
+    // Explicit navigation is allowed to move the reader so the actual card can be inspected.
+    const card = viewport.getByTestId(`gating-pending:${result.created.pending_id}`);
+    await card.scrollIntoViewIfNeeded(); await geometry.settle(page);
+    await card.getByRole("button", { name: "Approve", exact: true }).waitFor();
+    await capture(page, `${host}-late-approval-review-1600`);
+    assert.deepEqual(monitor.errors, []);
+  } catch (error) {
+    result.failure = error.stack || String(error); await capture(page, `${host}-late-approval-geometry-failure`).catch(() => {}); throw error;
+  } finally {
+    result.html = result.failure ? await page.content() : undefined;
+    await writeEvidence(`${host}-late-approval-geometry`, fixture, result);
+    await browser.close(); await fixture.close();
+  }
+}
+
 async function composedApproval(host) {
   await withBrowser(`real-${host}-approvals`, async ({ fixture, page }) => {
     const accepted = await openConversation(page, fixture, host);
@@ -389,6 +441,7 @@ module.exports = {
     { id: "api-approval-owner-edges", family: "approvals", backend: "real", run: ownerEdges },
   ],
   browserScenarios: [
+    ...["stock", "shared"].map(host => ({ id: `real-${host}-late-approval-geometry`, family: "real-approvals", backend: "real", run: () => lateApprovalGeometry(host) })),
     ...["stock", "shared"].map(host => ({ id: `real-${host}-approvals`, family: "real-approvals", backend: "real", run: () => composedApproval(host) })),
     ...["stock", "shared"].map(host => ({ id: `real-${host}-approval-revocation`, family: "real-approvals", backend: "real", run: () => accessRevocation(host) })),
     { id: "real-stock-approval-read-only", family: "real-approvals", backend: "real", run: readOnlyApproval },

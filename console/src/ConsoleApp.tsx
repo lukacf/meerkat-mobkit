@@ -177,6 +177,7 @@ import { PendingStack, type PendingItem } from "./panels/PendingStack";
 import { beginConsoleSendAttempt, createConsoleSendAttempt, finishConsoleSendAttempt, consoleSendFailureState, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope } from "../../packages/console-core/src/send-attempt";
 import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
 import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
+import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
 import type { ConsoleQuoteSelection } from "../../packages/console-components/src/conversation/context-selection";
 import { consoleSendStorageKey, loadConsoleSendAttempts, saveConsoleSendAttempts, readLegacyConsoleQueue, consoleLegacyQueueImported, consoleComposerTabId, loadConsoleComposerDraft, saveConsoleComposerDraft } from "./lib/send-attempt-storage";
 
@@ -586,6 +587,8 @@ function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
 
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
+  "interaction_started",
+  "run_started",
   "interaction_complete",
   "interaction_failed",
   "state_changed",
@@ -3632,6 +3635,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function updatePendingContexts(identity: string, id: string, update: (contexts: ConsoleContextRecord[]) => ConsoleContextRecord[]) {
     setPendingStack(identity, (previous) => previous.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
   }
+  async function editPendingContext(identity: string, id: string, contextId: string, quote: string) {
+    const saved = await setPendingStack(identity, (previous) => {
+      const item = previous.find(candidate => candidate.id === id);
+      if (!item || item.state !== "draft" || item.envelopeJson) throw new Error("This message is no longer an editable queued draft.");
+      const contexts = editConsoleContextQuote(item.contexts, contextId, quote);
+      return previous.map(candidate => candidate.id === id ? { ...candidate, contexts } : candidate);
+    });
+    if (!saved) throw new Error("The quote edit was not saved. Keep this draft and try again.");
+  }
   function reorderContexts(contexts: ConsoleContextRecord[], id: string, direction: "up" | "down") {
     const index = contexts.findIndex((record) => record.id === id);
     const to = index + (direction === "up" ? -1 : 1);
@@ -4357,6 +4369,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           }}
           onReconcile={(itemId) => onStackReconcile(identity, itemId)}
           onRemoveContext={(itemId, contextId) => updatePendingContexts(identity, itemId, (contexts) => contexts.filter((record) => record.id !== contextId))}
+          onEditContext={(itemId, contextId, quote) => editPendingContext(identity, itemId, contextId, quote)}
           onReorderContext={(itemId, contextId, direction) => updatePendingContexts(identity, itemId, (contexts) => reorderContexts(contexts, contextId, direction))}
           onTrash={(itemId) => onStackTrash(identity, itemId)}
           onEdit={(itemId) => onStackEdit(identity, itemId)}
@@ -4403,7 +4416,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         viewportKey={{ authority: sendScope, identity, conversation: identity, pane: panel.id }}
         submittedRowId={submittedRowId}
         onQuoteSelection={addQuote}
-        contextSlot={<QuoteContextChips records={quotedContexts} destinationLabel={target.title || agent?.label || identity} onRemove={(id) => {
+        contextSlot={<QuoteContextChips records={quotedContexts} destinationLabel={target.title || agent?.label || identity} onEdit={(id, quote) => {
+          if (sendScope !== sendScopeRef.current || !lifetimeRef.current.active) throw new Error("This draft is no longer active.");
+          const latest = storedComposerDraft(identity, panelKey);
+          const next = editConsoleContextQuote(latest.contexts, id, quote);
+          if (!persistComposerDraft(identity, panelKey, latest.text, next)) throw new Error("The quote edit was not saved. Keep this draft and try again.");
+          setContextDrafts((current) => ({ ...current, [draftKey]: next }));
+        }} onRemove={(id) => {
           if (sendScope !== sendScopeRef.current) return;
           const next = quotedContexts.filter((record) => record.id !== id);
           setContextDrafts((current) => ({ ...current, [draftKey]: next }));

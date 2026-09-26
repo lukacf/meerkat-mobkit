@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   buildConversationViewState, createHttpConsoleTransport, createMobKitConsoleController,
@@ -7,6 +7,7 @@ import {
   serializeConsoleContextMessage, type ConsoleContextRecord, type PendingApprovalSnapshot,
 } from "@console-core";
 import { callConsoleRpc } from "../../packages/console-core/src/network";
+import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
 import { ConversationPane, ConsoleTransportStatus, ApprovalCard, QuoteContextChips } from "@console-components";
 import "@console-components/styles";
 import "./shared-conversation-host.css";
@@ -14,16 +15,35 @@ import { acceptanceMarkdownUrlPolicy } from "./markdown-url-policy";
 
 const markdownUrlPolicy = acceptanceMarkdownUrlPolicy();
 
+function createHistoryLoad() {
+  let complete!: (available: boolean) => void;
+  const ready = new Promise<boolean>(resolve => { complete = resolve; });
+  return { ready, complete, frames: [] as ConsoleFrame[], loadOlder: null as (() => Promise<boolean>) | null };
+}
+
+function awaitHistory(work: Promise<boolean>, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const finish = (available: boolean) => { signal.removeEventListener("abort", cancel); resolve(available); };
+    const cancel = () => finish(false);
+    signal.addEventListener("abort", cancel, { once: true });
+    work.then(finish, () => finish(false));
+  });
+}
+
 function SharedHost() {
   const [identity, setIdentity] = useState("router:main");
   const [scope, setScope] = useState("fixture-principal-a");
-  const [frames, setFrames] = useState<ConsoleFrame[]>([]);
   const [history, setHistory] = useState({ available: false, loading: false });
-  const loadOlderRef = useRef<(() => Promise<void>) | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
+  const historyLoad = useMemo(createHistoryLoad, [identity, scope, revision]);
+  const [timeline, setTimeline] = useState({ load: historyLoad, frames: historyLoad.frames });
+  // A changed viewport identity must never inspect the previous load's rows,
+  // including the render before its subscription effect has started.
+  const frames = timeline.load === historyLoad ? timeline.frames : historyLoad.frames;
   const [twoPanes, setTwoPanes] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   const [contexts, setContexts] = useState<ConsoleContextRecord[]>([]);
@@ -48,62 +68,95 @@ function SharedHost() {
     const abort = new AbortController(); let unsubscribe: (() => void) | undefined;
     let oldestCursor: string | undefined;
     let exhausted = true;
-    let loading = false;
+    let loading: Promise<boolean> | null = null;
+    let seeded = false;
+    const publishFrames = (update: (current: ConsoleFrame[]) => ConsoleFrame[]) => {
+      if (abort.signal.aborted) return;
+      historyLoad.frames = update(historyLoad.frames);
+      setTimeline({ load: historyLoad, frames: historyLoad.frames });
+    };
     // Keep page metadata from the same authorized query used by the live
     // controller, without issuing a duplicate initial history request.
     const scopedController = createMobKitConsoleController({ transport: {
       ...controller.transport,
       async queryTimeline(input) {
         const page = await controller.transport.queryTimeline(input);
-        if (!abort.signal.aborted && (!oldestCursor || input.before)) {
+        if (!abort.signal.aborted && page.available !== false && (!oldestCursor || input.before)) {
           oldestCursor = page.frames[0]?.cursor ?? oldestCursor;
           exhausted = page.exhausted === true;
-          setHistory({ available: !!oldestCursor && !exhausted, loading });
+          if (!input.before) seeded = true;
+          setHistory({ available: !!oldestCursor && !exhausted, loading: loading !== null });
         }
         return page;
       },
     } });
-    loadOlderRef.current = async () => {
-      if (loading || exhausted || !oldestCursor || abort.signal.aborted) return;
-      loading = true; setHistory({ available: true, loading });
-      try {
-        const { value: page } = await scopedController.timeline.query({ identity,
-          mode: "recent", before: oldestCursor, limit: 200, signal: abort.signal });
-        if (abort.signal.aborted) return;
-        // The retained live version wins if a concurrent update overlaps this
-        // older page. Paging only adds owner frames absent from the transcript.
-        setFrames(current => {
-          const retained = new Set(current.map(frame => frame.id));
-          return [...page.frames.filter(frame => !retained.has(frame.id)), ...current];
-        });
-      } catch (reason) {
-        if (!abort.signal.aborted) setError(String(reason));
-      } finally {
-        loading = false;
-        if (!abort.signal.aborted) setHistory({ available: !!oldestCursor && !exhausted, loading });
-      }
+    historyLoad.loadOlder = () => {
+      if (loading) return loading;
+      if (exhausted || !oldestCursor || abort.signal.aborted) return Promise.resolve(false);
+      const before = oldestCursor;
+      setHistory({ available: true, loading: true });
+      loading = (async () => {
+        try {
+          const { value: page } = await scopedController.timeline.query({ identity,
+            mode: "recent", before, limit: 200, signal: abort.signal });
+          if (abort.signal.aborted || page.available === false) return false;
+          // The retained live version wins if a concurrent update overlaps this
+          // older page. Paging only adds owner frames absent from the transcript.
+          publishFrames(current => {
+            const retained = new Set(current.map(frame => frame.id));
+            return [...page.frames.filter(frame => !retained.has(frame.id)), ...current];
+          });
+          return oldestCursor !== before;
+        } catch (reason) {
+          if (!abort.signal.aborted) setError(String(reason));
+          return false;
+        } finally {
+          loading = null;
+          if (!abort.signal.aborted) setHistory({ available: !!oldestCursor && !exhausted, loading: false });
+        }
+      })();
+      return loading;
     };
-    setFrames([]); setHistory({ available: false, loading: false });
+    publishFrames(() => []); setHistory({ available: false, loading: false });
     setDraft(""); setContexts([]); setSubmitted(null); setError("");
-    void scopedController.timeline.subscribeWithBackfill({ identity, limit: 200, signal: abort.signal, onTransportState: setTransportState }, fact => {
+    void scopedController.timeline.subscribeWithBackfill({ identity, limit: 200, signal: abort.signal,
+      onTransportState: state => { if (!abort.signal.aborted) setTransportState(state); },
+    }, fact => {
       const frame = fact.value;
       if (frame.event === "snapshot_started" || frame.event === "snapshot_complete") return;
-      setFrames(current => {
+      publishFrames(current => {
         const update = frame.event === "frame_updated" && frame.data && typeof frame.data === "object" && "frame" in frame.data
           ? (frame.data as { frame: ConsoleFrame }).frame : frame;
         const index = current.findIndex(item => item.id === update.id);
         return index < 0 ? [...current, update] : current.map((item, i) => i === index ? update : item);
       });
-    }).then(value => { if (abort.signal.aborted) value(); else unsubscribe = value; }).catch(reason => {
+    }).then(value => {
+      if (abort.signal.aborted) value();
+      else { unsubscribe = value; historyLoad.complete(seeded); }
+    }).catch(reason => {
+      historyLoad.complete(false);
       if (!abort.signal.aborted) setError(String(reason));
     });
-    return () => { abort.abort(); unsubscribe?.(); loadOlderRef.current = null; };
-  }, [controller, identity, scope, revision]);
+    return () => { abort.abort(); historyLoad.complete(false); unsubscribe?.(); historyLoad.loadOlder = null; };
+  }, [controller, identity, historyLoad]);
 
   const entries = useMemo(() => mapFramesToTimelineEntries(null, frames, {
     textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: location.origin,
   }), [frames]);
   const viewState = useMemo(() => buildConversationViewState({ memberId: identity, agentLabel: identity, entries }), [entries, identity]);
+
+  async function revealAnchor(rowId: string, signal: AbortSignal) {
+    if (!await awaitHistory(historyLoad.ready, signal)) return false;
+    const hasRow = () => mapFramesToTimelineEntries(null, historyLoad.frames, {
+      textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: location.origin,
+    }).some(entry => entry.id === rowId);
+    while (!signal.aborted) {
+      if (hasRow()) return true;
+      if (!historyLoad.loadOlder) return false;
+      if (!await awaitHistory(historyLoad.loadOlder(), signal)) return !signal.aborted && hasRow();
+    }
+    return false;
+  }
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
@@ -121,7 +174,7 @@ function SharedHost() {
         <option>router:main</option><option>domain:delivery</option>
       </select></label>
       <button type="button" onClick={() => setTwoPanes(value => !value)}>Toggle second pane</button>
-      <button type="button" disabled={!history.available || history.loading} onClick={() => void loadOlderRef.current?.()}>Load older history</button>
+      <button type="button" disabled={!history.available || history.loading} onClick={() => void historyLoad.loadOlder?.()}>Load older history</button>
       <button type="button" onClick={() => { setShowInbox(value => !value); void approvalResource.refresh(); }}>Needs you ({activeApprovals?.status === "ready" ? activeApprovals.requests.length : "?"})</button>
       <button type="button" onClick={() => setScope(value => value === "fixture-principal-a" ? "fixture-principal-b" : "fixture-principal-a")}>Change host scope</button>
       <span data-testid="host-scope">{scope}</span>
@@ -142,6 +195,7 @@ function SharedHost() {
           approvalSnapshot={activeApprovals}
           onApprovalDecision={(id, action) => void approvalResource.decide(id, action)}
           contextSlot={pane === 0 ? <QuoteContextChips records={contexts} destinationLabel={identity}
+            onEdit={(id, quote) => setContexts(editConsoleContextQuote(contexts, id, quote))}
             onRemove={id => setContexts(current => current.filter(item => item.id !== id))} /> : undefined}
           onQuoteSelection={quote => {
             try {
@@ -153,6 +207,7 @@ function SharedHost() {
             catch (reason) { setError(String(reason)); }
           }}
           viewportKey={{ authority: `${location.origin}/${scope}`, identity, conversation: identity, pane: String(pane) }}
+          onRevealAnchor={revealAnchor}
           submittedRowId={submitted ? entries.find(entry => entry.id === submitted || entry.id.startsWith(`${submitted}:`))?.id : null}
           footer={pane === 0 ? <form onSubmit={send}>
             <label>Message to {identity}<textarea aria-label="Message" value={draft} onChange={event => setDraft(event.target.value)} /></label>

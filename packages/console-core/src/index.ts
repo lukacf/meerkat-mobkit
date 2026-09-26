@@ -447,5 +447,6 @@ export * from "./pending-approvals";
 export * from "./send-attempt";
 
 export * from "./context-record";
+export * from "./context-edit";
 
 export * from "./tool-completion";

@@ -507,7 +507,7 @@ fn phase0_contract_010_console_experience_preserves_watch_and_degraded_fields() 
             role: Some("lead".to_string()),
             state: Some("running".to_string()),
             session_id: Some("sess-1".to_string()),
-            response_phase: Some("waiting".to_string()),
+            response_phase: Some(Some("waiting".to_string())),
             model_capabilities: meerkat_mobkit::ConsoleModelCapabilities { image_input: false },
             watched: Some(true),
             alert_level: Some("critical".to_string()),
@@ -767,4 +767,86 @@ fn phase8_console_002_auth_protected_access_remains_enforced() {
         json!({"error":"unauthorized","reason":"provider_mismatch"})
     );
     assert_eq!(allowed.status, 200);
+}
+
+#[test]
+fn console_experience_preserves_known_quiet_and_unknown_response_phases() {
+    let state = decision_state(false);
+    for roster in [false, true] {
+        for (phase, expected) in [
+            (
+                Some(Some("generating".to_string())),
+                Some(json!("generating")),
+            ),
+            (Some(None), Some(serde_json::Value::Null)),
+            (None, None),
+        ] {
+            let agent = meerkat_mobkit::ConsoleAgentLiveSnapshot {
+                agent_id: "worker-runtime".into(),
+                member_id: "worker-runtime".into(),
+                label: "Worker".into(),
+                kind: "meerkat".into(),
+                identity: Some("worker".into()),
+                role: Some("lead".into()),
+                state: Some("active".into()),
+                session_id: Some("session-worker".into()),
+                model_capabilities: Default::default(),
+                response_phase: phase,
+                watched: None,
+                alert_level: None,
+                degraded: None,
+                degraded_reason: None,
+            };
+            let encoded = serde_json::to_value(&agent).unwrap();
+            assert_eq!(encoded.get("response_phase"), expected.as_ref());
+            let decoded: meerkat_mobkit::ConsoleAgentLiveSnapshot =
+                serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.response_phase, agent.response_phase);
+            let members = if roster {
+                vec![meerkat_mobkit::runtime::ConsoleMember {
+                    agent_identity: "worker-runtime".into(),
+                    role: "lead".into(),
+                    state: "active".into(),
+                    model_capabilities: Default::default(),
+                    runtime_mode: None,
+                    session_id: Some("session-worker".into()),
+                    wired_to: vec![],
+                    labels: BTreeMap::from([("agent_identity".into(), "worker".into())]),
+                    progress: None,
+                }]
+            } else {
+                vec![]
+            };
+            let snapshot = ConsoleLiveSnapshot::new(
+                Some("runtime".into()),
+                true,
+                vec![],
+                vec![agent],
+                members,
+                roster,
+            );
+            let response = handle_console_rest_json_route_with_snapshot(
+                &state,
+                &ConsoleRestJsonRequest {
+                    method: "GET".into(),
+                    path: "/console/experience".into(),
+                    auth: None,
+                },
+                Some(&snapshot),
+            );
+            assert_eq!(response.status, 200);
+            let sidebar = &response.body["agent_sidebar"]["live_snapshot"]["agents"][0];
+            let identity = &response.body["identity_status"]["rows"][0];
+            assert_eq!(
+                sidebar.get("response_phase"),
+                expected.as_ref(),
+                "roster={roster}"
+            );
+            assert_eq!(
+                identity.get("response_phase"),
+                expected.as_ref(),
+                "roster={roster}"
+            );
+        }
+    }
 }

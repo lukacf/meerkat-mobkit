@@ -1,4 +1,6 @@
 import { QuoteSelectionAction } from "../../../packages/console-components/src/conversation/quote-selection-action";
+import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
+import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import { JumpToLatest } from "../../../packages/console-components/src/conversation/jump-to-latest";
 import { ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
 import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
@@ -44,6 +46,7 @@ import {
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
 import { countRender } from "../lib/render-counts";
+import { Icon } from "../icon";
 
 interface ChatPaneProps extends ConversationApprovalProps {
   agent: ConsoleAgent | null;
@@ -148,6 +151,8 @@ interface Msg {
   runtimeEvent?: ConversationRuntimeEvent;
   who?: string;
   text?: string;
+  copyText?: string;
+  contextMessage?: ConsoleContextMessage;
   blocks?: ConversationRichBlock[];
   workGraphEntry?: ConversationWorkGraphEntry;
   councilEntry?: ConversationCouncilEntry;
@@ -216,6 +221,7 @@ function formatWorkedDuration(ms: number): string {
 }
 
 function msgCopyText(message: Msg): string {
+  if (message.copyText !== undefined) return message.copyText;
   if (message.blocks?.some((block) => block.type === "markdown")) {
     return conversationRichBlocksToText(message.blocks);
   }
@@ -462,6 +468,12 @@ function flattenEntryRows(entry: ConversationTimelineEntry): Msg[] {
   const isUser = role === "user";
   const label = entry.identity.label;
   const time = formatTime(entry.createdAt);
+
+  if (isUser && entry.kind === "message" && entry.contextMessage) {
+    return [{ id: entry.id, kind: "user", time, createdAt: entry.createdAt,
+      text: entry.contextMessage.instruction, contextMessage: entry.contextMessage,
+      copyText: entry.copyText ?? conversationRichBlocksToText(entry.blocks) }];
+  }
 
   if (entry.variant === "rich" && Array.isArray(entry.blocks) && entry.blocks.length > 0) {
     // Group consecutive blocks of the same kind so the peer-comms
@@ -880,6 +892,8 @@ function msgSignature(message: Msg): string {
     message.dayKey ?? "",
     message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? undefined)}` : "",
     textMark(message.text),
+    textMark(message.copyText),
+    message.contextMessage ? JSON.stringify(message.contextMessage) : "",
     message.workedFor ?? "",
     textMark(message.workedForCopyText),
   ];
@@ -1032,7 +1046,7 @@ const MessageRow = React.memo(function MessageRow({
         <div data-quote-message-id={m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : undefined} data-quote-source={m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : undefined}>
         {m.kind === "workgraph" && m.workGraphEntry ? (
           <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
-        ) : m.blocks && m.blocks.length > 0 ? (
+        ) : m.contextMessage ? <DeliveredContextMessage message={m.contextMessage} /> : m.blocks && m.blocks.length > 0 ? (
           <ConversationRichContent blocks={m.blocks} displayNormalization={false} markdownUrlPolicy={markdownUrlPolicy} />
         ) : (
           m.text && <span className="msg__text">{m.text}</span>
@@ -1664,13 +1678,26 @@ export function ChatPane({
   const [railHeight, setRailHeight] = React.useState<number | null>(null);
   React.useEffect(() => {
     const nav = railRef.current;
-    if (!nav || typeof ResizeObserver === "undefined") return;
+    const body = bodyRef.current;
+    const pane = body?.parentElement;
+    if (!nav || !body || !pane || typeof ResizeObserver === "undefined") return;
+    const measureBand = () => {
+      const paneBounds = pane.getBoundingClientRect();
+      const bodyBounds = body.getBoundingClientRect();
+      nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
+      // The latest control has a permanent lower gutter, even while hidden.
+      nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
+    };
     const observer = new ResizeObserver((entries) => {
+      measureBand();
       for (const entry of entries) {
-        setRailHeight(entry.contentRect.height);
+        if (entry.target === nav) setRailHeight(entry.contentRect.height);
       }
     });
+    measureBand();
     observer.observe(nav);
+    observer.observe(body);
+    observer.observe(pane);
     return () => observer.disconnect();
   }, [turns.length > 1]);
 
@@ -1921,20 +1948,24 @@ export function ChatPane({
     <div className="conv" data-testid={`chat-pane:${identity}`}>
       <div className={`conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`}>
         <div className="conv__avatar">{initial}</div>
-        <div style={{ minWidth: 0 }}>
+        <div className="conv__target">
           <div className="conv__title" title={identity}>{agentLabel}</div>
           {headerVariant === "full" ? <div className="conv__identity">
             {identity}{agent?.role ? ` · ${agent.role}` : ""}
           </div> : null}
         </div>
         <div className="conv__actions">
-          {onInspect ? <button className="conv__action" onClick={onInspect} data-testid="conv-action:details">{inspectLabel}</button> : null}
-          {agent?.affordances?.can_respawn && onRespawn ? (
-            <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">{respawnLabel}</button>
-          ) : null}
-          {agent?.affordances?.can_retire && onRetire ? (
-            <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire">{retireLabel}</button>
-          ) : null}
+          {[
+            { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
+            { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : undefined },
+            { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : undefined },
+          ].filter(action => action.onClick).map(action => (
+            <button key={action.id} type="button" className="conv__action" onClick={action.onClick}
+              aria-label={action.label} title={`${action.label} - ${identity}`} data-testid={`conv-action:${action.id}`}>
+              <span className="conv__action-icon" aria-hidden="true"><Icon name={action.icon} /></span>
+              <span className="conv__action-label">{action.label}</span>
+            </button>
+          ))}
         </div>
       </div>
       <TranscriptView

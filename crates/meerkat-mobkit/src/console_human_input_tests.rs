@@ -492,7 +492,8 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
                 .filter(|frame| frame.kind == "user_input")
                 .count(),
             1,
-            "ambient memory must not become a second human input"
+            "ambient memory must not become a second human input; frames: {:#?}",
+            full.frames
         );
         assert!(
             !serde_json::to_string(&full.frames)

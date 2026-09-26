@@ -5,6 +5,7 @@ import { ConsoleApp } from "../ConsoleApp";
 import type { MobKitConsoleTransport } from "./headless";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
+import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
 
 const identity = "identity:queue-agent";
 function seed(twoPanes = false) {
@@ -48,6 +49,47 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 20)); });
   cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
+
+describe("owner activity refresh", () => {
+  it.each(["interaction_started", "run_started"])("refreshes Working from the owner before the fallback poll on %s", async (event) => {
+    const fake = transport(vi.fn());
+    const quiet = await fake.loadExperience();
+    const quietAgents = quiet.agent_sidebar!.live_snapshot!.agents!;
+    quietAgents[0].response_phase = null;
+    let finishRefresh!: (value: typeof quiet) => void;
+    fake.loadExperience = vi.fn()
+      .mockResolvedValueOnce(quiet)
+      .mockImplementation(() => new Promise(resolve => { finishRefresh = resolve; }));
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    render(<ConsoleApp baseUrl="" transport={fake} />);
+    await screen.findByTestId(`sidebar-agent:${identity}`);
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    expect(fake.loadExperience).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Working", exact: true }));
+    expect(screen.queryByTestId(`sidebar-agent:${identity}`)).toBeNull();
+    await act(async () => {
+      for (const id of ["text-run-start", "text-run-start-repeat"]) {
+        receive?.({ id, event, identity, interactionId: "text-only-run", timestampMs: Date.now(), data: { content: "A text-only request", prompt: "A text-only request" } } as never);
+      }
+      receive?.({ id: "text-run-delta", event: "text_delta", identity, interactionId: "text-only-run", timestampMs: Date.now(), data: { delta: "Working on the answer" } } as never);
+    });
+    await waitFor(() => expect(fake.loadExperience).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    // Live chat activity is only a freshness signal; the pending owner reply
+    // still says quiet, so it must not fabricate a Working roster row.
+    expect(screen.queryByTestId(`sidebar-agent:${identity}`)).toBeNull();
+    const working = {
+      ...quiet,
+      agent_sidebar: { ...quiet.agent_sidebar, live_snapshot: {
+        ...quiet.agent_sidebar?.live_snapshot,
+        agents: quietAgents.map(agent => ({ ...agent, response_phase: "waiting" })),
+      } },
+    };
+    await act(async () => { finishRefresh(working as typeof quiet); });
+    await screen.findByTestId(`sidebar-agent:${identity}`);
+    expect(fake.loadExperience).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("stock durable queue integration", () => {
@@ -491,4 +533,58 @@ describe("stock durable queue integration", () => {
     expect(documents.some(draft => draft.text === nextText)).toBe(true);
   });
 
+});
+
+describe("durable queued quote editing", () => {
+  function prepared() {
+    const scope = "quote-edit-scope";
+    const context = createConsoleContextRecord({ id: "quote-edit-one", sourceScope: scope, sourceIdentity: identity, messageId: "source-message", label: "Review source", quote: "original", sourceText: "before original after" });
+    const other = { ...context, id: "quote-edit-two", quote: "another", sourceRange: undefined };
+    const attempt = createConsoleSendAttempt({ id: "quote-edit-draft", scope, destination: identity, origin: "console:test", idempotencyKey: "quote-edit-key", text: "Compare quoted evidence", contexts: [context, other], now: 1 });
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [attempt]);
+    const send = vi.fn(async () => { throw new Error("response lost after actual attempt"); });
+    const fake = transport(send);
+    fake.queryTimeline = async () => ({ available: true, frames: [{ id: "busy", event: "interaction_started", identity, interactionId: "busy", timestampMs: 1, data: { content: "existing work" } }] });
+    return { scope, attempt, send, fake, read: () => JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts[0] };
+  }
+  it("persists an exact quote edit under the queue lock, then freezes those bytes for the attempted send", async () => {
+    const fixture = prepared();
+    render(<ConsoleApp baseUrl="" storageNamespace={fixture.scope} transport={fixture.fake} />);
+    await screen.findByTestId("pending-item:quote-edit-draft");
+    fireEvent.click(screen.getByText("Compare quoted evidence"));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit quote from Review source" }))[0]);
+    const exact = "  Edited A\u030A 🚀\nsecond line  ";
+    const editor = screen.getByRole("textbox", { name: "Quote from Review source" });
+    fireEvent.change(editor, { target: { value: exact } });
+    fireEvent.keyDown(editor, { key: "Backspace", ctrlKey: true });
+    expect(fixture.read().contexts[0].quote).toBe("original");
+    fireEvent.click(screen.getByRole("button", { name: "Save quote" }));
+    await waitFor(() => expect(fixture.read().contexts[0].quote).toBe(exact));
+    expect(fixture.read().contexts.map((context: { id: string }) => context.id)).toEqual(["quote-edit-one", "quote-edit-two"]);
+    expect(fixture.read().contexts[0].sourceRange).toBeUndefined();
+    expect(fixture.read().contexts[1]).toEqual(fixture.attempt.contexts[1]);
+    expect(fixture.send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("pending-steer:quote-edit-draft"));
+    await waitFor(() => expect(fixture.read().state).toBe("outcome-unknown"));
+    const frozen = fixture.read().envelopeJson;
+    expect(JSON.parse(JSON.parse(frozen).content[1].text.split("\n")[2]).quote).toBe(exact);
+    expect(fixture.send).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Edit quote from Review source" })).toBeNull();
+    expect(fixture.read().envelopeJson).toBe(frozen);
+  });
+  it("rejects saving a quote if another tab has already attempted that queued message", async () => {
+    const fixture = prepared();
+    render(<ConsoleApp baseUrl="" storageNamespace={fixture.scope} transport={fixture.fake} />);
+    await screen.findByTestId("pending-item:quote-edit-draft");
+    fireEvent.click(screen.getByText("Compare quoted evidence"));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit quote from Review source" }))[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Quote from Review source" }), { target: { value: "stale local edit" } });
+    const attempted = beginConsoleSendAttempt(fixture.attempt, { owner: "other-tab", now: Date.now(), handlingMode: "queue" });
+    saveConsoleSendAttempts(window.localStorage, fixture.scope, identity, [attempted], [fixture.attempt]);
+    fireEvent.click(screen.getByRole("button", { name: "Save quote" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("no longer an editable queued draft");
+    expect(fixture.read().envelopeJson).toBe(attempted.envelopeJson);
+    expect(fixture.read().contexts[0].quote).toBe("original");
+    expect(fixture.send).not.toHaveBeenCalled();
+  });
 });

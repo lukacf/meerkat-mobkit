@@ -37,16 +37,24 @@ function terminal(frame, source) {
   return sourceKind(frame) && frame.kind === "interaction_complete"
     && frame.payload?.source_event_type === "run_completed" && frame.payload?.result === source;
 }
-function assertForeignCorrelation(foreignFrames, accepted) {
+function assertForeignCorrelation(foreignFrames, accepted, foreignStart) {
   assert(foreignFrames.length > 0);
+  assert(foreignStart.interaction_id && foreignStart.run_id, "foreign runtime boundary carries canonical lineage");
+  assert.notEqual(foreignStart.interaction_id, accepted.interaction_id);
   for (const frame of foreignFrames) {
-    assert.equal(frame.interaction_id ?? null, null, `foreign ${frame.kind} ${frame.id} must not acquire operator ${accepted.interaction_id}`);
+    assert.notEqual(frame.interaction_id, accepted.interaction_id, `foreign ${frame.kind} ${frame.id} must not acquire operator ${accepted.interaction_id}`);
+    if (["run_started", "text_delta", "text_complete", "tool_call_requested", "tool_result_received", "interaction_complete"].includes(frame.kind)) {
+      assert.equal(frame.interaction_id, foreignStart.interaction_id, `foreign ${frame.kind} keeps its actual owner`);
+      assert.equal(frame.run_id, foreignStart.run_id, `foreign ${frame.kind} keeps its actual run`);
+    }
   }
 }
 function assertOperatorCorrelation(operatorFrames, accepted) {
   assert(operatorFrames.length > 0);
   for (const frame of operatorFrames) {
-    assert.equal(frame.interaction_id, accepted.interaction_id, `actual operator ${frame.kind} ${frame.id} must preserve accepted interaction`);
+    if (["run_started", "text_delta", "text_complete", "tool_call_requested", "tool_result_received", "interaction_complete"].includes(frame.kind)) {
+      assert.equal(frame.interaction_id, accepted.interaction_id, `actual operator ${frame.kind} ${frame.id} must preserve accepted interaction`);
+    }
   }
 }
 
@@ -78,7 +86,7 @@ async function overlap() {
     evidence.foreignStart = await eventually(async () => (await frames(fixture, recipient)).find(frame =>
       sourceKind(frame) && frame.kind === "run_started" && typeof inputText(frame) === "string" && inputText(frame).includes(peerBody)),
     "raw owner records the actual foreign peer run before operator acceptance");
-    assert.equal(evidence.foreignStart.interaction_id ?? null, null);
+    assert(evidence.foreignStart.interaction_id && evidence.foreignStart.run_id, "foreign start has typed runtime lineage");
     // The peer model has already captured its barrier turn and the sender
     // already dispatched its tool. Only now configure the later operator's
     // ordinary reply, avoiding bootstrap traffic with the same final source.
@@ -112,7 +120,7 @@ async function overlap() {
     assert(cursor(operatorStart) < cursor(operatorEnd));
     const foreignFrames = current.filter(frame => sourceKind(frame) && cursor(frame) >= cursor(evidence.foreignStart) && cursor(frame) <= cursor(foreignEnd));
     const operatorFrames = current.filter(frame => sourceKind(frame) && cursor(frame) >= cursor(operatorStart) && cursor(frame) <= cursor(operatorEnd));
-    assertForeignCorrelation(foreignFrames, accepted);
+    assertForeignCorrelation(foreignFrames, accepted, evidence.foreignStart);
     assertOperatorCorrelation(operatorFrames, accepted);
     const toolId = `fixture-${id}-peer-ready`;
     const calls = foreignFrames.filter(frame => frame.kind === "tool_call_requested" && frame.payload?.id === toolId);
@@ -132,12 +140,17 @@ async function overlap() {
     assert(!current.some(frame => frame.interaction_id === accepted.interaction_id && ["interaction_failed", "message_delivery_failed"].includes(frame.kind)));
     evidence.finalBarrier = await fixture.control("model-barrier", { action: "status", id });
     assert.equal(evidence.finalBarrier.requests, 2, "foreign tool call and result continuation both used the barrier plan; operator did not");
-    evidence.ordering.push("foreign uncorrelated completion followed by exactly correlated operator completion");
+    evidence.ordering.push("foreign canonical completion followed by exactly correlated operator completion");
     evidence.foreignFrameIds = foreignFrames.map(frame => frame.id);
     evidence.operatorFrameIds = operatorFrames.map(frame => frame.id);
   } catch (error) {
     evidence.failure = error.stack || String(error);
     evidence.frames = await frames(fixture, recipient).catch(() => []);
+    evidence.senderFrames = await frames(fixture, sender).catch(() => []);
+    evidence.recordedRequests = await fetch(`${fixture.backendUrl}/__fixture/requests`).then(response => response.json()).catch(() => []);
+    evidence.barrierAtFailure = evidence.plan
+      ? await fixture.control("model-barrier", { action: "status", id: evidence.plan.id }).catch(() => null)
+      : null;
     throw error;
   } finally {
     const folder = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");

@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking (Rust source)
+
+- `ConsoleAgentLiveSnapshot.response_phase` is now `Option<Option<String>>`:
+  `None` means no activity observation, `Some(None)` means known quiet, and
+  `Some(Some(phase))` carries the recorded activity phase. JSON keeps the
+  existing string phase and now preserves explicit null separately from a
+  missing field. Update Rust constructors that set an active phase accordingly.
+
 ### Changed
+
+- Improve console reading and composition in the stock and reusable hosts:
+  preserve the reading position while output streams, render complete Markdown
+  with exact source copy, and use a compact latest-message arrow that animates
+  during agent work. Quoting appears beside a selection; quoted context can be
+  edited before sending and is displayed as readable cards after delivery.
+- Add roster activity filters, shared approval state with precisely correlated
+  conversation cards, and durable text/quote send attempts that reconcile lost
+  acknowledgements without erasing a newer draft.
+- Preserve repeated authored text, reasoning and tool outcomes across live
+  output, history paging and reconnection. Saved assistant messages no longer
+  create synthetic run-completion events. Fold only routine tool activity with
+  matched successful outcomes, and keep failures and unknown outcomes visible.
 
 - Bind the Meerkat family to published 0.8.42 (Claude Opus 5.5 as the default
   Anthropic model, GPT-6 Sol and Luna in the model catalog, upstream crates/

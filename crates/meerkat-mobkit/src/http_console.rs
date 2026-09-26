@@ -10461,16 +10461,18 @@ async fn wait_for_reset_startup_history(
 /// Terminality comes from typed data only, never from message text:
 /// - `interaction_complete` (the console projection of meerkat's
 ///   `run_completed`) and a raw `run_completed` end the run. The exception is
-///   a session-history `interaction_complete`: it projects one assistant step
-///   that said something, and a step whose typed `stop_reason` is `tool_use`
-///   continues with tool results.
+///   a legacy session-history `interaction_complete`, or the current
+///   `text_complete`: each projects one saved assistant step. A step whose
+///   typed `stop_reason` is `tool_use` continues with tool results.
 /// - `turn_completed` ends the turn only when its typed `stop_reason` is not
 ///   `tool_use`. meerkat emits a `tool_use` `turn_completed` after every
 ///   tool-loop call, so counting any `turn_completed` marked a tool-using
 ///   startup turn ready after its first tool round.
 fn frame_ends_startup_turn(frame: &ConsoleFrame) -> bool {
     match frame.kind.as_str() {
-        "interaction_complete" if frame.source.kind == ConsoleFrameSourceKind::SessionHistory => {
+        "interaction_complete" | "text_complete"
+            if frame.source.kind == ConsoleFrameSourceKind::SessionHistory =>
+        {
             !frame
                 .payload
                 .get("message")
@@ -10760,9 +10762,15 @@ async fn build_aggregator_live_snapshot(
     config_module_ids: &[String],
 ) -> Result<ConsoleLiveSnapshot, Box<dyn std::error::Error + Send + Sync>> {
     let identities = Box::pin(aggregator.list_identities()).await?;
+    let response_phases = aggregator
+        .response_phases_for_identities(&identities)
+        .await?;
     let mut members = Vec::with_capacity(identities.len());
     for identity in &identities {
         let mut labels = identity.labels.clone();
+        // The authorized aggregate row already includes its runtime namespace.
+        // Preserve that identity when the experience roster reads this label.
+        labels.insert("agent_identity".to_string(), identity.identity.clone());
         labels
             .entry("display_name".to_string())
             .or_insert_with(|| identity.display_name.clone());
@@ -10805,7 +10813,7 @@ async fn build_aggregator_live_snapshot(
             state: Some(member.state.clone()),
             session_id: member.session_id.clone(),
             model_capabilities: member.model_capabilities.clone(),
-            response_phase: None,
+            response_phase: response_phases.get(&member.agent_identity).cloned(),
             watched: None,
             alert_level: None,
             degraded: None,
@@ -15414,7 +15422,7 @@ comms = true
             default_timeout: None,
         }));
 
-        for name in ["agent:alpha", "agent:beta"] {
+        for name in ["agent:alpha", "agent:beta", "agent:unknown"] {
             let identity = AgentIdentity::parse(name)?;
             let record = ContinuityRecord {
                 identity: identity.clone(),
@@ -15430,7 +15438,7 @@ comms = true
                         profile: ProfileName::from("default"),
                         addressability: AgentAddressability::Addressable,
                         display_name: None,
-                        labels: BTreeMap::new(),
+                        labels: BTreeMap::from([("agent_identity".to_string(), name.to_string())]),
                         context: None,
                         additional_instructions: Vec::new(),
                         initial_message: None,
@@ -15456,23 +15464,69 @@ comms = true
             )?])
             .await;
 
-        let aggregator = MobKitConsoleAggregator::in_memory();
-        aggregator.register_runtime_handles_with_policy(
-            "identity-first",
-            "",
-            mob_runtime.clone(),
-            Some(identity_runtime),
-            ConsoleEventStore::new(),
-            Arc::new(AllowAllConsoleVisibilityPolicy),
-        );
+        for namespace in ["", "team"] {
+            let aggregator = MobKitConsoleAggregator::in_memory();
+            let events = ConsoleEventStore::new();
+            events
+                .reserve_interaction_value(
+                    "agent:alpha",
+                    None,
+                    "active-review",
+                    "console",
+                    json!({}),
+                )
+                .await?;
+            events
+                .record_lifecycle("agent:beta", "member_retired", json!({}))
+                .await;
+            aggregator.register_runtime_handles_with_policy(
+                "identity-first",
+                namespace,
+                mob_runtime.clone(),
+                Some(identity_runtime.clone()),
+                events,
+                Arc::new(AllowAllConsoleVisibilityPolicy),
+            );
 
-        let snapshot = build_aggregator_live_snapshot(&aggregator, &[]).await?;
-        let alpha = snapshot
-            .members
-            .iter()
-            .find(|member| member.agent_identity == "agent:alpha")
-            .ok_or("agent:alpha missing from live snapshot")?;
-        assert_eq!(alpha.wired_to, vec!["agent:beta".to_string()]);
+            let snapshot = build_aggregator_live_snapshot(&aggregator, &[]).await?;
+            let projected = |name: &str| {
+                if namespace.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{namespace}/{name}")
+                }
+            };
+            let alpha = snapshot
+                .members
+                .iter()
+                .find(|member| member.agent_identity == projected("agent:alpha"))
+                .ok_or("agent:alpha missing from live snapshot")?;
+            assert_eq!(alpha.wired_to, vec![projected("agent:beta")]);
+            for (name, expected_phase) in [
+                ("agent:alpha", Some(Some("waiting".to_string()))),
+                ("agent:beta", Some(None)),
+                ("agent:unknown", None),
+            ] {
+                let identity = projected(name);
+                let member = snapshot
+                    .members
+                    .iter()
+                    .find(|member| member.agent_identity == identity)
+                    .ok_or("expected aggregate member missing")?;
+                // The experience member-roster path prefers this authority label.
+                // It must address the same projected identity as the phase map.
+                assert_eq!(
+                    crate::member_comms_id::durable_identity_label(&member.labels),
+                    Some(identity.as_str())
+                );
+                let agent = snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.identity.as_deref() == Some(identity.as_str()))
+                    .ok_or("expected aggregate agent missing")?;
+                assert_eq!(agent.response_phase, expected_phase, "{identity}");
+            }
+        }
 
         let _ = mob_runtime.handle().stop().await;
         Ok(())
@@ -17539,7 +17593,7 @@ comms = true
     /// A tool-using startup turn is ready only at its real terminal. Newer
     /// meerkat emits `turn_completed` with `stop_reason: tool_use` after every
     /// tool-loop call, and session history projects a text-plus-tool step as
-    /// an `interaction_complete` carrying the step's `tool_use` stop reason;
+    /// a `text_complete` carrying the step's `tool_use` stop reason;
     /// neither ends the turn.
     #[tokio::test]
     async fn reset_startup_readiness_waits_past_tool_use_turn_completed() {
@@ -17597,6 +17651,13 @@ comms = true
                 ),
                 startup_frame(
                     identity,
+                    6,
+                    "text_complete",
+                    ConsoleFrameSourceKind::SessionHistory,
+                    json!({ "text": "Still checking.", "message": { "stop_reason": "tool_use" } }),
+                ),
+                startup_frame(
+                    identity,
                     4,
                     "tool_result_received",
                     ConsoleFrameSourceKind::ConsoleEvent,
@@ -17649,6 +17710,12 @@ comms = true
                 "interaction_complete",
                 ConsoleFrameSourceKind::ConsoleEvent,
                 json!({ "type": "run_completed", "result": "ready" }),
+            ),
+            (
+                "agent:history-text-answer",
+                "text_complete",
+                ConsoleFrameSourceKind::SessionHistory,
+                json!({ "text": "Ready.", "message": { "stop_reason": "end_turn" } }),
             ),
             (
                 "agent:history-answer",

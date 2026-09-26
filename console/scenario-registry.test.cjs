@@ -30,12 +30,16 @@ test("shipping runners discover every required real backend scenario and shard t
   const browserModules = [
     require("./scenarios/real-conversation.cjs").scenarios,
     require("./scenarios/real-markdown-url-policy.cjs").scenarios,
+    require("./scenarios/real-reasoning.cjs").scenarios,
+    require("./scenarios/real-startup-lineage.cjs").scenarios,
+    require("./scenarios/real-routine-tools.cjs").browserScenarios,
     require("./scenarios/approval-lifecycle.cjs").browserScenarios,
     require("./scenarios/real-workgraph.cjs").browserScenarios,
     require("./scenarios/real-images.cjs").browserScenarios,
     require("./scenarios/real-send-context.cjs").scenarios,
     require("./scenarios/real-tab-isolation.cjs").scenarios,
     require("./scenarios/real-legacy-import.cjs").scenarios,
+    require("./scenarios/real-sidebar-activity.cjs").scenarios,
   ];
   const requiredBrowser = browserModules.flat();
   assert(requiredBrowser.length >= 25, "real backend acceptance families must remain registered");
@@ -45,6 +49,7 @@ test("shipping runners discover every required real backend scenario and shard t
   for (const id of ["api-query-faults", "api-member-ingress", "api-identity-ingress", "api-member-send-restart", "api-identity-send-restart",
     ...require("./scenarios/approval-lifecycle.cjs").apiScenarios.map(item => item.id),
     ...require("./scenarios/real-workgraph.cjs").apiScenarios.map(item => item.id),
+    ...require("./scenarios/real-routine-tools.cjs").apiScenarios.map(item => item.id),
     ...require("./scenarios/stream-parity.cjs").apiScenarios.map(item => item.id),
     ...require("./scenarios/real-correlation-overlap.cjs").apiScenarios.map(item => item.id)]) {
     assert.equal(api.filter(item => item.id === id && item.backend === "real").length, 1, id);
@@ -53,4 +58,12 @@ test("shipping runners discover every required real backend scenario and shard t
     const shards = [1, 2, 3].flatMap(index => selectScenarios(runner, [`--shard=${index}/3`]).selected);
     assert.deepEqual(shards.map(item => item.id).sort(), runner.map(item => item.id).sort());
   }
+});
+
+test("default browser coverage includes activity filters against real runtime phases", () => {
+  const runner = require("./browser-e2e.cjs").scenarios;
+  const matches = selectScenarios(runner, []).selected.filter(item => item.id === "real-stock-sidebar-activity");
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].backend, "real");
+  assert.equal(typeof matches[0].run, "function");
 });

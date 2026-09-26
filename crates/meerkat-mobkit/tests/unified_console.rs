@@ -2481,10 +2481,9 @@ async fn two_console_sends_to_a_turn_driven_member_each_close_with_their_own_ter
     }
 
     // Positive observable first: counting EVERY interaction_complete for the
-    // identity, from any source, pins exactly one terminal per send. History
-    // text terminals collapse against their live twins and a tool-only step
-    // contributes none, so this cannot pass vacuously when the backfill has
-    // not landed yet. Pre-fix this was 3 or more.
+    // identity, from any source, pins exactly one terminal per send. Saved
+    // text steps are text_complete, while only live run completion is a
+    // terminal. The history assertions below prove backfill has landed.
     let all_terminals = frames
         .iter()
         .filter(|frame| frame["kind"] == json!("interaction_complete"))
@@ -2494,6 +2493,43 @@ async fn two_console_sends_to_a_turn_driven_member_each_close_with_their_own_ter
         2,
         "exactly one interaction_complete per send from any source; frames:\n{}",
         pretty()
+    );
+    let history_replies: Vec<_> = frames
+        .iter()
+        .filter(|frame| {
+            frame["kind"] == json!("text_complete")
+                && frame["source"]["kind"] == json!("session_history")
+        })
+        .collect();
+    assert_eq!(
+        history_replies.len(),
+        2,
+        "both authored replies survive backfill: {}",
+        pretty()
+    );
+    for (index, interaction_id) in interaction_ids.iter().enumerate() {
+        let reply = history_replies
+            .iter()
+            .find(|frame| frame["interaction_id"] == json!(interaction_id))
+            .expect("canonical reply retains its exact interaction");
+        assert_eq!(
+            frame_result_text(reply),
+            format!("Reply to turn-{}", index + 1)
+        );
+        let terminal = frames
+            .iter()
+            .find(|frame| {
+                frame["kind"] == json!("interaction_complete")
+                    && frame["interaction_id"] == json!(interaction_id)
+            })
+            .unwrap();
+        assert_eq!(reply["run_id"], terminal["run_id"]);
+        assert_eq!(reply["session_id"], terminal["session_id"]);
+        assert!(reply["source"]["source_cursor"].as_str().is_some());
+    }
+    assert_ne!(
+        history_replies[0]["source"]["source_cursor"],
+        history_replies[1]["source"]["source_cursor"]
     );
     // Diagnostic twin: name the offending frames when the count is wrong for
     // the reason this test exists.
@@ -2513,8 +2549,8 @@ async fn two_console_sends_to_a_turn_driven_member_each_close_with_their_own_ter
 
 /// The history-only rebuild of the same two turns: a tool-only step projects
 /// as its `tool_call_requested` frame (call and result render as a pair, like
-/// a live turn), and the only `interaction_complete` frames are the two text
-/// replies.
+/// a live turn), and the two text replies remain authored `text_complete`
+/// messages without fabricating any run terminals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_rebuild_projects_a_tool_only_step_as_a_tool_call_not_an_empty_completion() {
     let (frames, _) = run_tool_step_console_scenario(false).await;
@@ -2522,14 +2558,21 @@ async fn history_rebuild_projects_a_tool_only_step_as_a_tool_call_not_an_empty_c
 
     let mut results: Vec<&str> = frames
         .iter()
-        .filter(|frame| frame["kind"] == json!("interaction_complete"))
+        .filter(|frame| frame["kind"] == json!("text_complete"))
         .map(frame_result_text)
         .collect();
     results.sort_unstable();
     assert_eq!(
         results,
         vec!["Reply to turn-1", "Reply to turn-2"],
-        "one terminal per turn and none for the tool-only steps; frames:\n{}",
+        "one authored text message per turn and none for the tool-only steps; frames:\n{}",
+        pretty()
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame["kind"] != json!("interaction_complete")),
+        "history messages never fabricate run terminals: {}",
         pretty()
     );
     let peers_calls = frames

@@ -279,6 +279,13 @@ export function useConversationScrollController(options: ConversationScrollContr
     const onScroll = () => {
       const session = sessionRef.current;
       if (!session) return;
+      // Clearing rows while an identity's authorized history loads can clamp
+      // scrollTop and emit a native scroll event. Preserve the pending anchor;
+      // explicit pointer, wheel and keyboard intent cancel it via readHistory.
+      if (session.awaitingAnchor) {
+        publish();
+        return;
+      }
       if (session.expectedScrollTop !== null && Math.abs(viewport.scrollTop - session.expectedScrollTop) <= 1) {
         publish();
         return;

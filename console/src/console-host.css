@@ -1658,6 +1658,15 @@ svg[data-svg="fit"],
   user-select: text;
   -webkit-user-select: text;
 }
+.sidebar__activity-filters { display: flex; gap: 2px; margin-top: 8px; }
+.sidebar__activity-filters button {
+  flex: 1; min-width: 0; padding: 5px 2px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--ink-dim); font: inherit; font-size: 11px; cursor: pointer;
+}
+.sidebar__activity-filters button:hover { color: var(--ink); background: var(--bg-hover); }
+.sidebar__activity-filters button[aria-pressed="true"] { color: var(--ink); background: var(--bg-elev-2); box-shadow: inset 0 0 0 1px var(--line); }
+.sidebar__activity-filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 .sidebar__search input::placeholder { color: var(--ink-faint); }
 .sidebar__search input:focus { outline: none; border-color: var(--line-strong); background: var(--bg-elev-2); }
 
@@ -2351,15 +2360,22 @@ svg[data-svg="fit"],
   flex: none;
 }
 [data-cc-variant="terminal"] .conv__avatar { border-radius: 0; background: transparent; border: 1px solid var(--accent); }
-.conv__title { font-size: 14px; font-weight: 600; letter-spacing: -0.008em; color: var(--ink); }
+.conv__target { flex: 1; min-width: 0; }
+.conv__title { font-size: 14px; font-weight: 600; letter-spacing: -0.008em; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv__identity { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-top: 1px; }
+.conv__target .conv__identity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv__actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
 .conv__action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  min-width: 28px; min-height: 28px; flex: none;
   padding: 4px 10px; font-size: 11.5px; color: var(--ink-muted);
   border: 1px solid var(--line); border-radius: var(--r-sm);
   font-family: var(--disp);
   background: transparent;
 }
+.conv__action-icon { display: inline-flex; }
+.conv__action-icon svg { width: 14px; height: 14px; }
+.conv__action-label { white-space: nowrap; }
 .conv__action:hover:not(:disabled) { color: var(--ink); border-color: var(--line-strong); }
 .conv__action:disabled { opacity: 0.45; cursor: default; }
 
@@ -2892,10 +2908,7 @@ svg[data-svg="fit"],
   content: "TOOL  "; color: var(--ink-dim); letter-spacing: 0.1em;
   font-size: 10px; font-weight: 600;
 }
-.msg--thought .msg__bubble::before {
-  content: "THINKING  "; color: var(--ink-dim); letter-spacing: 0.1em;
-  font-size: 10px; font-weight: 600;
-}
+
 .msg--gate .msg__bubble {
   border-color: var(--warn);
   background: color-mix(in oklch, var(--warn) 8%, var(--bg-elev-1));
@@ -4190,6 +4203,14 @@ svg[data-svg="fit"],
 .conv__head--compact .conv__action { min-height: 28px; }
 .conv__action:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .conv__identity { color: var(--ink-muted); }
+@container (max-width: 440px) {
+  .conv__head, .pane__body .conv__head { padding-inline: 10px; gap: 6px; }
+  .conv__actions { gap: 4px; }
+  .conv__action { width: 28px; padding: 4px; border-color: transparent; }
+  .conv__action:hover:not(:disabled) { background: var(--bg-elev-2); }
+  .conv__action-icon svg { width: 16px; height: 16px; }
+  .conv__action-label { display: none; }
+}
 
 .conv > .queue-storage-note { font-size: 12px; color: var(--ink-muted); padding: 6px 16px; }
 

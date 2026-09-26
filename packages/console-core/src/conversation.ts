@@ -3,6 +3,7 @@ import {
   conversationRichBlocksToText,
   type ConversationRichBlock,
 } from "./rich-content";
+import type { ConsoleContextMessage } from "./context-record";
 
 export type ConversationRole = "assistant" | "user" | "system" | "other";
 export type ConversationPresentation = "assistant" | "user" | "participant" | "system";
@@ -80,6 +81,8 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   variant: "plain" | "rich" | "meta";
   text?: string;
   blocks?: ConversationRichBlock[];
+  /** Display-only projection of a validated local quote envelope. */
+  contextMessage?: ConsoleContextMessage;
   richStyle?: "default" | "streaming";
   /**
    * Typed host-task metadata. System tasks stay distinct from operator turns

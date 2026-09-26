@@ -35,3 +35,29 @@ test("three open tasks and two reversed edges cannot satisfy dependency proof", 
   items[0].machine_state.claim_owner_key = "some-owner";
   assert.throws(() => _oracles.assertOpenGraph(graph, { items: items.slice(0, 2) }), /unclaimed/);
 });
+
+test("unscheduled WorkGraph proof rejects explicit epoch and future scheduling in owner state", () => {
+  const items = ["Review diagram", "Review badge", "Publish report"].map((title, i) => ({ id: String(i), title, status: "open", machine_state: { claim_owner_key: null } }));
+  const graph = { items, edges: [{ kind: "blocks", from_id: "0", to_id: "2" }, { kind: "blocks", from_id: "1", to_id: "2" }] };
+  for (const field of ["due_at", "not_before", "snoozed_until"]) {
+    for (const value of ["1970-01-01T00:00:00Z", "9999-12-31T23:59:59Z"]) {
+      items[0][field] = value;
+      assert.throws(() => _oracles.assertOpenGraph(graph, { items: items.slice(0, 2) }), /unscheduled/, `${field}=${value} is an explicit date, not an absent schedule`);
+    }
+    delete items[0][field];
+    items[0].machine_state[`${field}_utc_ms`] = 0;
+    assert.throws(() => _oracles.assertOpenGraph(graph, { items: items.slice(0, 2) }), /unscheduled/, "typed epoch millis must not be treated as falsy absence");
+    items[0].machine_state[`${field}_utc_ms`] = null;
+  }
+  assert.equal(_oracles.assertOpenGraph(graph, { items: items.slice(0, 2) }).length, 3);
+});
+
+test("live model cannot silently introduce scheduling and clear it before final inspection", () => {
+  const create = { payload: { name: "workgraph_create", args: { title: "Review diagram", realm_id: "mob.console-acceptance" } } };
+  assert.doesNotThrow(() => _oracles.assertUnscheduledGraphCalls([create]));
+  for (const name of ["workgraph_create", "workgraph_update"]) {
+    for (const field of ["due_at", "not_before", "snoozed_until"]) {
+      assert.throws(() => _oracles.assertUnscheduledGraphCalls([{ payload: { name, args: { [field]: "1970-01-01T00:00:00Z" } } }]), /unscheduled/);
+    }
+  }
+});

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import {
@@ -247,5 +247,65 @@ describe("conversation quote and approval integration", () => {
     expect(screen.queryByTestId("gating-pending:wrong")).toBeNull();
     fireEvent.click(screen.getByTestId("gating-action:matching:approve"));
     expect(decide).toHaveBeenCalledWith("matching", "approve");
+  });
+});
+
+
+describe("bounded conversation turn navigation", () => {
+  const history = (count: number): ConversationViewState => {
+    const entries: ConversationTimelineEntry[] = Array.from({ length: count }, (_, index): ConversationTimelineEntry[] => [
+      { id: `rail-user-${index}`, kind: "message", variant: "plain",
+        identity: { id: "operator", label: "Operator", role: "user" }, text: `History checkpoint ${index}` },
+      { id: `rail-reply-${index}`, kind: "message", variant: "plain",
+        identity: { id: "agent", label: "Agent", role: "assistant" }, text: `Reply ${index}` },
+    ]).flat();
+    return { conversationId: "long-history", entries, groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null };
+  };
+
+  test("keeps a bounded rail while making every retained turn reachable in both directions", () => {
+    render(<ConversationPane viewState={history(127)} />);
+    const rail = screen.getByRole("navigation", { name: "Conversation turns" });
+    const sourceIndexes = () => [...rail.querySelectorAll('[data-testid^="conversation-turn-rail:"]')]
+      .map(node => Number(node.getAttribute("data-testid")!.split(":").at(-1)));
+    const visited = new Set(sourceIndexes());
+    expect(within(rail).getAllByRole("button").length).toBeLessThanOrEqual(48);
+    expect(sourceIndexes()).toContain(126);
+    let pages = 0;
+    while (within(rail).queryByRole("button", { name: "Show earlier turns" })) {
+      fireEvent.click(within(rail).getByRole("button", { name: "Show earlier turns" }));
+      sourceIndexes().forEach(index => visited.add(index));
+      expect(within(rail).getAllByRole("button").length).toBeLessThanOrEqual(48);
+      expect(++pages).toBeLessThan(10);
+    }
+    expect([...visited].sort((a, b) => a - b)).toEqual(Array.from({ length: 127 }, (_, index) => index));
+    expect(sourceIndexes()).toContain(0);
+    while (within(rail).queryByRole("button", { name: "Show later turns" })) {
+      fireEvent.click(within(rail).getByRole("button", { name: "Show later turns" }));
+      expect(++pages).toBeLessThan(20);
+    }
+    expect(sourceIndexes()).toContain(126);
+    expect(screen.getByText("History checkpoint 0", { selector: "p" })).toBeInTheDocument();
+  });
+
+  test("shrinks the rail tick budget to its measured band without removing transcript rows", () => {
+    const previous = globalThis.ResizeObserver;
+    const observations: Array<{ callback: ResizeObserverCallback; nodes: Set<Element> }> = [];
+    globalThis.ResizeObserver = class {
+      item: { callback: ResizeObserverCallback; nodes: Set<Element> };
+      constructor(callback: ResizeObserverCallback) { this.item = { callback, nodes: new Set() }; observations.push(this.item); }
+      observe(node: Element) { this.item.nodes.add(node); }
+      unobserve(node: Element) { this.item.nodes.delete(node); }
+      disconnect() { this.item.nodes.clear(); }
+    } as unknown as typeof ResizeObserver;
+    try {
+      render(<ConversationPane viewState={history(127)} />);
+      const rail = screen.getByRole("navigation", { name: "Conversation turns" });
+      const observer = observations.find(item => item.nodes.has(rail));
+      expect(observer).toBeDefined();
+      // Observer callbacks are browser events; run through React's act boundary.
+      act(() => observer!.callback([{ target: rail, contentRect: { height: 100 } } as ResizeObserverEntry], {} as ResizeObserver));
+      expect(within(rail).getAllByRole("button").length).toBeLessThanOrEqual(8);
+      expect(document.querySelectorAll("[data-conversation-row-id]")).toHaveLength(254);
+    } finally { globalThis.ResizeObserver = previous; }
   });
 });

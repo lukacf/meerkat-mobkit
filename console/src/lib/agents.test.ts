@@ -291,3 +291,16 @@ test("normalizeAgents appends live identities missing from the sidebar snapshot"
   assert.equal(subWorker?.addressable, true);
   assert.deepEqual(subWorker?.affordances, { can_send_message: true });
 });
+
+test("normalizeAgents distinguishes explicit quiet phase from missing or invalid activity", () => {
+  const phases = [null, undefined, "waiting", "tool-executing", "generating", "thinking"];
+  const agents = normalizeAgents({ agent_sidebar: { live_snapshot: { agents: phases.map((phase, index) => ({
+    identity: `agent-${index}`, ...(phase === undefined ? {} : { response_phase: phase }),
+  })) } } } as never, []);
+  assert.equal(agents[0].response_phase, null);
+  assert.equal(Object.hasOwn(agents[1], "response_phase"), false);
+  assert.equal(agents[2].response_phase, "waiting");
+  assert.equal(agents[3].response_phase, "tool-executing");
+  assert.equal(agents[4].response_phase, "generating");
+  assert.equal(Object.hasOwn(agents[5], "response_phase"), false);
+});

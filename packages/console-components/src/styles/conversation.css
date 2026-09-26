@@ -22,7 +22,8 @@
   scroll-padding-block: 26px 36px;
   scroll-snap-type: y proximity;
   scrollbar-gutter: stable;
-  padding-left: 34px;
+  /* The stable navigation gutter keeps the latest control off message text. */
+  padding-left: 46px;
   padding-right: 18px;
 }
 
@@ -45,12 +46,27 @@
   position: absolute;
   z-index: 8;
   top: calc(var(--cc-conversation-header-height, 0px) + 16px);
-  bottom: calc(var(--cc-conversation-footer-height, 0px) + 18px);
+  bottom: calc(var(--cc-conversation-footer-height, 0px) + 64px);
   left: 10px;
   width: 18px;
   display: grid;
   align-content: center;
   pointer-events: none;
+}
+
+.cc-conversation-turn-rail__page {
+  color: var(--_cc-text-secondary, #a3a3a3);
+}
+
+.cc-conversation-turn-rail__page:hover,
+.cc-conversation-turn-rail__page:focus-visible {
+  color: var(--_cc-text, #eee);
+}
+
+.cc-conversation-turn-rail__button:focus-visible {
+  outline: 2px solid var(--_cc-accent, #8ba8ff);
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 .cc-conversation-turn-rail__list {
@@ -2535,14 +2551,15 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-markdown-document img { max-width: 100%; height: auto; }
 .cc-markdown-document .task-list-item { list-style: none; }
 .cc-markdown-document :is(th, td) { padding: .4em .7em; }
+.cc-markdown-document th { overflow-wrap: normal; }
 .cc-markdown-document a { color: var(--_cc-link, inherit); text-decoration: underline; text-underline-offset: .15em; }
 .cc-markdown-image-placeholder { font-style: italic; }
 
-/* Controls float above content without adding a row to the composer. */
+/* The latest control occupies the reserved gutter, outside message text. */
 .cc-conversation-jump-anchor { position: relative; height: 0; flex: none; z-index: 20; }
 .cc-conversation-pane > .cc-conversation-jump-anchor { position: absolute; bottom: var(--cc-conversation-footer-height, 0px); left: 0; width: 100%; }
 .cc-conversation-jump-latest {
-  position: absolute; bottom: 14px; left: calc(50% - 18px);
+  position: absolute; bottom: 14px; left: 4px;
   display: grid; place-items: center; width: 36px; height: 36px;
   padding: 0; border: 1px solid var(--line, var(--_cc-border-soft)); border-radius: 50%;
   background: var(--bg-elev-1, var(--_cc-surface-raised));
@@ -2591,6 +2608,18 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-context-chip button:not(:disabled):hover { background: color-mix(in srgb, currentColor 8%, transparent); }
 .cc-context-chip button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
+.cc-delivered-context { min-width: 0; }
+.cc-delivered-context__instruction { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cc-delivered-context__sources { display: grid; gap: 10px; margin-top: 16px; }
+.cc-delivered-context__source { min-width: 0; margin: 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 10px; background: color-mix(in srgb, currentColor 3%, transparent); }
+.cc-delivered-context__caption { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cc-delivered-context__caption > span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.cc-delivered-context__caption strong { font-size: 12px; font-weight: 600; }
+.cc-delivered-context__caption small { font-size: 11px; opacity: .6; }
+.cc-delivered-context__caption .cc-copy-btn { position: static; flex: none; opacity: .65; padding: 4px; border: 0; background: transparent; color: inherit; }
+.cc-delivered-context__caption .cc-copy-btn:hover, .cc-delivered-context__caption .cc-copy-btn:focus-visible { opacity: 1; }
+.cc-delivered-context__quote { margin: 10px 0 0; padding: 0 0 0 12px; border-left: 2px solid color-mix(in srgb, currentColor 22%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+
 .reduced-motion .cc-conversation-jump-latest[data-working="true"] .cc-conversation-jump-latest__activity { animation: none; }
 
 /* Peer identity heads the card; the message gets the full reading width. */
@@ -2599,3 +2628,12 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-tool-call--peer > .cc-tool-call__header > .cc-tool-call__peer-summary { grid-column: 3 / -1; grid-row: 2; min-width: 0; padding-top: 3px; }
 .cc-tool-call--peer > .cc-tool-call__header > .cc-tool-call__status { grid-column: 4; grid-row: 1; }
 .cc-tool-call--peer > .cc-tool-call__header > .cc-tool-call__copy { grid-column: 5; grid-row: 1; }
+
+.cc-context-chip__actions { display: flex; flex: none; gap: 3px; }
+.cc-context-chip__actions button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; }
+.cc-context-chip__editor { flex: 1; min-width: 0; }
+.cc-context-chip__editor label { display: grid; gap: 6px; }
+.cc-context-chip__editor textarea { box-sizing: border-box; width: 100%; min-height: 88px; max-height: 220px; resize: vertical; padding: 8px; border: 1px solid var(--cc-border, #777); border-radius: 5px; background: var(--cc-bg-surface, transparent); color: inherit; font: inherit; line-height: 1.5; }
+.cc-context-chip__editor textarea:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.cc-context-chip__editor p[role="alert"] { margin: 6px 0; overflow-wrap: anywhere; }
+.cc-context-chip__edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 7px; }

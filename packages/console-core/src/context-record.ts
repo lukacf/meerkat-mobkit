@@ -14,6 +14,10 @@ export interface ConsoleContextRecord {
 export const MAX_CONSOLE_CONTEXTS = 8;
 export const MAX_CONSOLE_CONTEXT_BYTES = 64 * 1024;
 export type ConsoleTextContentBlock = { type: "text"; text: string };
+export interface ConsoleContextMessage {
+  instruction: string;
+  records: ConsoleContextRecord[];
+}
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 
 export function validateConsoleContexts(records: readonly ConsoleContextRecord[]): void {
@@ -31,6 +35,7 @@ export function validateConsoleContexts(records: readonly ConsoleContextRecord[]
     ids.add(record.id);
     if (record.sourceRange && (record.sourceRange.unit !== "utf16" ||
       !Number.isSafeInteger(record.sourceRange.start) || record.sourceRange.start < 0 ||
+      !Number.isSafeInteger(record.sourceRange.end) ||
       record.sourceRange.end !== record.sourceRange.start + record.quote.length)) {
       throw new Error("The quote source range is invalid.");
     }
@@ -74,4 +79,34 @@ export function serializeConsoleContextMessage(
         "\nEND USER-PROVIDED QUOTED CONTEXT v1",
     })),
   ];
+}
+
+/** Display-only inverse. A decoded snapshot never grants source authority. */
+export function parseConsoleContextMessage(content: unknown): ConsoleContextMessage | null {
+  if (!Array.isArray(content) || content.length < 2 || content.length > MAX_CONSOLE_CONTEXTS + 1) return null;
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) =>
+    Object.keys(value).every((key) => allowed.includes(key));
+  if (!content.every((block) => object(block) && onlyKeys(block, ["type", "text"]) && block.type === "text" && typeof block.text === "string")) return null;
+  const blocks = content as ConsoleTextContentBlock[];
+  const records: ConsoleContextRecord[] = [];
+  try {
+    for (const block of blocks.slice(1)) {
+      // JSON occupies exactly one line; source newlines remain escaped data.
+      const lines = block.text.split("\n");
+      if (lines.length !== 4) return null;
+      const value: unknown = JSON.parse(lines[2]);
+      if (!object(value) || !onlyKeys(value, ["version", "id", "sourceScope", "sourceIdentity", "conversationId", "messageId", "quote", "label", "sourceRange"])) return null;
+      if ("sourceRange" in value && (!object(value.sourceRange) || !onlyKeys(value.sourceRange, ["start", "end", "unit"]))) return null;
+      records.push(value as unknown as ConsoleContextRecord);
+    }
+    // The existing serializer validates records and exactly verifies the full
+    // envelope, escaping, instruction, and JSON spelling (including keys).
+    const canonical = serializeConsoleContextMessage(blocks[0].text, records);
+    if (!canonical.every((block, index) => block.text === blocks[index].text)) return null;
+    return { instruction: blocks[0].text, records };
+  } catch {
+    return null;
+  }
 }

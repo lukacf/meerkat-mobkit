@@ -213,6 +213,72 @@ describe("conversation scroll intent", () => {
     expect(reveal).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("status")).toHaveTextContent("Earlier position is unavailable");
   });
+  test("keeps a remembered anchor through an empty loading seed and its native scroll clamp", async () => {
+    vi.useFakeTimers();
+    const key = { authority: "identity-seed-loading", identity: "agent", conversation: "one", pane: "left" };
+    const view = render(<Harness viewportKey={key} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 225);
+    view.rerender(<Harness viewportKey={{ ...key, identity: "other", conversation: "other" }}
+      rows={baseRows.map(row => ({ ...row, id: `other-${row.id}` }))} />);
+    let completeSeed!: (available: boolean) => void;
+    const reveal = vi.fn(() => new Promise<boolean>(resolve => { completeSeed = resolve; }));
+    view.rerender(<Harness viewportKey={key} rows={[]} revealAnchor={reveal} />);
+    // Removing the old identity's rows clamps scrollTop in a real browser. It
+    // is not a wheel, pointer or keyboard decision to abandon the saved row.
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+    await act(async () => { vi.advanceTimersByTime(100); });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring earlier position");
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal).toHaveBeenCalledWith("row-2", expect.any(AbortSignal));
+    view.rerender(<Harness viewportKey={key} rows={baseRows} revealAnchor={reveal} />);
+    await act(async () => { completeSeed(true); await Promise.resolve(); vi.advanceTimersByTime(20); });
+    expect(viewport.querySelector('[data-conversation-row-id="row-2"]')!.getBoundingClientRect().top).toBe(-25);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+  test("reports an empty exhausted seed unavailable only after the host completes its query", async () => {
+    vi.useFakeTimers();
+    const key = { authority: "identity-seed-exhausted", identity: "agent", conversation: "one", pane: "left" };
+    const view = render(<Harness viewportKey={key} />);
+    userScroll(screen.getByTestId("viewport"), 225);
+    view.unmount();
+    let completeSeed!: (available: boolean) => void;
+    const reveal = () => new Promise<boolean>(resolve => { completeSeed = resolve; });
+    render(<Harness viewportKey={key} rows={[]} revealAnchor={reveal} />);
+    const viewport = screen.getByTestId("viewport");
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+    await act(async () => { vi.advanceTimersByTime(100); });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring earlier position");
+    await act(async () => { completeSeed(false); await Promise.resolve(); });
+    expect(screen.getByRole("status")).toHaveTextContent("Earlier position is unavailable");
+    expect(viewport.querySelectorAll("[data-conversation-row-id]")).toHaveLength(0);
+  });
+  test("an explicit scroll gesture cancels pending restoration and late seed completion", async () => {
+    vi.useFakeTimers();
+    const key = { authority: "identity-seed-user-intent", identity: "agent", conversation: "one", pane: "left" };
+    const view = render(<Harness viewportKey={key} />);
+    userScroll(screen.getByTestId("viewport"), 225);
+    view.unmount();
+    let completeSeed!: (available: boolean) => void;
+    let signal!: AbortSignal;
+    const reveal = (_row: string, request: AbortSignal) => {
+      signal = request;
+      return new Promise<boolean>(resolve => { completeSeed = resolve; });
+    };
+    const next = render(<Harness viewportKey={key} rows={baseRows.slice(5)} revealAnchor={reveal} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring earlier position");
+    fireEvent.wheel(viewport, { deltaY: 100 });
+    userScroll(viewport, 100);
+    expect(signal.aborted).toBe(true);
+    next.rerender(<Harness viewportKey={key} rows={baseRows} revealAnchor={reveal} />);
+    await act(async () => { completeSeed(true); await Promise.resolve(); vi.advanceTimersByTime(20); });
+    expect(viewport.querySelector('[data-conversation-row-id="row-6"]')!.getBoundingClientRect().top).toBe(0);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
   test("bounds never-settling and legacy boolean reveals without claiming the row exists", async () => {
     vi.useFakeTimers();
     const key = { authority: "bounded-reveal", identity: "agent", conversation: "one", pane: "left" };

@@ -133,6 +133,7 @@ const scenarios = [
   ...require("./scenarios/stream-parity.cjs").apiScenarios,
   ...require("./scenarios/approval-lifecycle.cjs").apiScenarios,
   ...require("./scenarios/real-workgraph.cjs").apiScenarios,
+  ...require("./scenarios/real-routine-tools.cjs").apiScenarios,
   ...require("./scenarios/real-correlation-overlap.cjs").apiScenarios,
   { id: "api-query-faults", family: "transport", backend: "real", run: faultClassification },
   { id: "api-member-ingress", family: "send", backend: "real", run: () => ingressAndResume("member") },

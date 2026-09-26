@@ -102,6 +102,9 @@ export function ConversationPane({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
+  const [railHeight, setRailHeight] = useState<number | null>(null);
+  const [railPage, setRailPage] = useState<{ conversationId: string; firstTurnId: string } | null>(null);
   const [railInsets, setRailInsets] = useState({ top: 0, bottom: 0 });
   const scroll = useConversationScrollController({
     viewportRef: scrollRef, contentRef, viewportKey,
@@ -121,6 +124,35 @@ export function ConversationPane({
       ? [{ id: "turn-diff", groups: [] }]
       : [];
   const showTurnRail = showTurnRailProp && !showEmptyState && railTurns.length > 1;
+  // Bound the rail to its measured band. Page controls keep every source turn
+  // individually reachable, while stable turn IDs survive history prepends.
+  const railSlots = railHeight === null || railHeight <= 0
+    ? 48 : Math.max(3, Math.min(48, Math.floor((railHeight - 8) / 10) - 1));
+  const railCapacity = Math.max(1, railSlots - 2);
+  const requestedRailStart = railPage?.conversationId === viewState.conversationId
+    ? railTurns.findIndex(turn => turn.id === railPage.firstTurnId) : -1;
+  const railStart = railTurns.length <= railSlots ? 0
+    : Math.min(Math.max(0, railTurns.length - railCapacity), requestedRailStart < 0 ? railTurns.length - railCapacity : requestedRailStart);
+  const railEnd = railTurns.length <= railSlots ? railTurns.length : Math.min(railTurns.length, railStart + railCapacity);
+  const pageRail = (start: number) => {
+    const turn = railTurns[Math.max(0, Math.min(start, railTurns.length - railCapacity))];
+    if (turn) setRailPage({ conversationId: viewState.conversationId, firstTurnId: turn.id });
+  };
+
+  useEffect(() => { setRailPage(null); }, [viewState.conversationId, viewportKey?.authority, viewportKey?.identity, viewportKey?.conversation, viewportKey?.pane]);
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail || !showTurnRail) return;
+    const measure = () => setRailHeight(rail.getBoundingClientRect().height);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(entries => {
+      const entry = entries.find(item => item.target === rail);
+      if (entry) setRailHeight(entry.contentRect.height);
+    });
+    observer?.observe(rail);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [showTurnRail]);
 
   useEffect(() => {
     const scrollNode = scrollRef.current;
@@ -217,9 +249,16 @@ export function ConversationPane({
     <div className={clsx("cc-theme-scope", "cc-conversation-pane", header && "cc-conversation-pane--header", className)} style={{ "--cc-conversation-header-height": `${railInsets.top}px`, "--cc-conversation-footer-height": `${railInsets.bottom}px` } as CSSProperties}>
       {header ? <div ref={headerRef}><ConversationHeader {...header} /></div> : null}
       {showTurnRail ? (
-        <nav className="cc-conversation-turn-rail" aria-label="Conversation turns">
+        <nav ref={railRef} className="cc-conversation-turn-rail" aria-label="Conversation turns">
           <ol className="cc-conversation-turn-rail__list">
-            {railTurns.map((turn, turnIndex) => {
+            {railStart > 0 ? <li className="cc-conversation-turn-rail__item">
+              <button type="button" className="cc-conversation-turn-rail__button cc-conversation-turn-rail__page"
+                aria-label="Show earlier turns" title="Show earlier turns" onClick={() => pageRail(railStart - railCapacity)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4 10 4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </li> : null}
+            {railTurns.slice(railStart, railEnd).map((turn, railIndex) => {
+              const turnIndex = railStart + railIndex;
               const isLastVisibleTurn = turnIndex === visibleTurns.length - 1;
               const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
               const preview = visibleTurns[turnIndex]
@@ -276,6 +315,12 @@ export function ConversationPane({
                 </li>
               );
             })}
+            {railEnd < railTurns.length ? <li className="cc-conversation-turn-rail__item">
+              <button type="button" className="cc-conversation-turn-rail__button cc-conversation-turn-rail__page"
+                aria-label="Show later turns" title="Show later turns" onClick={() => pageRail(railStart + railCapacity)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </li> : null}
           </ol>
         </nav>
       ) : null}

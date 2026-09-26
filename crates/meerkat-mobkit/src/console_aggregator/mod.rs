@@ -781,6 +781,40 @@ impl MobKitConsoleAggregator {
         Ok(identities)
     }
 
+    /// Forward recorded activity for already-authorized identity rows without
+    /// entering the member actor or inventing activity for unavailable sources.
+    pub(crate) async fn response_phases_for_identities(
+        &self,
+        identities: &[ConsoleIdentityRecord],
+    ) -> ConsoleLogResult<HashMap<String, Option<String>>> {
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut phases = HashMap::new();
+        for entry in entries {
+            let recorded = entry.console_events.response_phases_snapshot().await;
+            for identity in identities
+                .iter()
+                .filter(|row| row.runtime_key == entry.runtime_key)
+            {
+                for candidate in
+                    namespace_match_candidates(&identity.identity, &entry.identity_namespace)
+                {
+                    if let Some(phase) = recorded.get(&candidate) {
+                        phases.insert(identity.identity.clone(), phase.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(phases)
+    }
+
     #[cfg(test)]
     pub(crate) async fn list_identities_fresh(
         &self,
@@ -4723,8 +4757,10 @@ fn frames_from_session_history_message_with_namespace(
                 frames.extend(outgoing_comms_tool_call_frames_from_assistant(step));
                 return frames;
             }
+            // One committed assistant message can be an intermediate step.
+            // Preserve authored text without fabricating a run terminal.
             (
-                "interaction_complete",
+                "text_complete",
                 assistant.created_at.timestamp_millis().max(0) as u64,
                 json!({
                     "result": text,
@@ -5264,6 +5300,23 @@ fn history_counterpart_owner_matches(
             && !(history.interaction_id.is_some()
                 && live.interaction_id.is_some()
                 && history.interaction_id != live.interaction_id);
+    }
+    // A human send reserves its exact interaction before the runtime creates
+    // a run. Its later canonical message may fill in that run identity, but
+    // another source or a contradictory known run is never a substitute.
+    if history.kind == "user_input"
+        && live.kind == "user_input"
+        && live.source.kind == ConsoleFrameSourceKind::Send
+        && live.run_id.is_none()
+        && history.session_id.is_some()
+        && history.session_id == live.session_id
+        && history.interaction_id == live.interaction_id
+        && history
+            .interaction_id
+            .as_deref()
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+    {
+        return true;
     }
     if history_counterpart_has_typed_owner(
         history.run_id.as_deref(),
@@ -12029,7 +12082,7 @@ comms = true
                 .any(|frame| {
                     matches!(
                         frame.kind.as_str(),
-                        "user_input" | "system_notice" | "interaction_complete"
+                        "user_input" | "system_notice" | "text_complete"
                     ) && session_history_frame_content_text(frame).as_deref() == Some(expected)
                 })
             }) {
@@ -12882,6 +12935,53 @@ comms = true
     }
 
     #[tokio::test]
+    async fn history_counterpart_lineage_joins_accepted_human_input_before_run_assignment() {
+        let mut history = counterpart_lineage_history("");
+        history.kind = "user_input".to_string();
+        history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+        history.payload = json!({ "content": [{ "type": "text", "text": "  Human input.\n" }] });
+        let mut accepted = counterpart_lineage_frame(
+            "accepted-human",
+            "user_input",
+            json!({ "content": "  Human input.\n" }),
+        );
+        accepted.source.kind = ConsoleFrameSourceKind::Send;
+        accepted.interaction_id = history.interaction_id.clone();
+        accepted.run_id = None;
+        assert_history_counterpart(&history, vec![accepted.clone()], true).await;
+        for mismatch in [
+            "runtime",
+            "session",
+            "run",
+            "interaction",
+            "source",
+            "whitespace",
+            "mixed-content",
+        ] {
+            let mut candidate = accepted.clone();
+            match mismatch {
+                "runtime" => candidate.runtime_key = "runtime-b".to_string(),
+                "session" => candidate.session_id = None,
+                "run" => candidate.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string()),
+                "interaction" => {
+                    // Two genuine human sends can contain exactly the same text.
+                    candidate.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string())
+                }
+                "source" => candidate.source.kind = ConsoleFrameSourceKind::ConsoleEvent,
+                "whitespace" => candidate.payload["content"] = json!("Human input."),
+                "mixed-content" => {
+                    candidate.payload["content"] = json!([
+                        { "type": "text", "text": "  Human input.\n" },
+                        { "type": "image", "source": "another-image" }
+                    ])
+                }
+                _ => unreachable!(),
+            }
+            assert_history_counterpart(&history, vec![candidate], false).await;
+        }
+    }
+
+    #[tokio::test]
     async fn history_counterpart_lineage_matches_exact_user_input_with_authoritative_owner() {
         let mut history = counterpart_lineage_history("");
         history.kind = "user_input".to_string();
@@ -13496,6 +13596,45 @@ comms = true
     }
 
     #[test]
+    fn session_history_projection_retains_authored_text_without_inventing_run_terminals() {
+        let interaction = uuid::Uuid::from_u128(0xfeed_9301).to_string();
+        let run = uuid::Uuid::from_u128(0xfeed_9201).to_string();
+        let frames: Vec<_> = ["tool_use", "end_turn"]
+            .into_iter()
+            .enumerate()
+            .flat_map(|(offset, stop_reason)| {
+                frames_from_session_history_message(
+                    "runtime-a",
+                    "agent-a",
+                    "session-a",
+                    offset,
+                    json!({
+                        "role": "block_assistant",
+                        "identity": { "interaction_id": interaction, "run_id": run },
+                        "blocks": [{ "block_type": "text", "data": { "text": "Again.\n" } }],
+                        "stop_reason": stop_reason
+                    }),
+                )
+            })
+            .collect();
+        assert_eq!(frames.len(), 2, "both equal authored occurrences survive");
+        for frame in &frames {
+            assert_eq!(
+                frame.kind, "text_complete",
+                "a stored message is not a run terminal"
+            );
+            assert_eq!(frame.payload["result"], json!("Again.\n"));
+            assert_eq!(frame.interaction_id.as_deref(), Some(interaction.as_str()));
+            assert_eq!(frame.run_id.as_deref(), Some(run.as_str()));
+        }
+        assert_ne!(
+            frames[0].source.source_cursor,
+            frames[1].source.source_cursor
+        );
+        assert_ne!(frames[0].dedupe_key, frames[1].dedupe_key);
+    }
+
+    #[test]
     fn session_history_messages_project_to_renderable_frames() {
         let user = frame_from_session_history_message(
             "runtime-a",
@@ -13535,7 +13674,7 @@ comms = true
             user.payload["content"],
             json!([{ "type": "text", "text": "hello" }])
         );
-        assert_eq!(assistant.kind, "interaction_complete");
+        assert_eq!(assistant.kind, "text_complete");
         assert_eq!(assistant.payload["text"], json!("hi there"));
         assert!(
             assistant
@@ -13640,7 +13779,7 @@ comms = true
         )
         .expect("assistant block history frame");
 
-        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.kind, "text_complete");
         assert_eq!(frame.payload["result"], json!("Ready and standing by."));
     }
 
@@ -13669,7 +13808,7 @@ comms = true
         )
         .expect("assistant block history frame");
 
-        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.kind, "text_complete");
         assert_eq!(frame.payload["result"], json!("Visible answer."));
         assert_eq!(frame.payload["text"], json!("Visible answer."));
     }
@@ -14177,7 +14316,7 @@ comms = true
     /// projects as the live edge's `tool_call_requested` frames (one per
     /// non-comms tool call, comms calls stay with the comms parity helper), a
     /// silent step projects nothing, and a step that says something keeps
-    /// its `interaction_complete` with the text.
+    /// its `text_complete` with the authored text.
     #[test]
     fn session_history_text_less_step_never_projects_an_empty_completion() {
         let interaction = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
@@ -14274,8 +14413,8 @@ comms = true
         );
         assert!(frames.is_empty(), "{frames:#?}");
 
-        // Control: a step that says something keeps its terminal and the
-        // text, and its non-comms tool call stays inside that terminal's
+        // Control: a step that says something keeps its authored text,
+        // and its non-comms tool call stays inside that message's
         // message (the live edge already projected the call).
         let frames = frames_from_session_history_message_with_namespace(
             "runtime-a",
@@ -14296,11 +14435,16 @@ comms = true
                 "created_at": "1970-01-01T00:00:00.700Z"
             }),
         );
-        let terminal = frames
+        let message = frames
             .iter()
-            .find(|frame| frame.kind == "interaction_complete")
-            .expect("a step with text keeps its terminal");
-        assert_eq!(terminal.payload["result"], json!("Checking peers."));
+            .find(|frame| frame.kind == "text_complete")
+            .expect("a step with text keeps its authored message");
+        assert_eq!(message.payload["result"], json!("Checking peers."));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.kind != "interaction_complete")
+        );
         assert!(
             frames
                 .iter()

@@ -21,7 +21,11 @@ import {
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
 import { describeFailure, summarizeFailureData } from "./failure-summary";
-import { mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared } from "../../../packages/console-core/src/adapters";
+import {
+  mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared,
+  inferResponsePhaseFromFrames as inferResponsePhaseFromFramesShared,
+  resolvePanelResponsePhase as resolvePanelResponsePhaseShared,
+} from "../../../packages/console-core/src/adapters";
 import {
   conversationRichBlockCopyText,
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
@@ -344,6 +348,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
       { id: "evt-2", event: "reasoning_delta", interactionId: "int-1", data: { delta: "Thinking first." } },
       { id: "evt-5", event: "interaction_complete", interactionId: "int-1", timestampMs: 1300, data: {} },
     ],
+    { renderInteractionStartsAsUser: true },
   );
   const thinkingIdx = entries.findIndex(
     (e) => "blocks" in e && Array.isArray(e.blocks) && e.blocks.some((b) => b.type === "thinking"),
@@ -929,6 +934,50 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
     null,
   );
 });
+
+for (const [surface, inferPhase, resolvePhase] of [
+  ["stock", inferResponsePhaseFromFrames, resolvePanelResponsePhase],
+  ["shared", inferResponsePhaseFromFramesShared, resolvePanelResponsePhaseShared],
+] as const) {
+  for (const event of ["text_complete", "interaction_complete"]) {
+    const historyStep = {
+      id: "saved-intermediate", event, sourceKind: "session_history",
+      runtimeKey: "runtime-a", identity: "worker", sessionId: "session-a",
+      runId: "00000000-0000-0000-0000-000000000001",
+      interactionId: "00000000-0000-0000-0000-000000000002",
+      timestampMs: 2,
+      data: { result: "I will inspect the file.", text: "I will inspect the file.", message: {
+        role: "block_assistant", stop_reason: "tool_use", blocks: [
+          { block_type: "text", data: { text: "I will inspect the file." } },
+          { block_type: "tool_use", data: { id: "read-1", name: "read_file", args: { path: "README.md" } } },
+        ],
+      } },
+    };
+    test(`${surface}: saved intermediate ${event} cannot override working evidence without a retained start`, () => {
+      assert.equal(inferPhase([historyStep], "tool-executing"), "tool-executing");
+      assert.equal(resolvePhase({ frames: [historyStep], serverPhase: "generating" }), "generating");
+      assert.equal(resolvePhase({ frames: [historyStep], serverPhase: null }), null,
+        "a saved step alone does not manufacture current working state");
+      const open = { ...historyStep, id: "actual-start", event: "run_started", sourceKind: "console_event", timestampMs: 1, data: {} };
+      const liveText = { ...historyStep, id: "next-text", event: "text_complete", sourceKind: "console_event", timestampMs: 3, data: { text: "Next step." } };
+      assert.equal(inferPhase([open, historyStep, liveText]), "waiting",
+        "a legacy saved interaction_complete cannot close the real open run");
+      assert.equal(resolvePhase({ frames: [open, historyStep, liveText], serverPhase: "generating" }), "waiting");
+    });
+    test(`${surface}: actual terminals remain authoritative around saved intermediate ${event} replay`, () => {
+      for (const terminalEvent of ["run_completed", "interaction_complete"]) {
+        const terminal = { ...historyStep, id: "actual-terminal", event: terminalEvent, sourceKind: "console_event", timestampMs: 3, data: { result: "Done." } };
+        for (const frames of [[historyStep, terminal], [terminal, historyStep]]) {
+          assert.equal(inferPhase(frames, "waiting"), null);
+          assert.equal(resolvePhase({ frames, serverPhase: "tool-executing" }), null,
+            "an intermediate replay cannot revive a completed run");
+        }
+      }
+      assert.equal(resolvePhase({ frames: [{ ...historyStep, sourceKind: "console_event" }], serverPhase: "generating" }), null,
+        "the saved-step exception does not reinterpret live lifecycle events");
+    });
+  }
+}
 
 test("resolvePanelResponsePhase lets local terminal history clear stale server phase", () => {
   assert.equal(
@@ -2016,20 +2065,23 @@ test("mapFramesToTimelineEntries suppresses history reasoning replay after a str
     [
       {
         id: "reasoning-1",
-        event: "reasoning_delta",
+        event: "reasoning_complete",
         identity: "incident-worker-1",
-        data: { delta: "Planning before answering." },
+        runId: "run-history-replay",
+        data: { content: "Planning before answering." },
       },
       {
         id: "text-1",
         event: "text_delta",
         identity: "incident-worker-1",
+        runId: "run-history-replay",
         data: { delta: "Ready." },
       },
       {
         id: "history-final",
         event: "interaction_complete",
         identity: "incident-worker-1",
+        runId: "run-history-replay",
         sourceKind: "session_history",
         data: {
           message: {
@@ -2061,7 +2113,7 @@ test("mapFramesToTimelineEntries suppresses history reasoning replay after a str
   assert.equal(answer?.source, "Ready.");
 });
 
-test("mapFramesToTimelineEntries suppresses late completed reasoning slices after an answer", () => {
+test("mapFramesToTimelineEntries replaces unfinished reasoning with the late authoritative block", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-worker-1",
@@ -2104,13 +2156,13 @@ test("mapFramesToTimelineEntries suppresses late completed reasoning slices afte
   assert.equal(entries.length, 2);
   const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   assert.equal(thought?.type, "thinking");
-  assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
+  assert.equal(thought?.text, "Evaluating choices.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(answer?.type, "markdown");
   assert.equal(answer?.source, "Ready.");
 });
 
-test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice arrives before an answer", () => {
+test("mapFramesToTimelineEntries replaces pending reasoning with the authoritative complete block", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -2147,7 +2199,7 @@ test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice a
   const thinking = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(thinking?.type, "thinking");
-  assert.equal(thinking?.text, "Searching for context.\n\nEvaluating relocation choices.");
+  assert.equal(thinking?.text, "Evaluating relocation choices.");
   assert.equal(answer?.type, "markdown");
   assert.equal(answer?.source, "Answer.");
 });
@@ -2236,7 +2288,7 @@ test("mapFramesToTimelineEntries flushes pending reasoning before another intera
   assert.equal(second?.text, "Second turn reasoning.");
 });
 
-test("mapFramesToTimelineEntries suppresses late unscoped reasoning without mutating prior traces", () => {
+test("mapFramesToTimelineEntries preserves late unscoped reasoning separately from prior traces", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-worker-1",
@@ -2266,13 +2318,15 @@ test("mapFramesToTimelineEntries suppresses late unscoped reasoning without muta
     ],
   );
 
-  assert.equal(entries.length, 2);
+  assert.equal(entries.length, 3);
   const first = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(first?.type, "thinking");
   assert.equal(first?.text, "Searching for context.");
   assert.equal(answer?.type, "markdown");
   assert.equal(answer?.source, "Ready.");
+  const late = entries[2] && "blocks" in entries[2] ? entries[2].blocks?.[0] : null;
+  assert.equal(late?.text, "Searching for context.\n\nEvaluating a later independent turn.");
 });
 
 test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final", () => {
@@ -2299,6 +2353,93 @@ test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final",
   assert.equal(thought?.text, "Still thinking");
   assert.equal(thought?.final, undefined);
 });
+
+// AgentEvent::ReasoningComplete contains the assembler's entire current block.
+// Exercise both public adapters so the reusable surface follows the same owner contract.
+for (const [surface, mapper] of [
+  ["stock", mapFramesToTimelineEntries],
+  ["shared", mapFramesToTimelineEntriesShared],
+] as const) {
+  const reasoningFrame = (id: string, event: string, text: string, interactionId = "turn-a") => ({
+    id, event, interactionId,
+    data: event === "reasoning_delta" ? { delta: text } : { content: text },
+  });
+  const thoughts = (frames: Parameters<typeof mapper>[1]) => mapper(null, frames)
+    .flatMap((entry) => entry.kind === "message" ? (entry.blocks || [])
+      .filter((block) => block.type === "thinking")
+      .map((block) => ({ id: entry.id, text: block.text, final: block.final })) : []);
+
+  test(`${surface}: reasoning completion replaces damaged fragments exactly with a stable entry id`, () => {
+    const frames = [
+      reasoningFrame("reasoning-open", "reasoning_delta", "Check "),
+      reasoningFrame("reasoning-fragment", "reasoning_delta", "again and finish."),
+    ];
+    assert.deepEqual(thoughts(frames), [{ id: "reasoning-open", text: "Check again and finish.", final: undefined }]);
+    const completed = "  Check again again and finish.\r\n";
+    assert.deepEqual(thoughts([...frames, reasoningFrame("reasoning-done", "reasoning_complete", completed)]), [
+      { id: "reasoning-open", text: completed, final: true },
+    ]);
+  });
+
+  test(`${surface}: distinct completed reasoning blocks retain identical words in one interaction`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "Check again."),
+      reasoningFrame("first-done", "reasoning_complete", "Check again."),
+      reasoningFrame("second-open", "reasoning_delta", "Check again."),
+      reasoningFrame("second-done", "reasoning_complete", "Check again."),
+      reasoningFrame("third-complete-only", "reasoning_complete", "Check again."),
+    ]), [
+      { id: "first-open", text: "Check again.", final: true },
+      { id: "second-open", text: "Check again.", final: true },
+      { id: "third-complete-only", text: "Check again.", final: true },
+    ]);
+  });
+
+  test(`${surface}: late reasoning completion updates only its unfinished block after a visual flush`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "Keep this earlier block."),
+      reasoningFrame("first-done", "reasoning_complete", "Keep this earlier block."),
+      reasoningFrame("second-open", "reasoning_delta", "Damaged second block."),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("second-done", "reasoning_complete", "Exact completed second block."),
+    ]), [
+      { id: "first-open", text: "Keep this earlier block.", final: true },
+      { id: "second-open", text: "Exact completed second block.", final: true },
+    ]);
+  });
+
+  test(`${surface}: reasoning deltas continue the open block across interleaved text`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("reasoning-open", "reasoning_delta", "Check "),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("reasoning-next", "reasoning_delta", "again."),
+      reasoningFrame("reasoning-done", "reasoning_complete", "Check again."),
+    ]), [{ id: "reasoning-open", text: "Check again.", final: true }]);
+  });
+
+  test(`${surface}: foreign reasoning completion cannot rewrite another interaction`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "First provisional."),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("foreign-complete", "reasoning_complete", "First provisional. Foreign complete.", "turn-b"),
+      reasoningFrame("first-done", "reasoning_complete", "First canonical."),
+    ]), [
+      { id: "first-open", text: "First canonical.", final: true },
+      { id: "foreign-complete", text: "First provisional. Foreign complete.", final: true },
+    ]);
+  });
+
+  test(`${surface}: explicit run identity prevents reasoning completion from claiming another run`, () => {
+    assert.deepEqual(thoughts([
+      { ...reasoningFrame("first-open", "reasoning_delta", "First run."), runId: "run-a" },
+      { ...reasoningFrame("other-complete", "reasoning_complete", "Other run."), runId: "run-b" },
+      { ...reasoningFrame("first-complete", "reasoning_complete", "First run completed."), runId: "run-a" },
+    ]), [
+      { id: "first-open", text: "First run completed.", final: true },
+      { id: "other-complete", text: "Other run.", final: true },
+    ]);
+  });
+}
 
 test("mapFramesToTimelineEntries renders session-history tool-use only assistant turns", () => {
   const entries = mapFramesToTimelineEntries(
@@ -8245,6 +8386,293 @@ test("legacy console-interaction ids keep the text heuristic (same interaction, 
   const replyEntries = entries.filter((e) => entryVisibleTestText(e).includes("Same reply."));
   assert.equal(replyEntries.length, 1, JSON.stringify(entries, null, 2));
 });
+
+// Run lineage is the owner for startup turns, including runs with no interaction.
+for (const [surface, mapper] of [
+  ["stock", mapFramesToTimelineEntries],
+  ["shared", mapFramesToTimelineEntriesShared],
+] as const) {
+  const agent = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+  const runA = "01a0dae6-a27d-7720-baad-1288fc90471a";
+  const runB = "01a0dae6-a27d-7720-baad-1288fc90471b";
+  const history = (id: string, text: string, runId: string, interactionId?: string) => ({
+    id, event: "interaction_complete", sourceKind: "session_history", runId, interactionId,
+    data: { text, result: text, message: { role: "block_assistant", blocks: [{ block_type: "text", data: { text } }] } },
+  });
+  const texts = (frames: Parameters<typeof mapper>[1]) => mapper(agent, frames, { textMode: "markdown" })
+    .filter((entry) => entry.kind === "message" && entry.identity.role === "assistant");
+
+  for (const sourceKind of [undefined, "session_history"]) {
+    const transport = sourceKind || "console_event";
+    test(`${surface}: ${transport} typed tool text preserves exact source and failure state`, () => {
+      for (const [content, expected] of [
+        [[{ type: "text", text: "  Release notes\nKeep both spaces and this final newline.\n" }], "  Release notes\nKeep both spaces and this final newline.\n"],
+        [[{ type: "text", text: "alpha" }, { type: "text", text: "  \n" }, { type: "text", text: "beta\n" }], "alpha  \nbeta\n"],
+        [[{ type: "text", text: "   \n" }], "   \n"],
+        [[{ type: "text", text: "" }], ""],
+      ] as const) {
+        for (const isError of [false, true]) {
+          const entries = mapper(agent, [
+            { id: "file-call", event: "tool_call_requested", sourceKind, data: { id: "read-1", name: "read_file", args: { path: "notes.txt" } } },
+            { id: "file-result", event: "tool_result_received", sourceKind, data: { tool_call_id: "read-1", name: "read_file", result: content, is_error: isError } },
+          ]);
+          const blocks = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : []);
+          const block = blocks.find((candidate) => candidate.type === "tool-call");
+          assert.equal(block?.type === "tool-call" ? block.result : undefined, expected);
+          assert.equal(block?.type === "tool-call" ? block.status : undefined, isError ? "error" : "success");
+        }
+      }
+    });
+
+    test(`${surface}: ${transport} mixed and structured tool results keep all content semantics`, () => {
+      const payloads = [
+        [{ type: "text", text: "A picture follows." }, { type: "image", data: "image-bytes", mime_type: "image/png" }],
+        [{ type: "resource", text: "Resource label", uri: "file:///notes.txt" }],
+        [{ type: "text", text: "Annotated text", annotations: { audience: ["user"] } }],
+        { records: [{ text: "A field named text is structured data." }], count: 1 },
+      ];
+      for (const payload of payloads) {
+        const entries = mapper(agent, [
+          { id: "mixed-call", event: "tool_call_requested", sourceKind, data: { id: "mixed-1", name: "lookup", args: {} } },
+          { id: "mixed-result", event: "tool_result_received", sourceKind, data: { tool_call_id: "mixed-1", name: "lookup", result: payload, is_error: false } },
+        ]);
+        const block = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+          .find((candidate) => candidate.type === "tool-call");
+        assert.equal(block?.type === "tool-call" ? block.result : undefined, JSON.stringify(payload, null, 2));
+      }
+    });
+  }
+
+  test(`${surface}: persisted tool-use blocks retain empty and whitespace-only actual text results`, () => {
+    for (const text of ["", "   \n", "  File content\n"]) {
+      const entries = mapper(agent, [
+        { ...history("saved-tool", "", runA), data: { message: { role: "block_assistant", blocks: [
+          { block_type: "tool_use", data: { id: "saved-call", name: "read_file", args: { path: "notes.txt" } } },
+        ] } } },
+        { id: "saved-result", event: "tool_result_received", sourceKind: "session_history", runId: runA,
+          data: { tool_call_id: "saved-call", result: [{ type: "text", text }], is_error: false } },
+      ]);
+      const block = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+        .find((candidate) => candidate.type === "tool-call");
+      assert.equal(block?.type === "tool-call" ? block.result : undefined, text);
+    }
+  });
+
+  for (const interactionId of [undefined, UUID_A]) {
+    const lineage = interactionId ? "interaction and run" : "run only";
+    for (const historyEvent of ["interaction_complete", "text_complete"]) {
+      test(`${surface}: startup ${lineage} joins ${historyEvent} history before the final live chunk`, () => {
+        const content = "| Result | Status |\n| --- | --- |\n| Router | Ready |\n";
+        const owner = { runId: runA, interactionId };
+        const prefix = content.slice(0, -3);
+        const entries = texts([
+          { id: "startup-open", event: "run_started", ...owner, data: {} },
+          { id: "startup-first-text", event: "text_delta", ...owner, data: { delta: prefix } },
+          { ...history("startup-history", content, runA, interactionId), event: historyEvent },
+          { id: "startup-last-text", event: "text_delta", ...owner, data: { delta: content.slice(-3) } },
+          { id: "startup-complete", event: "run_completed", ...owner, data: { result: content } },
+        ]);
+        assert.equal(entries.length, 1, JSON.stringify(entries));
+        assert.equal(entries[0].id, "startup-first-text");
+        assert.equal(entries[0].runId, runA);
+        assert.equal(entries[0].interactionId, interactionId);
+        assert.equal(entryVisibleTestText(entries[0]), content);
+      });
+    }
+
+    test(`${surface}: startup ${lineage} preserves equal replies belonging to different runs`, () => {
+      const entries = texts([
+        { id: "first-reply", event: "interaction_complete", runId: runA, interactionId, data: { result: "Ready." } },
+        history("second-reply", "Ready.", runB, interactionId),
+      ]);
+      assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+        ["first-reply", runA, "Ready."], ["second-reply", runB, "Ready."],
+      ]);
+    });
+  }
+
+  test(`${surface}: startup run ownership does not erase a different persisted message from that run`, () => {
+    const entries = texts([
+      { id: "final-reply", event: "run_completed", runId: runA, data: { result: "All done." } },
+      history("earlier-response", "I will inspect the files first.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["final-reply", "All done."], ["earlier-response", "I will inspect the files first."],
+    ]);
+  });
+
+  test(`${surface}: startup preserves equal distinct history messages in one run`, () => {
+    const entries = texts([history("saved-first", "Ready.", runA), history("saved-second", "Ready.", runA)]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["saved-first", "Ready."], ["saved-second", "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup preserves whitespace-significant authored messages in one run`, () => {
+    const entries = texts([
+      { id: "live-paragraphs", event: "run_completed", runId: runA, data: { result: "alpha\n\nbeta" } },
+      history("saved-one-line", "alpha beta", runA),
+      history("saved-hard-break", "alpha  \nbeta", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["live-paragraphs", "alpha\n\nbeta"], ["saved-one-line", "alpha beta"], ["saved-hard-break", "alpha  \nbeta"],
+    ]);
+  });
+
+  test(`${surface}: startup consumes each owned live text occurrence once`, () => {
+    const entries = texts([
+      { id: "only-live-answer", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      history("saved-twin", "Ready.", runA),
+      history("saved-second-occurrence", "Ready.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["only-live-answer", "Ready."], ["saved-second-occurrence", "Ready."],
+    ]);
+  });
+
+  for (const historyEvent of ["interaction_complete", "text_complete"]) {
+    test(`${surface}: startup ${historyEvent} reconciles every arrival prefix with the opening live identity`, () => {
+      const answer = "## Acceptance reply\n\n| State | Value |\n| --- | --- |\n| Result | Ready |\n";
+      const owner = { runId: runA, interactionId: UUID_A };
+      const frames = [
+        { id: "prefix-open", event: "run_started", ...owner, data: {} },
+        { id: "prefix-first", event: "text_delta", ...owner, data: { delta: answer.slice(0, -3) } },
+        { ...history("prefix-history", answer, runA, UUID_A), event: historyEvent },
+        { id: "prefix-last", event: "text_delta", ...owner, data: { delta: answer.slice(-3) } },
+        { id: "prefix-terminal", event: "run_completed", ...owner, data: { result: answer } },
+      ];
+      assert.equal(texts(frames.slice(0, 1)).length, 0);
+      for (let length = 2; length <= frames.length; length++) {
+        const entries = texts(frames.slice(0, length));
+        assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+          ["prefix-first", length === 2 ? answer.slice(0, -3) : answer],
+        ], `arrival prefix ${length}`);
+      }
+    });
+  }
+
+  test(`${surface}: startup cannot treat a completed short message as the prefix of a different saved message`, () => {
+    const entries = texts([
+      { id: "short-first", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      { id: "short-complete", event: "text_complete", runId: runA, data: { content: "Ready." } },
+      history("longer-distinct", "Ready. Another message.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["short-first", "Ready."], ["longer-distinct", "Ready. Another message."],
+    ]);
+  });
+
+  test(`${surface}: startup history stays available when text deltas are disabled`, () => {
+    const entries = mapper(agent, [
+      { id: "ignored-delta", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      history("only-rendered-answer", "Ready.", runA),
+    ], { textMode: "markdown", renderTextDeltas: false });
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["only-rendered-answer", "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup live text does not erase persisted tool and reasoning siblings`, () => {
+    const entries = texts([
+      { id: "live-answer", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      { ...history("history-with-siblings", "Ready.", runA), data: {
+        text: "Ready.", result: "Ready.", message: { role: "block_assistant", blocks: [
+          { block_type: "reasoning", data: { text: "Check the file first." } },
+          { block_type: "tool_use", data: { id: "history-only-tool", name: "read_file", args: { path: "a" } } },
+          { block_type: "text", data: { text: "Ready." } },
+        ] },
+      } },
+    ]);
+    const blocks = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : []);
+    assert.equal(blocks.filter((block) => block.type === "markdown").length, 1);
+    assert.equal(blocks.filter((block) => block.type === "tool-call").length, 1);
+    assert.equal(blocks.filter((block) => block.type === "thinking").length, 1);
+  });
+
+  for (const historyEvent of ["interaction_complete", "text_complete"]) {
+    test(`${surface}: startup ${historyEvent} joins only owned thinking occurrences without splitting live text`, () => {
+      const thought = "Check again again and check again.";
+      const answer = "Review complete. Both independent checks support the release candidate.";
+      const owner = { runId: runA, interactionId: UUID_A };
+      const entries = texts([
+        { id: "first-thought", event: "reasoning_complete", ...owner, data: { content: thought } },
+        { id: "second-thought", event: "reasoning_complete", ...owner, data: { content: thought } },
+        { id: "answer-start", event: "text_delta", ...owner, data: { delta: answer.slice(0, -5) } },
+        { ...history("answer-history", answer, runA, UUID_A), event: historyEvent, data: {
+          result: answer, message: { role: "block_assistant", blocks: [
+            { block_type: "reasoning", data: { text: thought } },
+            { block_type: "reasoning", data: { text: thought } },
+            { block_type: "text", data: { text: answer } },
+          ] },
+        } },
+        { id: "answer-tail", event: "text_delta", ...owner, data: { delta: answer.slice(-5) } },
+        { id: "answer-complete", event: "interaction_complete", ...owner, data: { result: answer } },
+      ]);
+      assert.deepEqual(entries.map((entry) => entry.id), ["first-thought", "second-thought", "answer-start"]);
+      assert.deepEqual(entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+        .filter((block) => block.type === "thinking").map((block) => block.text), [thought, thought]);
+      assert.equal(entryVisibleTestText(entries[2]), answer);
+    });
+  }
+
+  test(`${surface}: startup thinking join preserves excess occurrences and equal blocks from other runs`, () => {
+    const thought = "Check again.";
+    const historyThinking = (id: string, runId: string, count: number) => ({
+      ...history(id, "", runId, UUID_A), data: { result: "", message: { role: "block_assistant",
+        blocks: Array.from({ length: count }, () => ({ block_type: "reasoning", data: { text: thought } })),
+      } },
+    });
+    const entries = texts([
+      { id: "only-live-thought", event: "reasoning_complete", runId: runA, interactionId: UUID_A, data: { content: thought } },
+      historyThinking("two-history-thoughts", runA, 2),
+      historyThinking("foreign-history-thought", runB, 1),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.kind === "message" ? entry.blocks?.length : 0]), [
+      ["only-live-thought", 1], ["two-history-thoughts", 1], ["foreign-history-thought", 1],
+    ]);
+  });
+
+  test(`${surface}: startup admission alone cannot suppress a persisted answer`, () => {
+    const entries = texts([
+      { id: "startup-open", event: "run_started", runId: runA, interactionId: UUID_A, data: {} },
+      history("only-answer", "Durable answer.", runA, UUID_A),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["only-answer", runA, "Durable answer."],
+    ]);
+  });
+
+  test(`${surface}: startup run boundaries keep equal adjacent streams separate`, () => {
+    const entries = texts([
+      { id: "first-delta", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Ready." } },
+      { id: "second-delta", event: "text_delta", runId: runB, interactionId: UUID_A, data: { delta: "Ready." } },
+      { id: "second-complete", event: "run_completed", runId: runB, interactionId: UUID_A, data: { result: "Ready." } },
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["first-delta", runA, "Ready."], ["second-delta", runB, "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup completion without live deltas renders its owned answer`, () => {
+    const entries = texts([
+      { id: "complete-only", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      history("durable-twin", "Ready.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["complete-only", runA, "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup foreign terminal cannot consume another run's equal streamed answer`, () => {
+    const entries = texts([
+      { id: "active-delta", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      { id: "foreign-terminal", event: "interaction_complete", runId: runB, data: { result: "Ready." } },
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["active-delta", runA, "Ready."], ["foreign-terminal", runB, "Ready."],
+    ]);
+  });
+}
 
 test("a council emits ONE card even when two frames each carry the sealed result", () => {
   // Regression: tool_result_received AND tool_execution_completed can each

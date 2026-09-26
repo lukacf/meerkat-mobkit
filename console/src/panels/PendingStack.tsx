@@ -26,6 +26,7 @@ interface PendingStackProps {
   onRetry: (id: string) => void;
   onReconcile: (id: string) => void;
   onRemoveContext: (id: string, contextId: string) => void;
+  onEditContext?: (id: string, contextId: string, quote: string) => void | Promise<void>;
   onReorderContext: (id: string, contextId: string, direction: "up" | "down") => void;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
@@ -97,6 +98,7 @@ interface StackItemProps {
   onRetry: (id: string) => void;
   onReconcile: (id: string) => void;
   onRemoveContext: (id: string, contextId: string) => void;
+  onEditContext?: (id: string, contextId: string, quote: string) => void | Promise<void>;
   onReorderContext: (id: string, contextId: string, direction: "up" | "down") => void;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
@@ -128,6 +130,7 @@ function StackItem({
   onRetry,
   onReconcile,
   onRemoveContext,
+  onEditContext,
   onReorderContext,
   onTrash,
   onEdit,
@@ -256,6 +259,7 @@ function StackItem({
             {item.text}
           </div>
           {item.expanded && <QuoteContextChips records={item.contexts} destinationLabel={item.destination}
+            onEdit={item.state === "draft" && !item.envelopeJson && onEditContext ? (contextId, quote) => onEditContext(item.id, contextId, quote) : undefined}
             onRemove={item.state === "draft" ? (contextId) => onRemoveContext(item.id, contextId) : undefined}
             onReorder={item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : undefined} />}
           <div className="stk-item__meta">
@@ -321,6 +325,7 @@ export function PendingStack({
   onRetry,
   onReconcile,
   onRemoveContext,
+  onEditContext,
   onReorderContext,
   onTrash,
   onEdit,
@@ -410,6 +415,7 @@ export function PendingStack({
             onRetry={onRetry}
             onReconcile={onReconcile}
             onRemoveContext={onRemoveContext}
+            onEditContext={onEditContext}
             onReorderContext={onReorderContext}
             onTrash={onTrash}
             onEdit={onEdit}
