@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A detached job's completion entry that shares its notice with a refresh
+  block (a persisted `BackgroundJob` block and a non-persisted one, in either
+  order) now counts as a completion entry. `is_detached_completion_entry`
+  required every `BackgroundJob` block of the notice to be persisted, so the
+  hygienist could collapse such a row and `mobkit/bound_member_transcript` did
+  not count it in `dropped_completion_entries`. It now uses meerkat 0.8.43's
+  typed `SystemNoticeMessage::persisted_background_job_id`: a `BackgroundJob`
+  notice with at least one persisted background-job block. Refresh-only
+  notices and text lookalikes are still not completion entries, and a row
+  carrying several completions still counts once.
+
 - The idle sweep no longer retires a member that still owns a live member it
   spawned. meerkat 0.8.43 retires everything a member spawned, directly or
   transitively, along with it (the roster's `spawned_by` provenance). The
