@@ -8402,6 +8402,63 @@ for (const [surface, mapper] of [
   const texts = (frames: Parameters<typeof mapper>[1]) => mapper(agent, frames, { textMode: "markdown" })
     .filter((entry) => entry.kind === "message" && entry.identity.role === "assistant");
 
+  test(`${surface}: queued steer keeps the original streamed answer once across overlapping input`, () => {
+    const first = { runId: runA, interactionId: UUID_A };
+    const steer = { runId: runB, interactionId: UUID_B };
+    const answer = "First segment. Second segment. Final segment.\n";
+    const frames = [
+      { id: "original-input", event: "user_input", interactionId: UUID_A, timestampMs: 1, data: { content: "Begin." } },
+      { id: "original-start", event: "run_started", ...first, timestampMs: 2, data: {} },
+      { id: "original-prefix", event: "text_delta", ...first, timestampMs: 3, data: { delta: "First segment. " } },
+      { id: "steer-input", event: "user_input", interactionId: UUID_B, timestampMs: 4, data: { content: "Steer." } },
+      { id: "original-middle", event: "text_delta", ...first, timestampMs: 5, data: { delta: "Second segment. " } },
+      { ...history("original-history", answer, runA, UUID_A), timestampMs: 6 },
+      { id: "original-tail", event: "text_delta", ...first, timestampMs: 7, data: { delta: "Final segment.\n" } },
+      { id: "original-text-complete", event: "text_complete", ...first, timestampMs: 8, data: { content: answer } },
+      { id: "original-complete", event: "run_completed", ...first, timestampMs: 9, data: { result: answer } },
+      { id: "steer-start", event: "run_started", ...steer, timestampMs: 10, data: {} },
+      { id: "steer-answer", event: "text_delta", ...steer, timestampMs: 11, data: { delta: "Acknowledged." } },
+      { id: "steer-complete", event: "run_completed", ...steer, timestampMs: 12, data: { result: "Acknowledged." } },
+      { ...history("steer-history", "Acknowledged.", runB, UUID_B), timestampMs: 13 },
+    ];
+    const entries = mapper(agent, frames, { textMode: "markdown", renderInteractionStartsAsUser: true });
+    const original = entries.filter(entry => entry.kind === "message" && entry.identity.role === "assistant" && entry.runId === runA);
+    assert.equal(original.map(entryVisibleTestText).join(""), answer);
+    assert.deepEqual(original.map(entry => [entry.id, entry.createdAt, entry.interactionId]), [
+      ["original-prefix", new Date(3).toISOString(), UUID_A],
+      ["original-middle", new Date(5).toISOString(), UUID_A],
+    ], "chronological segments retain their opening source identity across the steer input");
+    const acknowledgement = entries.filter(entry => entry.kind === "message" && entry.runId === runB);
+    assert.deepEqual(acknowledgement.map(entry => [entry.id, entry.interactionId, entryVisibleTestText(entry)]), [
+      ["steer-answer", UUID_B, "Acknowledged."],
+    ]);
+    const historyBeforeTail = mapper(agent, frames.slice(0, 6), { textMode: "markdown", renderInteractionStartsAsUser: true });
+    const visibleOriginal = historyBeforeTail.filter(entry => entry.kind === "message" && entry.identity.role === "assistant" && entry.runId === runA);
+    assert.deepEqual(visibleOriginal.map(entry => [entry.id, entryVisibleTestText(entry)]), [
+      ["original-prefix", "First segment. "],
+      ["original-middle", "Second segment. Final segment.\n"],
+    ], "history fills the open segment without moving later text ahead of the steer");
+  });
+
+  test(`${surface}: overlapping equal responses preserve both typed stream owners`, () => {
+    const frames = [
+      { id: "first-open", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Ready. " } },
+      { id: "second-open", event: "text_delta", runId: runB, interactionId: UUID_B, data: { delta: "Ready. " } },
+      { id: "first-tail", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Done." } },
+      { id: "first-terminal", event: "run_completed", runId: runA, interactionId: UUID_A, data: { result: "Ready. Done." } },
+      history("first-saved", "Ready. Done.", runA, UUID_A),
+      { id: "second-tail", event: "text_delta", runId: runB, interactionId: UUID_B, data: { delta: "Done." } },
+      { id: "second-terminal", event: "run_completed", runId: runB, interactionId: UUID_B, data: { result: "Ready. Done." } },
+      history("second-saved", "Ready. Done.", runB, UUID_B),
+    ];
+    const entries = texts(frames);
+    for (const runId of [runA, runB]) {
+      const owned = entries.filter(entry => entry.kind === "message" && entry.runId === runId);
+      assert.equal(owned.map(entryVisibleTestText).join(""), "Ready. Done.");
+      assert.equal(owned.length, 2, "both authored stream segments remain in chronology");
+    }
+  });
+
   for (const sourceKind of [undefined, "session_history"]) {
     const transport = sourceKind || "console_event";
     test(`${surface}: ${transport} typed tool text preserves exact source and failure state`, () => {

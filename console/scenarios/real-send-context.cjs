@@ -367,7 +367,9 @@ async function lostAcknowledgement(withQuote = false) {
 async function queuedSteer() {
   return inBrowser("real-scoped-queued-steer", async ({ fixture, page }) => {
     // The first call remains active long enough to inspect and steer its queue.
-    await fixture.control("model", { source: "The workgraph review is still in progress. ".repeat(80), delay_ms: 20, chunk_chars: 8 });
+    const firstAnswer = "The workgraph review is still in progress. ".repeat(80);
+    const acknowledgementText = "Steering acknowledged by the next model turn.";
+    await fixture.control("model", { source: firstAnswer, delay_ms: 20, chunk_chars: 8 });
     await open(page, fixture);
     await compose(page, "Begin the long workgraph review.");
     await eventually(async () => (await recordedRequests(fixture)).some(request => request.messages?.some(message => message.role === "user" && message.content === "Begin the long workgraph review.")), "first actual model turn active");
@@ -380,7 +382,7 @@ async function queuedSteer() {
     assert.equal(sendObservations(fixture).length, count, "busy Send persists locally before any dispatch");
     await page.getByTestId(`pending-item:${draft.id}`).waitFor();
     await capture(page, "scoped-busy-send-queued");
-    await fixture.control("model", { source: "Steering acknowledged by the next model turn.", delay_ms: 0, chunk_chars: 4096 });
+    await fixture.control("model", { source: acknowledgementText, delay_ms: 0, chunk_chars: 4096 });
     await page.getByTestId(`pending-steer:${draft.id}`).click();
     const sent = await eventually(() => sendObservations(fixture).find(item => {
       try { return wireEnvelope(item).idempotency_key === draft.idempotencyKey && item.response; } catch { return false; }
@@ -396,6 +398,32 @@ async function queuedSteer() {
     assert.equal(canonical?.payload.handling_mode, "steer"); assert.equal(canonical?.payload.content, queued);
     await capture(page, "scoped-steer-delivered");
     await saveEvidence(fixture, "scoped-steer-delivered", { draft, envelope, acceptance, canonical });
+    // An accepted send is not sufficient: follow the real rendered transcript
+    // through the first run's completion and its overlapping steering reply.
+    const transcript = viewport(page, "stock");
+    const acknowledgement = transcript.getByText(acknowledgementText, { exact: true }).first();
+    await acknowledgement.waitFor();
+    const latest = pane(page, "stock").getByRole("button", { name: "Jump to latest", exact: true });
+    if (await latest.isVisible()) await latest.click();
+    const geometry = await eventually(async () => {
+      const text = await acknowledgement.boundingBox();
+      const view = await transcript.boundingBox();
+      return text && view && text.y >= view.y && text.y + text.height <= view.y + view.height + 1
+        ? { acknowledgement: text, transcript: view } : null;
+    }, "latest arrow reveals the real steering acknowledgement");
+    const rows = await transcript.locator(".msg--agent").evaluateAll(nodes => nodes.map(node => ({
+      header: node.querySelector(".msg__head")?.textContent || null,
+      source: node.querySelector("[data-quote-source]")?.getAttribute("data-quote-source") || "",
+      text: node.textContent || "",
+    })));
+    await capture(page, "scoped-steer-follow-latest");
+    await saveEvidence(fixture, "scoped-steer-follow-latest", { draft, envelope, acceptance, canonical, rows, geometry });
+    const firstAnswerRows = rows.filter(row => row.source.includes("workgraph review") || firstAnswer.includes(row.source) && row.source.length > 0);
+    assert.equal(firstAnswerRows.map(row => row.source).join(""), firstAnswer, "the completed first answer renders exactly once across the overlapping input");
+    const acknowledgementRows = rows.filter(row => row.source === acknowledgementText);
+    assert.equal(acknowledgementRows.length, 1, "one rendered reply for the steering interaction");
+    assert(acknowledgementRows[0].header?.includes("Assistant"), "the new interaction retains its own assistant header");
+    assert.equal(await pane(page, "stock").getByTestId(`pending-item:${draft.id}`).count(), 0);
   });
 }
 

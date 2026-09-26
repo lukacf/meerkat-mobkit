@@ -25489,7 +25489,8 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
     consumed.add(occurrence);
     consumedHistory.add(history.id);
     if (occurrence.text !== text8 && !occurrence.complete && occurrence.frames.length > 0) {
-      occurrence.frames.forEach((frame, index2) => deltaOverrides.set(frame.id, index2 === 0 ? text8 : ""));
+      const last = occurrence.frames.length - 1;
+      deltaOverrides.set(occurrence.frames[last].id, occurrence.chunks[last] + text8.slice(occurrence.text.length));
     }
   }
   return {
@@ -26856,8 +26857,33 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   let pendingCreatedAt;
   const openReasoning = /* @__PURE__ */ new Map();
   let activeReasoning;
-  let streamedInteractionText = "";
   let streamedOwner;
+  const streamedTextByOwner = /* @__PURE__ */ new Map();
+  function ownedStream(frame) {
+    return streamedTextByOwner.get(assistantOwnerKey(frame))?.find((stream) => sameTextStreamOwner(stream.owner, frame));
+  }
+  function appendOwnedStream(frame, delta) {
+    const existing = ownedStream(frame);
+    if (existing) {
+      existing.text += delta;
+      return;
+    }
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key) || [];
+    streams.push({ owner: frame, text: delta });
+    streamedTextByOwner.set(key, streams);
+  }
+  function forgetOwnedStream(frame) {
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key)?.filter((stream) => !sameTextStreamOwner(stream.owner, frame)) || [];
+    if (streams.length) streamedTextByOwner.set(key, streams);
+    else streamedTextByOwner.delete(key);
+  }
+  function forgetUnscopedStream() {
+    if (streamedOwner && !streamedOwner.runId?.trim() && !streamedOwner.interactionId?.trim()) {
+      forgetOwnedStream(streamedOwner);
+    }
+  }
   function reasoningScope(frame) {
     const interactionId = frame.interactionId?.trim() || "";
     const runId = frame.runId?.trim() || "";
@@ -26957,7 +26983,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       flushPendingReasoning(true);
       if (!sameTextStreamOwner(streamedOwner, frame)) {
         flushPendingText();
-        streamedInteractionText = "";
+        forgetUnscopedStream();
         streamedOwner = frame;
       }
       const delta = assistantHistory.deltaOverrides.get(frame.id) ?? summarizeFrameData(frame.data);
@@ -26967,7 +26993,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += delta;
-      streamedInteractionText += delta;
+      appendOwnedStream(frame, delta);
       continue;
     }
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
@@ -27056,7 +27082,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       flushPendingReasoning(true);
       flushPendingText();
       if (!sameTextStreamOwner(streamedOwner, frame)) {
-        streamedInteractionText = "";
+        forgetUnscopedStream();
         streamedOwner = frame;
       }
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl, textMode);
@@ -27177,13 +27203,11 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     }
     if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
       const ownsStream = sameTextStreamOwner(streamedOwner, frame);
-      const streamedText = ownsStream ? streamedInteractionText || pendingText : "";
+      const streamedText = ownedStream(frame)?.text || (ownsStream ? pendingText : "");
       flushPendingReasoning(true);
       flushPendingText();
-      if (ownsStream) {
-        streamedInteractionText = "";
-        streamedOwner = void 0;
-      }
+      forgetOwnedStream(frame);
+      if (ownsStream) streamedOwner = void 0;
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || void 0;
@@ -36397,6 +36421,7 @@ function flattenEntry(entry, options = {}) {
     ...row,
     sourceEntryId: entry.id,
     interactionId: entry.interactionId,
+    runId: entry.kind === "message" ? entry.runId || void 0 : void 0,
     scrollRowId: index2 === 0 ? entry.id : `${entry.id}:row:${index2}`,
     source,
     dayKey,
@@ -36548,7 +36573,7 @@ function buildChatMessages(entries, options = {}) {
       last.blocks = [...lastBlocks, ...mBlocks];
       last.id = `${last.id}+${m.id}`;
     } else {
-      const canDedupeAdjacent = m.kind === "user" && last?.kind === "user" || m.kind === "agent" && last?.kind === "agent" && last.who === m.who;
+      const canDedupeAdjacent = last?.id === m.id && (m.kind === "user" && last.kind === "user" || m.kind === "agent" && last.kind === "agent" && last.who === m.who);
       if (last && canDedupeAdjacent) {
         const lastSignature = textSignatureForMsg(last);
         const nextSignature = textSignatureForMsg(m);
@@ -36562,7 +36587,7 @@ function buildChatMessages(entries, options = {}) {
   for (let index2 = 1; index2 < merged.length; index2 += 1) {
     const message = merged[index2];
     const previous3 = merged[index2 - 1];
-    if (message.showHeader && message.source?.kind === "assistant" && previous3.kind !== "user" && sameSource(previous3.source, message.source) && previous3.dayKey === message.dayKey) {
+    if (message.showHeader && message.source?.kind === "assistant" && previous3.kind !== "user" && sameSource(previous3.source, message.source) && previous3.interactionId === message.interactionId && previous3.runId === message.runId && previous3.dayKey === message.dayKey) {
       merged[index2] = { ...message, showHeader: false };
     }
   }

@@ -138,6 +138,7 @@ interface Msg {
   scrollRowId?: string;
   sourceEntryId?: string;
   interactionId?: string;
+  runId?: string;
   kind: MsgKind;
   time: string;
   createdAt?: string;
@@ -411,6 +412,7 @@ function flattenEntry(
     ...row,
     sourceEntryId: entry.id,
     interactionId: entry.interactionId,
+    runId: entry.kind === "message" ? entry.runId || undefined : undefined,
     scrollRowId: index === 0 ? entry.id : `${entry.id}:row:${index}`,
     source,
     dayKey,
@@ -612,8 +614,10 @@ function buildChatMessages(
       last.id = `${last.id}+${m.id}`;
     } else {
       const canDedupeAdjacent =
-        (m.kind === "user" && last?.kind === "user")
-        || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
+        last?.id === m.id && (
+          (m.kind === "user" && last.kind === "user")
+          || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
+        );
       if (last && canDedupeAdjacent) {
         const lastSignature = textSignatureForMsg(last);
         const nextSignature = textSignatureForMsg(m);
@@ -624,8 +628,8 @@ function buildChatMessages(
       merged.push({ ...m });
     }
   }
-  // One header per run of assistant output: consecutive assistant entries
-  // from the same assistant on the same day read as one reply.
+  // One header per owned run of assistant output. Another interaction or
+  // run starts a reply even when the same assistant is still speaking.
   for (let index = 1; index < merged.length; index += 1) {
     const message = merged[index];
     const previous = merged[index - 1];
@@ -634,6 +638,8 @@ function buildChatMessages(
       && message.source?.kind === "assistant"
       && previous.kind !== "user"
       && sameSource(previous.source, message.source)
+      && previous.interactionId === message.interactionId
+      && previous.runId === message.runId
       && previous.dayKey === message.dayKey
     ) {
       merged[index] = { ...message, showHeader: false };

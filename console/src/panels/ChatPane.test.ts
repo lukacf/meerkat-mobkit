@@ -603,6 +603,26 @@ test("consecutive rows from the same assistant share one header", () => {
   );
 });
 
+test("distinct assistant interactions retain equal replies and their own headers", () => {
+  const base = message({ id: "first", role: "assistant", createdAt: "2026-05-20T06:43:05.000Z", text: "Ready." });
+  for (const secondText of ["Ready.", "Acknowledged."]) {
+    const messages = __chatPaneTest.buildChatMessages([
+      { ...base, interactionId: "11111111-1111-4111-8111-111111111111", runId: "run-first" },
+      { ...base, id: "second", text: secondText, interactionId: "22222222-2222-4222-8222-222222222222", runId: "run-second" },
+    ]);
+    assert.deepEqual(messages.map(row => [row.id, row.showHeader]), [["first", true], ["second", true]]);
+  }
+});
+
+test("distinct assistant runs in one interaction retain equal replies and headers", () => {
+  const base = { ...message({ id: "first", role: "assistant", createdAt: "2026-05-20T06:43:05.000Z", text: "Ready." }), interactionId: "11111111-1111-4111-8111-111111111111" };
+  const messages = __chatPaneTest.buildChatMessages([
+    { ...base, runId: "run-first" },
+    { ...base, id: "second", runId: "run-second" },
+  ]);
+  assert.deepEqual(messages.map(row => [row.id, row.showHeader]), [["first", true], ["second", true]]);
+});
+
 test("Markdown copy and transcript export retain exact source whitespace", () => {
   const source = "  # A heading\n\nA line with a hard break  \nNext line\n\n";
   const entries: ConversationTimelineEntry[] = [{

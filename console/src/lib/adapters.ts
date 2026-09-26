@@ -2540,9 +2540,11 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     consumed.add(occurrence);
     consumedHistory.add(history.id);
     if (occurrence.text !== text && !occurrence.complete && occurrence.frames.length > 0) {
-      // Durable text can beat the final live chunks. Complete the opening
-      // source row without creating another row or appending those chunks twice.
-      occurrence.frames.forEach((frame, index) => deltaOverrides.set(frame.id, index === 0 ? text : ""));
+      // Durable text can beat the final live chunks. Complete the last
+      // observed chunk, preserving earlier segments and their chronological
+      // position around an overlapping input or another run's output.
+      const last = occurrence.frames.length - 1;
+      deltaOverrides.set(occurrence.frames[last].id, occurrence.chunks[last] + text.slice(occurrence.text.length));
     }
   }
   return {
@@ -4571,8 +4573,36 @@ export function mapFramesToTimelineEntries(
   // participate in content-based matching with a later block.
   const openReasoning = new Map<string, OpenReasoning>();
   let activeReasoning: OpenReasoning | undefined;
-  let streamedInteractionText = "";
   let streamedOwner: AssistantFrameOwner | undefined;
+  // A visible input can interrupt one run while that run keeps streaming.
+  // Keep completion evidence per owner; flushing a row changes presentation,
+  // not the source document whose terminal frame will arrive later.
+  const streamedTextByOwner = new Map<string, { owner: AssistantFrameOwner; text: string }[]>();
+  function ownedStream(frame: AssistantFrameOwner) {
+    return streamedTextByOwner.get(assistantOwnerKey(frame))?.find((stream) => sameTextStreamOwner(stream.owner, frame));
+  }
+  function appendOwnedStream(frame: AssistantFrameOwner, delta: string) {
+    const existing = ownedStream(frame);
+    if (existing) {
+      existing.text += delta;
+      return;
+    }
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key) || [];
+    streams.push({ owner: frame, text: delta });
+    streamedTextByOwner.set(key, streams);
+  }
+  function forgetOwnedStream(frame: AssistantFrameOwner) {
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key)?.filter((stream) => !sameTextStreamOwner(stream.owner, frame)) || [];
+    if (streams.length) streamedTextByOwner.set(key, streams);
+    else streamedTextByOwner.delete(key);
+  }
+  function forgetUnscopedStream() {
+    if (streamedOwner && !streamedOwner.runId?.trim() && !streamedOwner.interactionId?.trim()) {
+      forgetOwnedStream(streamedOwner);
+    }
+  }
 
   function reasoningScope(frame: ConsoleFrame): { scope: string; scoped: boolean } {
     const interactionId = frame.interactionId?.trim() || "";
@@ -4678,7 +4708,7 @@ export function mapFramesToTimelineEntries(
       flushPendingReasoning(true);
       if (!sameTextStreamOwner(streamedOwner, frame)) {
         flushPendingText();
-        streamedInteractionText = "";
+        forgetUnscopedStream();
         streamedOwner = frame;
       }
       const delta = assistantHistory.deltaOverrides.get(frame.id) ?? summarizeFrameData(frame.data);
@@ -4688,7 +4718,7 @@ export function mapFramesToTimelineEntries(
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += delta;
-      streamedInteractionText += delta;
+      appendOwnedStream(frame, delta);
       continue;
     }
 
@@ -4825,7 +4855,7 @@ export function mapFramesToTimelineEntries(
       flushPendingReasoning(true);
       flushPendingText();
       if (!sameTextStreamOwner(streamedOwner, frame)) {
-        streamedInteractionText = "";
+        forgetUnscopedStream();
         streamedOwner = frame;
       }
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl, textMode);
@@ -4979,13 +5009,11 @@ export function mapFramesToTimelineEntries(
       // Replayed completion can arrive before the final live chunk. Ignored
       // history must not flush or reset that still-streaming document.
       const ownsStream = sameTextStreamOwner(streamedOwner, frame);
-      const streamedText = ownsStream ? streamedInteractionText || pendingText : "";
+      const streamedText = ownedStream(frame)?.text || (ownsStream ? pendingText : "");
       flushPendingReasoning(true);
       flushPendingText();
-      if (ownsStream) {
-        streamedInteractionText = "";
-        streamedOwner = undefined;
-      }
+      forgetOwnedStream(frame);
+      if (ownsStream) streamedOwner = undefined;
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
