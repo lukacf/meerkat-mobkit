@@ -40,9 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sweep judged a member idle by its own turn alone, so a `fork_off` child C
   that forked D for long work and then went idle was retired after its idle
   window, and the cascade killed the still-running D, whose outcome reached
-  nobody. A member now counts as idle only while no member below it in the
-  roster's `spawned_by` tree is live (anything not retiring counts as live).
-  Once its descendants are retired, its idle window starts over.
+  nobody. A member now counts as idle only while no member it spawned is
+  still in the roster, retiring or not (the cascade reaches deeper members
+  only through such a child). No member status is consulted, so a child seen
+  retiring and then forked or respawned again under the same identity is
+  never mistaken for a gone one. Once its children are gone, its idle window
+  starts over.
 
 - The idle sweep never waits for a member's running turn. It read each
   candidate's execution snapshot, which a session answers only between turns,

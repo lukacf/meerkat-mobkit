@@ -81,11 +81,8 @@ async fn run_implicit_delegate_retirement(
                 continue;
             }
             let members = handle.list_members_observation_snapshot().await;
-            let retiring: BTreeSet<AgentIdentity> = members
-                .iter()
-                .filter(|member| member.status == MobMemberStatus::Retiring)
-                .map(|member| member.agent_identity.clone())
-                .collect();
+            #[cfg(test)]
+            tests::pause_after_member_snapshot(mob_id.as_str()).await;
             for member in members {
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
@@ -149,19 +146,23 @@ async fn run_implicit_delegate_retirement(
                     idle_since.remove(&key);
                     continue;
                 }
-                // Retiring a member retires every member it spawned (meerkat
-                // cascades along roster `spawned_by`). A member that owns a
-                // live member, directly or through its children, is not idle:
-                // a fork it started may still be running, and retiring it
-                // would kill that fork with its outcome reaching nobody.
-                let roster = handle.list_all_members().await;
-                if spawned_subtree_has_live_member(
-                    &member.agent_identity,
-                    roster.iter().filter_map(|entry| {
-                        Some((&entry.agent_identity, entry.spawned_by.as_ref()?))
-                    }),
-                    &retiring,
-                ) {
+                // Retiring a member retires every member it spawned: meerkat
+                // cascades along roster `spawned_by`, through members still in
+                // the roster. So a member that still has a member it spawned
+                // in the roster, retiring or not, is not idle: a fork it
+                // started may still be running, and retiring it would kill
+                // that fork with its outcome reaching nobody. A direct child
+                // is enough to check, since the cascade reaches deeper members
+                // only through a child still in the roster. No member status
+                // is consulted: a stale observation (a child seen retiring,
+                // then seated again under the same identity) cannot exempt a
+                // live child.
+                if handle
+                    .list_all_members()
+                    .await
+                    .iter()
+                    .any(|entry| entry.spawned_by.as_ref() == Some(&member.agent_identity))
+                {
                     idle_since.remove(&key);
                     continue;
                 }
@@ -361,37 +362,6 @@ pub(crate) fn turn_phase_is_idle(phase: TurnPhase) -> bool {
         phase,
         TurnPhase::Ready | TurnPhase::Completed | TurnPhase::Failed | TurnPhase::Cancelled
     )
-}
-
-/// Whether `member` spawned a member that is still live, directly or through
-/// members it spawned. `spawned` lists each spawned member with its spawner
-/// (roster `spawned_by`); exactly these descendants go when `member` is
-/// retired. Every descendant not in `retiring` counts as live, including one
-/// seated after the sweep's member snapshot was taken, and a retiring
-/// descendant's own children are still looked at.
-fn spawned_subtree_has_live_member<'a>(
-    member: &'a AgentIdentity,
-    spawned: impl Iterator<Item = (&'a AgentIdentity, &'a AgentIdentity)>,
-    retiring: &BTreeSet<AgentIdentity>,
-) -> bool {
-    let mut children: BTreeMap<&AgentIdentity, Vec<&AgentIdentity>> = BTreeMap::new();
-    for (child, spawner) in spawned {
-        children.entry(spawner).or_default().push(child);
-    }
-    let mut visited = BTreeSet::from([member]);
-    let mut owners = vec![member];
-    while let Some(owner) = owners.pop() {
-        for &child in children.get(owner).into_iter().flatten() {
-            if !visited.insert(child) {
-                continue;
-            }
-            if !retiring.contains(child) {
-                return true;
-            }
-            owners.push(child);
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -2252,36 +2222,6 @@ comms = true
         runtime.shutdown().await;
     }
 
-    #[test]
-    fn a_member_owns_every_live_member_below_it() {
-        let [c, d, e, other] = ["c", "d", "e", "other"].map(AgentIdentity::from);
-        let none = BTreeSet::new();
-        let owns = |member: &AgentIdentity,
-                    spawned: &[(&AgentIdentity, &AgentIdentity)],
-                    retiring: &BTreeSet<AgentIdentity>| {
-            spawned_subtree_has_live_member(member, spawned.iter().copied(), retiring)
-        };
-        assert!(!owns(&c, &[], &none), "nothing spawned");
-        assert!(!owns(&c, &[(&d, &other)], &none), "another member's child");
-        assert!(owns(&c, &[(&d, &c)], &none), "a live child");
-        assert!(
-            !owns(&d, &[(&d, &c)], &none),
-            "a child does not own its spawner"
-        );
-        let d_retiring = BTreeSet::from([d.clone()]);
-        assert!(!owns(&c, &[(&d, &c)], &d_retiring), "a retiring child");
-        assert!(
-            owns(&c, &[(&d, &c), (&e, &d)], &d_retiring),
-            "a live grandchild below a retiring child"
-        );
-        let both_retiring = BTreeSet::from([d.clone(), e.clone()]);
-        assert!(!owns(&c, &[(&d, &c), (&e, &d)], &both_retiring));
-        assert!(
-            !owns(&c, &[(&d, &e), (&e, &d)], &none),
-            "a spawner cycle that does not reach c"
-        );
-    }
-
     /// An LLM whose turns hold until the gate opens: a member's turn stays
     /// running until then.
     struct GatedLlmClient {
@@ -2553,6 +2493,193 @@ comms = true
         assert!(
             is_live(&handle, "a-busy").await,
             "a member mid-turn was idle-retired"
+        );
+        open_gate.send(true).expect("open the gate");
+        runtime.shutdown().await;
+    }
+
+    /// Holds sweep passes over one mob right after their member snapshot.
+    struct SweepPause {
+        reached: tokio::sync::mpsc::UnboundedSender<()>,
+        release: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>>,
+    }
+
+    static SWEEP_PAUSES: std::sync::Mutex<BTreeMap<String, SweepPause>> =
+        std::sync::Mutex::new(BTreeMap::new());
+
+    /// Called by the sweep once it has taken `mob_id`'s member snapshot: when
+    /// a test paused that mob, report the pass and wait for its release.
+    pub(super) async fn pause_after_member_snapshot(mob_id: &str) {
+        let pause = SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(mob_id)
+            .map(|pause| (pause.reached.clone(), Arc::clone(&pause.release)));
+        let Some((reached, release)) = pause else {
+            return;
+        };
+        if reached.send(()).is_ok() {
+            let _ = release.lock().await.recv().await;
+        }
+    }
+
+    /// Hold every sweep pass over `mob_id` right after its member snapshot:
+    /// each pass reports on the returned receiver and waits for one release
+    /// on the returned sender. [`unpause_sweep`] plus dropping the sender
+    /// lets passes run freely again.
+    fn pause_sweep(
+        mob_id: &str,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedSender<()>,
+    ) {
+        let (reached, reached_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release) = tokio::sync::mpsc::unbounded_channel();
+        SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                mob_id.to_string(),
+                SweepPause {
+                    reached,
+                    release: Arc::new(tokio::sync::Mutex::new(release)),
+                },
+            );
+        (reached_rx, release_tx)
+    }
+
+    fn unpause_sweep(mob_id: &str) {
+        SWEEP_PAUSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(mob_id);
+    }
+
+    /// `source` forks turn-driven `child` from its own turn; the child's
+    /// turn holds on the runtime's gate.
+    async fn fork_held_child(
+        handle: &meerkat_mob::MobHandle,
+        source: &AgentIdentity,
+        child: &AgentIdentity,
+    ) -> meerkat_mob::ForkChildRun {
+        let mut fork = meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("worker"),
+            child.clone(),
+        );
+        fork.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+        fork.initial_message = Some(meerkat_core::ContentInput::Text("long work".to_string()));
+        let (_forked, run) = handle
+            .fork_member_then_run_detached(
+                source,
+                fork,
+                None,
+                "fork_result",
+                256,
+                meerkat_core::DurableForkSourceAdmission::CallerTurn,
+                None,
+                None,
+            )
+            .await
+            .expect("fork the child");
+        run
+    }
+
+    /// Review of #448: the sweep once exempted a child it saw retiring in the
+    /// pass's member snapshot, by identity, while it checked the forker
+    /// against a fresh roster. An admitted respawn of the child shows its
+    /// predecessor as retiring to that snapshot, then seats the successor
+    /// under the same identity and `spawned_by` before the forker is
+    /// checked: the live successor was exempted, and retiring the forker
+    /// cascaded into it. Here the pass is held right after its snapshot
+    /// while the respawn completes: the forker and the successor both stay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_child_respawned_mid_pass_keeps_its_forker() {
+        const MOB_ID: &str = "respawned-mid-pass";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (open_gate, gate) = tokio::sync::watch::channel(false);
+        let runtime = boot_gated_persistent_runtime(MOB_ID, temp.path(), gate).await;
+        let handle = runtime.mob_handle();
+        let overrides = runtime
+            .mob_runtime
+            .implicit_delegate_retirement_overrides()
+            .expect("overrides");
+        let c = AgentIdentity::from("c");
+        let d = AgentIdentity::from("d");
+        seat_turn_driven(&handle, "c").await;
+
+        // C forks D, whose turn holds; a respawn of D is admitted and waits
+        // out meerkat's cooperative grace (about 2s) with the predecessor
+        // retiring.
+        let _run = fork_held_child(&handle, &c, &d).await;
+        let predecessor = handle
+            .get_member(&d)
+            .await
+            .expect("roster read")
+            .expect("d is seated")
+            .agent_runtime_id;
+        let (mut reached, release) = pause_sweep(MOB_ID);
+        let respawn = tokio::spawn({
+            let handle = handle.clone();
+            let d = d.clone();
+            async move { handle.respawn(d, None).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !handle
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|member| {
+                    member.agent_identity == d && member.status == MobMemberStatus::Retiring
+                })
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("d's predecessor is retiring");
+
+        // Passes already held took their snapshot before D was seen retiring:
+        // let them go (they found D live and left C alone). The next pass
+        // takes its snapshot with the predecessor retiring. While it is held,
+        // the respawn seats the successor, and C falls due at once.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        while reached.try_recv().is_ok() {
+            release.send(()).expect("release an earlier pass");
+        }
+        reached
+            .recv()
+            .await
+            .expect("a pass after d was seen retiring");
+        assert!(
+            !respawn.is_finished(),
+            "the respawn must still be retiring d when the held pass takes its snapshot"
+        );
+        respawn
+            .await
+            .expect("respawn task")
+            .expect("the respawn seats d's successor");
+        let successor = handle
+            .get_member(&d)
+            .await
+            .expect("roster read")
+            .expect("d's successor is seated");
+        assert_ne!(successor.agent_runtime_id, predecessor);
+        assert_eq!(successor.spawned_by, Some(c.clone()));
+        overrides
+            .set(MOB_ID, "c", DelegateIdleRetireOverride::Seconds(0))
+            .await;
+        unpause_sweep(MOB_ID);
+        drop(release);
+
+        // The held pass resumes, then later passes run.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        assert!(
+            is_live(&handle, "d").await,
+            "d's successor was killed by retiring c"
+        );
+        assert!(
+            is_live(&handle, "c").await,
+            "c was idle-retired while it owns d's successor"
         );
         open_gate.send(true).expect("open the gate");
         runtime.shutdown().await;
