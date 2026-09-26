@@ -452,7 +452,7 @@ async function graphEventPolls() {
   requirePrebuiltFixture();
   const fixture = await startFixture();
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, timezoneId: "Europe/Stockholm" });
   const monitor = browserMonitor(page);
   const evidence = { views: {} };
   const runId = `events-${randomUUID().slice(0, 8)}`;
@@ -496,8 +496,16 @@ async function graphEventPolls() {
     assert.equal(calls.at(-1).args.after_seq, lastSeq, "the empty query starts after the actual observed watermark");
     evidence.ownerItem = await ownerRpc(fixture, "mobkit/workgraph/get", { id: item.id });
     assert.deepEqual(evidence.ownerItem.item, item, "event polling does not mutate the item");
-    const expectedLines = first.events.slice(-5).map(event =>
-      `${event.kind.replaceAll("_", " ")} \u00b7 ${event.at.slice(11, 16)}`);
+    evidence.eventClocks = await page.evaluate(events => ({
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      values: events.map(event => ({
+        at: event.at,
+        clock: new Date(event.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+      })),
+    }), first.events.slice(-5));
+    assert.equal(evidence.eventClocks.timezone, "Europe/Stockholm", "the event-clock oracle uses the explicit browser timezone");
+    const expectedLines = first.events.slice(-5).map((event, index) =>
+      `${event.kind.replaceAll("_", " ")} \u00b7 ${evidence.eventClocks.values[index].clock}`);
     const scope = () => transcript(page, "stock", sender);
     const card = () => scope().locator("[data-work-graph-card]");
     const emptyTool = () => scope().locator(".cc-tool-call").filter({
@@ -521,7 +529,7 @@ async function graphEventPolls() {
         assert.equal(view.cards.length, 1, "event-only observations keep the one existing work card");
         assert.equal(view.cards[0].title, item.title);
         assert(view.cards[0].items.includes(`workgraph-item:${item.id}`));
-        assert.deepEqual(view.cards[0].events, expectedLines, "replayed event sequences appear once in the card's recent event window");
+        assert.deepEqual(view.cards[0].events, expectedLines, "replayed event sequences appear once with browser-local clocks from their exact owner timestamps");
         assert.deepEqual(view.tools.map(tool => tool.name), ["workgraph_events"], "only the unrepresented empty poll remains as a generic WorkGraph tool");
         assert.equal(view.tools[0].count, null, "represented polls cannot hide in a grouped generic tool row");
         assert.match(view.tools[0].status || "", /Success/);

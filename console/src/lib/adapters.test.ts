@@ -8045,7 +8045,7 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
   if (card.kind !== "workgraph") return;
   assert.deepEqual(
     card.recentEvents,
-    ["created · 09:00", "claimed · 09:01", "updated · 09:02"],
+    ["created", "claimed", "updated"].map((kind, index) => `${kind} · ${new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(`2026-07-08T09:0${index}:00Z`))}`),
     "replayed seq'd events fold exactly once",
   );
 
@@ -8080,7 +8080,7 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
   if (echoCard.kind !== "workgraph") return;
   assert.deepEqual(
     echoCard.recentEvents,
-    ["created · 09:00", "claimed · 09:01", "updated · 09:02", "evidence added · 09:03", "closed · 09:04"],
+    ["created", "claimed", "updated", "evidence added", "closed"].map((kind, index) => `${kind} · ${new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(`2026-07-08T09:0${index}:00Z`))}`),
     "seq-less duplicates dedupe by content; the 5-slot window holds five distinct events",
   );
 });
@@ -9284,4 +9284,33 @@ test("stock run duration accepts a direct successful run terminal and ignores tr
   assert.equal(timed.length, 1);
   assert.equal(timed[0].id, "duration-final");
   assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+});
+
+
+test("workgraph local card event and paused times use the browser clock without changing source", () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const at = "2026-07-09T01:15:30Z";
+    for (const [instant, expectedEvent, expectedPause] of [
+      [at, "created · 18:15", "paused until 2026-07-08 18:15"],
+      ["invalid-event-timestamp", "created", "paused"],
+    ]) {
+      const frames = workGraphToolFrames({ idPrefix: `local-time-${instant}`, name: "workgraph_snapshot", callArgs: {}, result: {
+        snapshot: { items: [workGraphItem({ id: "local-item", title: "Local time", createdAt: at })], edges: [],
+          attention: [{ binding_id: "local-binding", mode: "pursue", work_ref: { item_id: "local-item" }, status: { state: "paused", until: instant } }] },
+        events: [{ seq: 1, kind: "created", item_id: "local-item", at: instant }],
+      } });
+      const before = JSON.stringify(frames);
+      const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames).filter((entry) => entry.kind === "workgraph");
+      assert.equal(cards.length, 1);
+      assert.deepEqual(cards[0].recentEvents, [expectedEvent]);
+      assert.equal(cards[0].attention[0].statusLabel, expectedPause);
+      assert.equal(cards[0].items[0].createdAt, at);
+      assert.equal(JSON.stringify(frames), before, "formatting must not rewrite event timestamps or IDs");
+    }
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
 });

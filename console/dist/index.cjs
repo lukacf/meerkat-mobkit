@@ -24304,6 +24304,17 @@ function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.cr
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+// src/lib/workgraph-time.ts
+function formatWorkGraphTimestamp(value, options = {}) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const pad = (part) => String(part).padStart(2, "0");
+  const day = options.date ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` : "";
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${day}${clock}${options.seconds ? `:${pad(date.getSeconds())}` : ""}`;
+}
+
 // src/lib/adapters.ts
 function messageTextBlocks(source, textMode = "markdown", streaming = false) {
   if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
@@ -25158,9 +25169,9 @@ function workGraphBindingStatus(value) {
   const record3 = value && typeof value === "object" ? value : null;
   const state = workGraphString(record3?.state) || "active";
   if (state === "paused") {
-    const until = workGraphString(record3?.until);
+    const until = formatWorkGraphTimestamp(workGraphString(record3?.until), { date: true });
     return {
-      label: until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused",
+      label: until ? `paused until ${until}` : "paused",
       active: false
     };
   }
@@ -25239,7 +25250,7 @@ function foldWorkGraphEvent(state, value) {
     state.seenEventKeys.add(dedupeKey);
   }
   const at = workGraphString(record3.at);
-  const clock = at ? `${at.slice(11, 16)}` : "";
+  const clock = formatWorkGraphTimestamp(at);
   state.events.push({
     at,
     itemId: workGraphString(record3.item_id),
@@ -33664,8 +33675,8 @@ function buildWorkGraphPanelTree(items, edges) {
 function workGraphBindingStatusLabel(binding) {
   const state = binding.status?.state || "active";
   if (state === "paused") {
-    const until = binding.status?.until;
-    return until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused";
+    const until = formatWorkGraphTimestamp(binding.status?.until, { date: true });
+    return until ? `paused until ${until}` : "paused";
   }
   return state;
 }
@@ -33681,7 +33692,7 @@ function workGraphBindingTargetLabel(binding) {
 }
 function workGraphEventLine(event) {
   const kind = typeof event.kind === "string" ? event.kind.replace(/_/g, " ") : "event";
-  const at = typeof event.at === "string" && event.at.length >= 16 ? `${event.at.slice(0, 10)} ${event.at.slice(11, 16)}` : "";
+  const at = formatWorkGraphTimestamp(event.at, { date: true });
   const item = typeof event.item_id === "string" && event.item_id ? event.item_id : "";
   return [at, kind, item].filter(Boolean).join(" \xB7 ");
 }
@@ -33848,6 +33859,7 @@ function WorkGraphPanel({
   onAttentionResume,
   onAttentionReassign
 }) {
+  const capturedAt = formatWorkGraphTimestamp(data.capturedAt, { date: true, seconds: true });
   const rows = import_react33.default.useMemo(
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges]
@@ -33866,9 +33878,9 @@ function WorkGraphPanel({
   return /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("div", { className: "console-panel workgraph", "data-testid": "workgraph-panel", children: [
     /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("div", { className: "workgraph__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("h3", { children: "WorkGraph" }),
-      data.capturedAt ? /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("span", { className: "workgraph__captured", children: [
+      capturedAt ? /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("span", { className: "workgraph__captured", children: [
         "as of ",
-        data.capturedAt.slice(0, 19).replace("T", " ")
+        capturedAt
       ] }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime46.jsx)("span", { className: "workgraph__spacer" }),
       /* @__PURE__ */ (0, import_jsx_runtime46.jsxs)("div", { className: "workgraph__view-toggle", role: "group", "aria-label": "WorkGraph view mode", children: [

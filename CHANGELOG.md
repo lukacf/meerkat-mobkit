@@ -47,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Show canonical peer display names while preserving exact peer identities in
   details. Keep empty WorkGraph query results inspectable, and avoid duplicate
-  tool rows when event polls are already represented by a work card.
+  tool rows when event polls are already represented by a work card. WorkGraph
+  event and deadline displays use the same local clock as the conversation.
 - Calculate assistant work duration only from matching run-start and successful
   completion evidence. System notices never inherit assistant timing, and
   messages with unknown run timing omit the duration.

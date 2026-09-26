@@ -6,6 +6,7 @@ import type {
   WorkGraphWireItem,
 } from "../types";
 import { WORKGRAPH_GRAPH_NODE_CAP, workGraphItemOwnerLabel } from "../lib/workgraph-layout";
+import { formatWorkGraphTimestamp } from "../lib/workgraph-time";
 import { WorkGraphGraphView } from "./WorkGraphGraphView";
 
 export type WorkGraphViewMode = "tree" | "graph";
@@ -117,8 +118,8 @@ export function buildWorkGraphPanelTree(
 export function workGraphBindingStatusLabel(binding: WorkGraphWireBinding): string {
   const state = binding.status?.state || "active";
   if (state === "paused") {
-    const until = binding.status?.until;
-    return until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused";
+    const until = formatWorkGraphTimestamp(binding.status?.until, { date: true });
+    return until ? `paused until ${until}` : "paused";
   }
   return state;
 }
@@ -136,9 +137,7 @@ export function workGraphBindingTargetLabel(binding: WorkGraphWireBinding): stri
 
 export function workGraphEventLine(event: WorkGraphWireEvent): string {
   const kind = typeof event.kind === "string" ? event.kind.replace(/_/g, " ") : "event";
-  const at = typeof event.at === "string" && event.at.length >= 16
-    ? `${event.at.slice(0, 10)} ${event.at.slice(11, 16)}`
-    : "";
+  const at = formatWorkGraphTimestamp(event.at, { date: true });
   const item = typeof event.item_id === "string" && event.item_id ? event.item_id : "";
   return [at, kind, item].filter(Boolean).join(" · ");
 }
@@ -372,6 +371,7 @@ export function WorkGraphPanel({
   onAttentionResume,
   onAttentionReassign,
 }: WorkGraphPanelProps): React.JSX.Element {
+  const capturedAt = formatWorkGraphTimestamp(data.capturedAt, { date: true, seconds: true });
   const rows = React.useMemo(
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges],
@@ -402,8 +402,8 @@ export function WorkGraphPanel({
     <div className="console-panel workgraph" data-testid="workgraph-panel">
       <div className="workgraph__head">
         <h3>WorkGraph</h3>
-        {data.capturedAt ? (
-          <span className="workgraph__captured">as of {data.capturedAt.slice(0, 19).replace("T", " ")}</span>
+        {capturedAt ? (
+          <span className="workgraph__captured">as of {capturedAt}</span>
         ) : null}
         <span className="workgraph__spacer" />
         <div className="workgraph__view-toggle" role="group" aria-label="WorkGraph view mode">

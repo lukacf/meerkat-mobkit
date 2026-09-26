@@ -44,6 +44,7 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 import { createConsoleId } from "./id";
+import { formatWorkGraphTimestamp } from "./workgraph-time";
 
 function messageTextBlocks(source: string, textMode: ConversationTextMode = "markdown", streaming = false): ConversationRichBlock[] {
   if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
@@ -1542,9 +1543,9 @@ function workGraphBindingStatus(value: unknown): { label: string; active: boolea
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
   const state = workGraphString(record?.state) || "active";
   if (state === "paused") {
-    const until = workGraphString(record?.until);
+    const until = formatWorkGraphTimestamp(workGraphString(record?.until), { date: true });
     return {
-      label: until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused",
+      label: until ? `paused until ${until}` : "paused",
       active: false,
     };
   }
@@ -1645,7 +1646,7 @@ function foldWorkGraphEvent(state: WorkGraphFoldState, value: unknown): void {
     state.seenEventKeys.add(dedupeKey);
   }
   const at = workGraphString(record.at);
-  const clock = at ? `${at.slice(11, 16)}` : "";
+  const clock = formatWorkGraphTimestamp(at);
   state.events.push({
     at,
     itemId: workGraphString(record.item_id),

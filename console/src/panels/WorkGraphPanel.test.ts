@@ -9,6 +9,10 @@ import { WorkGraphGraphView, __workGraphGraphViewTest } from "./WorkGraphGraphVi
 import type { WorkGraphPanelData } from "./WorkGraphPanel";
 import type { WorkGraphWireBinding, WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 
+function localDateTime(instant: string): string {
+  return new Intl.DateTimeFormat("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(instant));
+}
+
 const {
   buildWorkGraphPanelTree,
   workGraphBindingStatusLabel,
@@ -82,7 +86,7 @@ test("workgraph binding status labels cover active, paused-with-deadline, and te
   assert.equal(workGraphBindingStatusLabel(binding({ state: "paused" })), "paused");
   assert.equal(
     workGraphBindingStatusLabel(binding({ state: "paused", until: "2026-07-09T10:30:00Z" })),
-    "paused until 2026-07-09 10:30",
+    `paused until ${localDateTime("2026-07-09T10:30:00Z")}`,
   );
   assert.equal(workGraphBindingStatusLabel(binding({ state: "superseded" })), "superseded");
   assert.equal(workGraphBindingStatusLabel(binding({ state: "stopped" })), "stopped");
@@ -105,7 +109,7 @@ test("workgraph binding target labels cover session and lowered-owner targets", 
 test("workgraph event lines render timestamp, kind, and item id compactly", () => {
   assert.equal(
     workGraphEventLine({ kind: "item_claimed", at: "2026-07-08T09:15:30Z", item_id: "item-1" }),
-    "2026-07-08 09:15 · item claimed · item-1",
+    `${localDateTime("2026-07-08T09:15:30Z")} · item claimed · item-1`,
   );
   assert.equal(workGraphEventLine({}), "event");
 });
@@ -349,4 +353,28 @@ test("workgraph graph labels truncate by measured width with a character fallbac
   assert.ok(fitLabel(long, 132, wide, 21).length < fitted.length);
   // Without a measurer (server render) the character cap applies.
   assert.equal(fitLabel(long, 132, null, 21), `${long.slice(0, 20)}…`);
+});
+
+
+test("workgraph local timestamps retain the local date across midnight", () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const at = "2026-07-09T01:15:30Z";
+    assert.equal(workGraphEventLine({ kind: "item_claimed", at, item_id: "item-1" }), "2026-07-08 18:15 · item claimed · item-1");
+    assert.equal(workGraphBindingStatusLabel({ status: { state: "paused", until: at } }), "paused until 2026-07-08 18:15");
+    const html = renderToStaticMarkup(React.createElement(WorkGraphPanel, { data: panelData({ capturedAt: at }), canManage: false, onRefresh: () => {} }));
+    assert.match(html, /as of 2026-07-08 18:15:30/);
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
+});
+
+test("workgraph local timestamps omit invalid event pause and snapshot times", () => {
+  const at = "not-a-valid-time-but-long-enough";
+  assert.equal(workGraphEventLine({ kind: "item_claimed", at, item_id: "item-1" }), "item claimed · item-1");
+  assert.equal(workGraphBindingStatusLabel({ status: { state: "paused", until: at } }), "paused");
+  const html = renderToStaticMarkup(React.createElement(WorkGraphPanel, { data: panelData({ capturedAt: at }), canManage: false, onRefresh: () => {} }));
+  assert.doesNotMatch(html, /as of|workgraph__captured|Invalid Date|not-a-valid-time/);
 });
