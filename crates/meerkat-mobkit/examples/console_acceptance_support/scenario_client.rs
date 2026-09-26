@@ -97,20 +97,49 @@ impl ModelBarrier {
     }
 
     fn matching_request(&self, messages: &[Message]) -> Option<(Arc<BarrierRun>, usize)> {
-        let start = messages
+        let (start, input) = messages
             .iter()
-            .rposition(|message| matches!(message, Message::User(_)))?;
-        let Message::User(user) = &messages[start] else {
-            return None;
-        };
+            .enumerate()
+            .rev()
+            .find_map(|(index, message)| barrier_input_text(message).map(|text| (index, text)))?;
         let current = self
             .current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let run = current.as_ref()?;
-        user.text_content()
+        input
             .contains(&run.plan.match_text)
             .then(|| (run.clone(), start))
+    }
+}
+
+// Incoming comms are typed notices in the real runtime transcript. A newer
+// operator or peer input closes the previous boundary, including when its text
+// is empty, so an old marker cannot capture an unrelated turn or continuation.
+fn barrier_input_text(message: &Message) -> Option<String> {
+    match message {
+        Message::User(user) if user.transcript_role.is_conversational() => {
+            Some(user.text_content())
+        }
+        Message::SystemNotice(notice) => {
+            let mut input = None;
+            for block in &notice.blocks {
+                if let meerkat_core::SystemNoticeBlock::Comms {
+                    direction: meerkat_core::SystemNoticeDirection::Incoming,
+                    content,
+                    ..
+                } = block
+                {
+                    let text = input.get_or_insert_with(String::new);
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&meerkat_core::types::text_content(content));
+                }
+            }
+            input
+        }
+        _ => None,
     }
 }
 
@@ -183,6 +212,8 @@ fn barrier_turn(plan: &BarrierPlan, messages: &[Message]) -> Result<Turn, String
 pub struct ModelPlan {
     #[serde(default)]
     pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_blocks: Vec<String>,
     #[serde(default)]
     pub delay_ms: u64,
     #[serde(default = "default_chunk_chars")]
@@ -201,6 +232,7 @@ pub enum ScenarioKind {
     Workgraph,
     Peer,
     Image,
+    Routine,
 }
 
 /// A unique run id also supplies the explicit trigger in the user message:
@@ -318,6 +350,16 @@ impl LlmClient for RecordingClient {
             }
             let stop_reason = match turn {
                 Turn::Text(text) => {
+                    for reasoning in &plan.reasoning_blocks {
+                        let chars: Vec<char> = reasoning.chars().collect();
+                        for chunk in chars.chunks(plan.chunk_chars.clamp(1, 4096)) {
+                            if plan.delay_ms > 0 {
+                                tokio::time::sleep(Duration::from_millis(plan.delay_ms.min(1000))).await;
+                            }
+                            yield Ok(LlmEvent::ReasoningDelta { delta: chunk.iter().collect() });
+                        }
+                        yield Ok(LlmEvent::ReasoningComplete { text: reasoning.clone(), meta: None });
+                    }
                     let chars: Vec<char> = text.chars().collect();
                     for chunk in chars.chunks(plan.chunk_chars.clamp(1, 4096)) {
                         if plan.delay_ms > 0 {
@@ -477,7 +519,67 @@ fn scenario_turn(scenario: &ScenarioPlan, messages: &[Message]) -> Result<Turn, 
         ScenarioKind::Workgraph => workgraph_turn(&recorded),
         ScenarioKind::Peer => peer_turn(&recorded),
         ScenarioKind::Image => image_turn(&recorded),
+        ScenarioKind::Routine => routine_turn(&recorded),
     }
+}
+
+fn routine_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
+    let steps = [
+        (
+            "notes",
+            "read_file",
+            json!({"path":"release-notes.txt"}),
+            false,
+        ),
+        ("files", "list_files", json!({}), false),
+        ("missing", "read_file", json!({"path":"missing.txt"}), true),
+        (
+            "late",
+            "read_file",
+            json!({"path":"late-review.txt"}),
+            false,
+        ),
+        ("ready", "workgraph_ready", json!({}), false),
+    ];
+    for (index, (step, _, _, expected_error)) in steps.iter().enumerate() {
+        let id = recorded.scenario.call_id(step);
+        let result = recorded
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::ToolResults { results, .. } => {
+                    results.iter().find(|result| result.tool_use_id == id)
+                }
+                _ => None,
+            });
+        if let Some(result) = result {
+            if result.is_error != *expected_error {
+                return Err(format!("{step}: unexpected runtime outcome"));
+            }
+            continue;
+        }
+        if recorded.messages.iter().any(|message| matches!(message, Message::BlockAssistant(assistant) if assistant.tool_calls().any(|call| call.id == id))) {
+            return Err(format!("{step}: requested tool has no runtime result"));
+        }
+        if index < 2 {
+            if index != 0 {
+                return Err("initial routine tool batch has incomplete results".into());
+            }
+            return Ok(Turn::Tools(
+                steps[..2]
+                    .iter()
+                    .map(|(step, name, args, _)| recorded.call(step, name, args.clone()))
+                    .collect(),
+            ));
+        }
+        return Ok(Turn::Tools(vec![recorded.call(
+            step,
+            steps[index].1,
+            steps[index].2.clone(),
+        )]));
+    }
+    Ok(Turn::Text("Routine workspace review complete. Two initial reads succeeded, the missing file stayed visible, and the delayed review arrived intact.".into()))
 }
 
 fn workgraph_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
@@ -768,6 +870,18 @@ mod tests {
     use futures::StreamExt;
     use meerkat_core::{AssistantBlock, BlockAssistantMessage, ToolResult, UserMessage};
 
+    fn comms_notice(direction: &str, text: &str) -> Message {
+        serde_json::from_value(json!({
+            "role": "system_notice", "kind": "comms", "body": "Peer message",
+            "blocks": [{
+                "type": "comms", "direction": direction, "kind": "message",
+                "peer": {"display_name": "console-acceptance/lead/peer", "id": "9c6b3d2f-21aa-4cb7-bd87-6a77b3d9c012"},
+                "summary": "Peer message", "content": [{"type": "text", "text": text}],
+            }],
+        }))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn barrier_blocks_before_first_tool_until_exact_release() {
         let barrier = Arc::new(ModelBarrier::default());
@@ -780,6 +894,7 @@ mod tests {
                 source: "Ordinary reply".into(),
                 delay_ms: 0,
                 chunk_chars: 32,
+                reasoning_blocks: Vec::new(),
                 scenario: None,
             })),
             Arc::new(Mutex::new(Vec::new())),
@@ -787,9 +902,10 @@ mod tests {
         );
         let request = LlmRequest::new(
             "gpt-5.5",
-            vec![Message::User(UserMessage::text(
-                "Incoming peer barrier marker",
-            ))],
+            vec![
+                Message::User(UserMessage::text("Old spawn request")),
+                comms_notice("incoming", "Incoming peer barrier marker"),
+            ],
         );
         let mut stream = client.stream(&request);
         let first = stream.next();
@@ -832,13 +948,15 @@ mod tests {
                 "id": "overlap-2", "match_text": "peer barrier marker", "source": "Peer complete."
             }}))
             .unwrap();
-        let peer = Message::User(UserMessage::text("Incoming peer barrier marker"));
+        let peer = comms_notice("incoming", "Incoming peer barrier marker");
         let messages = vec![
             peer.clone(),
             Message::User(UserMessage::text("New operator input")),
         ];
         assert!(barrier.matching_request(&messages).is_none());
-        let (run, _) = barrier.matching_request(&[peer]).unwrap();
+        let (run, _) = barrier
+            .matching_request(std::slice::from_ref(&peer))
+            .unwrap();
         barrier
             .control(&json!({"action": "release", "id": "overlap-2"}))
             .unwrap();
@@ -851,9 +969,121 @@ mod tests {
             "{\"items\":[]}".into(),
             false,
         )]);
+        let continuation = vec![
+            Message::User(UserMessage::text("Old spawn request")),
+            peer,
+            Message::BlockAssistant(BlockAssistantMessage::new(
+                vec![AssistantBlock::ToolUse {
+                    id: "fixture-overlap-2-peer-ready".into(),
+                    name: "workgraph_ready".into(),
+                    args: serde_json::value::to_raw_value(&json!({})).unwrap(),
+                    meta: None,
+                }],
+                StopReason::ToolUse,
+            )),
+            result,
+        ];
+        let (_, start) = barrier.matching_request(&continuation).unwrap();
+        assert_eq!(start, 1);
         assert!(
-            matches!(barrier_turn(&run.plan, &[result]), Ok(Turn::Text(text)) if text == "Peer complete.")
+            matches!(barrier_turn(&run.plan, &continuation[start..]), Ok(Turn::Text(text)) if text == "Peer complete.")
         );
+    }
+
+    #[test]
+    fn barrier_uses_latest_typed_input_and_ignores_non_input_notices() {
+        let barrier = ModelBarrier::default();
+        barrier
+            .control(&json!({"action": "arm", "plan": {
+                "id": "overlap-3", "match_text": "peer barrier marker", "source": "Peer complete."
+            }}))
+            .unwrap();
+        let peer = comms_notice("incoming", "Incoming peer barrier marker");
+        for newer in [
+            Message::User(UserMessage::text("New operator input")),
+            comms_notice("incoming", "A different peer input"),
+            comms_notice("incoming", ""),
+        ] {
+            assert!(barrier.matching_request(&[peer.clone(), newer]).is_none());
+        }
+        for notice in [
+            comms_notice("outgoing", "Sent to a peer"),
+            comms_notice("internal", "Runtime housekeeping"),
+            Message::SystemNotice(meerkat_core::SystemNoticeMessage::new(
+                meerkat_core::SystemNoticeKind::Generic,
+                "Unrelated notice",
+            )),
+        ] {
+            let messages = [peer.clone(), notice];
+            assert_eq!(barrier.matching_request(&messages).unwrap().1, 0);
+        }
+        // Prose alone cannot claim that a runtime notice is incoming peer input.
+        let marker_only_in_body = Message::SystemNotice(meerkat_core::SystemNoticeMessage::new(
+            meerkat_core::SystemNoticeKind::Comms,
+            "Incoming peer barrier marker",
+        ));
+        assert!(barrier.matching_request(&[marker_only_in_body]).is_none());
+        for direction in ["outgoing", "internal"] {
+            assert!(
+                barrier
+                    .matching_request(&[comms_notice(direction, "Incoming peer barrier marker")])
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_reasoning_streams_each_exact_block_before_the_answer() {
+        let source = "Check again again and check again.";
+        let plan: ModelPlan = serde_json::from_value(json!({
+            "source": "Review complete.", "chunk_chars": 6,
+            "reasoning_blocks": [source, source],
+        }))
+        .unwrap();
+        let client = RecordingClient::new(
+            Arc::new(Mutex::new(plan)),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(ModelBarrier::default()),
+        );
+        let request = LlmRequest::new(
+            "gpt-5.5",
+            vec![Message::User(UserMessage::text("Review the candidate."))],
+        );
+        let mut stream = client.stream(&request);
+        let mut current = String::new();
+        let mut completed = Vec::new();
+        let mut deltas = Vec::new();
+        let mut answer = String::new();
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                LlmEvent::ReasoningDelta { delta } => {
+                    assert!(answer.is_empty(), "reasoning precedes the answer");
+                    current.push_str(&delta);
+                    deltas.push(delta);
+                }
+                LlmEvent::ReasoningComplete { text, .. } => {
+                    assert_eq!(current, source);
+                    assert_eq!(text, source);
+                    completed.push(text);
+                    current.clear();
+                }
+                LlmEvent::TextDelta { delta, .. } => {
+                    assert_eq!(completed.len(), 2);
+                    answer.push_str(&delta);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(completed, vec![source, source]);
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|delta| delta.as_str() == "again ")
+                .count(),
+            4
+        );
+        assert_eq!(answer, "Review complete.");
+        assert!(current.is_empty());
     }
 
     #[tokio::test]
@@ -864,6 +1094,7 @@ mod tests {
                 source: "Scenario source must not run during bootstrap.".into(),
                 delay_ms: 0,
                 chunk_chars: 256,
+                reasoning_blocks: Vec::new(),
                 scenario: None,
             })),
             requests.clone(),
@@ -884,6 +1115,10 @@ mod tests {
             })
             .collect();
         assert_eq!(text, "Ready.");
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            Ok(LlmEvent::ReasoningDelta { .. } | LlmEvent::ReasoningComplete { .. })
+        )));
         assert!(matches!(
             events.get(events.len().saturating_sub(2)),
             Some(Ok(LlmEvent::UsageUpdate { .. }))
@@ -916,6 +1151,51 @@ mod tests {
             "{} Run the acceptance scenario.",
             scenario.trigger()
         )))]
+    }
+
+    #[test]
+    fn routine_scenario_requires_real_results_and_preserves_a_failed_read() {
+        let scenario = scenario(ScenarioKind::Routine);
+        let mut messages = start(&scenario);
+        let initial = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(initial.len(), 2);
+        assert_eq!(initial[0].name, "read_file");
+        assert_eq!(initial[1].name, "list_files");
+        for (step, text, is_error, next) in [
+            ("notes", "  exact notes\n", false, None),
+            ("files", "notes.txt\n", false, Some("missing")),
+            (
+                "missing",
+                "Cannot read missing.txt: NotFound",
+                true,
+                Some("late"),
+            ),
+            ("late", "Late review\n", false, Some("ready")),
+            ("ready", "{\"items\":[]}", false, None),
+        ] {
+            messages.push(Message::tool_results(vec![ToolResult::new(
+                scenario.call_id(step),
+                text.to_owned(),
+                is_error,
+            )]));
+            if let Some(next) = next {
+                let requested = calls(scenario_turn(&scenario, &messages).unwrap());
+                assert_eq!(requested.len(), 1);
+                assert_eq!(requested[0].id, scenario.call_id(next));
+            }
+        }
+        assert!(
+            matches!(scenario_turn(&scenario, &messages).unwrap(), Turn::Text(text) if text.starts_with("Routine workspace review complete."))
+        );
+        let mut wrong = start(&scenario);
+        wrong.push(result(&scenario, "notes", json!("notes")));
+        wrong.push(result(&scenario, "files", json!("files")));
+        wrong.push(result(&scenario, "missing", json!("false success")));
+        assert!(
+            scenario_turn(&scenario, &wrong)
+                .unwrap_err()
+                .contains("unexpected runtime outcome")
+        );
     }
 
     fn result(scenario: &ScenarioPlan, step: &str, value: Value) -> Message {

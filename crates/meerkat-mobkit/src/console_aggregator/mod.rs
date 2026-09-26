@@ -4210,6 +4210,7 @@ async fn project_console_event(
         return Ok(());
     };
     let mut frame = frame_from_console_event(&entry, envelope);
+    retain_legacy_reasoning_replay_key(inner.store.as_ref(), &mut frame).await?;
     frame.source.member_provenance = member_provenance_for_identity(
         &inner,
         &entry,
@@ -4350,22 +4351,79 @@ async fn update_frame_status_and_emit(
     Ok(Some(updated))
 }
 
+// Older logs keyed reasoning by text. Reuse that key only for the exact
+// already-stored source event, so replay cannot collide with its unique row ID.
+// Equal fragments from different events must retain their new event keys.
+async fn retain_legacy_reasoning_replay_key(
+    store: &dyn ConsoleLogStore,
+    frame: &mut NewConsoleFrame,
+) -> ConsoleLogResult<()> {
+    let Some(text) = reasoning_payload_text(&frame.kind, &frame.payload) else {
+        return Ok(());
+    };
+    let Some(event_id) = frame.source_event_id.as_deref() else {
+        return Ok(());
+    };
+    let scope = frame
+        .interaction_id
+        .as_deref()
+        .or(frame.turn_id.as_deref())
+        .or(frame.run_id.as_deref())
+        .unwrap_or(event_id);
+    let legacy_key = format!(
+        "console-reasoning:{}:{}:{}",
+        frame.runtime_key,
+        scope,
+        hash_short(&normalize_transcript_fingerprint_text(text))
+    );
+    if let Some(existing) = store.frame_by_dedupe_key(&legacy_key).await?
+        && Some(existing.id.as_str()) == frame.id.as_deref()
+        && existing.source_event_id == frame.source_event_id
+        && existing.runtime_key == frame.runtime_key
+        && existing.identity == frame.identity
+        && existing.kind == frame.kind
+        && existing.source.kind == ConsoleFrameSourceKind::ConsoleEvent
+    {
+        frame.dedupe_key = legacy_key;
+    }
+    Ok(())
+}
+
 fn frame_from_console_event(
     entry: &RuntimeEntry,
     envelope: crate::console_contracts::ConsoleIdentityEventEnvelope,
 ) -> NewConsoleFrame {
     let event_id = envelope.event_id;
-    let interaction_id = envelope.interaction_id;
+    let envelope_interaction_id = envelope.interaction_id;
     let event_type = envelope.event_type;
     let payload = envelope.data;
     let turn_id = payload
         .get("turn_id")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let run_id = payload
-        .get("run_id")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
+    let lineage = payload
+        .get("identity")
+        .cloned()
+        .and_then(|value| {
+            serde_json::from_value::<meerkat_core::types::TranscriptMessageIdentity>(value).ok()
+        })
+        .filter(|identity| !identity.is_empty());
+    let has_lineage = payload.get("identity").is_some_and(|value| {
+        !value.is_null() && value.as_object().is_none_or(|value| !value.is_empty())
+    });
+    let interaction_id = match lineage.as_ref() {
+        Some(identity) => identity.interaction_id.map(|id| id.to_string()),
+        None if !has_lineage => envelope_interaction_id,
+        None => None,
+    };
+    let run_id = match lineage.as_ref() {
+        Some(identity) => identity.run_id.as_ref().map(ToString::to_string),
+        None if !has_lineage => payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        None => None,
+    };
     let status = match event_type.as_str() {
         "interaction_started" => ConsoleFrameStatus::Accepted,
         "interaction_failed" | "run_failed" => ConsoleFrameStatus::DeliveryFailed,
@@ -4381,23 +4439,9 @@ fn frame_from_console_event(
     } else {
         apply_namespace(&envelope.identity, &entry.identity_namespace)
     };
-    let dedupe_key = reasoning_payload_text(&event_type, &payload)
-        .map(|reasoning_text| {
-            // Reasoning hashes assume console events carry full/cumulative text; if deltas become
-            // fragmentary, key by a stable reasoning segment id or emit only the complete frame.
-            let turn_scope = interaction_id
-                .as_deref()
-                .or(turn_id.as_deref())
-                .or(run_id.as_deref())
-                .unwrap_or(event_id.as_str());
-            format!(
-                "console-reasoning:{}:{}:{}",
-                entry.runtime_key,
-                turn_scope,
-                hash_short(&normalize_transcript_fingerprint_text(reasoning_text))
-            )
-        })
-        .unwrap_or_else(|| format!("console-event:{}:{}", entry.runtime_key, event_id));
+    // Reasoning deltas are fragments: identical words may occur repeatedly
+    // within one turn. Only a replay of the same source event is a duplicate.
+    let dedupe_key = format!("console-event:{}:{}", entry.runtime_key, event_id);
     NewConsoleFrame {
         id: Some(event_id.clone()),
         dedupe_key,
@@ -5083,12 +5127,37 @@ async fn history_frame_has_existing_counterpart(
     inner: &AggregatorInner,
     frame: &NewConsoleFrame,
 ) -> ConsoleLogResult<bool> {
-    let fingerprint = transcript_fingerprint(&frame.kind, &frame.payload);
+    let Some(category) = history_counterpart_category(&frame.kind) else {
+        return Ok(false);
+    };
+    let provider_tool_id = history_counterpart_tool_id(&frame.kind, &frame.payload);
+    if matches!(category, "tool-call" | "tool-result") && provider_tool_id.is_none() {
+        return Ok(false);
+    }
+    let typed_owner = history_counterpart_has_typed_owner(
+        frame.run_id.as_deref(),
+        frame.interaction_id.as_deref(),
+    );
+    // Run/interaction lineage identifies an execution, not one authored
+    // assistant message. The live edge has no persisted message offset, so
+    // pruning here could reuse one live occurrence for several history rows.
+    // Retain typed source rows for bounded occurrence reconciliation in the
+    // transcript adapter; append_if_absent still rejects exact source replay.
+    if typed_owner && matches!(category, "assistant" | "reasoning") {
+        return Ok(false);
+    }
+    let exact_content = typed_owner || provider_tool_id.is_some();
+    let fingerprint = if exact_content {
+        history_counterpart_exact_fingerprint(&frame.kind, &frame.payload)
+    } else {
+        transcript_fingerprint(&frame.kind, &frame.payload)
+    };
     let Some(fingerprint) = fingerprint else {
         return Ok(false);
     };
-    let assistant_terminal = assistant_terminal_fingerprint(&frame.kind, &frame.payload).is_some();
-    let mut delta_text_by_turn = BTreeMap::<String, String>::new();
+    let assistant_terminal = category == "assistant";
+    let mut delta_text_by_turn =
+        BTreeMap::<(Option<String>, Option<String>, Option<String>), String>::new();
     let mut after = None;
     loop {
         let page = inner
@@ -5101,27 +5170,32 @@ async fn history_frame_has_existing_counterpart(
             })
             .await?;
         for existing in &page.frames {
-            let same_session = existing.session_id == frame.session_id
-                || existing.session_id.is_none()
-                || frame.session_id.is_none();
-            if existing.source.kind == ConsoleFrameSourceKind::SessionHistory || !same_session {
+            if existing.source.kind == ConsoleFrameSourceKind::SessionHistory
+                || history_counterpart_category(&existing.kind) != Some(category)
+                || !history_counterpart_owner_matches(frame, existing, provider_tool_id.is_some())
+                || (provider_tool_id.is_some()
+                    && history_counterpart_tool_id(&existing.kind, &existing.payload)
+                        != provider_tool_id)
+            {
                 continue;
             }
-            if transcript_fingerprint(&existing.kind, &existing.payload).as_ref()
-                == Some(&fingerprint)
-            {
+            let existing_fingerprint = if exact_content {
+                history_counterpart_exact_fingerprint(&existing.kind, &existing.payload)
+            } else {
+                transcript_fingerprint(&existing.kind, &existing.payload)
+            };
+            if existing_fingerprint.as_ref() == Some(&fingerprint) {
                 return Ok(true);
             }
             if assistant_terminal
                 && let Some(delta) = text_delta_payload_text(&existing.kind, &existing.payload)
             {
-                let turn_key = existing
-                    .interaction_id
-                    .as_deref()
-                    .or(existing.turn_id.as_deref())
-                    .or(existing.run_id.as_deref())
-                    .unwrap_or("session");
-                let aggregated = delta_text_by_turn.entry(turn_key.to_string()).or_default();
+                let turn_key = (
+                    existing.run_id.clone(),
+                    existing.interaction_id.clone(),
+                    existing.turn_id.clone(),
+                );
+                let aggregated = delta_text_by_turn.entry(turn_key).or_default();
                 aggregated.push_str(delta);
                 if normalize_transcript_fingerprint_text(aggregated) == fingerprint {
                     return Ok(true);
@@ -5132,6 +5206,132 @@ async fn history_frame_has_existing_counterpart(
             return Ok(false);
         }
         after = page.next_cursor;
+    }
+}
+
+fn history_counterpart_category(kind: &str) -> Option<&'static str> {
+    match kind {
+        "user_input" | "interaction_started" => Some("user"),
+        "text_delta" | "text_complete" | "interaction_complete" | "run_completed" => {
+            Some("assistant")
+        }
+        "tool_call_requested" | "tool_call" | "tool_execution_started" => Some("tool-call"),
+        "tool_execution_completed" => Some("tool-result"),
+        kind if is_reasoning_event_kind(kind) => Some("reasoning"),
+        _ => None,
+    }
+}
+
+fn history_counterpart_tool_id<'a>(kind: &str, payload: &'a Value) -> Option<&'a str> {
+    if !matches!(
+        history_counterpart_category(kind),
+        Some("tool-call" | "tool-result")
+    ) {
+        return None;
+    }
+    payload
+        .get("tool_call_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+}
+
+fn history_counterpart_has_typed_owner(run_id: Option<&str>, interaction_id: Option<&str>) -> bool {
+    run_id.is_some_and(|id| !id.is_empty())
+        || interaction_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
+fn history_counterpart_owner_matches(
+    history: &NewConsoleFrame,
+    live: &ConsoleFrame,
+    provider_tool_identity: bool,
+) -> bool {
+    if history.runtime_key != live.runtime_key || history.identity != live.identity {
+        return false;
+    }
+    if history.session_id.is_some()
+        && live.session_id.is_some()
+        && history.session_id != live.session_id
+    {
+        return false;
+    }
+    if provider_tool_identity {
+        // ToolResults messages lack transcript lineage. The provider tool ID
+        // is their identity, but cannot overrule contradictory known owners.
+        return !(history.run_id.is_some()
+            && live.run_id.is_some()
+            && history.run_id != live.run_id)
+            && !(history.interaction_id.is_some()
+                && live.interaction_id.is_some()
+                && history.interaction_id != live.interaction_id);
+    }
+    if history_counterpart_has_typed_owner(
+        history.run_id.as_deref(),
+        history.interaction_id.as_deref(),
+    ) || history_counterpart_has_typed_owner(
+        live.run_id.as_deref(),
+        live.interaction_id.as_deref(),
+    ) {
+        return history.session_id == live.session_id
+            && history.run_id == live.run_id
+            && history.interaction_id == live.interaction_id;
+    }
+    // Synthetic legacy console interaction IDs never reached old transcripts.
+    true
+}
+
+fn history_counterpart_exact_fingerprint(kind: &str, payload: &Value) -> Option<String> {
+    let value = match history_counterpart_category(kind)? {
+        "user" => payload.get("content").or_else(|| payload.get("message"))?,
+        "tool-call" => return transcript_fingerprint(kind, payload),
+        "tool-result" => {
+            let tool_id = history_counterpart_tool_id(kind, payload)?;
+            // Persisted results have both a text summary and full content.
+            // Prefer full content so images/structured output are not erased.
+            let result = payload.get("content").or_else(|| payload.get("result"))?;
+            return Some(
+                json!([
+                    tool_id,
+                    history_counterpart_content_fingerprint(result),
+                    payload
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                ])
+                .to_string(),
+            );
+        }
+        _ => return None,
+    };
+    Some(history_counterpart_content_fingerprint(value))
+}
+
+fn history_counterpart_content_fingerprint(value: &Value) -> String {
+    fn exact_text(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(blocks) if !blocks.is_empty() => blocks
+                .iter()
+                .map(exact_text)
+                .collect::<Option<Vec<_>>>()
+                .map(|parts| parts.concat()),
+            Value::Object(block)
+                if block.len() == 2
+                    && block.get("type").and_then(Value::as_str) == Some("text") =>
+            {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }
+            _ => None,
+        }
+    }
+    // Only an entirely textual typed value can become plain text. Arbitrary
+    // JSON and mixed content retain their complete structure and exact strings.
+    match exact_text(value) {
+        Some(text) => json!(["text", text]).to_string(),
+        None => json!(["content", value]).to_string(),
     }
 }
 
@@ -7129,9 +7329,28 @@ comms = true
             .await
             .expect("console send accepted");
 
-        // A live completion event exactly as the mob event drain forwards it:
-        // `agent_id` is the member's AgentRuntimeId
-        // (`{roster alias}:{generation}`).
+        // Admission reserves the interaction; only the matching typed run
+        // input establishes which live run owns it. This fixture does not
+        // start the mob event drain, so these owner events are projected
+        // sequentially without racing a second, real completion.
+        runtime
+            .console_events()
+            .project_unified_event(&crate::types::EventEnvelope {
+                event_id: "evt-dispatch-run-started".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 9,
+                event: crate::types::UnifiedEvent::Agent {
+                    agent_id: "rt:builder:0:0".to_string(),
+                    event_type: "run_started".to_string(),
+                    payload: Some(serde_json::json!({
+                        "input": { "kind": "content", "content": "status sweep" },
+                    })),
+                },
+            })
+            .await;
+
+        // The completion uses the same member AgentRuntimeId as its start
+        // (`{roster alias}:{generation}`), as forwarded by the mob event drain.
         runtime
             .console_events()
             .project_unified_event(&crate::types::EventEnvelope {
@@ -7151,6 +7370,16 @@ comms = true
             .replay_all(None)
             .await
             .expect("console event replay");
+        let run_started = replay
+            .iter()
+            .find(|event| event.event_id == "evt-dispatch-run-started")
+            .expect("matching start event projected");
+        assert_eq!(run_started.identity, "builder");
+        assert_eq!(
+            run_started.interaction_id.as_deref(),
+            Some(accepted.interaction_id.as_str()),
+            "the exact console input must bind the reserved interaction at run start"
+        );
         let completion = replay
             .iter()
             .find(|event| event.event_id == "evt-dispatch-run-completed")
@@ -10618,22 +10847,79 @@ comms = true
     }
 
     #[tokio::test]
-    async fn reasoning_console_events_with_identical_text_share_a_frame_key() {
+    async fn console_frame_uses_canonical_runtime_lineage_for_live_history_join() {
+        let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        let interaction_id = uuid::Uuid::from_u128(0xfeed_8101).to_string();
+        let run_id = uuid::Uuid::from_u128(0xfeed_8102).to_string();
+        let lineage = json!({"interaction_id": interaction_id, "run_id": run_id});
+        let live = frame_from_console_event(
+            &entry,
+            console_envelope_for_test(
+                "live-start",
+                Some("unrelated-console-reservation"),
+                "run_started",
+                json!({"identity": lineage, "run_id": "wrong-top-level", "input":{"kind":"content","content":"same"}}),
+            ),
+        );
+        assert_eq!(
+            live.interaction_id.as_deref(),
+            Some(interaction_id.as_str())
+        );
+        assert_eq!(live.run_id.as_deref(), Some(run_id.as_str()));
+        let history = frame_from_session_history_message(
+            "runtime-a",
+            "test/agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "block_assistant", "blocks": [{"block_type":"text","data":{"text":"same"}}],
+                "stop_reason":"end_turn", "identity":lineage,
+            }),
+        )
+        .expect("assistant history frame");
+        assert_eq!(live.interaction_id, history.interaction_id);
+        assert_eq!(live.run_id, history.run_id);
+        let run_only = frame_from_console_event(
+            &entry,
+            console_envelope_for_test(
+                "run-only",
+                Some("unrelated-console-reservation"),
+                "run_started",
+                json!({"identity":{"run_id":run_id}}),
+            ),
+        );
+        assert!(run_only.interaction_id.is_none());
+        assert_eq!(run_only.run_id.as_deref(), Some(run_id.as_str()));
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn reasoning_console_events_preserve_repeated_fragments_and_completion() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         let runtime = build_single_member_runtime().await;
         let entry = runtime_entry_for_test("runtime-a", &runtime);
-        for event_type in ["reasoning_delta", "reasoning_complete"] {
+        for (event_id, event_type, text) in [
+            ("reasoning-1", "reasoning_delta", "Check "),
+            ("reasoning-2", "reasoning_delta", "again "),
+            ("reasoning-3", "reasoning_delta", "again "),
+            ("reasoning-3", "reasoning_delta", "again "),
+            ("reasoning-4", "reasoning_delta", "and finish."),
+            (
+                "reasoning-5",
+                "reasoning_complete",
+                "Check again again and finish.",
+            ),
+            ("reasoning-6", "reasoning_delta", "A complete sentence."),
+            ("reasoning-7", "reasoning_complete", "A complete sentence."),
+        ] {
             let frame = frame_from_console_event(
                 &entry,
                 console_envelope_for_test(
-                    event_type,
+                    event_id,
                     Some("interaction-a"),
                     event_type,
-                    json!({
-                        "delta": "I should inspect the file first.",
-                        "text": "I should inspect the file first.",
-                        "turn_id": "turn-a",
-                    }),
+                    json!({ "delta": text, "text": text, "turn_id": "turn-a" }),
                 ),
             );
             aggregator
@@ -10642,29 +10928,137 @@ comms = true
                 .await
                 .expect("append reasoning frame");
         }
-
         let page = aggregator
             .query_timeline(ConsoleTimelineQuery {
                 identity: Some("test/agent-a".to_string()),
-                limit: 10,
+                limit: 20,
                 ..ConsoleTimelineQuery::default()
             })
             .await
             .expect("query timeline");
-
         assert_eq!(
             page.frames.len(),
-            1,
-            "identical reasoning re-emissions in one turn should collapse"
+            7,
+            "only replay of the same source event collapses"
         );
-        assert_eq!(page.frames[0].kind, "reasoning_delta");
+        let streamed: String = page
+            .frames
+            .iter()
+            .filter(|frame| frame.kind == "reasoning_delta")
+            .map(|frame| {
+                frame.payload["delta"]
+                    .as_str()
+                    .expect("reasoning delta text")
+            })
+            .collect();
         assert_eq!(
-            page.frames[0].dedupe_key,
-            format!(
-                "console-reasoning:runtime-a:interaction-a:{}",
-                hash_short("I should inspect the file first.")
-            )
+            streamed,
+            "Check again again and finish.A complete sentence."
         );
+        assert_eq!(
+            page.frames
+                .iter()
+                .filter(|frame| frame.kind == "reasoning_complete")
+                .count(),
+            2,
+            "completion is retained even when one delta carried the whole segment"
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_console_events_replay_legacy_rows_without_dropping_new_fragments() {
+        let runtime = build_empty_runtime("reasoning-legacy-replay").await;
+        let temp = tempfile::TempDir::new().expect("temp directory");
+        for persistent in [false, true] {
+            let path = temp.path().join("console.sqlite");
+            let store: Arc<dyn ConsoleLogStore> = if persistent {
+                Arc::new(SqliteConsoleLogStore::open(&path).expect("open store"))
+            } else {
+                Arc::new(InMemoryConsoleLogStore::new())
+            };
+            let mut entry = runtime_entry_for_test("runtime-a", &runtime);
+            entry.identity_namespace.clear();
+            let envelope =
+                |id: &str, kind: &str| crate::console_contracts::ConsoleIdentityEventEnvelope {
+                    event_id: id.into(),
+                    interaction_id: Some("turn-a".into()),
+                    identity: SYSTEM_EVENT_IDENTITY.into(),
+                    event_type: kind.into(),
+                    timestamp_ms: 1,
+                    data: json!({"delta": "again ", "content": "again "}),
+                };
+            let mut legacy = frame_from_console_event(&entry, envelope("old", "reasoning_delta"));
+            legacy.dedupe_key =
+                format!("console-reasoning:runtime-a:turn-a:{}", hash_short("again"));
+            // Replaying the original event must also match a legitimately
+            // redacted stored row without comparing its changed payload.
+            legacy.payload = json!({"delta": "[redacted]"});
+            legacy.status = ConsoleFrameStatus::Redacted;
+            let original = store
+                .append_if_absent(legacy)
+                .await
+                .expect("seed legacy row")
+                .frame;
+            let store: Arc<dyn ConsoleLogStore> = if persistent {
+                drop(store);
+                Arc::new(SqliteConsoleLogStore::open(&path).expect("reopen legacy store"))
+            } else {
+                store
+            };
+            let owner = MobKitConsoleAggregator::new(store.clone());
+            owner
+                .inner
+                .runtimes
+                .write()
+                .expect("registry")
+                .insert("runtime-a".into(), entry);
+            let mut events = owner.subscribe();
+            for (id, kind) in [
+                ("old", "reasoning_delta"),
+                ("new", "reasoning_delta"),
+                ("complete", "reasoning_complete"),
+                ("new", "reasoning_delta"),
+                ("complete", "reasoning_complete"),
+            ] {
+                project_console_event(owner.inner.clone(), "runtime-a", envelope(id, kind))
+                    .await
+                    .expect("replay exact source event");
+            }
+            let page = store
+                .query_frames(ConsoleTimelineQuery {
+                    limit: 20,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("read frames");
+            assert_eq!(page.frames.len(), 3, "distinct equal-text events survive");
+            assert_eq!(
+                page.frames[0], original,
+                "legacy cursor and redaction stay intact"
+            );
+            assert_eq!(page.frames[1].dedupe_key, "console-event:runtime-a:new");
+            assert_eq!(
+                page.frames[2].dedupe_key,
+                "console-event:runtime-a:complete"
+            );
+            assert_eq!(
+                store
+                    .source_watermark("runtime-a", ConsoleFrameSourceKind::ConsoleEvent)
+                    .await
+                    .expect("watermark"),
+                Some("complete".into())
+            );
+            assert!(events.try_recv().is_ok());
+            assert!(events.try_recv().is_ok());
+            assert!(
+                matches!(
+                    events.try_recv(),
+                    Err(broadcast::error::TryRecvError::Empty)
+                ),
+                "exact replays emit no new frames"
+            );
+        }
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test]
@@ -12251,6 +12645,436 @@ comms = true
         assert_eq!(live.as_deref(), Some("I should inspect the file first."));
         assert_eq!(live, replay);
         assert_eq!(live, delta);
+    }
+
+    fn counterpart_lineage_frame(key: &str, kind: &str, payload: Value) -> NewConsoleFrame {
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: key.to_string(),
+            timestamp_ms: 2_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: kind.to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload,
+            source: ConsoleFrameSource {
+                member_provenance: None,
+                kind: ConsoleFrameSourceKind::ConsoleEvent,
+                source_cursor: None,
+            },
+            source_event_id: Some(key.to_string()),
+            interaction_id: None,
+            turn_id: None,
+            run_id: Some(uuid::Uuid::from_u128(0xfeed_9201).to_string()),
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        }
+    }
+
+    fn counterpart_lineage_history(text: &str) -> NewConsoleFrame {
+        let mut frame = counterpart_lineage_frame(
+            "history-answer",
+            "interaction_complete",
+            json!({ "result": text }),
+        );
+        frame.source.kind = ConsoleFrameSourceKind::SessionHistory;
+        frame.source.source_cursor = Some("session-a:3".to_string());
+        frame.source_event_id = None;
+        frame
+    }
+
+    async fn assert_history_counterpart(
+        history: &NewConsoleFrame,
+        live: Vec<NewConsoleFrame>,
+        expected: bool,
+    ) {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for frame in live {
+            aggregator
+                .store()
+                .append_if_absent(frame)
+                .await
+                .expect("append counterpart candidate");
+        }
+        assert_eq!(
+            history_frame_has_existing_counterpart(&aggregator.inner, history)
+                .await
+                .expect("scan counterpart candidates"),
+            expected,
+            "history: {history:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_keeps_equal_text_from_different_runs() {
+        for interaction in [None, Some(uuid::Uuid::from_u128(0xfeed_9301).to_string())] {
+            for kind in ["run_completed", "text_delta"] {
+                let mut history = counterpart_lineage_history("Ready.");
+                history.interaction_id = interaction.clone();
+                let mut live = counterpart_lineage_frame(
+                    "other-run",
+                    kind,
+                    json!({ "result": "Ready.", "delta": "Ready." }),
+                );
+                live.interaction_id = interaction.clone();
+                live.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string());
+                assert_history_counterpart(&history, vec![live], false).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_requires_typed_owner_on_both_text_sources() {
+        for missing_history_owner in [false, true] {
+            let mut history = counterpart_lineage_history("Ready.");
+            let mut live = counterpart_lineage_frame(
+                "live-answer",
+                "run_completed",
+                json!({ "result": "Ready." }),
+            );
+            if missing_history_owner {
+                history.run_id = None;
+            } else {
+                live.run_id = None;
+            }
+            assert_history_counterpart(&history, vec![live], false).await;
+        }
+        let mut history = counterpart_lineage_history("Ready.");
+        history.run_id = None;
+        let mut live = counterpart_lineage_frame(
+            "typed-interaction",
+            "run_completed",
+            json!({ "result": "Ready." }),
+        );
+        live.run_id = None;
+        live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+        assert_history_counterpart(&history, vec![live], false).await;
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_rejects_runtime_session_and_interaction_conflicts() {
+        for conflict in [
+            "runtime",
+            "session",
+            "missing-session",
+            "interaction",
+            "missing-interaction",
+        ] {
+            let mut history = counterpart_lineage_history("Ready.");
+            history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+            let mut live = counterpart_lineage_frame(
+                "conflicting-owner",
+                "run_completed",
+                json!({ "result": "Ready." }),
+            );
+            live.interaction_id = history.interaction_id.clone();
+            match conflict {
+                "runtime" => live.runtime_key = "runtime-b".to_string(),
+                "session" => live.session_id = Some("session-b".to_string()),
+                "missing-session" => live.session_id = None,
+                "interaction" => {
+                    live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string())
+                }
+                "missing-interaction" => live.interaction_id = None,
+                _ => unreachable!(),
+            }
+            assert_history_counterpart(&history, vec![live], false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_preserves_owned_assistant_terminal_and_stream_history() {
+        for interaction in [None, Some(uuid::Uuid::from_u128(0xfeed_9301).to_string())] {
+            let mut history = counterpart_lineage_history("  Ready.\n");
+            history.interaction_id = interaction.clone();
+            let mut terminal = counterpart_lineage_frame(
+                "owned-terminal",
+                "run_completed",
+                json!({ "result": "  Ready.\n" }),
+            );
+            terminal.interaction_id = interaction.clone();
+            assert_history_counterpart(&history, vec![terminal], false).await;
+            let mut deltas = Vec::new();
+            for (index, delta) in ["  Re", "ady.\n"].into_iter().enumerate() {
+                let mut frame = counterpart_lineage_frame(
+                    &format!("owned-delta-{index}"),
+                    "text_delta",
+                    json!({ "delta": delta }),
+                );
+                frame.interaction_id = interaction.clone();
+                deltas.push(frame);
+            }
+            assert_history_counterpart(&history, deltas, false).await;
+        }
+        let mut history = counterpart_lineage_history("Interaction-only owner.");
+        history.run_id = None;
+        history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+        let mut live = counterpart_lineage_frame(
+            "interaction-only",
+            "run_completed",
+            json!({ "result": "Interaction-only owner." }),
+        );
+        live.run_id = None;
+        live.interaction_id = history.interaction_id.clone();
+        assert_history_counterpart(&history, vec![live], false).await;
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_keeps_repeated_authored_messages_with_one_live_occurrence()
+    {
+        for kind in ["interaction_complete", "reasoning_complete"] {
+            let aggregator = MobKitConsoleAggregator::in_memory();
+            let mut live = counterpart_lineage_frame(
+                "one-live-occurrence",
+                kind,
+                json!({ "result": "Again.", "text": "Again." }),
+            );
+            live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+            aggregator
+                .store()
+                .append_if_absent(live)
+                .await
+                .expect("append live occurrence");
+            for offset in [3, 5] {
+                let mut history = counterpart_lineage_history("Again.");
+                history.kind = kind.to_string();
+                history.payload["text"] = json!("Again.");
+                history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+                history.dedupe_key = format!("authored-message-{offset}");
+                history.source.source_cursor = Some(format!("session-a:{offset}"));
+                if !history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                    .await
+                    .expect("check history retention")
+                {
+                    aggregator
+                        .store()
+                        .append_if_absent(history.clone())
+                        .await
+                        .expect("append authored history");
+                    let replay = aggregator
+                        .store()
+                        .append_if_absent(history)
+                        .await
+                        .expect("replay authored history");
+                    assert_eq!(replay.disposition, AppendDisposition::Existing);
+                }
+            }
+            let page = aggregator
+                .store()
+                .query_frames(ConsoleTimelineQuery {
+                    identity: Some("agent-a".to_string()),
+                    limit: 10,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query retained history");
+            assert_eq!(
+                page.frames
+                    .iter()
+                    .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
+                    .count(),
+                2,
+                "both authored offsets must reach occurrence reconciliation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_matches_exact_user_input_with_authoritative_owner() {
+        let mut history = counterpart_lineage_history("");
+        history.kind = "user_input".to_string();
+        history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+        history.payload = json!({ "content": [{ "type": "text", "text": "  Ready.\n" }] });
+        let mut live = counterpart_lineage_frame(
+            "typed-user",
+            "user_input",
+            json!({ "content": "  Ready.\n" }),
+        );
+        live.interaction_id = history.interaction_id.clone();
+        assert_history_counterpart(&history, vec![live.clone()], true).await;
+        for mismatch in [
+            "runtime",
+            "session",
+            "run",
+            "interaction",
+            "whitespace",
+            "mixed-content",
+        ] {
+            let mut candidate = live.clone();
+            match mismatch {
+                "runtime" => candidate.runtime_key = "runtime-b".to_string(),
+                "session" => candidate.session_id = None,
+                "run" => candidate.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string()),
+                "interaction" => candidate.interaction_id = None,
+                "whitespace" => candidate.payload["content"] = json!("Ready."),
+                "mixed-content" => {
+                    candidate.payload["content"] = json!([{ "type": "text", "text": "  Ready.\n" }, { "type": "image", "source": "different-image" }])
+                }
+                _ => unreachable!(),
+            }
+            assert_history_counterpart(&history, vec![candidate], false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_tool_results_preserve_full_content_and_outcome() {
+        let mut history = counterpart_lineage_history("");
+        history.kind = "tool_execution_completed".to_string();
+        history.run_id = None;
+        history.payload = json!({ "tool_call_id": "call-a", "result": "  File text\n", "content": [{ "type": "text", "text": "  File text\n" }], "is_error": false });
+        let live = counterpart_lineage_frame(
+            "typed-tool-result",
+            "tool_execution_completed",
+            json!({ "tool_call_id": "call-a", "result": [{ "type": "text", "text": "  File text\n" }], "is_error": false }),
+        );
+        assert_history_counterpart(&history, vec![live.clone()], true).await;
+        for mismatch in [
+            "whitespace",
+            "mixed-content",
+            "history-mixed-content",
+            "error",
+        ] {
+            let mut candidate = live.clone();
+            let mut durable = history.clone();
+            match mismatch {
+                "whitespace" => {
+                    candidate.payload["result"] = json!([{ "type": "text", "text": "File text" }])
+                }
+                "mixed-content" => {
+                    candidate.payload["result"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "different-image" }])
+                }
+                "history-mixed-content" => {
+                    durable.payload["content"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "history-image" }])
+                }
+                "error" => candidate.payload["is_error"] = json!(true),
+                _ => unreachable!(),
+            }
+            assert_history_counterpart(&durable, vec![candidate], false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_never_joins_deltas_across_runs() {
+        let mut history = counterpart_lineage_history("Ready.");
+        history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+        let mut first =
+            counterpart_lineage_frame("run-a-delta", "text_delta", json!({ "delta": "Re" }));
+        first.interaction_id = history.interaction_id.clone();
+        let mut second =
+            counterpart_lineage_frame("run-b-delta", "text_delta", json!({ "delta": "ady." }));
+        second.interaction_id = history.interaction_id.clone();
+        second.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string());
+        assert_history_counterpart(&history, vec![first, second], false).await;
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_preserves_exact_authored_whitespace() {
+        for history_text in ["    Ready.", "Ready.\n", "[EVENT via rpc] Ready."] {
+            let history = counterpart_lineage_history(history_text);
+            let live = counterpart_lineage_frame(
+                "different-source",
+                "run_completed",
+                json!({ "result": "Ready." }),
+            );
+            assert_history_counterpart(&history, vec![live], false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_does_not_use_user_or_reasoning_text_as_answer_evidence() {
+        for kind in ["user_input", "reasoning_complete"] {
+            let history = counterpart_lineage_history("Ready.");
+            let live = counterpart_lineage_frame(
+                "different-role",
+                kind,
+                json!({ "content": "Ready.", "text": "Ready." }),
+            );
+            assert_history_counterpart(&history, vec![live], false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_does_not_match_a_prefix_of_the_collected_stream() {
+        let history = counterpart_lineage_history("Ready.");
+        let first =
+            counterpart_lineage_frame("first-chunk", "text_delta", json!({ "delta": "Ready." }));
+        let second =
+            counterpart_lineage_frame("second-chunk", "text_delta", json!({ "delta": " More." }));
+        assert_history_counterpart(&history, vec![first, second], false).await;
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_tool_results_use_provider_identity_without_inventing_lineage()
+     {
+        for kind in ["tool_execution_completed", "tool_call_requested"] {
+            for mismatch in [
+                "none",
+                "provider-id",
+                "run",
+                "interaction",
+                "runtime",
+                "session",
+                "missing-provider-id",
+            ] {
+                let mut history = counterpart_lineage_history("");
+                history.kind = kind.to_string();
+                history.run_id = None;
+                history.payload = json!({ "tool_call_id": "call-a", "result": "Ready." });
+                let mut live =
+                    counterpart_lineage_frame("tool-evidence", kind, history.payload.clone());
+                match mismatch {
+                    "none" => {}
+                    "provider-id" => live.payload["tool_call_id"] = json!("call-b"),
+                    "run" => history.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string()),
+                    "interaction" => {
+                        history.interaction_id =
+                            Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
+                        live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string());
+                    }
+                    "runtime" => live.runtime_key = "runtime-b".to_string(),
+                    "session" => live.session_id = Some("session-b".to_string()),
+                    "missing-provider-id" => {
+                        history.payload = json!({ "result": "Ready." });
+                        live.payload = history.payload.clone();
+                    }
+                    _ => unreachable!(),
+                }
+                assert_history_counterpart(&history, vec![live], mismatch == "none").await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_keeps_distinct_persisted_offsets() {
+        let history = counterpart_lineage_history("Ready.");
+        let mut earlier = history.clone();
+        earlier.dedupe_key = "earlier-persisted-answer".to_string();
+        earlier.source.source_cursor = Some("session-a:1".to_string());
+        assert_history_counterpart(&history, vec![earlier], false).await;
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_lineage_preserves_identity_free_legacy_matching() {
+        let mut history = counterpart_lineage_history("[EVENT via rpc] Ready.");
+        history.run_id = None;
+        history.kind = "user_input".to_string();
+        history.payload = json!({ "content": "[EVENT via rpc] Ready." });
+        for other_runtime in [false, true] {
+            let mut live = counterpart_lineage_frame(
+                "legacy-user",
+                "user_input",
+                json!({ "content": "Ready." }),
+            );
+            live.run_id = None;
+            live.interaction_id = Some("console-interaction-old".to_string());
+            live.session_id = None;
+            if other_runtime {
+                live.runtime_key = "runtime-b".to_string();
+            }
+            assert_history_counterpart(&history, vec![live], !other_runtime).await;
+        }
     }
 
     #[tokio::test]

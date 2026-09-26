@@ -10624,6 +10624,7 @@ mod tests {
         use meerkat_core::event::{AgentErrorClass, AgentErrorReason, AgentErrorReport};
 
         let event = meerkat_core::AgentEvent::RunFailed {
+            identity: Default::default(),
             session_id: meerkat_core::types::SessionId::new(),
             error_report: AgentErrorReport {
                 class: AgentErrorClass::Llm,
@@ -10654,6 +10655,7 @@ mod tests {
         use meerkat_core::event::{AgentErrorClass, AgentErrorReport};
 
         let event = meerkat_core::AgentEvent::RunFailed {
+            identity: Default::default(),
             session_id: meerkat_core::types::SessionId::new(),
             error_report: AgentErrorReport {
                 class: AgentErrorClass::Internal,

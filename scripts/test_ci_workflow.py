@@ -92,6 +92,13 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("node console/voice-e2e-live.cjs --self-test-audio\n", block)
         self.assertNotIn("run e2e:voice:live", block)
 
+    def test_console_fixture_unit_regressions_run_with_the_shared_backend_build(self):
+        block = job_block("console")
+        command = "scripts/repo-cargo test -p meerkat-mobkit --example console_acceptance_fixture"
+        self.assertEqual(block.count(command), 1)
+        self.assertLess(block.index("Build console acceptance backends"), block.index(command))
+        self.assertLess(block.index(command), block.index("node console/api-e2e.cjs"))
+
     def test_gate_requires_every_job_it_lists(self):
         """A job absent from `gate` can fail without failing the check suite.
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 use crate::console_contracts::{
     ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope, ReplayUnavailableError,
@@ -29,6 +29,7 @@ pub(crate) fn event_channel_capacity_for_members(member_count: usize) -> usize {
 pub(crate) struct ConsoleEventStore {
     next_event_seq: Arc<AtomicU64>,
     state: Arc<RwLock<ConsoleEventReplayState>>,
+    projection_lock: Arc<Mutex<()>>,
     event_tx: broadcast::Sender<ConsoleIdentityEventEnvelope>,
 }
 
@@ -36,7 +37,11 @@ struct ConsoleEventReplayState {
     all_events: VecDeque<ConsoleIdentityEventEnvelope>,
     by_identity: BTreeMap<String, VecDeque<ConsoleIdentityEventEnvelope>>,
     pending_by_identity: BTreeMap<String, VecDeque<PendingInteraction>>,
+    // Legacy content-match association, retained only for old boundaries.
     active_interaction_by_identity: BTreeMap<String, String>,
+    // Observed runtime ownership is independent of a console reservation.
+    active_run_by_identity: BTreeMap<String, meerkat_core::types::TranscriptMessageIdentity>,
+    observed_runs_by_identity: BTreeMap<String, VecDeque<meerkat_core::lifecycle::RunId>>,
     callback_pending_by_identity: BTreeSet<String>,
     runtime_to_identity: BTreeMap<String, String>,
     response_phase_by_identity: BTreeMap<String, Option<String>>,
@@ -97,11 +102,14 @@ impl ConsoleEventStore {
         );
         Self {
             next_event_seq: Arc::new(AtomicU64::new(2)),
+            projection_lock: Arc::new(Mutex::new(())),
             state: Arc::new(RwLock::new(ConsoleEventReplayState {
                 all_events: VecDeque::from([bootstrap]),
                 by_identity,
                 pending_by_identity: BTreeMap::new(),
                 active_interaction_by_identity: BTreeMap::new(),
+                active_run_by_identity: BTreeMap::new(),
+                observed_runs_by_identity: BTreeMap::new(),
                 callback_pending_by_identity: BTreeSet::new(),
                 runtime_to_identity: BTreeMap::new(),
                 response_phase_by_identity: BTreeMap::new(),
@@ -298,9 +306,13 @@ impl ConsoleEventStore {
                     .runtime_to_identity
                     .insert(runtime_member_id.to_string(), identity.to_string());
             }
-            state
-                .response_phase_by_identity
-                .insert(identity.to_string(), Some("waiting".to_string()));
+            if !state.active_run_by_identity.contains_key(identity)
+                && !state.active_interaction_by_identity.contains_key(identity)
+            {
+                state
+                    .response_phase_by_identity
+                    .insert(identity.to_string(), Some("waiting".to_string()));
+            }
             evicted
         };
         if let Some(evicted) = evicted {
@@ -325,6 +337,7 @@ impl ConsoleEventStore {
     }
 
     pub(crate) async fn record_lifecycle(&self, identity: &str, event_type: &str, data: Value) {
+        let _projection_guard = self.projection_lock.lock().await;
         let failed = {
             let mut state = self.state.write().await;
             let pending = state
@@ -332,6 +345,7 @@ impl ConsoleEventStore {
                 .remove(identity)
                 .unwrap_or_default();
             state.active_interaction_by_identity.remove(identity);
+            state.active_run_by_identity.remove(identity);
             state.callback_pending_by_identity.remove(identity);
             state
                 .response_phase_by_identity
@@ -363,6 +377,7 @@ impl ConsoleEventStore {
         interaction_id: &str,
         data: Value,
     ) {
+        let _projection_guard = self.projection_lock.lock().await;
         {
             let mut state = self.state.write().await;
             close_console_interaction(&mut state, identity, interaction_id);
@@ -389,6 +404,9 @@ impl ConsoleEventStore {
             return;
         }
 
+        // Keep boundary association, append, and terminal settlement in event
+        // order even when separate forwarding tasks share this store.
+        let _projection_guard = self.projection_lock.lock().await;
         let mut projected_data = payload.clone().unwrap_or_else(|| json!({}));
         if let Some(object) = projected_data.as_object_mut() {
             object
@@ -396,7 +414,7 @@ impl ConsoleEventStore {
                 .or_insert_with(|| Value::String(event_type.clone()));
         }
 
-        let (identity, interaction_id) = {
+        let (identity, interaction_id, current_run_event) = {
             let mut state = self.state.write().await;
             // Replayed boundaries must not mutate the current run association.
             if state
@@ -429,17 +447,81 @@ impl ConsoleEventStore {
                     .entry(agent_id.clone())
                     .or_insert_with(|| identity.clone());
             }
+            let explicit_lineage = payload_transcript_identity(&projected_data);
             let interaction_id = match event_type.as_str() {
                 "run_started" => {
                     select_interaction_for_run_started(&mut state, &identity, &projected_data)
                 }
+                "run_completed" | "run_failed" => explicit_lineage
+                    .as_ref()
+                    .and_then(lineage_interaction_id)
+                    .or_else(|| {
+                        if !has_lineage_carrier(&projected_data)
+                            && !state.active_run_by_identity.contains_key(&identity)
+                        {
+                            state.active_interaction_by_identity.get(&identity).cloned()
+                        } else {
+                            None
+                        }
+                    }),
                 "interaction_complete" | "interaction_failed" | "interaction_callback_pending" => {
                     select_interaction_for_directed_terminal(&state, &identity, &projected_data)
                 }
-                // Admission alone cannot identify the run emitting this event.
-                _ => state.active_interaction_by_identity.get(&identity).cloned(),
+                _ => explicit_lineage
+                    .as_ref()
+                    .and_then(lineage_interaction_id)
+                    .or_else(|| {
+                        if !has_lineage_carrier(&projected_data)
+                            && event_inherits_run_lineage(event_type)
+                        {
+                            state
+                                .active_run_by_identity
+                                .get(&identity)
+                                .and_then(lineage_interaction_id)
+                                .or_else(|| {
+                                    state.active_interaction_by_identity.get(&identity).cloned()
+                                })
+                        } else {
+                            None
+                        }
+                    }),
             };
-            (identity, interaction_id)
+            let projected_lineage = explicit_lineage.or_else(|| {
+                if has_lineage_carrier(&projected_data) {
+                    return None;
+                }
+                let active = state.active_run_by_identity.get(&identity)?;
+                if event_inherits_run_lineage(event_type)
+                    || (matches!(
+                        event_type.as_str(),
+                        "interaction_complete"
+                            | "interaction_failed"
+                            | "interaction_callback_pending"
+                    ) && interaction_id.is_some()
+                        && interaction_id == lineage_interaction_id(active))
+                {
+                    Some(active.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(lineage) = projected_lineage.as_ref()
+                && let Some(object) = projected_data.as_object_mut()
+            {
+                object.insert("identity".into(), json!(lineage));
+                if let Some(run_id) = lineage.run_id.as_ref() {
+                    object.insert("run_id".into(), json!(run_id));
+                } else {
+                    object.remove("run_id");
+                }
+            }
+            let current_run_event = match state.active_run_by_identity.get(&identity) {
+                Some(active) => projected_lineage
+                    .as_ref()
+                    .is_some_and(|lineage| same_runtime_run(active, lineage)),
+                None => true,
+            };
+            (identity, interaction_id, current_run_event)
         };
 
         let projected_type = match event_type.as_str() {
@@ -472,6 +554,8 @@ impl ConsoleEventStore {
                     timestamp_ms: event.timestamp_ms,
                     data: json!({
                         "source_event_type": event_type,
+                        "identity": projected_data.get("identity"),
+                        "run_id": projected_data.get("run_id"),
                         "tool_call_id": projected_data.get("id").cloned().unwrap_or(Value::Null),
                         "image_id": image.image_id.0.to_string(),
                         "blob_id": image.blob_ref.blob_id,
@@ -489,56 +573,81 @@ impl ConsoleEventStore {
         {
             let mut state = self.state.write().await;
             match event_type.as_str() {
-                "tool_call_requested" | "tool_call" | "tool_result_received" => {
+                "tool_call_requested" | "tool_call" | "tool_result_received"
+                    if current_run_event =>
+                {
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), Some("tool-executing".to_string()));
                 }
-                "text_delta" | "reasoning_delta" => {
+                "text_delta" | "reasoning_delta" if current_run_event => {
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), Some("generating".to_string()));
                 }
                 "run_completed" | "run_failed" => {
-                    state.active_interaction_by_identity.remove(&identity);
-                    state.callback_pending_by_identity.remove(&identity);
-                    state
-                        .response_phase_by_identity
-                        .insert(identity.clone(), None);
+                    let terminal = payload_transcript_identity(&projected_data);
+                    let closes_current = match state.active_run_by_identity.get(&identity) {
+                        Some(active) => terminal
+                            .as_ref()
+                            .is_some_and(|lineage| same_runtime_run(active, lineage)),
+                        None => !has_lineage_carrier(&projected_data),
+                    };
+                    if closes_current {
+                        state.active_run_by_identity.remove(&identity);
+                        if let Some(interaction_id) = interaction_id.as_deref() {
+                            close_console_interaction(&mut state, &identity, interaction_id);
+                        } else {
+                            state.active_interaction_by_identity.remove(&identity);
+                            state.callback_pending_by_identity.remove(&identity);
+                            state
+                                .response_phase_by_identity
+                                .insert(identity.clone(), None);
+                        }
+                    } else if terminal.is_some()
+                        && let Some(interaction_id) = interaction_id.as_deref()
+                        && !state
+                            .active_run_by_identity
+                            .get(&identity)
+                            .is_some_and(|active| {
+                                lineage_interaction_id(active).as_deref() == Some(interaction_id)
+                            })
+                    {
+                        // An exact foreign/older terminal can settle only its
+                        // own reservation, never another current run.
+                        close_console_interaction(&mut state, &identity, interaction_id);
+                    }
                 }
                 "interaction_callback_pending" => {
-                    if interaction_id.as_ref().is_some_and(|interaction| {
-                        state.active_interaction_by_identity.get(&identity) == Some(interaction)
-                    }) {
+                    if current_run_event
+                        && interaction_id.as_ref().is_some_and(|interaction| {
+                            state.active_interaction_by_identity.get(&identity) == Some(interaction)
+                                || state
+                                    .active_run_by_identity
+                                    .get(&identity)
+                                    .and_then(lineage_interaction_id)
+                                    .as_ref()
+                                    == Some(interaction)
+                        })
+                    {
                         state.callback_pending_by_identity.insert(identity.clone());
                     }
                 }
                 "interaction_complete" | "interaction_failed" => {
-                    if let Some(interaction_id) = interaction_id.as_deref() {
+                    let explicit_run = payload_transcript_identity(&projected_data)
+                        .and_then(|lineage| lineage.run_id);
+                    if (explicit_run.is_none() || current_run_event)
+                        && let Some(interaction_id) = interaction_id.as_deref()
+                    {
                         close_console_interaction(&mut state, &identity, interaction_id);
                     }
                 }
-                "turn_completed" if terminal_turn_completed => {
+                "turn_completed" if terminal_turn_completed && current_run_event => {
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
                 }
                 _ => {}
-            }
-        }
-
-        if matches!(event_type.as_str(), "run_completed" | "run_failed") {
-            let mut state = self.state.write().await;
-            if let Some(interaction_id) = interaction_id.as_deref()
-                && let Some(queue) = state.pending_by_identity.get_mut(&identity)
-                && let Some(position) = queue
-                    .iter()
-                    .position(|pending| pending.interaction_id == interaction_id)
-            {
-                queue.remove(position);
-                if queue.is_empty() {
-                    state.pending_by_identity.remove(&identity);
-                }
             }
         }
     }
@@ -572,11 +681,101 @@ impl ConsoleEventStore {
     }
 }
 
+fn payload_transcript_identity(
+    payload: &Value,
+) -> Option<meerkat_core::types::TranscriptMessageIdentity> {
+    payload
+        .get("identity")
+        .cloned()
+        .and_then(|value| {
+            serde_json::from_value::<meerkat_core::types::TranscriptMessageIdentity>(value).ok()
+        })
+        .filter(|identity| !identity.is_empty())
+}
+
+fn has_lineage_carrier(payload: &Value) -> bool {
+    payload.get("identity").is_some_and(|value| {
+        !value.is_null() && value.as_object().is_none_or(|value| !value.is_empty())
+    })
+}
+
+fn lineage_interaction_id(
+    identity: &meerkat_core::types::TranscriptMessageIdentity,
+) -> Option<String> {
+    identity.interaction_id.map(|id| id.to_string())
+}
+
+fn same_runtime_run(
+    a: &meerkat_core::types::TranscriptMessageIdentity,
+    b: &meerkat_core::types::TranscriptMessageIdentity,
+) -> bool {
+    a.run_id.is_some() && a.run_id == b.run_id && a.interaction_id == b.interaction_id
+}
+
+fn event_inherits_run_lineage(kind: &str) -> bool {
+    // Images can be committed callback output from an earlier suspended run.
+    // Peer-ingestion notices and admission/hooks likewise do not establish the
+    // owner of execution. Preserve an explicit carrier, never guess for them.
+    matches!(
+        kind,
+        "turn_started"
+            | "turn_completed"
+            | "text_delta"
+            | "text_complete"
+            | "reasoning_delta"
+            | "reasoning_complete"
+            | "server_tool_content"
+            | "tool_call_requested"
+            | "tool_call"
+            | "tool_result_received"
+            | "tool_execution_started"
+            | "tool_execution_completed"
+            | "tool_execution_timed_out"
+            | "extraction_succeeded"
+            | "extraction_failed"
+            | "compaction_started"
+            | "compaction_completed"
+            | "compaction_failed"
+            | "budget_warning"
+            | "retrying"
+    )
+}
+
 fn select_interaction_for_run_started(
     state: &mut ConsoleEventReplayState,
     identity: &str,
     payload: &Value,
 ) -> Option<String> {
+    if let Some(lineage) = payload_transcript_identity(payload) {
+        let interaction_id = lineage_interaction_id(&lineage);
+        if let Some(run_id) = lineage.run_id.as_ref() {
+            let seen = state
+                .observed_runs_by_identity
+                .entry(identity.to_string())
+                .or_default();
+            if seen.contains(run_id) {
+                return interaction_id;
+            }
+            seen.push_back(run_id.clone());
+            trim_deque(seen, IDENTITY_REPLAY_CAP);
+            state
+                .active_run_by_identity
+                .insert(identity.to_string(), lineage);
+        } else {
+            state.active_run_by_identity.remove(identity);
+        }
+        state.active_interaction_by_identity.remove(identity);
+        state.callback_pending_by_identity.remove(identity);
+        return interaction_id;
+    }
+    // Only old identity-free starts use the historical content contract.
+    // An unknown new start must not lend the preceding typed run to output.
+    state.active_run_by_identity.remove(identity);
+    if has_lineage_carrier(payload) {
+        state.active_interaction_by_identity.remove(identity);
+        state.callback_pending_by_identity.remove(identity);
+        return None;
+    }
     let input = payload
         .get("input")
         .cloned()
@@ -607,21 +806,24 @@ fn select_interaction_for_run_started(
     Some(interaction_id)
 }
 
-/// Runtime-minted directed interaction events (`interaction_complete`,
-/// `interaction_failed`, `interaction_callback_pending`) name their
-/// interaction in `payload.interaction_id`. They belong to a console
-/// interaction only when that id is one the console reserved for this
-/// identity; peer, flow-step and schedule inputs mint their own ids, and their
-/// events must not attach to whichever console send happens to be pending.
-/// `interaction_complete` and `interaction_failed` close the interaction they
-/// name; `interaction_callback_pending` only names it, because the
-/// interaction is paused at an external callback boundary, not over.
+/// Directed runtime terminals carry their own interaction identity, including
+/// peer/flow interactions with no console reservation. Legacy non-UUID fixture
+/// ids remain accepted only when the console actually reserved them.
 fn select_interaction_for_directed_terminal(
     state: &ConsoleEventReplayState,
     identity: &str,
     payload: &Value,
 ) -> Option<String> {
     let directed = payload.get("interaction_id").and_then(Value::as_str)?;
+    if has_lineage_carrier(payload)
+        && payload_transcript_identity(payload)
+            .and_then(|lineage| lineage_interaction_id(&lineage))
+            .as_deref()
+            != Some(directed)
+    {
+        return None;
+    }
+    let runtime_owned = uuid::Uuid::parse_str(directed).is_ok();
     let reserved = state
         .active_interaction_by_identity
         .get(identity)
@@ -634,7 +836,7 @@ fn select_interaction_for_directed_terminal(
                     .iter()
                     .any(|pending| pending.interaction_id == directed)
             });
-    reserved.then(|| directed.to_string())
+    (runtime_owned || reserved).then(|| directed.to_string())
 }
 
 /// Drop one console interaction from the identity's pending queue and, when
@@ -645,6 +847,16 @@ fn close_console_interaction(
     identity: &str,
     interaction_id: &str,
 ) {
+    if state
+        .active_run_by_identity
+        .get(identity)
+        .and_then(lineage_interaction_id)
+        .as_deref()
+        == Some(interaction_id)
+    {
+        state.active_run_by_identity.remove(identity);
+        state.callback_pending_by_identity.remove(identity);
+    }
     if let Some(queue) = state.pending_by_identity.get_mut(identity) {
         if let Some(position) = queue
             .iter()
@@ -666,7 +878,9 @@ fn close_console_interaction(
     }
     // An exact terminal may settle a queued reservation while another run is
     // generating or paused for a callback. Only clear idle/own-run state.
-    if !state.active_interaction_by_identity.contains_key(identity) {
+    if !state.active_interaction_by_identity.contains_key(identity)
+        && !state.active_run_by_identity.contains_key(identity)
+    {
         state
             .response_phase_by_identity
             .insert(identity.to_string(), None);
@@ -794,7 +1008,7 @@ pub(crate) fn is_empty_web_search_annotations_event(
             .is_some_and(Vec::is_empty)
 }
 
-fn trim_deque(deque: &mut VecDeque<ConsoleIdentityEventEnvelope>, cap: usize) {
+fn trim_deque<T>(deque: &mut VecDeque<T>, cap: usize) {
     while deque.len() > cap {
         deque.pop_front();
     }
@@ -2399,5 +2613,437 @@ mod tests {
             &pending,
             &json!({"input": {"kind": "content", "content": changed_text}})
         ));
+    }
+
+    fn typed_lineage(interaction: u128, run: u128) -> Value {
+        json!({
+            "interaction_id": uuid::Uuid::from_u128(interaction).to_string(),
+            "run_id": uuid::Uuid::from_u128(run).to_string(),
+        })
+    }
+
+    #[tokio::test]
+    async fn typed_peer_start_preserves_canonical_lineage_without_consuming_equal_console_input() {
+        let store = ConsoleEventStore::new();
+        let operator = uuid::Uuid::from_u128(101).to_string();
+        let peer = typed_lineage(102, 202);
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                &operator,
+                "console",
+                json!("same text"),
+            )
+            .await
+            .unwrap();
+        for (id, kind, payload) in [
+            (
+                "peer-start",
+                "run_started",
+                json!({"identity": peer, "input": {"kind": "content", "content": "same text"}}),
+            ),
+            ("peer-delta", "text_delta", json!({"delta": "done"})),
+            (
+                "peer-end",
+                "run_completed",
+                json!({"identity": peer, "result": "done"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
+                .await;
+        }
+        let replay = store.replay_all(None).await.unwrap();
+        for event in replay
+            .iter()
+            .filter(|event| event.event_id.starts_with("peer-"))
+        {
+            assert_eq!(
+                event.interaction_id.as_deref(),
+                peer["interaction_id"].as_str()
+            );
+            assert_eq!(event.data["identity"], peer);
+            assert_eq!(event.data["run_id"], peer["run_id"]);
+        }
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"][0].interaction_id,
+            operator
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_identical_pending_messages_match_ids_and_replayed_start_cannot_replace_current_run()
+     {
+        let store = ConsoleEventStore::new();
+        let a = typed_lineage(111, 211);
+        let b = typed_lineage(112, 212);
+        for identity in [&a, &b] {
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    identity["interaction_id"].as_str().unwrap(),
+                    "console",
+                    json!("same text"),
+                )
+                .await
+                .unwrap();
+        }
+        let start = |id: &str, identity: &Value| {
+            agent_event_with_payload(
+                id,
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":identity,"input":{"kind":"content","content":"same text"}}),
+            )
+        };
+        let first = start("a-start", &a);
+        store.project_unified_event(&first).await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "a-end",
+                "rt:worker:1",
+                "run_completed",
+                json!({"identity":a,"result":"same answer"}),
+            ))
+            .await;
+        store.project_unified_event(&start("b-start", &b)).await;
+        store.project_unified_event(&first).await;
+        store
+            .project_unified_event(&start("a-start-replayed-with-new-envelope", &a))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "b-output",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"same answer"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.unwrap();
+        let output = replay
+            .iter()
+            .find(|event| event.event_id == "b-output")
+            .unwrap();
+        assert_eq!(output.data["identity"], b);
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_foreign_or_stale_terminal_does_not_borrow_or_clear_typed_active_run() {
+        let store = ConsoleEventStore::new();
+        let active = typed_lineage(121, 221);
+        let foreign = typed_lineage(122, 222);
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":active,"input":{"kind":"content","content":"hello"}}),
+            ))
+            .await;
+        for (id, payload) in [
+            ("missing", json!({"result":"old"})),
+            ("foreign", json!({"identity":foreign,"result":"other"})),
+            (
+                "same-interaction-old-run",
+                json!({"identity":{"interaction_id":active["interaction_id"],"run_id":foreign["run_id"]},"result":"old attempt"}),
+            ),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    id,
+                    "rt:worker:1",
+                    "run_completed",
+                    payload,
+                ))
+                .await;
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    &format!("after-{id}"),
+                    "rt:worker:1",
+                    "text_delta",
+                    json!({"delta":"still running"}),
+                ))
+                .await;
+        }
+        let replay = store.replay_all(None).await.unwrap();
+        assert!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "missing")
+                .unwrap()
+                .interaction_id
+                .is_none()
+        );
+        for event in replay
+            .iter()
+            .filter(|event| event.event_id.starts_with("after-"))
+        {
+            assert_eq!(event.data["identity"], active);
+        }
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("generating")
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_run_without_interaction_still_carries_run_and_cannot_claim_reservation() {
+        let store = ConsoleEventStore::new();
+        let run = uuid::Uuid::from_u128(231).to_string();
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "operator",
+                "console",
+                json!("same"),
+            )
+            .await
+            .unwrap();
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":{"run_id":run},"input":{"kind":"content","content":"same"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "delta",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"ready"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.unwrap();
+        let delta = replay
+            .iter()
+            .find(|event| event.event_id == "delta")
+            .unwrap();
+        assert!(delta.interaction_id.is_none());
+        assert_eq!(delta.data["run_id"], run);
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_image_never_inherits_new_run_and_explicit_message_identity_is_preserved() {
+        let store = ConsoleEventStore::new();
+        let old = typed_lineage(141, 241);
+        let current = typed_lineage(142, 242);
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":current,"input":{"kind":"content","content":"new"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "old-image",
+                "rt:worker:1",
+                "assistant_image_appended",
+                json!({"identity":old,"image":{"image_id":"old-image"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "unknown-image",
+                "rt:worker:1",
+                "assistant_image_appended",
+                json!({"image":{"image_id":"unknown-image"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "current-delta",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"new output"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.unwrap();
+        let by_id = |id: &str| replay.iter().find(|event| event.event_id == id).unwrap();
+        assert_eq!(by_id("old-image").data["identity"], old);
+        assert!(by_id("unknown-image").interaction_id.is_none());
+        assert!(by_id("unknown-image").data.get("run_id").is_none());
+        assert_eq!(by_id("current-delta").data["identity"], current);
+    }
+
+    #[tokio::test]
+    async fn typed_directed_terminal_settles_its_queued_owner_without_clearing_peer_run() {
+        let store = ConsoleEventStore::new();
+        let peer = typed_lineage(151, 251);
+        let queued = uuid::Uuid::from_u128(152).to_string();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "peer-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":peer,"input":{"kind":"content","content":"peer"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "peer-first",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"still working"}),
+            ))
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                &queued,
+                "console",
+                json!("queued"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("generating")
+        );
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "queue-failed",
+                "rt:worker:1",
+                "interaction_failed",
+                json!({"interaction_id":queued,"reason":"not admitted"}),
+            ))
+            .await;
+        assert!(
+            !store
+                .state
+                .read()
+                .await
+                .pending_by_identity
+                .contains_key("worker")
+        );
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "peer-second",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"finishing"}),
+            ))
+            .await;
+        let replay = store.replay_all(None).await.unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "peer-second")
+                .unwrap()
+                .data["identity"],
+            peer
+        );
+        assert!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "queue-failed")
+                .unwrap()
+                .data
+                .get("run_id")
+                .is_none()
+        );
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "peer-done",
+                "rt:worker:1",
+                "interaction_complete",
+                json!({"interaction_id":peer["interaction_id"],"result":"done"}),
+            ))
+            .await;
+        assert!(store.state.read().await.active_run_by_identity.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_explicit_lineage_cannot_fall_back_to_active_or_matching_prompt() {
+        let store = ConsoleEventStore::new();
+        let active = typed_lineage(161, 261);
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "legacy-operator",
+                "console",
+                json!("same"),
+            )
+            .await
+            .unwrap();
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":active,"input":{"kind":"content","content":"same"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "bad-terminal",
+                "rt:worker:1",
+                "run_completed",
+                json!({"identity":{"interaction_id":"not-a-uuid"},"result":"bad"}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "still-current",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"current"}),
+            ))
+            .await;
+        store.project_unified_event(&agent_event_with_payload("bad-start","rt:worker:1","run_started",json!({"identity":{"run_id":"not-a-uuid"},"input":{"kind":"content","content":"same"}}))).await;
+        let replay = store.replay_all(None).await.unwrap();
+        assert!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "bad-terminal")
+                .unwrap()
+                .interaction_id
+                .is_none()
+        );
+        assert_eq!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "still-current")
+                .unwrap()
+                .data["identity"],
+            active
+        );
+        assert!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "bad-start")
+                .unwrap()
+                .interaction_id
+                .is_none()
+        );
+        assert_eq!(
+            store.state.read().await.pending_by_identity["worker"].len(),
+            1
+        );
     }
 }

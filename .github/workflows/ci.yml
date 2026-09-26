@@ -184,6 +184,7 @@ jobs:
           scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference --example console_acceptance_fixture --example memory_console_reference --example workgraph_console_reference
           target_dir="$(scripts/repo-cargo --print-env | sed -n 's/^CARGO_TARGET_DIR=//p')"
           echo "MOBKIT_EXAMPLE_BIN_DIR=${target_dir}/debug/examples" >> "$GITHUB_ENV"
+      - run: scripts/repo-cargo test -p meerkat-mobkit --example console_acceptance_fixture
       - run: node console/api-e2e.cjs
       - run: node console/browser-e2e.cjs
       - run: node console/voice-e2e.cjs

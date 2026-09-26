@@ -1294,7 +1294,7 @@ mod tests {
         let probe = Connection::open(&path).expect("probe");
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-console").expect("ledger"),
-            Some(1)
+            Some(2)
         );
         let journal: String = probe
             .pragma_query_value(None, "journal_mode", |row| row.get(0))

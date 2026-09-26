@@ -32,6 +32,9 @@ type FixtureError = Box<dyn std::error::Error + Send + Sync>;
 mod scenario_client;
 use scenario_client::{ModelBarrier, ModelPlan, RecordingClient};
 
+#[path = "console_acceptance_support/routine_tools.rs"]
+mod routine_tools;
+
 #[tokio::main]
 async fn main() -> Result<(), FixtureError> {
     tracing_subscriber::fmt()
@@ -75,6 +78,7 @@ image_generation = {live_images}
         source: "## Acceptance reply\n\nReal runtime **Markdown**, a [safe link](https://example.com), and `code`.\n\n| Item | Value |\n| --- | --- |\n| Result | Ready |\n".into(),
         delay_ms: 10,
         chunk_chars: 16,
+        reasoning_blocks: Vec::new(),
         scenario: None,
     }));
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -106,6 +110,22 @@ image_generation = {live_images}
         builder = builder.persistent_state(dir);
     }
     let identity_mode = std::env::var("MOBKIT_FIXTURE_MODE").ok().as_deref() == Some("identity");
+    let routine_tools = if std::env::var("MOBKIT_FIXTURE_ROUTINE_TOOLS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        assert!(
+            identity_mode,
+            "routine tools use the identity-first customizer"
+        );
+        let tools = Arc::new(routine_tools::RoutineTools::new()?);
+        builder =
+            builder.agent_customizer(Arc::new(routine_tools::RoutineCustomizer(tools.clone())));
+        Some(tools)
+    } else {
+        None
+    };
     let identities = ["router:main", "domain:delivery"];
     let scratch = if identity_mode && storage.is_none() {
         Some(tempfile::tempdir()?)
@@ -211,6 +231,7 @@ image_generation = {live_images}
         MobKitConsoleAggregator::new(store.clone()),
     );
     let approval_runtime = runtime.clone();
+    let history_runtime = runtime.clone();
     let controls = Router::new()
         .route("/access", post(move |Json(value): Json<Value>| {
             let access = access.clone();
@@ -242,6 +263,20 @@ image_generation = {live_images}
                 }
             }
         }))
+        .route("/session-history", get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+            let runtime = history_runtime.clone();
+            async move {
+                let Some(session_id) = query.get("session_id") else {
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error":"session_id is required"})));
+                };
+                // Fixture-only read projection of the actual session owner. Do
+                // not synthesize console frames or reattach missing lineage.
+                match runtime.mob_runtime().read_session_history(session_id, 0, None).await {
+                    Ok(page) => (axum::http::StatusCode::OK, Json(json!(page))),
+                    Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error":error.to_string()}))),
+                }
+            }
+        }))
         .route("/peers", get(move || async move { Json(json!(peers)) }))
         .route("/approval", post(move |Json(value): Json<Value>| {
             let runtime = approval_runtime.clone();
@@ -269,6 +304,17 @@ image_generation = {live_images}
         .route("/model", post(move |Json(next): Json<ModelPlan>| async move {
             *plan.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = next;
             Json(json!({"ok": true}))
+        }))
+        .route("/routine-tools", post(move |Json(command): Json<Value>| {
+            let tools = routine_tools.clone();
+            async move {
+                let result = tools.as_ref().ok_or_else(|| "routine tools are disabled".to_string())
+                    .and_then(|tools| tools.control(command["action"].as_str().unwrap_or("")));
+                match result {
+                    Ok(status) => (axum::http::StatusCode::OK, Json(status)),
+                    Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))),
+                }
+            }
         }))
         .route("/model-barrier", post(move |Json(command): Json<Value>| {
             let barrier = barrier.clone();
