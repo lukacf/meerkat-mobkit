@@ -94,6 +94,10 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   taskId?: string;
   taskStatus?: string;
   runId?: string | null;
+  /** Display interval from matching runtime start and successful terminal
+   * evidence for this exact run. Absent when that timing is unknown; message
+   * creation timestamps must not be used as a substitute. */
+  runDurationMs?: number;
   connectionEvent?: ConversationConnectionEvent | null;
   /**
    * Typed provenance of a user-lane entry, copied from the wire. Renderers

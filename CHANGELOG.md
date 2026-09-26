@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Show canonical peer display names while preserving exact peer identities in
+  details. Keep empty WorkGraph query results inspectable, and avoid duplicate
+  tool rows when event polls are already represented by a work card.
+- Calculate assistant work duration only from matching run-start and successful
+  completion evidence. System notices never inherit assistant timing, and
+  messages with unknown run timing omit the duration.
+- Observe restored identity edges after eager continuity attachment so the
+  bootstrap report reflects the wired sessions. Lazy restore remains deferred.
+- Project durable runtime notices during their original active run and reconcile
+  them against saved history without duplicating or reordering the instruction.
+
 - Complete deferred activation before persistent gateway and builder startup
   returns. Classic compositions explicitly resume; identity compositions
   register continuity owners before resuming preserved sessions.

@@ -230,6 +230,7 @@ fn default_chunk_chars() -> usize {
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioKind {
     Workgraph,
+    WorkgraphEvents,
     Peer,
     Image,
     Routine,
@@ -517,6 +518,7 @@ fn scenario_turn(scenario: &ScenarioPlan, messages: &[Message]) -> Result<Turn, 
     let recorded = RecordedTurn { scenario, messages };
     match scenario.kind {
         ScenarioKind::Workgraph => workgraph_turn(&recorded),
+        ScenarioKind::WorkgraphEvents => workgraph_events_turn(&recorded),
         ScenarioKind::Peer => peer_turn(&recorded),
         ScenarioKind::Image => image_turn(&recorded),
         ScenarioKind::Routine => routine_turn(&recorded),
@@ -765,6 +767,95 @@ fn workgraph_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
         "## WorkGraph scenario complete\n\nThe runtime snapshot confirms two prerequisites and their dependent item are completed. The dependent was absent from the ready set before its prerequisites closed and present afterward.\n\n| Item | Runtime id | Status |\n| --- | --- | --- |\n| Source review | `{}` | completed |\n| Badge review | `{}` | completed |\n| Release candidate | `{}` | completed |\n\nThese are fixture WorkGraph transitions; no deployment was performed.",
         review.id, render.id, publish.id,
     )))
+}
+
+fn workgraph_events_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
+    if let Some(turn) = recorded.pending(&[(
+        "create-event-item",
+        "workgraph_create",
+        json!({
+            "title": "Review WorkGraph activity",
+            "description": "Review the recorded activity for this acceptance item.",
+            "labels": [recorded.scenario.label()],
+            "completion_policy": {"kind": "self_attest"},
+        }),
+    )])? {
+        return Ok(turn);
+    }
+    let item = recorded.item("create-event-item", None)?;
+    if item.status != "open" {
+        return Err(format!("create-event-item returned status {}", item.status));
+    }
+    let poll = json!({"limit": 100});
+    if let Some(turn) = recorded.pending(&[("events-first", "workgraph_events", poll.clone())])? {
+        return Ok(turn);
+    }
+    let first = recorded
+        .result("events-first")?
+        .ok_or("missing first event poll")?;
+    let after_seq = workgraph_event_watermark(&first, &item.id)?;
+    if let Some(turn) = recorded.pending(&[("events-repeat", "workgraph_events", poll)])? {
+        return Ok(turn);
+    }
+    let repeated = recorded
+        .result("events-repeat")?
+        .ok_or("missing overlapping event poll")?;
+    if repeated != first {
+        return Err("overlapping WorkGraph event polls changed without a graph mutation".into());
+    }
+    if let Some(turn) = recorded.pending(&[(
+        "events-empty",
+        "workgraph_events",
+        json!({"limit": 100, "after_seq": after_seq}),
+    )])? {
+        return Ok(turn);
+    }
+    if recorded.result("events-empty")? != Some(json!({"events": []})) {
+        return Err("event poll after the observed watermark must be exactly empty".into());
+    }
+    Ok(Turn::Text(format!(
+        "## WorkGraph event review complete\n\nThe runtime returned the same recorded events for item `{}` in both overlapping polls. No newer events were returned after sequence `{after_seq}`.",
+        item.id,
+    )))
+}
+
+fn workgraph_event_watermark(value: &Value, item_id: &str) -> Result<i64, String> {
+    let events = value
+        .get("events")
+        .and_then(Value::as_array)
+        .filter(|events| !events.is_empty())
+        .ok_or("first event poll must contain recorded events")?;
+    let mut sequences = std::collections::BTreeSet::new();
+    for event in events {
+        if event.get("item_id").and_then(Value::as_str) != Some(item_id) {
+            return Err("first event poll contains an event for another or missing item".into());
+        }
+        let seq = event
+            .get("seq")
+            .and_then(Value::as_i64)
+            .filter(|seq| (0..=9_007_199_254_740_991).contains(seq))
+            .ok_or("first event poll has no browser-safe integer sequence")?;
+        if !sequences.insert(seq) {
+            return Err("first event poll repeats a sequence".into());
+        }
+        if event
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err("first event poll has no event kind".into());
+        }
+        let at = event
+            .get("at")
+            .and_then(Value::as_str)
+            .ok_or("first event poll has no timestamp")?;
+        chrono::DateTime::parse_from_rfc3339(at)
+            .map_err(|error| format!("first event poll has an invalid timestamp: {error}"))?;
+    }
+    sequences
+        .last()
+        .copied()
+        .ok_or_else(|| "first event poll has no watermark".into())
 }
 
 fn item_ids(value: &Value) -> Result<Vec<&str>, String> {
@@ -1270,6 +1361,131 @@ mod tests {
         assert_eq!(links[0].args["from_id"], "review-id");
         assert_eq!(links[0].args["to_id"], "publish-id");
         assert_eq!(links[1].args["from_id"], "render-id");
+    }
+
+    fn event_item_created(scenario: &ScenarioPlan) -> Vec<Message> {
+        let mut messages = start(scenario);
+        messages.push(result(
+            scenario,
+            "create-event-item",
+            json!({"item": {
+                "id": "observed-event-item", "revision": 7, "status": "open",
+                "title": "Review WorkGraph activity",
+            }}),
+        ));
+        messages
+    }
+
+    fn observed_events() -> Value {
+        json!({"events": [
+            {"seq": 23, "item_id": "observed-event-item", "kind": "item_created",
+             "at": "2026-09-26T10:20:00Z", "payload": {"source": "first"}},
+            {"seq": 5, "item_id": "observed-event-item", "kind": "item_updated",
+             "at": "2026-09-26T10:21:00Z", "payload": {"source": "second"}},
+        ]})
+    }
+
+    #[test]
+    fn workgraph_events_plan_uses_real_result_ids_overlap_and_maximum_cursor() {
+        let scenario: ScenarioPlan = serde_json::from_value(json!({
+            "kind": "workgraph_events", "run_id": "events-1",
+        }))
+        .expect("browser plan needs no owner or peer settings");
+        assert!(matches!(scenario.kind, ScenarioKind::WorkgraphEvents));
+        let create = calls(scenario_turn(&scenario, &start(&scenario)).unwrap());
+        assert_eq!(create.len(), 1);
+        assert_eq!(create[0].id, scenario.call_id("create-event-item"));
+        assert_eq!(create[0].name, "workgraph_create");
+        assert_eq!(create[0].args["labels"], json!([scenario.label()]));
+
+        let mut messages = event_item_created(&scenario);
+        let first = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, scenario.call_id("events-first"));
+        assert_eq!(first[0].name, "workgraph_events");
+        assert_eq!(first[0].args, json!({"limit": 100}));
+
+        let events = observed_events();
+        messages.push(result(&scenario, "events-first", events.clone()));
+        let repeat = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(repeat.len(), 1);
+        assert_eq!(repeat[0].id, scenario.call_id("events-repeat"));
+        assert_eq!(repeat[0].name, "workgraph_events");
+        assert_eq!(repeat[0].args, first[0].args);
+        messages.push(result(&scenario, "events-repeat", events));
+        let empty = calls(scenario_turn(&scenario, &messages).unwrap());
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].id, scenario.call_id("events-empty"));
+        assert_eq!(empty[0].name, "workgraph_events");
+        assert_eq!(empty[0].args, json!({"limit": 100, "after_seq": 23}));
+        messages.push(result(&scenario, "events-empty", json!({"events": []})));
+        let Turn::Text(text) = scenario_turn(&scenario, &messages).unwrap() else {
+            panic!("completed polling must produce an observed summary");
+        };
+        assert!(text.starts_with("## WorkGraph event review complete\n"));
+        assert!(text.contains("observed-event-item"));
+    }
+
+    #[test]
+    fn workgraph_events_plan_rejects_unusable_or_foreign_first_poll() {
+        let scenario = scenario(ScenarioKind::WorkgraphEvents);
+        let mut invalid = vec![json!({}), json!({"events": []}), json!({"events": {}})];
+        for replacement in [
+            Value::Null,
+            json!(-1),
+            json!(1.25),
+            json!(9_007_199_254_740_992_u64),
+        ] {
+            let mut value = observed_events();
+            value["events"][0]["seq"] = replacement;
+            invalid.push(value);
+        }
+        for (field, replacement) in [
+            ("seq", json!(5)),
+            ("item_id", json!("another-item")),
+            ("item_id", Value::Null),
+            ("kind", Value::Null),
+            ("at", json!("not-a-time")),
+        ] {
+            let mut value = observed_events();
+            value["events"][0][field] = replacement;
+            invalid.push(value);
+        }
+        for value in invalid {
+            let mut messages = event_item_created(&scenario);
+            messages.push(result(&scenario, "events-first", value.clone()));
+            assert!(
+                scenario_turn(&scenario, &messages).is_err(),
+                "invalid first poll must not advance the script: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn workgraph_events_plan_refuses_changed_overlap_or_nonempty_final_poll() {
+        let scenario = scenario(ScenarioKind::WorkgraphEvents);
+        let events = observed_events();
+        let mut messages = event_item_created(&scenario);
+        messages.push(result(&scenario, "events-first", events.clone()));
+        let mut changed = events.clone();
+        changed["events"][0]["payload"] = json!({"source": "changed"});
+        messages.push(result(&scenario, "events-repeat", changed));
+        assert!(
+            scenario_turn(&scenario, &messages)
+                .unwrap_err()
+                .contains("overlap")
+        );
+        messages.pop();
+        messages.push(result(&scenario, "events-repeat", events.clone()));
+        for invalid in [events, json!({}), json!({"events": [], "unexpected": true})] {
+            messages.push(result(&scenario, "events-empty", invalid));
+            assert!(
+                scenario_turn(&scenario, &messages)
+                    .unwrap_err()
+                    .contains("empty")
+            );
+            messages.pop();
+        }
     }
 
     #[test]

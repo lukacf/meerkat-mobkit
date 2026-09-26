@@ -201,12 +201,6 @@ function formatFullTimestamp(iso?: string): string {
   return `${day} ${hh}:${mm}:${ss}`;
 }
 
-function parseTimeMs(iso?: string): number | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function formatWorkedDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (totalSeconds < 1) return "under 1s";
@@ -357,10 +351,6 @@ function isScaffoldUserText(text: string): boolean {
   const normalized = text.trimStart();
   return /^you have been spawned\b/i.test(normalized)
     || /^\[peer update\]/i.test(normalized);
-}
-
-function isScaffoldUserMessage(message: Msg): boolean {
-  return message.kind === "user" && isScaffoldUserText(msgCopyText(message));
 }
 
 function transcriptCopyText(messages: Msg[]): string {
@@ -645,30 +635,27 @@ function buildChatMessages(
       merged[index] = { ...message, showHeader: false };
     }
   }
-  let pendingUserStartedAt: number | null = null;
-  return merged.map((message) => {
-    if (message.kind === "user") {
-      pendingUserStartedAt = isScaffoldUserMessage(message)
-        ? null
-        : parseTimeMs(message.createdAt);
-      return message;
-    }
-    // System notices share the text layout but do not finish assistant work.
-    if (message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) {
-      return message;
-    }
-    const finishedAt = parseTimeMs(message.createdAt);
-    if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
-      return message;
-    }
-    const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
-    pendingUserStartedAt = null;
-    return {
+  const durations = new Map(entries.flatMap((entry) => (
+    entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number"
+      && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0
+      ? [[entry.id, entry.runDurationMs] as const] : []
+  )));
+  // A streamed row is stamped when its first text arrives. Only the host's
+  // completed-run evidence can supply a duration, once at the final text row.
+  for (let index = merged.length - 1; index >= 0; index -= 1) {
+    const message = merged[index];
+    const duration = durations.get(message.sourceEntryId || "");
+    if (duration === undefined || message.kind !== "agent"
+      || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) continue;
+    const workedFor = formatWorkedDuration(duration);
+    durations.delete(message.sourceEntryId!);
+    merged[index] = {
       ...message,
       workedFor,
       workedForCopyText: `Worked for ${workedFor}`,
     };
-  });
+  }
+  return merged;
 }
 
 export const __chatPaneTest = {

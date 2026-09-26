@@ -25006,7 +25006,7 @@ function buildToolBlocks(frames, cardToolCallIds) {
         completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
         ...isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {},
-        ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim()) } : {},
+        ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim())) } : {},
         ...peerIntent ? { peerIntent } : {},
         ...peerBody ? { peerBody, peerBodyFormat: "verbatim" } : {}
       });
@@ -25427,6 +25427,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   let sawWorkGraphFrame = false;
   const argIdsByCallId = /* @__PURE__ */ new Map();
   const failureNotedCallIds = /* @__PURE__ */ new Set();
+  const eventItemIdsByCallId = /* @__PURE__ */ new Map();
   for (let index2 = 0; index2 < frames.length; index2++) {
     const frame = frames[index2];
     if (!isWorkGraphToolFrame(frame, namesByCallId)) continue;
@@ -25505,6 +25506,12 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
         if (!isRefresh) foldWorkGraphEdge(state, result.edge);
         if (Array.isArray(result.events)) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
+          if (toolCallId) {
+            eventItemIdsByCallId.set(toolCallId, result.events.map((event) => {
+              const record4 = event && typeof event === "object" ? event : null;
+              return workGraphString(record4?.kind) ? workGraphString(record4?.item_id) : void 0;
+            }));
+          }
         }
         const snapshot = result.snapshot && typeof result.snapshot === "object" ? result.snapshot : null;
         if (snapshot) {
@@ -25700,6 +25707,16 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       ...lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {},
       ...lastUpdatedAt ? { lastUpdatedAt } : {}
     }, anchor.frameIndex);
+  }
+  const emittedCardIds = new Set([...byAnchor.values()].flatMap((entries) => entries.map((entry) => entry.id)));
+  for (const [callId, itemIds] of eventItemIdsByCallId) {
+    const allRepresented = itemIds.length > 0 && itemIds.every((itemId) => {
+      if (!itemId) return false;
+      const root4 = rootForItem(itemId);
+      const cardId = ownCardRoots.has(root4) ? `workgraph:${root4}` : catchAllForItem.get(root4);
+      return Boolean(cardId && emittedCardIds.has(cardId));
+    });
+    if (allRepresented) representedToolCallIds.add(callId);
   }
   return { entriesByAnchor: byAnchor, representedToolCallIds };
 }
@@ -26428,7 +26445,7 @@ function blockAssistantToolBlock(item, index2, peerRegistry, toolResults) {
     completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
     ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
     ...isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {},
-    ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim()) } : {},
+    ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim())) } : {},
     ...peerIntent ? { peerIntent } : {},
     ...peerBody ? { peerBody, peerBodyFormat: "verbatim" } : {}
   };
@@ -27052,7 +27069,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
-        ...typeof peer.display_name === "string" && peer.display_name.trim() ? { peerDisplayLabel: peerLastSegment2(peer.display_name.trim()) } : {},
+        ...typeof peer.display_name === "string" && peer.display_name.trim() ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment2(peer.display_name.trim())) } : {},
         peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...intent ? { peerIntent: intent } : {},
         peerBody: displayBody || void 0,
@@ -27244,6 +27261,50 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
     createdAt: isoFromTimestampMs(frame.timestampMs),
     ...blocks.length > 0 ? { blocks } : { text: text8 }
   };
+}
+function attachCompletedRunDurations(entries, frames) {
+  const ownerKey = (frame) => {
+    if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
+    return JSON.stringify([
+      frame.runtimeKey || "",
+      frame.identity || "",
+      frame.sessionId,
+      frame.runId,
+      frame.interactionId || ""
+    ]);
+  };
+  const timings = /* @__PURE__ */ new Map();
+  const framesById = new Map(frames.map((frame) => [frame.id, frame]));
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const started = frame.event === "run_started";
+    const completed = (frame.event === "run_completed" || frame.event === "interaction_complete" && (data.type === "run_completed" || data.source_event_type === "run_completed")) && data.extraction_required !== true && !isSteerDeliveryTerminalFrame(frame);
+    if (!started && !completed) continue;
+    const key = ownerKey(frame);
+    if (!key) continue;
+    const timing = timings.get(key) || { invalid: false };
+    const time = frame.timestampMs;
+    const field = started ? "start" : "end";
+    if (typeof time !== "number" || !Number.isFinite(time) || !Number.isFinite(new Date(time).getTime()) || timing[field] !== void 0 && timing[field] !== time) timing.invalid = true;
+    else timing[field] = time;
+    timings.set(key, timing);
+  }
+  const assigned = /* @__PURE__ */ new Set();
+  for (let index2 = entries.length - 1; index2 >= 0; index2 -= 1) {
+    const entry = entries[index2];
+    if (entry.kind !== "message" || describeConversationEntrySource(entry).kind !== "assistant") continue;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) continue;
+    const frame = framesById.get(entry.id);
+    if (!frame || !entry.runId || entry.runId !== frame.runId) continue;
+    const key = ownerKey(frame);
+    if (!key || assigned.has(key)) continue;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === void 0 || timing.end === void 0 || timing.end < timing.start) continue;
+    entry.runDurationMs = timing.end - timing.start;
+    assigned.add(key);
+  }
 }
 function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const textMode = options.textMode ?? "markdown";
@@ -27687,6 +27748,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   }
   flushPendingReasoning(false);
   flushPendingText(false);
+  attachCompletedRunDurations(entries, orderedFrames);
   return entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
     if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
@@ -36731,11 +36793,6 @@ function formatFullTimestamp(iso) {
   const ss = String(d.getSeconds()).padStart(2, "0");
   return `${day} ${hh}:${mm}:${ss}`;
 }
-function parseTimeMs(iso) {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
 function formatWorkedDuration(ms) {
   const totalSeconds = Math.max(0, Math.round(ms / 1e3));
   if (totalSeconds < 1) return "under 1s";
@@ -36818,13 +36875,6 @@ function chatTurnPreview(turn) {
     body = "No response yet.";
   }
   return { title, body };
-}
-function isScaffoldUserText(text8) {
-  const normalized = text8.trimStart();
-  return /^you have been spawned\b/i.test(normalized) || /^\[peer update\]/i.test(normalized);
-}
-function isScaffoldUserMessage(message) {
-  return message.kind === "user" && isScaffoldUserText(msgCopyText(message));
 }
 function transcriptCopyText(messages) {
   return messages.map((message) => {
@@ -37023,27 +37073,20 @@ function buildChatMessages(entries, options = {}) {
       merged[index2] = { ...message, showHeader: false };
     }
   }
-  let pendingUserStartedAt = null;
-  return merged.map((message) => {
-    if (message.kind === "user") {
-      pendingUserStartedAt = isScaffoldUserMessage(message) ? null : parseTimeMs(message.createdAt);
-      return message;
-    }
-    if (message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) {
-      return message;
-    }
-    const finishedAt = parseTimeMs(message.createdAt);
-    if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
-      return message;
-    }
-    const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
-    pendingUserStartedAt = null;
-    return {
+  const durations = new Map(entries.flatMap((entry) => entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number" && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0 ? [[entry.id, entry.runDurationMs]] : []));
+  for (let index2 = merged.length - 1; index2 >= 0; index2 -= 1) {
+    const message = merged[index2];
+    const duration = durations.get(message.sourceEntryId || "");
+    if (duration === void 0 || message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) continue;
+    const workedFor = formatWorkedDuration(duration);
+    durations.delete(message.sourceEntryId);
+    merged[index2] = {
       ...message,
       workedFor,
       workedForCopyText: `Worked for ${workedFor}`
     };
-  });
+  }
+  return merged;
 }
 function collectImageTransferPayload(data) {
   const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));

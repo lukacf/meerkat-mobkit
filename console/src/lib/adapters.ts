@@ -29,6 +29,8 @@ import type {
   WorkGraphCardStatus,
 } from "@console-core";
 import {
+  decodeMemberAlias,
+  describeConversationEntrySource,
   entryOriginFromFrameData,
   groupConversationTimelineEntries,
   humanizeRuntimeEventType,
@@ -1240,7 +1242,7 @@ function buildToolBlocks(
         ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
         ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
-          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim())) } : {}),
         ...(peerIntent ? { peerIntent } : {}),
         ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
       });
@@ -1899,6 +1901,7 @@ function buildWorkGraphEntries(
   // One failure note per tool call: a live frame and its session-history
   // backfill twin share a tool_call_id and must not double-report.
   const failureNotedCallIds = new Set<string>();
+  const eventItemIdsByCallId = new Map<string, Array<string | undefined>>();
 
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
@@ -1998,6 +2001,12 @@ function buildWorkGraphEntries(
         if (!isRefresh) foldWorkGraphEdge(state, result.edge);
         if (Array.isArray(result.events)) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
+          if (toolCallId) {
+            eventItemIdsByCallId.set(toolCallId, result.events.map((event) => {
+              const record = event && typeof event === "object" ? event as Record<string, unknown> : null;
+              return workGraphString(record?.kind) ? workGraphString(record?.item_id) : undefined;
+            }));
+          }
         }
         const snapshot = result.snapshot && typeof result.snapshot === "object"
           ? result.snapshot as Record<string, unknown>
@@ -2255,6 +2264,19 @@ function buildWorkGraphEntries(
     }, anchor.frameIndex);
   }
 
+  const emittedCardIds = new Set([...byAnchor.values()].flatMap((entries) => entries.map((entry) => entry.id)));
+  for (const [callId, itemIds] of eventItemIdsByCallId) {
+    // Events can update an existing card without returning its item again.
+    // Keep the raw result when any event has no represented item, or when
+    // the query is empty. Event observations never create item/card state.
+    const allRepresented = itemIds.length > 0 && itemIds.every((itemId) => {
+      if (!itemId) return false;
+      const root = rootForItem(itemId);
+      const cardId = ownCardRoots.has(root) ? `workgraph:${root}` : catchAllForItem.get(root);
+      return Boolean(cardId && emittedCardIds.has(cardId));
+    });
+    if (allRepresented) representedToolCallIds.add(callId);
+  }
   return { entriesByAnchor: byAnchor, representedToolCallIds };
 }
 
@@ -3363,7 +3385,7 @@ function blockAssistantToolBlock(
       ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
         ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
-          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim())) } : {}),
       ...(peerIntent ? { peerIntent } : {}),
       ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
     };
@@ -4243,7 +4265,7 @@ function typedSystemNoticeBlocksToRich(
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
         ...(typeof peer.display_name === "string" && peer.display_name.trim()
-          ? { peerDisplayLabel: peerLastSegment(peer.display_name.trim()) } : {}),
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peer.display_name.trim())) } : {}),
         peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,
@@ -4514,6 +4536,54 @@ function renderSystemNoticeEntry(
     createdAt: isoFromTimestampMs(frame.timestampMs),
     ...(blocks.length > 0 ? { blocks } : { text }),
   };
+}
+
+function attachCompletedRunDurations(entries: ConversationTimelineEntry[], frames: ConsoleFrame[]): void {
+  const ownerKey = (frame: ConsoleFrame): string | null => {
+    if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
+    return JSON.stringify([
+      frame.runtimeKey || "", frame.identity || "", frame.sessionId,
+      frame.runId, frame.interactionId || "",
+    ]);
+  };
+  const timings = new Map<string, { start?: number; end?: number; invalid: boolean }>();
+  const framesById = new Map(frames.map((frame) => [frame.id, frame]));
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+    const started = frame.event === "run_started";
+    const completed = (frame.event === "run_completed"
+      || (frame.event === "interaction_complete"
+        && (data.type === "run_completed" || data.source_event_type === "run_completed")))
+      && data.extraction_required !== true && !isSteerDeliveryTerminalFrame(frame);
+    if (!started && !completed) continue;
+    const key = ownerKey(frame);
+    if (!key) continue;
+    const timing = timings.get(key) || { invalid: false };
+    const time = frame.timestampMs;
+    const field = started ? "start" : "end";
+    if (typeof time !== "number" || !Number.isFinite(time) || !Number.isFinite(new Date(time).getTime())
+      || (timing[field] !== undefined && timing[field] !== time)) timing.invalid = true;
+    else timing[field] = time;
+    timings.set(key, timing);
+  }
+  // Entry timestamps belong to their first source chunk, not completion.
+  // Use that frame only for exact ownership; timing comes from named events.
+  const assigned = new Set<string>();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind !== "message" || describeConversationEntrySource(entry).kind !== "assistant") continue;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) continue;
+    const frame = framesById.get(entry.id);
+    if (!frame || !entry.runId || entry.runId !== frame.runId) continue;
+    const key = ownerKey(frame);
+    if (!key || assigned.has(key)) continue;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) continue;
+    entry.runDurationMs = timing.end - timing.start;
+    assigned.add(key);
+  }
 }
 
 export function mapFramesToTimelineEntries(
@@ -5099,6 +5169,7 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
+  attachCompletedRunDurations(entries, orderedFrames);
   return entries.filter((entry) => entry.kind !== "message"
     || entry.blocks?.length !== 1
     || entry.blocks[0].type !== "thinking"

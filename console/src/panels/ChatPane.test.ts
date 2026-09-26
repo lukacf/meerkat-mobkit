@@ -22,6 +22,8 @@ function message(args: {
   role: "user" | "assistant";
   createdAt: string;
   text: string;
+  runId?: string;
+  runDurationMs?: number;
 }): ConversationTimelineEntry {
   return {
     id: args.id,
@@ -30,6 +32,8 @@ function message(args: {
     identity: args.role === "user" ? USER : AGENT,
     createdAt: args.createdAt,
     text: args.text,
+    ...(args.runId ? { runId: args.runId } : {}),
+    ...(args.runDurationMs !== undefined ? { runDurationMs: args.runDurationMs } : {}),
   };
 }
 
@@ -52,7 +56,7 @@ test("chat pane does not count spawn scaffolding as user work", () => {
   assert.equal(messages.find((entry) => entry.id === "ready")?.workedFor, undefined);
 });
 
-test("chat pane still shows duration for real user turns", () => {
+test("chat pane displays the supplied completed run duration", () => {
   const messages = __chatPaneTest.buildChatMessages([
     message({
       id: "operator",
@@ -65,17 +69,60 @@ test("chat pane still shows duration for real user turns", () => {
       role: "assistant",
       createdAt: "2026-05-20T06:45:07.000Z",
       text: "Review complete.",
+      runId: "review-run",
+      runDurationMs: 125000,
     }),
   ]);
 
   assert.equal(messages.find((entry) => entry.id === "done")?.workedFor, "2m 5s");
 });
 
+test("chat pane omits work duration when only message timestamps are known", () => {
+  const entries = [
+    message({ id: "unknown-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }),
+    message({ id: "unknown-answer", role: "assistant", createdAt: "2026-09-26T05:21:49.485Z", text: "Review complete." }),
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "unknown-answer")?.workedFor, undefined);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+  assert.doesNotMatch(__chatPaneTest.transcriptCopyText(messages), /Worked for/);
+});
+
+test("a delayed streamed answer cannot use its first text timestamp as run completion", () => {
+  // The real acceptance run began at 44.485 and completed at 50.171. Its
+  // retained streaming row is stamped at the first text delta, 44.838.
+  const entries: ConversationTimelineEntry[] = [
+    { ...message({ id: "delayed-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }), interactionId: "release-interaction" },
+    { ...message({ id: "delayed-answer", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "The full review is now complete." }), interactionId: "release-interaction", runId: "release-run" },
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "delayed-answer")?.workedFor, undefined);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+});
+
+test("completed stream duration includes the time after its first text delta", () => {
+  const entries = [
+    message({ id: "timed-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }),
+    message({ id: "timed-answer", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "The full review is now complete.", runId: "release-run", runDurationMs: 5686 }),
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "timed-answer")?.workedFor, "6s");
+  assert.match(renderChat({ entries, phase: null }), /Worked for 6s/);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for under 1s/);
+});
+
+for (const duration of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+  test(`chat pane rejects invalid completed run duration ${duration}`, () => {
+    const entries = [message({ id: "invalid-duration", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "Done.", runId: "release-run", runDurationMs: duration })];
+    assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+  });
+}
+
 function durationNotice(id: string, createdAt: string): ConversationTimelineEntry {
   return {
     id, kind: "message", variant: "rich",
     identity: { id: "system", label: "Agent", role: "system" },
-    interactionId: "review-interaction", runId: "review-run", createdAt,
+    interactionId: "review-interaction", runId: "review-run", runDurationMs: 500, createdAt,
     blocks: [{ type: "paragraph", text: "Background review has new evidence." }],
   };
 }
@@ -83,7 +130,7 @@ function durationNotice(id: string, createdAt: string): ConversationTimelineEntr
 const DURATION_REVIEW_ENTRIES: ConversationTimelineEntry[] = [
   { ...message({ id: "review-ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }), interactionId: "review-interaction" },
   durationNotice("review-notice", "2026-05-20T06:43:02.500Z"),
-  { ...message({ id: "review-answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }), identity: { ...AGENT, label: "System" }, interactionId: "review-interaction", runId: "review-run" },
+  { ...message({ id: "review-answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }), identity: { ...AGENT, label: "System" }, interactionId: "review-interaction", runId: "review-run", runDurationMs: 125000 },
 ];
 
 test("system notice never receives or consumes the assistant work duration", () => {
@@ -328,7 +375,7 @@ test("canonical rows created during the active call stay hidden until the call e
 
 const WORK_ENTRIES: ConversationTimelineEntry[] = [
   message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }),
-  message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }),
+  message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete.", runId: "review-run", runDurationMs: 125000 }),
 ];
 
 test("chat pane shows the working indicator XOR the worked-for summary, never both", () => {

@@ -117,25 +117,33 @@ async function durableSteer(host) {
           workGraphTools,
         };
       }, notice);
+      result.lastNoticeProbe = { label, view, before };
       const after = requireRunning ? await state() : null;
       if (after && !inputStillRunning(after)) return { endedBeforeLiveObservation: after };
-      assert.equal(view.matches, 1, "the durable instruction appears exactly once in the real transcript");
-      assert(!view.text.includes("boundary_append_applied") && !view.text.includes('"input_id"') && !view.text.includes('"append_count"'),
-        "the transcript renders the instruction without raw transport envelopes");
-      assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
-      assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
-      assert.doesNotMatch(view.rows[0].text, /Worked for/);
-      for (const peer of result.expectedPeers) {
-        const matching = view.incomingPeers.filter(rendered => rendered.title === peer.id);
-        assert.equal(matching.length, 1, "one incoming peer header retains the exact canonical peer identity in its title");
-        assert.equal(matching[0].text, `Received from ${peer.label}`, "canonical display metadata supplies the readable peer label");
-        assert.equal(matching[0].displayed, true);
-      }
-      if (host === "stock") {
-        assert.equal(view.workGraphTools.length, 1, "the empty WorkGraph query remains visible as one tool result");
-        assert.equal(view.workGraphTools[0].displayed, true);
-        assert.match(view.workGraphTools[0].status || "", /Success/);
-        assert.equal(view.workGraphTools[0].beforeNotice, true, "the durable notice follows the real WorkGraph result in the rendered transcript");
+      try {
+        assert.equal(view.matches, 1, "the durable instruction appears exactly once in the real transcript");
+        assert(!view.text.includes("boundary_append_applied") && !view.text.includes('"input_id"') && !view.text.includes('"append_count"'),
+          "the transcript renders the instruction without raw transport envelopes");
+        assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
+        assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
+        assert.doesNotMatch(view.rows[0].text, /Worked for/);
+        for (const peer of result.expectedPeers) {
+          const matching = view.incomingPeers.filter(rendered => rendered.title === peer.id);
+          assert.equal(matching.length, 1, "one incoming peer header retains the exact canonical peer identity in its title");
+          for (const rendered of matching) {
+            assert.equal(rendered.text, `Received from ${peer.label}`, "canonical display metadata supplies the readable peer label");
+            assert.equal(rendered.displayed, true);
+          }
+        }
+        if (host === "stock") {
+          assert.equal(view.workGraphTools.length, 1, "the empty WorkGraph query remains visible as one tool result");
+          assert.equal(view.workGraphTools[0].displayed, true);
+          assert.match(view.workGraphTools[0].status || "", /Success/);
+          assert.equal(view.workGraphTools[0].beforeNotice, true, "the durable notice follows the real WorkGraph result in the rendered transcript");
+        }
+      } catch (error) {
+        result.lastNoticeProbe.assertion = error.message;
+        throw error;
       }
       if (requireRunning) view.liveObservation = { before, after };
       return view;
@@ -151,10 +159,49 @@ async function durableSteer(host) {
     const after = await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).boundingBox();
     assert(after && Math.abs(after.y - result.readingBefore.y) <= 2, "background delivery preserves the exact reading anchor");
   }
+  async function inspectAssistantDuration(label) {
+    if (host !== "stock") return null;
+    const view = await eventually(async () => {
+      const rows = await viewport().evaluate(root => [...root.querySelectorAll("[data-conversation-row-id]")]
+        .filter(row => [...row.querySelectorAll("h2")].some(heading => heading.textContent === "Background review incorporated"))
+        .map(row => ({
+          id: row.dataset.conversationRowId,
+          sourceKind: row.dataset.sourceKind,
+          footers: [...row.querySelectorAll(".msg__worked")].map(footer => footer.textContent),
+          copyButtons: row.querySelectorAll('[aria-label="Copy work time"]').length,
+        })));
+      result.lastAssistantDurationProbe = { label, rows, expected: result.workDuration };
+      try {
+        assert.equal(rows.length, 1, "one final assistant row owns the completed review");
+        assert.equal(rows[0].sourceKind, "assistant");
+        assert.deepEqual(rows[0].footers, [result.workDuration.text], "the assistant footer matches the exact run's actual start-to-completion duration");
+        assert.equal(rows[0].copyButtons, 1, "the proven duration has one copy action");
+      } catch (error) {
+        result.lastAssistantDurationProbe.assertion = error.message;
+        throw error;
+      }
+      return rows[0];
+    }, `${host} ${label}: the final assistant footer uses actual matching run timestamps`);
+    result.durationViews ||= {};
+    result.durationViews[label] = view;
+    return view;
+  }
   try {
     await fixture.control("model", { source: seedSource, delay_ms: 0, chunk_chars: 4096 });
     const seeded = await send("Read the release evidence before the background review.", `${barrierId}-seed`);
-    await eventually(async () => (await frames()).some(frame => liveEvent(frame) && frame.kind === "interaction_complete" && frame.interaction_id === seeded.interaction_id), "seed review completes through the real runtime");
+    const seedCompletion = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "interaction_complete" && frame.interaction_id === seeded.interaction_id), "seed review completes through the real runtime");
+    assert(seedCompletion.session_id);
+    // The owner history read waits behind an active model turn. Read the seed
+    // metadata before holding the next turn at its explicit model barrier.
+    result.expectedPeers = await eventually(async () => {
+      result.seededHistory = await read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(seedCompletion.session_id)}`);
+      const peers = result.seededHistory.messages.flatMap(message => (message.blocks || [])
+        .filter(block => block.type === "comms" && block.direction === "incoming" && block.peer?.display_name === "console-acceptance/lead/mk--domain_cdelivery")
+        .map(block => ({ id: block.peer.id, displayName: block.peer.display_name, label: "domain:delivery" })));
+      return peers.length ? peers : null;
+    }, "the startup peer message arrives in actual canonical history before the review barrier");
+    assert.equal(result.expectedPeers.length, 1, "the real fixture provides one canonical incoming peer with display metadata");
+    assert(result.expectedPeers[0].id);
     await open();
     await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).waitFor();
     // The streamed reply remains visibly active long enough to inspect the
@@ -169,12 +216,6 @@ async function durableSteer(host) {
     }, "the intended model request reaches its explicit barrier");
     result.runStart = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "run_started" && frame.interaction_id === result.started.interaction_id), "the running turn has canonical run and session ownership");
     assert(result.runStart.run_id && result.runStart.session_id);
-    const seededHistory = await read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(result.runStart.session_id)}`);
-    result.expectedPeers = seededHistory.messages.flatMap(message => (message.blocks || [])
-      .filter(block => block.type === "comms" && block.direction === "incoming" && block.peer?.display_name === "console-acceptance/lead/mk--domain_cdelivery")
-      .map(block => ({ id: block.peer.id, displayName: block.peer.display_name, label: "domain:delivery" })));
-    assert.equal(result.expectedPeers.length, 1, "the real fixture provides one canonical incoming peer with display metadata");
-    assert(result.expectedPeers[0].id);
     await composer().fill(draft);
     await composer().evaluate(node => node.setSelectionRange(3, 17));
     await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).scrollIntoViewIfNeeded();
@@ -214,6 +255,17 @@ async function durableSteer(host) {
     assert.equal(result.completed.completion.completion_type, "completed", "the retained input shares its run's successful result receipt");
     result.finalFrames = await frames();
     assert.equal(result.finalFrames.filter(frame => liveEvent(frame) && frame.kind === "boundary_append_applied" && frame.payload?.input_id === result.accepted.input_id).length, 1);
+    if (host === "stock") {
+      const completions = result.finalFrames.filter(frame => liveEvent(frame)
+        && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
+        && ["runtime_key", "identity", "session_id", "run_id", "interaction_id"].every(key => frame[key] === result.runStart[key]));
+      assert.equal(completions.length, 1, "the original run has one completion with exact runtime, agent, session, run and interaction ownership");
+      result.runCompletion = completions[0];
+      assert(Number.isSafeInteger(result.runStart.timestamp_ms) && Number.isSafeInteger(result.runCompletion.timestamp_ms));
+      const elapsedMs = result.runCompletion.timestamp_ms - result.runStart.timestamp_ms;
+      assert(elapsedMs >= 1000 && elapsedMs < 60_000, "this paced fixture provides a measurable run duration within one minute");
+      result.workDuration = { elapsedMs, text: `Worked for ${Math.round(elapsedMs / 1000)}s` };
+    }
     const turnRequests = (await requests()).filter(request => request.messages.some(message => message.role === "user" && textContent(message.content) === instruction));
     assert.equal(turnRequests.length, 2, "only the blocked request and one post-tool request execute; no follow-up turn");
     assert.equal(turnRequests[0].messages.filter(message => message.role === "system_notice" && message.body === notice).length, 0);
@@ -233,6 +285,7 @@ async function durableSteer(host) {
     await assertDraftAndReading();
     const completedView = await inspectNotice("completed");
     assert.deepEqual(completedView.rows, duringView.rows, "the exact live notice row and content survive the committed history reconciliation");
+    const completedDuration = await inspectAssistantDuration("completed");
     await viewport().getByText(notice, { exact: true }).scrollIntoViewIfNeeded();
     await capture("completed");
 
@@ -248,6 +301,7 @@ async function durableSteer(host) {
     await open(true);
     const reloaded = await inspectNotice("reloaded");
     assert.deepEqual(reloaded.rows, completedView.rows, "history reconciliation and reload preserve the exact notice row");
+    assert.deepEqual(await inspectAssistantDuration("reloaded"), completedDuration, "reload preserves the final assistant row and proven duration exactly");
     assert.deepEqual((await history()).messages, result.history.messages, "reload does not alter committed history");
     // Stock owns draft persistence. The reusable test host keeps draft state
     // in React only, so reload is a transcript check there.
@@ -255,7 +309,7 @@ async function durableSteer(host) {
     await viewport().getByText(notice, { exact: true }).scrollIntoViewIfNeeded();
     await capture("reloaded");
     await viewport().locator(".cc-tool-call--incoming .cc-tool-call__name")
-      .filter({ hasText: "Received from domain:delivery" }).scrollIntoViewIfNeeded();
+      .filter({ hasText: "Received from domain:delivery" }).first().scrollIntoViewIfNeeded();
     await capture("peer-label");
     const apiFailures = fixture.observations.filter(item => item.status >= 400 || (item.response && (() => { try { return Boolean(JSON.parse(item.response).error); } catch { return false; } })()));
     assert.deepEqual(apiFailures, [], "no unexpected actual API failures");

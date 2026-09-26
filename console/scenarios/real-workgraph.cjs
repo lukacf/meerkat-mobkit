@@ -448,10 +448,125 @@ async function graphOwnerRestart() {
   } finally { await fixture.close(); await fs.rm(stateDir, { recursive: true, force: true }); }
 }
 
+async function graphEventPolls() {
+  requirePrebuiltFixture();
+  const fixture = await startFixture();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const monitor = browserMonitor(page);
+  const evidence = { views: {} };
+  const runId = `events-${randomUUID().slice(0, 8)}`;
+  const steps = ["create-event-item", "events-first", "events-repeat", "events-empty"];
+  const heading = "WorkGraph event review complete";
+  try {
+    await fixture.control("model", {
+      source: "Acknowledged.", delay_ms: 0, chunk_chars: 256,
+      scenario: { kind: "workgraph_events", run_id: runId },
+    });
+    await monitor.during("initial host authority setup", async () => {
+      await page.goto(`${fixture.baseUrl}/console`);
+      await selectIdentity(page, "stock", sender);
+    }, authoritySetupCancellation);
+    evidence.accepted = await browserSend(page, "stock", sender,
+      `[fixture:${runId}] Create a review item, inspect its WorkGraph events twice, and check for newer events.`);
+    evidence.frames = await completedTranscript(fixture, sender, heading);
+    const requests = await recordedRequests(fixture);
+    const request = requests.findLast(item => requestTools(item, runId).results.has("events-empty"));
+    assert(request, "the real model request retains the empty poll result");
+    const { calls, results } = requestTools(request, runId);
+    assert.deepEqual(calls.map(call => call.id.slice(`fixture-${runId}-`.length)), steps);
+    assert.deepEqual([...results.keys()], steps);
+    const item = results.get("create-event-item").item;
+    assert(item?.id && item.title, "a real runtime mutation creates the represented work item");
+    const first = results.get("events-first");
+    const repeated = results.get("events-repeat");
+    const empty = results.get("events-empty");
+    assert(first.events.length > 0, "the first poll reads actual committed item events");
+    assert(first.events.every(event => event.item_id === item.id && Number.isSafeInteger(event.seq)));
+    assert.equal(new Set(first.events.map(event => event.seq)).size, first.events.length);
+    assert.deepEqual(repeated, first, "overlapping polls retain the exact owner events");
+    assert.deepEqual(empty, { events: [] });
+    for (const step of ["events-first", "events-repeat", "events-empty"]) {
+      const call = calls.find(call => call.id === `fixture-${runId}-${step}`);
+      assert.equal(call.name, "workgraph_events");
+      const ownerResult = await ownerRpc(fixture, "mobkit/workgraph/events", call.args);
+      assert.deepEqual(ownerResult, results.get(step), "host RPC and agent tool read the same canonical event ledger");
+    }
+    const lastSeq = Math.max(...first.events.map(event => event.seq));
+    assert.equal(calls.at(-1).args.after_seq, lastSeq, "the empty query starts after the actual observed watermark");
+    evidence.ownerItem = await ownerRpc(fixture, "mobkit/workgraph/get", { id: item.id });
+    assert.deepEqual(evidence.ownerItem.item, item, "event polling does not mutate the item");
+    const expectedLines = first.events.slice(-5).map(event =>
+      `${event.kind.replaceAll("_", " ")} \u00b7 ${event.at.slice(11, 16)}`);
+    const scope = () => transcript(page, "stock", sender);
+    const card = () => scope().locator("[data-work-graph-card]");
+    const emptyTool = () => scope().locator(".cc-tool-call").filter({
+      has: page.locator('.cc-tool-call__name[title="workgraph_events"]'),
+    });
+    async function inspect(label) {
+      await scope().getByRole("heading", { name: heading, exact: true }).waitFor();
+      await eventually(async () => {
+        const view = await scope().evaluate(root => ({
+          cards: [...root.querySelectorAll("[data-work-graph-card]")].map(node => ({
+            id: node.dataset.rootId,
+            title: node.querySelector(".cc-work-graph__title")?.textContent,
+            items: [...node.querySelectorAll('[data-testid^="workgraph-item:"]')].map(item => item.dataset.testid),
+            events: [...node.querySelectorAll(".cc-work-graph__event")].map(event => event.textContent),
+          })),
+          tools: [...root.querySelectorAll(".cc-tool-call")]
+            .filter(node => node.querySelector(".cc-tool-call__name")?.getAttribute("title")?.startsWith("workgraph_"))
+            .map(node => ({ name: node.querySelector(".cc-tool-call__name")?.getAttribute("title"), count: node.querySelector(".cc-tool-call__count")?.textContent || null, status: node.querySelector(".cc-tool-call__status")?.textContent })),
+        }));
+        evidence.views[label] = view;
+        assert.equal(view.cards.length, 1, "event-only observations keep the one existing work card");
+        assert.equal(view.cards[0].title, item.title);
+        assert(view.cards[0].items.includes(`workgraph-item:${item.id}`));
+        assert.deepEqual(view.cards[0].events, expectedLines, "replayed event sequences appear once in the card's recent event window");
+        assert.deepEqual(view.tools.map(tool => tool.name), ["workgraph_events"], "only the unrepresented empty poll remains as a generic WorkGraph tool");
+        assert.equal(view.tools[0].count, null, "represented polls cannot hide in a grouped generic tool row");
+        assert.match(view.tools[0].status || "", /Success/);
+        return view;
+      }, `${label}: one card represents repeated events and the empty query remains inspectable`);
+      const header = emptyTool().locator(".cc-tool-call__header");
+      if (await header.getAttribute("aria-expanded") !== "true") await header.click();
+      const resultSection = emptyTool().locator(".cc-tool-call__section").filter({
+        has: page.getByText("Result", { exact: true }),
+      });
+      const raw = await resultSection.locator("pre").textContent();
+      assert.deepEqual(JSON.parse(raw), empty, "the empty tool result remains inspectable without invented events");
+      evidence.views[label].emptyResultText = raw;
+      await visibleContent(card(), "WorkGraph item and exact event summary");
+      await capture(page, `stock-real-workgraph-events-${label}-card`);
+      await visibleContent(resultSection, "empty WorkGraph poll result");
+      await capture(page, `stock-real-workgraph-events-${label}-empty`);
+    }
+    await inspect("completed");
+    await monitor.during("reload releases previous stream", async () => {
+      await page.reload();
+      await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    }, authoritySetupCancellation);
+    await selectIdentity(page, "stock", sender, monitor);
+    await inspect("reloaded");
+    assert.deepEqual(evidence.views.reloaded, evidence.views.completed, "canonical reload preserves the exact card and only empty fallback");
+    assert.deepEqual(monitor.errors, []);
+    const apiFailures = fixture.observations.filter(observation => observation.status >= 400);
+    assert.deepEqual(apiFailures, [], "actual API calls succeed");
+    Object.assign(evidence, { runId, item, calls, results: Object.fromEntries(results), requests, expectedLines,
+      errors: monitor.errors, expectedCancellations: monitor.expected, observations: fixture.observations });
+    await fs.writeFile(path.join(evidenceDir, "stock-real-workgraph-events.json"), JSON.stringify(evidence, null, 2));
+  } catch (error) {
+    await capture(page, "stock-real-workgraph-events-failure").catch(() => {});
+    await captureFailure(fixture, "stock-real-workgraph-events-failure", error, page, monitor).catch(() => {});
+    await fs.writeFile(path.join(evidenceDir, "stock-real-workgraph-events-last-probe.json"), JSON.stringify(evidence, null, 2)).catch(() => {});
+    throw error;
+  } finally { await browser.close(); await fixture.close(); }
+}
+
 const apiScenarios = [{ id: "api-real-workgraph-peer-restart", family: "real-workgraph", backend: "real", run: graphOwnerRestart }];
 const browserScenarios = ["stock", "shared"].map(host => ({
   id: `real-${host}-workgraph-peer`, family: "real-workgraph", backend: "real", run: () => composedGraphAndPeer(host),
 }));
+browserScenarios.push({ id: "real-stock-workgraph-events", family: "real-workgraph", backend: "real", run: graphEventPolls });
 
 module.exports = { apiScenarios, browserScenarios };
 

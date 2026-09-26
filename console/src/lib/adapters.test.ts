@@ -8037,8 +8037,9 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     timestampMs: 1_779_405_466_000,
   });
 
-  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...firstPoll, ...secondPoll])
-    .filter((entry) => entry.kind === "workgraph");
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...firstPoll, ...secondPoll]);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.deepEqual(workGraphFallbackToolBlocks(entries), [], "represented event polls must not duplicate their card as generic tools");
   assert.equal(cards.length, 1);
   const card = cards[0];
   if (card.kind !== "workgraph") return;
@@ -8069,10 +8070,12 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     },
     timestampMs: 1_779_405_468_000,
   });
-  const echoCards = mapFramesToTimelineEntries(
+  const echoEntries = mapFramesToTimelineEntries(
     WORKGRAPH_AGENT,
     [...base, ...firstPoll, ...secondPoll, ...echoPollOnce, ...echoPollAgain],
-  ).filter((entry) => entry.kind === "workgraph");
+  );
+  const echoCards = echoEntries.filter((entry) => entry.kind === "workgraph");
+  assert.deepEqual(workGraphFallbackToolBlocks(echoEntries), [], "replayed event calls remain represented by the same card");
   const echoCard = echoCards[0];
   if (echoCard.kind !== "workgraph") return;
   assert.deepEqual(
@@ -8081,6 +8084,26 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     "seq-less duplicates dedupe by content; the 5-slot window holds five distinct events",
   );
 });
+
+for (const [scenario, events] of [
+  ["empty", []],
+  ["unknown item", [{ seq: 101, item_id: "unseen-item", kind: "created", at: "2026-07-08T09:00:00Z" }]],
+  ["partly unrendered", [
+    { seq: 101, item_id: "known-item", kind: "claimed", at: "2026-07-08T09:00:00Z" },
+    { seq: 102, item_id: "unseen-item", kind: "created", at: "2026-07-08T09:01:00Z" },
+  ]],
+] as const) {
+  test(`workgraph event fallback preserves ${scenario} results beside an unrelated card`, () => {
+    const base = workGraphToolFrames({ idPrefix: "event-fallback-base", name: "workgraph_create", callArgs: {}, result: { item: workGraphItem({ id: "known-item" }) } });
+    const result = { events };
+    const poll = workGraphToolFrames({ idPrefix: "event-fallback-poll", name: "workgraph_events", callArgs: { limit: 10 }, result, timestampMs: 1_779_405_465_000 });
+    const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...poll]);
+    assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 1, "events must not synthesize an unknown item card");
+    const blocks = workGraphFallbackToolBlocks(entries);
+    assert.deepEqual(blocks.map((block) => block.toolCallId), ["event-fallback-poll-tc"]);
+    assert.equal(blocks[0].result, JSON.stringify(result));
+  });
+}
 
 // Big-store snapshot fixture: 3 attention-bound goals (36 + 3 + 3 items in
 // their trees) plus 58 loose items — 100 items total in one interaction.
@@ -9153,7 +9176,7 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
     const peerId = "7a643fe3-e700-5846-85ab-a6ed817c7754";
     const entries = project({ agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" }, [{
       id: "canonical-peer-label", event: "system_notice", sourceKind: "session_history", timestampMs: 1000,
-      data: { message: typedCommsNotice({ peer: "mob/lead/domain:delivery", peerId, body: "Delivery review completed." }) },
+      data: { message: typedCommsNotice({ peer: "console-acceptance/lead/mk--domain_cdelivery", peerId, body: "Delivery review completed." }) },
     }]);
     const block = entries.flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []).find(block => block.type === "tool-call");
     assert.equal(block?.type, "tool-call");
@@ -9171,7 +9194,7 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
     assert.equal(unknown?.type, "tool-call");
     if (unknown?.type === "tool-call") assert.equal(unknown.peerDisplayLabel, undefined);
     const known = blockFrom([{ id: "peers-label", event: "tool_result_received", timestampMs: 1000,
-      data: { name: "peers", id: "peers-call", result: JSON.stringify({ peers: [{ peer_id: peerId, name: "mob/lead/domain:delivery" }] }) } } as unknown as typeof send, send]);
+      data: { name: "peers", id: "peers-call", result: JSON.stringify({ peers: [{ peer_id: peerId, name: "console-acceptance/lead/mk--domain_cdelivery" }] }) } } as unknown as typeof send, send]);
     assert.equal(known?.type, "tool-call");
     if (known?.type === "tool-call") {
       assert.equal(known.peerIdentity, peerId);
@@ -9179,3 +9202,86 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
     }
   });
 }
+
+const DURATION_AGENT = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+const DURATION_OWNER = {
+  runtimeKey: "default", identity: "router:main", sessionId: "01a0dc27-ae06-7371-914e-418f0a5949fc",
+  runId: "01a0dc27-b35d-7b30-8075-046846042446", interactionId: "9e46e6d7-a73e-5616-b323-daf84d0fa535",
+};
+const DURATION_FRAMES: Parameters<typeof mapFramesToTimelineEntries>[1] = [
+  { ...DURATION_OWNER, id: "duration-start", event: "run_started", timestampMs: 1790399984485, data: { type: "run_started" } },
+  { ...DURATION_OWNER, id: "duration-prefix", event: "text_delta", timestampMs: 1790399984838, data: { delta: "Reviewing. " } },
+  { ...DURATION_OWNER, id: "duration-notice", event: "system_notice", timestampMs: 1790399984900, data: { kind: "generic", body: "Keep the background instruction." } },
+  { ...DURATION_OWNER, id: "duration-final", event: "text_delta", timestampMs: 1790399985000, data: { delta: "Review complete." } },
+  { ...DURATION_OWNER, id: "duration-complete", event: "interaction_complete", timestampMs: 1790399990171, data: { type: "run_completed", extraction_required: false, result: "Reviewing. Review complete." } },
+];
+
+function runTimedEntries(frames: Parameters<typeof mapFramesToTimelineEntries>[1]) {
+  return mapFramesToTimelineEntries(DURATION_AGENT, frames).filter((entry) => entry.kind === "message" && entry.runDurationMs !== undefined);
+}
+
+test("stock run duration uses exact start and terminal across a delayed stream and notice", () => {
+  const entries = mapFramesToTimelineEntries(DURATION_AGENT, DURATION_FRAMES);
+  const timed = entries.filter((entry) => entry.kind === "message" && entry.runDurationMs !== undefined);
+  assert.equal(timed.length, 1, JSON.stringify(entries));
+  assert.equal(timed[0].id, "duration-final");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+  assert.equal(timed[0].createdAt, new Date(1790399985000).toISOString());
+  assert.equal(entries.find((entry) => entry.id === "duration-notice")?.identity.role, "system");
+});
+
+test("stock run duration requires valid complete run timing", () => {
+  const start = DURATION_FRAMES[0];
+  const terminal = DURATION_FRAMES[4];
+  const middle = DURATION_FRAMES.slice(1, 4);
+  const cases: Array<[string, Parameters<typeof mapFramesToTimelineEntries>[1]]> = [
+    ["missing start", [...middle, terminal]],
+    ["missing terminal", [start, ...middle]],
+    ["text completion only", [start, ...middle, { ...terminal, event: "text_complete", data: { content: "Reviewing. Review complete." } }]],
+    ["untyped interaction completion", [start, ...middle, { ...terminal, data: { result: "Reviewing. Review complete." } }]],
+    ["extraction pending", [start, ...middle, { ...terminal, data: { ...terminal.data as object, extraction_required: true } }]],
+    ["delivery receipt", [start, ...middle, { ...terminal, data: { ...terminal.data as object, reason: "steer_delivered" } }]],
+    ["history terminal", [start, ...middle, { ...terminal, sourceKind: "session_history" }]],
+    ["reversed timing", [{ ...start, timestampMs: terminal.timestampMs! + 1 }, ...middle, terminal]],
+    ["missing start time", [{ ...start, timestampMs: undefined }, ...middle, terminal]],
+    ["invalid terminal time", [start, ...middle, { ...terminal, timestampMs: Number.NaN }]],
+    ["conflicting starts", [start, { ...start, id: "other-start", timestampMs: start.timestampMs! + 1 }, ...middle, terminal]],
+  ];
+  for (const [label, frames] of cases) assert.equal(runTimedEntries(frames).length, 0, label);
+});
+
+test("stock run duration never crosses runtime session agent run or interaction ownership", () => {
+  for (const field of ["runtimeKey", "sessionId", "identity", "runId", "interactionId"] as const) {
+    const frames = DURATION_FRAMES.map((frame) => frame.id === "duration-start" ? { ...frame, [field]: `other-${field}` } : frame);
+    assert.equal(runTimedEntries(frames).length, 0, field);
+  }
+  const noRun = DURATION_FRAMES.map((frame) => ({ ...frame, runId: undefined }));
+  assert.equal(runTimedEntries(noRun).length, 0, "missing run");
+  const noSession = DURATION_FRAMES.map((frame) => ({ ...frame, sessionId: undefined }));
+  assert.equal(runTimedEntries(noSession).length, 0, "missing session");
+});
+
+test("stock run duration stays accurate with canonical history present", () => {
+  const frames = [
+    DURATION_FRAMES[0],
+    { ...DURATION_OWNER, id: "duration-history", event: "text_complete", sourceKind: "session_history", timestampMs: 1790399990169,
+      data: { text: "Reviewing. Review complete.", result: "Reviewing. Review complete.", message: { role: "block_assistant", stop_reason: "end_turn", blocks: [{ block_type: "text", data: { text: "Reviewing. Review complete." } }] } } },
+    DURATION_FRAMES[4],
+  ];
+  const timed = runTimedEntries(frames);
+  assert.equal(timed.length, 1);
+  assert.equal(entryVisibleTestText(timed[0]), "Reviewing. Review complete.");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+});
+
+test("stock run duration accepts a direct successful run terminal and ignores trailing tool evidence", () => {
+  const frames = [...DURATION_FRAMES.slice(0, 4),
+    { ...DURATION_FRAMES[4], event: "run_completed" },
+    { ...DURATION_OWNER, id: "duration-tool", event: "tool_call", timestampMs: 1790399990172, data: { id: "trailing-tool", name: "check", args: {} } },
+    { ...DURATION_OWNER, id: "duration-tool-done", event: "tool_execution_completed", timestampMs: 1790399990173, data: { id: "trailing-tool", name: "check", result: "Checked", is_error: false } },
+  ];
+  const timed = runTimedEntries(frames);
+  assert.equal(timed.length, 1);
+  assert.equal(timed[0].id, "duration-final");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+});
