@@ -948,15 +948,6 @@ span.cc-conversation-turn-preview__file-icon::after {
   width: 15px;
   height: 15px;
 }
-.cc-copy-btn:not(:has(*)) {
-  width: auto;
-  min-width: 42px;
-  padding-inline: 7px;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-}
 .cc-copy-btn[data-copied=true] {
   opacity: 1;
   background: rgba(44, 92, 67, 0.96);

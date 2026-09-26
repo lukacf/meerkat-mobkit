@@ -440,7 +440,36 @@ var import_jsx_runtime = require("react/jsx-runtime");
 
 // packages/console-components/src/copy-button.tsx
 var import_react = require("react");
+
+// packages/console-components/src/copy-glyph.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
+function CopyGlyph({ state = "idle" }) {
+  const icon = state === "copied" ? "check" : state === "failed" ? "cross" : "copy";
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+    "svg",
+    {
+      "aria-hidden": "true",
+      className: "cc-copy-glyph",
+      "data-icon": icon,
+      fill: "none",
+      focusable: "false",
+      height: "14",
+      stroke: "currentColor",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      strokeWidth: "1.6",
+      viewBox: "0 0 16 16",
+      width: "14",
+      children: icon === "check" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M3.5 8.5l3 3 6-7" }) : icon === "cross" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M4.5 4.5l7 7M11.5 4.5l-7 7" }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("rect", { height: "9", rx: "1.5", width: "8", x: "5.5", y: "5" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v6A1.5 1.5 0 0 0 4 10.5h.5" })
+      ] })
+    }
+  );
+}
+
+// packages/console-components/src/copy-button.tsx
+var import_jsx_runtime3 = require("react/jsx-runtime");
 function CopyButton({
   text: text8,
   label,
@@ -473,7 +502,7 @@ function CopyButton({
       resetTimerRef.current = null;
     }, 1600);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
     "button",
     {
       className: clsx_default("cc-copy-btn", className),
@@ -485,34 +514,7 @@ function CopyButton({
       onClick: () => {
         void handleClick();
       },
-      children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon3, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
-    }
-  );
-}
-
-// packages/console-components/src/copy-glyph.tsx
-var import_jsx_runtime3 = require("react/jsx-runtime");
-function CopyGlyph({ state = "idle" }) {
-  const icon = state === "copied" ? "check" : state === "failed" ? "cross" : "copy";
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-    "svg",
-    {
-      "aria-hidden": "true",
-      className: "cc-copy-glyph",
-      "data-icon": icon,
-      fill: "none",
-      focusable: "false",
-      height: "14",
-      stroke: "currentColor",
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-      strokeWidth: "1.6",
-      viewBox: "0 0 16 16",
-      width: "14",
-      children: icon === "check" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("path", { d: "M3.5 8.5l3 3 6-7" }) : icon === "cross" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("path", { d: "M4.5 4.5l7 7M11.5 4.5l-7 7" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("rect", { height: "9", rx: "1.5", width: "8", x: "5.5", y: "5" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("path", { d: "M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v6A1.5 1.5 0 0 0 4 10.5h.5" })
-      ] })
+      children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Icon3, { name: copied ? "i-check" : "i-copy" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CopyGlyph, { state: copied ? "copied" : "idle" })
     }
   );
 }

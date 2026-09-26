@@ -65,6 +65,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: [
+      "packages/console-components/src/copy-button.test.tsx",
       "packages/console-core/src/send-attempt.test.ts",
       "packages/console-core/src/context-record.test.ts",
       "console/src/lib/send-attempt-storage.test.ts",
