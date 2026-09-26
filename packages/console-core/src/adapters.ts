@@ -1200,6 +1200,8 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
         completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
         ...(peerIntent ? { peerIntent } : {}),
         ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
       });
@@ -2266,6 +2268,8 @@ function blockAssistantToolBlock(
       completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
       ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
       ...(peerIntent ? { peerIntent } : {}),
       ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
     };
@@ -3113,6 +3117,8 @@ function typedSystemNoticeBlocksToRich(
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
+        ...(typeof peer.display_name === "string" && peer.display_name.trim()
+          ? { peerDisplayLabel: peerLastSegment(peer.display_name.trim()) } : {}),
         peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,

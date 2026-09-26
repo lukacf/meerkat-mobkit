@@ -93,19 +93,50 @@ async function durableSteer(host) {
       // Return this failure out of the polling helper immediately. A late
       // history row must never satisfy the live-rendering assertion.
       if (before && !inputStillRunning(before)) return { endedBeforeLiveObservation: before };
-      const view = await viewport().evaluate((root, expected) => ({
-        text: root.textContent,
-        matches: root.textContent.split(expected).length - 1,
-        rows: [...root.querySelectorAll("[data-conversation-row-id]")]
-          .filter(row => row.textContent.includes(expected))
-          .map(row => ({ id: row.dataset.conversationRowId, text: row.textContent })),
-      }), notice);
+      const view = await viewport().evaluate((root, expected) => {
+        const rows = [...root.querySelectorAll("[data-conversation-row-id]")]
+          .filter(row => row.textContent.includes(expected));
+        const workGraphTools = [...root.querySelectorAll(".cc-tool-call")]
+          .filter(tool => tool.querySelector(".cc-tool-call__name")?.textContent === "workgraph_ready")
+          .map(tool => ({
+            rowId: tool.closest("[data-conversation-row-id]")?.dataset.conversationRowId,
+            status: tool.querySelector(".cc-tool-call__status")?.textContent,
+            displayed: tool.getBoundingClientRect().height > 0,
+            beforeNotice: Boolean(rows[0] && (tool.compareDocumentPosition(rows[0]) & Node.DOCUMENT_POSITION_FOLLOWING)),
+          }));
+        return {
+          text: root.textContent,
+          matches: root.textContent.split(expected).length - 1,
+          rows: rows.map(row => ({
+            id: row.dataset.conversationRowId,
+            text: row.textContent,
+            workFooters: row.querySelectorAll('.msg__worked, [aria-label="Copy work time"]').length,
+          })),
+          incomingPeers: [...root.querySelectorAll(".cc-tool-call--incoming .cc-tool-call__name")]
+            .map(peer => ({ text: peer.textContent, title: peer.getAttribute("title"), displayed: peer.getBoundingClientRect().height > 0 })),
+          workGraphTools,
+        };
+      }, notice);
       const after = requireRunning ? await state() : null;
       if (after && !inputStillRunning(after)) return { endedBeforeLiveObservation: after };
       assert.equal(view.matches, 1, "the durable instruction appears exactly once in the real transcript");
       assert(!view.text.includes("boundary_append_applied") && !view.text.includes('"input_id"') && !view.text.includes('"append_count"'),
         "the transcript renders the instruction without raw transport envelopes");
       assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
+      assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
+      assert.doesNotMatch(view.rows[0].text, /Worked for/);
+      for (const peer of result.expectedPeers) {
+        const matching = view.incomingPeers.filter(rendered => rendered.title === peer.id);
+        assert.equal(matching.length, 1, "one incoming peer header retains the exact canonical peer identity in its title");
+        assert.equal(matching[0].text, `Received from ${peer.label}`, "canonical display metadata supplies the readable peer label");
+        assert.equal(matching[0].displayed, true);
+      }
+      if (host === "stock") {
+        assert.equal(view.workGraphTools.length, 1, "the empty WorkGraph query remains visible as one tool result");
+        assert.equal(view.workGraphTools[0].displayed, true);
+        assert.match(view.workGraphTools[0].status || "", /Success/);
+        assert.equal(view.workGraphTools[0].beforeNotice, true, "the durable notice follows the real WorkGraph result in the rendered transcript");
+      }
       if (requireRunning) view.liveObservation = { before, after };
       return view;
     }, `${host} ${label}: one readable durable instruction`);
@@ -138,6 +169,12 @@ async function durableSteer(host) {
     }, "the intended model request reaches its explicit barrier");
     result.runStart = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "run_started" && frame.interaction_id === result.started.interaction_id), "the running turn has canonical run and session ownership");
     assert(result.runStart.run_id && result.runStart.session_id);
+    const seededHistory = await read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(result.runStart.session_id)}`);
+    result.expectedPeers = seededHistory.messages.flatMap(message => (message.blocks || [])
+      .filter(block => block.type === "comms" && block.direction === "incoming" && block.peer?.display_name === "console-acceptance/lead/mk--domain_cdelivery")
+      .map(block => ({ id: block.peer.id, displayName: block.peer.display_name, label: "domain:delivery" })));
+    assert.equal(result.expectedPeers.length, 1, "the real fixture provides one canonical incoming peer with display metadata");
+    assert(result.expectedPeers[0].id);
     await composer().fill(draft);
     await composer().evaluate(node => node.setSelectionRange(3, 17));
     await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).scrollIntoViewIfNeeded();
@@ -217,6 +254,9 @@ async function durableSteer(host) {
     if (host === "stock") assert.equal(await composer().inputValue(), draft, "reload restores the unsent operator draft");
     await viewport().getByText(notice, { exact: true }).scrollIntoViewIfNeeded();
     await capture("reloaded");
+    await viewport().locator(".cc-tool-call--incoming .cc-tool-call__name")
+      .filter({ hasText: "Received from domain:delivery" }).scrollIntoViewIfNeeded();
+    await capture("peer-label");
     const apiFailures = fixture.observations.filter(item => item.status >= 400 || (item.response && (() => { try { return Boolean(JSON.parse(item.response).error); } catch { return false; } })()));
     assert.deepEqual(apiFailures, [], "no unexpected actual API failures");
     assert.deepEqual(result.errors, [], "no unexpected browser or network failures");

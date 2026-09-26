@@ -4847,9 +4847,13 @@ var import_jsx_runtime10 = require("react/jsx-runtime");
 function explicitDisplayLabel(id, labels2) {
   return labels2?.get(id)?.trim() || id;
 }
+function peerDisplayLabel(block, labels2) {
+  const hostLabel = block.peerIdentity ? labels2?.get(block.peerIdentity)?.trim() : void 0;
+  return hostLabel || block.peerDisplayLabel?.trim() || block.peerIdentity || block.peerTarget || "Unknown peer";
+}
 var ROUTINE_TOOL_NAMES = /* @__PURE__ */ new Set(["read_file", "list_files", "search", "glob", "grep", "ls", "read", "file_read", "directory_list"]);
 function isCompletedRoutineTool(block) {
-  return block.type === "tool-call" && ROUTINE_TOOL_NAMES.has(block.name) && !block.peerIncoming && !block.peerTarget && !block.peerIdentity && !block.peerBody && block.status === "success" && block.completionEvidence?.outcome === "success" && block.completionEvidence.toolCallId === block.toolCallId && (block.completionEvidence.source === "runtime-result" || block.completionEvidence.source === "session-history");
+  return block.type === "tool-call" && ROUTINE_TOOL_NAMES.has(block.name) && !block.peerIncoming && !block.peerTarget && !block.peerIdentity && !block.peerDisplayLabel && !block.peerBody && block.status === "success" && block.completionEvidence?.outcome === "success" && block.completionEvidence.toolCallId === block.toolCallId && (block.completionEvidence.source === "runtime-result" || block.completionEvidence.source === "session-history");
 }
 function canFoldCompletedTools(blocks) {
   return blocks.length >= 2 && blocks.every(isCompletedRoutineTool);
@@ -20548,7 +20552,7 @@ function ToolCallBlock({
   const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
   const statusClass = `cc-tool-call--${block.status}`;
   if (isPeer || block.peerIncoming) {
-    const target = explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers);
+    const target = peerDisplayLabel(block, displayLabels?.peers);
     const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
     const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
     const content3 = peerBody || peerIntent || "";
@@ -20710,7 +20714,12 @@ function ToolCallGroup({ blocks }) {
 function PeerToolGroup({ blocks }) {
   const { expanded, toggle } = useToolDisclosure(blocks, true);
   const displayLabels = useConversationDisplayLabels();
-  const targets = Array.from(new Set(blocks.map((b) => explicitDisplayLabel(b.peerIdentity || b.peerTarget || "Unknown peer", displayLabels?.peers))));
+  const peers = /* @__PURE__ */ new Map();
+  for (const block of blocks) {
+    const identity = block.peerIdentity || block.peerTarget || "Unknown peer";
+    if (!peers.has(identity)) peers.set(identity, block);
+  }
+  const targets = Array.from(peers.values(), (block) => peerDisplayLabel(block, displayLabels?.peers));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "\u2717" : allSuccess ? "\u2713" : "\u22EF";
@@ -20731,7 +20740,7 @@ function PeerToolGroup({ blocks }) {
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
           /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
-          /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__name", children: label }),
+          /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__name", title: Array.from(peers.keys()).join(", "), children: label }),
           /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
           /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(CopyBtn, { text: blocks.map((b) => toolBlockCopyText(b)).join("\n") })
         ]
@@ -20744,7 +20753,7 @@ function PeerToolGroup({ blocks }) {
         /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("span", { className: "cc-tool-call__peer-target", title: block.peerIdentity || block.peerTarget, children: [
           isIncoming ? "\u2190" : "\u2192",
           " ",
-          explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers)
+          peerDisplayLabel(block, displayLabels?.peers)
         ] }),
         peerIntent ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__peer-intent", children: peerIntent }) : null,
         peerBody && /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "cc-tool-call__peer-body", children: peerBody }),
@@ -24910,12 +24919,12 @@ function parseToolResult(frame) {
   const result = toolResultTextFromContent(raw);
   return { ...result !== void 0 ? { result } : {}, status, completionEvidence };
 }
-function buildToolBlocks(frames, workGraphNamesByCallId) {
+function buildToolBlocks(frames, cardToolCallIds) {
   const toolCalls = /* @__PURE__ */ new Map();
   const pendingResults = /* @__PURE__ */ new Map();
   const peerRegistry = buildPeerRegistry(frames);
   for (const frame of frames) {
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
       const parsed = serverToolContentSummary(frame);
@@ -24997,6 +25006,7 @@ function buildToolBlocks(frames, workGraphNamesByCallId) {
         completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
         ...isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {},
+        ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim()) } : {},
         ...peerIntent ? { peerIntent } : {},
         ...peerBody ? { peerBody, peerBodyFormat: "verbatim" } : {}
       });
@@ -25424,6 +25434,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const frameIso = isoFromTimestampMs(frame.timestampMs);
     const contribution = {
       frameIndex: index2,
+      toolCallId: parseToolCallId(frame),
       interactionId: frame.interactionId?.trim() || "",
       itemIds: [],
       bindingIds: [],
@@ -25510,7 +25521,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     state.contributions.push(contribution);
   }
   const byAnchor = /* @__PURE__ */ new Map();
-  if (!sawWorkGraphFrame) return byAnchor;
+  const representedToolCallIds = /* @__PURE__ */ new Set();
+  if (!sawWorkGraphFrame) return { entriesByAnchor: byAnchor, representedToolCallIds };
   const rootMembers = /* @__PURE__ */ new Map();
   for (const itemId of state.items.keys()) {
     const root4 = resolveWorkGraphRoot(itemId, state.parents);
@@ -25538,6 +25550,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }
   }
   const anchorByCard = /* @__PURE__ */ new Map();
+  const toolCallsByCard = /* @__PURE__ */ new Map();
   const lastOutcomeByCard = /* @__PURE__ */ new Map();
   const firstItemByCard = /* @__PURE__ */ new Map();
   const catchAllMembers = /* @__PURE__ */ new Map();
@@ -25579,6 +25592,11 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       cardKeys.add(interactionKey);
     }
     for (const key of cardKeys) {
+      if (contribution.toolCallId) {
+        const calls = toolCallsByCard.get(key) || /* @__PURE__ */ new Set();
+        calls.add(contribution.toolCallId);
+        toolCallsByCard.set(key, calls);
+      }
       if (!anchorByCard.has(key)) {
         anchorByCard.set(key, {
           frameIndex: contribution.frameIndex,
@@ -25611,6 +25629,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const list4 = byAnchor.get(anchorIndex) || [];
     list4.push(entry);
     byAnchor.set(anchorIndex, list4);
+    for (const callId of toolCallsByCard.get(entry.id) || []) representedToolCallIds.add(callId);
   };
   const latestIso = (values) => {
     let latest;
@@ -25682,10 +25701,10 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       ...lastUpdatedAt ? { lastUpdatedAt } : {}
     }, anchor.frameIndex);
   }
-  return byAnchor;
+  return { entriesByAnchor: byAnchor, representedToolCallIds };
 }
 function framesContainWorkGraphCards(frames) {
-  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  const { entriesByAnchor: entries } = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
   for (const cards of entries.values()) {
     if (cards.length > 0) return true;
   }
@@ -26361,16 +26380,14 @@ function toolResultTextFromContent(content3) {
   }
   return JSON.stringify(content3, null, 2);
 }
-function historyToolResults(frames, workGraphNamesByCallId) {
+function historyToolResults(frames, cardToolCallIds) {
   const results = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (frame.sourceKind !== "session_history" || frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out") {
       continue;
     }
     const data = frame.data && typeof frame.data === "object" ? frame.data : null;
-    const historyToolName = typeof data?.name === "string" ? data.name : typeof data?.tool_name === "string" ? data.tool_name : "";
-    if (WORKGRAPH_TOOL_NAMES.has(historyToolName)) continue;
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim() ? data.tool_call_id.trim() : typeof data?.id === "string" && data.id.trim() ? data.id.trim() : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
@@ -26411,6 +26428,7 @@ function blockAssistantToolBlock(item, index2, peerRegistry, toolResults) {
     completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
     ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
     ...isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {},
+    ...isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim() ? { peerDisplayLabel: peerLastSegment2(peerRegistry.get(argsRecord.peer_id).trim()) } : {},
     ...peerIntent ? { peerIntent } : {},
     ...peerBody ? { peerBody, peerBodyFormat: "verbatim" } : {}
   };
@@ -27034,6 +27052,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
+        ...typeof peer.display_name === "string" && peer.display_name.trim() ? { peerDisplayLabel: peerLastSegment2(peer.display_name.trim()) } : {},
         peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...intent ? { peerIntent: intent } : {},
         peerBody: displayBody || void 0,
@@ -27233,10 +27252,10 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
   const emittedCouncilIds = /* @__PURE__ */ new Set();
-  const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
-  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
-  const sessionToolResults = historyToolResults(orderedFrames, workGraphNamesByCallId);
+  const sessionToolResults = historyToolResults(orderedFrames, cardToolCallIds);
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -27437,7 +27456,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           entries.push(card);
         }
       }
-      continue;
+      if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     }
     const toolCallId = parseToolCallId(frame);
     if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content") && !emittedToolCalls.has(toolCallId)) {
@@ -27550,7 +27569,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
           return false;
         },
-        consumeDuplicateToolBlock: (block) => WORKGRAPH_TOOL_NAMES.has(block.name) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (noticeEntry) {
         entries.push(noticeEntry);
@@ -27576,7 +27595,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
           return false;
         },
-        consumeDuplicateToolBlock: (block) => WORKGRAPH_TOOL_NAMES.has(block.name) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || void 0;
@@ -37010,7 +37029,7 @@ function buildChatMessages(entries, options = {}) {
       pendingUserStartedAt = isScaffoldUserMessage(message) ? null : parseTimeMs(message.createdAt);
       return message;
     }
-    if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
+    if (message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) {
       return message;
     }
     const finishedAt = parseTimeMs(message.createdAt);
@@ -37709,7 +37728,7 @@ function ChatPane({
   }, [revealTurnsFrom, windowStart]);
   const lastAgentMessageId = import_react40.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].kind === "agent") return messages[i].id;
+      if (messages[i].kind === "agent" && messages[i].source?.kind === "assistant") return messages[i].id;
     }
     return null;
   }, [messages]);

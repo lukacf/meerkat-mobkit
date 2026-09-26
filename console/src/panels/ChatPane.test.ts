@@ -71,6 +71,68 @@ test("chat pane still shows duration for real user turns", () => {
   assert.equal(messages.find((entry) => entry.id === "done")?.workedFor, "2m 5s");
 });
 
+function durationNotice(id: string, createdAt: string): ConversationTimelineEntry {
+  return {
+    id, kind: "message", variant: "rich",
+    identity: { id: "system", label: "Agent", role: "system" },
+    interactionId: "review-interaction", runId: "review-run", createdAt,
+    blocks: [{ type: "paragraph", text: "Background review has new evidence." }],
+  };
+}
+
+const DURATION_REVIEW_ENTRIES: ConversationTimelineEntry[] = [
+  { ...message({ id: "review-ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }), interactionId: "review-interaction" },
+  durationNotice("review-notice", "2026-05-20T06:43:02.500Z"),
+  { ...message({ id: "review-answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }), identity: { ...AGENT, label: "System" }, interactionId: "review-interaction", runId: "review-run" },
+];
+
+test("system notice never receives or consumes the assistant work duration", () => {
+  const messages = __chatPaneTest.buildChatMessages(DURATION_REVIEW_ENTRIES);
+  const notice = messages.find((entry) => entry.sourceEntryId === "review-notice");
+  const answer = messages.find((entry) => entry.sourceEntryId === "review-answer");
+  assert.equal(notice?.source?.kind, "system");
+  assert.equal(notice?.workedFor, undefined);
+  assert.equal(answer?.source?.kind, "assistant");
+  assert.equal(answer?.workedFor, "2m 5s");
+  assert.equal(answer?.interactionId, "review-interaction");
+  assert.equal(answer?.runId, "review-run");
+  const working = renderChat({ entries: DURATION_REVIEW_ENTRIES, phase: "generating" });
+  assert.doesNotMatch(working, /Worked for/);
+  assert.match(working, /chat-typing:agent/);
+  const done = renderChat({ entries: DURATION_REVIEW_ENTRIES, phase: null });
+  assert.equal((done.match(/class="msg__worked"/g) || []).length, 1);
+  assert.match(done, /Worked for 2m 5s/);
+});
+
+test("system task, tool, peer and reasoning rows preserve assistant timing", () => {
+  const base: ConversationTimelineEntry = {
+    id: "intervening", kind: "message", variant: "rich", identity: AGENT,
+    createdAt: "2026-05-20T06:43:03.000Z",
+    interactionId: "review-interaction", runId: "review-run",
+  };
+  const intervening: ConversationTimelineEntry[] = [
+    { ...base, id: "task", taskKind: "progress", taskLabel: "Assistant", blocks: [{ type: "paragraph", text: "Checking evidence." }] },
+    { ...base, id: "tool", blocks: [{ type: "tool-call", toolCallId: "check", name: "workgraph_ready", arguments: "{}", status: "success", result: '{"items":[]}' }] },
+    { ...base, id: "peer", blocks: [{ type: "tool-call", toolCallId: "peer-check", name: "peer_message", arguments: "{}", status: "success", peerIncoming: true, peerIdentity: "reviewer", peerTarget: "Reviewer", peerBody: "Evidence received." }] },
+    { ...base, id: "reasoning", blocks: [{ type: "thinking", text: "Reviewing the evidence." }] },
+  ];
+  const messages = __chatPaneTest.buildChatMessages([
+    DURATION_REVIEW_ENTRIES[0], ...intervening, DURATION_REVIEW_ENTRIES[2],
+  ]);
+  assert.ok(messages.filter((entry) => intervening.some((source) => source.id === entry.sourceEntryId)).every((entry) => entry.workedFor === undefined));
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "review-answer")?.workedFor, "2m 5s");
+});
+
+test("a trailing system notice cannot expose a still-working assistant duration", () => {
+  const entries = [...DURATION_REVIEW_ENTRIES, durationNotice("later-notice", "2026-05-20T06:45:08.000Z")];
+  const working = renderChat({ entries, phase: "generating" });
+  assert.match(working, /chat-typing:agent/);
+  assert.doesNotMatch(working, /Worked for/);
+  const done = renderChat({ entries, phase: null });
+  assert.equal((done.match(/class="msg__worked"/g) || []).length, 1);
+  assert.match(done, /Worked for 2m 5s/);
+});
+
 test("chat pane groups messages into user-addressable scroll turns", () => {
   const messages = __chatPaneTest.buildChatMessages([
     message({

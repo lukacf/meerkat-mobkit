@@ -6938,6 +6938,100 @@ function workGraphToolFrames(args: {
   ];
 }
 
+function workGraphFallbackToolBlocks(entries: ReturnType<typeof mapFramesToTimelineEntries>) {
+  return entries.flatMap((entry) => entry.kind === "message"
+    ? (entry.blocks || []).filter((block) => block.type === "tool-call")
+    : []);
+}
+
+for (const name of ["workgraph_ready", "workgraph_list"]) {
+  test(`workgraph fallback preserves empty ${name} result and exact copied bytes`, () => {
+    const frames = workGraphToolFrames({ idPrefix: name, name, callArgs: { labels: [] }, result: { items: [] } });
+    const exactResult = " \n{ \"items\" : [] }\n\t";
+    const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+      ...frames[1], data: { ...frames[1].data, result: exactResult, is_error: false },
+    }]);
+    const blocks = workGraphFallbackToolBlocks(entries);
+    assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 0);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].name, name);
+    assert.equal(blocks[0].result, exactResult);
+    assert.equal(blocks[0].completionEvidence?.outcome, "success");
+    assert.equal(conversationRichBlockCopyText(blocks[0]), `$ ${name}\nInput: {"labels":[]}\nResult: ${exactResult}`);
+  });
+}
+
+test("workgraph fallback preserves pending and unknown completion before empty success", () => {
+  const frames = workGraphToolFrames({ idPrefix: "pending-ready", name: "workgraph_ready", callArgs: {}, result: { items: [] } });
+  const pending = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames.slice(0, 1)));
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].status, "pending");
+  assert.equal(pending[0].completionEvidence?.outcome, "running");
+  assert.equal(pending[0].result, undefined);
+  const unknown = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames));
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].status, "pending");
+  assert.equal(unknown[0].completionEvidence?.outcome, "unknown");
+  const completed = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+    ...frames[1], data: { ...frames[1].data, is_error: false },
+  }]));
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].toolCallId, pending[0].toolCallId);
+  assert.equal(completed[0].status, "success");
+  assert.equal(completed[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback pairs a nameless history result with its exact call", () => {
+  const frames = workGraphToolFrames({ idPrefix: "history-empty", name: "workgraph_ready", callArgs: {}, result: { items: [] } });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [
+    { ...frames[0], sourceKind: "session_history" },
+    { ...frames[1], sourceKind: "session_history", data: { tool_call_id: "history-empty-tc", content: "{\"items\":[]}", is_error: false } },
+  ]);
+  const blocks = workGraphFallbackToolBlocks(entries);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].toolCallId, "history-empty-tc");
+  assert.equal(blocks[0].name, "workgraph_ready");
+  assert.equal(blocks[0].result, "{\"items\":[]}");
+  assert.equal(blocks[0].completionEvidence?.source, "session-history");
+  assert.equal(blocks[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback restores canonical assistant tool blocks with empty results", () => {
+  const frames = [
+    { id: "canonical-tool", event: "text_complete", sourceKind: "session_history", timestampMs: 1000,
+      data: { message: { role: "block_assistant", stop_reason: "tool_use", blocks: [{
+        block_type: "tool_use", data: { id: "canonical-empty-call", name: "workgraph_ready", args: {} },
+      }] } } },
+    { id: "canonical-result", event: "tool_execution_completed", sourceKind: "session_history", timestampMs: 1001,
+      data: { tool_call_id: "canonical-empty-call", content: " \n{\"items\":[]}\n", is_error: false } },
+  ];
+  const blocks = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].name, "workgraph_ready");
+  assert.equal(blocks[0].result, " \n{\"items\":[]}\n");
+  assert.equal(blocks[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback does not duplicate item cards or hide another empty call", () => {
+  const itemFrames = workGraphToolFrames({ idPrefix: "card", name: "workgraph_list", callArgs: {}, result: { items: [workGraphItem({ id: "visible-item" })] } });
+  const emptyFrames = workGraphToolFrames({ idPrefix: "empty-next", name: "workgraph_ready", callArgs: {}, result: { items: [] }, timestampMs: 1_779_405_465_000 });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...itemFrames, ...emptyFrames]);
+  assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 1);
+  assert.deepEqual(workGraphFallbackToolBlocks(entries).map((block) => block.toolCallId), ["empty-next-tc"]);
+});
+
+test("workgraph fallback keeps unrooted errors in their existing card without duplicate rows", () => {
+  const frames = workGraphToolFrames({ idPrefix: "unrooted-error", name: "workgraph_ready", callArgs: {}, result: {} });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+    ...frames[1], data: { ...frames[1].data, is_error: true, result: "Unable to read ready set" },
+  }]);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].lastActionFailed, true);
+  assert.match((cards[0].recentEvents || []).join("\n"), /Unable to read ready set/);
+  assert.deepEqual(workGraphFallbackToolBlocks(entries), []);
+});
+
 test("workgraph create→claim→close folds into one evolving card with correct progress and revisions", () => {
   const frames = [
     ...workGraphToolFrames({
@@ -9053,3 +9147,35 @@ test("a deduped user input keeps the typed origin carried by any of its twins", 
     assert.deepEqual(origin, { sendOrigin: "homecore:gate", originKind: "operator_probe" });
   }
 });
+
+for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`${surface}: canonical peer display metadata remains distinct from exact identity`, () => {
+    const peerId = "7a643fe3-e700-5846-85ab-a6ed817c7754";
+    const entries = project({ agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" }, [{
+      id: "canonical-peer-label", event: "system_notice", sourceKind: "session_history", timestampMs: 1000,
+      data: { message: typedCommsNotice({ peer: "mob/lead/domain:delivery", peerId, body: "Delivery review completed." }) },
+    }]);
+    const block = entries.flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []).find(block => block.type === "tool-call");
+    assert.equal(block?.type, "tool-call");
+    if (block?.type !== "tool-call") return;
+    assert.equal(block.peerIdentity, peerId);
+    assert.equal(block.peerDisplayLabel, "domain:delivery");
+  });
+  test(`${surface}: outgoing display labels require canonical peer registry evidence`, () => {
+    const peerId = "7a643fe3-e700-5846-85ab-a6ed817c7754";
+    const send = { id: "send-canonical-peer", event: "tool_call_requested", timestampMs: 2000,
+      data: { name: "send_message", id: "send-label", args: { peer_id: peerId, display_name: "Untrusted sender hint", content: "Please review." } } };
+    const agent = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+    const blockFrom = (frames: typeof send[]) => project(agent, frames).flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []).find(block => block.type === "tool-call" && block.toolCallId === "send-label");
+    const unknown = blockFrom([send]);
+    assert.equal(unknown?.type, "tool-call");
+    if (unknown?.type === "tool-call") assert.equal(unknown.peerDisplayLabel, undefined);
+    const known = blockFrom([{ id: "peers-label", event: "tool_result_received", timestampMs: 1000,
+      data: { name: "peers", id: "peers-call", result: JSON.stringify({ peers: [{ peer_id: peerId, name: "mob/lead/domain:delivery" }] }) } } as unknown as typeof send, send]);
+    assert.equal(known?.type, "tool-call");
+    if (known?.type === "tool-call") {
+      assert.equal(known.peerIdentity, peerId);
+      assert.equal(known.peerDisplayLabel, "domain:delivery");
+    }
+  });
+}

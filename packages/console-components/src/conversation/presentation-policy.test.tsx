@@ -14,7 +14,7 @@ describe("conservative presentation", () => {
     for (const outcome of ["unknown", "running", "error", "cancelled", "interrupted"]) {
       expect(canFoldCompletedTools([tool("a"), tool("b", { completionEvidence: { outcome, source: "runtime-result", toolCallId: "b" } })])).toBe(false);
     }
-    for (const override of [{ name: "send_message" }, { name: "workgraph_update" }, { peerTarget: "peer" }, { completionEvidence: undefined }, { completionEvidence: { outcome: "success", source: "session-history", toolCallId: "wrong" } }]) {
+    for (const override of [{ name: "send_message" }, { name: "workgraph_update" }, { peerTarget: "peer" }, { peerDisplayLabel: "Delivery" }, { completionEvidence: undefined }, { completionEvidence: { outcome: "success", source: "session-history", toolCallId: "wrong" } }]) {
       expect(canFoldCompletedTools([tool("a"), tool("b", override)])).toBe(false);
     }
   });
@@ -63,6 +63,44 @@ describe("conservative presentation", () => {
     expect(explicitDisplayLabel("peer:full:id", new Map([["id", "Wrong"]]))).toBe("peer:full:id");
     render(<ConversationPresentationProvider labels={{ tools: new Map([["read_file", "Read file"]]) }}><ConversationRichContent blocks={[tool("a")]} /></ConversationPresentationProvider>);
     expect(screen.getByText("Read file")).toHaveAttribute("title", "read_file");
+  });
+  test.each([true, false])("canonical peer labels render for incoming=%s and preserve the exact identity", (peerIncoming) => {
+    const peer = tool("canonical", { name: "send_message", peerIncoming, peerIdentity: "peer:full:id", peerDisplayLabel: "Delivery", peerTarget: "Untrusted argument", peerBody: "Please review this." });
+    render(<ConversationRichContent blocks={[peer]} />);
+    expect(screen.getByText(peerIncoming ? "Received from Delivery" : "Delivery")).toHaveAttribute("title", "peer:full:id");
+    expect(screen.queryByText("Untrusted argument")).not.toBeInTheDocument();
+  });
+  test("an exact host peer label overrides canonical display metadata", () => {
+    const peer = tool("override", { name: "send_message", peerIncoming: true, peerIdentity: "peer:full:id", peerDisplayLabel: "Delivery", peerTarget: "Untrusted argument" });
+    render(<ConversationPresentationProvider labels={{ peers: new Map([["peer:full:id", "Household delivery"]]) }}><ConversationRichContent blocks={[peer]} /></ConversationPresentationProvider>);
+    expect(screen.getByText("Received from Household delivery")).toHaveAttribute("title", "peer:full:id");
+    expect(screen.queryByText("Received from Delivery")).not.toBeInTheDocument();
+  });
+  test.each([
+    { peerIdentity: "peer:full:id", peerTarget: undefined, expected: "peer:full:id" },
+    { peerIdentity: "peer:full:id", peerTarget: "Untrusted argument", expected: "peer:full:id" },
+    { peerIdentity: undefined, peerTarget: "legacy-peer", expected: "legacy-peer" },
+  ])("missing canonical labels fall back to the exact identity or legacy target: $expected", ({ expected, ...identity }) => {
+    const peer = tool("fallback", { name: "send_message", peerIncoming: true, ...identity });
+    render(<ConversationPresentationProvider labels={{ peers: new Map([["id", "Wrong short ID"], ["Untrusted argument", "Wrong argument label"]]) }}><ConversationRichContent blocks={[peer]} /></ConversationPresentationProvider>);
+    expect(screen.getByText(`Received from ${expected}`)).toHaveAttribute("title", expected);
+    expect(screen.queryByText(/Wrong short ID|Wrong argument label/)).not.toBeInTheDocument();
+  });
+  test("grouped peer names preserve distinct identities even when canonical labels match", () => {
+    const peer = (id: string, peerIdentity: string) => tool(id, { name: "send_message", peerIncoming: true, peerIdentity, peerDisplayLabel: "Reviewer", peerBody: `Message ${id}` });
+    const view = render(<ConversationRichContent blocks={[peer("a", "peer:first"), peer("b", "peer:second"), peer("c", "peer:first")]} />);
+    expect(screen.getByText("Received from Reviewer, Reviewer")).toHaveAttribute("title", "peer:first, peer:second");
+    const targets = Array.from(view.container.querySelectorAll(".cc-tool-call__peer-target"));
+    expect(targets.map((target) => target.textContent)).toEqual(["← Reviewer", "← Reviewer", "← Reviewer"]);
+    expect(targets.map((target) => target.getAttribute("title"))).toEqual(["peer:first", "peer:second", "peer:first"]);
+  });
+  test("grouped peer headers and detail rows use the same exact host override", () => {
+    const peer = (id: string) => tool(id, { name: "send_message", peerIdentity: `peer:${id}`, peerDisplayLabel: "Reviewer", peerBody: `Message ${id}` });
+    const view = render(<ConversationPresentationProvider labels={{ peers: new Map([["peer:a", "Lead reviewer"]]) }}><ConversationRichContent blocks={[peer("a"), peer("b")]} /></ConversationPresentationProvider>);
+    expect(screen.getByText("Sent to Lead reviewer, Reviewer")).toHaveAttribute("title", "peer:a, peer:b");
+    const targets = Array.from(view.container.querySelectorAll(".cc-tool-call__peer-target"));
+    expect(targets.map((target) => target.textContent)).toEqual(["→ Lead reviewer", "→ Reviewer"]);
+    expect(targets.map((target) => target.getAttribute("title"))).toEqual(["peer:a", "peer:b"]);
   });
   test.each(["error", "cancelled", "interrupted", "unknown"] as const)("a late %s outcome exposes a same-ID tool result", (outcome) => {
     const pending = tool("late", { status: "pending", result: undefined, completionEvidence: { outcome: "running", source: "runtime-start", toolCallId: "late" } });

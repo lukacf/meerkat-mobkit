@@ -88,6 +88,8 @@ export interface ConversationRichToolCallBlock {
   completionEvidence?: ToolCompletionEvidence;
   /** Canonical peer identity for exact authorized display-label lookup. */
   peerIdentity?: string;
+  /** Authorized peer display metadata, never a model-supplied tool argument. */
+  peerDisplayLabel?: string;
   /** For peer comms tools (send_request, send_message, send_response) */
   peerTarget?: string;
   peerIntent?: string;

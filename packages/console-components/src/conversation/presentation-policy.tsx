@@ -10,11 +10,15 @@ export type ConversationDisplayLabels = {
 export function explicitDisplayLabel(id: string, labels?: ReadonlyMap<string, string>): string {
   return labels?.get(id)?.trim() || id;
 }
+export function peerDisplayLabel(block: ConversationRichToolCallBlock, labels?: ReadonlyMap<string, string>): string {
+  const hostLabel = block.peerIdentity ? labels?.get(block.peerIdentity)?.trim() : undefined;
+  return hostLabel || block.peerDisplayLabel?.trim() || block.peerIdentity || block.peerTarget || "Unknown peer";
+}
 export const ROUTINE_TOOL_NAMES: ReadonlySet<string> = new Set(["read_file", "list_files", "search", "glob", "grep", "ls", "read", "file_read", "directory_list"]);
 export function isCompletedRoutineTool(block: ConversationRichBlock): block is ConversationRichToolCallBlock {
   return block.type === "tool-call"
     && ROUTINE_TOOL_NAMES.has(block.name)
-    && !block.peerIncoming && !block.peerTarget && !block.peerIdentity && !block.peerBody
+    && !block.peerIncoming && !block.peerTarget && !block.peerIdentity && !block.peerDisplayLabel && !block.peerBody
     && block.status === "success"
     && block.completionEvidence?.outcome === "success"
     && block.completionEvidence.toolCallId === block.toolCallId

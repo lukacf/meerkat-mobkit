@@ -1,4 +1,4 @@
-import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, groupRoutineToolRows, useConversationDisplayLabels, useInsideCompletedToolDisclosure } from "./presentation-policy";
+import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, groupRoutineToolRows, peerDisplayLabel, useConversationDisplayLabels, useInsideCompletedToolDisclosure } from "./presentation-policy";
 import clsx from "clsx";
 
 import {
@@ -451,7 +451,7 @@ function ToolCallBlock({
   const statusClass = `cc-tool-call--${block.status}`;
 
   if (isPeer || block.peerIncoming) {
-    const target = explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers);
+    const target = peerDisplayLabel(block, displayLabels?.peers);
     const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
     const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
     const content = peerBody || peerIntent || "";
@@ -637,7 +637,12 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
   const { expanded, toggle } = useToolDisclosure(blocks, true);
   const displayLabels = useConversationDisplayLabels();
-  const targets = Array.from(new Set(blocks.map((b) => explicitDisplayLabel(b.peerIdentity || b.peerTarget || "Unknown peer", displayLabels?.peers))));
+  const peers = new Map<string, ConversationRichToolCallBlock>();
+  for (const block of blocks) {
+    const identity = block.peerIdentity || block.peerTarget || "Unknown peer";
+    if (!peers.has(identity)) peers.set(identity, block);
+  }
+  const targets = Array.from(peers.values(), (block) => peerDisplayLabel(block, displayLabels?.peers));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
@@ -660,7 +665,7 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
         <span className="cc-tool-call__icon">{arrow}</span>
-        <span className="cc-tool-call__name">{label}</span>
+        <span className="cc-tool-call__name" title={Array.from(peers.keys()).join(", ")}>{label}</span>
         <span className="cc-tool-call__status">{statusIcon}</span>
         <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
       </div>
@@ -671,7 +676,7 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
             const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
             return (
               <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
-                <span className="cc-tool-call__peer-target" title={block.peerIdentity || block.peerTarget}>{isIncoming ? "←" : "→"} {explicitDisplayLabel(block.peerIdentity || block.peerTarget || "Unknown peer", displayLabels?.peers)}</span>
+                <span className="cc-tool-call__peer-target" title={block.peerIdentity || block.peerTarget}>{isIncoming ? "←" : "→"} {peerDisplayLabel(block, displayLabels?.peers)}</span>
                 {peerIntent ? (
                   <span className="cc-tool-call__peer-intent">
                     {peerIntent}

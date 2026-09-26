@@ -653,7 +653,8 @@ function buildChatMessages(
         : parseTimeMs(message.createdAt);
       return message;
     }
-    if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
+    // System notices share the text layout but do not finish assistant work.
+    if (message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) {
       return message;
     }
     const finishedAt = parseTimeMs(message.createdAt);
@@ -1534,7 +1535,7 @@ export function ChatPane({
   // contradiction). Earlier, completed turns keep their summary regardless.
   const lastAgentMessageId = React.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].kind === "agent") return messages[i].id;
+      if (messages[i].kind === "agent" && messages[i].source?.kind === "assistant") return messages[i].id;
     }
     return null;
   }, [messages]);

@@ -1126,7 +1126,7 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
 
 function buildToolBlocks(
   frames: ConsoleFrame[],
-  workGraphNamesByCallId?: Map<string, string>,
+  cardToolCallIds: Set<string>,
 ): Map<string, ConversationRichToolCallBlock> {
   const toolCalls = new Map<string, ConversationRichToolCallBlock>();
   const pendingResults = new Map<string, { result?: string; status: "pending" | "success" | "error"; completionEvidence: ToolCompletionEvidence }>();
@@ -1140,9 +1140,8 @@ function buildToolBlocks(
   const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
-    // WorkGraph tool calls fold into the inline workgraph card instead of
-    // generic tool rows.
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    // A rendered WorkGraph card owns only the calls that contributed to it.
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
       const parsed = serverToolContentSummary(frame);
@@ -1240,6 +1239,8 @@ function buildToolBlocks(
         completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
         ...(peerIntent ? { peerIntent } : {}),
         ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
       });
@@ -1262,9 +1263,9 @@ function buildPeerRegistry(frames: ConsoleFrame[]): Map<string, string> {
 
 // ── WorkGraph inline card aggregation ───────────────────────────────────────
 //
-// WorkGraph tool calls never render as generic cc-tool-call rows. All frames
-// of a turn's workgraph activity fold into one evolving card per goal/root
+// Item-backed WorkGraph activity folds into one evolving card per goal/root
 // work item (kind "workgraph"), positioned at the first contributing frame.
+// Calls without a rendered card keep their ordinary tool evidence.
 // The fold is a single O(frames) pass rebuilt per render, same cost class as
 // buildToolBlocks. Per-item/binding `revision` is retained verbatim: it is
 // the CAS token operator actions must echo or the mutation conflicts.
@@ -1450,6 +1451,7 @@ interface WorkGraphFoldState {
   // card can surface whether its latest action failed.
   contributions: Array<{
     frameIndex: number;
+    toolCallId: string | null;
     interactionId: string;
     itemIds: string[];
     bindingIds: string[];
@@ -1875,7 +1877,10 @@ function buildWorkGraphEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
   namesByCallId?: Map<string, string>,
-): Map<number, ConversationWorkGraphEntry[]> {
+): {
+  entriesByAnchor: Map<number, ConversationWorkGraphEntry[]>;
+  representedToolCallIds: Set<string>;
+} {
   const state: WorkGraphFoldState = {
     items: new Map(),
     directItemIds: new Set(),
@@ -1902,6 +1907,7 @@ function buildWorkGraphEntries(
     const frameIso = isoFromTimestampMs(frame.timestampMs);
     const contribution = {
       frameIndex: index,
+      toolCallId: parseToolCallId(frame),
       interactionId: frame.interactionId?.trim() || "",
       itemIds: [] as string[],
       bindingIds: [] as string[],
@@ -2012,7 +2018,8 @@ function buildWorkGraphEntries(
   }
 
   const byAnchor = new Map<number, ConversationWorkGraphEntry[]>();
-  if (!sawWorkGraphFrame) return byAnchor;
+  const representedToolCallIds = new Set<string>();
+  if (!sawWorkGraphFrame) return { entriesByAnchor: byAnchor, representedToolCallIds };
 
   // Group known items by resolved root; attach bindings via their item root.
   const rootMembers = new Map<string, string[]>();
@@ -2054,6 +2061,7 @@ function buildWorkGraphEntries(
   // that the parent map is complete. Contributions run in frame order, so the
   // last recorded outcome per card is the outcome of its latest action.
   const anchorByCard = new Map<string, { frameIndex: number; createdAt?: string; interactionId: string }>();
+  const toolCallsByCard = new Map<string, Set<string>>();
   const lastOutcomeByCard = new Map<string, "ok" | "error">();
   // Per-card UI-state anchor: the first item id ever contributed to that
   // card, in frame order. It is stable from the first create result and, for
@@ -2104,6 +2112,11 @@ function buildWorkGraphEntries(
       cardKeys.add(interactionKey);
     }
     for (const key of cardKeys) {
+      if (contribution.toolCallId) {
+        const calls = toolCallsByCard.get(key) || new Set<string>();
+        calls.add(contribution.toolCallId);
+        toolCallsByCard.set(key, calls);
+      }
       if (!anchorByCard.has(key)) {
         anchorByCard.set(key, {
           frameIndex: contribution.frameIndex,
@@ -2144,6 +2157,7 @@ function buildWorkGraphEntries(
     const list = byAnchor.get(anchorIndex) || [];
     list.push(entry);
     byAnchor.set(anchorIndex, list);
+    for (const callId of toolCallsByCard.get(entry.id) || []) representedToolCallIds.add(callId);
   };
 
   const latestIso = (values: Array<string | null | undefined>): string | undefined => {
@@ -2241,14 +2255,14 @@ function buildWorkGraphEntries(
     }, anchor.frameIndex);
   }
 
-  return byAnchor;
+  return { entriesByAnchor: byAnchor, representedToolCallIds };
 }
 
 /// True when folding `frames` yields at least one workgraph card. The reload
 /// re-hydration path fetches a snapshot only for panes that actually show
 /// one; it runs once per identity, so the extra fold pass is bounded.
 export function framesContainWorkGraphCards(frames: ConsoleFrame[]): boolean {
-  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  const { entriesByAnchor: entries } = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
   for (const cards of entries.values()) {
     if (cards.length > 0) return true;
   }
@@ -3248,7 +3262,7 @@ function toolResultTextFromContent(content: unknown): string | undefined {
 
 function historyToolResults(
   frames: ConsoleFrame[],
-  workGraphNamesByCallId?: Map<string, string>,
+  cardToolCallIds: Set<string>,
 ): Map<string, HistoryToolResult> {
   const results = new Map<string, HistoryToolResult>();
   for (const frame of frames) {
@@ -3261,16 +3275,8 @@ function historyToolResults(
     const data = frame.data && typeof frame.data === "object"
       ? frame.data as Record<string, unknown>
       : null;
-    const historyToolName = typeof data?.name === "string"
-      ? data.name
-      : typeof data?.tool_name === "string"
-        ? data.tool_name
-        : "";
-    // WorkGraph results never hydrate history tool rows — the card owns them.
-    // Backfill result frames carry no name, so also match through the
-    // tool_call_id pairing (same resolution as the card fold).
-    if (WORKGRAPH_TOOL_NAMES.has(historyToolName)) continue;
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    // Keep empty-query evidence; only an actual card replaces a tool row.
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim()
       ? data.tool_call_id.trim()
       : typeof data?.id === "string" && data.id.trim()
@@ -3356,6 +3362,8 @@ function blockAssistantToolBlock(
       completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
       ...(peerTarget ? { peerTarget } : {}),
         ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim()) } : {}),
       ...(peerIntent ? { peerIntent } : {}),
       ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
     };
@@ -4234,6 +4242,8 @@ function typedSystemNoticeBlocksToRich(
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
+        ...(typeof peer.display_name === "string" && peer.display_name.trim()
+          ? { peerDisplayLabel: peerLastSegment(peer.display_name.trim()) } : {}),
         peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,
@@ -4534,10 +4544,11 @@ export function mapFramesToTimelineEntries(
   // React key. The workgraph fold avoids this by anchoring per card; a
   // council is a single call, so a seen-set is enough.
   const emittedCouncilIds = new Set<string>();
-  const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
-  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } =
+    buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
-  const sessionToolResults = historyToolResults(orderedFrames, workGraphNamesByCallId);
+  const sessionToolResults = historyToolResults(orderedFrames, cardToolCallIds);
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -4764,8 +4775,8 @@ export function mapFramesToTimelineEntries(
       if (!councilRecord || councilRecord.result === undefined) continue;
     }
 
-    // WorkGraph tool frames render as one evolving inline card per goal/root
-    // (anchored at the first contributing frame) — never as generic tool rows.
+    // Only calls represented by a rendered card are replaced. Empty queries
+    // and pending calls retain the generic tool row and its completion proof.
     if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) {
       const workGraphCards = workGraphEntriesByAnchor.get(i);
       if (workGraphCards && workGraphCards.length > 0) {
@@ -4775,7 +4786,8 @@ export function mapFramesToTimelineEntries(
           entries.push(card);
         }
       }
-      continue;
+      if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT
+        || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     }
 
     const toolCallId = parseToolCallId(frame);
@@ -4923,7 +4935,7 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          WORKGRAPH_TOOL_NAMES.has(block.name)
+          cardToolCallIds.has(block.toolCallId)
           || liveToolCallIds.has(block.toolCallId)
           || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
@@ -4957,7 +4969,7 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          WORKGRAPH_TOOL_NAMES.has(block.name)
+          cardToolCallIds.has(block.toolCallId)
           || liveToolCallIds.has(block.toolCallId)
           || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
