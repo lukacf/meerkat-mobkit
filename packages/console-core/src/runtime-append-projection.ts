@@ -115,7 +115,7 @@ function noticeBlock(value: unknown): boolean {
       && defaulted(block.persisted, boolean) && defaulted(block.pending_sources, strings);
     case "background_job": return string(block.job_id)
       && oneOf(block.status, ["completed", "failed", "aborted", "cancelled", "retired", "terminated"])
-      && optionalStrings(block, ["display_name", "detail"]);
+      && optionalStrings(block, ["display_name", "detail"]) && defaulted(block.persisted, boolean);
     case "auth": return string(block.state) && optionalStrings(block, ["binding", "detail"]);
     case "runtime_notice": return string(block.category) && optional(block.detail, string);
     case "unknown": return optional(block.summary, string);

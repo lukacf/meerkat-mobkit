@@ -2981,7 +2981,7 @@ function noticeBlock(value) {
     case "mcp":
       return optionalStrings(block, ["server_id", "detail"]) && optional(block.operation, operation) && optional(block.phase, phase) && defaulted(block.persisted, boolean) && defaulted(block.pending_sources, strings);
     case "background_job":
-      return string(block.job_id) && oneOf(block.status, ["completed", "failed", "aborted", "cancelled", "retired", "terminated"]) && optionalStrings(block, ["display_name", "detail"]);
+      return string(block.job_id) && oneOf(block.status, ["completed", "failed", "aborted", "cancelled", "retired", "terminated"]) && optionalStrings(block, ["display_name", "detail"]) && defaulted(block.persisted, boolean);
     case "auth":
       return string(block.state) && optionalStrings(block, ["binding", "detail"]);
     case "runtime_notice":
