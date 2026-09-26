@@ -309,8 +309,18 @@ async function accessRevocation(host) {
       "permanently denied approvals do not leave a global Needs you control");
     assert.equal(decisions(fixture, created.pending_id).length, 0, "read revocation never submits a decision");
     if (host === "stock") {
-      await page.getByText("Approval access denied", { exact: true }).waitFor();
-      assert.equal(await page.getByText("No pending approvals.", { exact: true }).count(), 0, "forbidden is not an empty success");
+      // The fixture removes gating from advertised capabilities before dispatch.
+      // The explicit inbox must explain that state after Needs you disappears.
+      await page.getByTestId("nav:gating").click();
+      await page.getByText("Approvals are not available for this connection", { exact: true }).waitFor();
+      const capabilityReads = fixture.observations.filter(item => {
+        try { return JSON.parse(item.request || "{}").method === "mobkit/capabilities"; }
+        catch { return false; }
+      });
+      const advertised = JSON.parse(capabilityReads.at(-1)?.response || "{}").result?.methods;
+      assert(Array.isArray(advertised), "revocation captured the advertised capabilities");
+      assert(!advertised.includes("mobkit/gating/pending"), "revocation removes the read capability before dispatch");
+      assert.equal(await page.getByText("No pending approvals.", { exact: true }).count(), 0, "unsupported is not an empty success");
     }
     await capture(page, `${host}-approval-access-revoked`);
     await fixture.control("access", { mode: "open" });

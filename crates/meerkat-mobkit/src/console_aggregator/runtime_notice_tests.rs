@@ -711,7 +711,7 @@ async fn sparse_notice_positions_remove_and_restore_original_coordinates() -> Co
             .store()
             .frame_by_dedupe_key(&original.dedupe_key)
             .await?
-            .expect("immutable frame"),
+            .ok_or("immutable frame")?,
         original
     );
     Ok(())

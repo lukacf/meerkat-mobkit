@@ -4933,7 +4933,7 @@ async fn append_backfill_gap(
             // store unbounded.
             dedupe_key: backfill_gap_dedupe_key(runtime_key, identity, session_id),
             timestamp_ms: current_time_ms(),
-            runtime_key: runtime_key.to_string(),
+            runtime_key: runtime_key.clone(),
             identity: identity.to_string(),
             conversation_id: Some(identity.to_string()),
             session_id: Some(session_id.to_string()),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { normalizePendingApproval as normalizePendingApprovalForInputTest, approvalMatchesConversation as approvalMatchesInputConversation } from "../../../packages/console-core/src/pending-approvals";
 
 import {
   appendOptimisticConversationEntry,
@@ -9314,3 +9315,77 @@ test("workgraph local card event and paused times use the browser clock without 
     else process.env.TZ = previousTimeZone;
   }
 });
+
+// An approval can arrive before the model produces its first assistant token.
+// Project real input shapes first so the renderer is not handed invented IDs.
+for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  const ownerId = "b6503200-06b6-4157-afc0-2a3c8d124178";
+  const otherId = "cd425e60-ae28-4013-84c4-e25edc113c04";
+  const agent = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+  const content = [
+    { type: "text", text: "Review this release before the model responds." },
+    { type: "image", source: "blob", blob_id: "release-proof", media_type: "image/png" },
+  ];
+  const cases = [
+    ["live text", "user_input", { content: content[0].text }, "console_event"],
+    ["live image", "user_input", { content }, "console_event"],
+    ["history text", "interaction_started", { content: content[0].text }, "session_history"],
+    ["history image", "user_input", { content }, "session_history"],
+    ["prompt text", "run_started", { prompt: content[0].text }, "console_event"],
+    ["prompt image", "run_started", { prompt: content }, "console_event"],
+  ] as const;
+  for (const [label, event, data, sourceKind] of cases) {
+    test(`${surface}: operator approval ownership survives ${label} before the first assistant token`, () => {
+      const input = { id: "accepted-input", event, sourceKind, identity: "router:main", interactionId: ownerId,
+        runId: "active-run", sessionId: "active-session", timestampMs: 1000, data };
+      const before = JSON.stringify(input);
+      const entries = project(agent, [input], { renderInteractionStartsAsUser: true, textMode: "markdown" });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].identity.role, "user");
+      assert.equal(entries[0].interactionId, ownerId);
+      const approval = normalizePendingApprovalForInputTest({ pending_id: "release-approval", action_id: "release", action: "Review release",
+        origin: { identity: "router:main", interaction_id: ownerId } })!;
+      const interactionIds = entries.flatMap(entry => entry.interactionId ? [entry.interactionId] : []);
+      const target = { identity: "router:main", conversationId: "router:main", interactionIds };
+      assert.equal(approvalMatchesInputConversation(approval, target), true);
+      assert.equal(approvalMatchesInputConversation({ ...approval, origin: { identity: "router:main", interactionId: otherId } }, target), false);
+      assert.equal(approvalMatchesInputConversation({ ...approval, origin: { identity: "other-agent", interactionId: ownerId } }, target), false);
+      assert.equal(JSON.stringify(input), before, "projection must not mutate source frames");
+    });
+  }
+  for (const event of ["user_input", "run_started"]) {
+    test(`${surface}: operator approval ownership survives plain legacy ${event}`, () => {
+      const entries = project(agent, [{ id: "plain-input", event, interactionId: ownerId,
+        data: { content: content[0].text, prompt: content[0].text } }], { renderInteractionStartsAsUser: true, textMode: "legacy" });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].kind === "message" && entries[0].variant, "plain");
+      assert.equal(entries[0].interactionId, ownerId);
+    });
+  }
+  test(`${surface}: operator approval ownership and typed origin survive deduped input twins`, () => {
+    const common = { identity: "router:main", interactionId: ownerId, sessionId: "active-session" };
+    const history = { ...common, id: "history-input", event: "interaction_started", sourceKind: "session_history", data: { content: content[0].text } };
+    const live = { ...common, id: "accepted-input", event: "user_input", sourceKind: "console_event", data: { content: content[0].text, origin: "console:operator", origin_kind: "operator" } };
+    const prompt = { ...common, id: "run-prompt", event: "run_started", sourceKind: "console_event", runId: "active-run", data: { prompt: content[0].text } };
+    for (const order of [[history, live, prompt], [live, prompt, history], [prompt, history, live]]) {
+      const frames = order.map((frame, index) => ({ ...frame, timestampMs: 1000 + index, cursor: `console:${index + 1}` }));
+      const entries = project(agent, frames, { renderInteractionStartsAsUser: true, textMode: "markdown" });
+      assert.equal(entries.length, 1, order[0].id);
+      assert.equal(entries[0].id, order[0].id, "retain the first canonical entry identity");
+      assert.equal(entries[0].interactionId, ownerId);
+      assert.deepEqual(entries[0].kind === "message" ? entries[0].origin : null, { sendOrigin: "console:operator", originKind: "operator" });
+    }
+  });
+  test(`${surface}: operator approval ownership is never inferred from text actors or nested hints`, () => {
+    for (const event of ["user_input", "run_started"]) {
+      const hinted = { content: `Review interaction ${ownerId}`, prompt: `Review interaction ${ownerId}`, actor_id: ownerId,
+        origin: "console:operator", identity: { interaction_id: ownerId }, interaction_id: ownerId };
+      const entries = project(agent, [{ id: "unscoped-input", event, data: hinted }], { renderInteractionStartsAsUser: true });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].identity.role, "user");
+      assert.equal(entries[0].interactionId, undefined);
+      const request = normalizePendingApprovalForInputTest({ pending_id: "release-approval", origin: { identity: "router:main", interaction_id: ownerId } })!;
+      assert.equal(approvalMatchesInputConversation(request, { identity: "router:main", interactionIds: [] }), false);
+    }
+  });
+}

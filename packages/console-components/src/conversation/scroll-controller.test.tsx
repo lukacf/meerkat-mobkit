@@ -91,6 +91,35 @@ function userScroll(viewport: HTMLElement, top: number) { viewport.scrollTop = t
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("conversation scroll intent", () => {
+  test("a pending browser reveal scroll after a live-edge tool expands keeps following", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    // The browser reveals a nearby control before its delayed scroll event.
+    viewport.scrollTop = 770;
+    fireEvent.pointerDown(viewport.querySelector('[data-conversation-row-id="row-9"]')!);
+    // Native disclosure growth precedes both the pending scroll and layout.
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 1103 });
+    fireEvent.scroll(viewport);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    const expanded = [...baseRows, { id: "tool-detail", height: 103 }];
+    view.rerender(<Harness rows={expanded} />);
+    expect(viewport.scrollTop).toBe(903);
+    fireEvent.wheel(viewport, { deltaY: -100 });
+    userScroll(viewport, 803);
+    view.rerender(<Harness rows={[...expanded, { id: "streamed", height: 150 }]} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(803);
+  });
+  test("a changed native scroll after a live-edge browser reveal still pauses", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    viewport.scrollTop = 770;
+    fireEvent.pointerDown(viewport.querySelector('[data-conversation-row-id="row-9"]')!);
+    userScroll(viewport, 600);
+    view.rerender(<Harness rows={[...baseRows, { id: "streamed", height: 150 }]} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    expect(viewport.scrollTop).toBe(600);
+  });
   test.each(["wheel-down", "ArrowDown", "PageDown", "End", " ", "pointer"])("a no-op %s at the live edge keeps following content growth", (gesture) => {
     const view = render(<Harness />);
     const viewport = screen.getByTestId("viewport");

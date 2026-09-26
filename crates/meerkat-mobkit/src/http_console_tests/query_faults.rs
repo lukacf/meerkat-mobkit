@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::console_aggregator::{
-    AppendOutcome, ConsoleFrameStatus, ConsoleTimelinePage, InMemoryConsoleLogStore,
-    NewConsoleFrame,
+    AppendOutcome, ConsoleFrameSource, ConsoleFrameStatus, ConsoleTimelinePage,
+    InMemoryConsoleLogStore, NewConsoleFrame,
 };
 use axum::body::Body;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,6 +22,36 @@ struct FaultStore {
     inner: InMemoryConsoleLogStore,
     fault: Fault,
     latest_reads: AtomicUsize,
+}
+
+// A stalled page must contain a frame: empty pages are valid legacy terminals.
+fn repeated_frame(cursor: Option<&ConsoleCursor>) -> ConsoleFrame {
+    ConsoleFrame {
+        id: "stalled-frame".into(),
+        cursor: cursor.cloned().unwrap_or_else(|| "console:0".into()),
+        dedupe_key: "stalled-frame".into(),
+        timestamp_ms: 0,
+        runtime_key: "fault-fixture".into(),
+        identity: "router:main".into(),
+        conversation_id: None,
+        session_id: None,
+        kind: "system_notice".into(),
+        status: ConsoleFrameStatus::Completed,
+        frame_version: 1,
+        updated_at_ms: None,
+        payload: serde_json::json!({ "text": "Repeated page" }),
+        source: ConsoleFrameSource {
+            member_provenance: None,
+            kind: ConsoleFrameSourceKind::Synthetic,
+            source_cursor: None,
+        },
+        source_event_id: None,
+        interaction_id: None,
+        turn_id: None,
+        run_id: None,
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    }
 }
 
 #[async_trait::async_trait]
@@ -56,7 +86,7 @@ impl ConsoleLogStore for FaultStore {
                 latest_cursor: Some(ConsoleCursor::from_seq(42)),
             })),
             Fault::NoProgress => Ok(ConsoleTimelineWindowPage {
-                frames: vec![],
+                frames: vec![repeated_frame(query.after.as_ref())],
                 next_cursor: query.after,
                 latest_cursor: Some(ConsoleCursor::from_seq(42)),
                 exhausted: false,

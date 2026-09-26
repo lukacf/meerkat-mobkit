@@ -5308,7 +5308,11 @@ function useConversationScrollController(options) {
       if (selection && !selection.isCollapsed && selection.anchorNode && viewport.contains(selection.anchorNode)) readHistory();
     };
     const onPointerDown = () => {
-      if (sessionRef.current?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
+      const session = sessionRef.current;
+      if (session?.mode !== "following-end" || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
+      else {
+        session.expectedScrollTop = viewport.scrollTop;
+      }
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointerdown", onPointerDown, true);
@@ -26236,6 +26240,7 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
+      ...frame.interactionId ? { interactionId: frame.interactionId } : {},
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
       blocks,
@@ -26250,6 +26255,7 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
+    ...frame.interactionId ? { interactionId: frame.interactionId } : {},
     variant: textMode === "markdown" ? "rich" : "plain",
     ...textMode === "markdown" ? { blocks: messageTextBlocks(text8, textMode) } : {},
     createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -26323,6 +26329,7 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
         kind: "message",
         id: entryId,
         identity: USER_IDENTITY,
+        ...frame.interactionId ? { interactionId: frame.interactionId } : {},
         variant: "rich",
         ...createdAt ? { createdAt } : {},
         blocks: promptBlocks
@@ -26337,6 +26344,7 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
+      ...frame.interactionId ? { interactionId: frame.interactionId } : {},
       variant: textMode === "markdown" ? "rich" : "plain",
       ...textMode === "markdown" ? { blocks: promptBlocks } : {},
       ...createdAt ? { createdAt } : {},

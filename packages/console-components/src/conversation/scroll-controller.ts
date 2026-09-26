@@ -320,8 +320,14 @@ export function useConversationScrollController(options: ConversationScrollContr
     const onPointerDown = () => {
       // Clicking a tool or copy control at the live edge does not request
       // history. Actual scrolling and selection retain their own handlers.
-      if (sessionRef.current?.mode !== "following-end"
+      const session = sessionRef.current;
+      if (session?.mode !== "following-end"
         || !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight)) readHistory();
+      else {
+        // A nearby control can be revealed before its native scroll event.
+        // Keep that observed position expected if the click grows its content.
+        session.expectedScrollTop = viewport.scrollTop;
+      }
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointerdown", onPointerDown, true);
