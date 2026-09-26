@@ -14,6 +14,7 @@ use meerkat_mob::{
     AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle,
     MobMemberStatus, MobState, ProfileName, SpawnMemberSpec,
 };
+use serde_json::json;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
