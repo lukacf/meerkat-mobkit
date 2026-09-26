@@ -161,3 +161,67 @@ test("workgraph layout of nothing is a zero-size empty layout", () => {
   const layout = layoutWorkGraph([], []);
   assert.deepEqual(layout, { nodes: [], edges: [], width: 0, height: 0, overflowCount: 0 });
 });
+
+
+test("parallel prerequisites stay on one rank and visibly converge on their dependent", () => {
+  const items = [item("source-review", "1"), item("badge-review", "2"), item("publish", "3")];
+  const edges = [
+    { kind: "blocks", from_id: "source-review", to_id: "publish" },
+    { kind: "blocks", from_id: "badge-review", to_id: "publish" },
+  ];
+  const layout = layoutWorkGraph(items, edges);
+  const byId = new Map(layout.nodes.map(node => [node.itemId, node]));
+  const source = byId.get("source-review")!;
+  const badge = byId.get("badge-review")!;
+  const publish = byId.get("publish")!;
+  assert.equal(source.x, badge.x, "independent prerequisites share a rank");
+  assert.equal(publish.x - source.x, WORKGRAPH_GRAPH_COL_WIDTH, "only the dependent advances a rank");
+  assert.ok(source.y < publish.y && publish.y < badge.y, "dependent is centered between parallel prerequisites");
+  assert.deepEqual(layout.edges.map(edge => [edge.kind, edge.fromId, edge.toId]), [
+    ["blocks", "source-review", "publish"], ["blocks", "badge-review", "publish"],
+  ]);
+  const [first, second] = layout.edges;
+  assert.notEqual(workGraphEdgePath(first), workGraphEdgePath(second));
+  assert.notDeepEqual(workGraphEdgeMidpoint(first), workGraphEdgeMidpoint(second), "edge labels remain separate");
+  for (const edge of layout.edges) {
+    const [p0, p1, p2, p3] = edge.points;
+    for (let step = 0; step <= 200; step += 1) {
+      const t = step / 200; const u = 1 - t;
+      const x = u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x;
+      const y = u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y;
+      for (const node of layout.nodes) {
+        if (node.itemId === edge.fromId || node.itemId === edge.toId) continue;
+        assert.ok(!(x > node.x && x < node.x + node.w && y > node.y && y < node.y + node.h), `${edge.fromId} -> ${edge.toId} crosses unrelated ${node.itemId}`);
+      }
+      assert.ok(x >= 0 && x <= layout.width && y >= 0 && y <= layout.height, "edges fit the advertised graph extent");
+    }
+  }
+  assert.deepEqual(layoutWorkGraph(items.slice().reverse(), edges.slice().reverse()).nodes, layout.nodes, "dependency placement does not depend on input ordering");
+});
+
+test("dependency ranking follows the longest prerequisite path and ignores dangling or duplicate edges", () => {
+  const layout = layoutWorkGraph([item("a", "1"), item("b", "2"), item("c", "3"), item("d", "4")], [
+    { kind: "blocks", from_id: "a", to_id: "b" },
+    { kind: "blocks", from_id: "a", to_id: "b" },
+    { kind: "blocks", from_id: "a", to_id: "c" },
+    { kind: "blocks", from_id: "b", to_id: "c" },
+    { kind: "blocks", from_id: "c", to_id: "d" },
+    { kind: "blocks", from_id: "ghost", to_id: "d" },
+    { kind: "relates", from_id: "d", to_id: "a" },
+  ]);
+  assert.deepEqual(layout.nodes.map(node => node.x - layout.nodes[0].x), [0, 1, 2, 3].map(rank => rank * WORKGRAPH_GRAPH_COL_WIDTH));
+  assert.equal(layout.edges.length, 5);
+});
+
+test("dependency edges preserve structural parent placement and cycles remain deterministic and bounded", () => {
+  const items = [item("root", "1"), item("child", "2"), item("peer", "3")];
+  const parents = [{ kind: "parent", from_id: "child", to_id: "root" }];
+  const baseline = layoutWorkGraph(items, parents);
+  assert.deepEqual(layoutWorkGraph(items, [...parents, { kind: "blocks", from_id: "child", to_id: "peer" }]).nodes, baseline.nodes);
+  const cycle = [{ kind: "blocks", from_id: "root", to_id: "child" }, { kind: "blocks", from_id: "child", to_id: "root" }];
+  const cyclic = layoutWorkGraph(items, cycle);
+  assert.equal(cyclic.nodes.length, items.length);
+  assert.equal(cyclic.edges.length, 2);
+  assert.deepEqual(layoutWorkGraph(items.slice().reverse(), cycle.slice().reverse()).nodes, cyclic.nodes);
+  assert.ok(cyclic.width < WORKGRAPH_GRAPH_COL_WIDTH * items.length && Number.isFinite(cyclic.height));
+});

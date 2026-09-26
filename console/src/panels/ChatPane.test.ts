@@ -22,6 +22,8 @@ function message(args: {
   role: "user" | "assistant";
   createdAt: string;
   text: string;
+  runId?: string;
+  runDurationMs?: number;
 }): ConversationTimelineEntry {
   return {
     id: args.id,
@@ -30,6 +32,8 @@ function message(args: {
     identity: args.role === "user" ? USER : AGENT,
     createdAt: args.createdAt,
     text: args.text,
+    ...(args.runId ? { runId: args.runId } : {}),
+    ...(args.runDurationMs !== undefined ? { runDurationMs: args.runDurationMs } : {}),
   };
 }
 
@@ -52,7 +56,7 @@ test("chat pane does not count spawn scaffolding as user work", () => {
   assert.equal(messages.find((entry) => entry.id === "ready")?.workedFor, undefined);
 });
 
-test("chat pane still shows duration for real user turns", () => {
+test("chat pane displays the supplied completed run duration", () => {
   const messages = __chatPaneTest.buildChatMessages([
     message({
       id: "operator",
@@ -65,10 +69,115 @@ test("chat pane still shows duration for real user turns", () => {
       role: "assistant",
       createdAt: "2026-05-20T06:45:07.000Z",
       text: "Review complete.",
+      runId: "review-run",
+      runDurationMs: 125000,
     }),
   ]);
 
   assert.equal(messages.find((entry) => entry.id === "done")?.workedFor, "2m 5s");
+});
+
+test("chat pane omits work duration when only message timestamps are known", () => {
+  const entries = [
+    message({ id: "unknown-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }),
+    message({ id: "unknown-answer", role: "assistant", createdAt: "2026-09-26T05:21:49.485Z", text: "Review complete." }),
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "unknown-answer")?.workedFor, undefined);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+  assert.doesNotMatch(__chatPaneTest.transcriptCopyText(messages), /Worked for/);
+});
+
+test("a delayed streamed answer cannot use its first text timestamp as run completion", () => {
+  // The real acceptance run began at 44.485 and completed at 50.171. Its
+  // retained streaming row is stamped at the first text delta, 44.838.
+  const entries: ConversationTimelineEntry[] = [
+    { ...message({ id: "delayed-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }), interactionId: "release-interaction" },
+    { ...message({ id: "delayed-answer", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "The full review is now complete." }), interactionId: "release-interaction", runId: "release-run" },
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "delayed-answer")?.workedFor, undefined);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+});
+
+test("completed stream duration includes the time after its first text delta", () => {
+  const entries = [
+    message({ id: "timed-ask", role: "user", createdAt: "2026-09-26T05:19:44.485Z", text: "Review the release." }),
+    message({ id: "timed-answer", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "The full review is now complete.", runId: "release-run", runDurationMs: 5686 }),
+  ];
+  const messages = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "timed-answer")?.workedFor, "6s");
+  assert.match(renderChat({ entries, phase: null }), /Worked for 6s/);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for under 1s/);
+});
+
+for (const duration of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+  test(`chat pane rejects invalid completed run duration ${duration}`, () => {
+    const entries = [message({ id: "invalid-duration", role: "assistant", createdAt: "2026-09-26T05:19:44.838Z", text: "Done.", runId: "release-run", runDurationMs: duration })];
+    assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for/);
+  });
+}
+
+function durationNotice(id: string, createdAt: string): ConversationTimelineEntry {
+  return {
+    id, kind: "message", variant: "rich",
+    identity: { id: "system", label: "Agent", role: "system" },
+    interactionId: "review-interaction", runId: "review-run", runDurationMs: 500, createdAt,
+    blocks: [{ type: "paragraph", text: "Background review has new evidence." }],
+  };
+}
+
+const DURATION_REVIEW_ENTRIES: ConversationTimelineEntry[] = [
+  { ...message({ id: "review-ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }), interactionId: "review-interaction" },
+  durationNotice("review-notice", "2026-05-20T06:43:02.500Z"),
+  { ...message({ id: "review-answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }), identity: { ...AGENT, label: "System" }, interactionId: "review-interaction", runId: "review-run", runDurationMs: 125000 },
+];
+
+test("system notice never receives or consumes the assistant work duration", () => {
+  const messages = __chatPaneTest.buildChatMessages(DURATION_REVIEW_ENTRIES);
+  const notice = messages.find((entry) => entry.sourceEntryId === "review-notice");
+  const answer = messages.find((entry) => entry.sourceEntryId === "review-answer");
+  assert.equal(notice?.source?.kind, "system");
+  assert.equal(notice?.workedFor, undefined);
+  assert.equal(answer?.source?.kind, "assistant");
+  assert.equal(answer?.workedFor, "2m 5s");
+  assert.equal(answer?.interactionId, "review-interaction");
+  assert.equal(answer?.runId, "review-run");
+  const working = renderChat({ entries: DURATION_REVIEW_ENTRIES, phase: "generating" });
+  assert.doesNotMatch(working, /Worked for/);
+  assert.match(working, /chat-typing:agent/);
+  const done = renderChat({ entries: DURATION_REVIEW_ENTRIES, phase: null });
+  assert.equal((done.match(/class="msg__worked"/g) || []).length, 1);
+  assert.match(done, /Worked for 2m 5s/);
+});
+
+test("system task, tool, peer and reasoning rows preserve assistant timing", () => {
+  const base: ConversationTimelineEntry = {
+    id: "intervening", kind: "message", variant: "rich", identity: AGENT,
+    createdAt: "2026-05-20T06:43:03.000Z",
+    interactionId: "review-interaction", runId: "review-run",
+  };
+  const intervening: ConversationTimelineEntry[] = [
+    { ...base, id: "task", taskKind: "progress", taskLabel: "Assistant", blocks: [{ type: "paragraph", text: "Checking evidence." }] },
+    { ...base, id: "tool", blocks: [{ type: "tool-call", toolCallId: "check", name: "workgraph_ready", arguments: "{}", status: "success", result: '{"items":[]}' }] },
+    { ...base, id: "peer", blocks: [{ type: "tool-call", toolCallId: "peer-check", name: "peer_message", arguments: "{}", status: "success", peerIncoming: true, peerIdentity: "reviewer", peerTarget: "Reviewer", peerBody: "Evidence received." }] },
+    { ...base, id: "reasoning", blocks: [{ type: "thinking", text: "Reviewing the evidence." }] },
+  ];
+  const messages = __chatPaneTest.buildChatMessages([
+    DURATION_REVIEW_ENTRIES[0], ...intervening, DURATION_REVIEW_ENTRIES[2],
+  ]);
+  assert.ok(messages.filter((entry) => intervening.some((source) => source.id === entry.sourceEntryId)).every((entry) => entry.workedFor === undefined));
+  assert.equal(messages.find((entry) => entry.sourceEntryId === "review-answer")?.workedFor, "2m 5s");
+});
+
+test("a trailing system notice cannot expose a still-working assistant duration", () => {
+  const entries = [...DURATION_REVIEW_ENTRIES, durationNotice("later-notice", "2026-05-20T06:45:08.000Z")];
+  const working = renderChat({ entries, phase: "generating" });
+  assert.match(working, /chat-typing:agent/);
+  assert.doesNotMatch(working, /Worked for/);
+  const done = renderChat({ entries, phase: null });
+  assert.equal((done.match(/class="msg__worked"/g) || []).length, 1);
+  assert.match(done, /Worked for 2m 5s/);
 });
 
 test("chat pane groups messages into user-addressable scroll turns", () => {
@@ -266,7 +375,7 @@ test("canonical rows created during the active call stay hidden until the call e
 
 const WORK_ENTRIES: ConversationTimelineEntry[] = [
   message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }),
-  message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }),
+  message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete.", runId: "review-run", runDurationMs: 125000 }),
 ];
 
 test("chat pane shows the working indicator XOR the worked-for summary, never both", () => {
@@ -601,4 +710,62 @@ test("consecutive rows from the same assistant share one header", () => {
     messages.map((m) => [m.id, m.showHeader]),
     [["q", true], ["a1", true], ["a2", false]],
   );
+});
+
+test("distinct assistant interactions retain equal replies and their own headers", () => {
+  const base = message({ id: "first", role: "assistant", createdAt: "2026-05-20T06:43:05.000Z", text: "Ready." });
+  for (const secondText of ["Ready.", "Acknowledged."]) {
+    const messages = __chatPaneTest.buildChatMessages([
+      { ...base, interactionId: "11111111-1111-4111-8111-111111111111", runId: "run-first" },
+      { ...base, id: "second", text: secondText, interactionId: "22222222-2222-4222-8222-222222222222", runId: "run-second" },
+    ]);
+    assert.deepEqual(messages.map(row => [row.id, row.showHeader]), [["first", true], ["second", true]]);
+  }
+});
+
+test("distinct assistant runs in one interaction retain equal replies and headers", () => {
+  const base = { ...message({ id: "first", role: "assistant", createdAt: "2026-05-20T06:43:05.000Z", text: "Ready." }), interactionId: "11111111-1111-4111-8111-111111111111" };
+  const messages = __chatPaneTest.buildChatMessages([
+    { ...base, runId: "run-first" },
+    { ...base, id: "second", runId: "run-second" },
+  ]);
+  assert.deepEqual(messages.map(row => [row.id, row.showHeader]), [["first", true], ["second", true]]);
+});
+
+test("Markdown copy and transcript export retain exact source whitespace", () => {
+  const source = "  # A heading\n\nA line with a hard break  \nNext line\n\n";
+  const entries: ConversationTimelineEntry[] = [{
+    id: "raw-markdown", kind: "message", variant: "rich", identity: AGENT,
+    blocks: [{ type: "markdown", id: "document", source, streaming: true }],
+  }];
+  const rows = __chatPaneTest.buildChatMessages(entries);
+  assert.equal(__chatPaneTest.msgCopyText(rows[0]), source);
+  assert.equal(__chatPaneTest.transcriptCopyText(rows), `Assistant - Agent: ${source}`);
+  assert.equal(rows[0].scrollRowId, "raw-markdown");
+});
+
+test("Markdown rows remain distinct when whitespace carries source meaning", () => {
+  const entries: ConversationTimelineEntry[] = ["one  \ntwo", "one two"].map((source, i) => ({
+    id: `raw-${i}`, kind: "message", variant: "rich", identity: AGENT,
+    blocks: [{ type: "markdown", id: `document-${i}`, source, streaming: false }],
+  }));
+  assert.equal(__chatPaneTest.buildChatMessages(entries).length, 2);
+});
+
+test("compact stock header retains target actions and destination", () => {
+  const html = renderToStaticMarkup(React.createElement(ChatPane, { agent: null, agentLabel: "Agent", identity: "canonical-agent", entries: [], phase: null, draft: "", sending: false, staged: [], onDraftChange: () => {}, onStagedChange: () => {}, onSend: () => true, onInspect: () => {}, headerVariant: "compact" }));
+  assert.match(html, /conv__head--compact/);
+  assert.match(html, /title="canonical-agent"/);
+  assert.match(html, /conv-action:details/);
+  assert.match(html, /To:/);
+  assert.doesNotMatch(html, /class="conv__identity"/);
+});
+
+test("stock folds consecutive proven generic completion but keeps unknown visible", () => {
+  const makeTool = (id: string, name: string, known: boolean): ConversationTimelineEntry => ({ id, kind: "message", variant: "rich", identity: AGENT, blocks: [{ type: "tool-call", toolCallId: id, name, arguments: "{}", status: known ? "success" : "pending", completionEvidence: { outcome: known ? "success" : "unknown", source: known ? "session-history" : "unknown", toolCallId: id } }] });
+  const html = renderToStaticMarkup(React.createElement(ChatPane, { agent: null, agentLabel: "Agent", identity: "agent", entries: [makeTool("one", "read_file", true), makeTool("two", "list_files", true), makeTool("three", "read_file", false)], phase: null, draft: "", sending: false, staged: [], onDraftChange: () => {}, onStagedChange: () => {}, onSend: () => true }));
+  assert.match(html, /2 completed tool calls/);
+  assert.match(html, /Completion unknown/);
+  assert.match(html, /data-conversation-row-id="one"/);
+  assert.match(html, /data-conversation-row-id="two"/);
 });

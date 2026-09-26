@@ -1,3 +1,4 @@
+import type { ToolCompletionEvidence } from "./tool-completion";
 const SUMMARY_HEADER_RE = /^(\d+)\s+files?\s+changed(?:\s+\+([\d,]+)\s+-([\d,]+))?$/i;
 const SUMMARY_FILE_RE = /^(.+?)\s+\+([\d,]+)\s+-([\d,]+)$/;
 const FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
@@ -19,10 +20,43 @@ export interface ConversationParsedSummary {
   files: ConversationParsedSummaryFile[];
 }
 
+/** Raw source for one stable text segment, never inferred runtime state. */
+export interface ConversationRichMarkdownBlock {
+  type: "markdown";
+  id: string;
+  source: string;
+  streaming: boolean;
+}
+
+export type ConversationTextMode = "legacy" | "markdown";
+
+export function buildConversationMarkdownBlocks(
+  source: string,
+  options: { documentId?: string; streaming?: boolean } = {},
+): ConversationRichMarkdownBlock[] {
+  if (!source) return [];
+  return [{
+    type: "markdown",
+    id: options.documentId ?? "text",
+    source,
+    streaming: options.streaming === true,
+  }];
+}
+
 export interface ConversationRichParagraphBlock {
   type: "paragraph";
   text: string;
   streaming?: boolean;
+}
+
+/** Presentation of canonical background-job notice fields, never inferred from prose. */
+export interface ConversationRichBackgroundJobBlock {
+  type: "background-job";
+  jobId: string;
+  displayName?: string;
+  status: string;
+  detail: string;
+  copyText: string;
 }
 
 export interface ConversationRichHeadingBlock {
@@ -61,10 +95,17 @@ export interface ConversationRichToolCallBlock {
   arguments: string;
   result?: string;
   status: "pending" | "success" | "error";
+  completionEvidence?: ToolCompletionEvidence;
+  /** Canonical peer identity for exact authorized display-label lookup. */
+  peerIdentity?: string;
+  /** Authorized peer display metadata, never a model-supplied tool argument. */
+  peerDisplayLabel?: string;
   /** For peer comms tools (send_request, send_message, send_response) */
   peerTarget?: string;
   peerIntent?: string;
   peerBody?: string;
+  /** Unmarked blocks retain legacy display summaries; typed owner bodies are verbatim. */
+  peerBodyFormat?: "verbatim" | "legacy";
   peerImages?: ConversationRichImageBlock[];
   /** Incoming peer message (received via comms drain, not a tool call) */
   peerIncoming?: boolean;
@@ -105,7 +146,9 @@ export interface ConversationRichImageBlock {
 }
 
 export type ConversationRichBlock =
+  | ConversationRichMarkdownBlock
   | ConversationRichParagraphBlock
+  | ConversationRichBackgroundJobBlock
   | ConversationRichHeadingBlock
   | ConversationRichCodeBlock
   | ConversationRichTableBlock
@@ -433,25 +476,20 @@ export function normalizeConversationDisplayLabel(label: string | null | undefin
     .trim();
 }
 
-export function conversationRichPeerBodyForDisplay(body: string | null | undefined): string | undefined {
+export function conversationRichPeerBodyForDisplay(
+  body: string | null | undefined,
+  format: "verbatim" | "legacy" = "verbatim",
+): string | undefined {
+  // Typed owner content is never classified by its spelling. Only callers
+  // explicitly rendering the old presentation format use its compatibility rules.
+  if (format === "verbatim") return typeof body === "string" && body.trim() ? body : undefined;
   const raw = String(body || "").trim();
-  if (!raw) {
-    return undefined;
-  }
-  if (UUID_RE.test(raw) || MACHINE_PEER_TOKEN_RE.test(raw)) {
-    return "Response sent.";
-  }
-  if (/^please\s+send_response\b.*\bresult\.token\b/i.test(raw)) {
-    return "Response requested.";
-  }
-  if (/^please\s+reply\s+with\s+ACK_FROM_PEER_/i.test(raw)) {
-    return "Acknowledgement requested.";
-  }
-  if (/^ACK_?FROM_?PEER_/i.test(raw)) {
-    return "Acknowledgement sent.";
-  }
-  const text = normalizeConversationDisplayText(raw);
-  return text || undefined;
+  if (!raw) return undefined;
+  if (UUID_RE.test(raw) || MACHINE_PEER_TOKEN_RE.test(raw)) return "Response sent.";
+  if (/^please\s+send_response\b.*\bresult\.token\b/i.test(raw)) return "Response requested.";
+  if (/^please\s+reply\s+with\s+ACK_FROM_PEER_/i.test(raw)) return "Acknowledgement requested.";
+  if (/^ACK_?FROM_?PEER_/i.test(raw)) return "Acknowledgement sent.";
+  return normalizeConversationDisplayText(raw) || undefined;
 }
 
 export function conversationRichBlockHasCopyAction(block: ConversationRichBlock): boolean {
@@ -460,6 +498,8 @@ export function conversationRichBlockHasCopyAction(block: ConversationRichBlock)
 
 export function conversationRichBlockCopyText(block: ConversationRichBlock): string {
   switch (block.type) {
+    case "markdown":
+      return block.source;
     case "code":
       return block.body.trim();
     case "command":
@@ -478,6 +518,8 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
         block.headers.join(" | "),
         ...block.rows.map((row) => row.join(" | ")),
       ].join("\n").trim();
+    case "background-job":
+      return block.copyText;
     case "heading":
       return block.text.trim();
     case "paragraph":
@@ -496,7 +538,7 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
           .filter(Boolean)
           .join(" ");
         return [
-          `${dir} ${conversationRichPeerTargetForDisplay(block.peerTarget)}`,
+          `${dir} ${block.peerIdentity || block.peerTarget || "Unknown peer"}`,
           conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
           peerBody,
           images,
@@ -506,7 +548,7 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
       const parts = [`$ ${block.name}`];
       if (block.arguments) parts.push(`Input: ${block.arguments}`);
       if (block.result) parts.push(`Result: ${block.result}`);
-      return parts.join("\n").trim();
+      return parts.join("\n");
     }
     default:
       return "";
@@ -514,11 +556,11 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
 }
 
 export function conversationRichBlocksToText(blocks: ConversationRichBlock[] | null | undefined): string {
-  return (blocks || [])
+  const text = (blocks || [])
     .map((block) => conversationRichBlockCopyText(block))
     .filter(Boolean)
-    .join("\n\n")
-    .trim();
+    .join("\n\n");
+  return blocks?.some((block) => block.type === "markdown" || block.type === "tool-call") ? text : text.trim();
 }
 
 export function parseStreamingConversationRichBlocks(

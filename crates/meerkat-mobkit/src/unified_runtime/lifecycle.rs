@@ -480,6 +480,12 @@ impl UnifiedRuntime {
         // Phase 3: Close event router
         self.close_event_router().await;
 
+        // The runtime owns the console projector. Detach its live source after
+        // draining runtime events so closed runtimes cannot retain discovery tasks.
+        if let Some(projection) = self.console_projection.get() {
+            projection.unregister_runtime("default");
+        }
+
         // Phase 4: Shutdown modules
         let module_shutdown = self.module_runtime.lock().await.shutdown();
         let retired_supervisor_cleanup = self.join_retired_supervisor_cleanups().await;

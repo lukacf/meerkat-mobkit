@@ -21,8 +21,13 @@ import {
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
 import { describeFailure, summarizeFailureData } from "./failure-summary";
-import { mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared } from "../../../packages/console-core/src/adapters";
 import {
+  mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared,
+  inferResponsePhaseFromFrames as inferResponsePhaseFromFramesShared,
+  resolvePanelResponsePhase as resolvePanelResponsePhaseShared,
+} from "../../../packages/console-core/src/adapters";
+import {
+  conversationRichBlockCopyText,
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
 function typedCommsNotice(args: {
@@ -244,9 +249,7 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
   const entry = entries[0]!;
   const text = "text" in entry
     ? entry.text
-    : "blocks" in entry && Array.isArray(entry.blocks) && entry.blocks[0]?.type === "paragraph"
-      ? entry.blocks[0].text
-      : "";
+    : "blocks" in entry && Array.isArray(entry.blocks) && (entry.blocks[0]?.type === "paragraph" || entry.blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entry.blocks[0]) : "";
   assert.equal(text, "Status is stable.");
 });
 
@@ -319,7 +322,7 @@ test("streamed reasoning entries carry the turn interactionId (audit fix, both a
     const text = entries.find(
       (entry) => entry.kind === "message"
         && (("text" in entry && entry.text) || ("blocks" in entry
-          && entry.blocks?.some((block) => block.type === "paragraph"))),
+          && entry.blocks?.some((block) => (block.type === "paragraph" || block.type === "markdown")))),
     );
     assert.ok(text, `${name}: text entry rendered`);
     assert.equal(
@@ -345,6 +348,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
       { id: "evt-2", event: "reasoning_delta", interactionId: "int-1", data: { delta: "Thinking first." } },
       { id: "evt-5", event: "interaction_complete", interactionId: "int-1", timestampMs: 1300, data: {} },
     ],
+    { renderInteractionStartsAsUser: true },
   );
   const thinkingIdx = entries.findIndex(
     (e) => "blocks" in e && Array.isArray(e.blocks) && e.blocks.some((b) => b.type === "thinking"),
@@ -352,9 +356,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
   const answerIdx = entries.findIndex((e) => {
     const t = "text" in e
       ? e.text
-      : "blocks" in e && Array.isArray(e.blocks) && e.blocks[0]?.type === "paragraph"
-        ? e.blocks[0].text
-        : "";
+      : "blocks" in e && Array.isArray(e.blocks) && (e.blocks[0]?.type === "paragraph" || e.blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(e.blocks[0]) : "";
     return typeof t === "string" && t.includes("The answer.");
   });
   assert.ok(thinkingIdx >= 0, "thinking entry present");
@@ -362,7 +364,7 @@ test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answe
   assert.ok(thinkingIdx < answerIdx, `thinking (${thinkingIdx}) should precede answer (${answerIdx})`);
 });
 
-test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conservative", () => {
+test("mapFramesToTimelineEntries preserves incomplete streamed Markdown as one raw document", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -378,12 +380,10 @@ test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conser
 
   assert.equal(entries.length, 1);
   const blocks = "blocks" in entries[0]! ? entries[0].blocks : [];
-  assert.equal(blocks?.[0]?.type, "heading");
-  assert.equal(blocks?.[1]?.type, "paragraph");
-  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "- first\n- seco");
+  assert.deepEqual(blocks, [{ type: "markdown", id: "evt-1:text:0", source: "## Risk\n\n- first\n- seco", streaming: true }]);
 });
 
-test("mapFramesToTimelineEntries reparses completed streamed markdown normally", () => {
+test("mapFramesToTimelineEntries keeps the same Markdown document on stream completion", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -409,9 +409,7 @@ test("mapFramesToTimelineEntries reparses completed streamed markdown normally",
 
   const assistant = entries.find((entry) => entry.kind === "message" && entry.identity.role === "assistant");
   const blocks = assistant && "blocks" in assistant ? assistant.blocks : [];
-  assert.equal(blocks?.[0]?.type, "heading");
-  assert.equal(blocks?.[1]?.type, "paragraph");
-  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "first\nsecond");
+  assert.deepEqual(blocks, [{ type: "markdown", id: "evt-1:text:0", source: "## Risk\n\n- first\n- second", streaming: false }]);
 });
 
 test("mapFramesToTimelineEntries renders run_started parent prompts as the inbound turn", () => {
@@ -515,9 +513,7 @@ test("mapFramesToTimelineEntries suppresses duplicate terminal text after stream
   assert.equal(entries[0]?.kind, "message");
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Hello! How can I assist you today?",
   );
@@ -572,7 +568,7 @@ test("mapFramesToTimelineEntries suppresses session-history terminal text alread
       if ("text" in entry) return entry.text;
       if ("blocks" in entry && Array.isArray(entry.blocks)) {
         return entry.blocks
-          .map((block) => block.type === "paragraph" ? block.text : "")
+          .map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "")
           .join("");
       }
       return "";
@@ -611,9 +607,7 @@ test("mapFramesToTimelineEntries ignores text_complete so the terminal event doe
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Status is stable.",
   );
@@ -646,9 +640,7 @@ test("mapFramesToTimelineEntries ignores live text_complete before matching inte
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : entries[0] && "text" in entries[0]
         ? entries[0].text
         : "",
@@ -675,9 +667,7 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Status is stable.",
   );
@@ -945,6 +935,50 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
   );
 });
 
+for (const [surface, inferPhase, resolvePhase] of [
+  ["stock", inferResponsePhaseFromFrames, resolvePanelResponsePhase],
+  ["shared", inferResponsePhaseFromFramesShared, resolvePanelResponsePhaseShared],
+] as const) {
+  for (const event of ["text_complete", "interaction_complete"]) {
+    const historyStep = {
+      id: "saved-intermediate", event, sourceKind: "session_history",
+      runtimeKey: "runtime-a", identity: "worker", sessionId: "session-a",
+      runId: "00000000-0000-0000-0000-000000000001",
+      interactionId: "00000000-0000-0000-0000-000000000002",
+      timestampMs: 2,
+      data: { result: "I will inspect the file.", text: "I will inspect the file.", message: {
+        role: "block_assistant", stop_reason: "tool_use", blocks: [
+          { block_type: "text", data: { text: "I will inspect the file." } },
+          { block_type: "tool_use", data: { id: "read-1", name: "read_file", args: { path: "README.md" } } },
+        ],
+      } },
+    };
+    test(`${surface}: saved intermediate ${event} cannot override working evidence without a retained start`, () => {
+      assert.equal(inferPhase([historyStep], "tool-executing"), "tool-executing");
+      assert.equal(resolvePhase({ frames: [historyStep], serverPhase: "generating" }), "generating");
+      assert.equal(resolvePhase({ frames: [historyStep], serverPhase: null }), null,
+        "a saved step alone does not manufacture current working state");
+      const open = { ...historyStep, id: "actual-start", event: "run_started", sourceKind: "console_event", timestampMs: 1, data: {} };
+      const liveText = { ...historyStep, id: "next-text", event: "text_complete", sourceKind: "console_event", timestampMs: 3, data: { text: "Next step." } };
+      assert.equal(inferPhase([open, historyStep, liveText]), "waiting",
+        "a legacy saved interaction_complete cannot close the real open run");
+      assert.equal(resolvePhase({ frames: [open, historyStep, liveText], serverPhase: "generating" }), "waiting");
+    });
+    test(`${surface}: actual terminals remain authoritative around saved intermediate ${event} replay`, () => {
+      for (const terminalEvent of ["run_completed", "interaction_complete"]) {
+        const terminal = { ...historyStep, id: "actual-terminal", event: terminalEvent, sourceKind: "console_event", timestampMs: 3, data: { result: "Done." } };
+        for (const frames of [[historyStep, terminal], [terminal, historyStep]]) {
+          assert.equal(inferPhase(frames, "waiting"), null);
+          assert.equal(resolvePhase({ frames, serverPhase: "tool-executing" }), null,
+            "an intermediate replay cannot revive a completed run");
+        }
+      }
+      assert.equal(resolvePhase({ frames: [{ ...historyStep, sourceKind: "console_event" }], serverPhase: "generating" }), null,
+        "the saved-step exception does not reinterpret live lifecycle events");
+    });
+  }
+}
+
 test("resolvePanelResponsePhase lets local terminal history clear stale server phase", () => {
   assert.equal(
     resolvePanelResponsePhase({
@@ -1013,9 +1047,7 @@ test("mapFramesToTimelineEntries renders terminal completion without streamed de
   assert.equal(entries[0]?.identity.role, "assistant");
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "The uploaded badge says ALL CLEAR.",
   );
@@ -1183,8 +1215,8 @@ test("mapFramesToTimelineEntries renders image-tool turns without duplicating fi
     return "blocks" in entry
       && Array.isArray(entry.blocks)
       && entry.blocks.some(
-        (block) => block.type === "paragraph"
-          && block.text === "Generated the square ALL CLEAR incident badge image.",
+        (block) => (block.type === "paragraph" || block.type === "markdown")
+          && conversationRichBlockCopyText(block) === "Generated the square ALL CLEAR incident badge image.",
       );
   });
   const imageEntries = entries.filter(
@@ -1426,8 +1458,8 @@ test("appendOptimisticConversationEntry preserves timestamp transcript order", (
       if (entry.id === "optimistic") return "optimistic";
       if (entry.kind !== "message") return entry.kind;
       if (entry.variant === "rich" && entry.blocks?.[0]?.type === "tool-call") return "tool";
-      if (entry.variant === "rich" && entry.blocks?.[0]?.type === "paragraph") {
-        return entry.blocks[0].text;
+      if (entry.variant === "rich" && (entry.blocks?.[0]?.type === "paragraph" || entry.blocks?.[0]?.type === "markdown")) {
+        return conversationRichBlockCopyText(entry.blocks[0]);
       }
       return "text" in entry ? entry.text : "rich";
     }),
@@ -1484,9 +1516,7 @@ test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle s
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Sent the status check.",
   );
@@ -1557,8 +1587,8 @@ test("mapFramesToTimelineEntries renders server tool content as tool activity wi
     assert.match(tool.result || "", /https:\/\/example\.com/);
   }
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "I found one source.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "I found one source.");
 });
 
 test("mapFramesToTimelineEntries renders completed web_search_call status and query context", () => {
@@ -1703,7 +1733,7 @@ test("mapFramesToTimelineEntries preserves text and tool interleaving inside one
       if (entry.variant === "rich") {
         const block = entry.blocks?.[0];
         if (block?.type === "tool-call") return "tool";
-        if (block?.type === "paragraph") return block.text;
+        if (block?.type === "paragraph" || block?.type === "markdown") return conversationRichBlockCopyText(block);
         return "rich";
       }
       return entry.text;
@@ -1880,7 +1910,7 @@ test("mapFramesToTimelineEntries renders session-history assistant text_complete
   const renderedText = entries[0] && "text" in entries[0]
     ? entries[0].text
     : entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      ? entries[0].blocks.map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "").join("")
       : "";
   assert.equal(
     renderedText,
@@ -1964,12 +1994,12 @@ test("mapFramesToTimelineEntries renders session-history reasoning blocks outsid
   assert.equal(finalBlocks?.[0]?.type, "thinking");
   assert.equal(finalBlocks?.[0]?.text, "**Considering event response**\n\nI should not be rendered as an answer.");
   assert.equal(finalBlocks?.[0]?.label, "");
-  assert.equal(finalBlocks?.[1]?.type, "paragraph");
-  assert.equal(finalBlocks?.[1]?.text, "Ready as the incident investigation worker and standing by for follow-up tasks.");
+  assert.equal(finalBlocks?.[1]?.type, "markdown");
+  assert.equal(finalBlocks?.[1]?.source, "Ready as the incident investigation worker and standing by for follow-up tasks.");
   const renderedText = entries[1] && "text" in entries[1]
     ? entries[1].text
     : entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      ? entries[1].blocks.map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "").join("")
       : "";
   assert.equal(
     renderedText,
@@ -2020,8 +2050,8 @@ test("mapFramesToTimelineEntries renders live reasoning deltas as thought blocks
   assert.equal(thought?.label, "");
   assert.equal(thought?.final, true);
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries suppresses history reasoning replay after a streamed answer", () => {
@@ -2035,20 +2065,23 @@ test("mapFramesToTimelineEntries suppresses history reasoning replay after a str
     [
       {
         id: "reasoning-1",
-        event: "reasoning_delta",
+        event: "reasoning_complete",
         identity: "incident-worker-1",
-        data: { delta: "Planning before answering." },
+        runId: "run-history-replay",
+        data: { content: "Planning before answering." },
       },
       {
         id: "text-1",
         event: "text_delta",
         identity: "incident-worker-1",
+        runId: "run-history-replay",
         data: { delta: "Ready." },
       },
       {
         id: "history-final",
         event: "interaction_complete",
         identity: "incident-worker-1",
+        runId: "run-history-replay",
         sourceKind: "session_history",
         data: {
           message: {
@@ -2076,11 +2109,11 @@ test("mapFramesToTimelineEntries suppresses history reasoning replay after a str
   assert.equal(thought?.type, "thinking");
   assert.equal(thought?.text, "Planning before answering.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
-test("mapFramesToTimelineEntries suppresses late completed reasoning slices after an answer", () => {
+test("mapFramesToTimelineEntries replaces unfinished reasoning with the late authoritative block", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-worker-1",
@@ -2123,13 +2156,13 @@ test("mapFramesToTimelineEntries suppresses late completed reasoning slices afte
   assert.equal(entries.length, 2);
   const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   assert.equal(thought?.type, "thinking");
-  assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
+  assert.equal(thought?.text, "Evaluating choices.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
-test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice arrives before an answer", () => {
+test("mapFramesToTimelineEntries replaces pending reasoning with the authoritative complete block", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "risk-red-team",
@@ -2166,9 +2199,9 @@ test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice a
   const thinking = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(thinking?.type, "thinking");
-  assert.equal(thinking?.text, "Searching for context.\n\nEvaluating relocation choices.");
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Answer.");
+  assert.equal(thinking?.text, "Evaluating relocation choices.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Answer.");
 });
 
 test("mapFramesToTimelineEntries upgrades prior reasoning when a late complete is fuller", () => {
@@ -2216,8 +2249,8 @@ test("mapFramesToTimelineEntries upgrades prior reasoning when a late complete i
   assert.equal(thought?.type, "thinking");
   assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
 });
 
 test("mapFramesToTimelineEntries flushes pending reasoning before another interaction completes", () => {
@@ -2255,7 +2288,7 @@ test("mapFramesToTimelineEntries flushes pending reasoning before another intera
   assert.equal(second?.text, "Second turn reasoning.");
 });
 
-test("mapFramesToTimelineEntries suppresses late unscoped reasoning without mutating prior traces", () => {
+test("mapFramesToTimelineEntries preserves late unscoped reasoning separately from prior traces", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-worker-1",
@@ -2285,13 +2318,15 @@ test("mapFramesToTimelineEntries suppresses late unscoped reasoning without muta
     ],
   );
 
-  assert.equal(entries.length, 2);
+  assert.equal(entries.length, 3);
   const first = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
   const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(first?.type, "thinking");
   assert.equal(first?.text, "Searching for context.");
-  assert.equal(answer?.type, "paragraph");
-  assert.equal(answer?.text, "Ready.");
+  assert.equal(answer?.type, "markdown");
+  assert.equal(answer?.source, "Ready.");
+  const late = entries[2] && "blocks" in entries[2] ? entries[2].blocks?.[0] : null;
+  assert.equal(late?.text, "Searching for context.\n\nEvaluating a later independent turn.");
 });
 
 test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final", () => {
@@ -2318,6 +2353,93 @@ test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final",
   assert.equal(thought?.text, "Still thinking");
   assert.equal(thought?.final, undefined);
 });
+
+// AgentEvent::ReasoningComplete contains the assembler's entire current block.
+// Exercise both public adapters so the reusable surface follows the same owner contract.
+for (const [surface, mapper] of [
+  ["stock", mapFramesToTimelineEntries],
+  ["shared", mapFramesToTimelineEntriesShared],
+] as const) {
+  const reasoningFrame = (id: string, event: string, text: string, interactionId = "turn-a") => ({
+    id, event, interactionId,
+    data: event === "reasoning_delta" ? { delta: text } : { content: text },
+  });
+  const thoughts = (frames: Parameters<typeof mapper>[1]) => mapper(null, frames)
+    .flatMap((entry) => entry.kind === "message" ? (entry.blocks || [])
+      .filter((block) => block.type === "thinking")
+      .map((block) => ({ id: entry.id, text: block.text, final: block.final })) : []);
+
+  test(`${surface}: reasoning completion replaces damaged fragments exactly with a stable entry id`, () => {
+    const frames = [
+      reasoningFrame("reasoning-open", "reasoning_delta", "Check "),
+      reasoningFrame("reasoning-fragment", "reasoning_delta", "again and finish."),
+    ];
+    assert.deepEqual(thoughts(frames), [{ id: "reasoning-open", text: "Check again and finish.", final: undefined }]);
+    const completed = "  Check again again and finish.\r\n";
+    assert.deepEqual(thoughts([...frames, reasoningFrame("reasoning-done", "reasoning_complete", completed)]), [
+      { id: "reasoning-open", text: completed, final: true },
+    ]);
+  });
+
+  test(`${surface}: distinct completed reasoning blocks retain identical words in one interaction`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "Check again."),
+      reasoningFrame("first-done", "reasoning_complete", "Check again."),
+      reasoningFrame("second-open", "reasoning_delta", "Check again."),
+      reasoningFrame("second-done", "reasoning_complete", "Check again."),
+      reasoningFrame("third-complete-only", "reasoning_complete", "Check again."),
+    ]), [
+      { id: "first-open", text: "Check again.", final: true },
+      { id: "second-open", text: "Check again.", final: true },
+      { id: "third-complete-only", text: "Check again.", final: true },
+    ]);
+  });
+
+  test(`${surface}: late reasoning completion updates only its unfinished block after a visual flush`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "Keep this earlier block."),
+      reasoningFrame("first-done", "reasoning_complete", "Keep this earlier block."),
+      reasoningFrame("second-open", "reasoning_delta", "Damaged second block."),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("second-done", "reasoning_complete", "Exact completed second block."),
+    ]), [
+      { id: "first-open", text: "Keep this earlier block.", final: true },
+      { id: "second-open", text: "Exact completed second block.", final: true },
+    ]);
+  });
+
+  test(`${surface}: reasoning deltas continue the open block across interleaved text`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("reasoning-open", "reasoning_delta", "Check "),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("reasoning-next", "reasoning_delta", "again."),
+      reasoningFrame("reasoning-done", "reasoning_complete", "Check again."),
+    ]), [{ id: "reasoning-open", text: "Check again.", final: true }]);
+  });
+
+  test(`${surface}: foreign reasoning completion cannot rewrite another interaction`, () => {
+    assert.deepEqual(thoughts([
+      reasoningFrame("first-open", "reasoning_delta", "First provisional."),
+      { id: "answer", event: "text_delta", interactionId: "turn-a", data: { delta: "Answer." } },
+      reasoningFrame("foreign-complete", "reasoning_complete", "First provisional. Foreign complete.", "turn-b"),
+      reasoningFrame("first-done", "reasoning_complete", "First canonical."),
+    ]), [
+      { id: "first-open", text: "First canonical.", final: true },
+      { id: "foreign-complete", text: "First provisional. Foreign complete.", final: true },
+    ]);
+  });
+
+  test(`${surface}: explicit run identity prevents reasoning completion from claiming another run`, () => {
+    assert.deepEqual(thoughts([
+      { ...reasoningFrame("first-open", "reasoning_delta", "First run."), runId: "run-a" },
+      { ...reasoningFrame("other-complete", "reasoning_complete", "Other run."), runId: "run-b" },
+      { ...reasoningFrame("first-complete", "reasoning_complete", "First run completed."), runId: "run-a" },
+    ]), [
+      { id: "first-open", text: "First run completed.", final: true },
+      { id: "other-complete", text: "Other run.", final: true },
+    ]);
+  });
+}
 
 test("mapFramesToTimelineEntries renders session-history tool-use only assistant turns", () => {
   const entries = mapFramesToTimelineEntries(
@@ -2586,8 +2708,8 @@ test("mapFramesToTimelineEntries renders user image content blocks inline", () =
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks[0]?.type, "paragraph");
-  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Describe this badge.");
+  assert.equal(blocks[0]?.type, "markdown");
+  assert.equal((blocks[0]?.type === "paragraph" || blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(blocks[0]) : "", "Describe this badge.");
   assert.equal(blocks[1]?.type, "image");
   assert.equal(
     blocks[1]?.type === "image" ? blocks[1].src : "",
@@ -2626,8 +2748,8 @@ test("mapFramesToTimelineEntries renders user image_ref content blocks inline", 
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks[0]?.type, "paragraph");
-  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Please inspect the forwarded image.");
+  assert.equal(blocks[0]?.type, "markdown");
+  assert.equal((blocks[0]?.type === "paragraph" || blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(blocks[0]) : "", "Please inspect the forwarded image.");
   assert.equal(blocks[1]?.type, "image");
   assert.equal(
     blocks[1]?.type === "image" ? blocks[1].src : "",
@@ -2793,9 +2915,7 @@ test("mapFramesToTimelineEntries treats spawn-looking interaction prompts as use
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Acknowledged.",
   );
@@ -2943,7 +3063,7 @@ test("mapFramesToTimelineEntries renders session-history typed comms frames as c
   assert.equal(block?.type, "tool-call");
   assert.equal(block?.peerIncoming, true);
   assert.equal(block?.peerTarget, "grandchild-worker");
-  assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
+  assert.equal(block?.peerBody, "Peer message from implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker:\ngrandchild-worker ping acknowledgement.");
 });
 
 test("mapFramesToTimelineEntries preserves outgoing typed comms direction", () => {
@@ -3043,9 +3163,7 @@ test("mapFramesToTimelineEntries suppresses repeated assistant history after an 
   assert.equal(assistantMessages.length, 1);
   const assistantText = "text" in assistantMessages[0]
     ? assistantMessages[0].text
-    : "blocks" in assistantMessages[0] && assistantMessages[0].blocks?.[0]?.type === "paragraph"
-      ? assistantMessages[0].blocks[0].text
-      : "";
+    : "blocks" in assistantMessages[0] && (assistantMessages[0].blocks?.[0]?.type === "paragraph" || assistantMessages[0].blocks?.[0]?.type === "markdown") ? conversationRichBlockCopyText(assistantMessages[0].blocks[0]) : "";
   assert.equal(assistantText, "qa-child-worker said: “Ping acknowledged.”");
   const commsMessages = entries.filter(
     (entry) => entry.kind === "message" && entry.identity.id === "comms",
@@ -3853,7 +3971,7 @@ test("mapFramesToTimelineEntries preserves literal Body lines in clean comms bod
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Here is the report Body: section one",
+    "Here is the report\nBody: section one",
   );
 });
 
@@ -3897,7 +4015,7 @@ test("mapFramesToTimelineEntries preserves clean comms bodies that look like int
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Intent: preserve this line Body: preserve this too",
+    "Intent: preserve this line\nBody: preserve this too",
   );
 });
 
@@ -3931,7 +4049,7 @@ test("mapFramesToTimelineEntries preserves quoted peer envelope lines in clean c
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Peer message from incident-lead: Please keep this quote.",
+    "Peer message from incident-lead:\nPlease keep this quote.",
   );
 });
 
@@ -3965,7 +4083,7 @@ test("mapFramesToTimelineEntries preserves same-peer envelope lines quoted insid
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Quoted wrapper: Peer message from review:singleton: Please keep this quote.",
+    "Quoted wrapper:\nPeer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -3999,7 +4117,7 @@ test("mapFramesToTimelineEntries preserves bracketed COMMS note literals in clea
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "[COMMS NOTE] Intent: preserve this Body: preserve this too",
+    "[COMMS NOTE]\nIntent: preserve this\nBody: preserve this too",
   );
 });
 
@@ -4033,7 +4151,7 @@ test("mapFramesToTimelineEntries preserves quoted bracketed COMMS envelopes in c
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "[COMMS MESSAGE from incident-lead] Intent: preserve this Body: preserve this too",
+    "[COMMS MESSAGE from incident-lead]\nIntent: preserve this\nBody: preserve this too",
   );
 });
 
@@ -4067,7 +4185,7 @@ test("mapFramesToTimelineEntries preserves standalone peer scaffold words in cle
     : null;
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
-    "Peer message Please keep this heading.",
+    "Peer message\nPlease keep this heading.",
   );
 });
 
@@ -4477,7 +4595,7 @@ test("mapFramesToTimelineEntries does not suppress later envelope-looking prompt
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "comms");
   assert.equal(entries[1]?.identity.id, "user");
-  assert.equal(entries[1]?.id, "later-operator-looking-prompt:2");
+  assert.equal(entries[1]?.id, "later-operator-looking-prompt");
 });
 
 test("mapFramesToTimelineEntries does not suppress quoted peer envelopes inside operator prompts", () => {
@@ -4554,7 +4672,7 @@ test("mapFramesToTimelineEntries suppresses nearest duplicate by frame order wit
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "comms");
   assert.equal(entries[1]?.identity.id, "user");
-  assert.equal(entries[1]?.id, "later-raw-run-started:2");
+  assert.equal(entries[1]?.id, "later-raw-run-started");
 });
 
 test("mapFramesToTimelineEntries does not suppress colon-prefixed peer aliases", () => {
@@ -4628,7 +4746,7 @@ test("mapFramesToTimelineEntries suppresses runtime-id peer envelopes without tr
   assert.equal(entries[0]?.identity.id, "comms");
 });
 
-test("mapFramesToTimelineEntries strips typed one-line comms envelopes by structured peer alias", () => {
+test("mapFramesToTimelineEntries preserves typed one-line comms owner content", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "planner",
@@ -4655,7 +4773,7 @@ test("mapFramesToTimelineEntries strips typed one-line comms envelopes by struct
   assert.equal(entries.length, 1);
   const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : undefined;
   assert.equal(block?.type, "tool-call");
-  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Error: failed");
+  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Peer message from review:singleton: Error: failed");
 });
 
 test("mapFramesToTimelineEntries does not suppress unrelated same-body peer prompts", () => {
@@ -5049,7 +5167,7 @@ test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from review:singleton: Please keep this quote.",
+    "Peer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -5090,7 +5208,7 @@ test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from review:singleton: Please keep this quote.",
+    "Peer message from review:singleton:\nPlease keep this quote.",
   );
 });
 
@@ -5123,7 +5241,7 @@ test("mapFramesToTimelineEntries preserves leading slash peer envelopes in struc
   assert.equal(block?.type, "tool-call");
   assert.equal(
     block?.peerBody,
-    "Peer message from fugue/issue_lead/LUC-642/issue_lead: Please keep this quote.",
+    "Peer message from fugue/issue_lead/LUC-642/issue_lead:\nPlease keep this quote.",
   );
 });
 
@@ -5352,9 +5470,7 @@ test("mapFramesToTimelineEntries renders live untyped peer system notices", () =
 
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.identity.id, "comms");
-  const text = entries[0] && "blocks" in entries[0] && entries[0].blocks?.[0]?.type === "paragraph"
-    ? entries[0].blocks[0].text
-    : "";
+  const text = entries[0] && "blocks" in entries[0] && (entries[0].blocks?.[0]?.type === "paragraph" || entries[0].blocks?.[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : "";
   assert.match(text, /LIVE_PEER_NOTICE landed in the parent chat/);
 });
 
@@ -5467,7 +5583,7 @@ test("mapFramesToTimelineEntries renders live non-comms system notices without t
   const runtimeBlock = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
   assert.equal(runtimeBlock?.type, "paragraph");
   assert.equal(
-    runtimeBlock?.type === "paragraph" ? runtimeBlock.text : "",
+    (runtimeBlock?.type === "paragraph" || runtimeBlock?.type === "markdown") ? conversationRichBlockCopyText(runtimeBlock) : "",
     "Runtime recovered from transient stream lag",
   );
 });
@@ -5707,7 +5823,7 @@ test("mapFramesToTimelineEntries hides image external-event notices after rich u
   assert.equal(entries[0]?.identity.id, "user");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks : [];
-  assert.equal(blocks?.filter((block) => block.type === "paragraph").length, 1);
+  assert.equal(blocks?.filter((block) => block.type === "paragraph" || block.type === "markdown").length, 1);
   assert.equal(blocks?.filter((block) => block.type === "image").length, 1);
 });
 
@@ -6178,8 +6294,8 @@ test("mapFramesToTimelineEntries renders inbound content-block run_started promp
   assert.equal(blocks.length, 3);
   assert.equal(
     blocks
-      .filter((block) => block.type === "paragraph")
-      .map((block) => block.type === "paragraph" ? block.text : "")
+      .filter((block) => block.type === "paragraph" || block.type === "markdown")
+      .map((block) => (block.type === "paragraph" || block.type === "markdown") ? conversationRichBlockCopyText(block) : "")
       .join("\n"),
     "[COMMS MESSAGE from incident-command-center/commander/incident-commander]\nPlease describe this generated self-portrait image.",
   );
@@ -6228,9 +6344,7 @@ test("mapFramesToTimelineEntries orders persisted interaction history by interac
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "Working on it.",
   );
@@ -6271,9 +6385,7 @@ test("mapFramesToTimelineEntries keeps accepted user input before the later assi
   assert.equal(entries[1]?.identity.role, "assistant");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
+      ? (entries[1].blocks[0]?.type === "paragraph" || entries[1].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[1].blocks[0]) : ""
       : "",
     "OK",
   );
@@ -6379,9 +6491,7 @@ test("mapFramesToTimelineEntries decodes stringified delta payloads from persist
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Enterprise merchants are experiencing significant payment failures.",
   );
@@ -6406,9 +6516,7 @@ test("mapFramesToTimelineEntries preserves whitespace-only text deltas instead o
   assert.equal(entries.length, 1);
   assert.equal(
     entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
-        : ""
+      ? (entries[0].blocks[0]?.type === "paragraph" || entries[0].blocks[0]?.type === "markdown") ? conversationRichBlockCopyText(entries[0].blocks[0]) : ""
       : "",
     "Payments-API remains degraded at 38%",
   );
@@ -6829,6 +6937,100 @@ function workGraphToolFrames(args: {
     },
   ];
 }
+
+function workGraphFallbackToolBlocks(entries: ReturnType<typeof mapFramesToTimelineEntries>) {
+  return entries.flatMap((entry) => entry.kind === "message"
+    ? (entry.blocks || []).filter((block) => block.type === "tool-call")
+    : []);
+}
+
+for (const name of ["workgraph_ready", "workgraph_list"]) {
+  test(`workgraph fallback preserves empty ${name} result and exact copied bytes`, () => {
+    const frames = workGraphToolFrames({ idPrefix: name, name, callArgs: { labels: [] }, result: { items: [] } });
+    const exactResult = " \n{ \"items\" : [] }\n\t";
+    const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+      ...frames[1], data: { ...frames[1].data, result: exactResult, is_error: false },
+    }]);
+    const blocks = workGraphFallbackToolBlocks(entries);
+    assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 0);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].name, name);
+    assert.equal(blocks[0].result, exactResult);
+    assert.equal(blocks[0].completionEvidence?.outcome, "success");
+    assert.equal(conversationRichBlockCopyText(blocks[0]), `$ ${name}\nInput: {"labels":[]}\nResult: ${exactResult}`);
+  });
+}
+
+test("workgraph fallback preserves pending and unknown completion before empty success", () => {
+  const frames = workGraphToolFrames({ idPrefix: "pending-ready", name: "workgraph_ready", callArgs: {}, result: { items: [] } });
+  const pending = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames.slice(0, 1)));
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].status, "pending");
+  assert.equal(pending[0].completionEvidence?.outcome, "running");
+  assert.equal(pending[0].result, undefined);
+  const unknown = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames));
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].status, "pending");
+  assert.equal(unknown[0].completionEvidence?.outcome, "unknown");
+  const completed = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+    ...frames[1], data: { ...frames[1].data, is_error: false },
+  }]));
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].toolCallId, pending[0].toolCallId);
+  assert.equal(completed[0].status, "success");
+  assert.equal(completed[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback pairs a nameless history result with its exact call", () => {
+  const frames = workGraphToolFrames({ idPrefix: "history-empty", name: "workgraph_ready", callArgs: {}, result: { items: [] } });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [
+    { ...frames[0], sourceKind: "session_history" },
+    { ...frames[1], sourceKind: "session_history", data: { tool_call_id: "history-empty-tc", content: "{\"items\":[]}", is_error: false } },
+  ]);
+  const blocks = workGraphFallbackToolBlocks(entries);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].toolCallId, "history-empty-tc");
+  assert.equal(blocks[0].name, "workgraph_ready");
+  assert.equal(blocks[0].result, "{\"items\":[]}");
+  assert.equal(blocks[0].completionEvidence?.source, "session-history");
+  assert.equal(blocks[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback restores canonical assistant tool blocks with empty results", () => {
+  const frames = [
+    { id: "canonical-tool", event: "text_complete", sourceKind: "session_history", timestampMs: 1000,
+      data: { message: { role: "block_assistant", stop_reason: "tool_use", blocks: [{
+        block_type: "tool_use", data: { id: "canonical-empty-call", name: "workgraph_ready", args: {} },
+      }] } } },
+    { id: "canonical-result", event: "tool_execution_completed", sourceKind: "session_history", timestampMs: 1001,
+      data: { tool_call_id: "canonical-empty-call", content: " \n{\"items\":[]}\n", is_error: false } },
+  ];
+  const blocks = workGraphFallbackToolBlocks(mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].name, "workgraph_ready");
+  assert.equal(blocks[0].result, " \n{\"items\":[]}\n");
+  assert.equal(blocks[0].completionEvidence?.outcome, "success");
+});
+
+test("workgraph fallback does not duplicate item cards or hide another empty call", () => {
+  const itemFrames = workGraphToolFrames({ idPrefix: "card", name: "workgraph_list", callArgs: {}, result: { items: [workGraphItem({ id: "visible-item" })] } });
+  const emptyFrames = workGraphToolFrames({ idPrefix: "empty-next", name: "workgraph_ready", callArgs: {}, result: { items: [] }, timestampMs: 1_779_405_465_000 });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...itemFrames, ...emptyFrames]);
+  assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 1);
+  assert.deepEqual(workGraphFallbackToolBlocks(entries).map((block) => block.toolCallId), ["empty-next-tc"]);
+});
+
+test("workgraph fallback keeps unrooted errors in their existing card without duplicate rows", () => {
+  const frames = workGraphToolFrames({ idPrefix: "unrooted-error", name: "workgraph_ready", callArgs: {}, result: {} });
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [frames[0], {
+    ...frames[1], data: { ...frames[1].data, is_error: true, result: "Unable to read ready set" },
+  }]);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].lastActionFailed, true);
+  assert.match((cards[0].recentEvents || []).join("\n"), /Unable to read ready set/);
+  assert.deepEqual(workGraphFallbackToolBlocks(entries), []);
+});
 
 test("workgraph create→claim→close folds into one evolving card with correct progress and revisions", () => {
   const frames = [
@@ -7835,14 +8037,15 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     timestampMs: 1_779_405_466_000,
   });
 
-  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...firstPoll, ...secondPoll])
-    .filter((entry) => entry.kind === "workgraph");
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...firstPoll, ...secondPoll]);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.deepEqual(workGraphFallbackToolBlocks(entries), [], "represented event polls must not duplicate their card as generic tools");
   assert.equal(cards.length, 1);
   const card = cards[0];
   if (card.kind !== "workgraph") return;
   assert.deepEqual(
     card.recentEvents,
-    ["created · 09:00", "claimed · 09:01", "updated · 09:02"],
+    ["created", "claimed", "updated"].map((kind, index) => `${kind} · ${new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(`2026-07-08T09:0${index}:00Z`))}`),
     "replayed seq'd events fold exactly once",
   );
 
@@ -7867,18 +8070,40 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     },
     timestampMs: 1_779_405_468_000,
   });
-  const echoCards = mapFramesToTimelineEntries(
+  const echoEntries = mapFramesToTimelineEntries(
     WORKGRAPH_AGENT,
     [...base, ...firstPoll, ...secondPoll, ...echoPollOnce, ...echoPollAgain],
-  ).filter((entry) => entry.kind === "workgraph");
+  );
+  const echoCards = echoEntries.filter((entry) => entry.kind === "workgraph");
+  assert.deepEqual(workGraphFallbackToolBlocks(echoEntries), [], "replayed event calls remain represented by the same card");
   const echoCard = echoCards[0];
   if (echoCard.kind !== "workgraph") return;
   assert.deepEqual(
     echoCard.recentEvents,
-    ["created · 09:00", "claimed · 09:01", "updated · 09:02", "evidence added · 09:03", "closed · 09:04"],
+    ["created", "claimed", "updated", "evidence added", "closed"].map((kind, index) => `${kind} · ${new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(`2026-07-08T09:0${index}:00Z`))}`),
     "seq-less duplicates dedupe by content; the 5-slot window holds five distinct events",
   );
 });
+
+for (const [scenario, events] of [
+  ["empty", []],
+  ["unknown item", [{ seq: 101, item_id: "unseen-item", kind: "created", at: "2026-07-08T09:00:00Z" }]],
+  ["partly unrendered", [
+    { seq: 101, item_id: "known-item", kind: "claimed", at: "2026-07-08T09:00:00Z" },
+    { seq: 102, item_id: "unseen-item", kind: "created", at: "2026-07-08T09:01:00Z" },
+  ]],
+] as const) {
+  test(`workgraph event fallback preserves ${scenario} results beside an unrelated card`, () => {
+    const base = workGraphToolFrames({ idPrefix: "event-fallback-base", name: "workgraph_create", callArgs: {}, result: { item: workGraphItem({ id: "known-item" }) } });
+    const result = { events };
+    const poll = workGraphToolFrames({ idPrefix: "event-fallback-poll", name: "workgraph_events", callArgs: { limit: 10 }, result, timestampMs: 1_779_405_465_000 });
+    const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...poll]);
+    assert.equal(entries.filter((entry) => entry.kind === "workgraph").length, 1, "events must not synthesize an unknown item card");
+    const blocks = workGraphFallbackToolBlocks(entries);
+    assert.deepEqual(blocks.map((block) => block.toolCallId), ["event-fallback-poll-tc"]);
+    assert.equal(blocks[0].result, JSON.stringify(result));
+  });
+}
 
 // Big-store snapshot fixture: 3 attention-bound goals (36 + 3 + 3 items in
 // their trees) plus 58 loose items — 100 items total in one interaction.
@@ -8178,9 +8403,11 @@ function entryVisibleTestText(entry: unknown): string {
   if (typeof record.text === "string") return record.text;
   if (Array.isArray(record.blocks)) {
     return record.blocks
-      .map((block) => (typeof (block as { text?: unknown }).text === "string"
-        ? (block as { text: string }).text
-        : ""))
+      .map((block) => (block as { type?: string }).type === "markdown"
+        ? (block as { source: string }).source
+        : typeof (block as { text?: unknown }).text === "string"
+          ? (block as { text: string }).text
+          : "")
       .join(" ");
   }
   return "";
@@ -8276,6 +8503,350 @@ test("legacy console-interaction ids keep the text heuristic (same interaction, 
   const replyEntries = entries.filter((e) => entryVisibleTestText(e).includes("Same reply."));
   assert.equal(replyEntries.length, 1, JSON.stringify(entries, null, 2));
 });
+
+// Run lineage is the owner for startup turns, including runs with no interaction.
+for (const [surface, mapper] of [
+  ["stock", mapFramesToTimelineEntries],
+  ["shared", mapFramesToTimelineEntriesShared],
+] as const) {
+  const agent = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+  const runA = "01a0dae6-a27d-7720-baad-1288fc90471a";
+  const runB = "01a0dae6-a27d-7720-baad-1288fc90471b";
+  const history = (id: string, text: string, runId: string, interactionId?: string) => ({
+    id, event: "interaction_complete", sourceKind: "session_history", runId, interactionId,
+    data: { text, result: text, message: { role: "block_assistant", blocks: [{ block_type: "text", data: { text } }] } },
+  });
+  const texts = (frames: Parameters<typeof mapper>[1]) => mapper(agent, frames, { textMode: "markdown" })
+    .filter((entry) => entry.kind === "message" && entry.identity.role === "assistant");
+
+  test(`${surface}: queued steer keeps the original streamed answer once across overlapping input`, () => {
+    const first = { runId: runA, interactionId: UUID_A };
+    const steer = { runId: runB, interactionId: UUID_B };
+    const answer = "First segment. Second segment. Final segment.\n";
+    const frames = [
+      { id: "original-input", event: "user_input", interactionId: UUID_A, timestampMs: 1, data: { content: "Begin." } },
+      { id: "original-start", event: "run_started", ...first, timestampMs: 2, data: {} },
+      { id: "original-prefix", event: "text_delta", ...first, timestampMs: 3, data: { delta: "First segment. " } },
+      { id: "steer-input", event: "user_input", interactionId: UUID_B, timestampMs: 4, data: { content: "Steer." } },
+      { id: "original-middle", event: "text_delta", ...first, timestampMs: 5, data: { delta: "Second segment. " } },
+      { ...history("original-history", answer, runA, UUID_A), timestampMs: 6 },
+      { id: "original-tail", event: "text_delta", ...first, timestampMs: 7, data: { delta: "Final segment.\n" } },
+      { id: "original-text-complete", event: "text_complete", ...first, timestampMs: 8, data: { content: answer } },
+      { id: "original-complete", event: "run_completed", ...first, timestampMs: 9, data: { result: answer } },
+      { id: "steer-start", event: "run_started", ...steer, timestampMs: 10, data: {} },
+      { id: "steer-answer", event: "text_delta", ...steer, timestampMs: 11, data: { delta: "Acknowledged." } },
+      { id: "steer-complete", event: "run_completed", ...steer, timestampMs: 12, data: { result: "Acknowledged." } },
+      { ...history("steer-history", "Acknowledged.", runB, UUID_B), timestampMs: 13 },
+    ];
+    const entries = mapper(agent, frames, { textMode: "markdown", renderInteractionStartsAsUser: true });
+    const original = entries.filter(entry => entry.kind === "message" && entry.identity.role === "assistant" && entry.runId === runA);
+    assert.equal(original.map(entryVisibleTestText).join(""), answer);
+    assert.deepEqual(original.map(entry => [entry.id, entry.createdAt, entry.interactionId]), [
+      ["original-prefix", new Date(3).toISOString(), UUID_A],
+      ["original-middle", new Date(5).toISOString(), UUID_A],
+    ], "chronological segments retain their opening source identity across the steer input");
+    const acknowledgement = entries.filter(entry => entry.kind === "message" && entry.runId === runB);
+    assert.deepEqual(acknowledgement.map(entry => [entry.id, entry.interactionId, entryVisibleTestText(entry)]), [
+      ["steer-answer", UUID_B, "Acknowledged."],
+    ]);
+    const historyBeforeTail = mapper(agent, frames.slice(0, 6), { textMode: "markdown", renderInteractionStartsAsUser: true });
+    const visibleOriginal = historyBeforeTail.filter(entry => entry.kind === "message" && entry.identity.role === "assistant" && entry.runId === runA);
+    assert.deepEqual(visibleOriginal.map(entry => [entry.id, entryVisibleTestText(entry)]), [
+      ["original-prefix", "First segment. "],
+      ["original-middle", "Second segment. Final segment.\n"],
+    ], "history fills the open segment without moving later text ahead of the steer");
+  });
+
+  test(`${surface}: overlapping equal responses preserve both typed stream owners`, () => {
+    const frames = [
+      { id: "first-open", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Ready. " } },
+      { id: "second-open", event: "text_delta", runId: runB, interactionId: UUID_B, data: { delta: "Ready. " } },
+      { id: "first-tail", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Done." } },
+      { id: "first-terminal", event: "run_completed", runId: runA, interactionId: UUID_A, data: { result: "Ready. Done." } },
+      history("first-saved", "Ready. Done.", runA, UUID_A),
+      { id: "second-tail", event: "text_delta", runId: runB, interactionId: UUID_B, data: { delta: "Done." } },
+      { id: "second-terminal", event: "run_completed", runId: runB, interactionId: UUID_B, data: { result: "Ready. Done." } },
+      history("second-saved", "Ready. Done.", runB, UUID_B),
+    ];
+    const entries = texts(frames);
+    for (const runId of [runA, runB]) {
+      const owned = entries.filter(entry => entry.kind === "message" && entry.runId === runId);
+      assert.equal(owned.map(entryVisibleTestText).join(""), "Ready. Done.");
+      assert.equal(owned.length, 2, "both authored stream segments remain in chronology");
+    }
+  });
+
+  for (const sourceKind of [undefined, "session_history"]) {
+    const transport = sourceKind || "console_event";
+    test(`${surface}: ${transport} typed tool text preserves exact source and failure state`, () => {
+      for (const [content, expected] of [
+        [[{ type: "text", text: "  Release notes\nKeep both spaces and this final newline.\n" }], "  Release notes\nKeep both spaces and this final newline.\n"],
+        [[{ type: "text", text: "alpha" }, { type: "text", text: "  \n" }, { type: "text", text: "beta\n" }], "alpha  \nbeta\n"],
+        [[{ type: "text", text: "   \n" }], "   \n"],
+        [[{ type: "text", text: "" }], ""],
+      ] as const) {
+        for (const isError of [false, true]) {
+          const entries = mapper(agent, [
+            { id: "file-call", event: "tool_call_requested", sourceKind, data: { id: "read-1", name: "read_file", args: { path: "notes.txt" } } },
+            { id: "file-result", event: "tool_result_received", sourceKind, data: { tool_call_id: "read-1", name: "read_file", result: content, is_error: isError } },
+          ]);
+          const blocks = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : []);
+          const block = blocks.find((candidate) => candidate.type === "tool-call");
+          assert.equal(block?.type === "tool-call" ? block.result : undefined, expected);
+          assert.equal(block?.type === "tool-call" ? block.status : undefined, isError ? "error" : "success");
+        }
+      }
+    });
+
+    test(`${surface}: ${transport} mixed and structured tool results keep all content semantics`, () => {
+      const payloads = [
+        [{ type: "text", text: "A picture follows." }, { type: "image", data: "image-bytes", mime_type: "image/png" }],
+        [{ type: "resource", text: "Resource label", uri: "file:///notes.txt" }],
+        [{ type: "text", text: "Annotated text", annotations: { audience: ["user"] } }],
+        { records: [{ text: "A field named text is structured data." }], count: 1 },
+      ];
+      for (const payload of payloads) {
+        const entries = mapper(agent, [
+          { id: "mixed-call", event: "tool_call_requested", sourceKind, data: { id: "mixed-1", name: "lookup", args: {} } },
+          { id: "mixed-result", event: "tool_result_received", sourceKind, data: { tool_call_id: "mixed-1", name: "lookup", result: payload, is_error: false } },
+        ]);
+        const block = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+          .find((candidate) => candidate.type === "tool-call");
+        assert.equal(block?.type === "tool-call" ? block.result : undefined, JSON.stringify(payload, null, 2));
+      }
+    });
+  }
+
+  test(`${surface}: persisted tool-use blocks retain empty and whitespace-only actual text results`, () => {
+    for (const text of ["", "   \n", "  File content\n"]) {
+      const entries = mapper(agent, [
+        { ...history("saved-tool", "", runA), data: { message: { role: "block_assistant", blocks: [
+          { block_type: "tool_use", data: { id: "saved-call", name: "read_file", args: { path: "notes.txt" } } },
+        ] } } },
+        { id: "saved-result", event: "tool_result_received", sourceKind: "session_history", runId: runA,
+          data: { tool_call_id: "saved-call", result: [{ type: "text", text }], is_error: false } },
+      ]);
+      const block = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+        .find((candidate) => candidate.type === "tool-call");
+      assert.equal(block?.type === "tool-call" ? block.result : undefined, text);
+    }
+  });
+
+  for (const interactionId of [undefined, UUID_A]) {
+    const lineage = interactionId ? "interaction and run" : "run only";
+    for (const historyEvent of ["interaction_complete", "text_complete"]) {
+      test(`${surface}: startup ${lineage} joins ${historyEvent} history before the final live chunk`, () => {
+        const content = "| Result | Status |\n| --- | --- |\n| Router | Ready |\n";
+        const owner = { runId: runA, interactionId };
+        const prefix = content.slice(0, -3);
+        const entries = texts([
+          { id: "startup-open", event: "run_started", ...owner, data: {} },
+          { id: "startup-first-text", event: "text_delta", ...owner, data: { delta: prefix } },
+          { ...history("startup-history", content, runA, interactionId), event: historyEvent },
+          { id: "startup-last-text", event: "text_delta", ...owner, data: { delta: content.slice(-3) } },
+          { id: "startup-complete", event: "run_completed", ...owner, data: { result: content } },
+        ]);
+        assert.equal(entries.length, 1, JSON.stringify(entries));
+        assert.equal(entries[0].id, "startup-first-text");
+        assert.equal(entries[0].runId, runA);
+        assert.equal(entries[0].interactionId, interactionId);
+        assert.equal(entryVisibleTestText(entries[0]), content);
+      });
+    }
+
+    test(`${surface}: startup ${lineage} preserves equal replies belonging to different runs`, () => {
+      const entries = texts([
+        { id: "first-reply", event: "interaction_complete", runId: runA, interactionId, data: { result: "Ready." } },
+        history("second-reply", "Ready.", runB, interactionId),
+      ]);
+      assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+        ["first-reply", runA, "Ready."], ["second-reply", runB, "Ready."],
+      ]);
+    });
+  }
+
+  test(`${surface}: startup run ownership does not erase a different persisted message from that run`, () => {
+    const entries = texts([
+      { id: "final-reply", event: "run_completed", runId: runA, data: { result: "All done." } },
+      history("earlier-response", "I will inspect the files first.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["final-reply", "All done."], ["earlier-response", "I will inspect the files first."],
+    ]);
+  });
+
+  test(`${surface}: startup preserves equal distinct history messages in one run`, () => {
+    const entries = texts([history("saved-first", "Ready.", runA), history("saved-second", "Ready.", runA)]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["saved-first", "Ready."], ["saved-second", "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup preserves whitespace-significant authored messages in one run`, () => {
+    const entries = texts([
+      { id: "live-paragraphs", event: "run_completed", runId: runA, data: { result: "alpha\n\nbeta" } },
+      history("saved-one-line", "alpha beta", runA),
+      history("saved-hard-break", "alpha  \nbeta", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["live-paragraphs", "alpha\n\nbeta"], ["saved-one-line", "alpha beta"], ["saved-hard-break", "alpha  \nbeta"],
+    ]);
+  });
+
+  test(`${surface}: startup consumes each owned live text occurrence once`, () => {
+    const entries = texts([
+      { id: "only-live-answer", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      history("saved-twin", "Ready.", runA),
+      history("saved-second-occurrence", "Ready.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["only-live-answer", "Ready."], ["saved-second-occurrence", "Ready."],
+    ]);
+  });
+
+  for (const historyEvent of ["interaction_complete", "text_complete"]) {
+    test(`${surface}: startup ${historyEvent} reconciles every arrival prefix with the opening live identity`, () => {
+      const answer = "## Acceptance reply\n\n| State | Value |\n| --- | --- |\n| Result | Ready |\n";
+      const owner = { runId: runA, interactionId: UUID_A };
+      const frames = [
+        { id: "prefix-open", event: "run_started", ...owner, data: {} },
+        { id: "prefix-first", event: "text_delta", ...owner, data: { delta: answer.slice(0, -3) } },
+        { ...history("prefix-history", answer, runA, UUID_A), event: historyEvent },
+        { id: "prefix-last", event: "text_delta", ...owner, data: { delta: answer.slice(-3) } },
+        { id: "prefix-terminal", event: "run_completed", ...owner, data: { result: answer } },
+      ];
+      assert.equal(texts(frames.slice(0, 1)).length, 0);
+      for (let length = 2; length <= frames.length; length++) {
+        const entries = texts(frames.slice(0, length));
+        assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+          ["prefix-first", length === 2 ? answer.slice(0, -3) : answer],
+        ], `arrival prefix ${length}`);
+      }
+    });
+  }
+
+  test(`${surface}: startup cannot treat a completed short message as the prefix of a different saved message`, () => {
+    const entries = texts([
+      { id: "short-first", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      { id: "short-complete", event: "text_complete", runId: runA, data: { content: "Ready." } },
+      history("longer-distinct", "Ready. Another message.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["short-first", "Ready."], ["longer-distinct", "Ready. Another message."],
+    ]);
+  });
+
+  test(`${surface}: startup history stays available when text deltas are disabled`, () => {
+    const entries = mapper(agent, [
+      { id: "ignored-delta", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      history("only-rendered-answer", "Ready.", runA),
+    ], { textMode: "markdown", renderTextDeltas: false });
+    assert.deepEqual(entries.map((entry) => [entry.id, entryVisibleTestText(entry)]), [
+      ["only-rendered-answer", "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup live text does not erase persisted tool and reasoning siblings`, () => {
+    const entries = texts([
+      { id: "live-answer", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      { ...history("history-with-siblings", "Ready.", runA), data: {
+        text: "Ready.", result: "Ready.", message: { role: "block_assistant", blocks: [
+          { block_type: "reasoning", data: { text: "Check the file first." } },
+          { block_type: "tool_use", data: { id: "history-only-tool", name: "read_file", args: { path: "a" } } },
+          { block_type: "text", data: { text: "Ready." } },
+        ] },
+      } },
+    ]);
+    const blocks = entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : []);
+    assert.equal(blocks.filter((block) => block.type === "markdown").length, 1);
+    assert.equal(blocks.filter((block) => block.type === "tool-call").length, 1);
+    assert.equal(blocks.filter((block) => block.type === "thinking").length, 1);
+  });
+
+  for (const historyEvent of ["interaction_complete", "text_complete"]) {
+    test(`${surface}: startup ${historyEvent} joins only owned thinking occurrences without splitting live text`, () => {
+      const thought = "Check again again and check again.";
+      const answer = "Review complete. Both independent checks support the release candidate.";
+      const owner = { runId: runA, interactionId: UUID_A };
+      const entries = texts([
+        { id: "first-thought", event: "reasoning_complete", ...owner, data: { content: thought } },
+        { id: "second-thought", event: "reasoning_complete", ...owner, data: { content: thought } },
+        { id: "answer-start", event: "text_delta", ...owner, data: { delta: answer.slice(0, -5) } },
+        { ...history("answer-history", answer, runA, UUID_A), event: historyEvent, data: {
+          result: answer, message: { role: "block_assistant", blocks: [
+            { block_type: "reasoning", data: { text: thought } },
+            { block_type: "reasoning", data: { text: thought } },
+            { block_type: "text", data: { text: answer } },
+          ] },
+        } },
+        { id: "answer-tail", event: "text_delta", ...owner, data: { delta: answer.slice(-5) } },
+        { id: "answer-complete", event: "interaction_complete", ...owner, data: { result: answer } },
+      ]);
+      assert.deepEqual(entries.map((entry) => entry.id), ["first-thought", "second-thought", "answer-start"]);
+      assert.deepEqual(entries.flatMap((entry) => entry.kind === "message" ? entry.blocks || [] : [])
+        .filter((block) => block.type === "thinking").map((block) => block.text), [thought, thought]);
+      assert.equal(entryVisibleTestText(entries[2]), answer);
+    });
+  }
+
+  test(`${surface}: startup thinking join preserves excess occurrences and equal blocks from other runs`, () => {
+    const thought = "Check again.";
+    const historyThinking = (id: string, runId: string, count: number) => ({
+      ...history(id, "", runId, UUID_A), data: { result: "", message: { role: "block_assistant",
+        blocks: Array.from({ length: count }, () => ({ block_type: "reasoning", data: { text: thought } })),
+      } },
+    });
+    const entries = texts([
+      { id: "only-live-thought", event: "reasoning_complete", runId: runA, interactionId: UUID_A, data: { content: thought } },
+      historyThinking("two-history-thoughts", runA, 2),
+      historyThinking("foreign-history-thought", runB, 1),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.kind === "message" ? entry.blocks?.length : 0]), [
+      ["only-live-thought", 1], ["two-history-thoughts", 1], ["foreign-history-thought", 1],
+    ]);
+  });
+
+  test(`${surface}: startup admission alone cannot suppress a persisted answer`, () => {
+    const entries = texts([
+      { id: "startup-open", event: "run_started", runId: runA, interactionId: UUID_A, data: {} },
+      history("only-answer", "Durable answer.", runA, UUID_A),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["only-answer", runA, "Durable answer."],
+    ]);
+  });
+
+  test(`${surface}: startup run boundaries keep equal adjacent streams separate`, () => {
+    const entries = texts([
+      { id: "first-delta", event: "text_delta", runId: runA, interactionId: UUID_A, data: { delta: "Ready." } },
+      { id: "second-delta", event: "text_delta", runId: runB, interactionId: UUID_A, data: { delta: "Ready." } },
+      { id: "second-complete", event: "run_completed", runId: runB, interactionId: UUID_A, data: { result: "Ready." } },
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["first-delta", runA, "Ready."], ["second-delta", runB, "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup completion without live deltas renders its owned answer`, () => {
+    const entries = texts([
+      { id: "complete-only", event: "run_completed", runId: runA, data: { result: "Ready." } },
+      history("durable-twin", "Ready.", runA),
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["complete-only", runA, "Ready."],
+    ]);
+  });
+
+  test(`${surface}: startup foreign terminal cannot consume another run's equal streamed answer`, () => {
+    const entries = texts([
+      { id: "active-delta", event: "text_delta", runId: runA, data: { delta: "Ready." } },
+      { id: "foreign-terminal", event: "interaction_complete", runId: runB, data: { result: "Ready." } },
+    ]);
+    assert.deepEqual(entries.map((entry) => [entry.id, entry.runId, entryVisibleTestText(entry)]), [
+      ["active-delta", runA, "Ready."], ["foreign-terminal", runB, "Ready."],
+    ]);
+  });
+}
 
 test("a council emits ONE card even when two frames each carry the sealed result", () => {
   // Regression: tool_result_received AND tool_execution_completed can each
@@ -8597,5 +9168,149 @@ test("a deduped user input keeps the typed origin carried by any of its twins", 
     assert.equal(users.length, 1);
     const origin = users[0].kind === "message" ? users[0].origin : null;
     assert.deepEqual(origin, { sendOrigin: "homecore:gate", originKind: "operator_probe" });
+  }
+});
+
+for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`${surface}: canonical peer display metadata remains distinct from exact identity`, () => {
+    const peerId = "7a643fe3-e700-5846-85ab-a6ed817c7754";
+    const entries = project({ agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" }, [{
+      id: "canonical-peer-label", event: "system_notice", sourceKind: "session_history", timestampMs: 1000,
+      data: { message: typedCommsNotice({ peer: "console-acceptance/lead/mk--domain_cdelivery", peerId, body: "Delivery review completed." }) },
+    }]);
+    const block = entries.flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []).find(block => block.type === "tool-call");
+    assert.equal(block?.type, "tool-call");
+    if (block?.type !== "tool-call") return;
+    assert.equal(block.peerIdentity, peerId);
+    assert.equal(block.peerDisplayLabel, "domain:delivery");
+  });
+  test(`${surface}: outgoing display labels require canonical peer registry evidence`, () => {
+    const peerId = "7a643fe3-e700-5846-85ab-a6ed817c7754";
+    const send = { id: "send-canonical-peer", event: "tool_call_requested", timestampMs: 2000,
+      data: { name: "send_message", id: "send-label", args: { peer_id: peerId, display_name: "Untrusted sender hint", content: "Please review." } } };
+    const agent = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+    const blockFrom = (frames: typeof send[]) => project(agent, frames).flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []).find(block => block.type === "tool-call" && block.toolCallId === "send-label");
+    const unknown = blockFrom([send]);
+    assert.equal(unknown?.type, "tool-call");
+    if (unknown?.type === "tool-call") assert.equal(unknown.peerDisplayLabel, undefined);
+    const known = blockFrom([{ id: "peers-label", event: "tool_result_received", timestampMs: 1000,
+      data: { name: "peers", id: "peers-call", result: JSON.stringify({ peers: [{ peer_id: peerId, name: "console-acceptance/lead/mk--domain_cdelivery" }] }) } } as unknown as typeof send, send]);
+    assert.equal(known?.type, "tool-call");
+    if (known?.type === "tool-call") {
+      assert.equal(known.peerIdentity, peerId);
+      assert.equal(known.peerDisplayLabel, "domain:delivery");
+    }
+  });
+}
+
+const DURATION_AGENT = { agent_id: "router:main", member_id: "router:main", label: "Router", kind: "identity" };
+const DURATION_OWNER = {
+  runtimeKey: "default", identity: "router:main", sessionId: "01a0dc27-ae06-7371-914e-418f0a5949fc",
+  runId: "01a0dc27-b35d-7b30-8075-046846042446", interactionId: "9e46e6d7-a73e-5616-b323-daf84d0fa535",
+};
+const DURATION_FRAMES: Parameters<typeof mapFramesToTimelineEntries>[1] = [
+  { ...DURATION_OWNER, id: "duration-start", event: "run_started", timestampMs: 1790399984485, data: { type: "run_started" } },
+  { ...DURATION_OWNER, id: "duration-prefix", event: "text_delta", timestampMs: 1790399984838, data: { delta: "Reviewing. " } },
+  { ...DURATION_OWNER, id: "duration-notice", event: "system_notice", timestampMs: 1790399984900, data: { kind: "generic", body: "Keep the background instruction." } },
+  { ...DURATION_OWNER, id: "duration-final", event: "text_delta", timestampMs: 1790399985000, data: { delta: "Review complete." } },
+  { ...DURATION_OWNER, id: "duration-complete", event: "interaction_complete", timestampMs: 1790399990171, data: { type: "run_completed", extraction_required: false, result: "Reviewing. Review complete." } },
+];
+
+function runTimedEntries(frames: Parameters<typeof mapFramesToTimelineEntries>[1]) {
+  return mapFramesToTimelineEntries(DURATION_AGENT, frames).filter((entry) => entry.kind === "message" && entry.runDurationMs !== undefined);
+}
+
+test("stock run duration uses exact start and terminal across a delayed stream and notice", () => {
+  const entries = mapFramesToTimelineEntries(DURATION_AGENT, DURATION_FRAMES);
+  const timed = entries.filter((entry) => entry.kind === "message" && entry.runDurationMs !== undefined);
+  assert.equal(timed.length, 1, JSON.stringify(entries));
+  assert.equal(timed[0].id, "duration-final");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+  assert.equal(timed[0].createdAt, new Date(1790399985000).toISOString());
+  assert.equal(entries.find((entry) => entry.id === "duration-notice")?.identity.role, "system");
+});
+
+test("stock run duration requires valid complete run timing", () => {
+  const start = DURATION_FRAMES[0];
+  const terminal = DURATION_FRAMES[4];
+  const middle = DURATION_FRAMES.slice(1, 4);
+  const cases: Array<[string, Parameters<typeof mapFramesToTimelineEntries>[1]]> = [
+    ["missing start", [...middle, terminal]],
+    ["missing terminal", [start, ...middle]],
+    ["text completion only", [start, ...middle, { ...terminal, event: "text_complete", data: { content: "Reviewing. Review complete." } }]],
+    ["untyped interaction completion", [start, ...middle, { ...terminal, data: { result: "Reviewing. Review complete." } }]],
+    ["extraction pending", [start, ...middle, { ...terminal, data: { ...terminal.data as object, extraction_required: true } }]],
+    ["delivery receipt", [start, ...middle, { ...terminal, data: { ...terminal.data as object, reason: "steer_delivered" } }]],
+    ["history terminal", [start, ...middle, { ...terminal, sourceKind: "session_history" }]],
+    ["reversed timing", [{ ...start, timestampMs: terminal.timestampMs! + 1 }, ...middle, terminal]],
+    ["missing start time", [{ ...start, timestampMs: undefined }, ...middle, terminal]],
+    ["invalid terminal time", [start, ...middle, { ...terminal, timestampMs: Number.NaN }]],
+    ["conflicting starts", [start, { ...start, id: "other-start", timestampMs: start.timestampMs! + 1 }, ...middle, terminal]],
+  ];
+  for (const [label, frames] of cases) assert.equal(runTimedEntries(frames).length, 0, label);
+});
+
+test("stock run duration never crosses runtime session agent run or interaction ownership", () => {
+  for (const field of ["runtimeKey", "sessionId", "identity", "runId", "interactionId"] as const) {
+    const frames = DURATION_FRAMES.map((frame) => frame.id === "duration-start" ? { ...frame, [field]: `other-${field}` } : frame);
+    assert.equal(runTimedEntries(frames).length, 0, field);
+  }
+  const noRun = DURATION_FRAMES.map((frame) => ({ ...frame, runId: undefined }));
+  assert.equal(runTimedEntries(noRun).length, 0, "missing run");
+  const noSession = DURATION_FRAMES.map((frame) => ({ ...frame, sessionId: undefined }));
+  assert.equal(runTimedEntries(noSession).length, 0, "missing session");
+});
+
+test("stock run duration stays accurate with canonical history present", () => {
+  const frames = [
+    DURATION_FRAMES[0],
+    { ...DURATION_OWNER, id: "duration-history", event: "text_complete", sourceKind: "session_history", timestampMs: 1790399990169,
+      data: { text: "Reviewing. Review complete.", result: "Reviewing. Review complete.", message: { role: "block_assistant", stop_reason: "end_turn", blocks: [{ block_type: "text", data: { text: "Reviewing. Review complete." } }] } } },
+    DURATION_FRAMES[4],
+  ];
+  const timed = runTimedEntries(frames);
+  assert.equal(timed.length, 1);
+  assert.equal(entryVisibleTestText(timed[0]), "Reviewing. Review complete.");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+});
+
+test("stock run duration accepts a direct successful run terminal and ignores trailing tool evidence", () => {
+  const frames = [...DURATION_FRAMES.slice(0, 4),
+    { ...DURATION_FRAMES[4], event: "run_completed" },
+    { ...DURATION_OWNER, id: "duration-tool", event: "tool_call", timestampMs: 1790399990172, data: { id: "trailing-tool", name: "check", args: {} } },
+    { ...DURATION_OWNER, id: "duration-tool-done", event: "tool_execution_completed", timestampMs: 1790399990173, data: { id: "trailing-tool", name: "check", result: "Checked", is_error: false } },
+  ];
+  const timed = runTimedEntries(frames);
+  assert.equal(timed.length, 1);
+  assert.equal(timed[0].id, "duration-final");
+  assert.equal(timed[0].kind === "message" ? timed[0].runDurationMs : undefined, 5686);
+});
+
+
+test("workgraph local card event and paused times use the browser clock without changing source", () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const at = "2026-07-09T01:15:30Z";
+    for (const [instant, expectedEvent, expectedPause] of [
+      [at, "created · 18:15", "paused until 2026-07-08 18:15"],
+      ["invalid-event-timestamp", "created", "paused"],
+    ]) {
+      const frames = workGraphToolFrames({ idPrefix: `local-time-${instant}`, name: "workgraph_snapshot", callArgs: {}, result: {
+        snapshot: { items: [workGraphItem({ id: "local-item", title: "Local time", createdAt: at })], edges: [],
+          attention: [{ binding_id: "local-binding", mode: "pursue", work_ref: { item_id: "local-item" }, status: { state: "paused", until: instant } }] },
+        events: [{ seq: 1, kind: "created", item_id: "local-item", at: instant }],
+      } });
+      const before = JSON.stringify(frames);
+      const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames).filter((entry) => entry.kind === "workgraph");
+      assert.equal(cards.length, 1);
+      assert.deepEqual(cards[0].recentEvents, [expectedEvent]);
+      assert.equal(cards[0].attention[0].statusLabel, expectedPause);
+      assert.equal(cards[0].items[0].createdAt, at);
+      assert.equal(JSON.stringify(frames), before, "formatting must not rewrite event timestamps or IDs");
+    }
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
   }
 });

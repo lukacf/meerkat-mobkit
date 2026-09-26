@@ -60,6 +60,7 @@ async function main() {
     bundle: true,
     format: "cjs",
     platform: "neutral",
+    mainFields: ["module", "main"],
     target: ["es2020"],
     external: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"],
     alias,

@@ -11,7 +11,8 @@ use futures::StreamExt;
 use meerkat_core::comms::EventStream;
 
 use crate::console_aggregator::{
-    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    AllowAllConsoleVisibilityPolicy, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
@@ -201,6 +202,19 @@ impl UnifiedRuntime {
         decisions: RuntimeDecisionState,
         visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     ) -> Router {
+        let projection = self.console_projection.get_or_init(|| {
+            let aggregator = MobKitConsoleAggregator::new(self.console_log_store());
+            aggregator.register_runtime_handles_with_policy(
+                "default",
+                "",
+                self.mob_runtime.clone(),
+                self.identity_runtime().cloned(),
+                self.console_events(),
+                Arc::new(AllowAllConsoleVisibilityPolicy),
+            );
+            aggregator
+        });
+        let view = projection.policy_view(visibility_policy.clone());
         console_json_router_with_runtime_events_and_policy(
             decisions,
             self.mob_runtime.clone(),
@@ -221,6 +235,7 @@ impl UnifiedRuntime {
             self.workgraph_service(),
             Some(self.topology_runtime_handle()),
             Some(Arc::clone(&self.job_health_projection)),
+            Some(view),
         )
     }
 
@@ -454,6 +469,101 @@ mod tests {
         LocalLeaseProvider, MutableRosterProvider,
     };
     use crate::unified_runtime::UnifiedRuntimeBuilder;
+
+    #[tokio::test]
+    async fn multiple_console_routers_reuse_one_runtime_projection() {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "shared-console-router-owner"
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition");
+        let runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime");
+        let decisions = crate::runtime::RuntimeDecisionState::local_console(
+            crate::ConsolePolicy {
+                require_app_auth: false,
+                ..Default::default()
+            },
+            None,
+        );
+        let _first = runtime.build_console_json_router(decisions.clone());
+        let first = runtime
+            .console_projection
+            .get()
+            .expect("projection")
+            .store();
+        let _second = runtime.build_console_json_router(decisions);
+        let second = runtime
+            .console_projection
+            .get()
+            .expect("same projection")
+            .store();
+        assert!(Arc::ptr_eq(&first, &second));
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn console_projection_tasks_release_replaced_and_shutdown_stores() {
+        async fn assert_released(
+            store: std::sync::Weak<crate::console_aggregator::InMemoryConsoleLogStore>,
+        ) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while store.upgrade().is_some() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("terminated console tasks must release their old store");
+        }
+
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "console-projector-lifecycle"
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition");
+        let mut runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime");
+        let decisions = crate::runtime::RuntimeDecisionState::local_console(
+            crate::ConsolePolicy {
+                require_app_auth: false,
+                ..Default::default()
+            },
+            None,
+        );
+        let old_store = Arc::new(crate::console_aggregator::InMemoryConsoleLogStore::new());
+        let old_weak = Arc::downgrade(&old_store);
+        runtime.set_console_log_store(old_store.clone());
+        drop(runtime.build_console_json_router(decisions.clone()));
+        drop(old_store);
+
+        let new_store = Arc::new(crate::console_aggregator::InMemoryConsoleLogStore::new());
+        let new_weak = Arc::downgrade(&new_store);
+        runtime.set_console_log_store(new_store.clone());
+        assert!(runtime.console_projection.get().is_none());
+        assert_released(old_weak).await;
+        drop(runtime.build_console_json_router(decisions.clone()));
+        drop(runtime.build_console_json_router(decisions));
+        drop(new_store);
+        runtime.shutdown().await;
+        drop(runtime);
+        assert_released(new_weak).await;
+    }
 
     #[test]
     fn reference_router_default_concurrency_allows_sse_fanout() {

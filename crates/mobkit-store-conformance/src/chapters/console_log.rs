@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use meerkat_mobkit::console_aggregator::{
-    AppendDisposition, ConsoleCursor, ConsoleFrameSourceKind, ConsoleLogStore, ConsoleTimelineMode,
-    ConsoleTimelineWindowQuery,
+    AppendDisposition, ConsoleCursor, ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleLogStore,
+    ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowQuery,
 };
 use meerkat_store_conformance::ConformanceFailure;
 
@@ -30,6 +30,7 @@ pub async fn console_log(factory: &dyn ConsoleLogStoreFactory) -> Result<(), Con
     let store = factory.open().await?;
 
     append_if_absent_idempotent(&steps, store.as_ref()).await?;
+    member_provenance_roundtrip(&steps, factory, store.as_ref()).await?;
     watermark_contract(&steps, factory, store.as_ref()).await?;
     windowed_query_under_concurrent_append(&steps, Arc::clone(&store)).await?;
     Ok(())
@@ -74,6 +75,80 @@ async fn append_if_absent_idempotent(
         by_key.id == first.frame.id,
         "frame_by_dedupe_key must serve the appended frame",
     )?;
+    Ok(())
+}
+
+async fn member_provenance_roundtrip(
+    steps: &Steps,
+    factory: &dyn ConsoleLogStoreFactory,
+    store: &dyn ConsoleLogStore,
+) -> Result<(), ConformanceFailure> {
+    const STEP: &str = "member_provenance_roundtrip";
+    let frame = fixtures::console_frame_with_member_provenance();
+    let expected = frame.source.member_provenance.clone();
+    let appended = steps.wrap(STEP, store.append_if_absent(frame.clone()).await)?;
+    steps.ensure(
+        STEP,
+        appended.frame.source.member_provenance == expected,
+        "append must retain the owner member-policy witness",
+    )?;
+    let replay = steps.wrap(STEP, store.append_if_absent(frame).await)?;
+    steps.ensure(
+        STEP,
+        replay.frame == appended.frame,
+        "idempotent append must return the same witness-bearing frame",
+    )?;
+    let updated = steps
+        .wrap(
+            STEP,
+            store
+                .update_frame_status(&appended.frame.id, ConsoleFrameStatus::Delivered)
+                .await,
+        )?
+        .ok_or_else(|| steps.fail(STEP, "status update must find the stored frame"))?;
+    steps.ensure(
+        STEP,
+        updated.source.member_provenance == expected,
+        "status update must preserve the member-policy witness",
+    )?;
+    let reopened = factory.open().await?;
+    for current in [store, reopened.as_ref()] {
+        let by_key = steps
+            .wrap(STEP, current.frame_by_dedupe_key(&updated.dedupe_key).await)?
+            .ok_or_else(|| steps.fail(STEP, "lookup must survive store reopen"))?;
+        steps.ensure(
+            STEP,
+            by_key == updated,
+            "lookup and reopen must retain the complete updated frame",
+        )?;
+        let query = ConsoleTimelineQuery {
+            identity: Some(updated.identity.clone()),
+            ..Default::default()
+        };
+        let page = steps.wrap(STEP, current.query_frames(query).await)?;
+        steps.ensure(
+            STEP,
+            page.frames == [updated.clone()],
+            "query must preserve the member-policy witness",
+        )?;
+        for mode in [ConsoleTimelineMode::Recent, ConsoleTimelineMode::Since] {
+            let page = steps.wrap(
+                STEP,
+                current
+                    .query_windowed_frames(ConsoleTimelineWindowQuery {
+                        identity: Some(updated.identity.clone()),
+                        mode,
+                        ..Default::default()
+                    })
+                    .await,
+            )?;
+            steps.ensure(
+                STEP,
+                page.frames == [updated.clone()],
+                "recent/since queries must retain the witness after reopen",
+            )?;
+        }
+    }
     Ok(())
 }
 

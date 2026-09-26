@@ -1,10 +1,15 @@
 import React from "react";
+import { ApprovalCard } from "../../../packages/console-components/src/conversation/approval-card";
+import type { PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 
 interface GatingInboxPanelProps {
   pending: unknown[];
   audit: unknown[];
   onDecide: (pendingId: string, decision: "approve" | "reject" | "escalate") => void;
   readOnly?: boolean;
+  resource?: PendingApprovalSnapshot;
+  onRefresh?: () => void;
+  selectedPendingId?: string;
 }
 
 type Tab = "pending" | "auto" | "audit" | "policies";
@@ -86,9 +91,24 @@ export function GatingInboxPanel({
   audit,
   onDecide,
   readOnly = false,
+  resource,
+  onRefresh,
+  selectedPendingId,
 }: GatingInboxPanelProps): React.JSX.Element {
   const [tab, setTab] = React.useState<Tab>("pending");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const pendingRequests = resource?.requests.filter((request) => request.status === "pending" && resource.decisions[request.pendingId]?.phase !== "settled");
+  const pendingLabel = !resource || resource.status === "ready" ? String(pendingRequests ? pendingRequests.length : pending.length) : "?";
+  const selectedRequestAvailable = resource?.requests.some((request) => request.pendingId === selectedPendingId) === true;
+  React.useEffect(() => { if (selectedPendingId) { setSelectedId(selectedPendingId); setTab("pending"); } }, [selectedPendingId]);
+  React.useEffect(() => {
+    if (tab !== "pending" || !selectedPendingId || !selectedRequestAvailable) return;
+    const selected = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-approval-id]") || [])
+      .find((element) => element.dataset.approvalId === selectedPendingId);
+    selected?.scrollIntoView?.({ block: "nearest" });
+    selected?.focus({ preventScroll: true });
+  }, [selectedPendingId, selectedRequestAvailable, tab]);
   const policies = React.useMemo(() => derivePolicies(audit), [audit]);
 
   const autoApproved = audit.filter((e) => {
@@ -106,7 +126,7 @@ export function GatingInboxPanel({
     <div className="gating" data-testid="gating-panel">
       <div className="gating__head">
         <h2>Approvals</h2>
-        <p>· {pending.length} pending · {autoApproved.length} auto-approved · {policies.length} policies</p>
+        <p>· {pendingLabel} pending · {autoApproved.length} auto-approved · {policies.length} policies</p>
       </div>
       <div className="gating__tabs">
         <button
@@ -114,7 +134,7 @@ export function GatingInboxPanel({
           onClick={() => setTab("pending")}
           data-testid="gating-tab:pending"
         >
-          Pending <span className="n">{pending.length}</span>
+          Pending <span className="n">{pendingLabel}</span>
         </button>
         <button
           className={`gating__tab ${tab === "auto" ? "is-active" : ""}`}
@@ -138,8 +158,17 @@ export function GatingInboxPanel({
           Policies <span className="n">{policies.length}</span>
         </button>
       </div>
-      <div className="gating__list">
-        {tab === "policies" ? (
+      <div className="gating__list" ref={listRef}>
+        {tab === "pending" && resource ? (
+          <div>
+            {resource.status !== "ready" ? <p role="status">{resource.status === "forbidden" ? "Approval access denied" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable"}</p> : null}
+            {onRefresh ? <button type="button" onClick={onRefresh}>Refresh approvals</button> : null}
+            {resource.status === "ready" && pendingRequests?.length === 0 ? <p>No pending approvals.</p> : null}
+            {resource.requests.map((request) => <div key={request.pendingId} tabIndex={-1} data-approval-id={request.pendingId} data-selected={selectedId === request.pendingId} className={selectedId === request.pendingId ? "is-selected" : undefined}>
+              <ApprovalCard request={request} resourceStatus={resource.status} decision={resource.decisions[request.pendingId]} readOnly={readOnly || resource.readOnly} onDecide={onDecide} />
+            </div>)}
+          </div>
+        ) : tab === "policies" ? (
           <div className="gating__policies">
             {policies.length === 0 && (
               <div className="gating__empty">No gate policies inferred from recent audit.</div>

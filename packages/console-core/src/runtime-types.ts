@@ -26,6 +26,7 @@ export interface ConsoleFrame {
   sessionId?: string;
   status?: string;
   sourceKind?: string;
+  sourceCursor?: string;
   frameVersion?: number;
   updatedAtMs?: number;
   turnId?: string;

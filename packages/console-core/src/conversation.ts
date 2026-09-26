@@ -3,6 +3,7 @@ import {
   conversationRichBlocksToText,
   type ConversationRichBlock,
 } from "./rich-content";
+import type { ConsoleContextMessage } from "./context-record";
 
 export type ConversationRole = "assistant" | "user" | "system" | "other";
 export type ConversationPresentation = "assistant" | "user" | "participant" | "system";
@@ -80,6 +81,8 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   variant: "plain" | "rich" | "meta";
   text?: string;
   blocks?: ConversationRichBlock[];
+  /** Display-only projection of a validated local quote envelope. */
+  contextMessage?: ConsoleContextMessage;
   richStyle?: "default" | "streaming";
   /**
    * Typed host-task metadata. System tasks stay distinct from operator turns
@@ -91,6 +94,10 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   taskId?: string;
   taskStatus?: string;
   runId?: string | null;
+  /** Display interval from matching runtime start and successful terminal
+   * evidence for this exact run. Absent when that timing is unknown; message
+   * creation timestamps must not be used as a substitute. */
+  runDurationMs?: number;
   connectionEvent?: ConversationConnectionEvent | null;
   /**
    * Typed provenance of a user-lane entry, copied from the wire. Renderers
@@ -530,7 +537,8 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
     ].filter(Boolean).join("\n");
   }
 
-  return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
+  const text = String(entry.copyText ?? entry.text ?? conversationRichBlocksToText(entry.blocks));
+  return entry.blocks?.some((block) => block.type === "markdown") ? text : text.trim();
 }
 
 export function conversationMessageHasIntrinsicCopyAction(
@@ -602,6 +610,32 @@ function conversationGroupReconciliationAnchor(
   return null;
 }
 
+function startsSeparateAssistantResponse(
+  current: ConversationTimelineGroup,
+  entry: ConversationTimelineEntry,
+): boolean {
+  if (conversationIdentityPresentation(entry.identity) !== "assistant"
+    || entry.kind !== "message"
+    || !conversationGroupSubstantiveEntries([entry]).length) {
+    return false;
+  }
+
+  const groupKey = entry.groupReconciliationKey?.trim();
+  const runId = entry.runId?.trim();
+  const interactionId = entry.interactionId?.trim();
+  const substantive = conversationGroupSubstantiveEntries(current.entries);
+  // A host anchor reconciles the whole group, including partial chunks
+  // that carry only the provisional transport owner.
+  if (groupKey && substantive.some(previous => previous.groupReconciliationKey?.trim() === groupKey)) return false;
+  return substantive.some((previous) => {
+    if (previous.kind !== "message") return false;
+    const previousRunId = previous.runId?.trim();
+    const previousInteractionId = previous.interactionId?.trim();
+    return Boolean((runId && previousRunId && runId !== previousRunId)
+      || (interactionId && previousInteractionId && interactionId !== previousInteractionId));
+  });
+}
+
 export function groupConversationTimelineEntries(
   entries: ConversationTimelineEntry[],
 ): ConversationTimelineGroup[] {
@@ -612,7 +646,8 @@ export function groupConversationTimelineEntries(
   for (const entry of entries) {
     const current = groups.at(-1);
     const identityKey = conversationIdentityGroupKey(entry.identity);
-    if (!current || conversationIdentityGroupKey(current.identity) !== identityKey) {
+    if (!current || conversationIdentityGroupKey(current.identity) !== identityKey
+      || startsSeparateAssistantResponse(current, entry)) {
       if (conversationIdentityPresentation(entry.identity) === "user") {
         // A turn is the durable reconciliation boundary. Entries can arrive
         // late or move ahead of an already-rendered assistant response (peer
@@ -675,7 +710,12 @@ export function groupConversationTimelineEntries(
     // anchor entry (position-independent, so a reordered twin keeps its
     // suffix instead of stealing a sibling's). The loop also guards anchors
     // that literally collide with a previously-issued suffixed id.
-    let discriminator = anchorEntry.id;
+    // Two responses can share one interaction while owning distinct runs.
+    // Prefer the typed run over a live row ID that changes at persistence.
+    const runAnchor = conversationGroupSubstantiveEntries(group.entries)
+      .find(entry => entry.kind === "message" && entry.runId?.trim());
+    let discriminator = runAnchor?.kind === "message" && runAnchor.runId?.trim()
+      ? `run-${runAnchor.runId.trim()}` : anchorEntry.id;
     while (seenIds.has(id)) {
       id = `${base}-dup-${discriminator}`;
       discriminator = `${discriminator}x`;

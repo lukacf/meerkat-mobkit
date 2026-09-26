@@ -1,3 +1,6 @@
+import { reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "../../../packages/console-core/src/runtime-append-projection";
+import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "../../../packages/console-core/src/tool-completion";
+import { parseConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import {
   councilArgsByCallId,
   councilEntryFromFrame,
@@ -14,6 +17,7 @@ import type {
   ConversationEmptySuggestion,
   ConversationIdentity,
   ConversationRichBlock,
+  ConversationTextMode,
   ConversationRichToolCallBlock,
   ConversationTimelineEntry,
   ConversationViewState,
@@ -25,6 +29,8 @@ import type {
   WorkGraphCardStatus,
 } from "@console-core";
 import {
+  decodeMemberAlias,
+  describeConversationEntrySource,
   entryOriginFromFrameData,
   groupConversationTimelineEntries,
   humanizeRuntimeEventType,
@@ -32,11 +38,20 @@ import {
   runtimeEventFromFrame,
   runtimeEventText,
   normalizeSidebarWatchFields,
+  buildConversationMarkdownBlocks,
   parseConversationRichBlocks,
   parseStreamingConversationRichBlocks,
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 import { createConsoleId } from "./id";
+import { formatWorkGraphTimestamp } from "./workgraph-time";
+
+function messageTextBlocks(source: string, textMode: ConversationTextMode = "markdown", streaming = false): ConversationRichBlock[] {
+  if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
+  return streaming
+    ? parseStreamingConversationRichBlocks(source, { displayNormalization: false })
+    : parseConversationRichBlocks(source, { displayNormalization: false });
+}
 
 export type MobKitDockTarget =
   | AgentChatTarget
@@ -112,7 +127,7 @@ export interface WorkGraphPanelTarget extends ConsoleDockTarget {
 
 export function buildPanelConversationKey(
   panelId: string,
-  target: Pick<MobKitDockTarget, "kind" | "identity" | "memberId" | "id" | "addressingMode"> | null,
+  target: Pick<ConsoleDockTarget, "kind" | "id"> & Partial<Pick<AgentChatTarget, "identity" | "memberId" | "addressingMode">> | null,
 ): string {
   if (!target) {
     return `panel:${panelId}:none`;
@@ -786,6 +801,16 @@ function reasoningFrameText(frame: ConsoleFrame): string {
   if (frame.event === "reasoning_delta" && typeof (data as Record<string, unknown>)?.delta === "string") {
     return (data as Record<string, string>).delta;
   }
+  if (frame.event === "reasoning_complete") {
+    // Native AgentEvent completion contains the complete block, including its
+    // original whitespace. Older callers used text or a bare string.
+    if (typeof data === "string") return data;
+    for (const field of ["content", "text"] as const) {
+      if (typeof (data as Record<string, unknown>)?.[field] === "string") {
+        return (data as Record<string, string>)[field];
+      }
+    }
+  }
   return textFromReasoningValue(data).trim();
 }
 
@@ -1093,65 +1118,21 @@ function peerTargetFromArgs(
           : undefined;
 }
 
-function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
+function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error"; completionEvidence: ToolCompletionEvidence } {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
-  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
-
-  // Extract actual result content — prefer tool_execution_completed which has the real result
-  let result = "";
-  const toolName = typeof record?.name === "string"
-    ? record.name
-    : typeof record?.tool_name === "string"
-      ? record.tool_name
-      : undefined;
-  if (typeof record?.result === "string") {
-    const display = summarizeToolResultForDisplay(toolName, record.result);
-    if (display) {
-      result = display;
-    } else {
-    // Try to parse JSON result and format it readably
-      try {
-        const parsed = JSON.parse(record.result);
-        if (typeof parsed === "object" && parsed !== null) {
-          // Remove metadata keys, keep the actual content
-          const clean = { ...parsed };
-          delete clean.source_event_type;
-          delete clean.type;
-          result = JSON.stringify(clean, null, 2);
-        } else {
-          result = record.result;
-        }
-      } catch {
-        result = record.result;
-      }
-    }
-  } else if (typeof record?.result === "object" && record.result !== null) {
-    result = summarizeToolResultForDisplay(toolName, record.result) || "";
-    if (!result) {
-      const clean = { ...(record.result as Record<string, unknown>) };
-      delete clean.source_event_type;
-      delete clean.type;
-      result = JSON.stringify(clean, null, 2);
-    }
-  }
-
-  // For tool_result_received without a result field, don't use the metadata dump
-  if (!result && frame.event === "tool_result_received") {
-    return { status: isError ? "error" : "success" };
-  }
-
-  return {
-    ...(result ? { result } : {}),
-    status: isError ? "error" : "success",
-  };
+  const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
+  const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
+  const raw = record?.result ?? record?.content;
+  const result = toolResultTextFromContent(raw);
+  return { ...(result !== undefined ? { result } : {}), status, completionEvidence };
 }
 
 function buildToolBlocks(
   frames: ConsoleFrame[],
-  workGraphNamesByCallId?: Map<string, string>,
+  cardToolCallIds: Set<string>,
 ): Map<string, ConversationRichToolCallBlock> {
   const toolCalls = new Map<string, ConversationRichToolCallBlock>();
-  const pendingResults = new Map<string, { result?: string; status: "success" | "error" }>();
+  const pendingResults = new Map<string, { result?: string; status: "pending" | "success" | "error"; completionEvidence: ToolCompletionEvidence }>();
   // Peer registry built from `peers` tool results: peer_id (uuid) -> name.
   // The LLM-supplied `display_name` field on send_* args is unreliable
   // (agents have been observed filling it with their own name on every
@@ -1162,9 +1143,8 @@ function buildToolBlocks(
   const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
-    // WorkGraph tool calls fold into the inline workgraph card instead of
-    // generic tool rows.
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    // A rendered WorkGraph card owns only the calls that contributed to it.
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
       const parsed = serverToolContentSummary(frame);
@@ -1179,7 +1159,7 @@ function buildToolBlocks(
           if (existing) {
             toolCalls.set(existing.toolCallId, {
               ...existing,
-              ...(parsed.result ? { result: parsed.result } : {}),
+              ...(parsed.result !== undefined ? { result: parsed.result } : {}),
               status: parsed.status,
             });
           }
@@ -1206,7 +1186,7 @@ function buildToolBlocks(
       continue;
     }
 
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       const toolCallId = parseToolCallId(frame);
       const data = frame.data as Record<string, unknown> | undefined;
       // Capture peer registry from the `peers` tool result.
@@ -1219,8 +1199,9 @@ function buildToolBlocks(
         const current = toolCalls.get(toolCallId)!;
         toolCalls.set(toolCallId, {
           ...current,
-          ...(parsed.result ? { result: parsed.result } : {}),
+          ...(parsed.result !== undefined ? { result: parsed.result } : {}),
           status: parsed.status,
+          completionEvidence: parsed.completionEvidence,
         });
       } else {
         pendingResults.set(toolCallId, parsed);
@@ -1256,11 +1237,15 @@ function buildToolBlocks(
         toolCallId,
         name,
         arguments: parseToolArguments(frame),
-        ...(pending?.result ? { result: pending.result } : {}),
+        ...(pending?.result !== undefined ? { result: pending.result } : {}),
         status: pending?.status || "pending",
+        completionEvidence: pending?.completionEvidence ?? { outcome: "running", source: "runtime-start", toolCallId },
         ...(peerTarget ? { peerTarget } : {}),
+        ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim())) } : {}),
         ...(peerIntent ? { peerIntent } : {}),
-        ...(peerBody ? { peerBody } : {}),
+        ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
       });
     }
   }
@@ -1281,9 +1266,9 @@ function buildPeerRegistry(frames: ConsoleFrame[]): Map<string, string> {
 
 // ── WorkGraph inline card aggregation ───────────────────────────────────────
 //
-// WorkGraph tool calls never render as generic cc-tool-call rows. All frames
-// of a turn's workgraph activity fold into one evolving card per goal/root
+// Item-backed WorkGraph activity folds into one evolving card per goal/root
 // work item (kind "workgraph"), positioned at the first contributing frame.
+// Calls without a rendered card keep their ordinary tool evidence.
 // The fold is a single O(frames) pass rebuilt per render, same cost class as
 // buildToolBlocks. Per-item/binding `revision` is retained verbatim: it is
 // the CAS token operator actions must echo or the mutation conflicts.
@@ -1469,6 +1454,7 @@ interface WorkGraphFoldState {
   // card can surface whether its latest action failed.
   contributions: Array<{
     frameIndex: number;
+    toolCallId: string | null;
     interactionId: string;
     itemIds: string[];
     bindingIds: string[];
@@ -1557,9 +1543,9 @@ function workGraphBindingStatus(value: unknown): { label: string; active: boolea
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
   const state = workGraphString(record?.state) || "active";
   if (state === "paused") {
-    const until = workGraphString(record?.until);
+    const until = formatWorkGraphTimestamp(workGraphString(record?.until), { date: true });
     return {
-      label: until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused",
+      label: until ? `paused until ${until}` : "paused",
       active: false,
     };
   }
@@ -1660,7 +1646,7 @@ function foldWorkGraphEvent(state: WorkGraphFoldState, value: unknown): void {
     state.seenEventKeys.add(dedupeKey);
   }
   const at = workGraphString(record.at);
-  const clock = at ? `${at.slice(11, 16)}` : "";
+  const clock = formatWorkGraphTimestamp(at);
   state.events.push({
     at,
     itemId: workGraphString(record.item_id),
@@ -1894,7 +1880,10 @@ function buildWorkGraphEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
   namesByCallId?: Map<string, string>,
-): Map<number, ConversationWorkGraphEntry[]> {
+): {
+  entriesByAnchor: Map<number, ConversationWorkGraphEntry[]>;
+  representedToolCallIds: Set<string>;
+} {
   const state: WorkGraphFoldState = {
     items: new Map(),
     directItemIds: new Set(),
@@ -1913,6 +1902,7 @@ function buildWorkGraphEntries(
   // One failure note per tool call: a live frame and its session-history
   // backfill twin share a tool_call_id and must not double-report.
   const failureNotedCallIds = new Set<string>();
+  const eventItemIdsByCallId = new Map<string, Array<string | undefined>>();
 
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
@@ -1921,6 +1911,7 @@ function buildWorkGraphEntries(
     const frameIso = isoFromTimestampMs(frame.timestampMs);
     const contribution = {
       frameIndex: index,
+      toolCallId: parseToolCallId(frame),
       interactionId: frame.interactionId?.trim() || "",
       itemIds: [] as string[],
       bindingIds: [] as string[],
@@ -2011,6 +2002,12 @@ function buildWorkGraphEntries(
         if (!isRefresh) foldWorkGraphEdge(state, result.edge);
         if (Array.isArray(result.events)) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
+          if (toolCallId) {
+            eventItemIdsByCallId.set(toolCallId, result.events.map((event) => {
+              const record = event && typeof event === "object" ? event as Record<string, unknown> : null;
+              return workGraphString(record?.kind) ? workGraphString(record?.item_id) : undefined;
+            }));
+          }
         }
         const snapshot = result.snapshot && typeof result.snapshot === "object"
           ? result.snapshot as Record<string, unknown>
@@ -2031,7 +2028,8 @@ function buildWorkGraphEntries(
   }
 
   const byAnchor = new Map<number, ConversationWorkGraphEntry[]>();
-  if (!sawWorkGraphFrame) return byAnchor;
+  const representedToolCallIds = new Set<string>();
+  if (!sawWorkGraphFrame) return { entriesByAnchor: byAnchor, representedToolCallIds };
 
   // Group known items by resolved root; attach bindings via their item root.
   const rootMembers = new Map<string, string[]>();
@@ -2073,6 +2071,7 @@ function buildWorkGraphEntries(
   // that the parent map is complete. Contributions run in frame order, so the
   // last recorded outcome per card is the outcome of its latest action.
   const anchorByCard = new Map<string, { frameIndex: number; createdAt?: string; interactionId: string }>();
+  const toolCallsByCard = new Map<string, Set<string>>();
   const lastOutcomeByCard = new Map<string, "ok" | "error">();
   // Per-card UI-state anchor: the first item id ever contributed to that
   // card, in frame order. It is stable from the first create result and, for
@@ -2123,6 +2122,11 @@ function buildWorkGraphEntries(
       cardKeys.add(interactionKey);
     }
     for (const key of cardKeys) {
+      if (contribution.toolCallId) {
+        const calls = toolCallsByCard.get(key) || new Set<string>();
+        calls.add(contribution.toolCallId);
+        toolCallsByCard.set(key, calls);
+      }
       if (!anchorByCard.has(key)) {
         anchorByCard.set(key, {
           frameIndex: contribution.frameIndex,
@@ -2163,6 +2167,7 @@ function buildWorkGraphEntries(
     const list = byAnchor.get(anchorIndex) || [];
     list.push(entry);
     byAnchor.set(anchorIndex, list);
+    for (const callId of toolCallsByCard.get(entry.id) || []) representedToolCallIds.add(callId);
   };
 
   const latestIso = (values: Array<string | null | undefined>): string | undefined => {
@@ -2260,14 +2265,27 @@ function buildWorkGraphEntries(
     }, anchor.frameIndex);
   }
 
-  return byAnchor;
+  const emittedCardIds = new Set([...byAnchor.values()].flatMap((entries) => entries.map((entry) => entry.id)));
+  for (const [callId, itemIds] of eventItemIdsByCallId) {
+    // Events can update an existing card without returning its item again.
+    // Keep the raw result when any event has no represented item, or when
+    // the query is empty. Event observations never create item/card state.
+    const allRepresented = itemIds.length > 0 && itemIds.every((itemId) => {
+      if (!itemId) return false;
+      const root = rootForItem(itemId);
+      const cardId = ownCardRoots.has(root) ? `workgraph:${root}` : catchAllForItem.get(root);
+      return Boolean(cardId && emittedCardIds.has(cardId));
+    });
+    if (allRepresented) representedToolCallIds.add(callId);
+  }
+  return { entriesByAnchor: byAnchor, representedToolCallIds };
 }
 
 /// True when folding `frames` yields at least one workgraph card. The reload
 /// re-hydration path fetches a snapshot only for panes that actually show
 /// one; it runs once per identity, so the extra fold pass is bounded.
 export function framesContainWorkGraphCards(frames: ConsoleFrame[]): boolean {
-  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  const { entriesByAnchor: entries } = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
   for (const cards of entries.values()) {
     if (cards.length > 0) return true;
   }
@@ -2349,10 +2367,12 @@ function renderTerminalEntry(
   frame: ConsoleFrame,
   entryId: string,
   streamedText = "",
+  textMode: ConversationTextMode = "markdown",
 ): ConversationTimelineEntry | null {
-  if (frame.event === "interaction_complete") {
+  if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete") {
     if (isSteerDeliveryTerminalFrame(frame)) return null;
-    const text = summarizeFrameData(frame.data).trim();
+    const source = terminalFrameVisibleText(frame);
+    const text = textMode === "markdown" ? source : source.trim();
     if (!text) return null;
 
     // Peer responses always render as compact meta, even if text was streamed
@@ -2372,7 +2392,7 @@ function renderTerminalEntry(
       return null;
     }
 
-    const blocks = parseConversationRichBlocks(text, { displayNormalization: false });
+    const blocks = messageTextBlocks(text, textMode);
     return {
       kind: "message",
       id: entryId,
@@ -2425,29 +2445,169 @@ function terminalFrameVisibleText(frame: ConsoleFrame): string {
   return "";
 }
 
-function liveAssistantTerminalTextSignatures(frames: ConsoleFrame[]): Set<string> {
-  const signatures = new Set<string>();
-  for (const frame of frames) {
-    if (frame.sourceKind === "session_history") continue;
-    const text = terminalFrameVisibleText(frame).trim();
-    if (!text) continue;
-    signatures.add(normalizeComparableText(text));
-  }
-  return signatures;
+type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId">;
+
+function ownerContextsConflict(left: AssistantFrameOwner, right: AssistantFrameOwner): boolean {
+  return (["runtimeKey", "identity", "sessionId"] as const).some((key) => (
+    Boolean(left[key] && right[key] && left[key] !== right[key])
+  ));
 }
 
-/// UUID-form interaction ids carried by NON-history frames. A history frame
-/// bearing one of these ids is the persisted twin of a live frame (see
-/// authoritativeInteractionId); one that bears a UUID absent from this set is
-/// a distinct interaction and must render even when its text repeats.
-function liveInteractionIdSet(frames: ConsoleFrame[]): Set<string> {
-  const ids = new Set<string>();
+function sameAssistantRunOwner(left: AssistantFrameOwner, right: AssistantFrameOwner): boolean {
+  if (ownerContextsConflict(left, right)) return false;
+  const leftRun = left.runId?.trim() || "";
+  const rightRun = right.runId?.trim() || "";
+  const leftInteraction = left.interactionId?.trim() || "";
+  const rightInteraction = right.interactionId?.trim() || "";
+  if (leftRun || rightRun) {
+    return Boolean(leftRun && leftRun === rightRun
+      && !(leftInteraction && rightInteraction && leftInteraction !== rightInteraction));
+  }
+  return UUID_FORM.test(leftInteraction) && UUID_FORM.test(rightInteraction)
+    && leftInteraction.toLowerCase() === rightInteraction.toLowerCase();
+}
+
+function sameTextStreamOwner(left: AssistantFrameOwner | undefined, right: AssistantFrameOwner): boolean {
+  return Boolean(left && !ownerContextsConflict(left, right)
+    && (left.runId?.trim() || "") === (right.runId?.trim() || "")
+    && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
+}
+
+type LiveAssistantTextOccurrence = {
+  owner: ConsoleFrame;
+  frames: ConsoleFrame[];
+  chunks: string[];
+  text: string;
+  complete: boolean;
+};
+
+function assistantOwnerKey(frame: AssistantFrameOwner): string {
+  if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
+  const interaction = frame.interactionId?.trim() || "";
+  return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
+}
+
+function historyAssistantSource(frame: ConsoleFrame): string {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+  const parsed = historyMessageText(record.message);
+  return parsed.role === "assistant" ? parsed.text : terminalFrameVisibleText(frame);
+}
+
+function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextDeltas: boolean): {
+  consumedHistory: Set<string>;
+  deltaOverrides: Map<string, string>;
+  consumeReasoning: (history: ConsoleFrame, text: string) => boolean;
+} {
+  const byOwner = new Map<string, LiveAssistantTextOccurrence[]>();
+  const active = new Map<string, LiveAssistantTextOccurrence>();
+  const reasoningByOwner = new Map<string, Map<string, ConsoleFrame[]>>();
+  const consumedReasoning = new Set<string>();
+  const pushOccurrence = (frame: ConsoleFrame): LiveAssistantTextOccurrence => {
+    const occurrence = { owner: frame, frames: [], chunks: [], text: "", complete: false };
+    const key = assistantOwnerKey(frame);
+    const bucket = byOwner.get(key) || [];
+    bucket.push(occurrence);
+    byOwner.set(key, bucket);
+    active.set(key, occurrence);
+    return occurrence;
+  };
   for (const frame of frames) {
     if (frame.sourceKind === "session_history") continue;
-    const id = frame.interactionId?.trim() || "";
-    if (UUID_FORM.test(id)) ids.add(id.toLowerCase());
+    const key = assistantOwnerKey(frame);
+    if (frame.event === "reasoning_complete" && frame.runId?.trim()) {
+      const byText = reasoningByOwner.get(key) || new Map<string, ConsoleFrame[]>();
+      const text = reasoningFrameText(frame);
+      const completions = byText.get(text) || [];
+      completions.push(frame);
+      byText.set(text, completions);
+      reasoningByOwner.set(key, byText);
+    }
+    let current = active.get(key);
+    if (current && !sameTextStreamOwner(current.owner, frame)) current = undefined;
+    if (frame.event === "text_delta" && renderTextDeltas) {
+      if (!current || current.complete) current = pushOccurrence(frame);
+      current.frames.push(frame);
+      current.chunks.push(summarizeFrameData(frame.data));
+      continue;
+    }
+    const terminal = terminalFrameVisibleText(frame);
+    if (terminal) {
+      const streamed = current?.chunks.join("") || "";
+      if (current && (current.text || streamed) === terminal) {
+        current.text = terminal;
+        current.complete = true;
+      } else {
+        current = pushOccurrence(frame);
+        current.text = terminal;
+        current.complete = true;
+      }
+      continue;
+    }
+    // A visible live boundary ends this text occurrence. History projections
+    // never change a live stream's message boundaries.
+    if (current && (frame.event.startsWith("tool_") || frame.event.startsWith("reasoning_")
+      || frame.event === "assistant_image" || frame.event === "assistant_image_appended"
+      || frame.event === "user_input" || frame.event === "system_notice")) {
+      current.complete = true;
+      active.delete(key);
+    }
   }
-  return ids;
+  for (const bucket of byOwner.values()) {
+    for (const occurrence of bucket) occurrence.text ||= occurrence.chunks.join("");
+  }
+  const consumed = new Set<LiveAssistantTextOccurrence>();
+  const consumedHistory = new Set<string>();
+  const deltaOverrides = new Map<string, string>();
+  for (const history of frames) {
+    if (history.sourceKind !== "session_history") continue;
+    const text = historyAssistantSource(history);
+    if (!text) continue;
+    const key = assistantOwnerKey(history);
+    const candidates = byOwner.get(key) || [];
+    const occurrence = candidates.find((candidate) => {
+      if (consumed.has(candidate) || !candidate.text) return false;
+      if (key === "legacy") return !candidate.owner.runId?.trim() && candidate.text === text;
+      if (!sameAssistantRunOwner(history, candidate.owner)) return false;
+      // Legacy interaction-only history has no message identity; retain the
+      // existing compatibility join. Typed runs use exact authored source.
+      if (!history.runId?.trim()) return true;
+      return candidate.text === text
+        || (!candidate.complete && candidate.frames.length > 0 && text.startsWith(candidate.text));
+    });
+    if (!occurrence) continue;
+    consumed.add(occurrence);
+    consumedHistory.add(history.id);
+    if (occurrence.text !== text && !occurrence.complete && occurrence.frames.length > 0) {
+      // Durable text can beat the final live chunks. Complete the last
+      // observed chunk, preserving earlier segments and their chronological
+      // position around an overlapping input or another run's output.
+      const last = occurrence.frames.length - 1;
+      deltaOverrides.set(occurrence.frames[last].id, occurrence.chunks[last] + text.slice(occurrence.text.length));
+    }
+  }
+  return {
+    consumedHistory,
+    deltaOverrides,
+    consumeReasoning: (history, text) => {
+      const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text) || [];
+      const completion = candidates.find((live) => !consumedReasoning.has(live.id)
+        && sameAssistantRunOwner(history, live));
+      if (!completion) return false;
+      consumedReasoning.add(completion.id);
+      return true;
+    },
+  };
+}
+
+function historyHasAssistantSiblings(frame: ConsoleFrame): boolean {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+  const message = record.message && typeof record.message === "object" ? record.message as Record<string, unknown> : {};
+  return message.role === "block_assistant" && Array.isArray(message.blocks)
+    && message.blocks.some((block) => {
+      if (!block || typeof block !== "object") return false;
+      const item = block as Record<string, unknown>;
+      return (item.block_type || item.type) !== "text";
+    });
 }
 
 function buildBlobUrl(blobId: string, baseUrl?: string): string {
@@ -2592,6 +2752,7 @@ function conversationEntryVisibleText(entry: ConversationTimelineEntry): string 
       if (!block || typeof block !== "object") return "";
       const record = block as Record<string, unknown>;
       if (record.type === "thinking") return "";
+      if (record.type === "markdown" && typeof record.source === "string") return record.source;
       if (typeof record.text === "string") return record.text;
       if (typeof record.peerBody === "string") return record.peerBody;
       return "";
@@ -2601,16 +2762,6 @@ function conversationEntryVisibleText(entry: ConversationTimelineEntry): string 
 }
 
 const UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/// UUID-form interaction ids are authoritative twin identity: the
-/// identity-first send path threads the console-minted UUID through meerkat
-/// runtime admission, so live frames and persisted transcript messages carry
-/// the SAME id. Legacy `console-interaction-*` strings never round-trip, so
-/// they are not comparable across live/history sources.
-function authoritativeInteractionId(entry: ConversationTimelineEntry): string {
-  const id = entry.interactionId?.trim() || "";
-  return UUID_FORM.test(id) ? id.toLowerCase() : "";
-}
 
 function shouldSuppressRepeatedAssistantEntry(
   entry: ConversationTimelineEntry,
@@ -2622,7 +2773,8 @@ function shouldSuppressRepeatedAssistantEntry(
   }
   const signature = normalizeComparableText(conversationEntryVisibleText(entry));
   if (!signature) return false;
-  const entryInteractionId = authoritativeInteractionId(entry);
+  const entryRun = entry.runId?.trim() || "";
+  const entryInteraction = entry.interactionId?.trim() || "";
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index = priorEntries.length - 1; index >= 0; index--) {
     const prior = priorEntries[index];
@@ -2635,15 +2787,17 @@ function shouldSuppressRepeatedAssistantEntry(
     if (prior.identity.id !== entry.identity.id) continue;
     const priorSignature = normalizeComparableText(conversationEntryVisibleText(prior));
     if (priorSignature !== signature) continue;
-    // Exact interaction identity beats the text+time heuristic in BOTH
-    // directions: matching UUIDs are the same interaction (suppress even
-    // outside the time window); differing UUIDs are genuinely distinct
-    // interactions that happen to repeat the same text (the over-cull class
-    // — keep the entry).
-    const priorInteractionId = authoritativeInteractionId(prior);
-    if (entryInteractionId && priorInteractionId) {
-      if (entryInteractionId === priorInteractionId) return true;
-      return false;
+    const priorRun = prior.runId?.trim() || "";
+    const priorInteraction = prior.interactionId?.trim() || "";
+    if (entryRun || priorRun) {
+      // A run owns many committed messages. Only an actual source-frame
+      // replay can be discarded here; live/history occurrences join earlier.
+      if (entryRun === priorRun && entry.id === prior.id) return true;
+      continue;
+    }
+    if (UUID_FORM.test(entryInteraction) && UUID_FORM.test(priorInteraction)) {
+      if (entryInteraction.toLowerCase() === priorInteraction.toLowerCase()) return true;
+      continue;
     }
     const priorTs = Date.parse(String(prior.createdAt || ""));
     if (Number.isFinite(entryTs) && Number.isFinite(priorTs) && Math.abs(entryTs - priorTs) > 15_000) {
@@ -2675,6 +2829,7 @@ function renderHistoryUserEntry(
   frame: ConsoleFrame,
   entryId: string,
   blobBaseUrl?: string,
+  textMode: ConversationTextMode = "markdown",
 ): ConversationTimelineEntry | null {
   if (
     frame.event !== "interaction_started"
@@ -2691,7 +2846,8 @@ function renderHistoryUserEntry(
   // itself never decides what kind of message this is.
   const origin = entryOriginFromFrameData(record);
   if (Array.isArray(content)) {
-    const blocks = contentToUserBlocks(content, blobBaseUrl);
+    const contextMessage = parseConsoleContextMessage(content);
+    const blocks = contentToUserBlocks(content, blobBaseUrl, textMode);
     if (blocks.length === 0) return null;
     return {
       kind: "message",
@@ -2700,19 +2856,40 @@ function renderHistoryUserEntry(
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
       blocks,
+      ...(contextMessage ? { contextMessage, copyText: content.map((block) => block.text).join("\n\n") } : {}),
       ...(origin ? { origin } : {}),
     };
   }
-  const text = extractTextFromContentBlocks(content).trim();
+  const source = extractTextFromContentBlocks(content);
+  const text = textMode === "markdown" ? source : source.trim();
   if (!text) return null;
   return {
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
-    variant: "plain",
+    variant: textMode === "markdown" ? "rich" : "plain",
+    ...(textMode === "markdown" ? { blocks: messageTextBlocks(text, textMode) } : {}),
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text,
     ...(origin ? { origin } : {}),
+  };
+}
+
+function renderUserDeliveryFailureEntry(frame: ConsoleFrame, entryId: string): ConversationTimelineEntry | null {
+  if (frame.event !== "user_input" || frame.status !== "delivery_failed") return null;
+  return {
+    kind: "message",
+    id: `${entryId}:delivery-status`,
+    identity: SYSTEM_IDENTITY,
+    variant: "meta",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
+    text: "Message delivery failed.",
+    runtimeEvent: runtimeEventFromFrame(frame.event, {
+      status: frame.status,
+      input_frame_id: frame.id,
+      payload: frame.data,
+    }),
   };
 }
 
@@ -2754,14 +2931,17 @@ function renderRunStartedPromptEntries(
     suppressEmbeddedRpcPrompt?: boolean;
     suppressStructuredCommsPrompt?: boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry[] {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
   const record = frame.data as Record<string, unknown>;
-  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl);
-  const prompt = extractPromptText(record.prompt).trim();
+  const textMode = options.textMode ?? "markdown";
+  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl, textMode);
+  const source = extractPromptText(record.prompt);
+  const prompt = textMode === "markdown" ? source : source.trim();
   if (!prompt) {
     return [];
   }
@@ -2797,7 +2977,8 @@ function renderRunStartedPromptEntries(
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
-      variant: "plain",
+      variant: textMode === "markdown" ? "rich" : "plain",
+      ...(textMode === "markdown" ? { blocks: promptBlocks } : {}),
       ...(createdAt ? { createdAt } : {}),
       text: scrubbedPrompt,
     });
@@ -2842,9 +3023,9 @@ function extractPromptText(prompt: unknown): string {
     .join("\n");
 }
 
-function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
+function contentToUserBlocks(content: unknown, blobBaseUrl?: string, textMode: ConversationTextMode = "markdown"): ConversationRichBlock[] {
   if (typeof content === "string") {
-    return parseConversationRichBlocks(content, { displayNormalization: false });
+    return messageTextBlocks(content, textMode);
   }
   if (!Array.isArray(content)) {
     return [];
@@ -2852,7 +3033,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   const blocks: ConversationRichBlock[] = [];
   for (const block of content) {
     if (typeof block === "string") {
-      blocks.push(...parseConversationRichBlocks(block, { displayNormalization: false }));
+      blocks.push(...messageTextBlocks(block, textMode));
       continue;
     }
     if (!block || typeof block !== "object") continue;
@@ -2864,7 +3045,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
         : typeof record.content === "string"
           ? record.content
           : "";
-      blocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
+      blocks.push(...messageTextBlocks(text, textMode));
       continue;
     }
     if (type === "image" || type === "image_ref") {
@@ -3082,55 +3263,43 @@ function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
 
 type HistoryToolResult = {
   result?: string;
-  status: "success" | "error";
+  status: "pending" | "success" | "error";
+  completionEvidence: ToolCompletionEvidence;
 };
 
-function toolResultTextFromContent(content: unknown): string {
+function toolResultTextFromContent(content: unknown): string | undefined {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((block) => {
-      if (typeof block === "string") return block;
-      if (!block || typeof block !== "object") return "";
-      const record = block as Record<string, unknown>;
-      if (typeof record.text === "string") return record.text;
-      if (typeof record.content === "string") return record.content;
-      const data = record.data && typeof record.data === "object"
-        ? record.data as Record<string, unknown>
-        : null;
-      if (typeof data?.text === "string") return data.text;
-      if (typeof data?.content === "string") return data.content;
-      return "";
-    })
-    .filter((value) => value.trim().length > 0)
-    .join("");
+  if (content === undefined || content === null) return undefined;
+  // Flatten only the canonical text-only carrier. Mixed blocks, annotations,
+  // resources and arbitrary structured results retain their complete payload.
+  if (Array.isArray(content) && content.length > 0 && content.every((block) => {
+    if (!block || typeof block !== "object") return false;
+    const record = block as Record<string, unknown>;
+    return record.type === "text" && typeof record.text === "string"
+      && Object.keys(record).every((key) => key === "type" || key === "text");
+  })) {
+    return content.map((block) => (block as { text: string }).text).join("");
+  }
+  return JSON.stringify(content, null, 2);
 }
 
 function historyToolResults(
   frames: ConsoleFrame[],
-  workGraphNamesByCallId?: Map<string, string>,
+  cardToolCallIds: Set<string>,
 ): Map<string, HistoryToolResult> {
   const results = new Map<string, HistoryToolResult>();
   for (const frame of frames) {
     if (
       frame.sourceKind !== "session_history"
-      || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received")
+      || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out")
     ) {
       continue;
     }
     const data = frame.data && typeof frame.data === "object"
       ? frame.data as Record<string, unknown>
       : null;
-    const historyToolName = typeof data?.name === "string"
-      ? data.name
-      : typeof data?.tool_name === "string"
-        ? data.tool_name
-        : "";
-    // WorkGraph results never hydrate history tool rows — the card owns them.
-    // Backfill result frames carry no name, so also match through the
-    // tool_call_id pairing (same resolution as the card fold).
-    if (WORKGRAPH_TOOL_NAMES.has(historyToolName)) continue;
-    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
+    // Keep empty-query evidence; only an actual card replaces a tool row.
+    if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim()
       ? data.tool_call_id.trim()
       : typeof data?.id === "string" && data.id.trim()
@@ -3138,13 +3307,12 @@ function historyToolResults(
         : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = rawResult !== undefined
-      ? summarizeToolResultForDisplay(undefined, rawResult) || toolResultTextFromContent(rawResult)
-      : "";
-    const status = data?.is_error === true || data?.status === "error" ? "error" : "success";
+    const result = toolResultTextFromContent(rawResult);
+    const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
+    const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
-      status,
-      ...(result.trim() ? { result } : {}),
+      status, completionEvidence,
+      ...(result !== undefined ? { result } : {}),
     });
   }
   return results;
@@ -3204,19 +3372,23 @@ function blockAssistantToolBlock(
     const peerIntent = displayPeerIntent(rawPeerIntent);
     const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : undefined;
     const result = toolResults?.get(id);
-    const displayResult = result?.result
-      ? summarizeToolResultForDisplay(name, result.result) || result.result
+    const displayResult = result?.result !== undefined
+      ? summarizeToolResultForDisplay(name, result.result) ?? result.result
       : undefined;
     return {
       type: "tool-call",
       toolCallId: id,
       name,
       arguments: argumentsText,
-      ...(displayResult ? { result: displayResult } : {}),
-      status: result?.status || "success",
+      ...(displayResult !== undefined ? { result: displayResult } : {}),
+      status: result?.status || "pending",
+      completionEvidence: result?.completionEvidence ?? unknownToolCompletion(id),
       ...(peerTarget ? { peerTarget } : {}),
+        ...(isPeerTool ? { peerIdentity: typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id : typeof argsRecord?.to === "string" ? argsRecord.to : "Unknown peer" } : {}),
+        ...(isPeerTool && typeof argsRecord?.peer_id === "string" && peerRegistry?.get(argsRecord.peer_id)?.trim()
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peerRegistry.get(argsRecord.peer_id)!.trim())) } : {}),
       ...(peerIntent ? { peerIntent } : {}),
-      ...(peerBody ? { peerBody } : {}),
+      ...(peerBody ? { peerBody, peerBodyFormat: "verbatim" as const } : {}),
     };
 }
 
@@ -3224,6 +3396,7 @@ function blockAssistantRichBlocks(
   blocks: unknown[],
   peerRegistry?: Map<string, string>,
   toolResults?: Map<string, HistoryToolResult>,
+  textMode: ConversationTextMode = "markdown",
 ): ConversationRichBlock[] {
   const reasoningBlocks: ConversationRichBlock[] = [];
   const actionAndTextBlocks: ConversationRichBlock[] = [];
@@ -3269,10 +3442,10 @@ function blockAssistantRichBlocks(
         : typeof item.text === "string"
           ? item.text
           : "";
-      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
+      if (text.trim()) actionAndTextBlocks.push(...messageTextBlocks(text, textMode));
     }
   }
-  return hasNonTextBlock ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
+  return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
 }
 
 function textFromUnknown(value: unknown): string {
@@ -3280,7 +3453,7 @@ function textFromUnknown(value: unknown): string {
 }
 
 function typedNoticeContentBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
-  return contentToUserBlocks(content, blobBaseUrl);
+  return contentToUserBlocks(content, blobBaseUrl, "legacy");
 }
 
 function typedNoticeBlockText(block: Record<string, unknown>): string {
@@ -3774,7 +3947,7 @@ function structuredCommsPromptSuppressionKeys(
     let best: { key: string; distance: number } | null = null;
     for (let index = 0; index < frames.length; index++) {
       const frame = frames[index];
-      const key = `${frame.id || frame.event || "frame"}:${index}`;
+      const key = frame.id || `${frame.event || "frame"}:${index}`;
       if (consumed.has(key)) continue;
       if (
         typeof signature.timestampMs === "number"
@@ -3811,6 +3984,7 @@ function structuredCommsPromptSuppressionKeys(
 }
 
 function commsNoticeDedupeKeys(frame: ConsoleFrame): string[] {
+  if (runtimeAppendNoticeKey(frame)) return [];
   const signatures = systemNoticeCommsSignatures(frame);
   const keys: string[] = [];
   for (const signature of signatures) {
@@ -4008,6 +4182,7 @@ function typedSystemNoticeBlocksToRich(
   blobBaseUrl?: string,
   sourceKind?: string,
   consumeDuplicateCommsBlock?: (key: string) => boolean,
+  textMode: ConversationTextMode = "legacy",
 ): ConversationRichBlock[] {
   const rich: ConversationRichBlock[] = [];
   const bodyText = textFromUnknown(body);
@@ -4058,7 +4233,27 @@ function typedSystemNoticeBlocksToRich(
         displayBodySource,
         peerAliases,
       );
-      const displayBody = normalizeStructuredCommsBodyText(
+      // Typed content is owner text, including envelope-looking authored lines.
+      // Preserve it without running the legacy parser or scaffold normalization.
+      const ownerContentText = typeof record.content === "string"
+        ? record.content
+        : Array.isArray(record.content)
+          ? record.content.map((part: unknown) => {
+            if (typeof part === "string") return part;
+            if (!part || typeof part !== "object") return "";
+            const textPart = part as Record<string, unknown>;
+            if (textPart.type !== "text") return "";
+            return typeof textPart.text === "string" ? textPart.text
+              : typeof textPart.content === "string" ? textPart.content : "";
+          }).join("")
+          : "";
+      // This typed runtime request's content is model-facing routing guidance,
+      // not an authored message. Its summary already describes the operation.
+      const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
+      const exactDisplayBody = (!runtimeKickoff && ownerContentText)
+        || [record.summary, record.body, record.detail].filter((part): part is string => typeof part === "string").join("\n")
+        || (typeof body === "string" ? body : "");
+      const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
         displayBodySource,
         preserveStructuredContentEnvelope ? [] : peerAliases,
       );
@@ -4070,8 +4265,12 @@ function typedSystemNoticeBlocksToRich(
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
+        ...(typeof peer.display_name === "string" && peer.display_name.trim()
+          ? { peerDisplayLabel: decodeMemberAlias(peerLastSegment(peer.display_name.trim())) } : {}),
+        peerIdentity: typeof peer.id === "string" && peer.id ? peer.id : "Unknown peer",
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,
+        peerBodyFormat: textMode === "markdown" ? "verbatim" : "legacy",
         ...(peerImages.length > 0 ? { peerImages } : {}),
       });
       continue;
@@ -4094,6 +4293,16 @@ function typedSystemNoticeBlocksToRich(
       const label = type === "mcp" ? "MCP" : "Tool config";
       const text = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
       rich.push({ type: "divider", text });
+      continue;
+    }
+    if (type === "background_job" && typeof record.job_id === "string" && record.job_id.trim()
+      && typeof record.status === "string" && record.status.trim()) {
+      rich.push({
+        type: "background-job", jobId: record.job_id, status: record.status,
+        ...(typeof record.display_name === "string" ? { displayName: record.display_name } : {}),
+        detail: typeof record.detail === "string" ? record.detail : "",
+        copyText: typedNoticeBlockText(record) || bodyText,
+      });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
@@ -4121,6 +4330,7 @@ function historyMessageText(
   toolResults?: Map<string, HistoryToolResult>,
   sourceKind?: string,
   consumeDuplicateCommsBlock?: (key: string) => boolean,
+  textMode: ConversationTextMode = "markdown",
 ): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
@@ -4139,6 +4349,7 @@ function historyMessageText(
         blobBaseUrl,
         sourceKind,
         consumeDuplicateCommsBlock,
+        textMode,
       );
       const duplicateCommsConsumed = Boolean(
         consumeDuplicateCommsBlock
@@ -4162,7 +4373,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -4197,10 +4408,13 @@ function renderSessionHistoryTextCompleteEntry(
   frame: ConsoleFrame,
   entryId: string,
   options: {
+    suppressAssistantText?: boolean;
+    consumeDuplicateReasoningBlock?: (text: string) => boolean;
     consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
     consumeDuplicateCommsBlock?: (key: string) => boolean;
     peerRegistry?: Map<string, string>;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
     toolResults?: Map<string, HistoryToolResult>;
   } = {},
 ): ConversationTimelineEntry | null {
@@ -4208,15 +4422,29 @@ function renderSessionHistoryTextCompleteEntry(
   const record = frame.data && typeof frame.data === "object"
     ? frame.data as Record<string, unknown>
     : {};
+  const message = record.message && typeof record.message === "object"
+    ? record.message as Record<string, unknown> : null;
+  const projectedMessage = message?.role === "block_assistant"
+    ? { ...message, blocks: Array.isArray(message.blocks) ? message.blocks.filter((block) => {
+        if (!block || typeof block !== "object") return true;
+        const item = block as Record<string, unknown>;
+        const kind = item.block_type || item.type;
+        if (kind === "text" && options.suppressAssistantText) return false;
+        if (kind === "reasoning" && options.consumeDuplicateReasoningBlock?.(reasoningBlockText(item))) return false;
+        return true;
+      }) : [] }
+    : options.suppressAssistantText && message?.role === "assistant" ? { ...message, content: "" } : record.message;
   const parsed = historyMessageText(
-    record.message,
+    projectedMessage,
     options.peerRegistry,
     options.blobBaseUrl,
     options.toolResults,
     frame.sourceKind,
     options.consumeDuplicateCommsBlock,
+    options.textMode,
   );
-  const text = parsed.text.trim();
+  const textMode = options.textMode ?? "markdown";
+  const text = textMode === "markdown" ? parsed.text : parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
     const filteredParsedBlocks = options.consumeDuplicateToolBlock
@@ -4228,7 +4456,7 @@ function renderSessionHistoryTextCompleteEntry(
     if (!text && filteredParsedBlocks.length === 0) return null;
     const blocks = filteredParsedBlocks.length > 0
       ? filteredParsedBlocks
-      : parseConversationRichBlocks(text, { displayNormalization: false });
+      : messageTextBlocks(text, textMode);
     return {
       kind: "message",
       id: entryId,
@@ -4251,7 +4479,7 @@ function renderSessionHistoryTextCompleteEntry(
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0
     ? filteredParsedBlocks
-    : parseConversationRichBlocks(text, { displayNormalization: false });
+    : messageTextBlocks(text, textMode);
   return {
     kind: "message",
     id: entryId,
@@ -4269,6 +4497,7 @@ function renderSystemNoticeEntry(
     consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
     consumeDuplicateCommsBlock?: (key: string) => boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry | null {
   if (frame.event !== "system_notice") return null;
@@ -4295,6 +4524,7 @@ function renderSystemNoticeEntry(
     undefined,
     frame.sourceKind,
     options.consumeDuplicateCommsBlock,
+    options.textMode ?? "legacy",
   );
   if (parsed.role !== "meta") return null;
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
@@ -4319,6 +4549,54 @@ function renderSystemNoticeEntry(
   };
 }
 
+function attachCompletedRunDurations(entries: ConversationTimelineEntry[], frames: ConsoleFrame[]): void {
+  const ownerKey = (frame: ConsoleFrame): string | null => {
+    if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
+    return JSON.stringify([
+      frame.runtimeKey || "", frame.identity || "", frame.sessionId,
+      frame.runId, frame.interactionId || "",
+    ]);
+  };
+  const timings = new Map<string, { start?: number; end?: number; invalid: boolean }>();
+  const framesById = new Map(frames.map((frame) => [frame.id, frame]));
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+    const started = frame.event === "run_started";
+    const completed = (frame.event === "run_completed"
+      || (frame.event === "interaction_complete"
+        && (data.type === "run_completed" || data.source_event_type === "run_completed")))
+      && data.extraction_required !== true && !isSteerDeliveryTerminalFrame(frame);
+    if (!started && !completed) continue;
+    const key = ownerKey(frame);
+    if (!key) continue;
+    const timing = timings.get(key) || { invalid: false };
+    const time = frame.timestampMs;
+    const field = started ? "start" : "end";
+    if (typeof time !== "number" || !Number.isFinite(time) || !Number.isFinite(new Date(time).getTime())
+      || (timing[field] !== undefined && timing[field] !== time)) timing.invalid = true;
+    else timing[field] = time;
+    timings.set(key, timing);
+  }
+  // Entry timestamps belong to their first source chunk, not completion.
+  // Use that frame only for exact ownership; timing comes from named events.
+  const assigned = new Set<string>();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind !== "message" || describeConversationEntrySource(entry).kind !== "assistant") continue;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) continue;
+    const frame = framesById.get(entry.id);
+    if (!frame || !entry.runId || entry.runId !== frame.runId) continue;
+    const key = ownerKey(frame);
+    if (!key || assigned.has(key)) continue;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) continue;
+    entry.runDurationMs = timing.end - timing.start;
+    assigned.add(key);
+  }
+}
+
 export function mapFramesToTimelineEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
@@ -4327,14 +4605,16 @@ export function mapFramesToTimelineEntries(
     renderTextDeltas?: boolean;
     suppressEmbeddedRunStartedPrompt?: boolean;
     blobBaseUrl?: string;
+    textMode?: ConversationTextMode;
   } = {},
 ): ConversationTimelineEntry[] {
   // Live streams keep store order so unscoped comms events do not jump
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
-  const orderedFrames = options.renderInteractionStartsAsUser
+  const textMode = options.textMode ?? "markdown";
+  const orderedFrames = reconcileRuntimeAppendFrames(options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
-    : frames;
+    : frames);
   const entries: ConversationTimelineEntry[] = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
@@ -4345,10 +4625,11 @@ export function mapFramesToTimelineEntries(
   // React key. The workgraph fold avoids this by anchoring per card; a
   // council is a single call, so a seen-set is enough.
   const emittedCouncilIds = new Set<string>();
-  const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
-  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } =
+    buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
+  const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
-  const sessionToolResults = historyToolResults(orderedFrames, workGraphNamesByCallId);
+  const sessionToolResults = historyToolResults(orderedFrames, cardToolCallIds);
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -4359,8 +4640,7 @@ export function mapFramesToTimelineEntries(
     liveToolCallIds,
     liveToolSignatureCounts,
   } = liveToolDedupeState(orderedFrames, toolBlocks);
-  const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
-  const liveInteractionIds = liveInteractionIdSet(orderedFrames);
+  const assistantHistory = buildAssistantHistoryReconciliation(orderedFrames, options.renderTextDeltas !== false);
   const emittedImages = new Set<string>();
   const emittedUserInputs = new Set<string>();
   // First-emitted user entry per dedupe key. A later twin of the same input
@@ -4377,112 +4657,102 @@ export function mapFramesToTimelineEntries(
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt: string | undefined;
-  let pendingReasoningText = "";
-  let pendingReasoningId = "";
-  let pendingReasoningCreatedAt: string | undefined;
-  let pendingReasoningInteractionId = "";
-  const emittedReasoning = new Map<string, Array<{ normalized: string; block: { text: string } }>>();
-  let streamedInteractionText = "";
-  let streamedInteractionId = "";
-
-  function reasoningInteractionKey(interactionId: string): string {
-    return interactionId || "__unscoped__";
+  type OpenReasoning = {
+    block: { type: "thinking"; label: string; text: string; final?: boolean };
+    scoped: boolean;
+    scope: string;
+  };
+  // ReasoningComplete closes the assembler's current block. A visual flush
+  // leaves that block available for a late completion; completed blocks never
+  // participate in content-based matching with a later block.
+  const openReasoning = new Map<string, OpenReasoning>();
+  let activeReasoning: OpenReasoning | undefined;
+  let streamedOwner: AssistantFrameOwner | undefined;
+  // A visible input can interrupt one run while that run keeps streaming.
+  // Keep completion evidence per owner; flushing a row changes presentation,
+  // not the source document whose terminal frame will arrive later.
+  const streamedTextByOwner = new Map<string, { owner: AssistantFrameOwner; text: string }[]>();
+  function ownedStream(frame: AssistantFrameOwner) {
+    return streamedTextByOwner.get(assistantOwnerKey(frame))?.find((stream) => sameTextStreamOwner(stream.owner, frame));
+  }
+  function appendOwnedStream(frame: AssistantFrameOwner, delta: string) {
+    const existing = ownedStream(frame);
+    if (existing) {
+      existing.text += delta;
+      return;
+    }
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key) || [];
+    streams.push({ owner: frame, text: delta });
+    streamedTextByOwner.set(key, streams);
+  }
+  function forgetOwnedStream(frame: AssistantFrameOwner) {
+    const key = assistantOwnerKey(frame);
+    const streams = streamedTextByOwner.get(key)?.filter((stream) => !sameTextStreamOwner(stream.owner, frame)) || [];
+    if (streams.length) streamedTextByOwner.set(key, streams);
+    else streamedTextByOwner.delete(key);
+  }
+  function forgetUnscopedStream() {
+    if (streamedOwner && !streamedOwner.runId?.trim() && !streamedOwner.interactionId?.trim()) {
+      forgetOwnedStream(streamedOwner);
+    }
   }
 
-  function reconcileEmittedReasoning(interactionId: string, text: string): boolean {
-    const normalized = normalizeComparableText(text);
-    if (!normalized) return false;
-    const previous = emittedReasoning.get(reasoningInteractionKey(interactionId)) || [];
-    for (const candidate of previous) {
-      if (candidate.normalized === normalized || candidate.normalized.includes(normalized)) {
-        return true;
-      }
-      if (normalized.includes(candidate.normalized)) {
-        if (!interactionId) {
-          return true;
-        }
-        candidate.normalized = normalized;
-        candidate.block.text = text;
-        return true;
-      }
-    }
-    return false;
+  function reasoningScope(frame: ConsoleFrame): { scope: string; scoped: boolean } {
+    const interactionId = frame.interactionId?.trim() || "";
+    const runId = frame.runId?.trim() || "";
+    const turnId = frame.turnId?.trim() || "";
+    return {
+      scoped: Boolean(interactionId || runId || turnId),
+      scope: JSON.stringify([
+        frame.runtimeKey || "", frame.identity || "", frame.sessionId || "",
+        interactionId, runId, turnId, frame.sourceKind || "console_event",
+      ]),
+    };
   }
 
-  function markEmittedReasoning(interactionId: string, text: string, block: { text: string }): void {
-    const normalized = normalizeComparableText(text);
-    if (!normalized) return;
-    const key = reasoningInteractionKey(interactionId);
-    const previous = emittedReasoning.get(key) || [];
-    if (!previous.some((candidate) => candidate.normalized === normalized)) {
-      emittedReasoning.set(key, [...previous, { normalized, block }]);
-    }
+  function startReasoning(frame: ConsoleFrame, entryId: string): OpenReasoning {
+    const state: OpenReasoning = {
+      ...reasoningScope(frame),
+      block: { type: "thinking", label: "", text: "" },
+    };
+    const interactionId = frame.interactionId?.trim();
+    const createdAt = isoFromTimestampMs(frame.timestampMs);
+    entries.push({
+      kind: "message",
+      id: entryId,
+      identity: agentIdentity(agent),
+      variant: "rich",
+      // The opening source frame owns the entry identity through completion.
+      ...(interactionId ? { interactionId } : {}),
+      ...(frame.runId ? { runId: frame.runId } : {}),
+      ...(createdAt ? { createdAt } : {}),
+      blocks: [state.block],
+    });
+    openReasoning.set(state.scope, state);
+    return state;
   }
 
   function flushPendingReasoning(final = false) {
-    if (!pendingReasoningText.trim()) return;
-    if (final && reconcileEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText)) {
-      pendingReasoningText = "";
-      pendingReasoningId = "";
-      pendingReasoningCreatedAt = undefined;
-      pendingReasoningInteractionId = "";
-      return;
-    }
-    const thinkingBlock = {
-      type: "thinking" as const,
-      label: "",
-      text: pendingReasoningText,
-      ...(final ? { final: true } : {}),
-    };
-    entries.push({
-      kind: "message",
-      id: pendingReasoningId,
-      identity: agentIdentity(agent),
-      variant: "rich",
-      // Reconciliation identity from the first frame: a group keyed only at
-      // finalization flips its id when the terminal entry joins, remounting
-      // the live response group (the #282/#283 failure mode).
-      ...(pendingReasoningInteractionId ? { interactionId: pendingReasoningInteractionId } : {}),
-      ...(pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {}),
-      blocks: [thinkingBlock],
-    });
-    if (final) {
-      markEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText, thinkingBlock);
-    }
-    pendingReasoningText = "";
-    pendingReasoningId = "";
-    pendingReasoningCreatedAt = undefined;
-    pendingReasoningInteractionId = "";
-  }
-
-  function reconcilePendingReasoning(interactionId: string, text: string): boolean {
-    if (!pendingReasoningId || interactionId !== pendingReasoningInteractionId) return false;
-    const normalizedPending = normalizeComparableText(pendingReasoningText);
-    const normalizedText = normalizeComparableText(text);
-    if (!normalizedPending || !normalizedText) return false;
-    if (normalizedPending === normalizedText || normalizedPending.includes(normalizedText)) {
-      return true;
-    }
-    if (normalizedText.includes(normalizedPending)) {
-      pendingReasoningText = text;
-      return true;
-    }
-    pendingReasoningText = `${pendingReasoningText.trimEnd()}\n\n${text.trimStart()}`;
-    return true;
+    if (!activeReasoning) return;
+    if (final) activeReasoning.block.final = true;
+    // Without a typed turn/run/interaction, a later event after a visual
+    // boundary cannot be claimed as the completion of this block.
+    if (!activeReasoning.scoped) openReasoning.delete(activeReasoning.scope);
+    activeReasoning = undefined;
   }
 
   function flushPendingText(final = true) {
     if (!pendingText) return;
-    const blocks = final
-      ? parseConversationRichBlocks(pendingText, { displayNormalization: false })
-      : parseStreamingConversationRichBlocks(pendingText, { displayNormalization: false });
+    const blocks = messageTextBlocks(pendingText, textMode, !final);
     entries.push({
       kind: "message",
       id: pendingId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
       // Reconciliation identity from the first frame (see flushPendingReasoning).
-      ...(streamedInteractionId ? { interactionId: streamedInteractionId } : {}),
+      ...(streamedOwner?.interactionId ? { interactionId: streamedOwner.interactionId } : {}),
+      ...(streamedOwner?.runId ? { runId: streamedOwner.runId } : {}),
       ...(pendingCreatedAt ? { createdAt: pendingCreatedAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text: pendingText }),
     });
@@ -4493,50 +4763,35 @@ export function mapFramesToTimelineEntries(
 
   for (let i = 0; i < orderedFrames.length; i++) {
     const frame = orderedFrames[i];
-    const entryId = `${frame.id || frame.event || "frame"}:${i}`;
+    // Canonical frame identity must survive insertion of older history.
+    const entryId = frame.id || `${frame.event || "frame"}:${i}`;
 
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
       if (!delta) continue;
-      const frameInteractionId = frame.interactionId?.trim() || "";
-      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
-        flushPendingReasoning(true);
-      }
-      if (!pendingReasoningId) {
-        pendingReasoningId = entryId;
-        pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
-        pendingReasoningInteractionId = frameInteractionId;
-      }
-      pendingReasoningText += delta;
+      const { scope } = reasoningScope(frame);
+      if (activeReasoning?.scope !== scope) flushPendingReasoning(true);
+      flushPendingText();
+      const state = openReasoning.get(scope) || startReasoning(frame, entryId);
+      state.block.text += delta;
+      delete state.block.final;
+      activeReasoning = state;
       continue;
     }
 
     if (frame.event === "reasoning_complete") {
-      const frameInteractionId = frame.interactionId?.trim() || pendingReasoningInteractionId;
-      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
-        flushPendingReasoning(true);
-      }
+      const { scope } = reasoningScope(frame);
+      const unfinished = openReasoning.get(scope);
+      if (activeReasoning !== unfinished) flushPendingReasoning(true);
+      flushPendingText();
       const text = reasoningFrameText(frame);
-      if (text) {
-        if (reconcilePendingReasoning(frameInteractionId, text)) {
-          flushPendingReasoning(true);
-          continue;
-        }
-        if (reconcileEmittedReasoning(frameInteractionId, text)) {
-          pendingReasoningText = "";
-          pendingReasoningId = "";
-          pendingReasoningCreatedAt = undefined;
-          pendingReasoningInteractionId = "";
-          continue;
-        }
-        pendingReasoningText = text;
-        if (!pendingReasoningId) {
-          pendingReasoningId = entryId;
-          pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
-        }
-        pendingReasoningInteractionId = frameInteractionId;
+      if (unfinished || text.trim()) {
+        const state = unfinished || startReasoning(frame, entryId);
+        state.block.text = text;
+        state.block.final = true;
+        openReasoning.delete(scope);
+        if (activeReasoning === state) activeReasoning = undefined;
       }
-      flushPendingReasoning(true);
       continue;
     }
 
@@ -4545,18 +4800,19 @@ export function mapFramesToTimelineEntries(
         continue;
       }
       flushPendingReasoning(true);
-      const frameInteractionId = frame.interactionId?.trim() || "";
-      if (frameInteractionId !== streamedInteractionId) {
-        streamedInteractionText = "";
-        streamedInteractionId = frameInteractionId;
+      if (!sameTextStreamOwner(streamedOwner, frame)) {
+        flushPendingText();
+        forgetUnscopedStream();
+        streamedOwner = frame;
       }
-      const delta = summarizeFrameData(frame.data);
+      const delta = assistantHistory.deltaOverrides.get(frame.id) ?? summarizeFrameData(frame.data);
+      if (!delta) continue;
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += delta;
-      streamedInteractionText += delta;
+      appendOwnedStream(frame, delta);
       continue;
     }
 
@@ -4600,8 +4856,8 @@ export function mapFramesToTimelineEntries(
       if (!councilRecord || councilRecord.result === undefined) continue;
     }
 
-    // WorkGraph tool frames render as one evolving inline card per goal/root
-    // (anchored at the first contributing frame) — never as generic tool rows.
+    // Only calls represented by a rendered card are replaced. Empty queries
+    // and pending calls retain the generic tool row and its completion proof.
     if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) {
       const workGraphCards = workGraphEntriesByAnchor.get(i);
       if (workGraphCards && workGraphCards.length > 0) {
@@ -4611,7 +4867,8 @@ export function mapFramesToTimelineEntries(
           entries.push(card);
         }
       }
-      continue;
+      if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT
+        || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     }
 
     const toolCallId = parseToolCallId(frame);
@@ -4672,7 +4929,7 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       flushPendingReasoning(true);
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
@@ -4692,24 +4949,25 @@ export function mapFramesToTimelineEntries(
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingReasoning(true);
       flushPendingText();
-      const frameInteractionId = frame.interactionId?.trim() || "";
-      if (frameInteractionId !== streamedInteractionId) {
-        streamedInteractionText = "";
-        streamedInteractionId = frameInteractionId;
+      if (!sameTextStreamOwner(streamedOwner, frame)) {
+        forgetUnscopedStream();
+        streamedOwner = frame;
       }
-      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
+      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl, textMode);
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
         if (userKey && emittedUserInputs.has(userKey)) {
           foldUserOrigin(userKey, userEntry);
-          continue;
+        } else {
+          if (userKey) {
+            emittedUserInputs.add(userKey);
+            emittedUserEntries.set(userKey, userEntry);
+          }
+          entries.push(userEntry);
         }
-        if (userKey) {
-          emittedUserInputs.add(userKey);
-          emittedUserEntries.set(userKey, userEntry);
-        }
-        entries.push(userEntry);
       }
+      const failureEntry = renderUserDeliveryFailureEntry(frame, entryId);
+      if (failureEntry) entries.push(failureEntry);
       continue;
     }
 
@@ -4717,6 +4975,7 @@ export function mapFramesToTimelineEntries(
       flushPendingReasoning(true);
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
+        textMode,
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
         suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId),
         blobBaseUrl: options.blobBaseUrl,
@@ -4746,7 +5005,10 @@ export function mapFramesToTimelineEntries(
       }
       const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
         blobBaseUrl: options.blobBaseUrl,
+        textMode,
         consumeDuplicateCommsBlock: (key) => {
+          const runtimeKey = runtimeAppendNoticeKey(frame);
+          if (runtimeKey) key = `${runtimeKey}:${key}`;
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
           }
@@ -4754,13 +5016,53 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          WORKGRAPH_TOOL_NAMES.has(block.name)
+          cardToolCallIds.has(block.toolCallId)
           || liveToolCallIds.has(block.toolCallId)
           || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
       });
       if (noticeEntry) {
         entries.push(noticeEntry);
+      }
+      continue;
+    }
+
+    if (frame.sourceKind === "session_history" && (
+      frame.event === "text_complete" || frame.event === "interaction_complete"
+      || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed"
+    )) {
+      const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
+      if (suppressAssistantText && !historyHasAssistantSiblings(frame)) continue;
+      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+        suppressAssistantText,
+        consumeDuplicateReasoningBlock: (text) => assistantHistory.consumeReasoning(frame, text),
+        textMode,
+        peerRegistry,
+        blobBaseUrl: options.blobBaseUrl,
+        toolResults: sessionToolResults,
+        consumeDuplicateCommsBlock: (key) => {
+          const runtimeKey = runtimeAppendNoticeKey(frame);
+          if (runtimeKey) key = `${runtimeKey}:${key}`;
+          if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
+            return true;
+          }
+          markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
+          return false;
+        },
+        consumeDuplicateToolBlock: (block) => (
+          cardToolCallIds.has(block.toolCallId)
+          || liveToolCallIds.has(block.toolCallId)
+          || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        ),
+      });
+      if (historyEntry) {
+        historyEntry.interactionId = frame.interactionId?.trim() || undefined;
+        if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || undefined;
+        if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+          continue;
+        }
+        if (conversationEntryVisibleText(historyEntry)) flushPendingText();
+        entries.push(historyEntry);
       }
       continue;
     }
@@ -4772,11 +5074,11 @@ export function mapFramesToTimelineEntries(
         if (
           text
           && pendingText
+          && sameTextStreamOwner(streamedOwner, frame)
           && normalizeComparableText(pendingText) === normalizeComparableText(text)
         ) {
           continue;
         }
-        const interactionId = frame.interactionId?.trim();
         const duplicateTerminalFollows = text
           && orderedFrames.slice(i + 1).some((later) => {
             if (
@@ -4785,7 +5087,7 @@ export function mapFramesToTimelineEntries(
             ) {
               return false;
             }
-            if (interactionId && later.interactionId?.trim() !== interactionId) {
+            if (later.sourceKind === "session_history" || !sameTextStreamOwner(frame, later)) {
               return false;
             }
             return normalizeComparableText(terminalFrameVisibleText(later)) === normalizeComparableText(text);
@@ -4794,105 +5096,27 @@ export function mapFramesToTimelineEntries(
           continue;
         }
       }
-      const historyText = frame.sourceKind === "session_history"
-        ? terminalFrameVisibleText(frame).trim()
-        : "";
-      const historyUuid = frame.sourceKind === "session_history"
-        && UUID_FORM.test(frame.interactionId?.trim() || "")
-        ? (frame.interactionId || "").trim().toLowerCase()
-        : "";
-      if (historyUuid && liveInteractionIds.has(historyUuid)) {
-        continue;
-      }
-      if (
-        historyText
-        && !historyUuid
-        && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
-      ) {
-        continue;
-      }
-        const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
-          peerRegistry,
-          blobBaseUrl: options.blobBaseUrl,
-          toolResults: sessionToolResults,
-          consumeDuplicateCommsBlock: (key) => {
-            if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
-              return true;
-            }
-            markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
-            return false;
-          },
-          consumeDuplicateToolBlock: (block) => (
-            WORKGRAPH_TOOL_NAMES.has(block.name)
-            || liveToolCallIds.has(block.toolCallId)
-            || consumeToolSignatureCount(liveToolSignatureCounts, block)
-          ),
-        });
-        if (historyEntry) {
-          flushPendingText();
-          historyEntry.interactionId = frame.interactionId?.trim() || undefined;
-          if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
-            continue;
-          }
-          entries.push(historyEntry);
-        }
-        continue;
-      }
+    }
 
     if (
       frame.event === "interaction_complete"
+      || frame.event === "run_completed"
+      || frame.event === "text_complete"
       || frame.event === "interaction_failed"
       || frame.event === "run_failed"
     ) {
-      const streamedText = streamedInteractionText || pendingText;
+      // Replayed completion can arrive before the final live chunk. Ignored
+      // history must not flush or reset that still-streaming document.
+      const ownsStream = sameTextStreamOwner(streamedOwner, frame);
+      const streamedText = ownedStream(frame)?.text || (ownsStream ? pendingText : "");
       flushPendingReasoning(true);
       flushPendingText();
-      streamedInteractionText = "";
-      streamedInteractionId = "";
-      if (frame.sourceKind === "session_history") {
-        const historyText = terminalFrameVisibleText(frame).trim();
-        const historyUuid = UUID_FORM.test(frame.interactionId?.trim() || "")
-          ? (frame.interactionId || "").trim().toLowerCase()
-          : "";
-        if (historyUuid && liveInteractionIds.has(historyUuid)) {
-          continue;
-        }
-        if (
-          historyText
-          && !historyUuid
-          && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
-        ) {
-          continue;
-        }
-        const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
-          peerRegistry,
-          blobBaseUrl: options.blobBaseUrl,
-          toolResults: sessionToolResults,
-          consumeDuplicateCommsBlock: (key) => {
-            if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
-              return true;
-            }
-            markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
-            return false;
-          },
-          consumeDuplicateToolBlock: (block) => (
-            WORKGRAPH_TOOL_NAMES.has(block.name)
-            || liveToolCallIds.has(block.toolCallId)
-            || consumeToolSignatureCount(liveToolSignatureCounts, block)
-          ),
-        });
-        if (historyEntry) {
-          historyEntry.interactionId = frame.interactionId?.trim() || undefined;
-          if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
-            continue;
-          }
-          entries.push(historyEntry);
-        }
-        continue;
-      }
-      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
+      forgetOwnedStream(frame);
+      if (ownsStream) streamedOwner = undefined;
+      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText, textMode);
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
+        if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || undefined;
         if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
         }
@@ -4917,7 +5141,7 @@ export function mapFramesToTimelineEntries(
 
     // Skip remaining tool lifecycle events (handled by tool blocks above)
     if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started"
-      || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       continue;
     }
 
@@ -4956,7 +5180,17 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
-  return entries;
+  attachCompletedRunDurations(entries, orderedFrames);
+  return entries.filter((entry) => entry.kind !== "message"
+    || entry.blocks?.length !== 1
+    || entry.blocks[0].type !== "thinking"
+    || entry.blocks[0].text.trim()).map((entry) => {
+    if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    let textIndex = 0;
+    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
+      ? { ...block, id: `${entry.id}:text:${textIndex++}` }
+      : block) };
+  });
 }
 
 /// Optimistic composer entries are typed as this console's own sends, the
@@ -4966,10 +5200,12 @@ const LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console", originKind: "operator" } 
 export function createUserEntry(
   message: string,
   images: Array<{ src: string; mediaType: string; alt?: string }> = [],
+  options: { textMode?: ConversationTextMode } = {},
 ): ConversationTimelineEntry {
-  if (images.length > 0) {
+  const textMode = options.textMode ?? "markdown";
+  if (images.length > 0 || textMode === "markdown") {
     const blocks: ConversationRichBlock[] = [
-      ...parseConversationRichBlocks(message, { displayNormalization: false }),
+      ...messageTextBlocks(message, textMode),
       ...images.map((image) => ({
         type: "image" as const,
         src: image.src,
@@ -5029,6 +5265,14 @@ export function appendOptimisticConversationEntry(
   return optimisticEntry ? [...entries, optimisticEntry] : entries;
 }
 
+function isIntermediateHistoryAssistantStep(frame: ConsoleFrame): boolean {
+  if (frame.sourceKind !== "session_history"
+    || (frame.event !== "text_complete" && frame.event !== "interaction_complete")) return false;
+  const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+  const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
+  return message.role === "block_assistant" && message.stop_reason === "tool_use";
+}
+
 export function inferResponsePhaseFromFrames(
   frames: ConsoleFrame[],
   fallback: ResponsePhase = null,
@@ -5037,6 +5281,8 @@ export function inferResponsePhaseFromFrames(
   let interactionOpen = false;
   let runOpen = false;
   for (const frame of frames) {
+    // A saved intermediate message supplies content, not current lifecycle.
+    if (isIntermediateHistoryAssistantStep(frame)) continue;
     switch (frame.event) {
       case "user_input":
         if (isTerminalUserInputStatus(frame.status)) phase = null;
@@ -5134,6 +5380,7 @@ export function resolvePanelResponsePhase(args: {
 function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
   for (let index = frames.length - 1; index >= 0; index -= 1) {
     const frame = frames[index];
+    if (isIntermediateHistoryAssistantStep(frame)) continue;
     switch (frame.event) {
       case "user_input":
         return isTerminalUserInputStatus(frame.status);
@@ -5174,6 +5421,7 @@ function hasOpenLifecycleBefore(frames: ConsoleFrame[], beforeIndex: number): bo
   let interactionOpen = false;
   let runOpen = false;
   for (let index = 0; index < beforeIndex; index += 1) {
+    if (isIntermediateHistoryAssistantStep(frames[index])) continue;
     switch (frames[index].event) {
       case "interaction_started":
         interactionOpen = true;

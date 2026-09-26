@@ -6,7 +6,150 @@ use super::module_boundary::{
 };
 use super::*;
 
+fn valid_gating_origin(origin: &GatingOrigin) -> bool {
+    !origin.identity.trim().is_empty()
+        && origin
+            .conversation_id
+            .as_deref()
+            .is_none_or(|value| !value.trim().is_empty())
+        && origin
+            .interaction_id
+            .as_deref()
+            .is_none_or(|value| !value.trim().is_empty())
+}
+
+fn validate_gating_snapshot(snapshot: &GatingStateSnapshot) -> Result<(), GatingStateRestoreError> {
+    use GatingStateRestoreError::InvalidSnapshot;
+    if snapshot.version != 1 {
+        return Err(GatingStateRestoreError::UnsupportedVersion(
+            snapshot.version,
+        ));
+    }
+    if snapshot.pending.len() > GATING_PENDING_MAX_RETAINED
+        || snapshot.audit.len() > GATING_AUDIT_MAX_RETAINED
+    {
+        return Err(InvalidSnapshot("retention bounds exceeded"));
+    }
+    if snapshot
+        .next_sequence
+        .checked_add(snapshot.pending.len() as u64 + 1)
+        .is_none()
+    {
+        return Err(InvalidSnapshot("sequence is exhausted"));
+    }
+    let valid_id = |value: &str, prefix: &str| {
+        value
+            .strip_prefix(prefix)
+            .and_then(|suffix| suffix.parse::<u64>().ok())
+            .is_some_and(|sequence| {
+                sequence < snapshot.next_sequence && value == format!("{prefix}{sequence:06}")
+            })
+    };
+    let mut pending_ids = BTreeSet::new();
+    for entry in &snapshot.pending {
+        if !valid_id(&entry.pending_id, "gate-pending-")
+            || !valid_id(&entry.action_id, "gate-action-")
+            || !pending_ids.insert(entry.pending_id.as_str())
+        {
+            return Err(InvalidSnapshot("invalid or duplicate pending ID"));
+        }
+        if !matches!(entry.risk_tier, GatingRiskTier::R3)
+            || entry.deadline_at_ms < entry.created_at_ms
+        {
+            return Err(InvalidSnapshot("invalid pending policy or deadline"));
+        }
+        if entry
+            .origin
+            .as_ref()
+            .is_some_and(|origin| !valid_gating_origin(origin))
+        {
+            return Err(InvalidSnapshot("invalid pending origin"));
+        }
+    }
+    let mut audit_ids = BTreeSet::new();
+    for entry in &snapshot.audit {
+        if !valid_id(&entry.audit_id, "gate-audit-")
+            || !valid_id(&entry.action_id, "gate-action-")
+            || !audit_ids.insert(entry.audit_id.as_str())
+            || entry
+                .pending_id
+                .as_deref()
+                .is_some_and(|id| !valid_id(id, "gate-pending-"))
+        {
+            return Err(InvalidSnapshot("invalid or duplicate audit ID"));
+        }
+        if entry
+            .pending_id
+            .as_deref()
+            .is_some_and(|id| pending_ids.contains(id))
+            && matches!(
+                entry.event_type.as_str(),
+                "approval_decided"
+                    | "rejection_decided"
+                    | "escalation_decided"
+                    | "timeout_fallback"
+            )
+        {
+            return Err(InvalidSnapshot("resolved request is also pending"));
+        }
+        if let Some(value) = entry.detail.get("origin").filter(|value| !value.is_null()) {
+            let origin = serde_json::from_value::<GatingOrigin>(value.clone())
+                .map_err(|_| InvalidSnapshot("invalid audit origin"))?;
+            if !valid_gating_origin(&origin) {
+                return Err(InvalidSnapshot("invalid audit origin"));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl MobkitRuntimeHandle {
+    /// Export canonical gating state after applying owner timeout transitions.
+    pub fn gating_state_snapshot(&mut self) -> GatingStateSnapshot {
+        self.refresh_gating_timeouts();
+        GatingStateSnapshot {
+            version: 1,
+            next_sequence: self.gating_sequence,
+            pending: self
+                .gating_pending_order
+                .iter()
+                .filter_map(|id| self.gating_pending.get(id).cloned())
+                .collect(),
+            audit: self.gating_audit.clone(),
+        }
+    }
+
+    /// Restore trusted host persistence before any gating action is evaluated.
+    /// Validation is atomic, and expired entries resolve through the existing
+    /// owner timeout path instead of becoming silently approved or renewed.
+    pub fn restore_gating_state(
+        &mut self,
+        snapshot: GatingStateSnapshot,
+    ) -> Result<(), GatingStateRestoreError> {
+        if self.gating_sequence != 0
+            || !self.gating_pending.is_empty()
+            || !self.gating_pending_order.is_empty()
+            || !self.gating_audit.is_empty()
+        {
+            return Err(GatingStateRestoreError::RuntimeNotPristine);
+        }
+        validate_gating_snapshot(&snapshot)?;
+        self.gating_sequence = snapshot.next_sequence;
+        self.gating_pending_order = snapshot
+            .pending
+            .iter()
+            .map(|entry| entry.pending_id.clone())
+            .collect();
+        self.gating_pending = snapshot
+            .pending
+            .into_iter()
+            .map(|entry| (entry.pending_id.clone(), entry))
+            .collect();
+        self.gating_audit = snapshot.audit;
+        self.refresh_gating_timeouts();
+        Ok(())
+    }
+
     fn next_gating_sequence(&mut self) -> u64 {
         Self::next_sequence(&mut self.gating_sequence)
     }
@@ -42,7 +185,8 @@ impl MobkitRuntimeHandle {
                     outcome: GatingOutcome::SafeDraft,
                     detail: serde_json::json!({
                         "fallback": "safe_draft",
-                        "reason": "approval_timeout"
+                        "reason": "approval_timeout",
+                        "origin": expired_entry.origin,
                     }),
                 });
                 self.gating_resolution_observers
@@ -123,6 +267,27 @@ impl MobkitRuntimeHandle {
         &mut self,
         request: GatingEvaluateRequest,
     ) -> GatingEvaluateResult {
+        self.evaluate_gating_action_with_origin(request, None)
+    }
+
+    /// Evaluate at a trusted host action boundary with optional conversation
+    /// provenance. Callers must derive origin from their authenticated action
+    /// context. The ordinary RPC method never accepts an origin claim.
+    pub fn evaluate_gating_action_with_origin(
+        &mut self,
+        request: GatingEvaluateRequest,
+        origin: Option<GatingOrigin>,
+    ) -> GatingEvaluateResult {
+        // Optional correlation metadata must not erase an identity access boundary.
+        let origin = origin.map(|mut origin| {
+            origin.conversation_id = origin
+                .conversation_id
+                .filter(|value| !value.trim().is_empty());
+            origin.interaction_id = origin
+                .interaction_id
+                .filter(|value| !value.trim().is_empty());
+            origin
+        });
         self.refresh_gating_timeouts();
         let action = request.action.trim().to_string();
         let actor_id = request.actor_id.trim().to_string();
@@ -159,6 +324,22 @@ impl MobkitRuntimeHandle {
         let action_sequence = self.next_gating_sequence();
         let action_id = format!("gate-action-{action_sequence:06}");
         let risk_tier = request.risk_tier.clone();
+        if origin
+            .as_ref()
+            .is_some_and(|origin| !valid_gating_origin(origin))
+        {
+            // Refuse malformed supplied identity without creating an unattributed
+            // pending or audit row that global gating grants could disclose.
+            return GatingEvaluateResult {
+                action_id,
+                action,
+                actor_id,
+                risk_tier,
+                outcome: GatingOutcome::SafeDraft,
+                pending_id: None,
+                fallback_reason: Some("invalid_gating_origin".to_string()),
+            };
+        }
 
         if matches!(request.risk_tier, GatingRiskTier::R2 | GatingRiskTier::R3) {
             if !self.memory_conflicts.is_empty() && (entity.is_none() || topic.is_none()) {
@@ -184,6 +365,7 @@ impl MobkitRuntimeHandle {
                             "topic": topic.is_none(),
                         },
                         "conflict_count": self.memory_conflicts.len(),
+                        "origin": origin,
                     }),
                 });
                 return GatingEvaluateResult {
@@ -214,6 +396,7 @@ impl MobkitRuntimeHandle {
                             "policy": "memory_conflict_lookup_via_core_mcp",
                             "reason": "memory_conflict_lookup_failed",
                             "error": format!("{error:?}"),
+                            "origin": origin,
                             "reference": {
                                 "entity": entity,
                                 "topic": topic,
@@ -250,6 +433,7 @@ impl MobkitRuntimeHandle {
                             "topic": topic,
                         },
                         "conflict": conflict,
+                        "origin": origin,
                     }),
                 });
                 return GatingEvaluateResult {
@@ -277,6 +461,7 @@ impl MobkitRuntimeHandle {
                     outcome: GatingOutcome::Allowed,
                     detail: serde_json::json!({
                         "policy": "allow_immediate",
+                        "origin": origin,
                         "rationale": request.rationale,
                         "action": action,
                     }),
@@ -303,6 +488,7 @@ impl MobkitRuntimeHandle {
                     outcome: GatingOutcome::AllowedWithAudit,
                     detail: serde_json::json!({
                         "policy": "consequence_mode_allow_with_audit_v0_1",
+                        "origin": origin,
                         "rationale": request.rationale,
                         "action": action,
                     }),
@@ -414,6 +600,8 @@ impl MobkitRuntimeHandle {
                     approval_delivery_id,
                     created_at_ms,
                     deadline_at_ms: created_at_ms.saturating_add(timeout_ms),
+                    rationale: request.rationale,
+                    origin,
                 };
                 self.upsert_gating_pending_entry(pending_entry.clone());
                 self.append_gating_audit(GatingAuditEntry {
@@ -434,6 +622,7 @@ impl MobkitRuntimeHandle {
                         "approval_notification_error": approval_notification_error,
                         "deadline_at_ms": pending_entry.deadline_at_ms,
                         "action": action,
+                        "origin": pending_entry.origin,
                     }),
                 });
                 GatingEvaluateResult {
@@ -508,6 +697,8 @@ impl MobkitRuntimeHandle {
                     approval_delivery_id: None,
                     created_at_ms: current_time_ms(),
                     deadline_at_ms: pending_entry.deadline_at_ms,
+                    rationale: pending_entry.rationale.clone(),
+                    origin: pending_entry.origin.clone(),
                 };
                 self.upsert_gating_pending_entry(successor_entry.clone());
                 next_pending_id = Some(successor_pending_id.clone());
@@ -529,6 +720,7 @@ impl MobkitRuntimeHandle {
                         "approval_delivery_id": successor_entry.approval_delivery_id,
                         "deadline_at_ms": successor_entry.deadline_at_ms,
                         "action": successor_entry.action,
+                        "origin": successor_entry.origin,
                     }),
                 });
                 (GatingOutcome::PendingApproval, "escalation_decided")
@@ -551,6 +743,7 @@ impl MobkitRuntimeHandle {
                 "approval_route_id": pending_entry.approval_route_id,
                 "approval_delivery_id": pending_entry.approval_delivery_id,
                 "next_pending_id": next_pending_id,
+                "origin": pending_entry.origin,
             }),
         });
         self.gating_resolution_observers

@@ -1315,6 +1315,51 @@ enum IdentityMemberReadiness {
     Failed(String),
 }
 
+/// The owner readiness wait also collects fresh member snapshots. Retry
+/// only refused snapshot observations, within the caller's remaining budget.
+async fn wait_identity_members_ready_with_observation_retry<T, Wait, WaitFuture>(
+    remaining: Duration,
+    mut wait: Wait,
+) -> IdentityMemberReadiness
+where
+    Wait: FnMut(Duration) -> WaitFuture,
+    WaitFuture: Future<Output = Result<T, meerkat_mob::MobError>>,
+{
+    let deadline = tokio::time::Instant::now() + remaining;
+    let result = if remaining.is_zero() {
+        // A zero-timeout query has always admitted an immediately successful
+        // owner read (including an empty roster). It cannot wait or retry.
+        match tokio::time::timeout_at(deadline, wait(Duration::ZERO)).await {
+            Ok(Err(meerkat_mob::MobError::LifecycleOperationAdmissionPending {
+                intent,
+                stage,
+            })) if intent == "member_status_observation"
+                && stage == "observation_lane_saturated" =>
+            {
+                return IdentityMemberReadiness::TimedOut;
+            }
+            Ok(result) => result,
+            Err(_) => return IdentityMemberReadiness::TimedOut,
+        }
+    } else {
+        crate::member_status_observation::retry_member_status_observation(deadline, || {
+            wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
+        })
+        .await
+    };
+    match result {
+        Ok(_) => IdentityMemberReadiness::Ready,
+        Err(meerkat_mob::MobError::ActorCommandTimedOut {
+            command_kind: "MemberStatus",
+            stage: "member_status_observation",
+        }) => IdentityMemberReadiness::TimedOut,
+        Err(error) if crate::unified_runtime::mob_ops::is_ready_wait_timeout(&error) => {
+            IdentityMemberReadiness::TimedOut
+        }
+        Err(error) => IdentityMemberReadiness::Failed(error.to_string()),
+    }
+}
+
 struct IdentityStartupReadyWait {
     status: crate::identity_first::IdentityBootstrapStatus,
     timed_out: bool,
@@ -3968,20 +4013,13 @@ async fn handle_unified_rpc_json_inner(
                     move |member_ids, remaining| {
                         let mob_handle = mob_handle.clone();
                         async move {
-                            match mob_handle
-                                .wait_for_members_ready(&member_ids, Some(remaining))
-                                .await
-                            {
-                                Ok(_) => IdentityMemberReadiness::Ready,
-                                Err(error)
-                                    if crate::unified_runtime::mob_ops::is_ready_wait_timeout(
-                                        &error,
-                                    ) =>
-                                {
-                                    IdentityMemberReadiness::TimedOut
-                                }
-                                Err(error) => IdentityMemberReadiness::Failed(error.to_string()),
-                            }
+                            wait_identity_members_ready_with_observation_retry(
+                                remaining,
+                                |remaining| {
+                                    mob_handle.wait_for_members_ready(&member_ids, Some(remaining))
+                                },
+                            )
+                            .await
                         }
                     },
                 )
@@ -7028,6 +7066,166 @@ shell = true
             0,
             "reconcile_identity must preserve mob_definition in roster context"
         );
+        Ok(())
+    }
+
+    fn member_observation_contention() -> meerkat_mob::MobError {
+        meerkat_mob::MobError::LifecycleOperationAdmissionPending {
+            intent: "member_status_observation".to_string(),
+            stage: "observation_lane_saturated",
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_ready_observation_retries_only_until_actual_success_with_remaining_budget() {
+        let mut budgets = Vec::new();
+        let result = super::wait_identity_members_ready_with_observation_retry(
+            Duration::from_millis(200),
+            |remaining| {
+                budgets.push(remaining);
+                std::future::ready(if budgets.len() == 1 {
+                    Err(member_observation_contention())
+                } else {
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        assert_eq!(result, IdentityMemberReadiness::Ready);
+        assert_eq!(budgets.len(), 2);
+        assert_eq!(budgets[0], Duration::from_millis(200));
+        assert!(budgets[1] < budgets[0]);
+        assert!(!budgets[1].is_zero());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_ready_observation_preserves_other_errors_and_owner_timeout() {
+        let errors = [
+            meerkat_mob::MobError::LifecycleOperationAdmissionPending {
+                intent: "member_resume".to_string(),
+                stage: "observation_lane_saturated",
+            },
+            meerkat_mob::MobError::Internal(
+                "observation_lane_saturated: member_status_observation".to_string(),
+            ),
+            meerkat_mob::MobError::ActorCommandTimedOut {
+                command_kind: "DifferentOwnerRead",
+                stage: "original_stage",
+            },
+            meerkat_mob::MobError::ReadyWaitTimedOut {
+                pending_member_ids: vec![meerkat_mob::AgentIdentity::from("still-starting")],
+            },
+        ];
+        for error in errors {
+            let expected = if crate::unified_runtime::mob_ops::is_ready_wait_timeout(&error) {
+                IdentityMemberReadiness::TimedOut
+            } else {
+                IdentityMemberReadiness::Failed(error.to_string())
+            };
+            let mut reply = Some(error);
+            let result = super::wait_identity_members_ready_with_observation_retry(
+                Duration::from_secs(1),
+                |_| std::future::ready(Err::<(), _>(reply.take().expect("no extra read"))),
+            )
+            .await;
+            assert_eq!(result, expected);
+            assert!(reply.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_ready_observation_deadline_never_becomes_ready() {
+        let start = tokio::time::Instant::now();
+        let mut budgets = Vec::new();
+        let result = super::wait_identity_members_ready_with_observation_retry(
+            Duration::from_millis(51),
+            |remaining| {
+                budgets.push(remaining);
+                std::future::ready(Err::<(), _>(member_observation_contention()))
+            },
+        )
+        .await;
+        assert_eq!(result, IdentityMemberReadiness::TimedOut);
+        assert_eq!(start.elapsed(), Duration::from_millis(51));
+        assert!(budgets.len() > 1);
+        assert!(budgets.windows(2).all(|pair| pair[1] < pair[0]));
+
+        let start = tokio::time::Instant::now();
+        let hanging = super::wait_identity_members_ready_with_observation_retry(
+            Duration::from_millis(30),
+            |_| std::future::pending::<Result<(), meerkat_mob::MobError>>(),
+        )
+        .await;
+        assert_eq!(hanging, IdentityMemberReadiness::TimedOut);
+        assert_eq!(start.elapsed(), Duration::from_millis(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_ready_observation_zero_budget_keeps_only_immediate_owner_success() {
+        let ready = super::wait_identity_members_ready_with_observation_retry(
+            Duration::ZERO,
+            |remaining| {
+                assert!(remaining.is_zero());
+                std::future::ready(Ok::<_, meerkat_mob::MobError>(()))
+            },
+        )
+        .await;
+        assert_eq!(ready, IdentityMemberReadiness::Ready);
+        let mut calls = 0;
+        let contended =
+            super::wait_identity_members_ready_with_observation_retry(Duration::ZERO, |_| {
+                calls += 1;
+                std::future::ready(Err::<(), _>(member_observation_contention()))
+            })
+            .await;
+        assert_eq!(contended, IdentityMemberReadiness::TimedOut);
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn startup_ready_observation_retry_is_cancelled_by_bootstrap_generation_change()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-startup-ready-observation-generation".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wait = wait_identity_startup_ready(&runtime, Duration::from_secs(1), {
+            let runtime = runtime.clone();
+            let generations = generations.clone();
+            let stale_reads = stale_reads.clone();
+            move |_ids, remaining| {
+                let generation = generations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let runtime = runtime.clone();
+                let stale_reads = stale_reads.clone();
+                async move {
+                    super::wait_identity_members_ready_with_observation_retry(remaining, |_| {
+                        if generation == 0 {
+                            let attempt =
+                                stale_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            assert_eq!(attempt, 0, "cancelled generation must not retry");
+                            runtime.test_supersede_identity_bootstrap_ready();
+                            std::future::ready(Err(member_observation_contention()))
+                        } else {
+                            std::future::ready(Ok(()))
+                        }
+                    })
+                    .await
+                }
+            }
+        })
+        .await?;
+        assert!(wait.startup_ready);
+        assert!(!wait.timed_out);
+        assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 2);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(stale_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
         Ok(())
     }
 

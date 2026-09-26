@@ -1,3 +1,11 @@
+import { QuoteSelectionAction } from "../../../packages/console-components/src/conversation/quote-selection-action";
+import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
+import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
+import { JumpToLatest } from "../../../packages/console-components/src/conversation/jump-to-latest";
+import { ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
+import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
+import type { MarkdownUrlPolicy } from "../../../packages/console-components/src/conversation/conversation-markdown";
+import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
 import React from "react";
 import type {
   ConversationTimelineEntry,
@@ -18,6 +26,8 @@ import {
 } from "@console-core";
 import {
   ConversationRichContent,
+  useConversationScrollController,
+  type ConversationViewportKey,
   CopyGlyph,
   CouncilCard,
   WorkGraphCard,
@@ -36,11 +46,20 @@ import {
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
 import { countRender } from "../lib/render-counts";
+import { Icon } from "../icon";
 
-interface ChatPaneProps {
+interface ChatPaneProps extends ConversationApprovalProps {
   agent: ConsoleAgent | null;
   agentLabel: string;
   identity: string;
+  viewportKey?: ConversationViewportKey;
+  submittedRowId?: string | null;
+  headerVariant?: "full" | "compact";
+  displayLabels?: ConversationDisplayLabels;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
+  conversationId?: string;
+  contextSlot?: React.ReactNode;
+  onQuoteSelection?: (quote: ConsoleQuoteSelection) => void;
   entries: ConversationTimelineEntry[];
   phase: "waiting" | "tool-executing" | "generating" | null;
   draft: string;
@@ -115,6 +134,11 @@ type MsgKind = "origin" | "event" | "user" | "agent" | "tool" | "thought" | "gat
 
 interface Msg {
   id: string;
+  /** Stable transcript anchor independent of rich-block grouping length. */
+  scrollRowId?: string;
+  sourceEntryId?: string;
+  interactionId?: string;
+  runId?: string;
   kind: MsgKind;
   time: string;
   createdAt?: string;
@@ -128,6 +152,8 @@ interface Msg {
   runtimeEvent?: ConversationRuntimeEvent;
   who?: string;
   text?: string;
+  copyText?: string;
+  contextMessage?: ConsoleContextMessage;
   blocks?: ConversationRichBlock[];
   workGraphEntry?: ConversationWorkGraphEntry;
   councilEntry?: ConversationCouncilEntry;
@@ -175,12 +201,6 @@ function formatFullTimestamp(iso?: string): string {
   return `${day} ${hh}:${mm}:${ss}`;
 }
 
-function parseTimeMs(iso?: string): number | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function formatWorkedDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (totalSeconds < 1) return "under 1s";
@@ -196,6 +216,10 @@ function formatWorkedDuration(ms: number): string {
 }
 
 function msgCopyText(message: Msg): string {
+  if (message.copyText !== undefined) return message.copyText;
+  if (message.blocks?.some((block) => block.type === "markdown")) {
+    return conversationRichBlocksToText(message.blocks);
+  }
   if (message.text) return message.text.trim();
   return conversationRichBlocksToText(message.blocks).trim();
 }
@@ -203,7 +227,8 @@ function msgCopyText(message: Msg): string {
 function msgHasTextualPayload(message: Msg): boolean {
   if (message.text?.trim()) return true;
   return Boolean(message.blocks?.some((block) => (
-    block.type === "paragraph"
+    block.type === "markdown"
+    || block.type === "paragraph"
     || block.type === "heading"
     || block.type === "divider"
     || block.type === "code"
@@ -328,10 +353,6 @@ function isScaffoldUserText(text: string): boolean {
     || /^\[peer update\]/i.test(normalized);
 }
 
-function isScaffoldUserMessage(message: Msg): boolean {
-  return message.kind === "user" && isScaffoldUserText(msgCopyText(message));
-}
-
 function transcriptCopyText(messages: Msg[]): string {
   return messages
     .map((message) => {
@@ -349,7 +370,8 @@ function transcriptCopyText(messages: Msg[]): string {
       const stamp = formatFullTimestamp(message.createdAt);
       const time = stamp ? `[${stamp}] ` : "";
       const worked = message.workedFor ? `\nWorked for ${message.workedFor}` : "";
-      return `${time}${label}: ${text}${worked}`.trim();
+      const row = `${time}${label}: ${text}${worked}`;
+      return message.blocks?.some((block) => block.type === "markdown") ? row : row.trim();
     })
     .filter(Boolean)
     .join("\n\n");
@@ -378,6 +400,10 @@ function flattenEntry(
   const dayKey = transcriptDayKey(entry.createdAt);
   return rows.map((row, index) => ({
     ...row,
+    sourceEntryId: entry.id,
+    interactionId: entry.interactionId,
+    runId: entry.kind === "message" ? entry.runId || undefined : undefined,
+    scrollRowId: index === 0 ? entry.id : `${entry.id}:row:${index}`,
     source,
     dayKey,
     showHeader: index === 0,
@@ -434,6 +460,12 @@ function flattenEntryRows(entry: ConversationTimelineEntry): Msg[] {
   const isUser = role === "user";
   const label = entry.identity.label;
   const time = formatTime(entry.createdAt);
+
+  if (isUser && entry.kind === "message" && entry.contextMessage) {
+    return [{ id: entry.id, kind: "user", time, createdAt: entry.createdAt,
+      text: entry.contextMessage.instruction, contextMessage: entry.contextMessage,
+      copyText: entry.copyText ?? conversationRichBlocksToText(entry.blocks) }];
+  }
 
   if (entry.variant === "rich" && Array.isArray(entry.blocks) && entry.blocks.length > 0) {
     // Group consecutive blocks of the same kind so the peer-comms
@@ -549,6 +581,7 @@ function buildChatMessages(
     const mBlocks = m.blocks;
     const sameName = !!(
       last
+      && last.interactionId === m.interactionId
       && last.kind === "tool"
       && m.kind === "tool"
       && Array.isArray(lastBlocks) && lastBlocks.length > 0
@@ -571,8 +604,10 @@ function buildChatMessages(
       last.id = `${last.id}+${m.id}`;
     } else {
       const canDedupeAdjacent =
-        (m.kind === "user" && last?.kind === "user")
-        || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
+        last?.id === m.id && (
+          (m.kind === "user" && last.kind === "user")
+          || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
+        );
       if (last && canDedupeAdjacent) {
         const lastSignature = textSignatureForMsg(last);
         const nextSignature = textSignatureForMsg(m);
@@ -583,8 +618,8 @@ function buildChatMessages(
       merged.push({ ...m });
     }
   }
-  // One header per run of assistant output: consecutive assistant entries
-  // from the same assistant on the same day read as one reply.
+  // One header per owned run of assistant output. Another interaction or
+  // run starts a reply even when the same assistant is still speaking.
   for (let index = 1; index < merged.length; index += 1) {
     const message = merged[index];
     const previous = merged[index - 1];
@@ -593,34 +628,34 @@ function buildChatMessages(
       && message.source?.kind === "assistant"
       && previous.kind !== "user"
       && sameSource(previous.source, message.source)
+      && previous.interactionId === message.interactionId
+      && previous.runId === message.runId
       && previous.dayKey === message.dayKey
     ) {
       merged[index] = { ...message, showHeader: false };
     }
   }
-  let pendingUserStartedAt: number | null = null;
-  return merged.map((message) => {
-    if (message.kind === "user") {
-      pendingUserStartedAt = isScaffoldUserMessage(message)
-        ? null
-        : parseTimeMs(message.createdAt);
-      return message;
-    }
-    if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
-      return message;
-    }
-    const finishedAt = parseTimeMs(message.createdAt);
-    if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
-      return message;
-    }
-    const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
-    pendingUserStartedAt = null;
-    return {
+  const durations = new Map(entries.flatMap((entry) => (
+    entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number"
+      && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0
+      ? [[entry.id, entry.runDurationMs] as const] : []
+  )));
+  // A streamed row is stamped when its first text arrives. Only the host's
+  // completed-run evidence can supply a duration, once at the final text row.
+  for (let index = merged.length - 1; index >= 0; index -= 1) {
+    const message = merged[index];
+    const duration = durations.get(message.sourceEntryId || "");
+    if (duration === undefined || message.kind !== "agent"
+      || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) continue;
+    const workedFor = formatWorkedDuration(duration);
+    durations.delete(message.sourceEntryId!);
+    merged[index] = {
       ...message,
       workedFor,
       workedForCopyText: `Worked for ${workedFor}`,
     };
-  });
+  }
+  return merged;
 }
 
 export const __chatPaneTest = {
@@ -628,6 +663,8 @@ export const __chatPaneTest = {
   buildChatTurns,
   chatTurnPreview,
   isScaffoldUserText,
+  msgCopyText,
+  transcriptCopyText,
 };
 
 interface ImageTransferPayload {
@@ -808,6 +845,8 @@ function textMark(value: string | undefined | null): string {
 
 function blockSignature(block: ConversationRichBlock): string {
   switch (block.type) {
+    case "markdown":
+      return `md${block.id}:${block.streaming ? 1 : 0}:${block.source}`;
     case "paragraph":
       return `p${textMark(block.text)}`;
     case "heading":
@@ -819,7 +858,7 @@ function blockSignature(block: ConversationRichBlock): string {
     case "command":
       return `m${textMark(block.title)}:${textMark(block.body)}:${textMark(block.output)}:${textMark(block.footer)}`;
     case "tool-call":
-      return `tc${block.toolCallId}:${block.name}:${block.status}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerImages?.length ?? 0}`;
+      return `tc${block.toolCallId}:${block.name}:${block.status}:${block.completionEvidence?.outcome ?? "unknown"}:${block.completionEvidence?.source ?? "unknown"}:${textMark(block.arguments)}:${textMark(block.result)}:${textMark(block.peerBody)}:${block.peerIdentity ?? ""}:${block.peerTarget ?? ""}:${block.peerImages?.length ?? 0}`;
     case "file-change":
       return `f${block.verb}:${block.name}:${block.plus}:${block.minus}`;
     case "divider":
@@ -838,6 +877,8 @@ function msgSignature(message: Msg): string {
   if (signature !== undefined) return signature;
   const parts = [
     message.id,
+    message.sourceEntryId ?? "",
+    message.interactionId ?? "",
     message.kind,
     message.time,
     message.who ?? "",
@@ -845,6 +886,8 @@ function msgSignature(message: Msg): string {
     message.dayKey ?? "",
     message.source ? `${message.source.kind}:${message.source.label}:${message.source.detail ?? ""}:${message.source.untrusted ? 1 : 0}:${textMark(message.source.sentence ?? undefined)}` : "",
     textMark(message.text),
+    textMark(message.copyText),
+    message.contextMessage ? JSON.stringify(message.contextMessage) : "",
     message.workedFor ?? "",
     textMark(message.workedForCopyText),
   ];
@@ -873,12 +916,14 @@ type MessageRowProps = {
   message: Msg;
   suppressWorked: boolean;
   workGraphActions: WorkGraphCardActions | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
 };
 
 function messageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boolean {
   return (
     prev.suppressWorked === next.suppressWorked &&
     prev.workGraphActions === next.workGraphActions &&
+    prev.markdownUrlPolicy === next.markdownUrlPolicy &&
     (prev.message === next.message || msgSignature(prev.message) === msgSignature(next.message))
   );
 }
@@ -928,6 +973,7 @@ function EventRow({ message: m }: { message: Msg }) {
       aria-label={m.source?.label}
       className={`msg msg--${m.kind}`}
       data-source-kind={m.source?.kind}
+      data-conversation-row-id={m.scrollRowId ?? m.id}
       data-testid={m.kind === "event" ? `chat-event:${m.runtimeEvent?.eventType ?? ""}` : undefined}
     >
       <div className="msg__bubble">
@@ -968,6 +1014,7 @@ const MessageRow = React.memo(function MessageRow({
   message: m,
   suppressWorked,
   workGraphActions,
+  markdownUrlPolicy,
 }: MessageRowProps) {
   countRender("MessageRow");
   if (m.kind === "event" || m.kind === "origin") {
@@ -978,7 +1025,7 @@ const MessageRow = React.memo(function MessageRow({
     : null;
   const header = m.showHeader && m.source;
   return (
-    <div className={`msg msg--${m.kind}`} data-source-kind={m.source?.kind}>
+    <div className={`msg msg--${m.kind}`} data-source-kind={m.source?.kind} data-conversation-row-id={m.scrollRowId ?? m.id}>
       {header ? <MessageHeader copyLabel={copyLabel} message={m} /> : null}
       <div className="msg__bubble">
         {!header && copyLabel && (
@@ -990,13 +1037,15 @@ const MessageRow = React.memo(function MessageRow({
           // by construction.
           <CouncilCard entry={m.councilEntry} />
         ) : null}
+        <div data-quote-message-id={m.kind === "user" || m.kind === "agent" ? m.sourceEntryId ?? m.id : undefined} data-quote-source={m.kind === "user" || m.kind === "agent" ? msgCopyText(m) : undefined}>
         {m.kind === "workgraph" && m.workGraphEntry ? (
           <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
-        ) : m.blocks && m.blocks.length > 0 ? (
-          <ConversationRichContent blocks={m.blocks} displayNormalization={false} />
+        ) : m.contextMessage ? <DeliveredContextMessage message={m.contextMessage} /> : m.blocks && m.blocks.length > 0 ? (
+          <ConversationRichContent blocks={m.blocks} displayNormalization={false} markdownUrlPolicy={markdownUrlPolicy} />
         ) : (
           m.text && <span className="msg__text">{m.text}</span>
         )}
+        </div>
         {m.workedFor && !suppressWorked && (
           <div className="msg__worked">
             <span>Worked for {m.workedFor}</span>
@@ -1032,6 +1081,10 @@ const TranscriptView = React.memo(function TranscriptView({
   bodyRef,
   onScroll,
   onRequestOlderHistory,
+  markdownUrlPolicy,
+  approvalSnapshot,
+  onApprovalDecision,
+  conversationId,
 }: {
   identity: string;
   agentLabel: string;
@@ -1049,6 +1102,10 @@ const TranscriptView = React.memo(function TranscriptView({
   bodyRef: React.RefObject<HTMLDivElement | null>;
   onScroll: React.UIEventHandler<HTMLDivElement>;
   onRequestOlderHistory: () => void;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
+  approvalSnapshot?: ConversationApprovalProps["approvalSnapshot"];
+  onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
+  conversationId?: string;
 }) {
   countRender("TranscriptView");
   const windowedTurns = React.useMemo(
@@ -1059,7 +1116,7 @@ const TranscriptView = React.memo(function TranscriptView({
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
   return (
-    <div className="conv__body" onScroll={onScroll} ref={bodyRef}>
+    <div className="conv__body" onScroll={onScroll} ref={bodyRef} tabIndex={0} aria-label="Conversation transcript">
       <CopyInlineButton
         className="msg__copy--transcript"
         label="Copy transcript"
@@ -1135,23 +1192,23 @@ const TranscriptView = React.memo(function TranscriptView({
           aria-label={`Turn ${turnIndex + 1}`}
           className="conv-turn"
           data-chat-turn-index={turnIndex}
+          data-conversation-turn-id={turn.id}
           data-testid={`chat-turn:${identity}:${turnIndex}`}
           key={turn.id}
         >
-          {turn.messages.map((m) => (
-            <React.Fragment key={m.id}>
+          {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
+            const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
               {daySeparator(m)}
-              <MessageRow
-                message={m}
-                suppressWorked={Boolean(phase && m.id === lastAgentMessageId)}
-                workGraphActions={workGraphActions}
-              />
-            </React.Fragment>
-          ))}
+              <MessageRow message={m} suppressWorked={Boolean(phase && m.id === lastAgentMessageId)} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+            </React.Fragment>);
+            return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
+          })}
+          <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])} />
         </div>
         );
       });
       })()}
+      <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} />
       {liveSpeech && liveSpeech.length > 0 && (
         <div
           aria-label="Live speech"
@@ -1305,6 +1362,16 @@ export function ChatPane({
   agent,
   agentLabel,
   identity,
+  viewportKey,
+  submittedRowId,
+  headerVariant = "full",
+  displayLabels,
+  markdownUrlPolicy,
+  conversationId,
+  approvalSnapshot,
+  onApprovalDecision,
+  contextSlot,
+  onQuoteSelection,
   entries,
   liveSpeech,
   voiceCallStartedAt,
@@ -1337,11 +1404,14 @@ export function ChatPane({
   peerLabels = null,
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
+  const [quoteError, setQuoteError] = React.useState<string | null>(null);
+  React.useEffect(() => { setQuoteError(null); }, [submittedRowId, identity, conversationId, viewportKey?.authority, viewportKey?.pane]);
   // The live composer value lives inside ComposerTextarea (below) so a
   // keystroke re-renders only that component. ChatPane keeps a ref to the
   // current value for submit and for the blob-reference effect, and a
   // debounced publisher back to the parent's persisted per-panel draft.
   const liveDraftRef = React.useRef(draft);
+  const liveDraftRevisionRef = React.useRef(0);
   const lastPublishedDraftRef = React.useRef(draft);
   const publishDraftTimerRef = React.useRef<number | null>(null);
   const onDraftChangeRef = React.useRef(onDraftChange);
@@ -1361,7 +1431,9 @@ export function ChatPane({
   const [liveDraftTick, setLiveDraftTick] = React.useState(0);
   const onLiveChange = React.useCallback(
     (value: string) => {
+      setQuoteError(null);
       liveDraftRef.current = value;
+      liveDraftRevisionRef.current += 1;
       if (publishDraftTimerRef.current !== null) {
         window.clearTimeout(publishDraftTimerRef.current);
       }
@@ -1397,9 +1469,6 @@ export function ChatPane({
   );
   React.useEffect(() => () => publishDraft(), [publishDraft]);
   const bodyRef = React.useRef<HTMLDivElement>(null);
-  const preserveOlderHistoryScrollRef = React.useRef(false);
-  const olderHistoryScrollHeightRef = React.useRef(0);
-  const olderHistoryScrollTopRef = React.useRef(0);
   const activeTurnFrameRef = React.useRef(0);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = React.useState<number[]>([]);
 
@@ -1428,21 +1497,21 @@ export function ChatPane({
     windowAnchor,
     (id) => turnIndexById.get(id) ?? -1,
   );
-  const pendingScrollToTurnRef = React.useRef<number | null>(null);
+  const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
+  const scroll = useConversationScrollController({
+    viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,
+    submittedRowId, revealAnchor: (rowId) => revealScrollAnchorRef.current(rowId),
+  });
   /// Reveal turns down to `firstIndex`, keeping the content under the
   /// viewport in place (same anchor as an older-history prepend).
   const revealTurnsFrom = React.useCallback(
     (firstIndex: number) => {
       const target = Math.max(0, firstIndex);
-      if (bodyRef.current) {
-        preserveOlderHistoryScrollRef.current = true;
-        olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
-        olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
-      }
+      scroll.captureBeforePrepend();
       const turnId = target === 0 ? "" : turns[target]?.id ?? "";
       setRevealedFrom({ identity, turnId, mountedTurns: turns.length - target });
     },
-    [identity, turns],
+    [identity, turns, scroll.captureBeforePrepend],
   );
   const revealEarlier = React.useCallback(() => {
     revealTurnsFrom(windowStart - TRANSCRIPT_WINDOW_STEP);
@@ -1453,7 +1522,7 @@ export function ChatPane({
   // contradiction). Earlier, completed turns keep their summary regardless.
   const lastAgentMessageId = React.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].kind === "agent") return messages[i].id;
+      if (messages[i].kind === "agent" && messages[i].source?.kind === "assistant") return messages[i].id;
     }
     return null;
   }, [messages]);
@@ -1475,46 +1544,15 @@ export function ChatPane({
     ].join(":");
   }, [identity, messages, phase]);
 
-  React.useLayoutEffect(() => {
-    if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
-      const node = bodyRef.current;
-      const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
-      node.scrollTop = olderHistoryScrollTopRef.current + Math.max(0, addedHeight);
-      node.scrollLeft = 0;
-      preserveOlderHistoryScrollRef.current = false;
-      return;
-    }
-    const resetTranscriptScroll = () => {
-      if (bodyRef.current) {
-        bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-        bodyRef.current.scrollLeft = 0;
-      }
-    };
-    resetTranscriptScroll();
-    const firstFrame = window.requestAnimationFrame(resetTranscriptScroll);
-    const secondFrame = window.requestAnimationFrame(resetTranscriptScroll);
-    return () => {
-      window.cancelAnimationFrame(firstFrame);
-      window.cancelAnimationFrame(secondFrame);
-    };
-  }, [scrollSignature, windowStart]);
-
-  // A rail jump into the hidden range reveals first, then scrolls once the
-  // target turn is mounted.
-  React.useEffect(() => {
-    const turnIndex = pendingScrollToTurnRef.current;
-    if (turnIndex === null || turnIndex < windowStart) return;
-    pendingScrollToTurnRef.current = null;
-    bodyRef.current
-      ?.querySelector<HTMLElement>(`[data-chat-turn-index="${turnIndex}"]`)
-      ?.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [windowStart]);
-
-  React.useEffect(() => {
-    if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
-      preserveOlderHistoryScrollRef.current = false;
-    }
-  }, [loadingOlderHistory]);
+  // Restoration uses stable row IDs, while the host retains its bounded
+  // turn window. Revealing a saved anchor is an explicit navigation request.
+  revealScrollAnchorRef.current = (rowId) => {
+    const index = turns.findIndex((turn) => turn.messages.some((message) => (message.scrollRowId ?? message.id) === rowId));
+    if (index < 0 || index >= windowStart) return false;
+    const turnId = index === 0 ? "" : turns[index]?.id ?? "";
+    setRevealedFrom({ identity, turnId, mountedTurns: turns.length - index });
+    return true;
+  };
 
   const updateActiveTurn = React.useCallback(() => {
     activeTurnFrameRef.current = 0;
@@ -1584,27 +1622,17 @@ export function ChatPane({
   }, [scheduleActiveTurnUpdate, updateActiveTurn]);
 
   function scrollToTurn(turnIndex: number) {
-    if (turnIndex < windowStart) {
-      pendingScrollToTurnRef.current = turnIndex;
-      revealTurnsFrom(turnIndex);
-      return;
-    }
-    const turnNode = bodyRef.current?.querySelector<HTMLElement>(
-      `[data-chat-turn-index="${turnIndex}"]`,
-    );
-    turnNode?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const message = turns[turnIndex]?.messages[0];
+    const rowId = message?.scrollRowId ?? message?.id;
+    if (rowId) scroll.jumpToRow(rowId);
   }
 
   const onLoadOlderRef = React.useRef(onLoadOlder);
   onLoadOlderRef.current = onLoadOlder;
   const requestOlderHistory = React.useCallback(() => {
-    if (bodyRef.current) {
-      preserveOlderHistoryScrollRef.current = true;
-      olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
-      olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
-    }
+    scroll.captureBeforePrepend();
     onLoadOlderRef.current?.();
-  }, []);
+  }, [scroll.captureBeforePrepend]);
   const hasOlderHistoryRef = React.useRef(hasOlderHistory);
   hasOlderHistoryRef.current = hasOlderHistory;
   const loadingOlderHistoryRef = React.useRef(loadingOlderHistory);
@@ -1644,13 +1672,26 @@ export function ChatPane({
   const [railHeight, setRailHeight] = React.useState<number | null>(null);
   React.useEffect(() => {
     const nav = railRef.current;
-    if (!nav || typeof ResizeObserver === "undefined") return;
+    const body = bodyRef.current;
+    const pane = body?.parentElement;
+    if (!nav || !body || !pane || typeof ResizeObserver === "undefined") return;
+    const measureBand = () => {
+      const paneBounds = pane.getBoundingClientRect();
+      const bodyBounds = body.getBoundingClientRect();
+      nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
+      // The latest control has a permanent lower gutter, even while hidden.
+      nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
+    };
     const observer = new ResizeObserver((entries) => {
+      measureBand();
       for (const entry of entries) {
-        setRailHeight(entry.contentRect.height);
+        if (entry.target === nav) setRailHeight(entry.contentRect.height);
       }
     });
+    measureBand();
     observer.observe(nav);
+    observer.observe(body);
+    observer.observe(pane);
     return () => observer.disconnect();
   }, [turns.length > 1]);
 
@@ -1841,6 +1882,7 @@ export function ChatPane({
       return;
     }
     const text = liveDraftRef.current;
+    const submittedRevision = liveDraftRevisionRef.current;
     if (!text.trim() && staged.length === 0) {
       return;
     }
@@ -1865,15 +1907,25 @@ export function ChatPane({
     const clearedEarly = files.length === 0;
     if (clearedEarly) setComposerText("");
     const restoreIfUntouched = () => {
-      if (clearedEarly && liveDraftRef.current === "") setComposerText(text);
+      if (clearedEarly && liveDraftRevisionRef.current === submittedRevision) setComposerText(text);
     };
     try {
       const sent = await onSend(files, text);
       if (sent) {
+        setQuoteError(null);
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
-        onStagedChange([]);
+        onStagedChange((current) => current.filter((item) => !files.includes(item.file)));
         setAttachmentError(null);
-        if (!clearedEarly && liveDraftRef.current === text) setComposerText("");
+        if (!clearedEarly && liveDraftRevisionRef.current === submittedRevision) setComposerText("");
+        // Persist the live surviving draft even when the synchronous clear
+        // already updated lastPublishedDraftRef. The parent must not guess
+        // whether a newer, possibly identical, draft belongs to this send.
+        if (publishDraftTimerRef.current !== null) {
+          window.clearTimeout(publishDraftTimerRef.current);
+          publishDraftTimerRef.current = null;
+        }
+        lastPublishedDraftRef.current = liveDraftRef.current;
+        onDraftChangeRef.current(liveDraftRef.current);
         return;
       }
       restoreIfUntouched();
@@ -1886,23 +1938,28 @@ export function ChatPane({
   };
 
   return (
+    <ConversationPresentationProvider labels={displayLabels ?? { peers: peerLabels ?? undefined }} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
     <div className="conv" data-testid={`chat-pane:${identity}`}>
-      <div className="conv__head">
+      <div className={`conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`}>
         <div className="conv__avatar">{initial}</div>
-        <div style={{ minWidth: 0 }}>
-          <div className="conv__title">{agentLabel}</div>
-          <div className="conv__identity">
+        <div className="conv__target">
+          <div className="conv__title" title={identity}>{agentLabel}</div>
+          {headerVariant === "full" ? <div className="conv__identity">
             {identity}{agent?.role ? ` · ${agent.role}` : ""}
-          </div>
+          </div> : null}
         </div>
         <div className="conv__actions">
-          {onInspect ? <button className="conv__action" onClick={onInspect} data-testid="conv-action:details">{inspectLabel}</button> : null}
-          {agent?.affordances?.can_respawn && onRespawn ? (
-            <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">{respawnLabel}</button>
-          ) : null}
-          {agent?.affordances?.can_retire && onRetire ? (
-            <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire">{retireLabel}</button>
-          ) : null}
+          {[
+            { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
+            { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : undefined },
+            { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : undefined },
+          ].filter(action => action.onClick).map(action => (
+            <button key={action.id} type="button" className="conv__action" onClick={action.onClick}
+              aria-label={action.label} title={`${action.label} - ${identity}`} data-testid={`conv-action:${action.id}`}>
+              <span className="conv__action-icon" aria-hidden="true"><Icon name={action.icon} /></span>
+              <span className="conv__action-label">{action.label}</span>
+            </button>
+          ))}
         </div>
       </div>
       <TranscriptView
@@ -1922,10 +1979,21 @@ export function ChatPane({
         bodyRef={bodyRef}
         onScroll={onBodyScroll}
         onRequestOlderHistory={requestOlderHistory}
+        markdownUrlPolicy={markdownUrlPolicy}
+        conversationId={conversationId}
+        approvalSnapshot={approvalSnapshot}
+        onApprovalDecision={onApprovalDecision}
       />
       {turnRail}
+      {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}
+      {scroll.missingAnchor ? <div className="conv__history-status" role="status">Earlier position is unavailable. Load older history to see more.</div> : null}
+      {onQuoteSelection ? <QuoteSelectionAction key={`${identity}:${conversationId ?? ""}:${viewportKey?.authority ?? ""}`} viewportRef={bodyRef} onQuote={onQuoteSelection} onError={setQuoteError} disabled={readOnly} /> : null}
+      {scroll.awayFromEnd ? <JumpToLatest onClick={scroll.jumpToLatest} working={phase !== null} /> : null}
       {stackSlot}
       <div className="composer">
+
+        {quoteError ? <p role="alert">{quoteError}</p> : null}
+        {contextSlot}
         {voiceSlot}
         <div
           className={`composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`}
@@ -2017,5 +2085,6 @@ export function ChatPane({
         </div>
       </div>
     </div>
+    </ConversationPresentationProvider>
   );
 }

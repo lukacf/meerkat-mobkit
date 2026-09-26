@@ -395,7 +395,8 @@ class TestDispatchTextConvenience:
         handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
 
         output = await handle.dispatch_text_and_wait(
-            "New event", origin="connector", timeout=5, poll_interval=0.01
+            "New event", origin="connector", correlation_id="event-1",
+            idempotency_key="connector:event-1", timeout=5, poll_interval=0.01
         )
 
         assert output == "ACK"
@@ -403,6 +404,8 @@ class TestDispatchTextConvenience:
             call for call in transport.calls if call["method"] == "mobkit/dispatch"
         )
         assert dispatched["params"]["dispatch_input"]["origin"] == "connector"
+        assert dispatched["params"]["dispatch_input"]["correlation_id"] == "event-1"
+        assert dispatched["params"]["dispatch_input"]["idempotency_key"] == "connector:event-1"
 
 
 class TestPerIdentityCorrelation:

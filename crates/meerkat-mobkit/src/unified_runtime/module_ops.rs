@@ -141,8 +141,33 @@ impl UnifiedRuntime {
         run_blocking(|| rt.evaluate_gating_action(request))
     }
 
+    /// Host-only origin-aware gating admission. The origin must come from the
+    /// authenticated action context; ordinary JSON-RPC cannot supply it.
+    pub async fn evaluate_gating_action_with_origin(
+        &self,
+        request: GatingEvaluateRequest,
+        origin: Option<crate::runtime::GatingOrigin>,
+    ) -> GatingEvaluateResult {
+        let mut rt = self.module_runtime.lock().await;
+        run_blocking(|| rt.evaluate_gating_action_with_origin(request, origin))
+    }
+
     pub async fn list_gating_pending(&self) -> Vec<GatingPendingEntry> {
         self.module_runtime.lock().await.list_gating_pending()
+    }
+
+    pub async fn gating_state_snapshot(&self) -> crate::runtime::GatingStateSnapshot {
+        self.module_runtime.lock().await.gating_state_snapshot()
+    }
+
+    pub async fn restore_gating_state(
+        &self,
+        snapshot: crate::runtime::GatingStateSnapshot,
+    ) -> Result<(), crate::runtime::GatingStateRestoreError> {
+        self.module_runtime
+            .lock()
+            .await
+            .restore_gating_state(snapshot)
     }
 
     pub async fn decide_gating_action(

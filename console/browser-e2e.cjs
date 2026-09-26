@@ -955,8 +955,32 @@ async function runReferenceBrowserProof() {
     // Send a message via the composer
     await openSidebarAgentChat(page, /router/i);
     await fillComposer(page, "browser proof message");
+    const acceptance = page.waitForResponse(response => response.url() === `${baseUrl}/console/rpc`
+      && response.request().postData()?.includes('"method":"mobkit/console/send"'));
     await clickSend(page);
-    await page.waitForTimeout(1_000);
+    const acceptedResponse = await acceptance;
+    const accepted = await acceptedResponse.json();
+    assert.equal(acceptedResponse.status(), 200);
+    assert(accepted.result?.input_frame_id, `send was not accepted: ${JSON.stringify(accepted)}`);
+    await require("./acceptance-runtime.cjs").eventually(async () => {
+      const timeline = await (await fetch(`${baseUrl}/console/timeline?identity=router%3Amain&mode=recent`)).json();
+      return timeline.frames?.some(frame => frame.id === accepted.result.input_frame_id);
+    }, "reference accepted input in timeline");
+    await page.waitForFunction(() => document.querySelector(".conv__body, .cc-conversation-scroll")?.textContent?.includes("browser proof message"));
+    try {
+      await page.getByTestId("chat-pane:router:main").locator('[data-quote-source="ok"]').first().waitFor({ timeout: 15_000 });
+    } catch (error) {
+      const evidenceDir = path.join(repoRoot, "output/playwright/console-acceptance");
+      fs.mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({ path: path.join(evidenceDir, "reference-response-failure.png"), fullPage: true });
+      fs.writeFileSync(path.join(evidenceDir, "reference-response-failure.html"), await page.content());
+      fs.writeFileSync(path.join(evidenceDir, "reference-response-failure.json"), JSON.stringify({ accepted, observedRequests,
+        timeline: await (await fetch(`${baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=500`)).json() }, null, 2));
+      throw error;
+    }
+    await page.reload();
+    await openSidebarAgentChat(page, /router/i);
+    await page.waitForFunction(() => document.querySelector(".conv__body, .cc-conversation-scroll")?.textContent?.includes("browser proof message"));
 
     const usesConsoleSendLane = observedRequests.some(
       (request) =>
@@ -1094,7 +1118,7 @@ async function runImageRenderingBrowserProof() {
             blocks: [{
               type: "comms",
               kind: "message",
-              peer: { display_name: "incident-command-center/scribe/scribe" },
+              peer: { id: "incident-command-center/scribe/scribe", display_name: "incident-command-center/scribe/scribe" },
               request_id: "peer-img-1",
               content: [
                 { type: "text", text: "Forwarded generated image." },
@@ -1167,7 +1191,7 @@ async function runImageRenderingBrowserProof() {
     assert(bodyText.includes("Operator attached image:"), "missing user image prompt text");
     assert(bodyText.includes("Forwarded generated image."), "missing peer image comms text");
     assert(
-      bodyText.includes("Received from scribe") || bodyText.includes("Received from incident-command-center/scribe/scribe"),
+      bodyText.includes("Received from incident-command-center/scribe/scribe"),
       "missing peer comms row",
     );
     assert(!bodyText.includes("image_ref"), "raw image_ref leaked into visible transcript");
@@ -3170,46 +3194,55 @@ async function runTopologyAmbiguousCommitBrowserProof() {
   }
 }
 
-async function main() {
-  if (process.argv.includes("--topology-only")) {
-    await runTopologyUnavailableBrowserProof();
-    await runTopologyDeniedPairBrowserProof();
-    await runTopologyAmbiguousCommitBrowserProof();
-    return;
-  }
-  const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
-  if (fs.existsSync(repoCargo)) {
-    await runReferenceBrowserProof();
-  } else {
-    process.stdout.write("browser reference proof skipped: MobKit workspace scripts unavailable in vendored package\n");
-  }
-  await runCanonicalSendBrowserProof();
-  await runImageRenderingBrowserProof();
-  await runComposerPasteAttachmentProof();
-  await runBusyWorkerConsoleProof();
-  await runToolOnlyWorkerBusyQueueProof();
-  await runToolOnlyWorkerTerminalClearsBusyProof();
-  await runNonCommsSystemNoticeDoesNotClearBusyProof();
-  await runSidebarSearchExpandsCollapsedWorkerSectionProof();
-  await runChatPaneAutoScrollProof();
-  await runChatPaneTurnRailProof();
-  await runGlobalTimelineRecentSeedProof();
-  await runChatPaneRecentFirstPageProof();
-  await runChatPaneOlderHistoryDemandPagingProof();
-  await runChatPaneAsyncBackfillRestoresOlderHistoryProof();
-  await runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof();
-  await runChatPaneReplayRecoveryReplacesStaleLocalLogProof();
-  await runRunStartedClearsOptimisticPromptProof();
-  await runUserInputEchoClearsOptimisticPromptProof();
-  await runLiveSystemNoticeAppearsInOpenChatProof();
-  await runConsoleMountsWithoutCryptoRandomUuidProof();
-  await runHeadlessControlSurfaceBrowserProof();
-  await runTopologyUnavailableBrowserProof();
-  await runTopologyDeniedPairBrowserProof();
-  await runTopologyAmbiguousCommitBrowserProof();
-}
+const scenarios = [
+  { id: "reference", family: "runtime", backend: "real", run: runReferenceBrowserProof },
+  { id: "topology-unavailable", family: "topology", backend: "mock", run: runTopologyUnavailableBrowserProof },
+  { id: "topology-denied-pair", family: "topology", backend: "mock", run: runTopologyDeniedPairBrowserProof },
+  { id: "topology-ambiguous-commit", family: "topology", backend: "mock", run: runTopologyAmbiguousCommitBrowserProof },
+  { id: "canonical-send", family: "console", backend: "mock", run: runCanonicalSendBrowserProof },
+  { id: "image-rendering", family: "presentation", backend: "mock", run: runImageRenderingBrowserProof },
+  { id: "composer-paste-attachment", family: "presentation", backend: "mock", run: runComposerPasteAttachmentProof },
+  { id: "busy-worker-console", family: "console", backend: "mock", run: runBusyWorkerConsoleProof },
+  { id: "tool-only-worker-busy-queue", family: "console", backend: "mock", run: runToolOnlyWorkerBusyQueueProof },
+  { id: "tool-only-worker-terminal-clears-busy", family: "console", backend: "mock", run: runToolOnlyWorkerTerminalClearsBusyProof },
+  { id: "non-comms-system-notice-does-not-clear-busy", family: "console", backend: "mock", run: runNonCommsSystemNoticeDoesNotClearBusyProof },
+  { id: "sidebar-search-expands-collapsed-worker-section", family: "console", backend: "mock", run: runSidebarSearchExpandsCollapsedWorkerSectionProof },
+  { id: "chat-pane-auto-scroll", family: "presentation", backend: "mock", run: runChatPaneAutoScrollProof },
+  { id: "chat-pane-turn-rail", family: "presentation", backend: "mock", run: runChatPaneTurnRailProof },
+  { id: "global-timeline-recent-seed", family: "console", backend: "mock", run: runGlobalTimelineRecentSeedProof },
+  { id: "chat-pane-recent-first-page", family: "presentation", backend: "mock", run: runChatPaneRecentFirstPageProof },
+  { id: "chat-pane-older-history-demand-paging", family: "presentation", backend: "mock", run: runChatPaneOlderHistoryDemandPagingProof },
+  { id: "chat-pane-async-backfill-restores-older-history", family: "presentation", backend: "mock", run: runChatPaneAsyncBackfillRestoresOlderHistoryProof },
+  { id: "chat-pane-non-empty-async-backfill-restores-older-history", family: "presentation", backend: "mock", run: runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof },
+  { id: "chat-pane-replay-recovery-replaces-stale-local-log", family: "presentation", backend: "mock", run: runChatPaneReplayRecoveryReplacesStaleLocalLogProof },
+  { id: "run-started-clears-optimistic-prompt", family: "console", backend: "mock", run: runRunStartedClearsOptimisticPromptProof },
+  { id: "user-input-echo-clears-optimistic-prompt", family: "console", backend: "mock", run: runUserInputEchoClearsOptimisticPromptProof },
+  { id: "live-system-notice-appears-in-open-chat", family: "console", backend: "mock", run: runLiveSystemNoticeAppearsInOpenChatProof },
+  { id: "console-mounts-without-crypto-random-uuid", family: "console", backend: "mock", run: runConsoleMountsWithoutCryptoRandomUuidProof },
+  { id: "headless-control-surface", family: "console", backend: "mock", run: runHeadlessControlSurfaceBrowserProof },
+];
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exit(1);
-});
+const allScenarios = [
+    ...scenarios,
+    ...require("./scenarios/real-conversation.cjs").scenarios,
+    ...require("./scenarios/real-markdown-url-policy.cjs").scenarios,
+    ...require("./scenarios/real-reasoning.cjs").scenarios,
+    ...require("./scenarios/real-startup-lineage.cjs").scenarios,
+    ...require("./scenarios/real-routine-tools.cjs").browserScenarios,
+    ...require("./scenarios/approval-lifecycle.cjs").browserScenarios,
+    ...require("./scenarios/real-workgraph.cjs").browserScenarios,
+    ...require("./scenarios/real-images.cjs").browserScenarios,
+    ...require("./scenarios/real-send-context.cjs").scenarios,
+    ...require("./scenarios/real-durable-steer.cjs").scenarios,
+    ...require("./scenarios/real-tab-isolation.cjs").scenarios,
+    ...require("./scenarios/real-legacy-import.cjs").scenarios,
+    ...require("./scenarios/real-sidebar-activity.cjs").scenarios,
+  ];
+
+module.exports = { scenarios: allScenarios };
+if (require.main === module) {
+  require("./scenario-registry.cjs").runScenarios(allScenarios).catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exit(1);
+  });
+}

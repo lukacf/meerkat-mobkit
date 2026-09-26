@@ -14,6 +14,7 @@ use meerkat_mob::{
     AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle,
     MobMemberStatus, MobState, ProfileName, SpawnMemberSpec,
 };
+use serde_json::json;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
@@ -231,6 +232,7 @@ pub struct UnifiedRuntime {
         tokio::sync::Mutex<Option<crate::mob_handle_runtime::PendingMobActivation>>,
     event_log: Option<event_log::EventLogHandle>,
     console_log_store: Arc<dyn ConsoleLogStore>,
+    console_projection: std::sync::OnceLock<crate::console_aggregator::MobKitConsoleAggregator>,
     /// What the builder asked the live doors to be (console voice and/or
     /// the external `mobkit/live/*` channel) plus the typed inputs retained
     /// from a persistent session service. `None` when the builder registered
@@ -504,6 +506,7 @@ impl UnifiedRuntime {
             pending_mob_activation: tokio::sync::Mutex::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
+            console_projection: std::sync::OnceLock::new(),
             live_plan: None,
             live_composition: tokio::sync::OnceCell::new(),
             console_events,
@@ -744,6 +747,31 @@ impl UnifiedRuntime {
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
             }
         }
+    }
+
+    /// Complete bootstrap when the host declares that no identity context
+    /// will be installed. Agent tools can retain an identity slot even for
+    /// this composition, so slot presence alone cannot discharge activation.
+    ///
+    /// Identity compositions must instead use
+    /// [`Self::install_and_bootstrap_identity_first_context`] to register
+    /// continuity owners before resumed sessions become runnable.
+    pub async fn activate_without_identity_context(&mut self) -> Result<(), MobRuntimeError> {
+        if self.identity_first_context.is_some() {
+            return Err(MobRuntimeError::InvalidConfig(
+                "cannot activate without identity authority after an identity context is installed"
+                    .to_string(),
+            ));
+        }
+        let pending = self.pending_mob_activation.lock().await.take();
+        if let Some(pending) = pending {
+            if let Err(error) = pending.activate().await {
+                self.shutdown().await;
+                return Err(error);
+            }
+            self.reconcile_bootstrap_edges_if_configured().await;
+        }
+        Ok(())
     }
 
     /// Run bootstrap edge reconciliation if this runtime was configured for it.
@@ -1000,7 +1028,10 @@ impl UnifiedRuntime {
         // and a revived session with no registered owner is refused; and
         // materialization must follow the lift, because a Stopped mob cannot
         // spawn. So this sits between installing the context and rostering.
-        if let Some(pending) = self.pending_mob_activation.lock().await.take() {
+        let pending = self.pending_mob_activation.lock().await.take();
+        let reconcile_after_materialization =
+            pending.is_some() && !context.bootstrap_mode().is_lazy();
+        if let Some(pending) = pending {
             let registered_sessions = match context
                 .runtime
                 .register_persisted_continuity_owners(roster)
@@ -1048,13 +1079,19 @@ impl UnifiedRuntime {
                     ),
                 ));
             }
-            // Deferred from bootstrap: now the identity context exists, so
-            // reconciliation takes the identity authority path against a
-            // Running mob.
-            self.reconcile_bootstrap_edges_if_configured().await;
+            // Lazy bootstrap keeps its pending-edge observation without
+            // forcing materialization. Eager restore must first attach the
+            // persisted members to the fresh bridge so actual wires can be
+            // resolved to their authoritative runtime identities.
+            if !reconcile_after_materialization {
+                self.reconcile_bootstrap_edges_if_configured().await;
+            }
         }
         match context.bootstrap_roster(roster).await {
             Ok(result) => {
+                if reconcile_after_materialization {
+                    self.reconcile_bootstrap_edges_if_configured().await;
+                }
                 self.start_identity_first_supervisors();
                 Ok(result)
             }
@@ -1095,6 +1132,9 @@ impl UnifiedRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
         self.identity_first_context = Some(context);
+        if let Some(projection) = self.console_projection.get() {
+            projection.update_identity_authority("default", self.identity_runtime().cloned());
+        }
     }
 
     pub(crate) fn install_identity_first_flow_target_provisioner(
@@ -1485,6 +1525,9 @@ impl UnifiedRuntime {
 
     pub fn set_console_log_store(&mut self, store: Arc<dyn ConsoleLogStore>) {
         self.console_log_store = store;
+        if let Some(projection) = self.console_projection.take() {
+            projection.unregister_runtime("default");
+        }
     }
 
     /// Query structural mob events from the meerkat ledger.
@@ -2783,6 +2826,19 @@ fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent
 }
 
 fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {
+    let mut payload =
+        crate::mob_handle_runtime::console_agent_event_payload(&attributed.envelope.payload);
+    if let Some(object) = payload.as_object_mut() {
+        // The event publisher owns source scope, including replay from an older
+        // session. Never substitute the member's current session at read time.
+        if let Some(session_id) = attributed.envelope.source.session_id() {
+            object.insert("session_id".to_string(), json!(session_id));
+            object.insert(
+                "source_sequence".to_string(),
+                json!(attributed.envelope.seq),
+            );
+        }
+    }
     EventEnvelope {
         event_id: format!("evt-agent-{}", attributed.envelope.event_id),
         source: "agent".to_string(),
@@ -2799,9 +2855,7 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
             // so downstream surfaces — console timeline frames, the
             // `mobkit/events/subscribe` replay buffer, and the event-log
             // query — keep the `result`/`tool_call_id` keys the SDKs parse.
-            payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
-                &attributed.envelope.payload,
-            )),
+            payload: Some(payload),
         },
     }
 }
@@ -2857,6 +2911,36 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn attributed_projection_preserves_exact_source_session_and_sequence() {
+        let session_id = meerkat_core::SessionId::new();
+        let mut attributed = attributed_text_delta("router", 1);
+        attributed.envelope.source =
+            meerkat_core::event::EventSourceIdentity::session(session_id.clone());
+        attributed.envelope.seq = 41;
+        let projected = attributed_event_to_unified(attributed);
+        let UnifiedEvent::Agent {
+            payload: Some(payload),
+            ..
+        } = projected.event
+        else {
+            panic!("expected agent payload");
+        };
+        assert_eq!(payload["session_id"], json!(session_id));
+        assert_eq!(payload["source_sequence"], json!(41));
+        assert_eq!(payload["delta"], "hello");
+        let legacy = attributed_event_to_unified(attributed_text_delta("router", 1));
+        let UnifiedEvent::Agent {
+            payload: Some(payload),
+            ..
+        } = legacy.event
+        else {
+            panic!("expected legacy agent payload");
+        };
+        assert!(payload.get("session_id").is_none());
+        assert!(payload.get("source_sequence").is_none());
     }
 
     #[test]

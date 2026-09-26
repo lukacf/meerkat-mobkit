@@ -107,6 +107,8 @@ jobs:
       # The shared host uses a loopback provider, never paid credentials.
       - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --lib --bin rpc_gateway --bin mobkit_gateway --test console_route_auth --test console_experience --test never_executed_persistence --test swarm_integration console_voice
       - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --bin rpc_gateway gateway_openai_live_registration
+      # Reuse this feature build for classic/identity restarts with and without voice.
+      - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --test mobkit_gateway_bootstrap persistent_http_restarts
 
   test-python:
     name: test-python
@@ -150,6 +152,9 @@ jobs:
   console:
     name: console
     runs-on: ubuntu-latest
+    env:
+      # Rust 1.97 incremental compilation can ICE in async identity iteration.
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -162,27 +167,41 @@ jobs:
       - run: npm --prefix console ci --silent --no-fund --no-audit
       - run: npm --prefix console run phase0:types --silent
       - run: npm --prefix console run contracts:console --silent
+      - run: npm --prefix console run contracts:conversation --silent
+      - run: npm --prefix console run typecheck:contracts --silent
+      - run: npm --prefix console run test:scenario-registry --silent
+      - run: npm --prefix console run e2e:api:list --silent
+      - run: npm --prefix console run e2e:browser:list --silent
       - run: npm --prefix console run phase1:targets --silent
       - run: npm --prefix console run headless:transport --silent
       - run: npm --prefix console run topology:adapter --silent
       - run: npm --prefix console run topology:components --silent
       - run: npm --prefix console run components:reuse --silent
       - run: npm --prefix console run embedded:freshness --silent
+      - run: npm --prefix console run build:acceptance --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
-      - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
-      - run: npm --prefix console run e2e:browser --silent
-      - run: npm --prefix console run e2e:voice --silent
+      # One immutable backend build serves every browser/API scenario below.
+      - name: Build console acceptance backends
+        run: |
+          scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference --example console_acceptance_fixture --example memory_console_reference --example workgraph_console_reference
+          target_dir="$(scripts/repo-cargo --print-env | sed -n 's/^CARGO_TARGET_DIR=//p')"
+          echo "MOBKIT_EXAMPLE_BIN_DIR=${target_dir}/debug/examples" >> "$GITHUB_ENV"
+      - run: scripts/repo-cargo test -p meerkat-mobkit --example console_acceptance_fixture
+      - run: node console/api-e2e.cjs
+      - run: node console/browser-e2e.cjs
+      - run: node console/voice-e2e.cjs
       # Validate paid-lane evidence and continuous silent audio without credentials.
       - run: node console/voice-e2e-live.cjs --self-test
       - run: node console/voice-e2e-live.cjs --self-test-audio
-      # Seeded memory-console lane (deterministic; the LIVE lane
-      # e2e:memory:live is creds-gated acceptance and never runs in CI).
-      # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.
-      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example memory_console_reference
-      - run: npm --prefix console run e2e:memory --silent
-      # Seeded workgraph graph-view lane (deterministic, same harness shape).
-      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example workgraph_console_reference
-      - run: npm --prefix console run e2e:workgraph --silent
+      - run: node console/memory-e2e.cjs
+      - run: node console/workgraph-e2e.cjs
+      - name: Upload console browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-browser-${{ github.run_id }}
+          path: output/playwright/console-acceptance/
+          if-no-files-found: error
 
   # Needs Rust but NOT playwright: the script bundles with esbuild, runs
   # `node --test`, then `cargo test -p meerkat-mobkit --test

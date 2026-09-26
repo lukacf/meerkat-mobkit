@@ -1,3 +1,4 @@
+import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import type { ReactNode } from "react";
 
 import type {
@@ -11,12 +12,12 @@ import {
 } from "@console-core";
 
 import { ConsoleComposer, type ConsoleComposerProps } from "../composer/console-composer";
-import { ConversationPane } from "./conversation-pane";
+import { ConversationPane, type ConversationPaneProps } from "./conversation-pane";
 import type { IconRenderer } from "../shared";
 
 export type ConsoleConversationPanelPhase = "waiting" | "tool-executing" | "generating" | string | null;
 
-export type ConsoleConversationPanelProps = {
+export type ConsoleConversationPanelProps = Pick<ConversationPaneProps, "viewportKey" | "submittedRowId" | "onRevealAnchor" | "displayLabels" | "header" | "contextSlot" | "onQuoteSelection" | "approvalSnapshot" | "onApprovalDecision"> & {
   agent: ConsoleAgent | null;
   agentLabel: string;
   identity: string;
@@ -33,6 +34,7 @@ export type ConsoleConversationPanelProps = {
   providerLabel?: string | null;
   stackSlot?: ReactNode;
   Icon?: IconRenderer | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
   className?: string;
   inputId?: string;
   submitButtonId?: string;
@@ -96,6 +98,16 @@ export function ConsoleConversationPanel({
   providerLabel = "OpenAI",
   stackSlot = null,
   Icon = null,
+  markdownUrlPolicy,
+  viewportKey,
+  submittedRowId,
+  onRevealAnchor,
+  displayLabels,
+  header,
+  contextSlot,
+  onQuoteSelection,
+  approvalSnapshot,
+  onApprovalDecision,
   className,
   inputId,
   submitButtonId,
@@ -158,6 +170,18 @@ export function ConsoleConversationPanel({
   return (
     <div className={["cc-conversation-panel", className].filter(Boolean).join(" ")} data-testid={`conversation-pane:${identity}`}>
       <ConversationPane
+        markdownUrlPolicy={markdownUrlPolicy}
+        viewportKey={viewportKey}
+        submittedRowId={submittedRowId}
+        onRevealAnchor={onRevealAnchor}
+        displayLabels={displayLabels}
+        header={header}
+        contextSlot={contextSlot}
+        onQuoteSelection={onQuoteSelection}
+        isWorking={phase !== null}
+        approvalSnapshot={approvalSnapshot}
+        approvalIdentity={identity}
+        onApprovalDecision={onApprovalDecision}
         Icon={Icon}
         viewState={conversation}
         footer={(

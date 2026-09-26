@@ -1,25 +1,14 @@
 import React from "react";
+import { QuoteContextChips } from "../../../packages/console-components/src/conversation/context-chips";
+import type { ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 
 /// One row in the per-identity pending-message stack. Lives entirely
 /// in the browser until either auto-drain (busy → idle), explicit
 /// Steer, or Trash. Persisted across reloads + tabs in localStorage.
-export interface PendingItem {
-  id: string;
-  text: string;
-  addedAt: number;
+export interface PendingItem extends ConsoleSendAttempt {
   expanded?: boolean;
   editing?: boolean;
-  /// `null` = static; the others are transient animation flags driven
-  /// by CSS keyframes. Items in `promoting`/`trashing`/`draining` are
-  /// non-interactive and on their way out.
   status?: "entering" | "promoting" | "trashing" | "draining" | null;
-  /// Cross-tab claim token for an item that is already being drained.
-  /// Without this, two open console tabs can both observe busy→idle and
-  /// submit the same pending item.
-  drainClaim?: string;
-  /// Wall-clock time for the drain claim. Used to expire claims whose
-  /// owning tab was closed before it submitted the queued item.
-  drainClaimedAt?: number;
 }
 
 type DropWhere = "above" | "below";
@@ -34,6 +23,11 @@ interface PendingStackProps {
   agentBusy: boolean;
   reducedMotion?: boolean;
   onSteer: (id: string) => void;
+  onRetry: (id: string) => void;
+  onReconcile: (id: string) => void;
+  onRemoveContext: (id: string, contextId: string) => void;
+  onEditContext?: (id: string, contextId: string, quote: string) => void | Promise<void>;
+  onReorderContext: (id: string, contextId: string, direction: "up" | "down") => void;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -78,7 +72,7 @@ function StackHead({
       <span className="stack__head-spacer" />
       <span className={`stack__head-phase ${agentBusy ? "" : "is-idle"}`}>
         <b />
-        {agentBusy ? "Agent busy" : "Agent idle · draining"}
+        {agentBusy ? "Agent busy" : "Agent idle"}
       </span>
       {count > 0 && (
         <button
@@ -101,6 +95,11 @@ interface StackItemProps {
   dragging: boolean;
   dropHint: DropWhere | null;
   onSteer: (id: string) => void;
+  onRetry: (id: string) => void;
+  onReconcile: (id: string) => void;
+  onRemoveContext: (id: string, contextId: string) => void;
+  onEditContext?: (id: string, contextId: string, quote: string) => void | Promise<void>;
+  onReorderContext: (id: string, contextId: string, direction: "up" | "down") => void;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -128,6 +127,11 @@ function StackItem({
   dragging,
   dropHint,
   onSteer,
+  onRetry,
+  onReconcile,
+  onRemoveContext,
+  onEditContext,
+  onReorderContext,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -179,7 +183,7 @@ function StackItem({
     dropHint === "below" ? "drop-target drop-below" : "",
   ].filter(Boolean).join(" ");
 
-  const longText = item.text.length > 90 || /\n/.test(item.text);
+  const longText = item.contexts.length > 0 || item.text.length > 90 || /\n/.test(item.text);
 
   return (
     <li
@@ -188,7 +192,7 @@ function StackItem({
       tabIndex={0}
       data-id={item.id}
       data-testid={`pending-item:${item.id}`}
-      draggable={!item.editing && item.status !== "promoting"}
+      draggable={!item.editing && item.state === "draft"}
       onDragStart={(e) => onDragStart(e, item.id)}
       onDragOver={(e) => onDragOver(e, item.id)}
       onDragLeave={(e) => onDragLeave(e, item.id)}
@@ -254,8 +258,15 @@ function StackItem({
           >
             {item.text}
           </div>
+          {item.expanded && <QuoteContextChips records={item.contexts} destinationLabel={item.destination}
+            onEdit={item.state === "draft" && !item.envelopeJson && onEditContext ? (contextId, quote) => onEditContext(item.id, contextId, quote) : undefined}
+            onRemove={item.state === "draft" ? (contextId) => onRemoveContext(item.id, contextId) : undefined}
+            onReorder={item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : undefined} />}
           <div className="stk-item__meta">
-            {isHead && <span className="stk-item__head-tag">Next</span>}
+            {isHead && item.state === "draft" && <span className="stk-item__head-tag">Next</span>}
+            <span>{item.state === "outcome-unknown" ? "Acceptance unknown - inspect conversation before discarding" : item.state === "definitely-rejected" ? "Rejected - retained for review" : item.state === "attempting" ? "Sending" : item.state === "accepted" ? "Accepted" : "Queued"}</span>
+            {item.contexts.length > 0 && <span>{item.contexts.length} quote(s)</span>}
+            {item.error && <span role="status">{item.error}</span>}
             <span>{timeAgo(item.addedAt)}</span>
             {item.status === "promoting" && (
               <span className="stk-item__sending">SENDING…</span>
@@ -266,12 +277,14 @@ function StackItem({
 
       {!item.editing && (
         <div className="stk-item__actions">
+          {item.state === "definitely-rejected" && <button type="button" className="stk-btn" onClick={() => onRetry(item.id)}>Retry same attempt</button>}
+          {(item.state === "outcome-unknown" || item.state === "attempting") && <button type="button" className="stk-btn" onClick={() => onReconcile(item.id)}>Check acceptance</button>}
           <button
             type="button"
             className="stk-btn stk-btn--steer"
             onClick={() => onSteer(item.id)}
-            disabled={item.status === "promoting"}
-            aria-label="Steer — send now and interrupt at next cooperative pause"
+            disabled={item.state !== "draft"}
+            aria-label="Steer - send now and interrupt at next cooperative pause"
             title="Send now and interrupt at the next cooperative pause"
             data-testid={`pending-steer:${item.id}`}
           >
@@ -281,6 +294,7 @@ function StackItem({
             type="button"
             className="stk-btn stk-btn--icon"
             onClick={() => onEdit(item.id)}
+            disabled={item.state !== "draft"}
             aria-label="Edit message"
             title="Edit message"
             data-testid={`pending-edit:${item.id}`}
@@ -291,7 +305,7 @@ function StackItem({
             type="button"
             className="stk-btn stk-btn--icon stk-btn--trash"
             onClick={() => onTrash(item.id)}
-            aria-label="Remove from queue"
+            aria-label={item.state === "draft" ? "Remove from queue" : "Discard saved attempt"}
             title="Remove from queue"
             data-testid={`pending-trash:${item.id}`}
           >
@@ -308,6 +322,11 @@ export function PendingStack({
   agentBusy,
   reducedMotion,
   onSteer,
+  onRetry,
+  onReconcile,
+  onRemoveContext,
+  onEditContext,
+  onReorderContext,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -393,6 +412,11 @@ export function PendingStack({
             dragging={dragId === item.id}
             dropHint={dropTarget.id === item.id ? dropTarget.where : null}
             onSteer={onSteer}
+            onRetry={onRetry}
+            onReconcile={onReconcile}
+            onRemoveContext={onRemoveContext}
+            onEditContext={onEditContext}
+            onReorderContext={onReorderContext}
             onTrash={onTrash}
             onEdit={onEdit}
             onCommitEdit={onCommitEdit}

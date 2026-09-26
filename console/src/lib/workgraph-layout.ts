@@ -4,9 +4,12 @@ import type { WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 ///
 /// Column = depth from parent edges (same semantics as
 /// `buildWorkGraphPanelTree`: parent edges run child→parent, placement is
-/// first-parent-wins, children of unknown parents are roots). Row = stable
-/// index within the column, ordered by created_at then id. No crossing
-/// minimization - the guardrails are determinism and the node cap.
+/// first-parent-wins, children of unknown parents are roots). Graphs without
+/// a rendered parent edge instead advance columns along blocks dependencies,
+/// so parallel prerequisites converge on the dependent. Row = stable index
+/// within the column, ordered by created_at then id; dependency columns are
+/// centered. No crossing minimization - the guardrails are determinism and
+/// the node cap.
 
 export const WORKGRAPH_GRAPH_COL_WIDTH = 220;
 export const WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
@@ -161,6 +164,49 @@ export function layoutWorkGraph(
   };
   for (const id of keptIds) resolveDepth(id, new Set([id]));
 
+  // Preserve the established structural tree when one is present. Otherwise
+  // use only typed blocks edges for dependency ranks, never relates/unknown
+  // kinds or targets that were omitted by the node cap.
+  const hasRenderedParent = [...parentOf].some(([child, parent]) => kept.has(child) && kept.has(parent));
+  let dependencyColumns = false;
+  if (!hasRenderedParent) {
+    const dependents = new Map(keptIds.map(id => [id, new Set<string>()]));
+    const prerequisites = new Map(keptIds.map(id => [id, 0]));
+    for (const edge of edges) {
+      if (edge.kind !== "blocks" || !edge.from_id || !edge.to_id || edge.from_id === edge.to_id) continue;
+      if (!kept.has(edge.from_id) || !kept.has(edge.to_id)) continue;
+      const targets = dependents.get(edge.from_id)!;
+      if (targets.has(edge.to_id)) continue;
+      targets.add(edge.to_id);
+      prerequisites.set(edge.to_id, prerequisites.get(edge.to_id)! + 1);
+      dependencyColumns = true;
+    }
+    if (dependencyColumns) {
+      const ready = keptIds.filter(id => prerequisites.get(id) === 0);
+      const ranks = new Map(keptIds.map(id => [id, 0]));
+      const resolved = new Set<string>();
+      for (let index = 0; index < ready.length; index += 1) {
+        const id = ready[index];
+        resolved.add(id);
+        for (const dependent of dependents.get(id)!) {
+          ranks.set(dependent, Math.max(ranks.get(dependent)!, ranks.get(id)! + 1));
+          const remaining = prerequisites.get(dependent)! - 1;
+          prerequisites.set(dependent, remaining);
+          if (remaining === 0) ready.push(dependent);
+        }
+      }
+      // Cycles and their downstream nodes cannot be topologically placed;
+      // retain them as roots rather than inventing an order or looping.
+      for (const id of keptIds) depthOf.set(id, resolved.has(id) ? ranks.get(id)! : 0);
+    }
+  }
+  const rowsPerColumn = new Map<number, number>();
+  for (const id of keptIds) {
+    const depth = depthOf.get(id) ?? 0;
+    rowsPerColumn.set(depth, (rowsPerColumn.get(depth) ?? 0) + 1);
+  }
+  const tallestColumn = Math.max(0, ...rowsPerColumn.values());
+
   // Row = stable index within the column, following the global sort.
   const columnRows = new Map<number, number>();
   const rects = new Map<string, { x: number; y: number; w: number; h: number }>();
@@ -177,7 +223,7 @@ export function layoutWorkGraph(
     maxRows = Math.max(maxRows, row + 1);
     const rect = {
       x: PAD + depth * WORKGRAPH_GRAPH_COL_WIDTH,
-      y: PAD + row * WORKGRAPH_GRAPH_ROW_HEIGHT,
+      y: PAD + (row + (dependencyColumns ? (tallestColumn - rowsPerColumn.get(depth)!) / 2 : 0)) * WORKGRAPH_GRAPH_ROW_HEIGHT,
       w: WORKGRAPH_GRAPH_NODE_WIDTH,
       h: WORKGRAPH_GRAPH_NODE_HEIGHT,
     };

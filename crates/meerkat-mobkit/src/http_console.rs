@@ -45,9 +45,9 @@ use crate::console_aggregator::{
     ConsoleCursor, ConsoleFrame, ConsoleFrameSourceKind, ConsoleIdentityRecord, ConsoleLogError,
     ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError,
     ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery,
-    ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleVisibility,
-    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
-    MobKitConsoleAggregator,
+    ConsoleTimelineQueryError, ConsoleTimelineQueryResult, ConsoleTimelineWindowPage,
+    ConsoleTimelineWindowQuery, ConsoleVisibility, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -366,6 +366,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -390,31 +391,34 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     workgraph: Option<meerkat::WorkGraphService>,
     topology: Option<crate::topology_control::TopologyRuntimeHandle>,
     job_health_projection: Option<Arc<std::sync::RwLock<Option<serde_json::Value>>>>,
+    shared_aggregator: Option<MobKitConsoleAggregator>,
 ) -> Router {
-    let console_aggregator = console_events.clone().map(|events| {
-        if let Some(store) = console_log_store {
-            let aggregator = MobKitConsoleAggregator::new(store);
-            aggregator.register_runtime_handles_with_policy(
-                "default",
-                "",
-                runtime.clone(),
-                identity_runtime.clone(),
-                events,
-                visibility_policy.clone(),
-            );
-            aggregator
-        } else {
-            let aggregator = MobKitConsoleAggregator::in_memory();
-            aggregator.register_runtime_handles_with_policy(
-                "default",
-                "",
-                runtime.clone(),
-                identity_runtime.clone(),
-                events,
-                visibility_policy.clone(),
-            );
-            aggregator
-        }
+    let console_aggregator = shared_aggregator.or_else(|| {
+        console_events.clone().map(|events| {
+            if let Some(store) = console_log_store {
+                let aggregator = MobKitConsoleAggregator::new(store);
+                aggregator.register_runtime_handles_with_policy(
+                    "default",
+                    "",
+                    runtime.clone(),
+                    identity_runtime.clone(),
+                    events,
+                    visibility_policy.clone(),
+                );
+                aggregator
+            } else {
+                let aggregator = MobKitConsoleAggregator::in_memory();
+                aggregator.register_runtime_handles_with_policy(
+                    "default",
+                    "",
+                    runtime.clone(),
+                    identity_runtime.clone(),
+                    events,
+                    visibility_policy.clone(),
+                );
+                aggregator
+            }
+        })
     });
     let snapshot_read_model = ConsoleSnapshotReadModel::default();
     snapshot_read_model.refresh_soon(runtime.clone());
@@ -1114,9 +1118,7 @@ async fn console_timeline_handler(
             )
                 .into_response()
         }
-        Err(err) => {
-            console_json_error(StatusCode::CONFLICT, "replay_unavailable", &err.to_string())
-        }
+        Err(err) => console_timeline_query_error_response(err),
     }
 }
 
@@ -1584,26 +1586,7 @@ async fn console_timeline_stream_handler(
     let (snapshot_frames, snapshot_cursor) =
         match Box::pin(query_timeline_snapshot(&aggregator, timeline_query.clone())).await {
             Ok(snapshot) => snapshot,
-            Err(_) => {
-                let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
-                let requested_cursor = timeline_query
-                    .after
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                return (
-                    StatusCode::CONFLICT,
-                    Json::<Value>(
-                        serde_json::to_value(ConsoleReplayUnavailable {
-                            error: "replay_unavailable".to_string(),
-                            requested_cursor,
-                            latest_cursor,
-                        })
-                        .unwrap_or_else(|_| json!({ "error": "replay_unavailable" })),
-                    ),
-                )
-                    .into_response();
-            }
+            Err(err) => return console_timeline_query_error_response(err),
         };
     let identity = timeline_query.identity.clone();
     let conversation_id = timeline_query.conversation_id.clone();
@@ -1648,6 +1631,7 @@ async fn console_timeline_stream_handler(
                     {
                         continue;
                     }
+                    let event = aggregator.project_event_for_view(event);
                     if let Some(sse) = sse_event_from_timeline_event(&event) {
                         if let Some(event_cursor) = timeline_event_cursor(&event) {
                             latest_cursor = Some(event_cursor.clone());
@@ -1713,7 +1697,7 @@ fn timeline_query_from_http(
 async fn query_timeline_snapshot(
     aggregator: &MobKitConsoleAggregator,
     mut query: ConsoleTimelineWindowQuery,
-) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
+) -> ConsoleTimelineQueryResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
     const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
     query.limit = if query.limit == 0 {
         DEFAULT_SNAPSHOT_LIMIT
@@ -1730,16 +1714,6 @@ async fn query_timeline_snapshot(
             Ok((page.frames, page.latest_cursor.or(page.next_cursor)))
         }
         ConsoleTimelineMode::Since => {
-            if let (Some(after), Some(latest)) =
-                (query.after.as_ref(), aggregator.latest_cursor().await?)
-                && let (Some(after_seq), Some(latest_seq)) = (after.seq(), latest.seq())
-                && after_seq > latest_seq
-            {
-                return Err(std::io::Error::other(
-                    "timeline replay cursor is beyond the current store frontier",
-                )
-                .into());
-            }
             let mut frames = Vec::new();
             let mut cursor = query.after.clone();
             let mut latest_cursor = None;
@@ -1759,9 +1733,7 @@ async fn query_timeline_snapshot(
                     return Ok((frames, cursor.or(latest_cursor)));
                 }
                 if page.next_cursor == query.after {
-                    return Err(
-                        std::io::Error::other("timeline replay made no cursor progress").into(),
-                    );
+                    return Err(ConsoleTimelineQueryError::PaginationNoProgress);
                 }
                 query.after = page.next_cursor;
             }
@@ -4191,6 +4163,58 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
     )
 }
 
+fn console_timeline_query_error_response(
+    error: ConsoleTimelineQueryError,
+) -> axum::response::Response {
+    tracing::warn!(target: "mobkit::console", %error, "console timeline query failed");
+    match error {
+        ConsoleTimelineQueryError::ReplayUnavailable {
+            requested_cursor,
+            latest_cursor,
+        } => (
+            StatusCode::CONFLICT,
+            Json(ConsoleReplayUnavailable {
+                error: "replay_unavailable".to_string(),
+                requested_cursor: requested_cursor
+                    .map(|cursor| cursor.to_string())
+                    .unwrap_or_default(),
+                latest_cursor,
+            }),
+        )
+            .into_response(),
+        ConsoleTimelineQueryError::Operational(_)
+        | ConsoleTimelineQueryError::PaginationNoProgress => console_json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "timeline_unavailable",
+            "console timeline is temporarily unavailable",
+        ),
+    }
+}
+
+fn console_timeline_query_rpc_error(id: Value, error: ConsoleTimelineQueryError) -> Value {
+    match error {
+        ConsoleTimelineQueryError::ReplayUnavailable {
+            requested_cursor,
+            latest_cursor,
+        } => {
+            let err = ConsoleTimelineQueryError::ReplayUnavailable {
+                requested_cursor: requested_cursor.clone(),
+                latest_cursor: latest_cursor.clone(),
+            };
+            console_timeline_replay_unavailable_response(
+                id,
+                Box::new(err),
+                requested_cursor.as_ref(),
+                latest_cursor,
+            )
+        }
+        error => {
+            tracing::warn!(target: "mobkit::console", %error, "console timeline query failed");
+            internal_error(id, "console timeline is temporarily unavailable")
+        }
+    }
+}
+
 fn console_timeline_replay_unavailable_response(
     id: Value,
     err: ConsoleLogError,
@@ -5380,15 +5404,7 @@ async fn handle_console_aggregator_rpc(
                         None,
                     )
                 }
-                Err(err) => {
-                    let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
-                    console_timeline_replay_unavailable_response(
-                        response_id,
-                        err,
-                        query.after.as_ref(),
-                        latest_cursor,
-                    )
-                }
+                Err(err) => console_timeline_query_rpc_error(response_id, err),
             }
         }
         "mobkit/console/send" => {
@@ -6292,15 +6308,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                         None,
                     )
                 }
-                Err(err) => {
-                    let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
-                    console_timeline_replay_unavailable_response(
-                        response_id,
-                        err,
-                        query.after.as_ref(),
-                        latest_cursor,
-                    )
-                }
+                Err(err) => console_timeline_query_rpc_error(response_id, err),
             }
         }
         "mobkit/console/send" => {
@@ -7487,7 +7495,17 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }),
                 );
             };
-            let pending = module_runtime.lock().await.list_gating_pending();
+            let pending = module_runtime
+                .lock()
+                .await
+                .list_gating_pending()
+                .into_iter()
+                .filter(|entry| {
+                    entry.origin.as_ref().is_none_or(|origin| {
+                        access_view.is_none_or(|view| view.can_view_agent(&origin.identity))
+                    })
+                })
+                .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "pending": pending })), None)
         }
         "mobkit/gating/audit" => {
@@ -7507,7 +7525,22 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .get("limit")
                 .and_then(Value::as_u64)
                 .unwrap_or(50) as usize;
-            let entries = module_runtime.lock().await.gating_audit_entries(limit);
+            let entries = module_runtime
+                .lock()
+                .await
+                .gating_audit_entries(limit)
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .detail
+                        .get("origin")
+                        .and_then(|origin| origin.get("identity"))
+                        .and_then(Value::as_str)
+                        .is_none_or(|identity| {
+                            access_view.is_none_or(|view| view.can_view_agent(identity))
+                        })
+                })
+                .collect::<Vec<_>>();
             response_value(response_id, Some(json!({ "entries": entries })), None)
         }
         "mobkit/gating/decide" => {
@@ -7525,6 +7558,23 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(pending_id) = request.params.get("pending_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "pending_id required");
             };
+            // The gating owner trims IDs. Authorize that same canonical value.
+            let pending_id = pending_id.trim();
+            if let Some(view) = access_view {
+                let pending = module_runtime.lock().await.list_gating_pending();
+                if pending.iter().any(|entry| {
+                    entry.pending_id == pending_id
+                        && entry
+                            .origin
+                            .as_ref()
+                            .is_some_and(|origin| !view.can_view_agent(&origin.identity))
+                }) {
+                    return access_denied_rpc_error(
+                        response_id,
+                        "access denied to approval origin",
+                    );
+                }
+            }
             let approver_id =
                 match resolve_gating_approver_id(&request.params, authenticated_principal) {
                     Ok(approver_id) => approver_id,
@@ -8281,17 +8331,16 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(error));
             }
-            match runtime
-                .handle()
-                // Decode before encoding. A caller may hand back the runtime
-                // alias our own status responses emit, and encoding that
-                // directly keys a roster row nothing owns - which here returns a
-                // WELL-FORMED "unknown/final" status rather than an error, so a
-                // live member reads as finished.
-                .member_status(&crate::member_comms_id::roster_member_id_for_supplied_id(
-                    &member_id,
-                ))
-                .await
+            // Decode before encoding. A caller may hand back the runtime
+            // alias our own status responses emit. Keep that exact owner target
+            // while waiting for a briefly occupied observation lane.
+            let target = crate::member_comms_id::roster_member_id_for_supplied_id(&member_id);
+            match crate::member_status_observation::observe_member_status_until(
+                &runtime.handle(),
+                &target,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
+            .await
             {
                 Ok(snapshot) => response_value(
                     response_id,
@@ -10411,16 +10460,18 @@ async fn wait_for_reset_startup_history(
 /// Terminality comes from typed data only, never from message text:
 /// - `interaction_complete` (the console projection of meerkat's
 ///   `run_completed`) and a raw `run_completed` end the run. The exception is
-///   a session-history `interaction_complete`: it projects one assistant step
-///   that said something, and a step whose typed `stop_reason` is `tool_use`
-///   continues with tool results.
+///   a legacy session-history `interaction_complete`, or the current
+///   `text_complete`: each projects one saved assistant step. A step whose
+///   typed `stop_reason` is `tool_use` continues with tool results.
 /// - `turn_completed` ends the turn only when its typed `stop_reason` is not
 ///   `tool_use`. meerkat emits a `tool_use` `turn_completed` after every
 ///   tool-loop call, so counting any `turn_completed` marked a tool-using
 ///   startup turn ready after its first tool round.
 fn frame_ends_startup_turn(frame: &ConsoleFrame) -> bool {
     match frame.kind.as_str() {
-        "interaction_complete" if frame.source.kind == ConsoleFrameSourceKind::SessionHistory => {
+        "interaction_complete" | "text_complete"
+            if frame.source.kind == ConsoleFrameSourceKind::SessionHistory =>
+        {
             !frame
                 .payload
                 .get("message")
@@ -10710,9 +10761,15 @@ async fn build_aggregator_live_snapshot(
     config_module_ids: &[String],
 ) -> Result<ConsoleLiveSnapshot, Box<dyn std::error::Error + Send + Sync>> {
     let identities = Box::pin(aggregator.list_identities()).await?;
+    let response_phases = aggregator
+        .response_phases_for_identities(&identities)
+        .await?;
     let mut members = Vec::with_capacity(identities.len());
     for identity in &identities {
         let mut labels = identity.labels.clone();
+        // The authorized aggregate row already includes its runtime namespace.
+        // Preserve that identity when the experience roster reads this label.
+        labels.insert("agent_identity".to_string(), identity.identity.clone());
         labels
             .entry("display_name".to_string())
             .or_insert_with(|| identity.display_name.clone());
@@ -10755,7 +10812,7 @@ async fn build_aggregator_live_snapshot(
             state: Some(member.state.clone()),
             session_id: member.session_id.clone(),
             model_capabilities: member.model_capabilities.clone(),
-            response_phase: None,
+            response_phase: response_phases.get(&member.agent_identity).cloned(),
             watched: None,
             alert_level: None,
             degraded: None,
@@ -10814,6 +10871,10 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 }
 
 #[cfg(test)]
+#[path = "http_console_tests/query_faults.rs"]
+mod query_fault_tests;
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::large_futures)]
 mod tests {
     use super::ConsoleTimelineHttpQuery;
@@ -10841,8 +10902,9 @@ mod tests {
     };
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
-        ConsoleTimelineQuery, ConsoleTimelineWindowQuery, ConsoleVisibilityPolicy,
-        MobKitConsoleAggregator, NewConsoleFrame,
+        ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineQueryError,
+        ConsoleTimelineWindowQuery, ConsoleVisibilityPolicy, MobKitConsoleAggregator,
+        NewConsoleFrame,
     };
     use crate::identity_first::contracts::{ContinuityStore, LeaseProvider};
     use crate::identity_first::{
@@ -11121,7 +11183,7 @@ mod tests {
         }
     }
 
-    async fn build_empty_console_test_runtime(
+    pub(super) async fn build_empty_console_test_runtime(
         mob_id: &str,
     ) -> Result<(tempfile::TempDir, MobRuntime), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
@@ -15359,7 +15421,7 @@ comms = true
             default_timeout: None,
         }));
 
-        for name in ["agent:alpha", "agent:beta"] {
+        for name in ["agent:alpha", "agent:beta", "agent:unknown"] {
             let identity = AgentIdentity::parse(name)?;
             let record = ContinuityRecord {
                 identity: identity.clone(),
@@ -15375,7 +15437,7 @@ comms = true
                         profile: ProfileName::from("default"),
                         addressability: AgentAddressability::Addressable,
                         display_name: None,
-                        labels: BTreeMap::new(),
+                        labels: BTreeMap::from([("agent_identity".to_string(), name.to_string())]),
                         context: None,
                         additional_instructions: Vec::new(),
                         initial_message: None,
@@ -15401,23 +15463,69 @@ comms = true
             )?])
             .await;
 
-        let aggregator = MobKitConsoleAggregator::in_memory();
-        aggregator.register_runtime_handles_with_policy(
-            "identity-first",
-            "",
-            mob_runtime.clone(),
-            Some(identity_runtime),
-            ConsoleEventStore::new(),
-            Arc::new(AllowAllConsoleVisibilityPolicy),
-        );
+        for namespace in ["", "team"] {
+            let aggregator = MobKitConsoleAggregator::in_memory();
+            let events = ConsoleEventStore::new();
+            events
+                .reserve_interaction_value(
+                    "agent:alpha",
+                    None,
+                    "active-review",
+                    "console",
+                    json!({}),
+                )
+                .await?;
+            events
+                .record_lifecycle("agent:beta", "member_retired", json!({}))
+                .await;
+            aggregator.register_runtime_handles_with_policy(
+                "identity-first",
+                namespace,
+                mob_runtime.clone(),
+                Some(identity_runtime.clone()),
+                events,
+                Arc::new(AllowAllConsoleVisibilityPolicy),
+            );
 
-        let snapshot = build_aggregator_live_snapshot(&aggregator, &[]).await?;
-        let alpha = snapshot
-            .members
-            .iter()
-            .find(|member| member.agent_identity == "agent:alpha")
-            .ok_or("agent:alpha missing from live snapshot")?;
-        assert_eq!(alpha.wired_to, vec!["agent:beta".to_string()]);
+            let snapshot = build_aggregator_live_snapshot(&aggregator, &[]).await?;
+            let projected = |name: &str| {
+                if namespace.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{namespace}/{name}")
+                }
+            };
+            let alpha = snapshot
+                .members
+                .iter()
+                .find(|member| member.agent_identity == projected("agent:alpha"))
+                .ok_or("agent:alpha missing from live snapshot")?;
+            assert_eq!(alpha.wired_to, vec![projected("agent:beta")]);
+            for (name, expected_phase) in [
+                ("agent:alpha", Some(Some("waiting".to_string()))),
+                ("agent:beta", Some(None)),
+                ("agent:unknown", None),
+            ] {
+                let identity = projected(name);
+                let member = snapshot
+                    .members
+                    .iter()
+                    .find(|member| member.agent_identity == identity)
+                    .ok_or("expected aggregate member missing")?;
+                // The experience member-roster path prefers this authority label.
+                // It must address the same projected identity as the phase map.
+                assert_eq!(
+                    crate::member_comms_id::durable_identity_label(&member.labels),
+                    Some(identity.as_str())
+                );
+                let agent = snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.identity.as_deref() == Some(identity.as_str()))
+                    .ok_or("expected aggregate agent missing")?;
+                assert_eq!(agent.response_phase, expected_phase, "{identity}");
+            }
+        }
 
         let _ = mob_runtime.handle().stop().await;
         Ok(())
@@ -16590,6 +16698,7 @@ comms = true
                     status: ConsoleFrameStatus::Completed,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -16641,6 +16750,7 @@ comms = true
                 status: ConsoleFrameStatus::Completed,
                 payload: json!({ "text": "still visible" }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -16667,6 +16777,7 @@ comms = true
                     status: ConsoleFrameStatus::Completed,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -16699,7 +16810,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn fresh_identity_snapshot_keeps_user_input_anchor_before_noisy_tail()
+    async fn fresh_identity_snapshot_pages_contiguous_history_before_noisy_tail()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
@@ -16723,6 +16834,7 @@ comms = true
                     ]
                 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::Synthetic,
                     source_cursor: None,
                 },
@@ -16749,6 +16861,7 @@ comms = true
                     status: ConsoleFrameStatus::Delivered,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -16773,17 +16886,73 @@ comms = true
         )
         .await?;
 
-        assert!(
-            frames.iter().any(|frame| {
-                frame.kind == "user_input"
-                    && frame.payload.to_string().contains("Console chat smoke")
-            }),
-            "identity chat snapshot must keep the worker kickoff prompt before a noisy tail: {frames:#?}",
-        );
         assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1_501));
         assert_eq!(
-            frames.last().and_then(|frame| frame.cursor.seq()),
-            Some(1_501)
+            frames
+                .iter()
+                .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                .collect::<Vec<_>>(),
+            (1_302u64..=1_501).collect::<Vec<_>>(),
+            "the snapshot must contain the latest contiguous 200 frames"
+        );
+
+        let mut recovered = frames;
+        let mut reached_start = false;
+        for _ in 0..8 {
+            let before = recovered.first().expect("nonempty history").cursor.clone();
+            let before_seq = before.seq().expect("canonical cursor");
+            let page = aggregator
+                .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                    identity: Some("review-worker-a".to_string()),
+                    mode: ConsoleTimelineMode::Recent,
+                    before: Some(before),
+                    limit: 200,
+                    ..ConsoleTimelineWindowQuery::default()
+                })
+                .await?;
+            assert_eq!(
+                page.frames
+                    .iter()
+                    .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                    .collect::<Vec<_>>(),
+                (before_seq.saturating_sub(200).max(1)..before_seq).collect::<Vec<_>>(),
+                "each older page must immediately precede the retained history"
+            );
+            let exhausted = page.exhausted;
+            let mut older = page.frames;
+            older.extend(recovered);
+            recovered = older;
+            if exhausted {
+                reached_start = true;
+                break;
+            }
+        }
+        assert!(
+            reached_start,
+            "bounded older paging must reach the history start"
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|frame| frame.cursor.seq().expect("canonical cursor"))
+                .collect::<Vec<_>>(),
+            (1u64..=1_501).collect::<Vec<_>>(),
+            "all owner frames must be reachable exactly once in order"
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|frame| frame.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1_501,
+            "paging must not duplicate frame identities"
+        );
+        assert_eq!(recovered[0].dedupe_key, "worker-kickoff");
+        assert_eq!(recovered[0].kind, "user_input");
+        assert_eq!(
+            recovered[0].payload["content"][0]["text"],
+            "Console chat smoke: review this initiative"
         );
         Ok(())
     }
@@ -16807,6 +16976,7 @@ comms = true
                     status: ConsoleFrameStatus::Completed,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -16863,6 +17033,7 @@ comms = true
                     status: ConsoleFrameStatus::Completed,
                     payload: json!({ "delta": idx }),
                     source: ConsoleFrameSource {
+                        member_provenance: None,
                         kind: ConsoleFrameSourceKind::ConsoleEvent,
                         source_cursor: None,
                     },
@@ -16915,6 +17086,7 @@ comms = true
                 status: ConsoleFrameStatus::Completed,
                 payload: json!({ "delta": 1 }),
                 source: ConsoleFrameSource {
+                    member_provenance: None,
                     kind: ConsoleFrameSourceKind::ConsoleEvent,
                     source_cursor: None,
                 },
@@ -16945,11 +17117,10 @@ comms = true
             Err(err) => err,
         };
 
-        assert!(
-            err.to_string()
-                .contains("beyond the current store frontier"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            err,
+            ConsoleTimelineQueryError::ReplayUnavailable { .. }
+        ));
         Ok(())
     }
 
@@ -16974,11 +17145,10 @@ comms = true
             Err(err) => err,
         };
 
-        assert!(
-            err.to_string()
-                .contains("beyond the current store frontier"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            err,
+            ConsoleTimelineQueryError::ReplayUnavailable { .. }
+        ));
         Ok(())
     }
 
@@ -17395,6 +17565,7 @@ comms = true
             status: ConsoleFrameStatus::Delivered,
             payload,
             source: ConsoleFrameSource {
+                member_provenance: None,
                 kind: source,
                 source_cursor: None,
             },
@@ -17421,7 +17592,7 @@ comms = true
     /// A tool-using startup turn is ready only at its real terminal. Newer
     /// meerkat emits `turn_completed` with `stop_reason: tool_use` after every
     /// tool-loop call, and session history projects a text-plus-tool step as
-    /// an `interaction_complete` carrying the step's `tool_use` stop reason;
+    /// a `text_complete` carrying the step's `tool_use` stop reason;
     /// neither ends the turn.
     #[tokio::test]
     async fn reset_startup_readiness_waits_past_tool_use_turn_completed() {
@@ -17479,6 +17650,13 @@ comms = true
                 ),
                 startup_frame(
                     identity,
+                    6,
+                    "text_complete",
+                    ConsoleFrameSourceKind::SessionHistory,
+                    json!({ "text": "Still checking.", "message": { "stop_reason": "tool_use" } }),
+                ),
+                startup_frame(
+                    identity,
                     4,
                     "tool_result_received",
                     ConsoleFrameSourceKind::ConsoleEvent,
@@ -17531,6 +17709,12 @@ comms = true
                 "interaction_complete",
                 ConsoleFrameSourceKind::ConsoleEvent,
                 json!({ "type": "run_completed", "result": "ready" }),
+            ),
+            (
+                "agent:history-text-answer",
+                "text_complete",
+                ConsoleFrameSourceKind::SessionHistory,
+                json!({ "text": "Ready.", "message": { "stop_reason": "end_turn" } }),
             ),
             (
                 "agent:history-answer",

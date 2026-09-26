@@ -828,10 +828,14 @@ class MobKitRuntime:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> Any:
-        """Dispatch plain text without constructing DispatchInput manually."""
+        """Dispatch plain text; supply correlation and idempotency keys together."""
         from .identity_first_models import DispatchInput
-        di = DispatchInput(content=text, origin=origin, correlation_id=correlation_id)
+        di = DispatchInput(
+            content=text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+        )
         return await self.dispatch(identity, di)
 
     async def list_identities(self) -> list[Any]:
@@ -1074,10 +1078,12 @@ class IdentityAgentHandle:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> Any:
         """Dispatch plain text without constructing DispatchInput."""
         return await self._runtime.dispatch_text(
             self._identity, text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
         )
 
     async def status(self) -> Any:
@@ -1181,12 +1187,14 @@ class IdentityAgentHandle:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
         timeout: float = 90,
         poll_interval: float = 0.5,
     ) -> str | None:
         """:meth:`dispatch_text` plus the completion wait, in one call."""
         result = await self.dispatch_text(
             text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
         )
         return await self._wait_for_admission(
             result, "dispatch", timeout=timeout, poll_interval=poll_interval,

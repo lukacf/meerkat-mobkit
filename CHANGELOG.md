@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking (Rust source)
+
+- `ConsoleAgentLiveSnapshot.response_phase` is now `Option<Option<String>>`:
+  `None` means no activity observation, `Some(None)` means known quiet, and
+  `Some(Some(phase))` carries the recorded activity phase. JSON keeps the
+  existing string phase and now preserves explicit null separately from a
+  missing field. Update Rust constructors that set an active phase accordingly.
+
 ### Changed
+
+- Improve console reading and composition in the stock and reusable hosts:
+  preserve the reading position while output streams, render complete Markdown
+  with exact source copy, and use a compact latest-message arrow that animates
+  during agent work. Quoting appears beside a selection; quoted context can be
+  edited before sending and is displayed as readable cards after delivery.
+- Add roster activity filters, shared approval state with precisely correlated
+  conversation cards, and durable text/quote send attempts that reconcile lost
+  acknowledgements without erasing a newer draft.
+- Preserve repeated authored text, reasoning and tool outcomes across live
+  output, history paging and reconnection. Saved assistant messages no longer
+  create synthetic run-completion events. Fold only routine tool activity with
+  matched successful outcomes, and keep failures and unknown outcomes visible.
+
 
 - Bind the Meerkat family to published 0.8.43: `fork_off` and council
   completions arrive in the owner's transcript as a persisted `BackgroundJob`
@@ -33,6 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Fixed
+
+- Show canonical peer display names while preserving exact peer identities in
+  details. Keep empty WorkGraph query results inspectable, and avoid duplicate
+  tool rows when event polls are already represented by a work card. WorkGraph
+  event and deadline displays use the same local clock as the conversation.
+- Calculate assistant work duration only from matching run-start and successful
+  completion evidence. System notices never inherit assistant timing, and
+  messages with unknown run timing omit the duration.
+- Observe restored identity edges after eager continuity attachment so the
+  bootstrap report reflects the wired sessions. Lazy restore remains deferred.
+- Project durable runtime notices during their original active run and reconcile
+  them against saved history without duplicating or reordering the instruction.
+
+- Complete deferred activation before persistent gateway and builder startup
+  returns. Classic compositions explicitly resume; identity compositions
+  register continuity owners before resuming preserved sessions.
+- Keep queued console sends, identity inspection and startup readiness within
+  their existing deadlines when the owner's member-observation lane is busy.
+  Only refused reads retry; message admission and delivery are not repeated.
+- Keep persistent gateway identity stable when a storage directory beneath a
+  symlink is created between launches by resolving its existing parent first.
+- Preserve a streamed response across an overlapping queued steer, including
+  its exact source and the subsequent reply's assistant header.
+- Let Python text-dispatch helpers carry caller-supplied idempotency keys with
+  correlation IDs, including the completion-waiting helper.
 
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either
