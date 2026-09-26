@@ -156,6 +156,16 @@ async function durableSteer(host, persistedBackgroundJob = false) {
             text: row.textContent,
             workFooters: row.querySelectorAll('.msg__worked, [aria-label="Copy work time"]').length,
           })),
+          backgroundJobs: [...root.querySelectorAll(".cc-background-job")].map(card => {
+            const bounds = card.getBoundingClientRect(), viewportBounds = root.getBoundingClientRect();
+            return { id: card.getAttribute("data-job-id"),
+              name: card.querySelector(".cc-background-job__name")?.textContent,
+              status: card.querySelector(".cc-background-job__status")?.textContent,
+              rawStatus: card.querySelector(".cc-background-job__status")?.getAttribute("data-status"),
+              detail: card.querySelector(".cc-background-job__detail")?.textContent,
+              width: bounds.width, fits: bounds.left >= viewportBounds.left && bounds.right <= viewportBounds.right,
+            };
+          }),
           incomingPeers: [...root.querySelectorAll(".cc-tool-call--incoming .cc-tool-call__name")]
             .map(peer => ({ text: peer.textContent, title: peer.getAttribute("title"), displayed: peer.getBoundingClientRect().height > 0 })),
           workGraphTools,
@@ -172,6 +182,16 @@ async function durableSteer(host, persistedBackgroundJob = false) {
         assert.equal(view.rows[0].id, result.noticeRowId, "the rendered row belongs to the exact runtime notice source");
         assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
         assert.doesNotMatch(view.rows[0].text, /Worked for/);
+        if (backgroundJob) {
+          assert.equal(view.backgroundJobs.length, 1, "one typed job card remains visible");
+          const card = view.backgroundJobs[0];
+          assert.equal(card.id, backgroundJob.job_id);
+          assert.equal(card.name, backgroundJob.display_name);
+          assert.equal(card.status, "Completed");
+          assert.equal(card.rawStatus, "completed");
+          assert.equal(card.detail, notice, "job detail retains exact original bytes");
+          assert(card.width > 0 && card.fits, "job card fits the conversation viewport");
+        }
         for (const peer of result.expectedPeers) {
           const matching = view.incomingPeers.filter(rendered => rendered.title === peer.id);
           assert.equal(matching.length, peer.count, "each canonical incoming peer row retains its exact peer identity in the header");
@@ -394,6 +414,13 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     const completedDuration = await inspectAssistantDuration("completed");
     await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
     await capture("completed");
+    if (backgroundJob) {
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
+      await inspectNotice("completed-1024");
+      await capture("completed-1024");
+      await page.setViewportSize({ width: 1600, height: 1000 });
+    }
 
     allowance = "disconnect";
     const streams = () => fixture.observations.filter(item => item.path.includes("/timeline/stream") && item.status === 200).length;

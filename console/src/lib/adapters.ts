@@ -4295,6 +4295,16 @@ function typedSystemNoticeBlocksToRich(
       rich.push({ type: "divider", text });
       continue;
     }
+    if (type === "background_job" && typeof record.job_id === "string" && record.job_id.trim()
+      && typeof record.status === "string" && record.status.trim()) {
+      rich.push({
+        type: "background-job", jobId: record.job_id, status: record.status,
+        ...(typeof record.display_name === "string" ? { displayName: record.display_name } : {}),
+        detail: typeof record.detail === "string" ? record.detail : "",
+        copyText: typedNoticeBlockText(record) || bodyText,
+      });
+      continue;
+    }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
       const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text });

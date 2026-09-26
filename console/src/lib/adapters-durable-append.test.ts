@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { sanitizeConversationEntries } from "./conversation-visibility";
+import type { ConversationTimelineEntry } from "@console-core";
 
 import {
   mapFramesToTimelineEntries as stockMap,
@@ -146,6 +148,26 @@ for (const [surface, map, merge, parse, query, subscribe] of [
   });
   const rows = (frames: WireFrame[], body = BODY, restoreOrder = true) => project(frames, restoreOrder)
     .filter(entry => conversationEntryText(entry) === body);
+
+  test(`${surface}: background jobs preserve typed identity, status and exact detail in live and history views`, () => {
+    const detail = "  Review A\u030A and <admin>.\nKeep every space.  ";
+    for (const status of ["completed", "terminated"]) {
+      const typed = { ...notice({}, "Background release review finished."), kind: "background_job",
+        blocks: [{ type: "background_job", job_id: "job-1", display_name: "Release review", status, detail, persisted: true }] };
+      const expected = { type: "background-job", jobId: "job-1", displayName: "Release review", status,
+        detail, copyText: `${detail.trim()}\n${status}` };
+      for (const frames of [[applied("job-live", [typed])], [saved("job-saved", typed)],
+        [applied("job-live", [typed]), saved("job-saved", typed)]]) {
+        const entries = project(frames);
+        assert.equal(entries.length, 1);
+        assert.deepEqual(entries[0].blocks, [expected]);
+        assert.equal(entries[0].identity.role, "system");
+        assert.equal(conversationEntryText(entries[0]), expected.copyText);
+      }
+    }
+    const ordinary = project([applied("plain-status", [notice({}, "Background job completed")])]);
+    assert(!ordinary[0].blocks?.some(block => block.type === "background-job"), "prose cannot mint typed job status");
+  });
 
   test(`${surface}: typed boundary rows render exact Unicode once without model projection text`, () => {
     for (const restoreOrder of [false, true]) {
@@ -903,4 +925,19 @@ test("runtime append reconciliation does not mutate source frames or nested noti
   const projected = reconcileRuntimeAppendFrames(frames);
   assert.equal(projected.length, 1);
   assert.equal(JSON.stringify(frames), before);
+});
+
+
+test("stock visibility preserves typed job headers and exact details while dropping empty prose", () => {
+  for (const detail of ["", "  Preserve A\u030A and <admin>.\nSecond line.  "]) {
+    const block = { type: "background-job" as const, jobId: "job-visible", displayName: "Review",
+      status: "completed", detail, copyText: detail };
+    const job: ConversationTimelineEntry = { id: "job-row", kind: "message", variant: "rich",
+      identity: { id: "system", label: "System", role: "system" }, blocks: [block] };
+    const blank: ConversationTimelineEntry = { ...job, id: "empty", blocks: [{ type: "paragraph", text: "  " }] };
+    const visible = sanitizeConversationEntries([blank, job]);
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0].id, "job-row");
+    assert.deepEqual(visible[0], job);
+  }
 });

@@ -14,6 +14,25 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationMessageView", () => {
+  test("typed background jobs show a named status chip and exact escaped detail", () => {
+    const detail = "  Keep A\u030A and <admin>.\nSecond line.  ";
+    const statuses = { completed: "Completed", failed: "Failed", aborted: "Aborted",
+      cancelled: "Cancelled", retired: "Retired", terminated: "Terminated", future_state: "future_state" };
+    for (const [status, label] of Object.entries(statuses)) {
+      const view = render(<ConversationRichContent blocks={[{ type: "background-job", jobId: "job-1",
+        displayName: "Release <review>", status, detail, copyText: `${detail}\n${status}` }]} />);
+      expect(view.container.querySelector(".cc-background-job")?.getAttribute("data-job-id")).toBe("job-1");
+      expect(view.container.querySelector(".cc-background-job__name")?.textContent).toBe("Release <review>");
+      expect(view.container.querySelector(".cc-background-job__detail")?.textContent).toBe(detail);
+      expect(view.container.querySelector(".cc-background-job__status")?.textContent).toBe(
+        label);
+      expect(view.container.querySelector(".cc-background-job__status")?.getAttribute("data-status")).toBe(status);
+      expect(view.container.querySelector("admin, review")).toBeNull();
+      expect(view.container.querySelector(".msg__worked")).toBeNull();
+      view.unmount();
+    }
+  });
+
   test("stock and shared display delivered snapshots identically while preserving original copies and provenance", () => {
     const instruction = "  Explain A\u030A and 🚀.\nKeep spacing.  ";
     const quote = "  quoted <admin>\nexact å  ";

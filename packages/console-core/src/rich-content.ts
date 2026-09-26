@@ -49,6 +49,16 @@ export interface ConversationRichParagraphBlock {
   streaming?: boolean;
 }
 
+/** Presentation of canonical background-job notice fields, never inferred from prose. */
+export interface ConversationRichBackgroundJobBlock {
+  type: "background-job";
+  jobId: string;
+  displayName?: string;
+  status: string;
+  detail: string;
+  copyText: string;
+}
+
 export interface ConversationRichHeadingBlock {
   type: "heading";
   level: number;
@@ -138,6 +148,7 @@ export interface ConversationRichImageBlock {
 export type ConversationRichBlock =
   | ConversationRichMarkdownBlock
   | ConversationRichParagraphBlock
+  | ConversationRichBackgroundJobBlock
   | ConversationRichHeadingBlock
   | ConversationRichCodeBlock
   | ConversationRichTableBlock
@@ -507,6 +518,8 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
         block.headers.join(" | "),
         ...block.rows.map((row) => row.join(" | ")),
       ].join("\n").trim();
+    case "background-job":
+      return block.copyText;
     case "heading":
       return block.text.trim();
     case "paragraph":

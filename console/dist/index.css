@@ -3066,6 +3066,71 @@ span.cc-conversation-turn-preview__file-icon::after {
   gap: 6px;
   margin-top: 7px;
 }
+.cc-background-job {
+  border: 1px solid var(--_cc-border-soft);
+  border-radius: 10px;
+  background: var(--_cc-surface-soft);
+  overflow: hidden;
+}
+.cc-background-job__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.cc-background-job__icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--_cc-foreground-muted);
+}
+.cc-background-job__heading {
+  flex: 1;
+  min-width: 0;
+}
+.cc-background-job__kind {
+  display: block;
+  color: var(--_cc-foreground-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cc-background-job__name {
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.cc-background-job__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--_cc-foreground-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.cc-background-job__status[data-status=completed] {
+  color: var(--_cc-positive);
+}
+.cc-background-job__status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.cc-background-job__detail {
+  border-top: 1px solid var(--_cc-border-soft);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
 
 /* ../packages/console-components/src/styles/conversation-panel.css */
 .cc-conversation-panel {

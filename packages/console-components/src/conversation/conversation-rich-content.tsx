@@ -93,6 +93,32 @@ function renderBlock(
     return <ConversationMarkdown block={block} urlPolicy={markdownUrlPolicy} key={block.id} />;
   }
 
+  if (block.type === "background-job") {
+    const statusLabels: Record<string, string> = {
+      completed: "Completed", failed: "Failed", aborted: "Aborted",
+      cancelled: "Cancelled", retired: "Retired", terminated: "Terminated",
+    };
+    const statusLabel = Object.hasOwn(statusLabels, block.status) ? statusLabels[block.status] : block.status;
+    return (
+      <section className="cc-background-job" data-job-id={block.jobId} key={`background-job-${index}`}>
+        <header className="cc-background-job__header">
+          <svg className="cc-background-job__icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+            <rect x="4" y="3.5" width="12" height="13" rx="2" />
+            <path d="M7 7h6M7 10h6M7 13h3" strokeLinecap="round" />
+          </svg>
+          <div className="cc-background-job__heading">
+            <span className="cc-background-job__kind">Background job</span>
+            {block.displayName?.trim() ? <strong className="cc-background-job__name">{block.displayName}</strong> : null}
+          </div>
+          <span className="cc-background-job__status" data-status={block.status}>
+            <span className="cc-background-job__status-dot" aria-hidden="true" />{statusLabel}
+          </span>
+        </header>
+        {block.detail ? <div className="cc-background-job__detail">{block.detail}</div> : null}
+      </section>
+    );
+  }
+
   if (block.type === "paragraph") {
     return <p className="cc-rich-paragraph" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} key={`paragraph-${index}`} />;
   }
