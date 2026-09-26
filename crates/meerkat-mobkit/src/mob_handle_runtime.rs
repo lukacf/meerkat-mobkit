@@ -6315,18 +6315,18 @@ macro_rules! delegate_mob_session_service {
                 }
                 result
             }
-            async fn prepare_transient_turn_context_for_active_turn(
+            async fn prepare_turn_boundary_delivery_for_active_turn(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
                 expected_run_id: &meerkat_core::lifecycle::RunId,
-                contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+                delivery: meerkat_core::TurnBoundaryDelivery,
             ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
             {
                 self.inner
-                    .prepare_transient_turn_context_for_active_turn(
+                    .prepare_turn_boundary_delivery_for_active_turn(
                         session_id,
                         expected_run_id,
-                        contexts,
+                        delivery,
                     )
                     .await
             }
@@ -7226,14 +7226,14 @@ impl MobSessionService for AfterCreateMobSessionService {
             .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
             .await
     }
-    async fn prepare_transient_turn_context_for_active_turn(
+    async fn prepare_turn_boundary_delivery_for_active_turn(
         &self,
         session_id: &meerkat_core::types::SessionId,
         expected_run_id: &meerkat_core::lifecycle::RunId,
-        contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+        delivery: meerkat_core::TurnBoundaryDelivery,
     ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
         self.inner
-            .prepare_transient_turn_context_for_active_turn(session_id, expected_run_id, contexts)
+            .prepare_turn_boundary_delivery_for_active_turn(session_id, expected_run_id, delivery)
             .await
     }
     async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
@@ -14182,14 +14182,14 @@ comms = true
             Ok(true)
         }
 
-        async fn prepare_transient_turn_context_for_active_turn(
+        async fn prepare_turn_boundary_delivery_for_active_turn(
             &self,
             _session_id: &meerkat_core::types::SessionId,
             _expected_run_id: &meerkat_core::lifecycle::RunId,
-            _contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+            _delivery: meerkat_core::TurnBoundaryDelivery,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
-            self.record("prepare_transient_turn_context_for_active_turn");
+            self.record("prepare_turn_boundary_delivery_for_active_turn");
             Err(meerkat_core::CoreBoundaryStageError::unavailable(
                 "probe has no boundary authority",
             ))
@@ -14703,13 +14703,13 @@ comms = true
 
         assert_eq!(staged.accepted_result_count, 7);
         let preparation_error = wrapped
-            .prepare_transient_turn_context_for_active_turn(
+            .prepare_turn_boundary_delivery_for_active_turn(
                 &session_id,
                 &meerkat_core::lifecycle::RunId::new(),
-                vec![
+                meerkat_core::TurnBoundaryDelivery::RequestOnly(vec![
                     meerkat_core::lifecycle::run_primitive::TurnRequestContext::new("steer")
                         .expect("non-empty transient turn context"),
-                ],
+                ]),
             )
             .await
             .expect_err("probe preparation error should forward unchanged");
@@ -14735,7 +14735,7 @@ comms = true
                 "stage_tool_results",
                 "read_transcript_revision",
                 "list_transcript_revisions",
-                "prepare_transient_turn_context_for_active_turn",
+                "prepare_turn_boundary_delivery_for_active_turn",
                 "session_known_to_archive_authority",
             ]
         );

@@ -1206,12 +1206,17 @@ pub fn load_gateway_host_config(path: &Path) -> Result<meerkat::Config, GatewayH
         source,
     })?;
     let mut config = meerkat::Config::default();
-    config
-        .merge_toml_str(&text)
+    let warnings = config
+        .merge_toml_str_with_warnings(&text)
         .map_err(|source| GatewayHostConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
+    // A persisted legacy shape (a pre-0.8.37 `[model_fallback]` table) loads
+    // as no policy, with fallback off; say which file carries it.
+    for warning in warnings {
+        tracing::warn!(path = %path.display(), %warning, "gateway host config loaded with a warning");
+    }
     // Validation is the gateway ingress being at least as strict as meerkat's
     // own: a dangling `[self_hosted.models.<id>] server = ".."` reference
     // passes the parse and would otherwise kill the first member build.
@@ -1547,14 +1552,33 @@ default_binding = "local"
         Ok(())
     }
 
+    /// meerkat 0.8.43 loads the two persisted pre-0.8.37 `[model_fallback]`
+    /// shapes as no fallback policy (with a typed warning) instead of
+    /// refusing them: the gateway starts, with fallback off.
     #[test]
-    fn host_model_fallback_invalid_policy_is_an_explicit_init_error()
+    fn host_model_fallback_legacy_shapes_load_with_fallback_off()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("fallback.toml");
         for declaration in [
             "[model_fallback]\nenabled = true\n",
             "[model_fallback]\nuse_catalog_default_chain = true\n",
+        ] {
+            std::fs::write(&path, declaration)?;
+            assert!(
+                !load_gateway_host_config(&path)?.model_fallback.is_enabled(),
+                "{declaration}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_model_fallback_invalid_policy_is_an_explicit_init_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("fallback.toml");
+        for declaration in [
             "[model_fallback]\nenabeld = false\n",
             "[model_fallback.policy]\ncross_providre = true\n",
             "[model_fallback.policy]\ntrigger_after_attempts = 0\n",

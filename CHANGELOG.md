@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Bind the Meerkat family to published 0.8.43: `fork_off` and council
+  completions arrive in the owner's transcript as a persisted `BackgroundJob`
+  notice delivered in-turn (MobKit's callers are all mob members, so no
+  `DetachedOwnerHost` is needed), with the typed `no_owner_revival_host`
+  in-turn fallback; retiring a member retires everything it spawned
+  (`spawned_by`); member status never waits for a running turn; legacy
+  `model_fallback` tables load as no fallback policy with a warning (the
+  gateway's host config file included, now with fallback off and a warning
+  naming the file instead of a startup refusal); a whole-crew stop and resume
+  keeps coordinator-owned workers.
 - Bind the Meerkat family to published 0.8.42 (Claude Opus 5.5 as the default
   Anthropic model, GPT-6 Sol and Luna in the model catalog, upstream crates/
   repository layout).
