@@ -268,37 +268,58 @@ async function measure(
   }
   const keystrokeRenders = snapshotCounts(counts);
 
+  const scheduledFrames = new Map<number, FrameRequestCallback>();
+  const requestFrame = window.requestAnimationFrame;
+  const cancelFrame = window.cancelAnimationFrame;
+  let nextFrameId = -1;
+  // Keep independent React commits per event, but hold the frame boundary so
+  // CPU contention cannot split this structural coalescing check across frames.
+  window.requestAnimationFrame = (callback) => {
+    const id = nextFrameId--;
+    scheduledFrames.set(id, callback);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => {
+    if (!scheduledFrames.delete(id)) cancelFrame.call(window, id);
+  };
   resetRenderCounts();
   const frameMs: number[] = [];
   const base = 1_800_000_000_000;
   const burstStarted = performance.now();
-  for (let i = 0; i < SSE_FRAMES; i += 1) {
-    const frame: ConsoleFrame = {
-      id: `live:${i}`,
-      event: "text_delta",
-      identity: CHAT_IDENTITY,
-      interactionId: "live-turn",
-      timestampMs: base + i,
-      cursor: `console:${100_000 + i}`,
-      data: `token ${i} `,
-    };
-    const started = performance.now();
+  let burstMs: number;
+  let frameRenders: RenderCounts;
+  try {
+    for (let i = 0; i < SSE_FRAMES; i += 1) {
+      const frame: ConsoleFrame = {
+        id: `live:${i}`,
+        event: "text_delta",
+        identity: CHAT_IDENTITY,
+        interactionId: "live-turn",
+        timestampMs: base + i,
+        cursor: `console:${100_000 + i}`,
+        data: `token ${i} `,
+      };
+      const started = performance.now();
+      await act(async () => {
+        transport.live?.(frame);
+      });
+      frameMs.push(performance.now() - started);
+    }
+    // Release one animation frame only after all independent event commits.
     await act(async () => {
-      transport.live?.(frame);
+      const callbacks = [...scheduledFrames.values()];
+      scheduledFrames.clear();
+      callbacks.forEach((callback) => callback(performance.now()));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    frameMs.push(performance.now() - started);
+    burstMs = performance.now() - burstStarted;
+    frameRenders = snapshotCounts(counts);
+  } finally {
+    view.unmount();
+    scheduledFrames.clear();
+    window.requestAnimationFrame = requestFrame;
+    window.cancelAnimationFrame = cancelFrame;
   }
-  // Let the coalescing scheduler drain (one animation frame) before reading
-  // the frame counts; the burst time includes that flush.
-  await act(async () => {
-    await new Promise((resolve) => {
-      window.requestAnimationFrame(() => setTimeout(resolve, 0));
-    });
-  });
-  const burstMs = performance.now() - burstStarted;
-  const frameRenders = snapshotCounts(counts);
-
-  view.unmount();
   return {
     keystrokeMs,
     keystrokeRenders,
@@ -437,7 +458,7 @@ describe("console typing lag benchmark", () => {
         `[typing-lag] N=${n} keystroke ${stats(m.keystrokeMs)} renders ${JSON.stringify(m.keystrokeRenders)}`,
       );
       console.log(
-        `[typing-lag] N=${n} sse-frame ${stats(m.frameMs)} burst ${m.burstMs.toFixed(2)} ms renders ${JSON.stringify(m.frameRenders)}`,
+        `[typing-lag] N=${n} controlled-sse-dispatch ${stats(m.frameMs)} controlled-flush ${m.burstMs.toFixed(2)} ms renders ${JSON.stringify(m.frameRenders)}`,
       );
       console.log(
         `[typing-lag] N=${n} mounted turns ${m.mountedTurns} of ${m.lastTurnIndex + 1}; idle timeline queries visible ${m.idleTimelineQueries} hidden ${m.hiddenIdleTimelineQueries} per 2.5 s`,
@@ -461,8 +482,8 @@ describe("console typing lag benchmark", () => {
       expect(perKeystroke("VoiceBar")).toBe(0);
       expect(perKeystroke("ChatPane")).toBe(0);
       expect(perKeystroke("TranscriptView")).toBe(0);
-      // 20 frames within one animation frame budget each coalesce to far fewer
-      // app renders than frames; the sidebar must not render per frame.
+      // 20 independent events before one controlled animation frame coalesce
+      // to one sidebar render; React event batching cannot satisfy this alone.
       expect(m.frameRenders["Sidebar"] ?? 0).toBeLessThanOrEqual(1);
       expect(m.frameRenders["SignalsRail"] ?? 0).toBeLessThanOrEqual(1);
       expect(m.frameRenders["VoiceBar"] ?? 0).toBeLessThanOrEqual(1);
