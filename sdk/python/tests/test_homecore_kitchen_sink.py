@@ -17,12 +17,18 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import os
+import re
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import pytest
 
 from meerkat_mobkit.builder import MobKit
 from meerkat_mobkit.identity_first_models import (
+    DispatchInput,
     DurableAgentSpec,
     ManagedPeerEdge,
 )
@@ -277,11 +283,194 @@ async def _boot(state_dir, roster, topology, customizer):
         .gateway(_GATEWAY_BIN)
         .mob_inline(_HOUSEHOLD_MOB_TOML)
         .persistent_state(state_dir)
+        .http_listen("127.0.0.1:0")
+        .console_auth_required(False)
         .roster(roster)
         .topology_provider(topology)
         .agent_customizer(customizer)
         .build()
     )
+
+
+_LUKA_CLOSURE_NOTICE = (
+    "School closed tomorrow (pipe burst). Kids must stay home. "
+    "This affects your morning schedule."
+)
+
+
+def _content_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        block["text"] for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    )
+
+
+def _school_delivery_frame_matches(frame, identity, session_id, sender_peer_id):
+    if (
+        frame.get("identity") != identity
+        or frame.get("session_id") != session_id
+        or frame.get("kind") != "system_notice"
+        or frame.get("source", {}).get("kind") != "session_history"
+    ):
+        return False
+    for block in frame.get("payload", {}).get("blocks", []):
+        if not isinstance(block, dict):
+            continue
+        if (
+            block.get("type") != "comms"
+            or block.get("kind") not in ("message", "request")
+            or block.get("direction") != "incoming"
+            or (block.get("peer") or {}).get("id") != sender_peer_id
+        ):
+            continue
+        text = _content_text(block.get("content")).lower()
+        if "hillside" in text and "closed" in text and "pipe" in text and "burst" in text:
+            return True
+    return False
+
+
+def _closure_notice_frame_matches(frame, identity, session_id):
+    return (
+        frame.get("identity") == identity
+        and frame.get("session_id") == session_id
+        and frame.get("kind") == "user_input"
+        and frame.get("source", {}).get("kind") == "session_history"
+        and _content_text(frame.get("payload", {}).get("content")) == _LUKA_CLOSURE_NOTICE
+    )
+
+
+def _remembers_school_closure(text):
+    text = text.lower().replace("\u2019", "'")
+    uncertain = any(phrase in text for phrase in (
+        "do not know", "don't know", "not sure", "uncertain", "whether", "might be", "may be",
+    ))
+    negated = re.search(r"\b(?:not|isn't|won't be) closed\b", text)
+    closure = re.search(r"\bclosed\b|\b(?:not (?:be )?|won't be )open\b", text)
+    return (
+        bool(closure) and "pipe" in text and "burst" in text
+        and not uncertain and not negated and "?" not in text
+    )
+
+
+async def _wait_for_history_frame(runtime, identity, predicate, *, timeout=20):
+    """Read the supported console timeline until durable history proves the fact."""
+    base = runtime.rust_http_base_url
+    assert base, "gateway must expose its loopback console history endpoint"
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    def read_page(params, remaining):
+        with urlopen(
+            base.rstrip("/") + "/console/timeline?" + urlencode(params),
+            timeout=min(10, remaining),
+        ) as response:
+            return json.load(response)
+
+    while loop.time() < deadline:
+        params = {"identity": identity, "mode": "since", "limit": 400}
+        seen_cursors = set()
+        while loop.time() < deadline:
+            page = await asyncio.to_thread(read_page, params, deadline - loop.time())
+            frames = page.get("frames")
+            assert isinstance(frames, list), f"invalid console timeline page: {page}"
+            for frame in frames:
+                if predicate(frame):
+                    return frame
+            cursor = page.get("next_cursor")
+            if page.get("exhausted") or not frames or cursor is None:
+                break
+            assert cursor not in seen_cursors, "console timeline pagination did not advance"
+            seen_cursors.add(cursor)
+            params["after"] = cursor
+        await asyncio.sleep(min(0.25, max(0, deadline - loop.time())))
+    raise AssertionError(f"{identity}: required incident evidence missing from session history")
+
+
+def _school_history_fixture():
+    return {
+        "identity": "domain:school",
+        "session_id": "school-session",
+        "kind": "system_notice",
+        "source": {"kind": "session_history"},
+        "payload": {"blocks": [{
+            "type": "comms",
+            "kind": "request",
+            "direction": "incoming",
+            "peer": {"id": "triage-peer-id", "display_name": "household/triage/mk--triage_cmain"},
+            "content": [{
+                "type": "text",
+                "text": "Hillside Elementary is closed tomorrow due to a pipe burst.",
+            }],
+        }]},
+    }
+
+
+@pytest.mark.parametrize("mismatch", [
+    None, "old_output", "other_identity", "other_session", "outgoing",
+    "other_peer", "terminal_response", "missing_incident", "body_only",
+])
+def test_kitchen_school_history_oracle_requires_received_incident(mismatch):
+    frame = copy.deepcopy(_school_history_fixture())
+    block = frame["payload"]["blocks"][0]
+    if mismatch == "old_output":
+        frame["source"]["kind"] = "console_event"
+        frame["kind"] = "text_complete"
+    elif mismatch == "other_identity":
+        frame["identity"] = "domain:calendar"
+    elif mismatch == "other_session":
+        frame["session_id"] = "previous-school-session"
+    elif mismatch == "outgoing":
+        block["direction"] = "outgoing"
+    elif mismatch == "other_peer":
+        block["peer"]["id"] = "calendar-peer-id"
+    elif mismatch == "terminal_response":
+        block["kind"] = "response_terminal"
+    elif mismatch == "missing_incident":
+        block["content"][0]["text"] = "Ready to track school closures."
+    elif mismatch == "body_only":
+        frame["payload"]["body"] = block["content"][0]["text"]
+        block["content"] = []
+    assert _school_delivery_frame_matches(
+        frame, "domain:school", "school-session", "triage-peer-id"
+    ) is (mismatch is None)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("School is closed tomorrow because a pipe burst.", True),
+    ("Hillside Elementary will not be open due to burst pipes.", True),
+    ("School won't be open tomorrow because of the pipe burst.", True),
+    ("Is school open or closed tomorrow?", False),
+    ("School is closed tomorrow.", False),
+    ("School is open despite the pipe burst.", False),
+    ("I do not know whether school is closed after the pipe burst.", False),
+    ("Is school closed due to a pipe burst?", False),
+    ("School is not closed after the pipe burst.", False),
+])
+def test_kitchen_continuity_oracle_requires_closure_and_cause(text, expected):
+    assert _remembers_school_closure(text) is expected
+
+
+@pytest.mark.parametrize("mismatch", [None, "other_session", "live_echo", "changed_text"])
+def test_kitchen_notice_oracle_requires_exact_persisted_content(mismatch):
+    frame = {
+        "identity": "identity:luka",
+        "session_id": "luka-session",
+        "kind": "user_input",
+        "source": {"kind": "session_history", "source_cursor": "luka-session:4"},
+        "payload": {"content": [{"type": "text", "text": _LUKA_CLOSURE_NOTICE}]},
+    }
+    if mismatch == "other_session":
+        frame["session_id"] = "unrelated-session"
+    elif mismatch == "live_echo":
+        frame["source"]["kind"] = "send"
+    elif mismatch == "changed_text":
+        frame["payload"]["content"][0]["text"] = "Is school closed?"
+    assert _closure_notice_frame_matches(frame, "identity:luka", "luka-session") is (mismatch is None)
 
 
 # ===========================================================================
@@ -332,6 +521,10 @@ class TestHouseholdIncident:
                 f"luka, louise), got {triage_inspection.peer_reachable_count}"
             )
             print(f"[Phase 1] triage peers: {triage_inspection.peer_reachable_count} reachable")
+            school_session = (await school.status()).session_id
+            luka_session = (await luka.status()).session_id
+            triage_peer = await rt.mob_handle().peer_info("triage:main")
+            assert triage_peer.get("peer_id"), "triage must expose its canonical comms peer ID"
 
             # Addressability enforcement
             with pytest.raises(RpcError, match="not addressable"):
@@ -354,25 +547,40 @@ class TestHouseholdIncident:
             # =============================================================
             print("\n--- Phase 2: School closure + autonomous fan-out ---")
 
-            await triage.dispatch_text(
-                "URGENT from school connector: Hillside Elementary closed tomorrow "
-                "due to pipe burst. All students must stay home. This affects the "
-                "family's morning schedule. Forward this to the school domain agent.",
+            school_baseline = (await school.inspect()).completion_cursor
+            assert school_baseline is not None, "school must expose its typed completion cursor"
+            school_dispatch = await triage.dispatch(DispatchInput(
+                content=(
+                    "URGENT from school connector: Hillside Elementary closed tomorrow "
+                    "due to pipe burst. All students must stay home. This affects the "
+                    "family's morning schedule. Forward this to the school domain agent."
+                ),
                 origin="connector",
                 correlation_id="school-closure-1",
-            )
+                idempotency_key="school:school-closure-1",
+            ))
 
             # Wait for triage to process
-            triage_output = await triage.wait_for_output(timeout=90)
+            assert school_dispatch.completion_baseline is not None
+            triage_output = await triage.wait_for_completion(
+                school_dispatch.completion_baseline, timeout=90
+            )
             assert triage_output, "triage should have produced output after school closure dispatch"
             print(f"[Phase 2] triage output: {triage_output}")
 
             # ASSERT domain:school received comms from triage
-            school_output = await school.wait_for_output(timeout=60)
+            school_output = await school.wait_for_completion(school_baseline, timeout=60)
             assert school_output is not None, (
                 "domain:school should have received comms from triage and produced output. "
                 "This means triage's autonomous fan-out via comms send tool is broken."
             )
+            received = await _wait_for_history_frame(
+                rt, "domain:school",
+                lambda frame: _school_delivery_frame_matches(
+                    frame, "domain:school", school_session, triage_peer["peer_id"]
+                ),
+            )
+            print(f"[Phase 2] school accepted triage incident in history frame {received['id']}")
             print(f"[Phase 2] domain:school received comms: {school_output}")
 
             # Deliver closure notice to luka (simulates end of triage→domain→gate→identity chain).
@@ -380,9 +588,12 @@ class TestHouseholdIncident:
             # output text changing — luka may legitimately answer the same way
             # twice.
             await luka.send_and_wait(
-                "School closed tomorrow (pipe burst). Kids must stay home. "
-                "This affects your morning schedule.",
+                _LUKA_CLOSURE_NOTICE,
                 timeout=60,
+            )
+            closure_history = await _wait_for_history_frame(
+                rt, "identity:luka",
+                lambda frame: _closure_notice_frame_matches(frame, "identity:luka", luka_session),
             )
             print("[Phase 2] identity:luka notified about school closure")
 
@@ -392,13 +603,14 @@ class TestHouseholdIncident:
             print("\n--- Phase 3: Calendar conflict + gate ---")
 
             # Dispatch to gate for policy evaluation
-            await gate.dispatch_text(
+            gate_dispatch = await gate.dispatch_text(
                 "Proposed action: notify family group that school is closed tomorrow "
                 "and Luka's dentist at 09:00 conflicts with childcare. "
                 "Evaluate whether this notification is appropriate to send.",
                 origin="system",
             )
-            gate_output = await gate.wait_for_output(timeout=60)
+            assert gate_dispatch.completion_baseline is not None
+            gate_output = await gate.wait_for_completion(gate_dispatch.completion_baseline, timeout=60)
             assert gate_output is not None, (
                 "gate:main should have produced output after policy evaluation dispatch"
             )
@@ -412,12 +624,15 @@ class TestHouseholdIncident:
             # Dispatch calendar event and shutdown IMMEDIATELY
             # without waiting for processing. This tests checkpoint/restore
             # during active work, not after completion.
-            await triage.dispatch_text(
-                "Calendar connector: Luka has dentist appointment at 09:00 tomorrow. "
-                "School is closed. Forward to calendar domain agent for conflict analysis.",
+            await triage.dispatch(DispatchInput(
+                content=(
+                    "Calendar connector: Luka has dentist appointment at 09:00 tomorrow. "
+                    "School is closed. Forward to calendar domain agent for conflict analysis."
+                ),
                 origin="connector",
                 correlation_id="calendar-dentist-1",
-            )
+                idempotency_key="calendar:calendar-dentist-1",
+            ))
             # Record state BEFORE waiting for calendar processing
             pre_shutdown = {}
             for name in all_names:
@@ -460,6 +675,14 @@ class TestHouseholdIncident:
             )
             assert startup.startup_ready is True, startup.to_dict()
 
+            restored_history = await _wait_for_history_frame(
+                rt2, "identity:luka",
+                lambda frame: _closure_notice_frame_matches(frame, "identity:luka", luka_session),
+            )
+            assert restored_history["source"]["source_cursor"] == closure_history["source"]["source_cursor"], (
+                "restart must preserve the exact durable school notice in Luka's session"
+            )
+
             # ASSERT conversational continuity via LLM content.
             # Luka received the school closure notice before shutdown.
             # After restore, asking about school should reference the closure.
@@ -468,37 +691,18 @@ class TestHouseholdIncident:
             # from "never answered".
             try:
                 luka_output = await luka2.send_and_wait(
-                    "Is school open or closed tomorrow? Answer in one sentence only.",
+                    "Is school open or closed tomorrow, and why? Answer in one sentence only.",
                     timeout=90,
                 )
             except TimeoutError:
                 luka_output = None
 
             assert luka_output is not None, "luka should respond after restore"
-            luka_lower = luka_output.lower()
-            # Check luka remembers: look for definitive statements about closure,
-            # not just the word "closed" appearing in the question echo.
-            knows_closed = (
-                "school is closed" in luka_lower
-                or "school will be closed" in luka_lower
-                or "school closed" in luka_lower
-                or "not open" in luka_lower
-                or "won't be open" in luka_lower
-                or "pipe burst" in luka_lower
-                or "stay home" in luka_lower
+            assert _remembers_school_closure(luka_output), (
+                "Luka must recall both the closure and its pipe-burst cause from persisted "
+                f"history, not merely respond after restart: {luka_output}"
             )
-            # NOTE: In-process restart may lose session history due to
-            # SESSION_IDENTITY_CLAIMS not being released (meerkat crate issue).
-            # When that's fixed, make this a hard assert.
-            if knows_closed:
-                print(f"[Phase 5] luka remembers school closure: {luka_output}")
-            else:
-                print(
-                    f"[Phase 5] WARNING: luka does NOT remember school closure "
-                    f"(likely SESSION_IDENTITY_CLAIMS in-process restart issue): {luka_output}"
-                )
-            # Hard-assert luka at least responds (session is alive)
-            assert luka_output is not None
+            print(f"[Phase 5] luka remembers school closure: {luka_output}")
 
             # =============================================================
             # Phase 6: Respawn domain:calendar
