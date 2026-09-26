@@ -128,4 +128,41 @@ for (const [name, mapper] of [["stock", stock], ["shared", shared]] as const) {
     assert(user.blocks?.some(block => block.type === "markdown" && block.source === "  Inspect this image.\n"));
     assert(entries.some(entry => entry.kind === "message" && entry.text === "Message delivery failed."));
   });
+
+  test(`${name}: reserved sends and retained canonical inputs render once across refresh and reload`, () => {
+    const source = "CURRENT_VALUE is cobalt; remember my exact choice.";
+    const interactionId = "5a163c98-4bfa-5f31-83ce-aa0d88d14701";
+    const sessionId = "01a0dfac-04a8-7803-9615-87943a823ffb";
+    const runId = "01a0dfac-0ad6-7801-bc57-77c425fa3132";
+    const send = frame("reserved-human", "user_input", {
+      content: source, origin: "console", handling_mode: "queue", idempotency_key: "recall-projection",
+    }, { sourceKind: "send", runtimeKey: "human", identity: "human", sessionId, interactionId, status: "delivered", timestampMs: 1, cursor: "console:1" });
+    const history = frame("canonical-human", "user_input", {
+      content: [{ type: "text", text: source }],
+      message: { role: "user", content: source, identity: { run_id: runId, interaction_id: interactionId } },
+    }, { sourceKind: "session_history", runtimeKey: "human", identity: "human", sessionId, interactionId, runId,
+      sourceCursor: `${sessionId}:4`, status: "completed", timestampMs: 2, cursor: "console:5" });
+    const inputs = (frames: ConsoleFrame[]) => mapper(null, frames, options)
+      .filter(entry => entry.kind === "message" && entry.identity.role === "user");
+    const baseline = inputs([send]);
+    assert.equal(baseline.length, 1);
+    for (const frames of [[send, history], [history, send]]) {
+      const users = inputs(frames);
+      assert.equal(users.length, 1, "two source records are one authored human input");
+      assert.equal(users[0].id, baseline[0].id, "refresh preserves the admitted row key");
+      assert.equal(conversationEntryText(users[0]), source);
+    }
+    const reloaded = inputs([history]);
+    assert.equal(reloaded.length, 1, "canonical evidence renders without an admission record");
+    assert.equal(conversationEntryText(reloaded[0]), source);
+    const secondInteraction = "01900000-0000-7000-8000-000000000031";
+    const repeated = frame("another-canonical-human", "user_input", {
+      content: [{ type: "text", text: source }],
+      message: { role: "user", content: source, identity: { run_id: runId, interaction_id: secondInteraction } },
+    }, { sourceKind: "session_history", runtimeKey: "human", identity: "human", sessionId, runId, status: "completed", interactionId: secondInteraction,
+      sourceCursor: `${sessionId}:6`, timestampMs: 3, cursor: "console:7" });
+    const distinct = inputs([send, history, repeated]);
+    assert.equal(distinct.length, 2, "identical text in a different interaction is a distinct input");
+    assert.deepEqual(distinct.map(conversationEntryText), [source, source]);
+  });
 }

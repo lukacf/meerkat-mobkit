@@ -11,8 +11,8 @@ use meerkat_mob::{MobDefinition, MobDeliveryIdentity, WorkOrigin, WorkSpec};
 use serde_json::json;
 
 use crate::console_aggregator::{
-    AllowAllConsoleVisibilityPolicy, ConsoleFrameStatus, ConsoleInteractionAccepted,
-    ConsoleSendRequest, ConsoleTimelineQuery, MobKitConsoleAggregator,
+    AllowAllConsoleVisibilityPolicy, ConsoleFrame, ConsoleFrameSourceKind, ConsoleFrameStatus,
+    ConsoleInteractionAccepted, ConsoleSendRequest, ConsoleTimelineQuery, MobKitConsoleAggregator,
 };
 use crate::identity_first::agent_memory::{
     AgentMemoryConfig, AgentMemoryError, AgentMemoryPerTurnInjection, AgentMemoryProvider,
@@ -328,6 +328,111 @@ comms = true
     }
 }
 
+// The event feed retains both admission and committed transcript evidence.
+// A conversation renderer joins their exact interaction; raw-row count is not
+// a count of authored human inputs. Check both sources without hiding either.
+fn assert_canonical_human_frame(
+    frame: &ConsoleFrame,
+    accepted: &ConsoleInteractionAccepted,
+    session_id: &SessionId,
+    canonical: &[Message],
+) {
+    let matching: Vec<_> = canonical
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            matches!(message,
+            Message::User(user)
+                if user.transcript_role == TranscriptUserRole::Conversational
+                    && user.identity.interaction_id.as_ref().is_some_and(|id|
+                        id.0.to_string() == accepted.interaction_id))
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "one committed human input per interaction"
+    );
+    let (offset, message) = matching[0];
+    let Message::User(user) = message else {
+        unreachable!()
+    };
+    assert_eq!(user.text_content(), HUMAN);
+    assert_eq!(frame.kind, "user_input");
+    assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
+    assert_eq!(
+        frame.session_id.as_deref(),
+        Some(session_id.to_string().as_str())
+    );
+    assert_eq!(
+        frame.interaction_id.as_deref(),
+        Some(accepted.interaction_id.as_str())
+    );
+    assert_eq!(
+        frame.run_id,
+        user.identity.run_id.as_ref().map(|id| id.0.to_string())
+    );
+    assert!(
+        frame.run_id.is_some(),
+        "committed human input retains its runtime run"
+    );
+    assert_eq!(
+        frame.source.source_cursor,
+        Some(format!("{session_id}:{offset}"))
+    );
+    assert_eq!(
+        frame.payload["message"],
+        serde_json::to_value(message).unwrap()
+    );
+    assert_eq!(
+        frame.payload["content"],
+        serde_json::to_value(&user.content).unwrap()
+    );
+}
+
+fn assert_human_input_source_pair(
+    frames: &[ConsoleFrame],
+    accepted: &ConsoleInteractionAccepted,
+    session_id: &SessionId,
+    canonical: &[Message],
+) -> ConsoleFrame {
+    let inputs: Vec<_> = frames
+        .iter()
+        .filter(|frame| frame.kind == "user_input")
+        .collect();
+    assert_eq!(
+        inputs.len(),
+        2,
+        "exactly one admission and one canonical source: {frames:#?}"
+    );
+    let reservations: Vec<_> = inputs
+        .iter()
+        .copied()
+        .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::Send)
+        .collect();
+    assert_eq!(reservations.len(), 1);
+    let reserved = reservations[0];
+    assert_eq!(reserved.id, accepted.input_frame_id);
+    assert_eq!(reserved.cursor, accepted.cursor);
+    assert_eq!(
+        reserved.session_id.as_deref(),
+        Some(session_id.to_string().as_str())
+    );
+    assert_eq!(
+        reserved.interaction_id.as_deref(),
+        Some(accepted.interaction_id.as_str())
+    );
+    assert_eq!(reserved.payload["content"], HUMAN);
+    let history: Vec<_> = inputs
+        .iter()
+        .copied()
+        .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
+        .collect();
+    assert_eq!(history.len(), 1);
+    assert_canonical_human_frame(history[0], accepted, session_id, canonical);
+    history[0].clone()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn console_human_is_canonical_once_and_generic_identity_work_stays_external_event() {
     let h = Harness::new(WAIT).await;
@@ -361,6 +466,7 @@ async fn console_human_is_canonical_once_and_generic_identity_work_stays_externa
         Err(crate::console_aggregator::ConsoleSendError::IdempotencyConflict(_))
     ));
 
+    h.aggregator.refresh_session_history().await.unwrap();
     let page = h
         .aggregator
         .query_timeline(ConsoleTimelineQuery {
@@ -369,15 +475,7 @@ async fn console_human_is_canonical_once_and_generic_identity_work_stays_externa
         })
         .await
         .unwrap();
-    assert_eq!(
-        page.frames
-            .iter()
-            .filter(|frame| frame.kind == "user_input"
-                && frame.interaction_id.as_deref() == Some(&accepted.interaction_id))
-            .count(),
-        1,
-        "optimistic/native history must join by the exact interaction"
-    );
+    assert_human_input_source_pair(&page.frames, &accepted, &h.session_id, &history);
 
     h.identity_runtime
         .send(
@@ -476,6 +574,8 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
     h.finish_human_with_context(&accepted, HUMAN, HandlingMode::Queue, injected)
         .await;
 
+    let canonical = h.history().await;
+    let mut retained_canonical = None;
     for _ in 0..2 {
         h.aggregator.refresh_session_history().await.unwrap();
         let full = h
@@ -486,23 +586,26 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
             })
             .await
             .unwrap();
-        assert_eq!(
-            full.frames
-                .iter()
-                .filter(|frame| frame.kind == "user_input")
-                .count(),
-            1,
-            "ambient memory must not become a second human input; frames: {:#?}",
-            full.frames
-        );
+        let source =
+            assert_human_input_source_pair(&full.frames, &accepted, &h.session_id, &canonical);
+        if let Some(previous) = &retained_canonical {
+            assert_eq!(
+                &source, previous,
+                "refresh cannot duplicate or rewrite the canonical row"
+            );
+        } else {
+            retained_canonical = Some(source);
+        }
         assert!(
             !serde_json::to_string(&full.frames)
                 .unwrap()
                 .contains(MEMORY)
         );
     }
+    let retained_canonical = retained_canonical.unwrap();
     let mut cursor = accepted.cursor.clone();
     let mut reached_end = false;
+    let mut paged_inputs = Vec::new();
     for _ in 0..20 {
         let page = h
             .aggregator
@@ -514,10 +617,15 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
             })
             .await
             .unwrap();
-        assert!(
-            !page.frames.iter().any(|frame| frame.kind == "user_input"),
-            "paging past the reserved human input must not surface ambient memory as another"
-        );
+        for frame in page
+            .frames
+            .iter()
+            .filter(|frame| frame.kind == "user_input")
+        {
+            assert_canonical_human_frame(frame, &accepted, &h.session_id, &canonical);
+            assert_eq!(frame, &retained_canonical);
+            paged_inputs.push(frame.clone());
+        }
         assert!(
             !serde_json::to_string(&page.frames)
                 .unwrap()
@@ -532,6 +640,12 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
     assert!(
         reached_end,
         "bounded pagination must exhaust the transcript"
+    );
+
+    assert_eq!(
+        paged_inputs,
+        vec![retained_canonical],
+        "paging retains the committed human row exactly once, without another admission or recall row"
     );
 
     // A fresh observer has no optimistic reservation to hide behind.
@@ -558,6 +672,15 @@ async fn console_human_recall_stays_canonical_context_not_refreshed_or_paged_hum
             .filter(|frame| frame.kind == "user_input")
             .count(),
         1
+    );
+    assert_canonical_human_frame(
+        page.frames
+            .iter()
+            .find(|frame| frame.kind == "user_input")
+            .unwrap(),
+        &accepted,
+        &h.session_id,
+        &canonical,
     );
     assert!(
         !serde_json::to_string(&page.frames)
