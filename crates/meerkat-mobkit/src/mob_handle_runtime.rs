@@ -6308,18 +6308,18 @@ macro_rules! delegate_mob_session_service {
                 }
                 result
             }
-            async fn prepare_transient_turn_context_for_active_turn(
+            async fn prepare_turn_boundary_delivery_for_active_turn(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
                 expected_run_id: &meerkat_core::lifecycle::RunId,
-                contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+                delivery: meerkat_core::TurnBoundaryDelivery,
             ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
             {
                 self.inner
-                    .prepare_transient_turn_context_for_active_turn(
+                    .prepare_turn_boundary_delivery_for_active_turn(
                         session_id,
                         expected_run_id,
-                        contexts,
+                        delivery,
                     )
                     .await
             }
@@ -6408,6 +6408,13 @@ macro_rules! delegate_mob_session_service {
             // drops its mutation gate before calling publication code, so a
             // delayed predecessor callback resolved only by id could target a
             // successor actor. Forward the witness verbatim.
+            async fn publish_boundary_appends_discarded_for_actor(
+                &self,
+                actor_witness: &meerkat_session::LiveSessionActorWitness,
+                discarded: &meerkat_core::event::BoundaryAppendsDiscarded,
+            ) -> Result<(), SessionError> {
+                self.inner.publish_boundary_appends_discarded_for_actor(actor_witness, discarded).await
+            }
             async fn publish_interaction_terminals_for_actor(
                 &self,
                 actor_witness: &meerkat_session::LiveSessionActorWitness,
@@ -7219,14 +7226,14 @@ impl MobSessionService for AfterCreateMobSessionService {
             .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
             .await
     }
-    async fn prepare_transient_turn_context_for_active_turn(
+    async fn prepare_turn_boundary_delivery_for_active_turn(
         &self,
         session_id: &meerkat_core::types::SessionId,
         expected_run_id: &meerkat_core::lifecycle::RunId,
-        contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+        delivery: meerkat_core::TurnBoundaryDelivery,
     ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
         self.inner
-            .prepare_transient_turn_context_for_active_turn(session_id, expected_run_id, contexts)
+            .prepare_turn_boundary_delivery_for_active_turn(session_id, expected_run_id, delivery)
             .await
     }
     async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
@@ -7281,6 +7288,15 @@ impl MobSessionService for AfterCreateMobSessionService {
     }
     // meerkat 0.8.22: keyed by the exact actor incarnation, not SessionId
     // (see the same seam in `delegate_mob_session_service!`).
+    async fn publish_boundary_appends_discarded_for_actor(
+        &self,
+        actor_witness: &meerkat_session::LiveSessionActorWitness,
+        discarded: &meerkat_core::event::BoundaryAppendsDiscarded,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .publish_boundary_appends_discarded_for_actor(actor_witness, discarded)
+            .await
+    }
     async fn publish_interaction_terminals_for_actor(
         &self,
         actor_witness: &meerkat_session::LiveSessionActorWitness,
@@ -8451,6 +8467,7 @@ impl MobBootstrapSpec {
                     ),
                 }
             };
+        let runtime_authority_prewarm = Arc::clone(&runtime_store);
         let archived_terminal_authority = Arc::clone(&runtime_store);
         let concrete_session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
@@ -8516,6 +8533,7 @@ impl MobBootstrapSpec {
             )?,
         );
         let mut spec = Self::new(definition, storage, session_service);
+        spec.runtime_authority_prewarm = Some(runtime_authority_prewarm);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -8843,6 +8861,7 @@ impl MobBootstrapSpec {
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.runtime_authority_prewarm = Some(runtime_store);
         spec.live_compose_inputs = live_compose_inputs;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
@@ -9847,6 +9866,71 @@ impl MobRuntime {
         )
         .await
         .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))
+    }
+
+    /// Observe whether an exact previous append attempt can still be applying.
+    /// This projects existing runtime authority; it does not advance an input.
+    pub(crate) async fn settled_notice_attempts(
+        &self,
+        session_id_str: &str,
+        attempts: &BTreeSet<(String, String)>,
+    ) -> BTreeSet<(String, String)> {
+        use meerkat_runtime::input_state::InputLifecycleState;
+        use meerkat_runtime::service_ext::SessionServiceRuntimeExt;
+        let mut settled = BTreeSet::new();
+        let Ok(session_id) = meerkat_core::types::SessionId::parse(session_id_str) else {
+            return settled;
+        };
+        // The hot driver may already reflect a transition whose persistence
+        // failed. Only the composition's actual durable store grants negative
+        // evidence here. Custom/ephemeral runtimes without it keep provisional
+        // notices until an exact discard event or positive history arrives.
+        let Some(store) = self.runtime_authority_prewarm.as_ref() else {
+            return settled;
+        };
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(&session_id);
+        let adapter = self
+            .session_service
+            .as_ref()
+            .and_then(|service| service.runtime_adapter());
+        for (run_id, input_id) in attempts {
+            let Ok(input_uuid) = uuid::Uuid::parse_str(input_id) else {
+                continue;
+            };
+            let input = meerkat_core::lifecycle::InputId(input_uuid);
+            let Ok(Some(state)) = store.load_input_state(&runtime_id, &input).await else {
+                continue;
+            };
+            if state.state.input_id != input {
+                continue;
+            }
+            let same_attempt = state
+                .seed
+                .last_run_id
+                .as_ref()
+                .is_some_and(|run| run.to_string() == *run_id);
+            let newer_attempt = state.seed.last_run_id.is_some() && !same_attempt;
+            let queued = state.seed.phase == InputLifecycleState::Queued;
+            let terminal = matches!(
+                state.seed.phase,
+                InputLifecycleState::Consumed
+                    | InputLifecycleState::Superseded
+                    | InputLifecycleState::Coalesced
+                    | InputLifecycleState::Abandoned
+            );
+            let finalized = if terminal && let Some(adapter) = adapter.as_ref() {
+                matches!(
+                    adapter.input_terminal_completion(&session_id, &input).await,
+                    Ok(Some(_))
+                )
+            } else {
+                false
+            };
+            if newer_attempt || queued || finalized {
+                settled.insert((run_id.clone(), input_id.clone()));
+            }
+        }
+        settled
     }
 
     #[allow(dead_code)]
@@ -13688,6 +13772,13 @@ comms = true
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
+        boundary_deliveries: Mutex<
+            Vec<(
+                meerkat_core::SessionId,
+                meerkat_core::RunId,
+                meerkat_core::TurnBoundaryDelivery,
+            )>,
+        >,
         live_machine: Mutex<Option<Arc<meerkat_runtime::MeerkatMachine>>>,
         live_commit: Mutex<
             Option<(
@@ -14177,14 +14268,18 @@ comms = true
             Ok(true)
         }
 
-        async fn prepare_transient_turn_context_for_active_turn(
+        async fn prepare_turn_boundary_delivery_for_active_turn(
             &self,
-            _session_id: &meerkat_core::types::SessionId,
-            _expected_run_id: &meerkat_core::lifecycle::RunId,
-            _contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+            session_id: &meerkat_core::types::SessionId,
+            expected_run_id: &meerkat_core::lifecycle::RunId,
+            delivery: meerkat_core::TurnBoundaryDelivery,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
-            self.record("prepare_transient_turn_context_for_active_turn");
+            self.record("prepare_turn_boundary_delivery_for_active_turn");
+            self.boundary_deliveries
+                .lock()
+                .expect("boundary deliveries")
+                .push((session_id.clone(), expected_run_id.clone(), delivery));
             Err(meerkat_core::CoreBoundaryStageError::unavailable(
                 "probe has no boundary authority",
             ))
@@ -14489,6 +14584,42 @@ comms = true
             after_hook: Arc::new(|_, _| Box::pin(async {})),
         });
         let session_id = meerkat_core::types::SessionId::new();
+        let run_id = meerkat_core::RunId::new();
+        let request_only = meerkat_core::TurnBoundaryDelivery::RequestOnly(vec![
+            meerkat_core::lifecycle::run_primitive::TurnRequestContext::new(" first context\n")
+                .expect("first request context"),
+            meerkat_core::lifecycle::run_primitive::TurnRequestContext::new("second context")
+                .expect("second request context"),
+        ]);
+        let durable = meerkat_core::TurnBoundaryDelivery::DurableAppends(
+            meerkat_core::DurableTurnBoundaryAppends::try_new(
+                meerkat_core::InputId::new(),
+                vec![
+                    meerkat_core::lifecycle::run_primitive::ConversationAppend {
+                        runtime_source: None,
+                        role: meerkat_core::lifecycle::run_primitive::ConversationAppendRole::User,
+                        content: meerkat_core::lifecycle::run_primitive::CoreRenderable::text(
+                            " durable user instruction\n",
+                        ),
+                        identity: None,
+                    },
+                    meerkat_core::lifecycle::run_primitive::ConversationAppend {
+                        runtime_source: None,
+                        role: meerkat_core::lifecycle::run_primitive::ConversationAppendRole::InjectedContext,
+                        content: meerkat_core::lifecycle::run_primitive::CoreRenderable::text(
+                            "durable injected context",
+                        ),
+                        identity: None,
+                    },
+                ],
+                Some(meerkat_core::types::TranscriptMessageIdentity {
+                    interaction_id: Some(meerkat_core::interaction::InteractionId::new()),
+                    run_id: Some(run_id.clone()),
+                    ..Default::default()
+                }),
+            )
+            .expect("durable appends eligible for the active turn"),
+        );
         let expected = meerkat_mob::SessionResumeAuthority::default();
         for wrapper in [pre_build, after_create] {
             assert!(
@@ -14514,6 +14645,57 @@ comms = true
                 .await
                 .expect("revalidate_session_resume_authority must forward")
                 .expect("the probe accepts");
+            for delivery in [&request_only, &durable] {
+                let error = wrapper
+                    .prepare_turn_boundary_delivery_for_active_turn(
+                        &session_id,
+                        &run_id,
+                        delivery.clone(),
+                    )
+                    .await
+                    .expect_err("the exact probe preparation error must forward");
+                assert_eq!(
+                    error,
+                    meerkat_core::CoreBoundaryStageError::unavailable(
+                        "probe has no boundary authority"
+                    ),
+                );
+                let received = std::mem::take(
+                    &mut *probe
+                        .boundary_deliveries
+                        .lock()
+                        .expect("boundary deliveries"),
+                );
+                let [(received_session, received_run, received_delivery)] = received.as_slice()
+                else {
+                    panic!("one preparation must reach the inner service: {received:?}");
+                };
+                assert_eq!(received_session, &session_id);
+                assert_eq!(received_run, &run_id);
+                match (delivery, received_delivery) {
+                    (
+                        meerkat_core::TurnBoundaryDelivery::RequestOnly(expected),
+                        meerkat_core::TurnBoundaryDelivery::RequestOnly(actual),
+                    ) => assert_eq!(actual, expected, "preserve exact context bytes and order"),
+                    (
+                        meerkat_core::TurnBoundaryDelivery::DurableAppends(expected),
+                        meerkat_core::TurnBoundaryDelivery::DurableAppends(actual),
+                    ) => {
+                        assert_eq!(actual.input_id(), expected.input_id());
+                        assert_eq!(actual.messages(), expected.messages());
+                        assert_eq!(actual.model_projection(), expected.model_projection());
+                        assert_eq!(
+                            serde_json::to_value(actual.peer_ingested_events())
+                                .expect("serialize actual ingestion events"),
+                            serde_json::to_value(expected.peer_ingested_events())
+                                .expect("serialize expected ingestion events"),
+                        );
+                    }
+                    (expected, actual) => panic!(
+                        "the wrapper changed the typed boundary delivery: {expected:?} -> {actual:?}"
+                    ),
+                }
+            }
         }
         let calls = probe.calls.lock().expect("probe calls");
         for name in [
@@ -14528,6 +14710,14 @@ comms = true
                 "{name} must reach the inner service once per wrapper: {calls:?}"
             );
         }
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| **call == "prepare_turn_boundary_delivery_for_active_turn")
+                .count(),
+            4,
+            "both delivery variants must reach the inner service through both wrappers",
+        );
     }
 
     struct CountingArchiveHook {
@@ -14698,17 +14888,20 @@ comms = true
 
         assert_eq!(staged.accepted_result_count, 7);
         let preparation_error = wrapped
-            .prepare_transient_turn_context_for_active_turn(
+            .prepare_turn_boundary_delivery_for_active_turn(
                 &session_id,
                 &meerkat_core::lifecycle::RunId::new(),
-                vec![
+                meerkat_core::TurnBoundaryDelivery::RequestOnly(vec![
                     meerkat_core::lifecycle::run_primitive::TurnRequestContext::new("steer")
                         .expect("non-empty transient turn context"),
-                ],
+                ]),
             )
             .await
             .expect_err("probe preparation error should forward unchanged");
-        assert!(preparation_error.is_unavailable());
+        assert_eq!(
+            preparation_error,
+            meerkat_core::CoreBoundaryStageError::unavailable("probe has no boundary authority"),
+        );
         // meerkat 0.7.19 disposal-routing seam: the trait default is
         // fail-closed `true`, so a wrapper that fails to forward this
         // silently resurrects the ask-20 stranding for host-owned sessions.
@@ -14730,7 +14923,7 @@ comms = true
                 "stage_tool_results",
                 "read_transcript_revision",
                 "list_transcript_revisions",
-                "prepare_transient_turn_context_for_active_turn",
+                "prepare_turn_boundary_delivery_for_active_turn",
                 "session_known_to_archive_authority",
             ]
         );
@@ -17269,8 +17462,8 @@ comms = true
     /// The 0.6.3 fix uses a **persistent** SqliteRuntimeStore — durable
     /// across restart AND control-op authoritative — at
     /// `<store_path>/runtime.sqlite`.
-    #[test]
-    fn persistent_bootstrap_uses_sqlite_runtime_store() {
+    #[tokio::test]
+    async fn persistent_bootstrap_uses_sqlite_runtime_store() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(sqlite) = meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
@@ -17294,6 +17487,10 @@ comms = true
             "persistent bootstrap must provide its own runtime adapter via spec.runtime_adapter"
         );
         assert!(
+            spec.runtime_authority_prewarm.is_some(),
+            "persistent bootstrap must expose the same committed runtime store for notice observations"
+        );
+        assert!(
             spec.session_service.runtime_adapter().is_some(),
             "session service must own a runtime_store so archive/retire don't \
              hit the store-only-projection rejection"
@@ -17301,6 +17498,52 @@ comms = true
         assert!(
             store_path.join("runtime.sqlite").exists(),
             "persistent_inner must open a SqliteRuntimeStore at <store_path>/runtime.sqlite"
+        );
+        assert_notice_store_observes_machine_admission(&spec).await;
+    }
+
+    async fn assert_notice_store_observes_machine_admission(spec: &MobBootstrapSpec) {
+        use meerkat_runtime::service_ext::SessionServiceRuntimeExt;
+
+        let machine = spec.runtime_adapter.as_ref().expect("runtime machine");
+        let store = spec
+            .runtime_authority_prewarm
+            .as_ref()
+            .expect("notice observation store");
+        assert!(
+            machine.shares_runtime_store_authority(store),
+            "notice settlement must read the store used by this runtime machine"
+        );
+        let session_id = meerkat_core::types::SessionId::new();
+        machine
+            .register_session(session_id.clone())
+            .await
+            .expect("register a session without an automatic runtime loop");
+        let input = meerkat_runtime::Input::Prompt(meerkat_runtime::input::PromptInput::new(
+            "notice authority constructor regression",
+            None,
+        ));
+        let input_id = input.id().clone();
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(&session_id);
+        assert!(
+            store
+                .load_input_state(&runtime_id, &input_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let outcome = machine.accept_input(&session_id, input).await.unwrap();
+        assert!(outcome.is_accepted());
+        let stored = store
+            .load_input_state(&runtime_id, &input_id)
+            .await
+            .expect("read actual owner admission through the notice observation store")
+            .expect("the accepted input was committed to this exact store");
+        assert_eq!(stored.state.input_id, input_id);
+        assert_eq!(
+            stored.seed.phase,
+            meerkat_runtime::input_state::InputLifecycleState::Queued,
+            "the notice reader sees committed generated input state, not a separate store"
         );
     }
 
@@ -17718,8 +17961,8 @@ comms = true
     /// Ephemeral counterpart: runtime-backed ephemeral builds must use a
     /// single in-memory machine authority for session service, comms, and
     /// image-generation tooling.
-    #[test]
-    fn ephemeral_runtime_backed_uses_session_service_runtime_adapter() {
+    #[tokio::test]
+    async fn ephemeral_runtime_backed_uses_session_service_runtime_adapter() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
@@ -17748,6 +17991,7 @@ comms = true
             spec.session_service.runtime_adapter().is_some(),
             "session service must still expose a runtime adapter so autonomous-host comms can wire"
         );
+        assert_notice_store_observes_machine_admission(&spec).await;
     }
 
     /// Pins meerkat 0.8.23's fail-closed default at mobkit's bootstrap

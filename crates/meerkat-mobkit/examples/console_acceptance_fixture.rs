@@ -35,6 +35,9 @@ use scenario_client::{ModelBarrier, ModelPlan, RecordingClient};
 #[path = "console_acceptance_support/routine_tools.rs"]
 mod routine_tools;
 
+#[path = "console_acceptance_support/durable_steer.rs"]
+mod durable_steer;
+
 #[tokio::main]
 async fn main() -> Result<(), FixtureError> {
     tracing_subscriber::fmt()
@@ -233,6 +236,7 @@ image_generation = {live_images}
     let approval_runtime = runtime.clone();
     let history_runtime = runtime.clone();
     let controls = Router::new()
+        .merge(durable_steer::router(runtime.clone()))
         .route("/access", post(move |Json(value): Json<Value>| {
             let access = access.clone();
             async move {

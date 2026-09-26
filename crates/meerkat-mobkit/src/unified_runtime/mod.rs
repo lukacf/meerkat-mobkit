@@ -2817,6 +2817,19 @@ fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent
 }
 
 fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {
+    let mut payload =
+        crate::mob_handle_runtime::console_agent_event_payload(&attributed.envelope.payload);
+    if let Some(object) = payload.as_object_mut() {
+        // The event publisher owns source scope, including replay from an older
+        // session. Never substitute the member's current session at read time.
+        if let Some(session_id) = attributed.envelope.source.session_id() {
+            object.insert("session_id".to_string(), json!(session_id));
+            object.insert(
+                "source_sequence".to_string(),
+                json!(attributed.envelope.seq),
+            );
+        }
+    }
     EventEnvelope {
         event_id: format!("evt-agent-{}", attributed.envelope.event_id),
         source: "agent".to_string(),
@@ -2833,9 +2846,7 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
             // so downstream surfaces — console timeline frames, the
             // `mobkit/events/subscribe` replay buffer, and the event-log
             // query — keep the `result`/`tool_call_id` keys the SDKs parse.
-            payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
-                &attributed.envelope.payload,
-            )),
+            payload: Some(payload),
         },
     }
 }
@@ -2891,6 +2902,36 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn attributed_projection_preserves_exact_source_session_and_sequence() {
+        let session_id = meerkat_core::SessionId::new();
+        let mut attributed = attributed_text_delta("router", 1);
+        attributed.envelope.source =
+            meerkat_core::event::EventSourceIdentity::session(session_id.clone());
+        attributed.envelope.seq = 41;
+        let projected = attributed_event_to_unified(attributed);
+        let UnifiedEvent::Agent {
+            payload: Some(payload),
+            ..
+        } = projected.event
+        else {
+            panic!("expected agent payload");
+        };
+        assert_eq!(payload["session_id"], json!(session_id));
+        assert_eq!(payload["source_sequence"], json!(41));
+        assert_eq!(payload["delta"], "hello");
+        let legacy = attributed_event_to_unified(attributed_text_delta("router", 1));
+        let UnifiedEvent::Agent {
+            payload: Some(payload),
+            ..
+        } = legacy.event
+        else {
+            panic!("expected legacy agent payload");
+        };
+        assert!(payload.get("session_id").is_none());
+        assert!(payload.get("source_sequence").is_none());
     }
 
     #[test]

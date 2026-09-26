@@ -37,6 +37,7 @@ test("shipping runners discover every required real backend scenario and shard t
     require("./scenarios/real-workgraph.cjs").browserScenarios,
     require("./scenarios/real-images.cjs").browserScenarios,
     require("./scenarios/real-send-context.cjs").scenarios,
+    require("./scenarios/real-durable-steer.cjs").scenarios,
     require("./scenarios/real-tab-isolation.cjs").scenarios,
     require("./scenarios/real-legacy-import.cjs").scenarios,
     require("./scenarios/real-sidebar-activity.cjs").scenarios,

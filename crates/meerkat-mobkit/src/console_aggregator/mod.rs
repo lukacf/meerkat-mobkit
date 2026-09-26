@@ -1,4 +1,6 @@
 mod query_error;
+#[cfg(test)]
+mod runtime_notice_tests;
 mod state;
 mod store;
 mod types;
@@ -92,8 +94,15 @@ struct AggregatorInner {
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
+    // Each targeted worker owns one key and at most one pending forced read.
+    // Pending targets retain the latest requested registration incarnation.
+    targeted_session_backfills: tokio::sync::Mutex<BTreeMap<String, Option<SessionBackfillTarget>>>,
     opportunistic_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     session_backfill_permits: Arc<Semaphore>,
+    // Serialize each session's current-image read and publication. These locks
+    // contain no transcript or lifecycle authority.
+    session_history_projection_locks:
+        std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Last COMPLETED backfill's pre-read session write epoch, keyed by the
     /// session's watermark runtime key. While the runtime's epoch witness for
     /// the session is unchanged, the periodic discovery loop skips the
@@ -217,6 +226,7 @@ impl ConsoleIdentityReadModel {
 
 #[derive(Clone)]
 struct RuntimeEntry {
+    registration_id: uuid::Uuid,
     runtime_key: String,
     identity_namespace: String,
     runtime: MobRuntime,
@@ -441,11 +451,13 @@ impl MobKitConsoleAggregator {
                 runtimes: RwLock::new(BTreeMap::new()),
                 event_tx,
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: Arc::new(Semaphore::new(
                     options.max_concurrent_session_backfills,
                 )),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(BTreeMap::new()),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
@@ -505,9 +517,11 @@ impl MobKitConsoleAggregator {
                 runtimes: RwLock::new(runtimes),
                 event_tx: owner.event_tx.clone(),
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: owner.session_backfill_permits.clone(),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(BTreeMap::new()),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options: owner.options,
@@ -614,6 +628,7 @@ impl MobKitConsoleAggregator {
         let runtime_key = runtime_key.into();
         let identity_namespace = identity_namespace.into();
         let entry = RuntimeEntry {
+            registration_id: uuid::Uuid::new_v4(),
             runtime_key: runtime_key.clone(),
             identity_namespace,
             runtime,
@@ -3621,6 +3636,311 @@ async fn backfill_session_history_targets(
     }
 }
 
+#[derive(Default)]
+struct RuntimeNoticeObservation {
+    observed_through: u64,
+    relevant_frontier: u64,
+    attempts: BTreeSet<(String, String)>,
+    previous_snapshot: Option<ConsoleFrame>,
+    has_notice_history: bool,
+    canonical_frames: Vec<ConsoleFrame>,
+}
+
+async fn observe_runtime_notice_attempts(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+) -> ConsoleLogResult<RuntimeNoticeObservation> {
+    let mut observation = RuntimeNoticeObservation {
+        observed_through: inner
+            .store
+            .latest_cursor()
+            .await?
+            .and_then(|cursor| cursor.seq())
+            .unwrap_or(0),
+        ..Default::default()
+    };
+    let mut after = None;
+    loop {
+        let page = inner
+            .store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some(identity.to_string()),
+                after,
+                limit: 1_000,
+                ..Default::default()
+            })
+            .await?;
+        let Some(last) = page.frames.last() else {
+            break;
+        };
+        let last_cursor = last.cursor.clone();
+        for frame in page.frames {
+            if frame
+                .cursor
+                .seq()
+                .is_none_or(|seq| seq > observation.observed_through)
+                || frame.runtime_key != runtime_key
+                || frame.session_id.as_deref() != Some(session_id)
+            {
+                continue;
+            }
+            if frame.kind == "runtime_notice_snapshot"
+                && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+            {
+                observation.previous_snapshot = Some(frame);
+                continue;
+            }
+            if frame.kind == "system_notice"
+                && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                && frame
+                    .payload
+                    .get("message")
+                    .and_then(|message| message.get("runtime_origin"))
+                    .is_some_and(Value::is_object)
+            {
+                observation.has_notice_history = true;
+                observation.relevant_frontier = observation
+                    .relevant_frontier
+                    .max(frame.cursor.seq().unwrap_or(0));
+            }
+            if frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                && !(frame.kind == "system_notice"
+                    && frame
+                        .payload
+                        .get("message")
+                        .and_then(|message| message.get("runtime_origin"))
+                        .is_some_and(Value::is_object))
+            {
+                observation.canonical_frames.push(frame.clone());
+            }
+            if frame.kind != "boundary_append_applied"
+                || frame.source.kind != ConsoleFrameSourceKind::ConsoleEvent
+            {
+                continue;
+            }
+            let Ok(meerkat_core::event::AgentEvent::BoundaryAppendApplied {
+                run_id,
+                input_id,
+                notices,
+                ..
+            }) = serde_json::from_value::<meerkat_core::event::AgentEvent>(frame.payload.clone())
+            else {
+                continue;
+            };
+            if frame.run_id.as_deref() != Some(run_id.to_string().as_str())
+                || !notices.iter().any(|notice| {
+                    notice.runtime_origin.as_ref().is_some_and(|origin| {
+                        origin.session_id.to_string() == session_id
+                            && origin.run_id == run_id
+                            && origin.input_id == input_id
+                    })
+                })
+            {
+                continue;
+            }
+            observation.relevant_frontier = observation
+                .relevant_frontier
+                .max(frame.cursor.seq().unwrap_or(0));
+            observation
+                .attempts
+                .insert((run_id.to_string(), input_id.to_string()));
+        }
+        if last_cursor
+            .seq()
+            .is_none_or(|seq| seq >= observation.observed_through)
+        {
+            break;
+        }
+        after = Some(last_cursor);
+    }
+    Ok(observation)
+}
+
+fn complete_current_history_page(
+    session_id: &str,
+    page: meerkat_core::service::SessionHistoryPage,
+) -> Option<meerkat_core::service::SessionHistoryPage> {
+    (page.session_id.to_string() == session_id
+        && page.offset == 0
+        && !page.has_more
+        && page.messages.len() == page.message_count)
+        .then_some(page)
+}
+
+fn current_history_positions(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> Vec<Value> {
+    fn key(kind: &str, payload: &Value, run: Option<&str>, input: Option<&str>) -> String {
+        serde_json::to_string(&(kind, payload, run, input)).unwrap_or_default()
+    }
+    let mut current = BTreeMap::<String, std::collections::VecDeque<String>>::new();
+    for (offset, message) in messages.iter().enumerate() {
+        let Ok(message) = serde_json::to_value(message) else {
+            continue;
+        };
+        for frame in frames_from_session_history_message_with_namespace(
+            runtime_key,
+            identity,
+            "",
+            session_id,
+            offset,
+            message,
+        ) {
+            if frame.identity != identity
+                || (frame.kind == "system_notice"
+                    && frame
+                        .payload
+                        .get("message")
+                        .and_then(|message| message.get("runtime_origin"))
+                        .is_some_and(Value::is_object))
+            {
+                continue;
+            }
+            if let Some(cursor) = frame.source.source_cursor {
+                current
+                    .entry(key(
+                        &frame.kind,
+                        &frame.payload,
+                        frame.run_id.as_deref(),
+                        frame.interaction_id.as_deref(),
+                    ))
+                    .or_default()
+                    .push_back(cursor);
+            }
+        }
+    }
+    let mut old: Vec<_> = observation.canonical_frames.iter().collect();
+    old.sort_by_key(|frame| {
+        let suffix = frame
+            .source
+            .source_cursor
+            .as_deref()
+            .and_then(|cursor| cursor.strip_prefix(&format!("{session_id}:")))
+            .unwrap_or("");
+        // Preserve complete numeric subindices, not lexical 10-before-2
+        // ordering, when one canonical message projects several equal rows.
+        let position: Vec<_> = suffix
+            .split(':')
+            .map(|part| match part.parse::<u64>() {
+                Ok(number) => (0, number, String::new()),
+                Err(_) => (1, 0, part.to_owned()),
+            })
+            .collect();
+        (position, frame.cursor.seq().unwrap_or(u64::MAX))
+    });
+    old.into_iter()
+        .filter_map(|frame| {
+            let cursor = current
+                .get_mut(&key(
+                    &frame.kind,
+                    &frame.payload,
+                    frame.run_id.as_deref(),
+                    frame.interaction_id.as_deref(),
+                ))?
+                .pop_front()?;
+            Some(json!({ "frame_id": frame.id, "source_cursor": cursor }))
+        })
+        .collect()
+}
+
+fn runtime_entry_is_current(inner: &AggregatorInner, entry: &RuntimeEntry) -> bool {
+    inner.runtimes.read().is_ok_and(|entries| {
+        entries
+            .get(&entry.runtime_key)
+            .is_some_and(|current| current.registration_id == entry.registration_id)
+    })
+}
+
+fn runtime_notice_snapshot_frame(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    settled_attempts: &BTreeSet<(String, String)>,
+    messages: &[Message],
+) -> Option<NewConsoleFrame> {
+    let notices: Vec<Value> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, message)| {
+            let Message::SystemNotice(notice) = message else {
+                return None;
+            };
+            notice.runtime_origin.as_ref()?;
+            Some(json!({ "offset": offset, "message": message }))
+        })
+        .collect();
+    if notices.is_empty()
+        && observation.attempts.is_empty()
+        && !observation.has_notice_history
+        && observation.previous_snapshot.is_none()
+    {
+        return None;
+    }
+    let settled: Vec<Value> = settled_attempts
+        .iter()
+        .map(|(run_id, input_id)| json!({ "run_id": run_id, "input_id": input_id }))
+        .collect();
+    let history_positions =
+        current_history_positions(runtime_key, identity, session_id, observation, messages);
+    let previous = observation.previous_snapshot.as_ref();
+    // A repeated observation needs no new row. A later A -> B -> A image does:
+    // key it by the previous observation, not the content digest alone.
+    if previous.is_some_and(|frame| {
+        frame.payload.get("notices") == Some(&json!(notices))
+            && frame.payload.get("settled_attempts") == Some(&json!(settled))
+            && frame.payload.get("history_positions") == Some(&json!(history_positions))
+            && frame
+                .payload
+                .get("observed_through")
+                .and_then(Value::as_str)
+                .and_then(|cursor| ConsoleCursor::from(cursor).seq())
+                .is_some_and(|seq| seq >= observation.relevant_frontier)
+    }) {
+        return None;
+    }
+    let payload = json!({
+        "session_id": session_id, "complete": true,
+        "observed_through": ConsoleCursor::from_seq(observation.observed_through),
+        "notices": notices, "settled_attempts": settled, "history_positions": history_positions,
+    });
+    let digest = hash_short(&serde_json::to_string(&payload).ok()?);
+    Some(NewConsoleFrame {
+        id: None,
+        dedupe_key: format!(
+            "runtime-notice-snapshot:{runtime_key}:{session_id}:{}:{digest}",
+            previous
+                .map(|frame| frame.cursor.as_str())
+                .unwrap_or("initial")
+        ),
+        timestamp_ms: current_time_ms(),
+        runtime_key: runtime_key.to_string(),
+        identity: identity.to_string(),
+        conversation_id: Some(identity.to_string()),
+        session_id: Some(session_id.to_string()),
+        kind: "runtime_notice_snapshot".to_string(),
+        status: ConsoleFrameStatus::Completed,
+        payload,
+        source: ConsoleFrameSource {
+            member_provenance: None,
+            kind: ConsoleFrameSourceKind::SessionHistory,
+            source_cursor: None,
+        },
+        source_event_id: None,
+        interaction_id: None,
+        turn_id: None,
+        run_id: None,
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    })
+}
+
 async fn backfill_one_session_history(
     inner: Arc<AggregatorInner>,
     target: SessionBackfillTarget,
@@ -3657,6 +3977,21 @@ async fn backfill_one_session_history(
     };
     let watermark_runtime_key =
         session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
+    let projection_lock = inner
+        .session_history_projection_locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(watermark_runtime_key.clone())
+        .or_default()
+        .clone();
+    let _projection_guard = projection_lock.lock().await;
+    // A replaced target waiting behind its successor must not overwrite it.
+    // An already-running predecessor may finish its append, but this same
+    // lock ensures the successor publishes afterward. Completed snapshots
+    // remain durable observations across registrations and process restarts.
+    if !runtime_entry_is_current(&inner, &entry) {
+        return Ok(());
+    }
     // Steady-state gate: observe the runtime's per-session durable write
     // epoch BEFORE any read. If the last completed backfill saw this same
     // epoch, nothing durable moved through this process since — skip the
@@ -3693,13 +4028,29 @@ async fn backfill_one_session_history(
     {
         return Ok(());
     }
+    // A bounded timeline window cannot establish absence. Scan existing exact
+    // attempts before reading their runtime state and ONE complete current
+    // history image. The cursor prevents this observation erasing later events.
+    let notice_observation =
+        observe_runtime_notice_attempts(&inner, &entry.runtime_key, &record.identity, &session_id)
+            .await?;
+    if !runtime_entry_is_current(&inner, &entry) {
+        return Ok(());
+    }
+    let settled_attempts = entry
+        .runtime
+        .settled_notice_attempts(&session_id, &notice_observation.attempts)
+        .await;
     // Only a failure-free pass may admit the pre-read epoch: recording it on
     // a failure would suppress retries until the next durable write.
     let mut completed_cleanly = true;
     loop {
+        if !runtime_entry_is_current(&inner, &entry) {
+            return Ok(());
+        }
         let page = match entry
             .runtime
-            .read_session_history(&session_id, offset, Some(SESSION_HISTORY_PAGE_LIMIT))
+            .read_session_history(&session_id, 0, None)
             .await
         {
             Ok(page) => page,
@@ -3718,6 +4069,43 @@ async fn backfill_one_session_history(
                 break;
             }
         };
+        let Some(mut page) = complete_current_history_page(&session_id, page) else {
+            record_session_history_backfill_failure(
+                &inner,
+                &watermark_runtime_key,
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                offset,
+                "session history did not return one complete current image".to_string(),
+            )
+            .await?;
+            completed_cleanly = false;
+            break;
+        };
+        if !runtime_entry_is_current(&inner, &entry) {
+            return Ok(());
+        }
+        if let Some(mut snapshot) = runtime_notice_snapshot_frame(
+            &entry.runtime_key,
+            &record.identity,
+            &session_id,
+            &notice_observation,
+            &settled_attempts,
+            &page.messages,
+        ) {
+            snapshot.source.member_provenance = provenance.clone();
+            if let Some(redacted) = entry.visibility_policy.redact_payload(&snapshot) {
+                snapshot.payload = redacted;
+                snapshot.status = ConsoleFrameStatus::Redacted;
+            }
+            append_and_emit(&inner, snapshot).await?;
+        }
+        // The snapshot observes the complete image, while ordinary append-only
+        // backfill still skips the already-published prefix.
+        offset = offset.min(page.messages.len());
+        page.offset = offset;
+        page.messages.drain(..offset);
         let page_value = match serde_json::to_value(page) {
             Ok(value) => value,
             Err(err) => {
@@ -3826,6 +4214,16 @@ async fn backfill_one_session_history(
         }
     }
     if completed_cleanly && let Some(epoch) = write_epoch {
+        let registrations = inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?;
+        if !registrations
+            .get(&entry.runtime_key)
+            .is_some_and(|current| current.registration_id == entry.registration_id)
+        {
+            return Ok(());
+        }
         inner
             .session_backfill_epochs
             .lock()
@@ -3952,20 +4350,55 @@ fn spawn_session_history_backfill_target(
 
 async fn run_targeted_session_history_backfill(
     inner: Arc<AggregatorInner>,
-    target: SessionBackfillTarget,
+    mut target: SessionBackfillTarget,
     force_refresh: bool,
 ) -> ConsoleLogResult<()> {
     let active_key = targeted_session_history_active_key(&target, force_refresh);
     {
-        let mut active = inner.active_session_backfills.lock().await;
-        if !active.insert(active_key.clone()) {
+        let mut active = inner.targeted_session_backfills.lock().await;
+        // Check while admitting under the scheduler lock: an old request must
+        // never replace a pending target belonging to a newer registration.
+        let registrations = inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?;
+        if !registrations
+            .get(&target.entry.runtime_key)
+            .is_some_and(|entry| entry.registration_id == target.entry.registration_id)
+        {
             return Ok(());
         }
+        match active.entry(active_key.clone()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if force_refresh {
+                    entry.insert(Some(target));
+                }
+                return Ok(());
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(None);
+            }
+        }
     }
-    let result = backfill_one_session_history(inner.clone(), target, force_refresh).await;
-    let mut active = inner.active_session_backfills.lock().await;
-    active.remove(&active_key);
-    result
+    let mut first_error = None;
+    loop {
+        if let Err(error) = backfill_one_session_history(inner.clone(), target, force_refresh).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+        let mut active = inner.targeted_session_backfills.lock().await;
+        if let Some(pending) = active.get_mut(&active_key).and_then(Option::take) {
+            target = pending;
+            // A burst during this pass requests one trailing forced read. New
+            // triggers during that read can request another, without polling
+            // or retaining one job per trigger.
+            drop(active);
+            continue;
+        }
+        active.remove(&active_key);
+        return first_error.map_or(Ok(()), Err);
+    }
 }
 
 fn targeted_session_history_active_key(
@@ -4293,8 +4726,17 @@ async fn project_console_event(
 fn console_event_should_refresh_session_history(frame: &NewConsoleFrame) -> bool {
     matches!(
         frame.kind.as_str(),
-        "interaction_complete" | "interaction_failed" | "message_delivery_failed"
-    ) || frame.session_id.is_some()
+        "interaction_complete"
+            | "interaction_failed"
+            | "message_delivery_failed"
+            | "run_completed"
+            | "run_failed"
+            | "run_cancelled"
+            | "boundary_append_applied"
+            | "boundary_appends_discarded"
+            | "transcript_rewrite_committed"
+            | "transcript_rewrite_audit_receipt_committed"
+    )
 }
 
 fn console_event_should_start_session_history_backfill(frame: &NewConsoleFrame) -> bool {
@@ -5174,12 +5616,13 @@ async fn history_frame_has_existing_counterpart(
         frame.run_id.as_deref(),
         frame.interaction_id.as_deref(),
     );
-    // Run/interaction lineage identifies an execution, not one authored
-    // assistant message. The live edge has no persisted message offset, so
-    // pruning here could reuse one live occurrence for several history rows.
-    // Retain typed source rows for bounded occurrence reconciliation in the
-    // transcript adapter; append_if_absent still rejects exact source replay.
-    if typed_owner && matches!(category, "assistant" | "reasoning") {
+    // Canonical typed history supplies committed content and transcript order.
+    // Keep it beside the live projection for exact adapter reconciliation:
+    // dropping it loses the only durable user evidence and tool positions.
+    // append_if_absent still rejects replay of the same canonical source row.
+    if typed_owner && matches!(category, "assistant" | "reasoning" | "user")
+        || provider_tool_id.is_some()
+    {
         return Ok(false);
     }
     let exact_content = typed_owner || provider_tool_id.is_some();
@@ -6244,6 +6687,7 @@ mod tests {
         source_watermark_calls: AtomicUsize,
         record_watermark_calls: AtomicUsize,
         window_page_limit: usize,
+        snapshot_append_gate: std::sync::Mutex<Option<Arc<HistoryReadGate>>>,
     }
 
     impl CountingConsoleLogStore {
@@ -6253,6 +6697,7 @@ mod tests {
                 source_watermark_calls: AtomicUsize::new(0),
                 record_watermark_calls: AtomicUsize::new(0),
                 window_page_limit: usize::MAX,
+                snapshot_append_gate: std::sync::Mutex::new(None),
             }
         }
 
@@ -6307,6 +6752,34 @@ mod tests {
         read_calls: Arc<AtomicUsize>,
         active_reads: Arc<AtomicUsize>,
         max_active_reads: Arc<AtomicUsize>,
+        scripted_reads: Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedHistoryRead>>>,
+    }
+
+    struct ScriptedHistoryRead {
+        page: Option<SessionHistoryPage>,
+        gate: Option<Arc<HistoryReadGate>>,
+    }
+
+    struct HistoryReadGate {
+        entered: Semaphore,
+        release: Semaphore,
+    }
+
+    impl HistoryReadGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                entered: Semaphore::new(0),
+                release: Semaphore::new(0),
+            })
+        }
+
+        async fn wait_until_entered(&self) {
+            tokio::time::timeout(Duration::from_secs(10), self.entered.acquire())
+                .await
+                .expect("scripted history read entered")
+                .expect("entry gate open")
+                .forget();
+        }
     }
 
     impl DelayedHistorySessionService {
@@ -6317,7 +6790,15 @@ mod tests {
                 read_calls: Arc::new(AtomicUsize::new(0)),
                 active_reads: Arc::new(AtomicUsize::new(0)),
                 max_active_reads: Arc::new(AtomicUsize::new(0)),
+                scripted_reads: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             }
+        }
+
+        fn script_history(&self, reads: impl IntoIterator<Item = ScriptedHistoryRead>) {
+            self.scripted_reads
+                .lock()
+                .expect("scripted history lock")
+                .extend(reads);
         }
 
         fn read_calls(&self) -> usize {
@@ -6543,6 +7024,25 @@ mod tests {
             self.read_calls.fetch_add(1, Ordering::SeqCst);
             let active = self.active_reads.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active_reads.fetch_max(active, Ordering::SeqCst);
+            let scripted = self
+                .scripted_reads
+                .lock()
+                .expect("scripted history lock")
+                .pop_front();
+            if let Some(scripted) = scripted {
+                if let Some(gate) = scripted.gate {
+                    gate.entered.add_permits(1);
+                    gate.release
+                        .acquire()
+                        .await
+                        .expect("release gate open")
+                        .forget();
+                }
+                self.active_reads.fetch_sub(1, Ordering::SeqCst);
+                return scripted
+                    .page
+                    .ok_or_else(|| SessionError::NotFound { id: id.clone() });
+            }
             tokio::time::sleep(self.delay).await;
             let result = self.inner.read_history(id, query).await;
             self.active_reads.fetch_sub(1, Ordering::SeqCst);
@@ -6993,18 +7493,18 @@ mod tests {
                 .await
         }
 
-        async fn prepare_transient_turn_context_for_active_turn(
+        async fn prepare_turn_boundary_delivery_for_active_turn(
             &self,
             session_id: &SessionId,
             expected_run_id: &meerkat_core::RunId,
-            contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
+            delivery: meerkat_core::TurnBoundaryDelivery,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
             self.inner
-                .prepare_transient_turn_context_for_active_turn(
+                .prepare_turn_boundary_delivery_for_active_turn(
                     session_id,
                     expected_run_id,
-                    contexts,
+                    delivery,
                 )
                 .await
         }
@@ -7122,6 +7622,21 @@ mod tests {
             &self,
             frame: NewConsoleFrame,
         ) -> ConsoleLogResult<AppendOutcome> {
+            if frame.kind == "runtime_notice_snapshot" {
+                let gate = self
+                    .snapshot_append_gate
+                    .lock()
+                    .expect("append gate lock")
+                    .take();
+                if let Some(gate) = gate {
+                    gate.entered.add_permits(1);
+                    gate.release
+                        .acquire()
+                        .await
+                        .expect("append release gate open")
+                        .forget();
+                }
+            }
             self.inner.append_if_absent(frame).await
         }
 
@@ -7681,6 +8196,7 @@ comms = true
 
     fn runtime_entry_for_test(runtime_key: &str, runtime: &UnifiedRuntime) -> RuntimeEntry {
         RuntimeEntry {
+            registration_id: uuid::Uuid::new_v4(),
             runtime_key: runtime_key.to_string(),
             identity_namespace: "test".to_string(),
             runtime: runtime.mob_runtime().clone(),
@@ -8203,6 +8719,7 @@ comms = true
         .await;
 
         let entry = RuntimeEntry {
+            registration_id: uuid::Uuid::new_v4(),
             runtime_key: "runtime-a".to_string(),
             identity_namespace: String::new(),
             runtime: runtime.mob_runtime().clone(),
@@ -9039,6 +9556,7 @@ comms = true
         .await;
 
         let entry = RuntimeEntry {
+            registration_id: uuid::Uuid::new_v4(),
             runtime_key: "runtime-a".to_string(),
             identity_namespace: String::new(),
             runtime: runtime.mob_runtime().clone(),
@@ -9141,6 +9659,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -9324,6 +9843,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -9460,6 +9980,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -9605,6 +10126,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -9784,6 +10306,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -9901,6 +10424,7 @@ comms = true
             runtimes.insert(
                 "a-hidden".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "a-hidden".to_string(),
                     identity_namespace: String::new(),
                     runtime: hidden_runtime.mob_runtime().clone(),
@@ -9912,6 +10436,7 @@ comms = true
             runtimes.insert(
                 "b-visible".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "b-visible".to_string(),
                     identity_namespace: String::new(),
                     runtime: visible_runtime.mob_runtime().clone(),
@@ -10035,6 +10560,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -10142,6 +10668,7 @@ comms = true
             .insert(
                 "default".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "default".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -10294,6 +10821,7 @@ comms = true
             .insert(
                 "runtime-a".to_string(),
                 RuntimeEntry {
+                    registration_id: uuid::Uuid::new_v4(),
                     runtime_key: "runtime-a".to_string(),
                     identity_namespace: String::new(),
                     runtime: runtime.mob_runtime().clone(),
@@ -10823,6 +11351,7 @@ comms = true
     async fn system_identity_frames_are_visible_on_global_timeline_queries() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
         // Register a runtime so the per-identity visibility gate engages
         // (an empty registry short-circuits every frame to visible). The
         // test entry carries the "test" identity namespace on purpose.
@@ -10831,11 +11360,7 @@ comms = true
             .runtimes
             .write()
             .expect("runtime registry")
-            .insert(
-                "runtime-a".to_string(),
-                runtime_entry_for_test("runtime-a", &runtime),
-            );
-        let entry = runtime_entry_for_test("runtime-a", &runtime);
+            .insert("runtime-a".to_string(), entry.clone());
 
         let envelope = |event_id: &str, identity: &str, event_type: &str| {
             crate::console_contracts::ConsoleIdentityEventEnvelope {
@@ -12700,6 +13225,748 @@ comms = true
         assert_eq!(live, delta);
     }
 
+    fn runtime_notice_test_message(
+        session_id: &meerkat_core::types::SessionId,
+        body: &str,
+    ) -> Message {
+        let mut notice = meerkat_core::types::SystemNoticeMessage::new(
+            meerkat_core::types::SystemNoticeKind::Generic,
+            body,
+        );
+        notice.runtime_origin = Some(meerkat_core::types::RuntimeAppendOrigin {
+            session_id: session_id.clone(),
+            run_id: meerkat_core::lifecycle::RunId(uuid::Uuid::from_u128(0x9201)),
+            input_id: meerkat_core::lifecycle::InputId(uuid::Uuid::from_u128(0x9301)),
+            append_ordinal: 2,
+        });
+        Message::SystemNotice(notice)
+    }
+
+    fn registration_test_target(entry: RuntimeEntry, session: &SessionId) -> SessionBackfillTarget {
+        let mut record = identity_record_for_test("archived-worker");
+        record.runtime_key = entry.runtime_key.clone();
+        record.session_id = Some(session.to_string());
+        record.visibility = ConsoleVisibility::RetiredReadable;
+        SessionBackfillTarget {
+            provenance: None,
+            entry,
+            record,
+            session_id: session.to_string(),
+        }
+    }
+
+    fn registration_test_page(session: &SessionId, body: &str) -> SessionHistoryPage {
+        SessionHistoryPage::from_messages(
+            session.clone(),
+            &[runtime_notice_test_message(session, body)],
+            SessionHistoryQuery::default(),
+        )
+    }
+
+    async fn stored_notice_snapshots(aggregator: &MobKitConsoleAggregator) -> Vec<ConsoleFrame> {
+        aggregator
+            .store()
+            .query_frames(ConsoleTimelineQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .expect("stored frames")
+            .frames
+            .into_iter()
+            .filter(|frame| frame.kind == "runtime_notice_snapshot")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stale_captured_backfill_target_cannot_read_publish_or_admit_epoch_after_replacement() {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let session = SessionId::new();
+        let predecessor = runtime_entry_for_test("registration-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(predecessor.runtime_key.clone(), predecessor.clone());
+        let captured = registration_test_target(predecessor.clone(), &session);
+        let mut successor = predecessor.clone();
+        successor.registration_id = uuid::Uuid::new_v4();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(successor.runtime_key.clone(), successor.clone());
+        service.script_history([ScriptedHistoryRead {
+            page: Some(registration_test_page(&session, "Must remain unread.")),
+            gate: None,
+        }]);
+        let reads_before = service.read_calls();
+        let watermark_key =
+            session_history_watermark_runtime_key(&predecessor.runtime_key, &session.to_string());
+        aggregator
+            .inner
+            .session_backfill_epochs
+            .lock()
+            .expect("epochs")
+            .insert(watermark_key.clone(), 77);
+        assert!(!runtime_entry_is_current(&aggregator.inner, &predecessor));
+        assert!(runtime_entry_is_current(&aggregator.inner, &successor));
+        backfill_one_session_history(aggregator.inner.clone(), captured, true)
+            .await
+            .expect("stale no-op");
+        assert_eq!(service.read_calls(), reads_before);
+        assert_eq!(store.source_watermark_calls(), 0);
+        assert_eq!(store.record_watermark_calls.load(Ordering::SeqCst), 0);
+        assert!(stored_notice_snapshots(&aggregator).await.is_empty());
+        assert_eq!(
+            aggregator
+                .inner
+                .session_backfill_epochs
+                .lock()
+                .expect("epochs")
+                .get(&watermark_key),
+            Some(&77)
+        );
+        assert_eq!(
+            service.scripted_reads.lock().expect("scripted reads").len(),
+            1
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn completed_notice_snapshot_survives_reregister_reopen_and_unavailable_successor_history()
+     {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let directory = tempfile::tempdir().expect("snapshot store directory");
+        let path = directory.path().join("notice-history.sqlite");
+        let session = SessionId::new();
+        let predecessor = runtime_entry_for_test("registration-test", &runtime);
+        let aggregator = MobKitConsoleAggregator::new(Arc::new(
+            SqliteConsoleLogStore::open(&path).expect("store"),
+        ));
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(predecessor.runtime_key.clone(), predecessor.clone());
+        let old_message = runtime_notice_test_message(&session, "Removed canonical notice.");
+        for row in frames_from_session_history_message_with_namespace(
+            &predecessor.runtime_key,
+            "archived-worker",
+            "",
+            &session.to_string(),
+            0,
+            serde_json::to_value(&old_message).expect("notice JSON"),
+        ) {
+            aggregator
+                .store()
+                .append_if_absent(row)
+                .await
+                .expect("old canonical notice");
+        }
+        let observation = observe_runtime_notice_attempts(
+            &aggregator.inner,
+            &predecessor.runtime_key,
+            "archived-worker",
+            &session.to_string(),
+        )
+        .await
+        .expect("observation");
+        let removal = runtime_notice_snapshot_frame(
+            &predecessor.runtime_key,
+            "archived-worker",
+            &session.to_string(),
+            &observation,
+            &BTreeSet::new(),
+            &[],
+        )
+        .expect("complete removal snapshot");
+        let saved = append_and_emit(&aggregator.inner, removal)
+            .await
+            .expect("valid snapshot append")
+            .frame;
+        aggregator.unregister_runtime(&predecessor.runtime_key);
+        drop(aggregator);
+
+        let reopened = MobKitConsoleAggregator::new(Arc::new(
+            SqliteConsoleLogStore::open(&path).expect("reopen store"),
+        ));
+        let mut successor = predecessor;
+        successor.registration_id = uuid::Uuid::new_v4();
+        reopened
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(successor.runtime_key.clone(), successor.clone());
+        service.script_history([ScriptedHistoryRead {
+            page: None,
+            gate: None,
+        }]);
+        let reads_before = service.read_calls();
+        backfill_one_session_history(
+            reopened.inner.clone(),
+            registration_test_target(successor, &session),
+            true,
+        )
+        .await
+        .expect("unavailable read recorded as gap");
+        assert_eq!(service.read_calls(), reads_before + 1);
+        assert_eq!(
+            stored_notice_snapshots(&reopened).await,
+            vec![saved.clone()]
+        );
+        assert!(
+            frame_is_visible_cached(&reopened.inner, &saved, true, &mut HashMap::new(), &[])
+                .await
+                .expect("snapshot visibility"),
+            "a valid durable removal remains visible without a new history image"
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn forced_history_refresh_burst_coalesces_one_trailing_read_and_preserves_final_image() {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let session = SessionId::new();
+        let entry = runtime_entry_for_test("registration-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(entry.runtime_key.clone(), entry.clone());
+        let target = registration_test_target(entry, &session);
+        let gate = HistoryReadGate::new();
+        service.script_history([
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Before terminal rewrite.")),
+                gate: Some(gate.clone()),
+            },
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Final committed image.")),
+                gate: None,
+            },
+        ]);
+        let reads_before = service.read_calls();
+        let worker = tokio::spawn(run_targeted_session_history_backfill(
+            aggregator.inner.clone(),
+            target.clone(),
+            true,
+        ));
+        gate.wait_until_entered().await;
+        for _ in 0..32 {
+            run_targeted_session_history_backfill(aggregator.inner.clone(), target.clone(), true)
+                .await
+                .expect("overlapping forced trigger coalesces");
+        }
+        assert_eq!(service.read_calls(), reads_before + 1);
+        gate.release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("worker finishes")
+            .expect("worker joins")
+            .expect("both history passes succeed");
+        assert_eq!(service.read_calls(), reads_before + 2);
+        assert_eq!(service.max_active_reads(), 1);
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .is_empty()
+        );
+        let snapshots = stored_notice_snapshots(&aggregator).await;
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].payload["notices"][0]["message"]["body"],
+            "Before terminal rewrite."
+        );
+        assert_eq!(
+            snapshots[1].payload["notices"][0]["message"]["body"],
+            "Final committed image."
+        );
+        assert!(snapshots[0].cursor.seq() < snapshots[1].cursor.seq());
+
+        service.script_history([ScriptedHistoryRead {
+            page: Some(registration_test_page(&session, "Later refresh.")),
+            gate: None,
+        }]);
+        run_targeted_session_history_backfill(aggregator.inner.clone(), target, true)
+            .await
+            .expect("later refresh starts new worker");
+        assert_eq!(service.read_calls(), reads_before + 3);
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .is_empty()
+        );
+        assert_eq!(stored_notice_snapshots(&aggregator).await.len(), 3);
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn forced_history_refresh_keeps_pending_successor_when_stale_predecessor_requests_again()
+    {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let session = SessionId::new();
+        let predecessor = runtime_entry_for_test("registration-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(predecessor.runtime_key.clone(), predecessor.clone());
+        let old_target = registration_test_target(predecessor.clone(), &session);
+        let gate = HistoryReadGate::new();
+        service.script_history([
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Stale read image.")),
+                gate: Some(gate.clone()),
+            },
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Successor image.")),
+                gate: None,
+            },
+        ]);
+        let reads_before = service.read_calls();
+        let worker = tokio::spawn(run_targeted_session_history_backfill(
+            aggregator.inner.clone(),
+            old_target.clone(),
+            true,
+        ));
+        gate.wait_until_entered().await;
+        let mut successor = predecessor;
+        successor.registration_id = uuid::Uuid::new_v4();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(successor.runtime_key.clone(), successor.clone());
+        let successor_target = registration_test_target(successor, &session);
+        run_targeted_session_history_backfill(aggregator.inner.clone(), successor_target, true)
+            .await
+            .expect("successor schedules trailing pass");
+        for _ in 0..8 {
+            run_targeted_session_history_backfill(
+                aggregator.inner.clone(),
+                old_target.clone(),
+                true,
+            )
+            .await
+            .expect("stale request ignored");
+        }
+        gate.release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("worker finishes")
+            .expect("worker joins")
+            .expect("successor converges");
+        assert_eq!(service.read_calls(), reads_before + 2);
+        let snapshots = stored_notice_snapshots(&aggregator).await;
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "old captured read is rejected before publication"
+        );
+        assert_eq!(
+            snapshots[0].payload["notices"][0]["message"]["body"],
+            "Successor image."
+        );
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .is_empty()
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn failed_held_history_read_still_drains_pending_refresh_and_releases_scheduler() {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let session = SessionId::new();
+        let entry = runtime_entry_for_test("registration-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(entry.runtime_key.clone(), entry.clone());
+        let target = registration_test_target(entry, &session);
+        let gate = HistoryReadGate::new();
+        service.script_history([
+            ScriptedHistoryRead {
+                page: None,
+                gate: Some(gate.clone()),
+            },
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Recovered final image.")),
+                gate: None,
+            },
+        ]);
+        let reads_before = service.read_calls();
+        let worker = tokio::spawn(run_targeted_session_history_backfill(
+            aggregator.inner.clone(),
+            target.clone(),
+            true,
+        ));
+        gate.wait_until_entered().await;
+        run_targeted_session_history_backfill(aggregator.inner.clone(), target, true)
+            .await
+            .expect("pending retry");
+        gate.release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("worker finishes")
+            .expect("worker joins")
+            .expect("failed history page recorded as gap");
+        assert_eq!(service.read_calls(), reads_before + 2);
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .is_empty()
+        );
+        let snapshots = stored_notice_snapshots(&aggregator).await;
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "failed read grants no invalidating snapshot"
+        );
+        assert_eq!(
+            snapshots[0].payload["notices"][0]["message"]["body"],
+            "Recovered final image."
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn admitted_predecessor_append_finishes_before_successor_snapshot_under_projection_lock()
+    {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let session = SessionId::new();
+        let predecessor = runtime_entry_for_test("registration-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(predecessor.runtime_key.clone(), predecessor.clone());
+        let old_target = registration_test_target(predecessor.clone(), &session);
+        let gate = HistoryReadGate::new();
+        *store.snapshot_append_gate.lock().expect("append gate lock") = Some(gate.clone());
+        service.script_history([
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(
+                    &session,
+                    "Admitted predecessor image.",
+                )),
+                gate: None,
+            },
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "New successor image.")),
+                gate: None,
+            },
+        ]);
+        let reads_before = service.read_calls();
+        let old_worker = tokio::spawn(backfill_one_session_history(
+            aggregator.inner.clone(),
+            old_target,
+            true,
+        ));
+        gate.wait_until_entered().await;
+        let mut successor = predecessor;
+        successor.registration_id = uuid::Uuid::new_v4();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(successor.runtime_key.clone(), successor.clone());
+        let new_worker = backfill_one_session_history(
+            aggregator.inner.clone(),
+            registration_test_target(successor, &session),
+            true,
+        );
+        tokio::pin!(new_worker);
+        assert!(
+            matches!(
+                futures::poll!(new_worker.as_mut()),
+                std::task::Poll::Pending
+            ),
+            "successor waits on the held session projection lock"
+        );
+        assert_eq!(service.read_calls(), reads_before + 1);
+        gate.release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), old_worker)
+            .await
+            .expect("old worker finishes")
+            .expect("old worker joins")
+            .expect("admitted append succeeds");
+        tokio::time::timeout(Duration::from_secs(10), new_worker)
+            .await
+            .expect("successor finishes")
+            .expect("successor append succeeds");
+        assert_eq!(service.read_calls(), reads_before + 2);
+        let snapshots = stored_notice_snapshots(&aggregator).await;
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].payload["notices"][0]["message"]["body"],
+            "Admitted predecessor image."
+        );
+        assert_eq!(
+            snapshots[1].payload["notices"][0]["message"]["body"],
+            "New successor image."
+        );
+        assert!(snapshots[0].cursor.seq() < snapshots[1].cursor.seq());
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[test]
+    fn runtime_notice_snapshot_requires_one_complete_exact_session_image() {
+        use meerkat_core::service::{SessionHistoryPage, SessionHistoryQuery};
+        let session = meerkat_core::types::SessionId::new();
+        let messages = vec![runtime_notice_test_message(&session, "Canonical.")];
+        let page = SessionHistoryPage::from_messages(
+            session.clone(),
+            &messages,
+            SessionHistoryQuery::default(),
+        );
+        assert!(complete_current_history_page(&session.to_string(), page.clone()).is_some());
+        let mut incomplete = page.clone();
+        incomplete.has_more = true;
+        assert!(complete_current_history_page(&session.to_string(), incomplete).is_none());
+        let mut shifted = page.clone();
+        shifted.offset = 1;
+        assert!(complete_current_history_page(&session.to_string(), shifted).is_none());
+        let mut short = page.clone();
+        short.message_count += 1;
+        assert!(complete_current_history_page(&session.to_string(), short).is_none());
+        assert!(
+            complete_current_history_page(&meerkat_core::types::SessionId::new().to_string(), page)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_notice_snapshot_preserves_fork_scope_and_publishes_image_replacement() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let original = meerkat_core::types::SessionId::new();
+        let viewed = meerkat_core::types::SessionId::new().to_string();
+        let message = runtime_notice_test_message(&original, "Original canonical body.");
+        let mut observation = RuntimeNoticeObservation {
+            observed_through: 8,
+            ..Default::default()
+        };
+        let first = runtime_notice_snapshot_frame(
+            "runtime-a",
+            "agent-a",
+            &viewed,
+            &observation,
+            &BTreeSet::new(),
+            &[message.clone()],
+        )
+        .unwrap();
+        assert_eq!(first.payload["notices"][0]["offset"], 0);
+        assert_eq!(
+            first.payload["notices"][0]["message"]["runtime_origin"]["session_id"],
+            original.to_string()
+        );
+        let first = aggregator
+            .store()
+            .append_if_absent(first)
+            .await
+            .unwrap()
+            .frame;
+        observation.previous_snapshot = Some(first);
+        assert!(
+            runtime_notice_snapshot_frame(
+                "runtime-a",
+                "agent-a",
+                &viewed,
+                &observation,
+                &BTreeSet::new(),
+                &[message.clone()]
+            )
+            .is_none()
+        );
+        let removed = runtime_notice_snapshot_frame(
+            "runtime-a",
+            "agent-a",
+            &viewed,
+            &observation,
+            &BTreeSet::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(removed.payload["notices"], json!([]));
+        let removed = aggregator.store().append_if_absent(removed).await.unwrap();
+        assert_eq!(removed.disposition, AppendDisposition::Inserted);
+        observation.previous_snapshot = Some(removed.frame);
+        let restored = runtime_notice_snapshot_frame(
+            "runtime-a",
+            "agent-a",
+            &viewed,
+            &observation,
+            &BTreeSet::new(),
+            &[message],
+        )
+        .unwrap();
+        assert_eq!(
+            aggregator
+                .store()
+                .append_if_absent(restored)
+                .await
+                .unwrap()
+                .disposition,
+            AppendDisposition::Inserted
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_notice_snapshot_refreshes_same_content_after_new_live_application() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let session = meerkat_core::types::SessionId::new().to_string();
+        let attempt = (
+            uuid::Uuid::from_u128(0x9201).to_string(),
+            uuid::Uuid::from_u128(0x9301).to_string(),
+        );
+        let mut observation = RuntimeNoticeObservation {
+            observed_through: 5,
+            attempts: BTreeSet::from([attempt.clone()]),
+            ..Default::default()
+        };
+        let settled = BTreeSet::from([attempt]);
+        let first = runtime_notice_snapshot_frame(
+            "runtime-a",
+            "agent-a",
+            &session,
+            &observation,
+            &settled,
+            &[],
+        )
+        .unwrap();
+        observation.previous_snapshot = Some(
+            aggregator
+                .store()
+                .append_if_absent(first)
+                .await
+                .unwrap()
+                .frame,
+        );
+        observation.observed_through = 12;
+        observation.relevant_frontier = 9;
+        let next = runtime_notice_snapshot_frame(
+            "runtime-a",
+            "agent-a",
+            &session,
+            &observation,
+            &settled,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(next.payload["observed_through"], "console:12");
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_retains_committed_user_and_tool_rows_once_for_public_queries() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for (kind, payload, owner) in [
+            (
+                "user_input",
+                json!({ "content": "  Exact human input.\\n" }),
+                true,
+            ),
+            (
+                "tool_execution_completed",
+                json!({ "id": "tool-owned", "tool_call_id": "tool-owned", "result": "Exact tool result", "is_error": false }),
+                false,
+            ),
+        ] {
+            let mut live =
+                counterpart_lineage_frame(&format!("live-{kind}"), kind, payload.clone());
+            live.interaction_id = owner.then(|| uuid::Uuid::from_u128(0x9301).to_string());
+            live.source.kind = if owner {
+                ConsoleFrameSourceKind::Send
+            } else {
+                ConsoleFrameSourceKind::ConsoleEvent
+            };
+            if !owner {
+                live.run_id = None;
+            }
+            aggregator
+                .store()
+                .append_if_absent(live.clone())
+                .await
+                .unwrap();
+            let mut history = live;
+            history.dedupe_key = format!("canonical-{kind}");
+            history.source.kind = ConsoleFrameSourceKind::SessionHistory;
+            history.source.source_cursor = Some(format!("session-a:{}", if owner { 1 } else { 3 }));
+            history.source_event_id = None;
+            assert!(
+                !history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                aggregator
+                    .store()
+                    .append_if_absent(history.clone())
+                    .await
+                    .unwrap()
+                    .disposition,
+                AppendDisposition::Inserted
+            );
+            assert_eq!(
+                aggregator
+                    .store()
+                    .append_if_absent(history)
+                    .await
+                    .unwrap()
+                    .disposition,
+                AppendDisposition::Existing
+            );
+        }
+        let page = aggregator
+            .store()
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.frames.len(), 4);
+        assert_eq!(
+            page.frames
+                .iter()
+                .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
+                .count(),
+            2
+        );
+    }
+
     fn counterpart_lineage_frame(key: &str, kind: &str, payload: Value) -> NewConsoleFrame {
         NewConsoleFrame {
             id: None,
@@ -12935,7 +14202,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn history_counterpart_lineage_joins_accepted_human_input_before_run_assignment() {
+    async fn history_counterpart_lineage_keeps_committed_human_input_after_acceptance() {
         let mut history = counterpart_lineage_history("");
         history.kind = "user_input".to_string();
         history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
@@ -12948,7 +14215,7 @@ comms = true
         accepted.source.kind = ConsoleFrameSourceKind::Send;
         accepted.interaction_id = history.interaction_id.clone();
         accepted.run_id = None;
-        assert_history_counterpart(&history, vec![accepted.clone()], true).await;
+        assert_history_counterpart(&history, vec![accepted.clone()], false).await;
         for mismatch in [
             "runtime",
             "session",
@@ -12982,7 +14249,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn history_counterpart_lineage_matches_exact_user_input_with_authoritative_owner() {
+    async fn history_counterpart_lineage_keeps_canonical_user_input_with_authoritative_owner() {
         let mut history = counterpart_lineage_history("");
         history.kind = "user_input".to_string();
         history.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9301).to_string());
@@ -12993,7 +14260,7 @@ comms = true
             json!({ "content": "  Ready.\n" }),
         );
         live.interaction_id = history.interaction_id.clone();
-        assert_history_counterpart(&history, vec![live.clone()], true).await;
+        assert_history_counterpart(&history, vec![live.clone()], false).await;
         for mismatch in [
             "runtime",
             "session",
@@ -13029,7 +14296,7 @@ comms = true
             "tool_execution_completed",
             json!({ "tool_call_id": "call-a", "result": [{ "type": "text", "text": "  File text\n" }], "is_error": false }),
         );
-        assert_history_counterpart(&history, vec![live.clone()], true).await;
+        assert_history_counterpart(&history, vec![live.clone()], false).await;
         for mismatch in [
             "whitespace",
             "mixed-content",
@@ -13141,7 +14408,7 @@ comms = true
                     }
                     _ => unreachable!(),
                 }
-                assert_history_counterpart(&history, vec![live], mismatch == "none").await;
+                assert_history_counterpart(&history, vec![live], false).await;
             }
         }
     }
@@ -13395,7 +14662,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn history_counterpart_scan_matches_live_tool_results() {
+    async fn history_counterpart_scan_keeps_canonical_tool_result_with_live_twin() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
             .store()
@@ -13459,7 +14726,7 @@ comms = true
         };
 
         assert!(
-            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+            !history_frame_has_existing_counterpart(&aggregator.inner, &history)
                 .await
                 .expect("counterpart scan")
         );

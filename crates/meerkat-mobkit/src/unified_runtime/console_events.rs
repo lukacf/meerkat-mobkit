@@ -915,6 +915,7 @@ fn canonical_run_content_digest(content: meerkat_core::ContentInput) -> Option<S
     };
     let canonical =
         model_projection_content_input_from_conversation_appends(&[ConversationAppend {
+            runtime_source: None,
             role: ConversationAppendRole::User,
             content,
             identity: None,
