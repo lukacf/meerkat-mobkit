@@ -32,6 +32,7 @@ function unwrapConsoleEnvelope(
   sessionId?: string;
   status?: string;
   sourceKind?: string;
+  sourceCursor?: string;
   frameVersion?: number;
   updatedAtMs?: number;
   turnId?: string;
@@ -56,6 +57,7 @@ function unwrapConsoleEnvelope(
       sessionId: frame.sessionId,
       status: frame.status,
       sourceKind: frame.sourceKind,
+      sourceCursor: frame.sourceCursor,
       frameVersion: frame.frameVersion,
       updatedAtMs: frame.updatedAtMs,
       turnId: frame.turnId,
@@ -99,6 +101,7 @@ function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
       sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
       status: typeof record.status === "string" ? record.status : updated.status,
       sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
+      sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : updated.sourceCursor,
       frameVersion:
         typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
       updatedAtMs:
@@ -119,6 +122,7 @@ function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
     sessionId: typeof record.session_id === "string" ? record.session_id : undefined,
     status: typeof record.status === "string" ? record.status : undefined,
     sourceKind: source && typeof source.kind === "string" ? source.kind : undefined,
+    sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : undefined,
     frameVersion: typeof record.frame_version === "number" ? record.frame_version : undefined,
     updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : undefined,
     turnId: typeof record.turn_id === "string" ? record.turn_id : undefined,
@@ -180,6 +184,7 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
       sessionId: normalized.sessionId,
       status: normalized.status,
       sourceKind: normalized.sourceKind,
+      sourceCursor: normalized.sourceCursor,
       frameVersion: normalized.frameVersion,
       updatedAtMs: normalized.updatedAtMs,
       turnId: normalized.turnId,

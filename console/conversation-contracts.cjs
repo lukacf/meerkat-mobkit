@@ -8,6 +8,7 @@ const entries = [
   "../packages/console-core/src/tool-completion.test.ts",
   "src/lib/adapters-completion.test.ts",
   "src/lib/adapters-integrity.test.ts",
+  "src/lib/adapters-durable-append.test.ts",
 ];
 (async () => {
   const outdir = path.join(__dirname, ".tmp/conversation-contracts");

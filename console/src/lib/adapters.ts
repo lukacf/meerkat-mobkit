@@ -1,3 +1,4 @@
+import { reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "../../../packages/console-core/src/runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "../../../packages/console-core/src/tool-completion";
 import { parseConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import {
@@ -3952,6 +3953,7 @@ function structuredCommsPromptSuppressionKeys(
 }
 
 function commsNoticeDedupeKeys(frame: ConsoleFrame): string[] {
+  if (runtimeAppendNoticeKey(frame)) return [];
   const signatures = systemNoticeCommsSignatures(frame);
   const keys: string[] = [];
   for (const signature of signatures) {
@@ -4519,9 +4521,9 @@ export function mapFramesToTimelineEntries(
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
   const textMode = options.textMode ?? "markdown";
-  const orderedFrames = options.renderInteractionStartsAsUser
+  const orderedFrames = reconcileRuntimeAppendFrames(options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
-    : frames;
+    : frames);
   const entries: ConversationTimelineEntry[] = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
@@ -4912,6 +4914,8 @@ export function mapFramesToTimelineEntries(
         blobBaseUrl: options.blobBaseUrl,
         textMode,
         consumeDuplicateCommsBlock: (key) => {
+          const runtimeKey = runtimeAppendNoticeKey(frame);
+          if (runtimeKey) key = `${runtimeKey}:${key}`;
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
           }
@@ -4944,6 +4948,8 @@ export function mapFramesToTimelineEntries(
         blobBaseUrl: options.blobBaseUrl,
         toolResults: sessionToolResults,
         consumeDuplicateCommsBlock: (key) => {
+          const runtimeKey = runtimeAppendNoticeKey(frame);
+          if (runtimeKey) key = `${runtimeKey}:${key}`;
           if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
             return true;
           }
