@@ -1,40 +1,30 @@
 //! Detached job completion entries in an owner's transcript.
 //!
 //! A background `fork_off` or council job records its outcome in the owner's
-//! durable transcript when it finishes: a `BackgroundJob` system notice whose
-//! `SystemNoticeBlock::BackgroundJob` blocks are `persisted`. The entry is a
-//! fact the owner refers back to on later turns, not scaffolding, so MobKit
+//! durable transcript when it finishes: a `BackgroundJob` system notice with
+//! at least one persisted `SystemNoticeBlock::BackgroundJob` block. The entry
+//! is a fact the owner refers back to on later turns, not scaffolding, so MobKit
 //! paths that collapse or drop transcript rows must leave it alone or at
 //! least account for it. They all decide through
 //! [`is_detached_completion_entry`], which reads typed transcript data only,
 //! never message text.
 
 use meerkat_core::Message;
+#[cfg(test)]
 use meerkat_core::types::{SystemNoticeBlock, SystemNoticeKind};
 
 /// Whether a transcript row is a detached job's durable completion entry.
 ///
-/// True for a `BackgroundJob` system notice that carries background-job
-/// blocks, all of them `persisted`. A non-persisted `BackgroundJob` notice
-/// (shell job progress and other refresh projections the agent rebuilds at
-/// each model call) is not a completion entry, and neither is a
-/// `BackgroundJob` notice without any background-job block.
+/// True for a `BackgroundJob` system notice carrying at least one persisted
+/// background-job block, even when the row also includes refresh blocks.
+/// Meerkat owns this typed distinction through the notice's persisted-job
+/// predicate. Text lookalikes, refresh-only notices and empty notices are not
+/// completion entries.
 pub fn is_detached_completion_entry(message: &Message) -> bool {
     let Message::SystemNotice(notice) = message else {
         return false;
     };
-    if notice.kind != SystemNoticeKind::BackgroundJob {
-        return false;
-    }
-    let mut jobs = notice
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            SystemNoticeBlock::BackgroundJob { persisted, .. } => Some(*persisted),
-            _ => None,
-        })
-        .peekable();
-    jobs.peek().is_some() && jobs.all(|persisted| persisted)
+    notice.persisted_background_job_id().is_some()
 }
 
 #[cfg(test)]
@@ -90,6 +80,17 @@ mod tests {
         ])));
     }
 
+    #[test]
+    fn mixed_background_job_notices_are_completion_entries_in_either_order() {
+        for blocks in [
+            vec![job_block("job-a", true), job_block("shell-1", false)],
+            vec![job_block("shell-1", false), job_block("job-a", true)],
+        ] {
+            let message = background_job_notice(blocks);
+            assert!(is_detached_completion_entry(&message));
+        }
+    }
+
     /// Refresh projections share the `BackgroundJob` kind but are rebuilt at
     /// each model call and never stored; they are not completion entries.
     #[test]
@@ -98,8 +99,8 @@ mod tests {
             job_block("shell-1", false)
         ])));
         assert!(!is_detached_completion_entry(&background_job_notice(vec![
-            job_block("job-a", true),
             job_block("shell-1", false),
+            job_block("shell-2", false),
         ])));
         assert!(!is_detached_completion_entry(&background_job_notice(
             Vec::new()
@@ -113,6 +114,13 @@ mod tests {
         let text = "Background fork_off job job-a finished (completed):\n{}";
         assert!(!is_detached_completion_entry(&Message::SystemNotice(
             SystemNoticeMessage::new(SystemNoticeKind::Generic, text)
+        )));
+        assert!(!is_detached_completion_entry(&Message::SystemNotice(
+            SystemNoticeMessage::with_blocks(
+                SystemNoticeKind::Generic,
+                Some(text.to_string()),
+                vec![job_block("job-a", true)],
+            )
         )));
         assert!(!is_detached_completion_entry(&Message::System(
             SystemMessage::new(text)

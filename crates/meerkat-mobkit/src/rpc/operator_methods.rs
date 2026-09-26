@@ -1029,6 +1029,56 @@ mod tests {
         )
     }
 
+    fn mixed_completion_entry(job_id: &str) -> Message {
+        let Message::SystemNotice(mut notice) = completion_entry(job_id) else {
+            panic!("completion fixture must be a typed notice");
+        };
+        notice
+            .blocks
+            .push(meerkat_core::types::SystemNoticeBlock::BackgroundJob {
+                job_id: "shell-refresh".to_string(),
+                display_name: Some("shell".to_string()),
+                status: meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+                detail: None,
+                persisted: false,
+            });
+        Message::SystemNotice(notice)
+    }
+
+    #[test]
+    fn dropped_completion_entries_count_a_mixed_notice_once() {
+        let Message::SystemNotice(mixed) = mixed_completion_entry("job-a") else {
+            panic!("mixed fixture must be a typed notice");
+        };
+        let refresh = Message::SystemNotice(SystemNoticeMessage::with_blocks(
+            SystemNoticeKind::BackgroundJob,
+            None,
+            vec![mixed.blocks[1].clone()],
+        ));
+        let mut multiple_completions = mixed.clone();
+        let Message::SystemNotice(second) = completion_entry("job-b") else {
+            panic!("completion fixture must be a typed notice");
+        };
+        multiple_completions.blocks.extend(second.blocks);
+        let messages = vec![
+            Message::SystemNotice(mixed),
+            refresh,
+            Message::SystemNotice(SystemNoticeMessage::new(
+                SystemNoticeKind::Generic,
+                "Background fork_off job job-x finished (completed)",
+            )),
+            Message::SystemNotice(multiple_completions),
+            user("tail"),
+        ];
+        let keep_mixed = pair_safe_cut_index(&messages, 2);
+        assert_eq!(keep_mixed, 3);
+        assert_eq!(completion_entries_before_cut(&messages, keep_mixed), 1);
+        let drop_mixed = pair_safe_cut_index(&messages, 1);
+        assert_eq!(drop_mixed, 4);
+        assert_eq!(completion_entries_before_cut(&messages, drop_mixed), 2);
+        assert_eq!(completion_entries_before_cut(&messages, 0), 0);
+    }
+
     /// Only completion entries before the cut count; ones in the kept window
     /// and ordinary notices do not.
     #[test]
@@ -2580,7 +2630,7 @@ comms = true
         let seeded_len = settled_transcript_len(&service, &session_id).await;
         let (assistant, results) = tool_use_pair("call-straddle");
         let fixture = vec![
-            completion_entry("job-before-cut"),
+            mixed_completion_entry("job-before-cut"),
             user("older"),
             assistant,
             results,
@@ -2617,7 +2667,7 @@ comms = true
             }
         }
 
-        // Transcript is now [..seeded_len ordinary rows, completion entry,
+        // Transcript is now [..seeded_len ordinary rows, mixed completion notice,
         // older, assistant, results, tail] with the results row at index
         // seeded_len + 3. keep_last = 2 naively cuts at len - 2 = seeded_len
         // + 3, which IS the tool_results row; the pair-safe cut walks back
@@ -2659,7 +2709,7 @@ comms = true
         assert_eq!(
             result["dropped_completion_entries"],
             serde_json::json!(1),
-            "the dropped completion entry must be reported, never silent: {result:#?}"
+            "the mixed completion notice must count once when dropped: {result:#?}"
         );
         assert!(result["revision"].as_str().is_some(), "{result:#?}");
 

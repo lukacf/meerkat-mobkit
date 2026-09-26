@@ -2024,6 +2024,61 @@ mod tests {
     }
 
     #[test]
+    fn validator_never_collapses_a_mixed_background_job_notice() {
+        let Message::SystemNotice(mut mixed) = completion_entry() else {
+            panic!("completion fixture must be a typed notice");
+        };
+        let refresh_block = meerkat_core::types::SystemNoticeBlock::BackgroundJob {
+            job_id: "shell-refresh".to_string(),
+            display_name: Some("shell".to_string()),
+            status: meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+            detail: None,
+            persisted: false,
+        };
+        mixed.blocks.push(refresh_block.clone());
+        let messages = vec![
+            user("older scaffold"),
+            Message::SystemNotice(mixed),
+            Message::SystemNotice(SystemNoticeMessage::with_blocks(
+                SystemNoticeKind::BackgroundJob,
+                None,
+                vec![refresh_block],
+            )),
+            Message::SystemNotice(SystemNoticeMessage::new(
+                SystemNoticeKind::Generic,
+                "Background fork_off job job-a finished (completed)",
+            )),
+            user("newer scaffold"),
+        ];
+        let roles = roles(&messages);
+        assert_eq!(roles[1], HygieneRole::BackgroundJobResult);
+        assert_eq!(roles[2], HygieneRole::SystemNotice);
+        assert_eq!(roles[3], HygieneRole::SystemNotice);
+        let rejected = validate_revision(
+            &RevisionProposal {
+                ops: vec![collapse(0, 2)],
+            },
+            &roles,
+            &[],
+            OrderingContext::SequencedAfterHarvest,
+        );
+        assert!(
+            matches!(rejected, Err(RevisionReject::IllegalRole { .. })),
+            "{rejected:?}"
+        );
+        let ordinary = validate_revision(
+            &RevisionProposal {
+                ops: vec![collapse(2, 5)],
+            },
+            &roles,
+            &[],
+            OrderingContext::SequencedAfterHarvest,
+        );
+        assert!(ordinary.is_ok(), "{ordinary:?}");
+        assert!(render_transcript(&messages).contains("[1] background job result: "));
+    }
+
+    #[test]
     fn validator_hard_blocks_quarantine_referenced_spans() {
         let messages = transcript();
         let spans = vec![SpanReference {
