@@ -172,8 +172,12 @@ async function sidebarActivity() {
     await page.setViewportSize({ width: 1600, height: 1000 });
     await capture("completed-light-1600");
     const toolId = `fixture-${barrierId}-peer-ready`;
-    assert.equal(result.finalFrames.filter(frame => frame.kind === "tool_call_requested" && frame.payload?.id === toolId).length, 1);
-    assert.equal(result.finalFrames.filter(frame => frame.kind === "tool_result_received" && frame.payload?.id === toolId && frame.payload?.is_error === false).length, 1);
+    const liveTool = result.finalFrames.filter(frame => frame.source?.kind === "console_event" && frame.payload?.id === toolId);
+    const savedTool = result.finalFrames.filter(frame => frame.source?.kind === "session_history" && frame.payload?.id === toolId);
+    assert.equal(liveTool.filter(frame => frame.kind === "tool_call_requested").length, 1, "one actual runtime tool call");
+    assert.equal(liveTool.filter(frame => frame.kind === "tool_result_received" && frame.payload?.is_error === false).length, 1, "one actual successful runtime tool result");
+    assert.equal(savedTool.filter(frame => frame.kind === "tool_call_requested").length, 1, "one retained tool-call source counterpart");
+    assert.equal(savedTool.filter(frame => frame.kind === "tool_execution_completed" && frame.payload?.is_error === false).length, 1, "one retained successful tool-result source counterpart");
     assert.deepEqual(result.errors, [], "no unexpected browser or network errors");
   } catch (error) {
     result.failure = error.stack || String(error);
