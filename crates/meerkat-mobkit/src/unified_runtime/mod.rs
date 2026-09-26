@@ -1029,6 +1029,8 @@ impl UnifiedRuntime {
         // materialization must follow the lift, because a Stopped mob cannot
         // spawn. So this sits between installing the context and rostering.
         let pending = self.pending_mob_activation.lock().await.take();
+        let reconcile_after_materialization =
+            pending.is_some() && !context.bootstrap_mode().is_lazy();
         if let Some(pending) = pending {
             let registered_sessions = match context
                 .runtime
@@ -1077,13 +1079,19 @@ impl UnifiedRuntime {
                     ),
                 ));
             }
-            // Deferred from bootstrap: now the identity context exists, so
-            // reconciliation takes the identity authority path against a
-            // Running mob.
-            self.reconcile_bootstrap_edges_if_configured().await;
+            // Lazy bootstrap keeps its pending-edge observation without
+            // forcing materialization. Eager restore must first attach the
+            // persisted members to the fresh bridge so actual wires can be
+            // resolved to their authoritative runtime identities.
+            if !reconcile_after_materialization {
+                self.reconcile_bootstrap_edges_if_configured().await;
+            }
         }
         match context.bootstrap_roster(roster).await {
             Ok(result) => {
+                if reconcile_after_materialization {
+                    self.reconcile_bootstrap_edges_if_configured().await;
+                }
                 self.start_identity_first_supervisors();
                 Ok(result)
             }

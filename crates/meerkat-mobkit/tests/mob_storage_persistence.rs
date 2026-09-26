@@ -33,9 +33,9 @@ use meerkat_mob::{
 use meerkat_mobkit::identity_first::orchestrator::RestoreOutcome;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentIdentity as MobKitAgentIdentity, AgentRuntimeServices,
-    ContinuityStore, DurabilityPolicy, DurableAgentSpec, IdentityFirstRuntimeContext,
-    IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider,
-    MobSessionBridge, MutableRosterProvider,
+    ContinuityStore, DurabilityPolicy, DurableAgentSpec, EdgeDiscoveryTopologyAdapter,
+    IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore,
+    LocalLeaseProvider, MobSessionBridge, MutableRosterProvider, SessionBridge,
 };
 use meerkat_mobkit::mob_composition_manifest::{
     MobCompositionManifest, MobCompositionProvenanceError, MobStorageProvenance, manifest_path,
@@ -43,8 +43,10 @@ use meerkat_mobkit::mob_composition_manifest::{
 };
 use meerkat_mobkit::mob_handle_runtime::{MobRuntimeError, auto_mark_declared_resume_overrides};
 use meerkat_mobkit::spec_update_ceremony::{SpecUpdateError, declare_spec_update};
+use meerkat_mobkit::unified_runtime::edge_reconcile::DefinitionWiringEdgeDiscovery;
 use meerkat_mobkit::{
-    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntime, UnifiedRuntime,
+    DesiredPeerEdge, DiscoverySpec, IdentityBootstrapMode, MobBootstrapOptions, MobBootstrapSpec,
+    MobKitConfig, MobRuntime, UnifiedRuntime,
 };
 use meerkat_runtime::store::{PreparedWholeBlobSnapshotCas, WholeBlobSnapshotCasOutcome};
 use meerkat_runtime::{LogicalRuntimeId, RuntimeStore};
@@ -1917,9 +1919,15 @@ b = "worker"
 model = "gpt-5.5"
 runtime_mode = "turn_driven"
 
+[profiles.lead.tools]
+comms = true
+
 [profiles.worker]
 model = "gpt-5.5"
 runtime_mode = "turn_driven"
+
+[profiles.worker.tools]
+comms = true
 "#
     ));
     let (storage, provenance) =
@@ -2051,4 +2059,249 @@ async fn classic_activation_refuses_installed_identity_authority_without_consumi
     );
     let shutdown = second.shutdown().await;
     assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}
+
+fn activation_identity_roster() -> Vec<DurableAgentSpec> {
+    [("lead-1", "lead"), ("worker-1", "worker")]
+        .into_iter()
+        .map(|(identity, profile)| DurableAgentSpec {
+            identity: MobKitAgentIdentity::parse(identity).expect("valid fixture identity"),
+            profile: ProfileName::from(profile),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+            placement: None,
+        })
+        .collect()
+}
+
+fn activation_identity_context(
+    runtime: &UnifiedRuntime,
+    root: &Path,
+    roster: &[DurableAgentSpec],
+    mode: IdentityBootstrapMode,
+) -> (Arc<IdentityFirstRuntimeContext>, Arc<MobSessionBridge>) {
+    let bridge = Arc::new(MobSessionBridge::with_session_service(
+        runtime.mob_handle(),
+        runtime
+            .mob_runtime()
+            .session_service()
+            .cloned()
+            .expect("persistent fixture session service"),
+    ));
+    let identity_runtime = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(
+                LocalContinuityStore::open(root.join("identity-continuity.sqlite3"))
+                    .expect("persistent identity continuity"),
+            ),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: runtime.mob_handle().mob_id().to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(runtime.mob_handle())),
+    );
+    let topology =
+        DefinitionWiringEdgeDiscovery::from_definition(runtime.mob_handle().definition())
+            .expect("fixture declares a role wire");
+    let context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+        identity_runtime,
+        Arc::new(MutableRosterProvider::new(roster.to_vec())),
+        Some(Arc::new(EdgeDiscoveryTopologyAdapter::new(topology))),
+        None,
+        Some(runtime.mob_handle().definition().clone()),
+        mode,
+    ));
+    (context, bridge)
+}
+
+#[tokio::test]
+async fn eager_identity_restore_reports_edges_after_persisted_members_attach() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    const MOB_ID: &str = "eager-restore-edge-observation";
+    let roster = activation_identity_roster();
+    let expected_edge = DesiredPeerEdge::new("lead-1", "worker-1").expect("fixture edge");
+
+    let mut first = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    let (context, bridge) = activation_identity_context(
+        &first,
+        temp.path(),
+        &roster,
+        IdentityBootstrapMode::EagerMaterialize,
+    );
+    let created = first
+        .install_and_bootstrap_identity_first_context(context.clone(), &roster)
+        .await
+        .expect("seed wired identity roster");
+    assert_eq!(created.outcomes.len(), 2);
+    assert!(
+        created
+            .outcomes
+            .values()
+            .all(|outcome| matches!(outcome, RestoreOutcome::Created { .. })),
+        "both fixture members must really materialize: {:?}",
+        created.outcomes
+    );
+    assert_eq!(
+        bridge
+            .current_member_wires()
+            .await
+            .expect("seeded physical wire")
+            .len(),
+        1
+    );
+    let mut original_sessions = BTreeMap::new();
+    for spec in &roster {
+        original_sessions.insert(
+            spec.identity.clone(),
+            context
+                .runtime
+                .status(&spec.identity)
+                .await
+                .expect("seed identity")
+                .session_id
+                .expect("seed session"),
+        );
+    }
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    drop(context);
+    drop(bridge);
+    drop(first);
+
+    let mut second = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    assert_eq!(
+        second.mob_handle().status().await.expect("prepared state"),
+        meerkat_mob::MobState::Stopped
+    );
+    assert!(second.bootstrap_edges_report().await.is_none());
+    let persisted_members = second.mob_handle().list_members_including_retiring().await;
+    assert_eq!(persisted_members.len(), 2);
+    assert!(
+        persisted_members
+            .iter()
+            .all(|member| member.wired_to.len() == 1)
+    );
+
+    let (context, bridge) = activation_identity_context(
+        &second,
+        temp.path(),
+        &roster,
+        IdentityBootstrapMode::EagerMaterialize,
+    );
+    assert!(
+        bridge.current_member_wires().await.is_err(),
+        "a fresh bridge cannot name the persisted wire before member attachment"
+    );
+    let restored = second
+        .install_and_bootstrap_identity_first_context(context.clone(), &roster)
+        .await
+        .expect("restore and attach both wired identities");
+    assert!(
+        restored
+            .outcomes
+            .values()
+            .all(|outcome| matches!(outcome, RestoreOutcome::Resumed { .. })),
+        "restore must retain the persisted members: {:?}",
+        restored.outcomes
+    );
+    for spec in &roster {
+        let status = context
+            .runtime
+            .status(&spec.identity)
+            .await
+            .expect("restored identity");
+        assert_eq!(
+            status.session_id.as_ref(),
+            original_sessions.get(&spec.identity)
+        );
+    }
+    assert!(context.runtime.identity_bootstrap_status().ready);
+    assert_eq!(
+        bridge
+            .current_member_wires()
+            .await
+            .expect("restored physical wire")
+            .len(),
+        1
+    );
+    let report = second
+        .bootstrap_edges_report()
+        .await
+        .expect("final bootstrap edge observation");
+    // Clean up before the decisive assertion so the expected RED run does
+    // not retain an active runtime or its process-global comms registration.
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    assert!(
+        report.is_complete(),
+        "successful eager attachment must replace the pre-attachment missing-binding observation: {report:?}"
+    );
+    assert_eq!(report.desired_edges, vec![expected_edge.clone()]);
+    assert_eq!(report.retained_edges, vec![expected_edge]);
+}
+
+#[tokio::test]
+async fn lazy_identity_restore_keeps_unmaterialized_edges_pending() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    const MOB_ID: &str = "lazy-restore-edge-observation";
+    let first = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    drop(first);
+
+    let mut second = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    assert_eq!(
+        second.mob_handle().status().await.expect("prepared state"),
+        meerkat_mob::MobState::Stopped
+    );
+    assert!(second.bootstrap_edges_report().await.is_none());
+    let roster = activation_identity_roster();
+    let (context, bridge) = activation_identity_context(
+        &second,
+        temp.path(),
+        &roster,
+        IdentityBootstrapMode::LazyMaterialize,
+    );
+    second
+        .install_and_bootstrap_identity_first_context(context.clone(), &roster)
+        .await
+        .expect("register lazy identity roster");
+    let bootstrap = context.runtime.identity_bootstrap_status();
+    assert!(bootstrap.complete);
+    assert!(!bootstrap.ready);
+    assert_eq!(bootstrap.counts.dormant, 2);
+    assert_eq!(bootstrap.counts.active, 0);
+    assert!(second.mob_handle().list_members().await.is_empty());
+    assert!(
+        bridge
+            .current_member_wires()
+            .await
+            .expect("empty physical topology")
+            .is_empty()
+    );
+    let report = second
+        .bootstrap_edges_report()
+        .await
+        .expect("pending bootstrap edge observation");
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    assert!(
+        !report.is_complete(),
+        "unmaterialized endpoints cannot be reported wired"
+    );
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(
+        report.skipped_missing_members,
+        vec![DesiredPeerEdge::new("lead-1", "worker-1").expect("fixture edge")]
+    );
 }
