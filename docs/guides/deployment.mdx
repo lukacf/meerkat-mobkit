@@ -373,7 +373,17 @@ raw_bytes)` over the decoded bytes (`crates/meerkat-mobkit/src/blob_store.rs`,
 `compute_blob_id`). Both render as `sha256:<64 hex digits>`, so the same PNG
 under the two recipes carries two visually indistinguishable ids. The store
 resolves both forms through both faces, so references written before the rule
-keep hydrating; still, compare ids only within one recipe. The side by side
+keep hydrating; still, compare ids only within one recipe. When meerkat's
+read-back verification meets an image reference whose meerkat content address
+differs, it asks the store through `BlobStore::attest_address`;
+`Base64BlobStoreAdapter` recomputes MobKit's own recipe over the returned
+payload and attests only an exact match. The attestation covers the media
+type stored beside the bytes, not the media type a transcript block declares
+for the reference; binding the two is the caller's side of the check. A
+durable fork of a transcript that holds such a reference then stores the image
+under its meerkat content address and points the child at it, leaving the
+source transcript and object in place, and realtime history hydration accepts
+the reference. The side by side
 recipe, provenance rules and the planned unification are documented in the
 meerkat storage operations runbook under "Blob digests in meerkat and MobKit".
 

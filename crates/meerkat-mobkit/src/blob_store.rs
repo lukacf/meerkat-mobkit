@@ -10,7 +10,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use meerkat_core::{BlobId, BlobPayload, BlobRef, BlobStore, BlobStoreError};
+use meerkat_core::{
+    BlobAddressAttestation, BlobId, BlobPayload, BlobRef, BlobStore, BlobStoreError,
+};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
@@ -358,6 +360,38 @@ impl BlobStore for Base64BlobStoreAdapter {
         })
     }
 
+    /// Attest MobKit's pre-0.8.41 image address for exactly this payload.
+    ///
+    /// Before 0.8.41 `put_image` decoded meerkat's base64 and stored it
+    /// through [`BinaryBlobStore::put_bytes`], and console image uploads did
+    /// the same, so the references those writes left in transcripts carry
+    /// MobKit's raw-bytes address, `sha256(media_type || 0x00 || bytes)`,
+    /// over the media type the store keeps beside the bytes. Meerkat
+    /// recomputes its own content address on read-back and asks here before
+    /// it refuses such a reference. The adapter recomputes MobKit's recipe
+    /// over the returned payload and attests only an exact match; every other
+    /// reference, and a payload that is not valid base64, stays unattested.
+    ///
+    /// The attestation binds the reference to the payload's stored media type
+    /// and bytes only. The adapter never sees the media type a transcript
+    /// block declares for the reference, so checking that declaration against
+    /// `payload.media_type` is the caller's side of the gate.
+    async fn attest_address(
+        &self,
+        blob_id: &BlobId,
+        payload: &BlobPayload,
+    ) -> Result<BlobAddressAttestation, BlobStoreError> {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.data.as_bytes())
+        else {
+            return Ok(BlobAddressAttestation::Unattested);
+        };
+        if compute_blob_id(&payload.media_type, &bytes) == *blob_id {
+            Ok(BlobAddressAttestation::StoreAddress)
+        } else {
+            Ok(BlobAddressAttestation::Unattested)
+        }
+    }
+
     async fn delete(&self, blob_id: &BlobId) -> Result<(), BlobStoreError> {
         self.inner.delete(blob_id).await
     }
@@ -659,6 +693,256 @@ mod tests {
         assert!(matches!(err, BlobStoreError::NotFound(id) if id == invalid));
         let err = store.delete(&invalid).await.expect_err("invalid delete");
         assert!(matches!(err, BlobStoreError::NotFound(id) if id == invalid));
+    }
+
+    /// Decoded bytes of [`PNG_SIGNATURE_BASE64`].
+    const PNG_SIGNATURE_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    /// Write an image the way MobKit's adapter did before 0.8.41: decoded
+    /// bytes through `put_bytes`, addressed by MobKit's raw-bytes recipe.
+    async fn put_pre_0841_image(binary: &dyn BinaryBlobStore) -> BlobId {
+        let stored = binary
+            .put_bytes("image/png", Bytes::from_static(PNG_SIGNATURE_BYTES))
+            .await
+            .expect("put raw bytes");
+        assert_ne!(
+            stored.blob_id,
+            meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64),
+            "the fixture must model a non-content address"
+        );
+        stored.blob_id
+    }
+
+    fn user_image_ref(blob_id: &BlobId) -> meerkat_core::types::Message {
+        meerkat_core::types::Message::User(meerkat_core::types::UserMessage::with_blocks(vec![
+            meerkat_core::types::ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: meerkat_core::types::ImageData::Blob {
+                    blob_id: blob_id.clone(),
+                },
+            },
+        ]))
+    }
+
+    fn only_user_image_blob_id(messages: &[meerkat_core::types::Message]) -> BlobId {
+        match messages {
+            [meerkat_core::types::Message::User(user)] => match user.content.as_slice() {
+                [
+                    meerkat_core::types::ContentBlock::Image {
+                        data: meerkat_core::types::ImageData::Blob { blob_id },
+                        ..
+                    },
+                ] => blob_id.clone(),
+                other => unreachable!("expected one blob-backed image, got {other:?}"),
+            },
+            other => unreachable!("expected one user message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_attests_its_pre_0841_raw_bytes_image_address() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let legacy_id = put_pre_0841_image(binary.as_ref()).await;
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let payload = adapter.get(&legacy_id).await.expect("legacy id readable");
+
+        assert_eq!(
+            adapter
+                .attest_address(&legacy_id, &payload)
+                .await
+                .expect("attest"),
+            BlobAddressAttestation::StoreAddress
+        );
+
+        // meerkat's accepting gate reports the payload's content address and
+        // hands back the payload so a fork can re-home the reference.
+        let verification = meerkat_core::verify_stored_image_blob_accepting_store_address(
+            &adapter,
+            &legacy_id,
+            "image/png",
+            1 << 20,
+        )
+        .await
+        .expect("an attested legacy reference verifies");
+        match verification {
+            meerkat_core::StoredImageBlobVerification::StoreAttested { verified, data } => {
+                assert_eq!(
+                    verified.blob_ref.blob_id,
+                    meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64)
+                );
+                assert_eq!(data, PNG_SIGNATURE_BASE64);
+            }
+            other => unreachable!("expected a store-attested verification, got {other:?}"),
+        }
+
+        // The strict gate is unchanged: it still refuses the foreign address.
+        let strict =
+            meerkat_core::verify_stored_image_blob(&adapter, &legacy_id, "image/png", 1 << 20)
+                .await
+                .expect_err("the strict gate does not consult the store");
+        assert!(matches!(
+            strict,
+            meerkat_core::ImageBlobIntegrityError::BlobIdentityMismatch { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn adapter_does_not_attest_a_reference_the_payload_does_not_hash_to() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let legacy_id = put_pre_0841_image(binary.as_ref()).await;
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let payload = adapter.get(&legacy_id).await.expect("legacy id readable");
+
+        let different_bytes = BlobPayload {
+            data: base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n\0"),
+            ..payload.clone()
+        };
+        let different_media_type = BlobPayload {
+            media_type: "image/jpeg".to_string(),
+            ..payload.clone()
+        };
+        let non_canonical_media_type = BlobPayload {
+            media_type: "image/PNG".to_string(),
+            ..payload.clone()
+        };
+        let invalid_base64 = BlobPayload {
+            data: "not base64!".to_string(),
+            ..payload.clone()
+        };
+        for mismatched in [
+            different_bytes,
+            different_media_type,
+            non_canonical_media_type,
+            invalid_base64,
+        ] {
+            assert_eq!(
+                adapter
+                    .attest_address(&legacy_id, &mismatched)
+                    .await
+                    .expect("attest"),
+                BlobAddressAttestation::Unattested,
+                "payload {mismatched:?} must not attest {legacy_id}"
+            );
+        }
+
+        let unrelated_id = compute_blob_id("image/png", b"some other image");
+        assert_eq!(
+            adapter
+                .attest_address(&unrelated_id, &payload)
+                .await
+                .expect("attest"),
+            BlobAddressAttestation::Unattested,
+            "the payload attests only its own raw-bytes address"
+        );
+    }
+
+    /// A reference whose object was replaced by different bytes under the
+    /// same legacy address still fails meerkat's gate: the recipe is
+    /// recomputed from what the store returns, never looked up.
+    #[tokio::test]
+    async fn tampered_legacy_object_is_refused_by_the_accepting_gate() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let legacy_id = compute_blob_id("image/png", PNG_SIGNATURE_BYTES);
+        binary
+            .put_bytes_addressed(
+                legacy_id.clone(),
+                "image/png",
+                Bytes::from_static(b"\x89PNG\r\n\x1a\n\0"),
+            )
+            .await
+            .expect("put tampered bytes under the legacy id");
+        let adapter = Base64BlobStoreAdapter::new(binary);
+
+        let error = meerkat_core::verify_stored_image_blob_accepting_store_address(
+            &adapter,
+            &legacy_id,
+            "image/png",
+            1 << 20,
+        )
+        .await
+        .expect_err("bytes that do not hash to the reference are refused");
+        assert!(matches!(
+            error,
+            meerkat_core::ImageBlobIntegrityError::BlobIdentityMismatch { expected_blob_id, .. }
+                if expected_blob_id == legacy_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn content_addressed_image_is_unaffected_by_attestation() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let adapter = Base64BlobStoreAdapter::new(binary);
+        let stored = adapter
+            .put_image("image/png", PNG_SIGNATURE_BASE64)
+            .await
+            .expect("put base64");
+        let content_id = meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64);
+        assert_eq!(stored.blob_id, content_id);
+
+        let verification = meerkat_core::verify_stored_image_blob_accepting_store_address(
+            &adapter,
+            &content_id,
+            "image/png",
+            1 << 20,
+        )
+        .await
+        .expect("a content-addressed image verifies");
+        assert!(matches!(
+            verification,
+            meerkat_core::StoredImageBlobVerification::ContentAddressed(verified)
+                if verified.blob_ref.blob_id == content_id
+        ));
+        meerkat_core::verify_stored_image_blob(&adapter, &content_id, "image/png", 1 << 20)
+            .await
+            .expect("the strict gate still accepts the content address");
+
+        // The content address is not MobKit's raw-bytes recipe, so the store
+        // claims nothing about it; meerkat never needs to ask.
+        let payload = adapter.get(&content_id).await.expect("get");
+        assert_eq!(
+            adapter
+                .attest_address(&content_id, &payload)
+                .await
+                .expect("attest"),
+            BlobAddressAttestation::Unattested
+        );
+
+        let mut messages = vec![user_image_ref(&content_id)];
+        meerkat_core::image_content::preflight_messages_for_durable_fork(&adapter, &mut messages)
+            .await
+            .expect("fork preflight accepts the content address");
+        assert_eq!(
+            only_user_image_blob_id(&messages),
+            content_id,
+            "a content-addressed reference is not re-homed"
+        );
+    }
+
+    /// HomeCore regression: a transcript holding a pre-0.8.41 image reference
+    /// failed every durable fork with "blob identity mismatch". Through the
+    /// MobKit adapter the fork preflight now re-homes the child's reference to
+    /// meerkat's content address and leaves the source's object in place.
+    #[tokio::test]
+    async fn durable_fork_preflight_rehomes_pre_0841_image_through_the_adapter() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let legacy_id = put_pre_0841_image(binary.as_ref()).await;
+        let adapter = Base64BlobStoreAdapter::new(binary.clone());
+        let content_id = meerkat_core::blob::content_blob_id("image/png", PNG_SIGNATURE_BASE64);
+        let mut messages = vec![user_image_ref(&legacy_id)];
+
+        meerkat_core::image_content::preflight_messages_for_durable_fork(&adapter, &mut messages)
+            .await
+            .expect("an attested legacy reference must not block the fork");
+
+        assert_eq!(only_user_image_blob_id(&messages), content_id);
+        meerkat_core::verify_stored_image_blob(&adapter, &content_id, "image/png", 1 << 20)
+            .await
+            .expect("the child's re-homed reference verifies under meerkat's strict gate");
+        let source_object = binary
+            .get_bytes(&legacy_id)
+            .await
+            .expect("the source's legacy object is kept");
+        assert_eq!(source_object.data.as_ref(), PNG_SIGNATURE_BYTES);
     }
 
     fn compute_legacy_blob_id(media_type: &str, data: &str) -> BlobId {
