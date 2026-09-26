@@ -9521,8 +9521,18 @@ async fn collect_console_snapshot_read_model(
     // `build_live_snapshot` calls never need to enter MobHandle async
     // methods. The session-id index in `state` was populated above by
     // `collect_console_session_index_for_handle`.
-    let (primary_members, _primary_owner_index) =
-        project_console_members_from_handle(&handle, None, None, &state, &registered_labels).await;
+    let runtime_machine = runtime
+        .session_service()
+        .and_then(|service| service.runtime_adapter());
+    let (primary_members, _primary_owner_index) = project_console_members_from_handle(
+        &handle,
+        runtime_machine.as_deref(),
+        None,
+        None,
+        &state,
+        &registered_labels,
+    )
+    .await;
     state.primary_members = primary_members;
 
     let Some(mcp_state) = runtime.agent_mob_mcp_state() else {
@@ -9558,6 +9568,7 @@ async fn collect_console_snapshot_read_model(
             collect_console_session_index_for_handle(&delegate_handle, &mut state).await;
             let (delegate_members, _delegate_owner_index) = project_console_members_from_handle(
                 &delegate_handle,
+                runtime_machine.as_deref(),
                 Some(&host_identity),
                 Some(mob_id.as_str()),
                 &state,
@@ -10585,6 +10596,7 @@ async fn prime_access_cache_from_handle_with_registry(
 
 async fn project_console_members_from_handle(
     handle: &MobHandle,
+    runtime_machine: Option<&meerkat_runtime::MeerkatMachine>,
     host_identity: Option<&str>,
     source_mob_id: Option<&str>,
     read_model: &ConsoleSnapshotReadModelState,
@@ -10653,17 +10665,14 @@ async fn project_console_members_from_handle(
             progress: None,
         });
     }
-    attach_member_progress(handle, &entries, &mut members).await;
+    attach_member_progress(handle, runtime_machine, &entries, &mut members).await;
     (members, session_owner_by_id)
 }
 
-/// Console progress projection cap: `member_status` is an actor-mailbox
-/// roundtrip per member, and the experience endpoint refreshes every ~15s
-/// (plus SSE-triggered refetches). Small durable rosters (HomeCore: 16) get
-/// liveness for free; whole-mob fan-out at OB3 scale (hundreds of members)
-/// would compete with real work on the mob actor mailbox, so large rosters
-/// skip the projection unless the operator raises the cap.
-/// `MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP` overrides; `0` disables entirely.
+/// Console progress projection cap: the experience endpoint refreshes every
+/// ~15s (plus SSE-triggered refetches) and reads each non-final member's
+/// status; large rosters skip the projection unless the operator raises the
+/// cap. `MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP` overrides; `0` disables entirely.
 const CONSOLE_PROGRESS_MEMBER_CAP: usize = 64;
 
 fn console_progress_member_cap() -> usize {
@@ -10673,14 +10682,134 @@ fn console_progress_member_cap() -> usize {
         .unwrap_or(CONSOLE_PROGRESS_MEMBER_CAP)
 }
 
-/// Attach the machine-owned liveness projection (meerkat 0.7.29+, ask 14) to
-/// non-final console members. Best-effort: a failed or absent snapshot leaves
-/// `progress: None` — the console renders nothing rather than a lie.
+/// How many member-status reads the console runs at once.
+const CONSOLE_PROGRESS_READ_CONCURRENCY: usize = 8;
+
+/// How long the console waits for one member's status read.
+const CONSOLE_MEMBER_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the console waits for one member's run state from the runtime
+/// machine.
+const CONSOLE_RUN_STATE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A console member's fallback liveness, in the wire shape of meerkat's
+/// `MemberProgressSnapshot`, which the console renders.
+///
+/// Used only when a member's status read errors, times out, or carries no
+/// progress. It comes from the runtime machine the member runs on, which says
+/// only whether a run is open: the health class and last progress, which
+/// meerkat derives from member-status reads, are the typed `unknown` and
+/// `unchanged`.
+#[derive(Debug, serde::Serialize)]
+struct ConsoleMemberProgress {
+    run_state: meerkat_mob::MemberRunState,
+    /// The open run, if any; pending operations are not visible here.
+    in_flight_work: u64,
+    last_progress_at_ms: u64,
+    last_progress_event: ConsoleProgressEvent,
+    health: ConsoleProgressHealth,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConsoleProgressEvent {
+    Unchanged,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConsoleProgressHealth {
+    Unknown,
+}
+
+impl ConsoleMemberProgress {
+    fn from_run_state(run_state: meerkat_mob::MemberRunState) -> Self {
+        Self {
+            run_state,
+            in_flight_work: u64::from(run_state == meerkat_mob::MemberRunState::RunOpen),
+            last_progress_at_ms: 0,
+            last_progress_event: ConsoleProgressEvent::Unchanged,
+            health: ConsoleProgressHealth::Unknown,
+        }
+    }
+}
+
+/// Whether `session` has a run open on `runtime_machine`, bounded so a busy
+/// runtime never stalls the console. Anything the machine cannot answer
+/// reads as `Unknown`.
+async fn console_member_run_state(
+    runtime_machine: Option<&meerkat_runtime::MeerkatMachine>,
+    session: Option<&meerkat_core::types::SessionId>,
+) -> meerkat_mob::MemberRunState {
+    use meerkat_runtime::SessionServiceRuntimeExt as _;
+
+    let (Some(runtime_machine), Some(session)) = (runtime_machine, session) else {
+        return meerkat_mob::MemberRunState::Unknown;
+    };
+    match tokio::time::timeout(
+        CONSOLE_RUN_STATE_TIMEOUT,
+        runtime_machine.runtime_state(session),
+    )
+    .await
+    {
+        Ok(Ok(meerkat_runtime::RuntimeState::Running)) => meerkat_mob::MemberRunState::RunOpen,
+        Ok(Ok(meerkat_runtime::RuntimeState::Idle | meerkat_runtime::RuntimeState::Attached)) => {
+            meerkat_mob::MemberRunState::Idle
+        }
+        _ => meerkat_mob::MemberRunState::Unknown,
+    }
+}
+
+/// Attach meerkat's machine-owned liveness projection (run state, in-flight
+/// work, last progress, health class) to every non-final console member.
+///
+/// Status reads run [`CONSOLE_PROGRESS_READ_CONCURRENCY`] at a time, each
+/// bounded by [`CONSOLE_MEMBER_STATUS_TIMEOUT`]. A member whose read errors,
+/// times out, or carries no progress gets [`ConsoleMemberProgress`] from the
+/// runtime machine instead: it is never left out.
 async fn attach_member_progress(
     handle: &MobHandle,
+    runtime_machine: Option<&meerkat_runtime::MeerkatMachine>,
     entries: &[meerkat_mob::runtime::MobMemberListEntry],
     members: &mut [ConsoleMember],
 ) {
+    attach_member_progress_with(
+        handle,
+        runtime_machine,
+        entries,
+        members,
+        CONSOLE_MEMBER_STATUS_TIMEOUT,
+        |identity| {
+            Box::pin(async move {
+                handle
+                    .member_status(&identity)
+                    .await
+                    .map(|snapshot| {
+                        snapshot
+                            .progress
+                            .and_then(|progress| serde_json::to_value(progress).ok())
+                    })
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+    .await;
+}
+
+/// A member's serialized progress, or `None` when its status carries none.
+type MemberProgressRead<'a> = futures::future::BoxFuture<'a, Result<Option<Value>, String>>;
+
+/// [`attach_member_progress`] over `read_status`.
+async fn attach_member_progress_with<'a>(
+    handle: &'a MobHandle,
+    runtime_machine: Option<&'a meerkat_runtime::MeerkatMachine>,
+    entries: &'a [meerkat_mob::runtime::MobMemberListEntry],
+    members: &mut [ConsoleMember],
+    read_timeout: Duration,
+    read_status: impl Fn(meerkat_mob::AgentIdentity) -> MemberProgressRead<'a>,
+) {
+    use futures::StreamExt as _;
+
     let cap = console_progress_member_cap();
     if entries.len() > cap {
         tracing::debug!(
@@ -10691,18 +10820,61 @@ async fn attach_member_progress(
         );
         return;
     }
-    for (entry, member) in entries.iter().zip(members.iter_mut()) {
-        if entry.is_final {
-            continue;
+    let reads: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !entry.is_final)
+        .map(|(index, entry)| {
+            member_progress_or_fallback(
+                index,
+                handle,
+                runtime_machine,
+                entry,
+                read_timeout,
+                read_status(entry.agent_identity.clone()),
+            )
+        })
+        .collect();
+    let progress: Vec<(usize, Option<Value>)> = futures::stream::iter(reads)
+        .buffer_unordered(CONSOLE_PROGRESS_READ_CONCURRENCY)
+        .collect()
+        .await;
+    for (index, progress) in progress {
+        if let Some(member) = members.get_mut(index) {
+            member.progress = progress;
         }
-        let Ok(snapshot) = handle.member_status(&entry.agent_identity).await else {
-            continue;
-        };
-        member.progress = snapshot
-            .progress
-            .as_ref()
-            .and_then(|progress| serde_json::to_value(progress).ok());
     }
+}
+
+/// One member's progress: its status read's, or the runtime-machine
+/// fallback when the read errors, times out, or carries no progress.
+async fn member_progress_or_fallback(
+    index: usize,
+    handle: &MobHandle,
+    runtime_machine: Option<&meerkat_runtime::MeerkatMachine>,
+    entry: &meerkat_mob::runtime::MobMemberListEntry,
+    read_timeout: Duration,
+    read: MemberProgressRead<'_>,
+) -> (usize, Option<Value>) {
+    let unreadable = match tokio::time::timeout(read_timeout, read).await {
+        Ok(Ok(Some(progress))) => return (index, Some(progress)),
+        Ok(Ok(None)) => "the status carries no progress".to_string(),
+        Ok(Err(error)) => error,
+        Err(_) => format!("no status within {read_timeout:?}"),
+    };
+    tracing::debug!(
+        agent_identity = %entry.agent_identity,
+        reason = %unreadable,
+        "console progress falls back to the runtime run state"
+    );
+    let session = handle
+        .resolve_bridge_session_id(&entry.agent_identity)
+        .await;
+    let run_state = console_member_run_state(runtime_machine, session.as_ref()).await;
+    (
+        index,
+        serde_json::to_value(ConsoleMemberProgress::from_run_state(run_state)).ok(),
+    )
 }
 
 async fn build_aggregator_live_snapshot(
@@ -16526,6 +16698,7 @@ comms = true
             &runtime.handle(),
             None,
             None,
+            None,
             &empty_read_model,
             &BTreeMap::new(),
         )
@@ -16539,6 +16712,7 @@ comms = true
         let refreshed_read_model = collect_console_snapshot_read_model(&runtime).await;
         let (members, session_owner_by_id) = project_console_members_from_handle(
             &runtime.handle(),
+            None,
             None,
             None,
             &refreshed_read_model,
@@ -17565,5 +17739,190 @@ comms = true
         assert_eq!(readiness["timeout"], json!(false), "{readiness}");
         assert_eq!(readiness["ready"], json!(expected_ready), "{readiness}");
         assert_eq!(readiness["pending"], json!([]), "{readiness}");
+    }
+
+    /// A console test runtime whose members run on `TestClient`, with the
+    /// runtime machine they run on.
+    async fn console_progress_runtime(
+        mob_id: &str,
+        root: &std::path::Path,
+        members: &[&str],
+    ) -> Result<
+        (MobRuntime, Option<Arc<meerkat_runtime::MeerkatMachine>>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let definition = MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\n\
+             [profiles.worker.tools]\ncomms = true\n"
+        ))?;
+        let runtime = MobRuntime::bootstrap(
+            MobBootstrapSpec::ephemeral(
+                definition,
+                MobStorage::in_memory(),
+                root.to_path_buf(),
+                4,
+                None,
+            )
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(Arc::new(TestClient::default())),
+            }),
+        )
+        .await?;
+        for member in members {
+            let mut spec = SpawnMemberSpec::new(
+                ProfileName::from("worker"),
+                meerkat_mob::AgentIdentity::from(*member),
+            );
+            spec.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+            runtime.handle().ensure_member(spec).await?;
+        }
+        let runtime_machine = runtime
+            .session_service()
+            .and_then(|service| service.runtime_adapter());
+        Ok((runtime, runtime_machine))
+    }
+
+    fn console_progress_of<'a>(members: &'a [ConsoleMember], id: &str) -> Option<&'a Value> {
+        members
+            .iter()
+            .find(|member| member.agent_identity == id)
+            .and_then(|member| member.progress.as_ref())
+    }
+
+    /// Member-status load (K2): a member whose status read errors, times
+    /// out, or carries no progress is never left without progress. It gets
+    /// the runtime machine's run state with the typed `unknown` health; a
+    /// member whose read succeeds keeps meerkat's progress as is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn console_progress_tolerates_status_read_errors_with_a_typed_fallback()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let (runtime, runtime_machine) = console_progress_runtime(
+            "console-progress-fallback",
+            temp_dir.path(),
+            &["read", "refused", "slow", "empty"],
+        )
+        .await?;
+        let handle = runtime.handle();
+        let (mut members, _) = project_console_members_from_handle(
+            &handle,
+            runtime_machine.as_deref(),
+            None,
+            None,
+            &ConsoleSnapshotReadModelState::default(),
+            &BTreeMap::new(),
+        )
+        .await;
+        for member in &mut members {
+            member.progress = None;
+        }
+        let entries = handle.list_members_including_retiring().await;
+        let meerkat_progress = json!({
+            "run_state": "run_open",
+            "in_flight_work": 2,
+            "last_progress_at_ms": 42,
+            "last_progress_event": "execution_advanced",
+            "health": "degraded",
+        });
+        let reported = meerkat_progress.clone();
+        super::attach_member_progress_with(
+            &handle,
+            runtime_machine.as_deref(),
+            &entries,
+            &mut members,
+            Duration::from_millis(100),
+            |identity| {
+                let reported = reported.clone();
+                Box::pin(async move {
+                    match identity.as_str() {
+                        "read" => Ok(Some(reported)),
+                        "refused" => Err("mob lifecycle operation admission is still pending at \
+                                          observation_lane_saturated: member_status_observation"
+                            .to_string()),
+                        "slow" => std::future::pending().await,
+                        _ => Ok(None),
+                    }
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(
+            console_progress_of(&members, "read"),
+            Some(&meerkat_progress)
+        );
+        let fallback = json!({
+            "run_state": "idle",
+            "in_flight_work": 0,
+            "last_progress_at_ms": 0,
+            "last_progress_event": "unchanged",
+            "health": "unknown",
+        });
+        for id in ["refused", "slow", "empty"] {
+            assert_eq!(console_progress_of(&members, id), Some(&fallback), "{id}");
+        }
+        Ok(())
+    }
+
+    /// The console keeps meerkat's own progress (health class, last
+    /// progress) when a member's status read succeeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn console_progress_keeps_meerkats_progress_when_the_read_succeeds()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let (runtime, runtime_machine) =
+            console_progress_runtime("console-progress-read", temp_dir.path(), &["solo"]).await?;
+        let handle = runtime.handle();
+        let direct = handle
+            .member_status(&meerkat_mob::AgentIdentity::from("solo"))
+            .await?
+            .progress
+            .map(serde_json::to_value)
+            .transpose()?
+            .expect("meerkat reports progress for a local member");
+        let (members, _) = project_console_members_from_handle(
+            &handle,
+            runtime_machine.as_deref(),
+            None,
+            None,
+            &ConsoleSnapshotReadModelState::default(),
+            &BTreeMap::new(),
+        )
+        .await;
+        let progress = console_progress_of(&members, "solo").expect("solo has progress");
+        assert_eq!(progress.get("health"), direct.get("health"));
+        assert_eq!(progress.get("run_state"), direct.get("run_state"));
+        assert_ne!(
+            progress.get("health").and_then(Value::as_str),
+            Some("unknown"),
+            "meerkat's health class, not the fallback: {progress}"
+        );
+        Ok(())
+    }
+
+    /// A member whose run state the console cannot read is shown as
+    /// `unknown`, never left without progress.
+    #[tokio::test]
+    async fn console_progress_reports_an_unreadable_run_state_as_unknown() {
+        assert_eq!(
+            super::console_member_run_state(None, None).await,
+            meerkat_mob::MemberRunState::Unknown
+        );
+        let progress = serde_json::to_value(super::ConsoleMemberProgress::from_run_state(
+            meerkat_mob::MemberRunState::Unknown,
+        ))
+        .expect("progress serializes");
+        assert_eq!(
+            progress,
+            json!({
+                "run_state": "unknown",
+                "in_flight_work": 0,
+                "last_progress_at_ms": 0,
+                "last_progress_event": "unchanged",
+                "health": "unknown",
+            })
+        );
     }
 }

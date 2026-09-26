@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Concurrent `mobkit/inspect_identity` calls no longer each cost a
+  member-status read. Meerkat admits one member-status read per mob at a time
+  (refusing the rest as `observation_lane_saturated` before meerkat 0.8.45),
+  so a once-a-second `inspect_identity` poller made `mob_check_member` fail.
+  Concurrent inspections of one member incarnation (and `wait_for_output`,
+  which polls the same path) now join one bridge read in flight. A settled
+  read is never reused, and a caller never joins a read that started before a
+  completion it already counts, so the output next to a completion cursor is
+  never an older turn's.
+- The console's per-member progress reads member status with bounded
+  concurrency instead of one member at a time, and no non-final member is
+  silently left without progress any more: a member whose status read errors,
+  times out, or carries no progress shows its run state from the runtime
+  machine it runs on (`run_open`, `idle` or `unknown`) with the typed
+  `unknown` health class, instead of being dropped.
+
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either
   order) now counts as a completion entry. `is_detached_completion_entry`
