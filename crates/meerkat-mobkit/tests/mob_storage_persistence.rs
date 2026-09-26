@@ -1901,3 +1901,154 @@ async fn declared_ephemeral_storage_may_resume_in_process() {
     .expect("a declared in-process storage must be allowed to resume");
     drop(second);
 }
+
+async fn boot_raw_activation_fixture(root: &Path, mob_id: &str) -> UnifiedRuntime {
+    std::fs::create_dir_all(root).expect("activation fixture root");
+    let definition = definition_with(&format!(
+        r#"
+[mob]
+id = "{mob_id}"
+
+[[wiring.role_wiring]]
+a = "lead"
+b = "worker"
+
+[profiles.lead]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+"#
+    ));
+    let (storage, provenance) =
+        persistent_mob_storage(root.join("mob.sqlite3")).expect("persistent ledger");
+    let sessions = Arc::new(
+        meerkat_store::SqliteSessionStore::open(root.join("sessions.sqlite3"))
+            .expect("persistent session store"),
+    );
+    let spec = MobBootstrapSpec::persistent(definition, storage, root.to_path_buf(), 8, sessions)
+        .expect("persistent fixture with the agent-tool identity slot")
+        .with_mob_storage_provenance(provenance)
+        .with_options(options());
+    UnifiedRuntime::bootstrap(
+        spec,
+        MobKitConfig {
+            modules: Vec::new(),
+            discovery: DiscoverySpec {
+                namespace: mob_id.to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        },
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("raw prepared runtime")
+}
+
+#[tokio::test]
+async fn classic_activation_consumes_stopped_obligation_and_reconciles_deferred_topology() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    const MOB_ID: &str = "classic-pending-activation-topology";
+    let first = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    assert_eq!(
+        first.mob_handle().status().await.expect("first state"),
+        meerkat_mob::MobState::Running
+    );
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    drop(first);
+
+    let mut second = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    assert_eq!(
+        second.mob_handle().status().await.expect("prepared state"),
+        meerkat_mob::MobState::Stopped,
+        "this regression must exercise the durable stopped ledger"
+    );
+    assert!(
+        second.bootstrap_edges_report().await.is_none(),
+        "topology must remain deferred before activation"
+    );
+    second
+        .activate_without_identity_context()
+        .await
+        .expect("classic composition consumes pending activation");
+    assert_eq!(
+        second.mob_handle().status().await.expect("activated state"),
+        meerkat_mob::MobState::Running
+    );
+    let report = second
+        .bootstrap_edges_report()
+        .await
+        .expect("configured topology must be reconciled after activation");
+    assert!(report.is_complete(), "{report:?}");
+    second
+        .activate_without_identity_context()
+        .await
+        .expect("an already consumed obligation is a no-op");
+    assert_eq!(second.bootstrap_edges_report().await, Some(report));
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}
+
+#[tokio::test]
+async fn classic_activation_refuses_installed_identity_authority_without_consuming_pending() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    const MOB_ID: &str = "identity-guard-pending-activation";
+    let first = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    drop(first);
+
+    let mut second = boot_raw_activation_fixture(temp.path(), MOB_ID).await;
+    assert_eq!(
+        second.mob_handle().status().await.expect("prepared state"),
+        meerkat_mob::MobState::Stopped
+    );
+    let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: Arc::new(LocalContinuityStore::in_memory().expect("continuity")),
+        lease_provider: Arc::new(LocalLeaseProvider::new()),
+        runtime_instance_id: MOB_ID.to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: None,
+        default_timeout: None,
+    }));
+    let context = Arc::new(IdentityFirstRuntimeContext::new(
+        identity_runtime,
+        Arc::new(MutableRosterProvider::new(Vec::new())),
+        None,
+        None,
+        Some(second.mob_handle().definition().clone()),
+    ));
+    second.attach_identity_first_context(context.clone());
+    let error = second
+        .activate_without_identity_context()
+        .await
+        .expect_err("classic finalization must reject installed identity authority");
+    assert!(
+        matches!(error, MobRuntimeError::InvalidConfig(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        second.mob_handle().status().await.expect("refused state"),
+        meerkat_mob::MobState::Stopped
+    );
+    assert!(second.bootstrap_edges_report().await.is_none());
+    second
+        .install_and_bootstrap_identity_first_context(context, &[])
+        .await
+        .expect("identity installer must retain and consume the refused pending token");
+    assert_eq!(
+        second
+            .mob_handle()
+            .status()
+            .await
+            .expect("identity activation state"),
+        meerkat_mob::MobState::Running
+    );
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}

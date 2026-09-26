@@ -9201,9 +9201,9 @@ pub(crate) struct PendingMobActivation {
 impl PendingMobActivation {
     /// Perform the deferred `Stopped` -> `Running` transition.
     ///
-    /// Call only after the identity context is installed and current continuity
-    /// records are registered; that ordering is the whole reason this is
-    /// deferred.
+    /// The host must first declare its composition. Identity compositions
+    /// register current continuity owners before activation; classic
+    /// compositions explicitly finalize without an identity context.
     pub(crate) async fn activate(self) -> Result<(), MobRuntimeError> {
         match self.handle.status().await? {
             // The only transition MobHandle::resume performs.
@@ -9285,8 +9285,8 @@ impl MobRuntime {
     /// Build the mob without committing to `Running`.
     ///
     /// Returns the runtime plus, when a lift is owed and an identity runtime
-    /// slot says identity-first composition is coming, the typed activation that
-    /// must be consumed once continuity is registered.
+    /// slot permits late identity composition, the typed activation that the
+    /// host must consume after choosing and installing its authority.
     pub(crate) async fn prepare(
         mut spec: MobBootstrapSpec,
     ) -> Result<(Self, Option<PendingMobActivation>), MobRuntimeError> {
@@ -10563,12 +10563,12 @@ pub(crate) async fn send_console_human_on_mob(
         "console human target has no current runtime binding",
     ))?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    let status = tokio::time::timeout_at(deadline, handle.member_status(&member.agent_identity))
-        .await
-        .map_err(|_| MobError::ActorCommandTimedOut {
-            command_kind: "MemberStatus",
-            stage: "console_human_target",
-        })??;
+    let status = crate::member_status_observation::observe_member_status_until(
+        handle,
+        &member.agent_identity,
+        deadline,
+    )
+    .await?;
     if status.external_member.is_some() {
         // Keep remote work transport semantics, but use the original binding:
         // a stale local snapshot must never become a send to a replacement peer.

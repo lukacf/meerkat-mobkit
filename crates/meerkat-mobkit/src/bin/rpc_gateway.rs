@@ -13111,6 +13111,13 @@ external_addressable = true
             compaction_floors: Some(compaction_floors),
         })
     } else {
+        if let Err(error) = runtime.activate_without_identity_context().await {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("activating runtime without an identity roster failed: {error}"),
+            );
+        }
         None
     };
 

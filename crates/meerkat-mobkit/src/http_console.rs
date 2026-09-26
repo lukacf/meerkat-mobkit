@@ -8331,17 +8331,16 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(error));
             }
-            match runtime
-                .handle()
-                // Decode before encoding. A caller may hand back the runtime
-                // alias our own status responses emit, and encoding that
-                // directly keys a roster row nothing owns - which here returns a
-                // WELL-FORMED "unknown/final" status rather than an error, so a
-                // live member reads as finished.
-                .member_status(&crate::member_comms_id::roster_member_id_for_supplied_id(
-                    &member_id,
-                ))
-                .await
+            // Decode before encoding. A caller may hand back the runtime
+            // alias our own status responses emit. Keep that exact owner target
+            // while waiting for a briefly occupied observation lane.
+            let target = crate::member_comms_id::roster_member_id_for_supplied_id(&member_id);
+            match crate::member_status_observation::observe_member_status_until(
+                &runtime.handle(),
+                &target,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
+            .await
             {
                 Ok(snapshot) => response_value(
                     response_id,

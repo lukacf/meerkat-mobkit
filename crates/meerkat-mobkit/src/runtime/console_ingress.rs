@@ -93,6 +93,8 @@ pub struct ConsoleAgentLiveSnapshot {
     pub degraded_reason: Option<String>,
 }
 
+// The wire contract distinguishes missing (unknown), null (quiet), and a phase.
+#[allow(clippy::option_option)]
 fn deserialize_response_phase<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,

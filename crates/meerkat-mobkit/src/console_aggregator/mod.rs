@@ -5296,8 +5296,8 @@ fn history_counterpart_owner_matches(
         // is their identity, but cannot overrule contradictory known owners.
         return !(history.run_id.is_some()
             && live.run_id.is_some()
-            && history.run_id != live.run_id)
-            && !(history.interaction_id.is_some()
+            && history.run_id != live.run_id
+            || history.interaction_id.is_some()
                 && live.interaction_id.is_some()
                 && history.interaction_id != live.interaction_id);
     }
@@ -12828,7 +12828,7 @@ comms = true
                 "session" => live.session_id = Some("session-b".to_string()),
                 "missing-session" => live.session_id = None,
                 "interaction" => {
-                    live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string())
+                    live.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string());
                 }
                 "missing-interaction" => live.interaction_id = None,
                 _ => unreachable!(),
@@ -12965,7 +12965,7 @@ comms = true
                 "run" => candidate.run_id = Some(uuid::Uuid::from_u128(0xfeed_9202).to_string()),
                 "interaction" => {
                     // Two genuine human sends can contain exactly the same text.
-                    candidate.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string())
+                    candidate.interaction_id = Some(uuid::Uuid::from_u128(0xfeed_9302).to_string());
                 }
                 "source" => candidate.source.kind = ConsoleFrameSourceKind::ConsoleEvent,
                 "whitespace" => candidate.payload["content"] = json!("Human input."),
@@ -12973,7 +12973,7 @@ comms = true
                     candidate.payload["content"] = json!([
                         { "type": "text", "text": "  Human input.\n" },
                         { "type": "image", "source": "another-image" }
-                    ])
+                    ]);
                 }
                 _ => unreachable!(),
             }
@@ -13010,7 +13010,7 @@ comms = true
                 "interaction" => candidate.interaction_id = None,
                 "whitespace" => candidate.payload["content"] = json!("Ready."),
                 "mixed-content" => {
-                    candidate.payload["content"] = json!([{ "type": "text", "text": "  Ready.\n" }, { "type": "image", "source": "different-image" }])
+                    candidate.payload["content"] = json!([{ "type": "text", "text": "  Ready.\n" }, { "type": "image", "source": "different-image" }]);
                 }
                 _ => unreachable!(),
             }
@@ -13040,13 +13040,13 @@ comms = true
             let mut durable = history.clone();
             match mismatch {
                 "whitespace" => {
-                    candidate.payload["result"] = json!([{ "type": "text", "text": "File text" }])
+                    candidate.payload["result"] = json!([{ "type": "text", "text": "File text" }]);
                 }
                 "mixed-content" => {
-                    candidate.payload["result"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "different-image" }])
+                    candidate.payload["result"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "different-image" }]);
                 }
                 "history-mixed-content" => {
-                    durable.payload["content"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "history-image" }])
+                    durable.payload["content"] = json!([{ "type": "text", "text": "  File text\n" }, { "type": "image", "source": "history-image" }]);
                 }
                 "error" => candidate.payload["is_error"] = json!(true),
                 _ => unreachable!(),

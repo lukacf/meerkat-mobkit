@@ -748,6 +748,31 @@ impl UnifiedRuntime {
         }
     }
 
+    /// Complete bootstrap when the host declares that no identity context
+    /// will be installed. Agent tools can retain an identity slot even for
+    /// this composition, so slot presence alone cannot discharge activation.
+    ///
+    /// Identity compositions must instead use
+    /// [`Self::install_and_bootstrap_identity_first_context`] to register
+    /// continuity owners before resumed sessions become runnable.
+    pub async fn activate_without_identity_context(&mut self) -> Result<(), MobRuntimeError> {
+        if self.identity_first_context.is_some() {
+            return Err(MobRuntimeError::InvalidConfig(
+                "cannot activate without identity authority after an identity context is installed"
+                    .to_string(),
+            ));
+        }
+        let pending = self.pending_mob_activation.lock().await.take();
+        if let Some(pending) = pending {
+            if let Err(error) = pending.activate().await {
+                self.shutdown().await;
+                return Err(error);
+            }
+            self.reconcile_bootstrap_edges_if_configured().await;
+        }
+        Ok(())
+    }
+
     /// Run bootstrap edge reconciliation if this runtime was configured for it.
     ///
     /// One rule, shared by the immediate path and the deferred identity-first
@@ -1002,7 +1027,8 @@ impl UnifiedRuntime {
         // and a revived session with no registered owner is refused; and
         // materialization must follow the lift, because a Stopped mob cannot
         // spawn. So this sits between installing the context and rostering.
-        if let Some(pending) = self.pending_mob_activation.lock().await.take() {
+        let pending = self.pending_mob_activation.lock().await.take();
+        if let Some(pending) = pending {
             let registered_sessions = match context
                 .runtime
                 .register_persisted_continuity_owners(roster)

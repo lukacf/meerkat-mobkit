@@ -1536,29 +1536,26 @@ impl UnifiedRuntimeBuilder {
             runtime.identity_first_context.clone(),
             identity_roster_specs.as_ref(),
         ) {
-            runtime.install_identity_first_context_authority(Arc::clone(&context));
-
-            // Identity bootstrap may now launch background warming; if it
-            // fails, drive the fully assembled runtime through the same
-            // cooperative shutdown path used by embedders so partially
-            // acquired authority is not detached.
-            if let Err(err) = context.bootstrap_roster(roster_specs).await {
+            // The shared installer registers continuity owners before lifting
+            // a persistent stopped mob and owns bootstrap failure cleanup.
+            if let Err(err) = runtime
+                .install_and_bootstrap_identity_first_context(context, roster_specs)
+                .await
+            {
                 let build_error = UnifiedRuntimeBuilderError::Bootstrap(
                     UnifiedRuntimeBootstrapError::IdentityFirst(format!(
                         "identity bootstrap failed: {err}"
                     )),
                 );
-                runtime.shutdown().await;
                 return Err(build_error);
             }
-
-            *runtime.identity_lease_renewal_task.lock().await =
-                Some(context.runtime.clone().spawn_tracked_lease_renewal_task());
-            *runtime.identity_continuity_repair_task.lock().await = Some(
-                context
-                    .clone()
-                    .spawn_tracked_broken_identity_repair_task(Default::default()),
-            );
+        } else {
+            runtime
+                .activate_without_identity_context()
+                .await
+                .map_err(|error| {
+                    UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::Mob(error))
+                })?;
         }
 
         if runtime.identity_first_context.is_none()
@@ -2073,8 +2070,8 @@ fn verify_shared_state_root(
     continuity_dir: &std::path::Path,
     state_path: &std::path::Path,
 ) -> Result<(), UnifiedRuntimeBuilderError> {
-    let canonical_continuity =
-        canonicalize_for_root_comparison(continuity_dir).map_err(|error| {
+    let canonical_continuity = crate::storage_layout::canonicalize_storage_root(continuity_dir)
+        .map_err(|error| {
             UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
                 "cannot canonicalize continuity_from_state_dir root {} to verify it is the \
                  same state directory as persistent_state {}: {error}",
@@ -2082,14 +2079,15 @@ fn verify_shared_state_root(
                 state_path.display()
             ))
         })?;
-    let canonical_state = canonicalize_for_root_comparison(state_path).map_err(|error| {
-        UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
-            "cannot canonicalize persistent_state root {} to verify it is the same state \
+    let canonical_state =
+        crate::storage_layout::canonicalize_storage_root(state_path).map_err(|error| {
+            UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                "cannot canonicalize persistent_state root {} to verify it is the same state \
              directory as continuity_from_state_dir root {}: {error}",
-            state_path.display(),
-            continuity_dir.display()
-        ))
-    })?;
+                state_path.display(),
+                continuity_dir.display()
+            ))
+        })?;
     if canonical_continuity != canonical_state {
         return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
             format!(
@@ -2104,44 +2102,6 @@ fn verify_shared_state_root(
         ));
     }
     Ok(())
-}
-
-/// Canonicalize a state-root path for physical-identity comparison.
-///
-/// `std::fs::canonicalize` when the path exists. A not-yet-created root
-/// canonicalizes its deepest existing ancestor and rejoins the missing
-/// remainder, so the comparison still resolves symlinks and relative
-/// spellings; a fully relative path with no existing prefix anchors at the
-/// working directory, exactly where the stores would create it. Any other
-/// failure (permissions, a `..` or root ending above a missing component)
-/// propagates — callers fail closed.
-fn canonicalize_for_root_comparison(path: &std::path::Path) -> std::io::Result<PathBuf> {
-    let mut existing = path.to_path_buf();
-    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if existing.as_os_str().is_empty() {
-            existing = std::env::current_dir()?;
-            continue;
-        }
-        match std::fs::canonicalize(&existing) {
-            Ok(mut canonical) => {
-                for component in missing_tail.iter().rev() {
-                    canonical.push(component);
-                }
-                return Ok(canonical);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
-                    // A `..` or root ending above a missing component cannot
-                    // be resolved textually without lying about identity.
-                    return Err(error);
-                };
-                missing_tail.push(name);
-                existing = existing.parent().map(PathBuf::from).unwrap_or_default();
-            }
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 #[cfg(test)]

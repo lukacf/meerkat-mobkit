@@ -36,6 +36,7 @@ pub mod http_sse;
 pub mod live_contracts;
 pub mod live_wiring;
 pub mod member_comms_id;
+pub(crate) mod member_status_observation;
 pub mod member_tool_policy;
 pub mod memory;
 pub mod memory_wiring;

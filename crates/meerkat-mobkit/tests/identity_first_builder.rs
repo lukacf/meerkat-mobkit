@@ -4494,3 +4494,249 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
 
     runtime.shutdown().await;
 }
+
+fn activation_regression_spec(
+    root: &std::path::Path,
+    mob_id: &str,
+) -> meerkat_mobkit::MobBootstrapSpec {
+    std::fs::create_dir_all(root).expect("activation fixture root");
+    let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+        r#"
+[mob]
+id = "{mob_id}"
+
+[profiles.default]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.default.tools]
+comms = true
+"#
+    ))
+    .expect("activation fixture definition");
+    let (storage, provenance) =
+        meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(root.join("mob.sqlite3"))
+            .expect("persistent mob ledger");
+    let sessions = Arc::new(
+        meerkat_store::SqliteSessionStore::open(root.join("sessions.sqlite3"))
+            .expect("persistent sessions"),
+    );
+    // The persistent constructor installs the agent-tool identity slot even
+    // for the classic composition, matching the gateway regression.
+    meerkat_mobkit::MobBootstrapSpec::persistent(
+        definition,
+        storage,
+        root.to_path_buf(),
+        8,
+        sessions,
+    )
+    .expect("persistent spec with agent mob tools")
+    .with_mob_storage_provenance(provenance)
+    .with_options(meerkat_mobkit::MobBootstrapOptions {
+        allow_ephemeral_sessions: false,
+        notify_orchestrator_on_resume: true,
+        default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+    })
+}
+
+fn activation_regression_builder(root: &std::path::Path, mob_id: &str) -> UnifiedRuntimeBuilder {
+    UnifiedRuntimeBuilder::default()
+        .mob_spec(activation_regression_spec(root, mob_id))
+        .persistent_state(root)
+        .module_config(meerkat_mobkit::MobKitConfig {
+            modules: Vec::new(),
+            discovery: meerkat_mobkit::DiscoverySpec {
+                namespace: mob_id.to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        })
+        .timeout(Duration::from_secs(2))
+}
+
+#[tokio::test]
+async fn classic_persistent_builder_consumes_activation_before_returning_running() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let mob_id = unique_builder_mob_id();
+    let member_id = meerkat_mob::AgentIdentity::from("activation-member");
+    let first = Box::pin(activation_regression_builder(temp.path(), &mob_id).build())
+        .await
+        .expect("first classic bootstrap");
+    assert!(first.identity_runtime().is_none());
+    assert_eq!(
+        first
+            .mob_handle()
+            .status()
+            .await
+            .expect("first owner state"),
+        meerkat_mob::MobState::Running
+    );
+    first
+        .mob_handle()
+        .spawn_spec(meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("default"),
+            member_id.clone(),
+        ))
+        .await
+        .expect("seed persistent member");
+    let session_before = first
+        .mob_handle()
+        .resolve_bridge_session_id(&member_id)
+        .await
+        .expect("seed member has a bridge session");
+    let turn = first
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("seed member handle")
+        .start_turn(
+            "seed a committed classic turn",
+            meerkat_core::types::HandlingMode::Queue,
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("first turn admission");
+    tokio::time::timeout(Duration::from_secs(10), turn.wait())
+        .await
+        .expect("first turn finishes")
+        .expect("first turn commits");
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    assert_eq!(
+        first.mob_handle().status().await.expect("stopped owner"),
+        meerkat_mob::MobState::Stopped
+    );
+    drop(first);
+
+    let second = Box::pin(activation_regression_builder(temp.path(), &mob_id).build())
+        .await
+        .expect("second classic bootstrap");
+    assert!(second.identity_runtime().is_none());
+    assert_eq!(
+        second
+            .mob_handle()
+            .status()
+            .await
+            .expect("second owner state"),
+        meerkat_mob::MobState::Running,
+        "classic composition must consume its pending activation before build returns"
+    );
+    assert_eq!(
+        second
+            .mob_handle()
+            .resolve_bridge_session_id(&member_id)
+            .await,
+        Some(session_before.clone()),
+        "cold activation must retain the persisted member-session binding"
+    );
+    let turn = second
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("restored member handle")
+        .start_turn(
+            "commit another classic turn after cold activation",
+            meerkat_core::types::HandlingMode::Queue,
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("restored member admits a turn");
+    assert_eq!(turn.session_id(), Some(&session_before));
+    tokio::time::timeout(Duration::from_secs(10), turn.wait())
+        .await
+        .expect("restored turn finishes")
+        .expect("restored turn commits");
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}
+
+#[tokio::test]
+async fn identity_persistent_builder_registers_owners_before_deferred_activation() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let mob_id = unique_builder_mob_id();
+    let identity = AgentIdentity::parse("agent:activation").expect("identity");
+    let roster = || {
+        Arc::new(StubRosterProvider::new(vec![durable_spec(
+            identity.as_str(),
+        )]))
+    };
+    let first = Box::pin(
+        activation_regression_builder(temp.path(), &mob_id)
+            .roster_provider(roster())
+            .build(),
+    )
+    .await
+    .expect("first identity bootstrap");
+    let identity_runtime = first.identity_runtime().expect("identity runtime");
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert!(
+        bootstrap.ready,
+        "first identity bootstrap must be ready before sending: {bootstrap:?}"
+    );
+    identity_runtime
+        .send_awaiting_commit(
+            &identity,
+            &meerkat_core::ContentInput::Text("seed committed identity turn".to_string()),
+        )
+        .await
+        .expect("first identity turn commits");
+    let before = identity_runtime
+        .status(&identity)
+        .await
+        .expect("seed identity");
+    assert_eq!(before.state, IdentityLifecycleState::Active);
+    assert!(before.session_id.is_some());
+    let shutdown = first.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+    assert_eq!(
+        first.mob_handle().status().await.expect("stopped owner"),
+        meerkat_mob::MobState::Stopped
+    );
+    drop(first);
+
+    let second = Box::pin(
+        activation_regression_builder(temp.path(), &mob_id)
+            .roster_provider(roster())
+            .build(),
+    )
+    .await
+    .expect("second identity bootstrap");
+    assert_eq!(
+        second
+            .mob_handle()
+            .status()
+            .await
+            .expect("second owner state"),
+        meerkat_mob::MobState::Running
+    );
+    let identity_runtime = second
+        .identity_runtime()
+        .expect("restored identity runtime");
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert!(
+        bootstrap.ready,
+        "restored identity bootstrap must be ready before sending: {bootstrap:?}"
+    );
+    let after = identity_runtime
+        .status(&identity)
+        .await
+        .expect("restored identity");
+    assert_eq!(after.state, IdentityLifecycleState::Active);
+    assert_eq!(after.session_id, before.session_id);
+    assert_eq!(after.agent_runtime_id, before.agent_runtime_id);
+    assert_eq!(after.generation, before.generation);
+    identity_runtime
+        .send_awaiting_commit(
+            &identity,
+            &meerkat_core::ContentInput::Text(
+                "commit identity turn after cold activation".to_string(),
+            ),
+        )
+        .await
+        .expect("restored identity turn commits with its registered authority");
+    let shutdown = second.shutdown().await;
+    assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}

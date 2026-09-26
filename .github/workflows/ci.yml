@@ -107,6 +107,8 @@ jobs:
       # The shared host uses a loopback provider, never paid credentials.
       - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --lib --bin rpc_gateway --bin mobkit_gateway --test console_route_auth --test console_experience --test never_executed_persistence --test swarm_integration console_voice
       - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --bin rpc_gateway gateway_openai_live_registration
+      # Reuse this feature build for classic/identity restarts with and without voice.
+      - run: scripts/repo-cargo test -p meerkat-mobkit --locked --features openai-live --test mobkit_gateway_bootstrap persistent_http_restarts
 
   test-python:
     name: test-python

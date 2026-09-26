@@ -2635,7 +2635,7 @@ mod tests {
                 json!("same text"),
             )
             .await
-            .unwrap();
+            .expect("reserve exact console interaction");
         for (id, kind, payload) in [
             (
                 "peer-start",
@@ -2653,7 +2653,10 @@ mod tests {
                 .project_unified_event(&agent_event_with_payload(id, "rt:worker:1", kind, payload))
                 .await;
         }
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         for event in replay
             .iter()
             .filter(|event| event.event_id.starts_with("peer-"))
@@ -2682,12 +2685,14 @@ mod tests {
                 .reserve_interaction_value(
                     "worker",
                     Some("rt:worker:1"),
-                    identity["interaction_id"].as_str().unwrap(),
+                    identity["interaction_id"]
+                        .as_str()
+                        .expect("typed interaction UUID"),
                     "console",
                     json!("same text"),
                 )
                 .await
-                .unwrap();
+                .expect("reserve exact console interaction");
         }
         let start = |id: &str, identity: &Value| {
             agent_event_with_payload(
@@ -2720,11 +2725,14 @@ mod tests {
                 json!({"delta":"same answer"}),
             ))
             .await;
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         let output = replay
             .iter()
             .find(|event| event.event_id == "b-output")
-            .unwrap();
+            .expect("projected b-output frame");
         assert_eq!(output.data["identity"], b);
         assert_eq!(
             store.state.read().await.pending_by_identity["worker"].len(),
@@ -2773,12 +2781,15 @@ mod tests {
                 ))
                 .await;
         }
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         assert!(
             replay
                 .iter()
                 .find(|event| event.event_id == "missing")
-                .unwrap()
+                .expect("projected missing frame")
                 .interaction_id
                 .is_none()
         );
@@ -2807,7 +2818,7 @@ mod tests {
                 json!("same"),
             )
             .await
-            .unwrap();
+            .expect("reserve exact console interaction");
         store
             .project_unified_event(&agent_event_with_payload(
                 "start",
@@ -2824,11 +2835,14 @@ mod tests {
                 json!({"delta":"ready"}),
             ))
             .await;
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         let delta = replay
             .iter()
             .find(|event| event.event_id == "delta")
-            .unwrap();
+            .expect("projected delta frame");
         assert!(delta.interaction_id.is_none());
         assert_eq!(delta.data["run_id"], run);
         assert_eq!(
@@ -2877,8 +2891,16 @@ mod tests {
                 json!({"delta":"new output"}),
             ))
             .await;
-        let replay = store.replay_all(None).await.unwrap();
-        let by_id = |id: &str| replay.iter().find(|event| event.event_id == id).unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
+        let by_id = |id: &str| {
+            replay
+                .iter()
+                .find(|event| event.event_id == id)
+                .expect("projected image or current delta frame")
+        };
         assert_eq!(by_id("old-image").data["identity"], old);
         assert!(by_id("unknown-image").interaction_id.is_none());
         assert!(by_id("unknown-image").data.get("run_id").is_none());
@@ -2918,7 +2940,7 @@ mod tests {
                 json!("queued"),
             )
             .await
-            .unwrap();
+            .expect("reserve exact console interaction");
         assert_eq!(
             store.response_phase_for_identity("worker").await.as_deref(),
             Some("generating")
@@ -2947,12 +2969,15 @@ mod tests {
                 json!({"delta":"finishing"}),
             ))
             .await;
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         assert_eq!(
             replay
                 .iter()
                 .find(|event| event.event_id == "peer-second")
-                .unwrap()
+                .expect("projected peer-second frame")
                 .data["identity"],
             peer
         );
@@ -2960,7 +2985,7 @@ mod tests {
             replay
                 .iter()
                 .find(|event| event.event_id == "queue-failed")
-                .unwrap()
+                .expect("projected queue-failed frame")
                 .data
                 .get("run_id")
                 .is_none()
@@ -2989,7 +3014,7 @@ mod tests {
                 json!("same"),
             )
             .await
-            .unwrap();
+            .expect("reserve exact console interaction");
         store
             .project_unified_event(&agent_event_with_payload(
                 "start",
@@ -3015,12 +3040,15 @@ mod tests {
             ))
             .await;
         store.project_unified_event(&agent_event_with_payload("bad-start","rt:worker:1","run_started",json!({"identity":{"run_id":"not-a-uuid"},"input":{"kind":"content","content":"same"}}))).await;
-        let replay = store.replay_all(None).await.unwrap();
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
         assert!(
             replay
                 .iter()
                 .find(|event| event.event_id == "bad-terminal")
-                .unwrap()
+                .expect("projected bad-terminal frame")
                 .interaction_id
                 .is_none()
         );
@@ -3028,7 +3056,7 @@ mod tests {
             replay
                 .iter()
                 .find(|event| event.event_id == "still-current")
-                .unwrap()
+                .expect("projected still-current frame")
                 .data["identity"],
             active
         );
@@ -3036,7 +3064,7 @@ mod tests {
             replay
                 .iter()
                 .find(|event| event.event_id == "bad-start")
-                .unwrap()
+                .expect("projected bad-start frame")
                 .interaction_id
                 .is_none()
         );

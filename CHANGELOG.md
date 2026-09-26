@@ -45,6 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Complete deferred activation before persistent gateway and builder startup
+  returns. Classic compositions explicitly resume; identity compositions
+  register continuity owners before resuming preserved sessions.
+- Keep queued console sends, identity inspection and startup readiness within
+  their existing deadlines when the owner's member-observation lane is busy.
+  Only refused reads retry; message admission and delivery are not repeated.
+- Keep persistent gateway identity stable when a storage directory beneath a
+  symlink is created between launches by resolving its existing parent first.
+- Preserve a streamed response across an overlapping queued steer, including
+  its exact source and the subsequent reply's assistant header.
+- Let Python text-dispatch helpers carry caller-supplied idempotency keys with
+  correlation IDs, including the completion-waiting helper.
+
 - A persistent `MobBootstrapSpec` (`MobBootstrapSpec::persistent`, and the
   persistent `UnifiedRuntimeBuilder` path identity-first library hosts use)
   ran two `MeerkatMachine::persistent` instances over one runtime store: the
