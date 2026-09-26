@@ -627,6 +627,9 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "run_failed",
   "message_delivery_failed",
   "system_notice",
+  "boundary_append_applied",
+  "boundary_appends_discarded",
+  "runtime_notice_snapshot",
   "frame_updated",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([

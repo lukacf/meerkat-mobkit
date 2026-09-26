@@ -40765,6 +40765,9 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "run_failed",
   "message_delivery_failed",
   "system_notice",
+  "boundary_append_applied",
+  "boundary_appends_discarded",
+  "runtime_notice_snapshot",
   "frame_updated"
 ]);
 var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
