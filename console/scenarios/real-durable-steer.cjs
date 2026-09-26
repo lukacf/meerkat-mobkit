@@ -392,7 +392,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     const completedView = await inspectNotice("completed");
     assert.deepEqual(completedView.rows, duringView.rows, "the exact live notice row and content survive the committed history reconciliation");
     const completedDuration = await inspectAssistantDuration("completed");
-    await viewport().getByText(notice, { exact: true }).scrollIntoViewIfNeeded();
+    await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
     await capture("completed");
 
     allowance = "disconnect";
@@ -412,7 +412,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     // Stock owns draft persistence. The reusable test host keeps draft state
     // in React only, so reload is a transcript check there.
     if (host === "stock") assert.equal(await composer().inputValue(), draft, "reload restores the unsent operator draft");
-    await viewport().getByText(notice, { exact: true }).scrollIntoViewIfNeeded();
+    await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
     await capture("reloaded");
     await viewport().locator(".cc-tool-call--incoming .cc-tool-call__name")
       .filter({ hasText: "Received from domain:delivery" }).first().scrollIntoViewIfNeeded();
