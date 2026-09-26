@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The idle sweep no longer retires a member that still owns a live member it
+  spawned. meerkat 0.8.43 retires everything a member spawned, directly or
+  transitively, along with it (the roster's `spawned_by` provenance). The
+  sweep judged a member idle by its own turn alone, so a `fork_off` child C
+  that forked D for long work and then went idle was retired after its idle
+  window, and the cascade killed the still-running D, whose outcome reached
+  nobody. A member now counts as idle only while no member below it in the
+  roster's `spawned_by` tree is live (anything not retiring counts as live).
+  Once its descendants are retired, its idle window starts over.
+
 - Councils a restart interrupted are recovered after the restart (requires
   the meerkat release carrying #1190's durable-store council sweep). MobKit
   built its agent-tool `MobMcpState` with `Arc::new`, so the state could not
