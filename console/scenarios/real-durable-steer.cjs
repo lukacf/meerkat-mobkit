@@ -18,6 +18,26 @@ const textContent = content => typeof content === "string" ? content : (content 
 const assistantText = message => (message.blocks || []).filter(block => block.block_type === "text").map(block => block.data?.text ?? block.text ?? "").join("\n\n");
 const liveEvent = frame => frame.source?.kind === "console_event";
 
+function assertPeerSetupHistory(history, expected) {
+  assert.equal(history.session_id, expected.completion.session_id, "actual recipient session");
+  assert.equal(history.has_more, false, "complete recipient history");
+  assert.equal(history.message_count, history.messages.length, "complete recipient history count");
+  const incoming = history.messages.filter(message => message.role === "system_notice")
+    .flatMap(message => (message.blocks || []).filter(block => block.type === "comms" && block.direction === "incoming"));
+  const delivered = incoming.filter(block => block.kind === "message"
+    && textContent(block.content) === `Peer message from ${expected.displayName}:\n${expected.body}`);
+  assert.equal(delivered.length, 1, "one explicit peer message with exact delivered bytes");
+  assert.deepEqual(delivered[0].peer, { id: expected.senderId, display_name: expected.displayName }, "canonical sender identity and display metadata");
+  const replies = history.messages.filter(message => message.role === "block_assistant"
+    && message.identity?.run_id === expected.completion.run_id
+    && message.identity?.interaction_id === expected.completion.interaction_id);
+  assert.equal(replies.length, 1, "one committed acknowledgement from the matching peer run");
+  assert.equal(assistantText(replies[0]), expected.acknowledgement, "exact peer acknowledgement");
+  const fromSender = incoming.filter(block => block.peer?.id === expected.senderId);
+  for (const block of fromSender) assert.equal(block.peer.display_name, expected.displayName, "canonical sender display metadata");
+  return [{ id: expected.senderId, displayName: expected.displayName, label: "domain:delivery", count: fromSender.length }];
+}
+
 function expectedNavigationCancellation(request) {
   if (!request.failure()?.errorText?.includes("ERR_ABORTED")) return false;
   if (new URL(request.url()).pathname.endsWith("/timeline/stream")) return true;
@@ -65,13 +85,13 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     assert.equal(response.status, 200, `${response.status}: ${await response.clone().text()}`);
     return response.json();
   }
-  const frames = async () => (await read(`${fixture.baseUrl}/console/timeline?identity=${encodeURIComponent(identity)}&mode=recent&limit=1000`)).frames;
+  const frames = async (target = identity) => (await read(`${fixture.baseUrl}/console/timeline?identity=${encodeURIComponent(target)}&mode=recent&limit=1000`)).frames;
   const requests = () => read(`${fixture.backendUrl}/__fixture/requests`);
   const state = () => read(`${fixture.backendUrl}/__fixture/durable-steer?session_id=${encodeURIComponent(result.accepted.session_id)}&input_id=${encodeURIComponent(result.accepted.input_id)}`);
   const history = () => read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(result.accepted.session_id)}`);
-  async function send(content, key) {
+  async function send(content, key, target = identity) {
     const response = await rpc(fixture.baseUrl, "mobkit/console/send", {
-      identity, content, origin: "console:durable-steer-acceptance", origin_kind: "operator",
+      identity: target, content, origin: "console:durable-steer-acceptance", origin_kind: "operator",
       handling_mode: "queue", idempotency_key: key,
     });
     assert.equal(response.status, 200);
@@ -154,7 +174,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
         assert.doesNotMatch(view.rows[0].text, /Worked for/);
         for (const peer of result.expectedPeers) {
           const matching = view.incomingPeers.filter(rendered => rendered.title === peer.id);
-          assert.equal(matching.length, 1, "one incoming peer header retains the exact canonical peer identity in its title");
+          assert.equal(matching.length, peer.count, "each canonical incoming peer row retains its exact peer identity in the header");
           for (const rendered of matching) {
             assert.equal(rendered.text, `Received from ${peer.label}`, "canonical display metadata supplies the readable peer label");
             assert.equal(rendered.displayed, true);
@@ -212,21 +232,57 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     return view;
   }
   try {
+    // Kickoff can finish before the fixture wires members. Establish an
+    // explicit delivery after wiring instead of relying on lifecycle timing.
+    const peers = await read(`${fixture.backendUrl}/__fixture/peers`);
+    const sender = "domain:delivery";
+    const peerRunId = `notice-peer-${randomUUID().slice(0, 8)}`;
+    const peer = {
+      senderId: peers[sender]?.[0], displayName: peers[sender]?.[1],
+      recipientId: peers[identity]?.[0],
+      body: `Review the release prerequisites before the background check. Exact peer marker ${peerRunId}.`,
+      acknowledgement: `Release peer context acknowledged for ${peerRunId}.`,
+    };
+    assert.equal(typeof peer.senderId, "string");
+    assert.equal(typeof peer.recipientId, "string");
+    assert.equal(peer.displayName, "console-acceptance/lead/mk--domain_cdelivery");
+    result.peerSetup = peer;
+    await fixture.control("model", { source: peer.acknowledgement, delay_ms: 0, chunk_chars: 4096,
+      scenario: { kind: "peer", run_id: peerRunId, peer_id: peer.recipientId, peer_body: peer.body },
+    });
+    peer.accepted = await send(`[fixture:${peerRunId}] Send the release review context to the router.`, `${peerRunId}-send`, sender);
+    peer.senderCompletion = await eventually(async () => (await frames(sender)).find(frame => liveEvent(frame)
+      && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
+      && frame.interaction_id === peer.accepted.interaction_id), "explicit peer sender completes after its real send receipt");
+    peer.senderFrames = await frames(sender);
+    const callId = `fixture-${peerRunId}-send-peer`;
+    const calls = peer.senderFrames.filter(frame => liveEvent(frame) && frame.kind === "tool_call_requested" && frame.payload?.id === callId);
+    const results = peer.senderFrames.filter(frame => liveEvent(frame) && frame.kind === "tool_result_received" && frame.payload?.id === callId);
+    assert.equal(calls.length, 1, "one actual peer send tool call");
+    assert.equal(calls[0].payload.name, "send_message");
+    assert.deepEqual(calls[0].payload.args, { peer_id: peer.recipientId, body: peer.body, handling_mode: "queue" });
+    assert.equal(results.length, 1, "one actual peer send tool result");
+    assert.equal(results[0].payload.is_error, false);
+    peer.receipt = JSON.parse(textContent(results[0].payload.content));
+    assert.equal(peer.receipt.status, "sent");
+    assert.equal(peer.receipt.receipt?.kind, "peer_message_sent");
+    assert.equal(typeof peer.receipt.receipt.envelope_id, "string");
+    peer.completion = await eventually(async () => (await frames()).find(frame => liveEvent(frame)
+      && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
+      && frame.interaction_id === peer.receipt.receipt.envelope_id), "explicit peer recipient completes its matching envelope");
+    assert.equal(peer.completion.payload.result, peer.acknowledgement);
+    assert(peer.completion.session_id && peer.completion.run_id);
     await fixture.control("model", { source: seedSource, delay_ms: 0, chunk_chars: 4096 });
     const seeded = await send("Read the release evidence before the background review.", `${barrierId}-seed`);
     const seedCompletion = await eventually(async () => (await frames()).find(frame => liveEvent(frame) && frame.kind === "interaction_complete" && frame.interaction_id === seeded.interaction_id), "seed review completes through the real runtime");
     assert(seedCompletion.session_id);
     // The owner history read waits behind an active model turn. Read the seed
     // metadata before holding the next turn at its explicit model barrier.
+    assert.equal(seedCompletion.session_id, peer.completion.session_id, "review and explicit peer share the recipient session");
     result.expectedPeers = await eventually(async () => {
       result.seededHistory = await read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(seedCompletion.session_id)}`);
-      const peers = result.seededHistory.messages.flatMap(message => (message.blocks || [])
-        .filter(block => block.type === "comms" && block.direction === "incoming" && block.peer?.display_name === "console-acceptance/lead/mk--domain_cdelivery")
-        .map(block => ({ id: block.peer.id, displayName: block.peer.display_name, label: "domain:delivery" })));
-      return peers.length ? peers : null;
-    }, "the startup peer message arrives in actual canonical history before the review barrier");
-    assert.equal(result.expectedPeers.length, 1, "the real fixture provides one canonical incoming peer with display metadata");
-    assert(result.expectedPeers[0].id);
+      return assertPeerSetupHistory(result.seededHistory, peer);
+    }, "explicit peer delivery and matching acknowledgement are in canonical history before the review barrier");
     await open();
     await viewport().getByRole("heading", { name: "Evidence 3", exact: true }).waitFor();
     // The streamed reply remains visibly active long enough to inspect the
@@ -388,5 +444,5 @@ const scenarios = ["stock", "shared"].flatMap(host => [
   { id: `real-${host}-durable-steer`, family: "real-runtime", backend: "real", run: () => durableSteer(host) },
   { id: `real-${host}-persisted-background-job`, family: "real-runtime", backend: "real", run: () => durableSteer(host, true) },
 ]);
-module.exports = { scenarios };
+module.exports = { scenarios, assertPeerSetupHistory };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
