@@ -239,6 +239,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Ordinary append boundaries no longer run the rewrite-chain provers. The
+  committed-to-durable projection compared the durable row with the
+  committed transcript's current revision, which includes the turn's own
+  appends, so every boundary that appended rows after a compaction missed
+  the at-head check. It then walked the rewrite chain and ran both repair
+  admissions (durable-behind replays the graph per commit) inside the
+  boundary commit, under the runtime's driver mutex, found nothing to
+  repair, logged a "no repair admission holds" WARN and fell through to the
+  plain projection save (HomeCore: about 3.6 s per pass across 16
+  identities and one WARN per turn). A durable row that is the committed
+  transcript's digest-prefix past its last rewrite, at the committed rewrite
+  generation, now goes straight to that save. Reading the rewrite generation
+  off the loaded row on stores without an incremental head keeps the
+  at-head check correct there, and the WARN, which now fires only on
+  unproven shapes, compares against the head commit's parent and names the
+  relations it tested.
+
 - `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
   and `sendAndWait` / `dispatchAndWait` (TypeScript) return the output of the
   turn they started. They waited until the identity-wide completion cursor
