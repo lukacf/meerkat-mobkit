@@ -1730,6 +1730,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-tool-call__peer-status--success { color: var(--_cc-positive, #3fb950); }
 .cc-tool-call__peer-status--error { color: var(--_cc-negative, #f85149); }
 .cc-tool-call__peer-status--pending { color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38)); }
+.cc-tool-call__peer-status--explicit { color: var(--_cc-foreground-muted); }
 
 .cc-tool-call__copy {
   margin-left: 4px;

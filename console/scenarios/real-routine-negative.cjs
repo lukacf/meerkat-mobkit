@@ -23,16 +23,25 @@ function assertFrameOwner(frame, spec, requireSession = false) {
 function isCancelled(frame, spec) {
   return frame.source?.kind === "console_event" && frame.kind === "interaction_failed"
     && frame.interaction_id === spec.accepted.interaction_id
-    && (frame.payload?.reason?.kind === "cancelled" || frame.payload?.error_report?.class === "cancelled");
+    && [undefined, "interaction_failed"].includes(frame.payload?.source_event_type)
+    && frame.payload?.reason?.kind === "cancelled";
 }
 function assertStoppedFrames(frames, spec) {
   assert(actions.includes(spec.action));
   const start = frames.filter(frame => frame.source?.kind === "console_event" && frame.kind === "run_started" && frame.interaction_id === spec.accepted.interaction_id);
   assert.equal(start.length, 1, "one canonical start"); assertFrameOwner(start[0], spec, true);
-  const terminal = frames.filter(frame => isCancelled(frame, spec));
-  assert(terminal.length >= 1, "typed cancellation terminal, never cancelled prose");
+  const terminal = frames.filter(frame => frame.source?.kind === "console_event" && frame.kind === "interaction_failed"
+    && frame.interaction_id === spec.accepted.interaction_id);
+  assert(terminal.some(frame => isCancelled(frame, spec)), "typed directed cancellation terminal, never cancelled prose");
+  const agentFailures = terminal.filter(frame => frame.payload?.source_event_type === "run_failed");
+  if (spec.action === "interrupt") assert.equal(agentFailures.length, 0, "hard interruption has no agent cancellation report");
+  else assert(agentFailures.length >= 1, "cooperative stop has an actual agent cancellation report");
   assert.equal(new Set(terminal.map(frame => frame.id)).size, terminal.length, "distinct original terminal event IDs");
-  for (const frame of terminal) assertFrameOwner(frame, spec);
+  for (const frame of terminal) {
+    assertFrameOwner(frame, spec);
+    if (agentFailures.includes(frame)) assert.equal(frame.payload?.error_report?.class, "cancelled", "typed agent cancellation report");
+    else assert(isCancelled(frame, spec), "typed directed cancellation terminal");
+  }
   const expected = stoppedTools(spec.scenarioId), ids = new Set(expected.map(tool => tool.id));
   const owned = frames.filter(frame => frame.source?.kind === "console_event" && ids.has(frame.payload?.tool_call_id));
   assert.equal(new Set(owned.map(frame => frame.id)).size, owned.length, "distinct original tool event IDs");
@@ -61,30 +70,41 @@ function assertProofRetained(previous, next) {
   assert.deepEqual(next.tools, previous.tools, "exact tool source identities and outcomes");
   for (const id of previous.terminalIds) assert(next.terminalIds.includes(id), "original typed terminal identity retained");
 }
+function assertCompletedBaseline(page, frames, warmup) {
+  assert.equal(warmup.accepted.session_id, warmup.sessionId, "warmup accepted by the pre-run actual owner session");
+  assert.equal(page.session_id, warmup.sessionId, "pre-run actual owner session");
+  assert.equal(page.offset, 0, "complete pre-run owner history"); assert.equal(page.has_more, false, "complete pre-run owner history");
+  assert.equal(page.messages.length, page.message_count, "complete pre-run owner history");
+  const terminals = frames.filter(frame => frame.source?.kind === "console_event"
+    && frame.kind === "interaction_complete" && frame.payload?.source_event_type === "run_completed"
+    && frame.interaction_id === warmup.accepted.interaction_id && frame.payload?.result === warmup.source);
+  assert.equal(terminals.length, 1, "one exact completed warmup terminal");
+  const terminal = terminals[0]; assert(terminal.run_id, "completed warmup has a canonical run");
+  assertFrameOwner(terminal, { accepted: warmup.accepted, runId: terminal.run_id }, true);
+  const replies = page.messages.flatMap((message, index) => {
+    const source = message.role === "block_assistant"
+      ? (message.blocks || []).filter(block => block.block_type === "text").map(block => block.data?.text ?? block.text ?? "").join("\n\n")
+      : message.role === "assistant" ? message.content : undefined;
+    return source === warmup.source && message.identity?.run_id === terminal.run_id
+      && message.identity?.interaction_id === warmup.accepted.interaction_id ? [index] : [];
+  });
+  assert.equal(replies.length, 1, "one committed warmup reply with exact source and canonical identity");
+  return { runId: terminal.run_id, terminalId: terminal.id, replyIndex: replies[0] };
+}
 function assertStoppedHistory(page, spec) {
+  const baseline = spec.baselineHistory;
+  assert(baseline, "pre-run owner history was captured before the tested send");
+  assert.equal(baseline.session_id, spec.accepted.session_id, "pre-run actual owner session");
+  assert.equal(baseline.offset, 0, "complete pre-run owner history"); assert.equal(baseline.has_more, false, "complete pre-run owner history");
+  assert.equal(baseline.messages.length, baseline.message_count, "complete pre-run owner history");
   assert.equal(page.session_id, spec.accepted.session_id, "actual owner session");
   assert.equal(page.offset, 0, "complete owner history"); assert.equal(page.has_more, false, "complete owner history");
   assert.equal(page.messages.length, page.message_count, "complete owner history");
-  const calls = page.messages.flatMap((message, index) => message.role === "block_assistant"
-    ? message.blocks.filter(block => block.block_type === "tool_use").map(block => ({ index, identity: message.identity, call: block.data })) : []);
-  const results = page.messages.flatMap((message, index) => message.role === "tool_results"
-    ? message.results.map(result => ({ index, result })) : []);
-  assert(!calls.some(item => item.call.id === `fixture-${spec.scenarioId}-ready`), "no later tool in durable history");
-  return stoppedTools(spec.scenarioId).map(tool => {
-    const ownCalls = calls.filter(item => item.call.id === tool.id), ownResults = results.filter(item => item.result.tool_use_id === tool.id);
-    assert.equal(ownCalls.length, 1, `history ${tool.step}: one call`);
-    const call = ownCalls[0]; assert.equal(call.identity?.interaction_id, spec.accepted.interaction_id, "canonical interaction");
-    assert.equal(call.identity?.run_id, spec.runId, "canonical run");
-    assert.equal(call.call.name, tool.name); assert.deepEqual(call.call.args, tool.args, "exact arguments");
-    if (unknown(spec, tool)) assert.equal(ownResults.length, 0, "durable interrupted dispatch has no authoritative result");
-    else {
-      assert.equal(ownResults.length, 1, `history ${tool.step}: one actual result`);
-      const result = ownResults[0]; assert(result.index > call.index, "result follows its own call");
-      assert.equal(textContent(result.result.content), tool.result, "exact result bytes"); assert.equal(result.result.is_error, tool.error);
-    }
-    return { id: tool.id, callIndex: call.index, resultIndex: ownResults[0]?.index ?? null,
-      outcome: unknown(spec, tool) ? "unknown" : tool.error ? "error" : "success" };
-  });
+  // Persistent cancelled runs commit no session boundary. Their real tool
+  // evidence remains in console events, independently checked by replay below.
+  assert.equal(page.message_count, baseline.message_count, "pre-run committed message count is unchanged");
+  assert.deepEqual(page.messages, baseline.messages, "pre-run committed messages and canonical identities are unchanged");
+  return page;
 }
 
 async function stoppedScenario(host, action) {
@@ -95,7 +115,7 @@ async function stoppedScenario(host, action) {
   const viewport = () => page.locator(host === "stock" ? ".conv__body" : '[data-testid="shared-pane-0"] .cc-conversation-pane__scroll').first();
   const read = async url => { const response = await fetch(url); assert.equal(response.status, 200, await response.clone().text()); return response.json(); };
   const timeline = async () => (await read(`${fixture.baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=1000`)).frames;
-  const history = () => read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(result.accepted.session_id)}`);
+  const history = (sessionId = result.accepted.session_id) => read(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(sessionId)}`);
   const runControl = (next, runId = result.runId) => fixture.control("routine-run", { identity: "router:main", session_id: result.accepted.session_id, run_id: runId, action: next });
   const shot = async label => { await fs.mkdir(evidence, { recursive: true }); await page.screenshot({ path: path.join(evidence, `${host}-real-routine-${action}-${label}.png`), fullPage: true }); };
   async function open(reload = false) {
@@ -119,7 +139,10 @@ async function stoppedScenario(host, action) {
     const output = body.locator(".cc-tool-call__section").filter({ has: page.getByText("Result", { exact: true }) });
     if (noResult) {
       assert.equal(await output.count(), 0, `${state} completion has no result body`);
-      if (await detail.count()) assert(await detail.locator(".cc-tool-call__peer-status--pending").count(), "exact held child has no success status");
+      if (await detail.count()) {
+        assert(await detail.locator(".cc-tool-call__peer-status--pending").count(), "exact held child has no success status");
+        if (state === "unknown") assert(await detail.getByText("Completion unknown", { exact: true }).isVisible(), "exact interrupted child exposes its unknown completion");
+      }
       else {
         assert(await section.evaluate(node => node.classList.contains("cc-tool-call--pending")), "exact incomplete call has no success status");
         if (state === "unknown") assert.match(await section.locator(".cc-tool-call__status").textContent(), /Completion unknown/);
@@ -146,6 +169,23 @@ async function stoppedScenario(host, action) {
       page.on("response", response => { if (response.status() >= 400) result.errors.push({ url: response.url(), status: response.status() }); });
       await open();
     }
+    const owner = await rpc(fixture.baseUrl, "mobkit/status_identity", { identity: "router:main" });
+    assert.equal(owner.status, 200); assert.equal(owner.body.result?.identity, "router:main");
+    result.baselineOwner = owner.body.result; assert(result.baselineOwner.session_id, "actual pre-run session owner");
+    const sessionId = result.baselineOwner.session_id;
+    const idle = () => fixture.control("routine-run", { identity: "router:main", session_id: sessionId, run_id: randomUUID(), action: "status" });
+    await eventually(async () => (await idle()).current_run_id === null, "owner is idle before warmup");
+    result.warmup = { sessionId, source: `Prior completed routine check ${result.scenarioId}.`, content: `Record the baseline for ${result.scenarioId}; no tools are needed.` };
+    await fixture.control("model", { source: result.warmup.source, delay_ms: 0, chunk_chars: 256 });
+    const warmed = await rpc(fixture.baseUrl, "mobkit/console/send", { identity: "router:main", content: result.warmup.content,
+      origin: "console:routine-negative-warmup", origin_kind: "operator", handling_mode: "queue", idempotency_key: randomUUID() });
+    assert.equal(warmed.status, 200); assert(warmed.body.result?.interaction_id, JSON.stringify(warmed.body)); result.warmup.accepted = warmed.body.result;
+    result.baselineHistory = await eventually(async () => {
+      const frames = await timeline(), page = await history(sessionId);
+      result.warmup.proof = assertCompletedBaseline(page, frames, result.warmup);
+      result.baselineIdle = await idle(); assert.equal(result.baselineIdle.current_run_id, null, "warmup owner is idle before baseline capture");
+      return page;
+    }, "exact warmup terminal, committed reply and idle owner precede cancellation baseline");
     const baseline = await read(`${fixture.baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=1000`);
     live = await require("./real-routine-tools.cjs").capture(`${fixture.backendUrl}/console/timeline/stream?identity=router%3Amain&after=${encodeURIComponent(baseline.latest_cursor)}`);
     await eventually(() => { live.check(); return live.events.some(event => event.type === "snapshot_complete"); }, "subscriber connected before real tool dispatch");
@@ -153,6 +193,7 @@ async function stoppedScenario(host, action) {
     const sent = await rpc(fixture.baseUrl, "mobkit/console/send", { identity: "router:main", content: `[fixture:${result.scenarioId}] Inspect the release files, then hold the delayed review for cancellation.`,
       origin: "console:routine-negative", origin_kind: "operator", handling_mode: "queue", idempotency_key: randomUUID() });
     assert.equal(sent.status, 200); assert(sent.body.result?.interaction_id, JSON.stringify(sent.body)); result.accepted = sent.body.result;
+    assert.equal(result.accepted.session_id, sessionId, "tested cancellation uses the captured pre-run owner session");
     await eventually(async () => (await fixture.control("routine-tools", { action: "status" })).entered, "actual file dispatcher is held");
     const started = await eventually(() => live.frames().find(frame => frame.kind === "run_started" && frame.interaction_id === result.accepted.interaction_id), "exact accepted run started");
     result.runId = started.run_id; assert(result.runId && result.accepted.session_id);
@@ -176,10 +217,10 @@ async function stoppedScenario(host, action) {
     result.dispatch = await fixture.control("routine-tools", { action: "status" });
     assert.equal(result.dispatch.completed, action === "cancel_after_boundary");
     assert.equal(result.dispatch.dropped, action === "interrupt");
-    result.live = assertStoppedFrames(live.frames(), result);
+    result.live = await eventually(() => { live.check(); return assertStoppedFrames(live.frames(), result); }, "all exact owner cancellation carriers reach live SSE");
     // Releasing the old wait handle after interruption must not resurrect work.
     if (action === "interrupt") await fixture.control("routine-tools", { action: "release" });
-    result.ownerHistory = await eventually(async () => { const page = await history(); assertStoppedHistory(page, result); return page; }, "complete durable owner history retains the exact stopped call and true result absence");
+    result.ownerHistory = await history();
     result.history = assertStoppedHistory(result.ownerHistory, result);
     result.ownerFrames = await timeline(); result.ownerProof = assertStoppedFrames(result.ownerFrames, result);
     assertProofRetained(result.live, result.ownerProof);
@@ -212,4 +253,4 @@ async function stoppedScenario(host, action) {
 }
 const apiScenarios = actions.map(action => ({ id: `api-routine-${action.replaceAll("_", "-")}`, family: "routine-tools", backend: "real", run: () => stoppedScenario(null, action) }));
 const browserScenarios = ["stock", "shared"].flatMap(host => actions.map(action => ({ id: `real-${host}-routine-${action.replaceAll("_", "-")}`, family: "real-presentation", backend: "real", run: () => stoppedScenario(host, action) })));
-module.exports = { apiScenarios, browserScenarios, assertStoppedFrames, assertStoppedHistory, assertProofRetained, stoppedTools };
+module.exports = { apiScenarios, browserScenarios, assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, stoppedTools };

@@ -1,10 +1,43 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { assertStoppedFrames, assertStoppedHistory, assertProofRetained, stoppedTools } = require("./real-routine-negative.cjs");
+const { assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, stoppedTools } = require("./real-routine-negative.cjs");
 
-const expected = { scenarioId: "negative-unit", action: "interrupt", runId: "run-a",
+function history() {
+  const identity = { interaction_id: "earlier-interaction", run_id: "earlier-run" };
+  const messages = [
+    { role: "user", content: "Keep the prior completed run.\nExact bytes: A\u030A and 🚀.", interaction_id: identity.interaction_id },
+    { role: "block_assistant", identity, blocks: [{ block_type: "text", data: { text: "  Prior completed reply.\n" } }] },
+  ];
+  return { session_id: "session-a", offset: 0, message_count: messages.length, has_more: false, messages };
+}
+const expected = { scenarioId: "negative-unit", action: "interrupt", runId: "run-a", baselineHistory: history(),
   accepted: { session_id: "session-a", interaction_id: "interaction-a" } };
+test("baseline requires an exact completed warmup and its committed owner reply", () => {
+  const warmup = { sessionId: "session-a", source: "  Prior completed reply.\n", accepted: { session_id: "session-a", interaction_id: "earlier-interaction" } };
+  const terminal = { kind: "interaction_complete", identity: "router:main", session_id: "session-a", interaction_id: "earlier-interaction", run_id: "earlier-run",
+    payload: { source_event_type: "run_completed", result: warmup.source }, source: { kind: "console_event" }, id: "warmup-terminal", source_event_id: "warmup-terminal" };
+  assert.equal(assertCompletedBaseline(history(), [terminal], warmup).runId, "earlier-run");
+  assert.throws(() => assertCompletedBaseline(history(), [], warmup), /exact completed warmup/);
+  assert.throws(() => assertCompletedBaseline(history(), [{ ...terminal, payload: { result: "another reply" } }], warmup), /exact completed warmup/);
+  assert.throws(() => assertCompletedBaseline(history(), [{ ...terminal, session_id: "foreign" }], warmup), /canonical session/);
+  assert.throws(() => assertCompletedBaseline(history(), [{ ...terminal, run_id: "foreign" }], warmup), /one committed warmup reply/);
+  const uncommitted = history(); uncommitted.messages.pop(); uncommitted.message_count--;
+  assert.throws(() => assertCompletedBaseline(uncommitted, [terminal], warmup), /one committed warmup reply/);
+  assert.throws(() => assertCompletedBaseline({ ...history(), has_more: true }, [terminal], warmup), /complete pre-run owner history/);
+});
+test("warmup pins one core completion while allowing its distinct directed terminal", () => {
+  const warmup = { sessionId: "session-a", source: "  Prior completed reply.\n", accepted: { session_id: "session-a", interaction_id: "earlier-interaction" } };
+  const core = { kind: "interaction_complete", identity: "router:main", session_id: "session-a", interaction_id: "earlier-interaction", run_id: "earlier-run",
+    payload: { source_event_type: "run_completed", result: warmup.source }, source: { kind: "console_event" }, id: "warmup-core", source_event_id: "warmup-core" };
+  const directed = { ...core, id: "warmup-directed", source_event_id: "warmup-directed", payload: { source_event_type: "interaction_complete", result: warmup.source } };
+  assert.equal(assertCompletedBaseline(history(), [core, directed], warmup).terminalId, core.id);
+  assert.equal(assertCompletedBaseline(history(), [directed, core], warmup).terminalId, core.id);
+  assert.throws(() => assertCompletedBaseline(history(), [directed], warmup), /exact completed warmup/);
+  const unattributed = { ...core, payload: { result: warmup.source } };
+  assert.throws(() => assertCompletedBaseline(history(), [unattributed], warmup), /exact completed warmup/);
+  assert.throws(() => assertCompletedBaseline(history(), [core, { ...core, id: "second-core", source_event_id: "second-core" }], warmup), /exact completed warmup/);
+});
 function frames(action = "interrupt") {
   const owner = { identity: "router:main", session_id: "session-a", interaction_id: "interaction-a", run_id: "run-a" };
   let seq = 0;
@@ -12,16 +45,9 @@ function frames(action = "interrupt") {
     { kind: "tool_call_requested", payload: { tool_call_id: tool.id, name: tool.name, args: tool.args } },
     ...(tool.step === "late" && action === "interrupt" ? [] : [{ kind: "tool_result_received",
       payload: { tool_call_id: tool.id, content: [{ type: "text", text: tool.result }], is_error: tool.error } }]),
-  ]), { kind: "interaction_failed", payload: { reason: { kind: "cancelled" } } }]
+  ]), ...(action === "cancel_after_boundary" ? [{ kind: "interaction_failed", payload: { source_event_type: "run_failed", error_report: { class: "cancelled", message: "Stopped" } } }] : []),
+  { kind: "interaction_failed", payload: { source_event_type: "interaction_failed", reason: { kind: "cancelled" } } }]
     .map(frame => { const id = `event-${++seq}`; return { ...frame, ...owner, id, source_event_id: id, source: { kind: "console_event" } }; });
-}
-function history(action = "interrupt") {
-  const identity = { interaction_id: "interaction-a", run_id: "run-a" };
-  const messages = stoppedTools(expected.scenarioId).flatMap(tool => [
-    { role: "block_assistant", identity, blocks: [{ block_type: "tool_use", data: { id: tool.id, name: tool.name, args: tool.args } }] },
-    ...(tool.step === "late" && action === "interrupt" ? [] : [{ role: "tool_results", results: [{ tool_use_id: tool.id, content: [{ type: "text", text: tool.result }], is_error: tool.error }] }]),
-  ]);
-  return { session_id: "session-a", offset: 0, message_count: messages.length, has_more: false, messages };
 }
 
 test("stopped-run oracle distinguishes real cooperative result from absent interrupted completion", () => {
@@ -29,12 +55,46 @@ test("stopped-run oracle distinguishes real cooperative result from absent inter
     const spec = { ...expected, action };
     const proof = assertStoppedFrames(frames(action), spec);
     assert.equal(proof.tools.at(-1).outcome, action === "interrupt" ? "unknown" : "success");
-    assert.equal(assertStoppedHistory(history(action), spec).at(-1).outcome, action === "interrupt" ? "unknown" : "success");
     const wrong = frames(action); wrong.at(-1).payload.reason = { kind: "abandoned", detail: "cancelled" };
-    assert.throws(() => assertStoppedFrames(wrong, spec), /typed cancellation/);
+    assert.throws(() => assertStoppedFrames(wrong, spec), /typed directed cancellation/);
     const foreign = frames(action); foreign.at(-1).run_id = "other-run";
     assert.throws(() => assertStoppedFrames(foreign, spec), /canonical run/);
   }
+});
+
+test("both cancellations retain exactly the pre-run committed transcript without same-run prompt or tools", () => {
+  for (const action of ["interrupt", "cancel_after_boundary"]) {
+    const spec = { ...expected, action };
+    assert.deepEqual(assertStoppedHistory(history(), spec), history());
+    for (const leaked of [
+      { role: "user", content: "Cancelled prompt", interaction_id: spec.accepted.interaction_id },
+      { role: "block_assistant", identity: { run_id: spec.runId, interaction_id: spec.accepted.interaction_id },
+        blocks: [{ block_type: "tool_use", data: { id: stoppedTools(spec.scenarioId).at(-1).id } }] },
+      { role: "tool_results", results: [{ tool_use_id: stoppedTools(spec.scenarioId)[0].id, is_error: false, content: [] }] },
+    ]) {
+      const bad = history(); bad.messages.push(leaked); bad.message_count++;
+      assert.throws(() => assertStoppedHistory(bad, spec), /pre-run committed/);
+    }
+  }
+});
+
+test("committed boundary proof rejects lost prior runs, changed bytes or identity, wrong session and incomplete pages", () => {
+  for (const mutate of [
+    page => { page.messages.pop(); page.message_count--; },
+    page => { page.messages[1].blocks[0].data.text = page.messages[1].blocks[0].data.text.trim(); },
+    page => { page.messages[1].identity.run_id = "rewritten"; },
+    page => { page.messages.reverse(); },
+  ]) {
+    const bad = history(); mutate(bad);
+    assert.throws(() => assertStoppedHistory(bad, expected), /pre-run committed/);
+  }
+  assert.throws(() => assertStoppedHistory({ ...history(), session_id: "foreign" }, expected), /actual owner session/);
+  for (const patch of [{ offset: 1 }, { has_more: true }, { message_count: 99 }]) {
+    assert.throws(() => assertStoppedHistory({ ...history(), ...patch }, expected), /complete owner history/);
+    assert.throws(() => assertStoppedHistory(history(), { ...expected, baselineHistory: { ...history(), ...patch } }), /complete pre-run owner history/);
+  }
+  assert.throws(() => assertStoppedHistory(history(), { ...expected, baselineHistory: undefined }), /pre-run owner history was captured/);
+  assert.throws(() => assertStoppedHistory(history(), { ...expected, baselineHistory: { ...history(), session_id: "foreign" } }), /pre-run actual owner session/);
 });
 
 test("unknown requires absence of authoritative completion, never a result containing unknown prose", () => {
@@ -43,25 +103,28 @@ test("unknown requires absence of authoritative completion, never a result conta
   bad.splice(-1, 0, { ...bad[1], id: "invented", source_event_id: "invented", kind: "tool_result_received",
     payload: { tool_call_id: tool.id, is_error: false, content: [{ type: "text", text: "Cancelled, completion unknown" }] } });
   assert.throws(() => assertStoppedFrames(bad, expected), /no authoritative result/);
-  const durable = history(); durable.messages.push({ role: "tool_results", results: [{ tool_use_id: tool.id, is_error: false, content: [] }] }); durable.message_count++;
-  assert.throws(() => assertStoppedHistory(durable, expected), /no authoritative result/);
 });
 
-test("run cancellation accepts typed owner error reports while preserving distinct directed terminals", () => {
-  const value = frames("cancel_after_boundary");
-  const terminal = value.at(-1);
-  value.splice(-1, 0, { ...terminal, id: "run-terminal", source_event_id: "run-terminal",
-    payload: { source_event_type: "run_failed", error_report: { class: "cancelled", message: "Stopped" } } });
-  assert.deepEqual(assertStoppedFrames(value, { ...expected, action: "cancel_after_boundary" }).terminalIds, ["run-terminal", terminal.id]);
-  const untyped = frames(); untyped.at(-1).payload = { error_report: { class: "internal", message: "cancelled" } };
-  assert.throws(() => assertStoppedFrames(untyped, expected), /typed cancellation/);
+test("agent cancellation reports belong only to the cooperative path and never replace the directed terminal", () => {
+  const cooperative = frames("cancel_after_boundary"), spec = { ...expected, action: "cancel_after_boundary" };
+  assert.equal(assertStoppedFrames(cooperative, spec).terminalIds.length, 2);
+  const noDirected = cooperative.slice(0, -1);
+  assert.throws(() => assertStoppedFrames(noDirected, spec), /typed directed cancellation/);
+  const noAgent = cooperative.filter(frame => frame.payload.source_event_type !== "run_failed");
+  assert.throws(() => assertStoppedFrames(noAgent, spec), /cooperative.*agent cancellation/);
+  const hardWithAgent = frames();
+  hardWithAgent.splice(-1, 0, { ...cooperative.at(-2), id: "invented-run-failed", source_event_id: "invented-run-failed" });
+  assert.throws(() => assertStoppedFrames(hardWithAgent, expected), /hard interruption.*agent cancellation/);
+  const wrongAgent = structuredClone(cooperative); wrongAgent.at(-2).payload.error_report.class = "internal";
+  assert.throws(() => assertStoppedFrames(wrongAgent, spec), /typed agent cancellation/);
+  const falseReason = frames(); falseReason.at(-1).payload = { source_event_type: "run_failed", reason: { kind: "cancelled" } };
+  assert.throws(() => assertStoppedFrames(falseReason, expected), /typed directed cancellation/);
 });
 
-test("later typed cancellation carrier extends proof without losing any original terminal or tool identity", () => {
+test("later directed cancellation carrier extends proof without losing original terminal or tool identity", () => {
   const original = assertStoppedFrames(frames(), expected);
   const laterFrames = frames();
-  laterFrames.push({ ...laterFrames.at(-1), id: "later-terminal", source_event_id: "later-terminal",
-    payload: { error_report: { class: "cancelled", message: "Stopped" } } });
+  laterFrames.push({ ...laterFrames.at(-1), id: "later-terminal", source_event_id: "later-terminal" });
   const later = assertStoppedFrames(laterFrames, expected);
   assertProofRetained(original, later);
   assert.throws(() => assertProofRetained(original, { ...later, terminalIds: ["later-terminal"] }), /original typed terminal/);
@@ -78,9 +141,4 @@ test("stop proof rejects missing or duplicate calls, mutated bytes, later work, 
   assert.throws(() => assertStoppedFrames(altered, expected), /exact result/);
   const continued = frames(); continued.push({ ...continued[1], id: "after", source_event_id: "after", payload: { tool_call_id: `fixture-${expected.scenarioId}-ready` } });
   assert.throws(() => assertStoppedFrames(continued, expected), /no later tool/);
-  const rewired = history(); rewired.messages[0].identity = { interaction_id: "foreign", run_id: expected.runId };
-  assert.throws(() => assertStoppedHistory(rewired, expected), /canonical interaction/);
-  const lost = history(); lost.messages.pop(); lost.message_count--;
-  assert.throws(() => assertStoppedHistory(lost, expected), /one call/);
-  assert.throws(() => assertStoppedHistory({ ...history(), has_more: true }, expected), /complete owner history/);
 });

@@ -631,12 +631,15 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
             const result = block.result
               ? formatJsonIfPossible(block.result)
               : "";
+            const completionLabel = toolCompletionLabel(block);
+            const showCompletionLabel = ["unknown", "cancelled", "interrupted"].includes(block.completionEvidence?.outcome ?? "");
             return (
               <div className="cc-tool-call__sub" key={block.toolCallId || i}>
                 <div className="cc-tool-call__sub-head">
                   <span className="cc-tool-call__sub-index">#{i + 1}</span>
-                  <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
-                    {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
+                  <span className={clsx("cc-tool-call__peer-status", `cc-tool-call__peer-status--${block.status}`, showCompletionLabel && "cc-tool-call__peer-status--explicit")}
+                    role="status" aria-label={completionLabel} title={completionLabel}>
+                    {showCompletionLabel ? completionLabel : <span aria-hidden="true">{block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}</span>}
                   </span>
                 </div>
                 {args && (
