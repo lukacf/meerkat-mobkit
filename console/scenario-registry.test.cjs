@@ -29,6 +29,7 @@ test("shipping runners discover every required real backend scenario and shard t
   const api = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "api-e2e.cjs"), "--list"], { encoding: "utf8" }));
   const browserModules = [
     require("./scenarios/real-conversation.cjs").scenarios,
+    require("./scenarios/real-recovery-scope.cjs").scenarios,
     require("./scenarios/real-markdown-url-policy.cjs").scenarios,
     require("./scenarios/real-reasoning.cjs").scenarios,
     require("./scenarios/real-assistant-identity.cjs").scenarios,

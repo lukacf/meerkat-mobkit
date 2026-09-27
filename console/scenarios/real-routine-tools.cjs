@@ -261,5 +261,8 @@ async function routineScenario(host) {
 }
 const apiScenarios = [{ id: "api-routine-tool-owner", family: "routine-tools", backend: "real", run: () => routineScenario(null) }];
 const browserScenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-routine-tools`, family: "real-presentation", backend: "real", run: () => routineScenario(host) }));
-module.exports = { apiScenarios, browserScenarios, assertRoutineFrames, assertRoutineHistory, expectedTools };
+module.exports = { apiScenarios, browserScenarios, assertRoutineFrames, assertRoutineHistory, expectedTools, capture };
+const negative = require("./real-routine-negative.cjs");
+apiScenarios.push(...negative.apiScenarios);
+browserScenarios.push(...negative.browserScenarios);
 if (require.main === module) require("../scenario-registry.cjs").runScenarios([...apiScenarios, ...browserScenarios]).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

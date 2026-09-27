@@ -3237,6 +3237,7 @@ const allScenarios = [
     ...scenarios,
     ...require("./scenarios/storage-lock.cjs").scenarios,
     ...require("./scenarios/real-conversation.cjs").scenarios,
+    ...require("./scenarios/real-recovery-scope.cjs").scenarios,
     ...require("./scenarios/real-markdown-url-policy.cjs").scenarios,
     ...require("./scenarios/real-reasoning.cjs").scenarios,
     ...require("./scenarios/real-assistant-identity.cjs").scenarios,

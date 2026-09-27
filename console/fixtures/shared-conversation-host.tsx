@@ -14,6 +14,7 @@ import "./shared-conversation-host.css";
 import { acceptanceMarkdownUrlPolicy } from "./markdown-url-policy";
 
 const markdownUrlPolicy = acceptanceMarkdownUrlPolicy();
+const switchRuntimeAuthority = new URLSearchParams(location.search).get("runtime-scope-switch") === "1";
 
 function createHistoryLoad() {
   let complete!: (available: boolean) => void;
@@ -34,6 +35,11 @@ function awaitHistory(work: Promise<boolean>, signal: AbortSignal): Promise<bool
 function SharedHost() {
   const [identity, setIdentity] = useState("router:main");
   const [scope, setScope] = useState("fixture-principal-a");
+  // Opt-in acceptance proxy prefixes select isolated real runtime owners.
+  // Ordinary shared-host tests retain their existing same-runtime scope switch.
+  const baseUrl = switchRuntimeAuthority
+    ? `${location.origin}/${scope === "fixture-principal-a" ? "scope-a" : "scope-b"}`
+    : location.origin;
   const [history, setHistory] = useState({ available: false, loading: false });
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -49,14 +55,14 @@ function SharedHost() {
   const [contexts, setContexts] = useState<ConsoleContextRecord[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalSnapshot>();
   const [transportState, setTransportState] = useState<ConsoleTransportState>({ phase: "connecting", stale: true, freshness: "unknown" });
-  const controller = useMemo(() => createMobKitConsoleController({ transport: createHttpConsoleTransport({ baseUrl: location.origin }) }), []);
+  const controller = useMemo(() => createMobKitConsoleController({ transport: createHttpConsoleTransport({ baseUrl }) }), [baseUrl]);
   const approvalResource = useMemo(() => createPendingApprovalResource({
     scopeKey: scope,
-    load: signal => callConsoleRpc(location.origin, "mobkit/gating/pending", {}, undefined, signal),
-    decide: (pendingId, decision, signal) => callConsoleRpc(location.origin, "mobkit/gating/decide", {
+    load: signal => callConsoleRpc(baseUrl, "mobkit/gating/pending", {}, undefined, signal),
+    decide: (pendingId, decision, signal) => callConsoleRpc(baseUrl, "mobkit/gating/decide", {
       pending_id: pendingId, decision, approver_id: "acceptance-operator", reason: "Reviewed evidence",
     }, undefined, signal),
-  }), [scope]);
+  }), [scope, baseUrl]);
   useEffect(() => {
     const publish = () => setApprovals(approvalResource.getSnapshot());
     const unsubscribe = approvalResource.subscribe(publish); publish();
@@ -141,14 +147,14 @@ function SharedHost() {
   }, [controller, identity, historyLoad]);
 
   const entries = useMemo(() => mapFramesToTimelineEntries(null, frames, {
-    textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: location.origin,
-  }), [frames]);
+    textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: baseUrl,
+  }), [frames, baseUrl]);
   const viewState = useMemo(() => buildConversationViewState({ memberId: identity, agentLabel: identity, entries }), [entries, identity]);
 
   async function revealAnchor(rowId: string, signal: AbortSignal) {
     if (!await awaitHistory(historyLoad.ready, signal)) return false;
     const hasRow = () => mapFramesToTimelineEntries(null, historyLoad.frames, {
-      textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: location.origin,
+      textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: baseUrl,
     }).some(entry => entry.id === rowId);
     while (!signal.aborted) {
       if (hasRow()) return true;

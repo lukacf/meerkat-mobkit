@@ -6,6 +6,7 @@ const { createHash } = require("node:crypto");
 const { isDeepStrictEqual } = require("node:util");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc } = require("../acceptance-runtime.cjs");
+const { browserFailureMonitor, navigation } = require("./browser-failure-monitor.cjs");
 
 const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
 const identity = "router:main";
@@ -57,24 +58,34 @@ async function inBrowser(name, run) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   page.setDefaultTimeout(20_000);
-  const errors = [];
-  page.on("pageerror", error => errors.push(error.message));
+  const monitor = browserFailureMonitor(page.context(), { origin: fixture.baseUrl });
+  const { errors, expected: expectedFailures, failures: requestFailures } = monitor;
   try {
-    await run({ fixture, browser, page, errors });
-    assert.deepEqual(errors, [], "no uncaught browser exceptions");
+    await run({ fixture, browser, page, errors, monitor });
+    monitor.assertClean();
+    await saveEvidence(fixture, `${name}-browser`, { errors, expectedFailures, requestFailures });
+    monitor.assertClean();
   } catch (error) {
     await capture(page, `${name}-failure`).catch(() => {});
-    await saveEvidence(fixture, `${name}-failure`, { error: String(error), errors, logs: fixture.logs() }).catch(() => {});
+    await saveEvidence(fixture, `${name}-failure`, { error: String(error), errors, expectedFailures, requestFailures, logs: fixture.logs() }).catch(() => {});
     throw error;
-  } finally { await browser.close(); await fixture.close(); }
+  } finally { monitor.stop(); await browser.close(); await fixture.close(); }
 }
 async function open(page, fixture, host = "stock") {
-  await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
-  if (host !== "shared" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
-    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
-  }
-  await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
-  if (host !== "shared") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+  await navigation(page, `open ${host} send-context host`, async () => {
+    await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
+    if (host !== "shared" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
+      await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
+    }
+    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    if (host !== "shared") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+  });
+}
+async function reload(page) {
+  await navigation(page, "explicit send-context reload", async () => {
+    await page.reload();
+    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+  });
 }
 const pane = (page, host) => host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(`chat-pane:${identity}`).first();
 const viewport = (page, host) => pane(page, host).locator(host === "shared" ? ".cc-conversation-pane__scroll" : ".conv__body");
@@ -238,7 +249,7 @@ async function quotedContext(host) {
     assert.equal(await scope.getByRole("alert").filter({ hasText: "Select text from one message at a time." }).count(), 0, "selection feedback clears after composing and sending");
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-quote-delivered`);
-    await page.reload(); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    await reload(page); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-quote-delivered-reloaded`);
     await saveEvidence(fixture, `${host}-quote-delivered`, { selected, envelope, record });
@@ -288,7 +299,7 @@ async function editedQuotedContext(host) {
     assert.deepEqual(envelope.content, expected); await exactModelContent(fixture, expected, `${host} edited quote`);
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-edited-quote-delivered-1600`);
-    await page.reload(); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    await reload(page); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await assertDeliveredContext(page, host, expected, [record]);
     for (const width of [1440, 1024]) {
       await page.setViewportSize({ width, height: 900 });
@@ -304,7 +315,7 @@ async function editedQuotedContext(host) {
 
 async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
   const name = `${host === "embedded" ? "embedded" : "scoped"}-${withQuote ? "quoted-" : ""}lost-ack`;
-  return inBrowser(`real-${name}`, async ({ fixture, page }) => {
+  return inBrowser(`real-${name}`, async ({ fixture, page, monitor }) => {
     let storageNamespace = namespace(fixture);
     const assetResponses = [];
     if (host === "embedded") {
@@ -360,6 +371,7 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
       assert(observation && observation.response === responseText, "fault drops a completed real owner response");
       observation.browserResponseDropped = true;
       dropped = observation;
+      monitor.expectFailure(route.request(), "deliberately drop completed owner send response", "net::ERR_FAILED");
       await route.abort("failed");
     });
     await compose(page, text);
@@ -400,7 +412,7 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
     await capture(page, `${name}-saved-dark`, { animations: "disabled" });
     await page.getByTestId("theme-toggle").click();
-    await page.reload();
+    await reload(page);
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     const reloaded = (await savedAttempts(page, fixture, storageNamespace)).find(item => item.id === saved.id);
@@ -596,7 +608,7 @@ async function twoPaneDrafts() {
     assert.deepEqual(wireEnvelope(sent).content, expected);
     await exactModelContent(fixture, expected, "first pane");
     assert.equal(await other.getByTestId(`chat-composer:${identity}`).inputValue(), textB);
-    await page.reload();
+    await reload(page);
     await page.getByTestId(secondId).getByTestId(`chat-composer:${identity}`).waitFor();
     assert.equal(await page.getByTestId(firstId).getByTestId(`chat-composer:${identity}`).inputValue(), "");
     assert.equal(await page.getByTestId(secondId).getByTestId(`chat-composer:${identity}`).inputValue(), textB);
@@ -645,7 +657,7 @@ async function newerDraftDuringEnqueue() {
     assert.deepEqual(await scope.locator(".cc-context-chip blockquote").allTextContents(), [newQuote], "only the submitted quote is removed");
     const drafts = await draftDocuments(page);
     assert(drafts.some(item => item.text === newInstruction && item.contexts.length === 1 && item.contexts[0].quote === newQuote), "sessionStorage retains the newer complete draft");
-    await page.reload(); await scope.getByTestId(`chat-composer:${identity}`).waitFor();
+    await reload(page); await scope.getByTestId(`chat-composer:${identity}`).waitFor();
     assert.equal(await scope.getByTestId(`chat-composer:${identity}`).inputValue(), newInstruction);
     assert.deepEqual(await scope.locator(".cc-context-chip blockquote").allTextContents(), [newQuote]);
     assert.equal(sendObservations(fixture).length, before + 1, "newer draft remains unsent through reload");

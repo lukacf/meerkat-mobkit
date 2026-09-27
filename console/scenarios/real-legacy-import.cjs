@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { chromium } = require("playwright");
 const { startFixture, eventually } = require("../acceptance-runtime.cjs");
+const { browserFailureMonitor, navigation } = require("./browser-failure-monitor.cjs");
 
 async function explicitLegacyImport({ embeddedHttp = false } = {}) {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator's prebuilt fixture");
@@ -20,8 +21,13 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
   let namespace = `${fixture.baseUrl}/acceptance-realm/operator-a`;
   let queueKey;
   const dir = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
-  const errors = [];
-  page.on("pageerror", error => errors.push(error.message));
+  const monitor = browserFailureMonitor(page.context(), { origin });
+  const { errors, expected: expectedFailures, failures: requestFailures } = monitor;
+  const live = () => page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+  const reload = () => navigation(page, "explicit legacy-import reload", async () => {
+    await page.reload();
+    await live();
+  });
   const sends = () => fixture.observations.filter(item => item.method === "POST" &&
     (item.path.endsWith("/send") || item.request.includes('"method":"mobkit/console/send"')));
   const requests = async () => (await (await fetch(fixture.backendUrl + "/__fixture/requests")).json());
@@ -35,15 +41,20 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
       namespace = JSON.stringify([origin, experience.storage_scope]);
     }
     queueKey = `mobkit-send-attempts:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(identity)}`;
-    await page.goto(origin + (embeddedHttp ? "/console" : "/scoped"));
+    await navigation(page, "open legacy-import host", async () => {
+      await page.goto(origin + (embeddedHttp ? "/console" : "/scoped"));
+      await live();
+    });
     if (embeddedHttp) {
       assert.deepEqual(await page.evaluate(() => ({ secure: isSecureContext, locks: Boolean(navigator.locks), indexedDB: Boolean(indexedDB) })),
         { secure: false, locks: false, indexedDB: true });
     }
     await page.evaluate(([key, bytes]) => localStorage.setItem(key, bytes), [legacyKey, legacyBytes]);
-    await page.reload();
-    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
-    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    await navigation(page, "reload seeded legacy queue and select target", async () => {
+      await page.reload();
+      await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
+      await live();
+    });
     const importButton = page.getByRole("button", { name: "Import legacy queue into this account", exact: true });
     await importButton.waitFor();
     assert.equal(sends().length, 0, "opening the console cannot submit a legacy queue");
@@ -53,7 +64,7 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
         .filter(key => key.startsWith("mobkit-composer-draft:v2:"))
         .some(key => { const draft = JSON.parse(sessionStorage.getItem(key)); return draft.namespace === namespace && draft.text === unsentDraft; }),
       { namespace, unsentDraft }), "default embedded composer draft saved in server scope");
-      await page.reload();
+      await reload();
       await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
       assert.equal(await page.getByTestId(`chat-composer:${identity}`).first().inputValue(), unsentDraft);
       await importButton.waitFor();
@@ -80,7 +91,7 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
     assert.equal(await page.evaluate(key => localStorage.getItem(key), legacyKey), legacyBytes, "original bytes are preserved");
     const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), queueKey);
     assert.equal(saved.legacyImported, true);
-    await page.reload();
+    await reload();
     await page.getByTestId(`chat-composer:${identity}`).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     assert.equal(await importButton.count(), 0);
@@ -91,16 +102,17 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
         "importing an older queued intent cannot erase the current unsent draft");
       assert(!(await requests()).some(request => JSON.stringify(request.messages).includes(unsentDraft)));
     }
-    assert.deepEqual(errors, []);
+    monitor.assertClean();
     await fs.mkdir(dir, { recursive: true });
     await page.screenshot({ path: path.join(dir, `${screenshotPrefix}-after-reload.png`), fullPage: true });
-    await fs.writeFile(path.join(dir, `${screenshotPrefix}.json`), JSON.stringify({ embeddedHttp, namespace, saved, envelope, originalBytesPreserved: true, sends: sends(), errors }, null, 2));
+    await fs.writeFile(path.join(dir, `${screenshotPrefix}.json`), JSON.stringify({ embeddedHttp, namespace, saved, envelope, originalBytesPreserved: true, sends: sends(), errors, expectedFailures, requestFailures }, null, 2));
+    monitor.assertClean();
   } catch (error) {
     await fs.mkdir(dir, { recursive: true });
     await page.screenshot({ path: path.join(dir, `${screenshotPrefix}-failure.png`), fullPage: true }).catch(() => {});
-    await fs.writeFile(path.join(dir, `${screenshotPrefix}-failure.json`), JSON.stringify({ error: String(error), observations: fixture.observations, logs: fixture.logs(), errors }, null, 2));
+    await fs.writeFile(path.join(dir, `${screenshotPrefix}-failure.json`), JSON.stringify({ error: String(error), observations: fixture.observations, logs: fixture.logs(), errors, expectedFailures, requestFailures }, null, 2));
     throw error;
-  } finally { await browser.close(); await fixture.close(); }
+  } finally { monitor.stop(); await browser.close(); await fixture.close(); }
 }
 
 module.exports = { scenarios: [
