@@ -159,6 +159,7 @@ impl SessionBridge for ScriptedPreviewBridge {
     ) -> Result<MemberInspection, BridgeError> {
         Ok(MemberInspection {
             output_preview: self.preview.lock().await.clone(),
+            preview_unavailable: None,
             is_final: false,
             peer_reachable_count: 0,
         })

@@ -5714,6 +5714,17 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            // Forwarded exactly: the inner service answers from its live
+            // status watch without waiting on a running turn. A wrapper-level
+            // `read` would wait on the member's turn (meerkat 0.8.45 makes
+            // this method required for that reason).
+            async fn observe_member_status_view(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
+                self.inner.observe_member_status_view(session_id).await
+            }
+
             #[cfg(feature = "openai-live")]
             async fn validate_live_bridge_member_eligibility(
                 &self,
@@ -6778,6 +6789,15 @@ impl MobSessionService for AfterCreateMobSessionService {
         self.inner
             .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
             .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: the inner
+    // service answers from its live status watch without waiting on a turn.
+    async fn observe_member_status_view(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
+        self.inner.observe_member_status_view(session_id).await
     }
 
     #[cfg(feature = "openai-live")]
@@ -9166,6 +9186,24 @@ fn legacy_auto_mark_declared_resume_overrides(definition: &mut MobDefinition) {
     }
 }
 
+/// Bound on [`MobRuntime::session_commit_pending`]'s runtime read. A read
+/// still waiting for the session's runtime driver (held by a boundary commit
+/// until it lands) when this elapses answers `None`.
+pub const SESSION_COMMIT_PENDING_READ_BOUND: std::time::Duration =
+    std::time::Duration::from_secs(2);
+
+/// [`MobRuntime::session_commit_pending`]'s mapping: only a conclusive answer
+/// within `bound` is `Some`; an error or a timeout is `None`.
+async fn bounded_commit_pending<E>(
+    read: impl std::future::Future<Output = Result<bool, E>>,
+    bound: std::time::Duration,
+) -> Option<bool> {
+    match tokio::time::timeout(bound, read).await {
+        Ok(Ok(pending)) => Some(pending),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
+
 /// Live mob runtime backed by a `MobHandle`.
 #[derive(Clone)]
 pub struct MobRuntime {
@@ -9953,6 +9991,33 @@ impl MobRuntime {
         settled
     }
 
+    /// Whether a session holds run input its runtime has taken up but not yet
+    /// committed at a run boundary: meerkat's
+    /// `MeerkatMachine::session_has_uncommitted_run_input`, read within
+    /// [`SESSION_COMMIT_PENDING_READ_BOUND`].
+    ///
+    /// - `Some(true)`: run input is staged, applied or pending consumption.
+    /// - `Some(false)`: durability is ready, every input of the session's
+    ///   current runtime driver was read, and none is. Queued input that has
+    ///   not started does not count. It is not a promise that no later run
+    ///   starts.
+    /// - `None`: inconclusive, never a guessed `false`. No runtime machine, a
+    ///   session id that does not parse, every meerkat error (no runtime holds
+    ///   the session, its driver was replaced during the read, degraded
+    ///   durability, an input without its phase), and a read that did not
+    ///   answer within the bound. The read waits for the session driver, which
+    ///   a boundary commit holds until it lands, so a timeout usually means a
+    ///   commit is in flight.
+    pub async fn session_commit_pending(&self, session_id: &str) -> Option<bool> {
+        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
+        bounded_commit_pending(
+            runtime_adapter.session_has_uncommitted_run_input(&session_id),
+            SESSION_COMMIT_PENDING_READ_BOUND,
+        )
+        .await
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn runtime_state_for_session(
         &self,
@@ -10718,6 +10783,63 @@ pub(crate) async fn send_console_human_on_mob(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    // `session_commit_pending` answers only what the runtime read concluded
+    // within the bound: one test per arm of its mapping. The real-machine
+    // arms (a missing runtime, an unknown or gone session) are in
+    // tests/bridge_completion_seam.rs.
+
+    #[tokio::test]
+    async fn session_commit_pending_reports_pending_input() {
+        assert_eq!(
+            bounded_commit_pending(
+                async { Ok::<_, ()>(true) },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_commit_pending_reports_no_pending_input() {
+        assert_eq!(
+            bounded_commit_pending(
+                async { Ok::<_, ()>(false) },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_commit_pending_fails_closed_on_a_runtime_error() {
+        assert_eq!(
+            bounded_commit_pending(
+                async { Err::<bool, _>("session is not held by a runtime") },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
+            None,
+            "an error is inconclusive, never a guessed false"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn session_commit_pending_fails_closed_when_the_read_outlasts_its_bound() {
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            bounded_commit_pending(
+                std::future::pending::<Result<bool, ()>>(),
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
+            None,
+            "a read still waiting (a boundary commit holds the driver) is inconclusive"
+        );
+        assert_eq!(started.elapsed(), SESSION_COMMIT_PENDING_READ_BOUND);
+    }
 
     /// meerkat >= 0.7 `RunFailed` carries only the typed `error_report`; the
     /// projection derives the flat `error` and `reason` every MobKit consumer
@@ -13642,6 +13764,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // In-memory double: `read` is its published state (meerkat 0.8.45).
+        async fn observe_member_status_view(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            meerkat_mob::observe_member_status_view_via_read(self, session_id).await
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,
@@ -13973,6 +14103,11 @@ comms = true
         );
     }
 
+    /// What `ForwardingProbe` answers for a member-status view, so a test can
+    /// tell a forwarded answer from a wrapper-level read.
+    const FORWARDED_STATUS_PREVIEW: &str = "committed preview from the inner service";
+    const FORWARDED_STATUS_TOKENS: u64 = 4242;
+
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
@@ -14178,6 +14313,17 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn observe_member_status_view(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            self.record("observe_member_status_view");
+            Ok(meerkat_mob::MemberStatusSessionView::live_watch(
+                Some(FORWARDED_STATUS_PREVIEW.to_string()),
+                FORWARDED_STATUS_TOKENS,
+            ))
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             machine: &meerkat_runtime::MeerkatMachine,
@@ -14763,6 +14909,50 @@ comms = true
                 "validate_live_bridge_member_eligibility",
                 "capture_live_bridge_execution_snapshot",
             ]
+        );
+    }
+
+    /// meerkat 0.8.45 made `observe_member_status_view` required so no
+    /// wrapper can answer it with a `read` that waits on the member's running
+    /// turn. Both production decorators must forward it exactly once and
+    /// return the inner service's view unchanged.
+    #[tokio::test]
+    async fn wrappers_forward_the_member_status_view_exactly() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            let view = wrapper
+                .observe_member_status_view(&session_id)
+                .await
+                .expect("the inner view is forwarded");
+            assert_eq!(
+                view.last_assistant_text.as_deref(),
+                Some(FORWARDED_STATUS_PREVIEW)
+            );
+            assert_eq!(view.total_tokens, FORWARDED_STATUS_TOKENS);
+            assert!(matches!(
+                view.source,
+                meerkat_mob::MemberStatusViewSource::LiveWatch
+            ));
+        }
+        assert_eq!(
+            probe.calls(),
+            vec!["observe_member_status_view", "observe_member_status_view"],
+            "each wrapper forwards exactly once and adds no read of its own"
         );
     }
 

@@ -1958,6 +1958,14 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        // In-memory double: `read` is its published state (meerkat 0.8.45).
+        async fn observe_member_status_view(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            meerkat_mob::observe_member_status_view_via_read(self, session_id).await
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,
@@ -2230,6 +2238,14 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        // In-memory double: `read` is its published state (meerkat 0.8.45).
+        async fn observe_member_status_view(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            meerkat_mob::observe_member_status_view_via_read(self, session_id).await
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,

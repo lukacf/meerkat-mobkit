@@ -908,10 +908,10 @@ comms = true
             .expect("member-turn event channel should remain open through completion");
         observed_events.push(format!("{:?}", event.payload));
         match event.payload {
-            AgentEvent::TextDelta { delta } => {
+            AgentEvent::TextDelta { delta, .. } => {
                 observed_text_output |= delta == "ok";
             }
-            AgentEvent::TextComplete { content } => {
+            AgentEvent::TextComplete { content, .. } => {
                 observed_text_output |= content == "ok";
             }
             AgentEvent::RunCompleted { session_id, .. } => {

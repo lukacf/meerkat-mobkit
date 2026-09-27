@@ -110,7 +110,12 @@ export type {
 export { textBlock, imageBlock, imageBlobBlock, toolContent, ToolResultContent } from "./tool-content.js";
 export type { ContentBlock } from "./tool-content.js";
 
-export { SessionBuildOptions } from "./models.js";
+export {
+  parseForkBuildSource,
+  SessionBuildOptions,
+  type ForkBuildSource,
+  type MobMemberBinding,
+} from "./models.js";
 export type {
   DiscoverySpec,
   PreSpawnData,

@@ -320,3 +320,133 @@ describe("SessionCreatedContext", () => {
     assert.equal(ctx.systemPrompt, "You are a lead agent.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// fork_source on callback/build_agent (meerkat 0.8.45+)
+// ---------------------------------------------------------------------------
+
+describe("callback/build_agent fork lineage", () => {
+  const SOURCE_SESSION_ID = "0192f5c4-7a3e-7d21-9b0e-4c1d2e3f4a5b";
+  const forkSourceWire = () => ({
+    source_member: {
+      mob_id: "home",
+      role: "domain",
+      member: "mk--domain_ccalendar",
+      future_member_field: true,
+    },
+    source_session_id: SOURCE_SESSION_ID,
+    future_source_field: { nested: [1, 2] },
+  });
+
+  async function build(
+    options: Record<string, unknown>,
+    mutate: (opts: SessionBuildOptions) => void = () => {},
+  ): Promise<{ opts: SessionBuildOptions; result: Record<string, unknown> }> {
+    let seen: SessionBuildOptions | null = null;
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerBuilder({
+      async buildAgent(opts: SessionBuildOptions): Promise<void> {
+        seen = opts;
+        mutate(opts);
+      },
+    });
+    const result = (await dispatcher.handleCallback("callback/build_agent", {
+      options,
+    })) as Record<string, unknown>;
+    assert.ok(seen !== null, "buildAgent must run");
+    return { opts: seen, result };
+  }
+
+  it("types the source and its durable identity, ignoring unknown fields", async () => {
+    const { opts } = await build({
+      scope_id: "s1",
+      session_id: "child-session",
+      labels: { session_id: "child-session" },
+      fork_source: forkSourceWire(),
+      fork_source_identity: "domain:calendar",
+      future_top_level_field: 1,
+    });
+    assert.deepEqual(opts.forkSource, {
+      sourceMember: {
+        mobId: "home",
+        role: "domain",
+        member: "mk--domain_ccalendar",
+      },
+      sourceSessionId: SOURCE_SESSION_ID,
+    });
+    assert.equal(opts.forkSourceIdentity, "domain:calendar");
+    // The child keeps its own identity and session.
+    assert.equal(opts.sessionId, "child-session");
+    assert.deepEqual(opts.labels, { session_id: "child-session" });
+  });
+
+  it("never sends fork lineage back", async () => {
+    for (const options of [
+      { scope_id: "s1" },
+      {
+        scope_id: "s2",
+        fork_source: forkSourceWire(),
+        fork_source_identity: "domain:calendar",
+      },
+    ]) {
+      const { result } = await build(options, (opts) => {
+        // Receive-only: a builder cannot mint lineage into its response.
+        (opts as unknown as Record<string, unknown>).forkSource = {
+          sourceMember: { mobId: "x", role: "y", member: "z" },
+          sourceSessionId: "spoofed",
+        };
+        (opts as unknown as Record<string, unknown>).forkSourceIdentity = "spoofed";
+      });
+      assert.equal("fork_source" in result, false);
+      assert.equal("fork_source_identity" in result, false);
+    }
+  });
+
+  it("gives an ordinary build no fork source", async () => {
+    for (const options of [
+      { scope_id: "s1" },
+      { scope_id: "s2", fork_source: null, fork_source_identity: null },
+    ]) {
+      const { opts } = await build(options);
+      assert.equal(opts.forkSource, null);
+      assert.equal(opts.forkSourceIdentity, null);
+    }
+  });
+
+  it("fails the build on a malformed fork source", async () => {
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerBuilder({
+      async buildAgent(): Promise<void> {
+        throw new Error("must not be called");
+      },
+    });
+    await assert.rejects(
+      dispatcher.handleCallback("callback/build_agent", {
+        options: {
+          scope_id: "s1",
+          fork_source: {
+            source_member: { mob_id: "home", role: "domain", member: "m" },
+          },
+        },
+      }),
+      /source_session_id/,
+    );
+  });
+
+  it("carries resume_session_id both ways", async () => {
+    const { opts, result } = await build({
+      scope_id: "s1",
+      resume_session_id: "sid-resumed",
+    });
+    assert.equal(opts.resumeSessionId, "sid-resumed");
+    assert.equal(result.resume_session_id, "sid-resumed");
+
+    const minted = await build({ scope_id: "s2" }, (o) => {
+      o.resumeSessionId = "sid-owner-789";
+    });
+    assert.equal(minted.result.resume_session_id, "sid-owner-789");
+    const plain = await build({ scope_id: "s3" });
+    assert.equal(plain.opts.resumeSessionId, null);
+    assert.equal("resume_session_id" in plain.result, false);
+  });
+});

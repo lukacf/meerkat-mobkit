@@ -265,6 +265,40 @@ describe("model mirrors carry the cursor in both directions", () => {
     );
   });
 
+  it("IdentityInspection preview_unavailable", async () => {
+    const { parseIdentityInspection, identityInspectionToDict } = await import(
+      "../src/types.js"
+    );
+    const payload = {
+      identity: "triage:main",
+      is_final: false,
+      peer_reachable_count: 0,
+      preview_unavailable: "observation_deadline",
+    };
+
+    const parsed = parseIdentityInspection(payload);
+    assert.equal(parsed.outputPreview, null);
+    assert.equal(parsed.previewUnavailable, "observation_deadline");
+    assert.deepEqual(identityInspectionToDict(parsed), payload);
+    // An observed preview carries no marker, and a gateway predating the
+    // field (or a null marker) reads as observed.
+    const observed = parseIdentityInspection({
+      identity: "triage:main",
+      output_preview: "ACK",
+      preview_unavailable: null,
+    });
+    assert.equal(observed.previewUnavailable, null);
+    assert.equal("preview_unavailable" in identityInspectionToDict(observed), false);
+    // Unknown future reasons pass through.
+    assert.equal(
+      parseIdentityInspection({
+        identity: "triage:main",
+        preview_unavailable: "some_future_reason",
+      }).previewUnavailable,
+      "some_future_reason",
+    );
+  });
+
   it("DispatchResult", async () => {
     const { parseDispatchResult, dispatchResultToDict } = await import(
       "../src/types.js"

@@ -2907,6 +2907,7 @@ mod tests {
                 mob_id: None,
                 timestamp_ms: 1,
                 payload: AgentEvent::TextDelta {
+                    assistant_message_id: None,
                     delta: "hello".to_string(),
                 },
             },

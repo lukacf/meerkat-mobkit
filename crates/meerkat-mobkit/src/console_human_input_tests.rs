@@ -158,19 +158,24 @@ comms = true
             .unwrap();
         let status = identity_runtime.status(&identity).await.unwrap();
         if kickoff {
+            // Read the kickoff phase from the roster (a plain actor read), not
+            // through member_status: a member-status read joins the member's
+            // status observation, and back-to-back observations can hold the
+            // kickoff turn off (meerkat #1226). Roster reads never do.
+            let member_id = crate::member_comms_id::mob_member_id(identity.as_str());
             tokio::time::timeout(WAIT, async {
                 loop {
-                    let snapshot = unified
-                        .mob_handle()
-                        .member_status(&crate::member_comms_id::mob_member_id(identity.as_str()))
-                        .await
-                        .unwrap();
-                    if snapshot.kickoff.as_ref().is_some_and(|kickoff| {
-                        kickoff.phase == meerkat_mob::MobMemberKickoffPhase::Started
-                    }) {
+                    let entry = unified.mob_handle().get_member(&member_id).await.unwrap();
+                    if entry
+                        .as_ref()
+                        .and_then(|entry| entry.kickoff.as_ref())
+                        .is_some_and(|kickoff| {
+                            kickoff.phase == meerkat_mob::MobMemberKickoffPhase::Started
+                        })
+                    {
                         break;
                     }
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             })
             .await

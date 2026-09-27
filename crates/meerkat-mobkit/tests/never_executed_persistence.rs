@@ -118,6 +118,13 @@ impl SessionServiceHistoryExt for NeverStartsActorRunService {
 
 #[async_trait::async_trait]
 impl MobSessionService for NeverStartsActorRunService {
+    async fn observe_member_status_view(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+        self.inner.observe_member_status_view(session_id).await
+    }
+
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,

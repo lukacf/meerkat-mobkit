@@ -1,7 +1,7 @@
 """Typed data models for MobKit SDK — matches HomeCore import surface."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -102,11 +102,84 @@ class SessionCreatedContext:
         )
 
 
+def _required_str(data: dict[str, Any], key: str, owner: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise TypeError(f"{owner}.{key} must be a string, got {type(value).__name__}: {value!r}")
+    return value
+
+
+@dataclass(frozen=True)
+class MobMemberBinding:
+    """A mob member as meerkat names it: its mob, role and roster member id.
+
+    In a MobKit mob ``member`` is MobKit's comms-safe roster encoding of the
+    member's durable identity (``mk--...``), not the identity itself.
+    """
+
+    mob_id: str
+    role: str
+    member: str
+
+    @classmethod
+    def from_dict(cls, data: Any) -> MobMemberBinding:
+        """Decode the wire object. Fields this SDK does not know are ignored."""
+        if not isinstance(data, dict):
+            raise TypeError(f"MobMemberBinding must be an object, got {type(data).__name__}")
+        return cls(
+            mob_id=_required_str(data, "mob_id", "MobMemberBinding"),
+            role=_required_str(data, "role", "MobMemberBinding"),
+            member=_required_str(data, "member", "MobMemberBinding"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mob_id": self.mob_id, "role": self.role, "member": self.member}
+
+
+@dataclass(frozen=True)
+class ForkBuildSource:
+    """The source a fork-derived member was forked from (meerkat 0.8.45+).
+
+    Set by the mob runtime on the build that seats a durable fork (fork_off
+    children, fork_member children, local council participants) and on every
+    later rebuild of that member. Absent for every other build.
+    """
+
+    source_member: MobMemberBinding
+    source_session_id: str
+
+    @classmethod
+    def from_dict(cls, data: Any) -> ForkBuildSource:
+        """Decode the wire object. Fields this SDK does not know are ignored,
+        so a newer gateway can add fields without breaking older builders."""
+        if not isinstance(data, dict):
+            raise TypeError(f"ForkBuildSource must be an object, got {type(data).__name__}")
+        return cls(
+            source_member=MobMemberBinding.from_dict(data.get("source_member")),
+            source_session_id=_required_str(data, "source_session_id", "ForkBuildSource"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_member": self.source_member.to_dict(),
+            "source_session_id": self.source_session_id,
+        }
+
+
 @dataclass
 class SessionBuildOptions:
     """Options passed to SessionAgentBuilder.build_agent().
 
     Mutable — the builder mutates fields during agent construction.
+
+    ``fork_source`` and ``fork_source_identity`` are receive-only: they tell
+    the builder that this member is a fork and which member it was forked
+    from, so it can build the child as its source. They are never sent back,
+    and the gateway ignores them in a build response: fork lineage is set by
+    the mob runtime alone. ``fork_source.source_member.member`` is MobKit's
+    encoded roster id; ``fork_source_identity`` is the source's durable
+    identity (for example ``domain:calendar``), the key to resolve grants by.
+    The child's own ``labels`` and ``session_id`` still name the child.
     """
 
     app_context: Any | None = None
@@ -115,6 +188,8 @@ class SessionBuildOptions:
     labels: dict[str, str] = field(default_factory=dict)
     profile_name: str | None = None
     resume_session_id: str | None = None
+    fork_source: ForkBuildSource | None = None
+    fork_source_identity: str | None = None
     _tools: list[str] = field(default_factory=list, repr=False)
     _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False)
     # Per-tool wire metadata from register_tool(description=/input_schema=);
@@ -126,6 +201,30 @@ class SessionBuildOptions:
         default_factory=dict,
         repr=False,
     )
+
+    @classmethod
+    def from_callback_options(cls, raw: dict[str, Any]) -> SessionBuildOptions:
+        """Decode the gateway's ``callback/build_agent`` options.
+
+        Keys that are not SessionBuildOptions fields are informational (the
+        gateway also sends model and prompt) or come from a newer gateway, and
+        are ignored. ``fork_source`` is decoded to a typed ForkBuildSource.
+        """
+        known = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in raw.items() if k in known}
+        fork_source = filtered.pop("fork_source", None)
+        fork_source_identity = filtered.pop("fork_source_identity", None)
+        opts = cls(**filtered)
+        if fork_source is not None:
+            opts.fork_source = ForkBuildSource.from_dict(fork_source)
+        if fork_source_identity is not None:
+            if not isinstance(fork_source_identity, str):
+                raise TypeError(
+                    "fork_source_identity must be a string, got "
+                    f"{type(fork_source_identity).__name__}: {fork_source_identity!r}"
+                )
+            opts.fork_source_identity = fork_source_identity
+        return opts
 
     def add_tools(self, tools: list[str]) -> None:
         """Declare tool names the agent can use."""

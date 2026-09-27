@@ -4866,6 +4866,9 @@ async fn handle_unified_rpc_json_inner(
                                 "healthy": lease.healthy,
                             }))),
                             "output_preview": inspection.output_preview,
+                            // Typed (meerkat 0.8.45): why `output_preview`
+                            // is not an observation. Null when it is one.
+                            "preview_unavailable": inspection.preview_unavailable,
                             "is_final": inspection.is_final,
                             "peer_reachable_count": inspection.peer_reachable_count,
                             // Completion identity. `output_preview` cannot
@@ -5516,6 +5519,7 @@ async fn rpc_live_identity_inspect_json(
         },
         "lease": Value::Null,
         "output_preview": snapshot.as_ref().and_then(|snapshot| snapshot.output_preview.clone()),
+        "preview_unavailable": snapshot.as_ref().and_then(|snapshot| snapshot.preview_unavailable),
         "is_final": snapshot.as_ref().map(|snapshot| snapshot.is_final).unwrap_or(false),
         "peer_reachable_count": alias.member.wired_to.len(),
         // Raw live aliases are not identity-first owned, so no identity
