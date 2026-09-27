@@ -273,6 +273,11 @@ async function stoppedScenario(host, action) {
     }
   }
 }
-const apiScenarios = actions.map(action => ({ id: `api-routine-${action.replaceAll("_", "-")}`, family: "routine-tools", backend: "real", run: () => stoppedScenario(null, action) }));
-const browserScenarios = ["stock", "shared"].flatMap(host => actions.map(action => ({ id: `real-${host}-routine-${action.replaceAll("_", "-")}`, family: "real-presentation", backend: "real", run: () => stoppedScenario(host, action) })));
+const hardInterruptDiagnostic = {
+  reason: "Hard cancellation can finalize the runtime input without a terminal event, leaving the console Working. Durable receipt projection is deferred; this known failing repro is excluded from release acceptance.",
+  issues: ["https://github.com/lukacf/meerkat-mobkit/issues/460", "https://github.com/lukacf/meerkat/issues/1233"],
+};
+const diagnosticMetadata = action => action === "interrupt" ? { diagnostic: hardInterruptDiagnostic } : {};
+const apiScenarios = actions.map(action => ({ id: `api-routine-${action.replaceAll("_", "-")}`, family: "routine-tools", backend: "real", ...diagnosticMetadata(action), run: () => stoppedScenario(null, action) }));
+const browserScenarios = ["stock", "shared"].flatMap(host => actions.map(action => ({ id: `real-${host}-routine-${action.replaceAll("_", "-")}`, family: "real-presentation", backend: "real", ...diagnosticMetadata(action), run: () => stoppedScenario(host, action) })));
 module.exports = { apiScenarios, browserScenarios, assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, stoppedTools };

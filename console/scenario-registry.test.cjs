@@ -24,7 +24,7 @@ test("typos, empty selections, duplicate IDs and invalid shards cannot produce g
   assert.throws(() => selectScenarios([...scenarios, scenarios[0]], []));
 });
 
-test("shipping runners discover every required real backend scenario and shard the complete set", () => {
+test("shipping runners discover every registered scenario and shard default acceptance exactly once", () => {
   const browser = require("./browser-e2e.cjs").scenarios;
   const api = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "api-e2e.cjs"), "--list"], { encoding: "utf8" }));
   const browserModules = [
@@ -59,8 +59,86 @@ test("shipping runners discover every required real backend scenario and shard t
   }
   for (const runner of [browser, api]) {
     const shards = [1, 2, 3].flatMap(index => selectScenarios(runner, [`--shard=${index}/3`]).selected);
-    assert.deepEqual(shards.map(item => item.id).sort(), runner.map(item => item.id).sort());
+    assert.deepEqual(shards.map(item => item.id).sort(), selectScenarios(runner, []).selected.map(item => item.id).sort());
   }
+});
+
+const diagnostic = {
+  id: "hard-stop", family: "runtime", backend: "real",
+  diagnostic: { reason: "Known terminal projection defect", issues: ["https://github.com/lukacf/meerkat-mobkit/issues/460"] },
+};
+
+test("diagnostics are discoverable and explicitly selectable but excluded from default acceptance", () => {
+  const registry = [scenarios[0], diagnostic, ...scenarios.slice(1)];
+  assert.deepEqual(selectScenarios(registry, []).selected, scenarios);
+  assert.deepEqual(selectScenarios(registry, ["--family=runtime"]).selected, [scenarios[0], scenarios[3]]);
+  assert.deepEqual(selectScenarios(registry, ["--list"]).selected, registry);
+  for (const args of [["--scenario=hard-stop"], ["--family=runtime", "--scenario=hard-stop"], ["--scenario=hard-stop", "--family=runtime"]]) {
+    assert.deepEqual(selectScenarios(registry, args).selected, [diagnostic]);
+  }
+  assert.deepEqual(selectScenarios(registry, ["--scenario=hard-stop,scroll"]).selected, [diagnostic, scenarios[1]]);
+  const shards = [1, 2].map(index => selectScenarios(registry, [`--shard=${index}/2`]).selected);
+  assert.deepEqual(shards, [[scenarios[0], scenarios[2]], [scenarios[1], scenarios[3]]]);
+  assert.throws(() => selectScenarios([diagnostic], []), /selection is empty/);
+});
+
+test("diagnostic exclusions require a concrete reason and issue references", () => {
+  for (const invalid of [null, {}, { reason: " ", issues: ["issue"] }, { reason: "Known issue", issues: [] }, { reason: "Known issue", issues: [""] }]) {
+    assert.throws(() => selectScenarios([...scenarios, { ...diagnostic, diagnostic: invalid }], []), /diagnostic metadata/);
+  }
+});
+
+test("hard-interrupt repros retain executable registrations and linked diagnostic metadata", () => {
+  const negative = require("./scenarios/real-routine-negative.cjs");
+  const registered = [...negative.apiScenarios, ...negative.browserScenarios];
+  const issues = ["https://github.com/lukacf/meerkat-mobkit/issues/460", "https://github.com/lukacf/meerkat/issues/1233"];
+  for (const id of ["api-routine-interrupt", "real-stock-routine-interrupt", "real-shared-routine-interrupt"]) {
+    const [selected] = selectScenarios(registered, [`--scenario=${id}`]).selected;
+    assert.equal(selected.id, id);
+    assert.equal(typeof selected.run, "function");
+    assert.match(selected.diagnostic?.reason ?? "", /hard.*cancel|hard.*interrupt/i);
+    assert.match(selected.diagnostic.reason, /terminal|Working/);
+    assert.deepEqual(selected.diagnostic.issues, issues);
+    assert(!selectScenarios(registered, []).selected.some(item => item.id === id));
+  }
+  const defaults = selectScenarios(registered, []).selected;
+  assert.equal(defaults.length, 3);
+  assert(defaults.every(item => item.id.endsWith("cancel-after-boundary") && !item.diagnostic));
+  for (const runner of ["api-e2e.cjs", "browser-e2e.cjs"]) {
+    const listed = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, runner), "--list"], { encoding: "utf8" }));
+    const hard = listed.filter(item => item.id.endsWith("routine-interrupt"));
+    assert.equal(hard.length, runner === "api-e2e.cjs" ? 1 : 2);
+    for (const item of hard) assert.deepEqual(item.diagnostic.issues, issues);
+  }
+});
+
+function runSyntheticRegistry(diagnosticFails = false) {
+  const script = `
+    const { runScenarios } = require(${JSON.stringify(path.join(__dirname, "scenario-registry.cjs"))});
+    const registry = [
+      { id: "ordinary", family: "runtime", backend: "mock", run: async () => {} },
+      { ...${JSON.stringify(diagnostic)}, run: async () => { ${diagnosticFails ? 'throw new Error("diagnostic remains red")' : ""} } },
+    ];
+    runScenarios(registry, ["--scenario=ordinary,hard-stop"]).catch(error => {
+      process.stderr.write(error.message); process.exitCode = 1;
+    });
+  `;
+  return require("node:child_process").spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+}
+
+test("explicit diagnostics never emit acceptance passes even if their run resolves", () => {
+  const completed = runSyntheticRegistry();
+  assert.equal(completed.status, 0, completed.stderr);
+  assert.match(completed.stdout, /scenario:pass ordinary/);
+  assert.doesNotMatch(completed.stdout, /scenario:pass hard-stop/);
+  assert.match(completed.stdout, /scenario:diagnostic:complete hard-stop/);
+  assert.match(completed.stdout, /excluded from release acceptance/);
+  assert.match(completed.stdout, /Known terminal projection defect/);
+  assert.match(completed.stdout, /https:\/\/github.com\/lukacf\/meerkat-mobkit\/issues\/460/);
+  const failed = runSyntheticRegistry(true);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /diagnostic remains red/);
+  assert.doesNotMatch(failed.stdout, /scenario:pass hard-stop|scenario:diagnostic:complete hard-stop/);
 });
 
 test("default browser coverage includes activity filters against real runtime phases", () => {
