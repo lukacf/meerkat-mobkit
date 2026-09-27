@@ -423,8 +423,9 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     assert.equal(canonical.kind, "user_input");
     for (const field of ["content", "origin", "origin_kind", "idempotency_key", "handling_mode"]) assert.deepEqual(canonical.payload[field], envelope[field], `canonical receipt ${field}`);
     await page.getByRole("button", { name: "Check acceptance", exact: true }).click();
-    await eventually(async () => !(await savedAttempts(page, fixture, storageNamespace)).some(item => item.id === saved.id), "exact receipt removes unknown attempt");
-    assert.equal(await page.getByTestId(`pending-item:${saved.id}`).count(), 0);
+    // Durable removal precedes the scheduled render that removes its queue row.
+    await eventually(async () => !(await savedAttempts(page, fixture, storageNamespace)).some(item => item.id === saved.id)
+      && await page.getByTestId(`pending-item:${saved.id}`).count() === 0, "exact receipt removes unknown attempt from storage and queue");
     assert.equal(sendObservations(fixture).length, before + 1, "Check acceptance only queries, never dispatches");
     assert.equal((await timeline(fixture)).frames.filter(frame => frame.id === acceptance.input_frame_id).length, 1);
     await exactModelContent(fixture, content, "lost acknowledgement");

@@ -797,6 +797,46 @@ async fn assistant_identity_append_only_runs_do_not_repeat_full_position_maps()
         .ok_or("fixture identity missing")?;
     let session_id = record.session_id.clone().ok_or("fixture session missing")?;
     let session = meerkat_core::types::SessionId::parse(&session_id)?;
+    // Spawn acknowledges admission. Settle the initial turn before scripting
+    // history so the real refresh gate can authorize each complete image.
+    let handle = entry.runtime.handle();
+    let member_id =
+        crate::member_comms_id::roster_member_id_for_supplied_id(&record.runtime_member_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut last_observation = String::from("startup observation not completed");
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            let execution =
+                meerkat_mob::MobSessionService::execution_snapshot(&service, &session).await?;
+            let status = crate::member_status_observation::observe_member_status_until(
+                &handle, &member_id, deadline,
+            )
+            .await?;
+            let pending = entry.runtime.session_commit_pending(&session_id).await;
+            last_observation = format!(
+                "execution={execution:?}, session={:?}, progress={:?}, commit_pending={pending:?}",
+                status.current_session_id, status.progress,
+            );
+            if execution.as_ref().is_some_and(|snapshot| {
+                snapshot.turn_terminal && snapshot.terminal_run_id.is_some()
+            }) && status.current_session_id.as_ref() == Some(&session)
+                && status.progress.as_ref().is_some_and(|progress| {
+                    progress.run_state == meerkat_mob::MemberRunState::Idle
+                        && progress.in_flight_work == 0
+                })
+                && pending == Some(false)
+            {
+                return Ok::<(), ConsoleLogError>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::other(format!(
+            "fixture initial turn did not commit before scripted history: {last_observation}"
+        ))
+    })??;
     let target = SessionBackfillTarget {
         assistant_refresh: assistant_history_refresh::AssistantHistoryRefreshReason::Recovery,
         provenance: None,
@@ -875,7 +915,7 @@ async fn assistant_identity_append_only_runs_do_not_repeat_full_position_maps()
         );
         live.identity = target.record.identity.clone();
         live.conversation_id = Some(live.identity.clone());
-        store.append_if_absent(live).await?;
+        let observed_through = store.append_if_absent(live).await?.frame.cursor;
         service.script_history([super::tests::ScriptedHistoryRead {
             page: Some(meerkat_core::service::SessionHistoryPage::from_messages(
                 session.clone(),
@@ -908,6 +948,17 @@ async fn assistant_identity_append_only_runs_do_not_repeat_full_position_maps()
             .rev()
             .find(|frame| frame.kind == "assistant_history_snapshot")
             .ok_or("assistant image missing")?;
+        assert_eq!(latest.runtime_key, RUNTIME);
+        assert_eq!(latest.identity, target.record.identity);
+        assert_eq!(latest.session_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(latest.source.kind, ConsoleFrameSourceKind::SessionHistory);
+        assert_eq!(latest.payload["session_id"], session_id);
+        assert_eq!(latest.payload["complete"], true);
+        assert_eq!(
+            latest.payload["observed_through"],
+            json!(observed_through),
+            "image {index}: the published assistant snapshot covers this exact prefix"
+        );
         let ids: Vec<_> = messages
             .iter()
             .filter_map(|message| {
