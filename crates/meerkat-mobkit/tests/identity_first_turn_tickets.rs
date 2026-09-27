@@ -1258,15 +1258,16 @@ async fn assert_delivered_once_untracked(
     );
 }
 
-/// Wait until the identity-wide cursor passes `baseline`, then return the
-/// session's latest output (the old SDK wait).
-async fn cursor_wait(
+/// Poll the session's latest output (`output_preview`, which is what the old
+/// identity-wide wait returns once satisfied) until `accept` holds for it.
+/// Tests never gate on the identity-wide completion cursor itself: it moves
+/// only once the identity health monitor has subscribed to the member's event
+/// stream, and that timing is not part of what these tests assert.
+async fn wait_for_preview(
     runtime: &meerkat_mobkit::UnifiedRuntime,
     ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
-    baseline: &Value,
-) -> Option<String> {
-    let baseline: meerkat_mobkit::identity_first::CompletionCursor =
-        serde_json::from_value(baseline.clone()).expect("baseline");
+    accept: impl Fn(&str) -> bool,
+) -> String {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let inspection = rpc(
@@ -1276,24 +1277,26 @@ async fn cursor_wait(
                 json!({"identity": "keeper"}),
             )
             .await;
-            let cursor: meerkat_mobkit::identity_first::CompletionCursor =
-                serde_json::from_value(inspection["completion_cursor"].clone())
-                    .expect("completion cursor");
-            if cursor.progress_since(baseline) == CompletionProgress::Completed {
-                return inspection["output_preview"].as_str().map(str::to_string);
+            if let Some(preview) = inspection["output_preview"].as_str()
+                && accept(preview)
+            {
+                return preview.to_string();
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the cursor passes the baseline")
+    .expect("the session commits the expected output")
 }
 
-/// End to end on a real runtime: an untracked dispatch to `keeper` is
-/// admitted first and held; two tracked sends queue behind it. When the
-/// dispatch finishes, the identity-wide cursor passes the first send's
-/// baseline, and the old cursor wait (the SDKs' previous `send_and_wait`)
-/// returns at once, without that send's reply. Each ticket still reports its
+/// End to end on a real runtime: a foreign dispatch to `keeper` is admitted
+/// first and held in the model; two tracked sends queue behind it (the member
+/// is turn_driven, so turns run one at a time). When the foreign turn
+/// finishes, the session's latest output, which is what the old identity-wide
+/// wait (the SDKs' previous `send_and_wait`) returns once the cursor passes
+/// the first send's baseline, is the FOREIGN reply while that send's own turn
+/// is still pending. Every sync point is typed (tickets, the model holding a
+/// turn), never the identity-wide cursor's timing. Each ticket reports its
 /// own turn's reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_gateway_sends_each_get_their_own_reply() {
@@ -1303,14 +1306,23 @@ async fn concurrent_gateway_sends_each_get_their_own_reply() {
     let (runtime, ctx, _scratch) =
         live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
 
-    // The untracked dispatch is admitted first and held in the model.
-    rpc(
+    // The foreign dispatch is admitted first and held in the model. It is
+    // tracked only so the test can observe its completion typed.
+    let foreign = rpc(
         &runtime,
         &ctx,
         "mobkit/dispatch",
-        json!({"identity": "keeper", "dispatch_input": {"content": "foreign", "origin": "system"}}),
+        json!({
+            "identity": "keeper",
+            "dispatch_input": {"content": "foreign", "origin": "system"},
+            "track_turn": true,
+        }),
     )
     .await;
+    let foreign_ticket = foreign["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the foreign dispatch is tracked: {foreign}"))
+        .to_string();
     // The model is holding the foreign turn before the tracked sends go out,
     // so their baselines are read while it is still running.
     wait_for_model_call(&client, "foreign").await;
@@ -1341,18 +1353,25 @@ async fn concurrent_gateway_sends_each_get_their_own_reply() {
         "pending"
     );
 
-    // The dispatch finishes; alpha is still held in the model.
+    // The foreign turn finishes; alpha is held in the model and beta is
+    // queued behind it, so nothing else can commit output meanwhile.
     release_foreign.send(()).expect("release the dispatch");
-    let old_wait = cursor_wait(&runtime, &ctx, &alpha["completion_baseline"]).await;
+    assert_eq!(
+        await_turn(&runtime, &ctx, &foreign_ticket).await["output"],
+        "reply to: foreign"
+    );
+    // Control: what the old identity-wide wait returns once satisfied is the
+    // session's latest output, and that is the foreign reply, not alpha's.
+    let old_wait_output =
+        wait_for_preview(&runtime, &ctx, |preview| preview == "reply to: foreign").await;
     assert_ne!(
-        old_wait.as_deref(),
-        Some("reply to: alpha"),
-        "control: the old cursor wait returns before alpha's reply exists"
+        old_wait_output, "reply to: alpha",
+        "control: the old wait could only have returned a foreign output"
     );
     assert_eq!(
         turn_result(&runtime, &ctx, &alpha_ticket).await["state"],
         "pending",
-        "the dispatch's completion must not settle alpha's ticket"
+        "the foreign completion must not settle alpha's ticket"
     );
 
     release_alpha.send(()).expect("release alpha");
@@ -1407,13 +1426,11 @@ async fn an_autonomous_member_through_the_gateway_is_delivered_once_untracked() 
     .await;
     assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
     assert_delivered_once_untracked(&client, &dispatched, "beta", "autonomous_host").await;
-    let fallback = cursor_wait(&runtime, &ctx, &dispatched["completion_baseline"]).await;
-    assert!(
-        fallback
-            .as_deref()
-            .is_some_and(|reply| reply.starts_with("reply to: ")),
-        "the identity-wide wait returns one of this identity's replies: {fallback:?}"
-    );
+    // What a satisfied fallback wait returns is the session's latest output:
+    // one of this identity's replies, never a promise about which.
+    let fallback =
+        wait_for_preview(&runtime, &ctx, |preview| preview.starts_with("reply to: ")).await;
+    assert!(fallback.starts_with("reply to: "), "{fallback}");
     runtime.shutdown().await;
 }
 
@@ -1480,8 +1497,20 @@ async fn a_live_redispatch_reads_the_original_reply_or_no_own_result() {
     // The untracked original has ENDED before the retry: then the runtime's
     // dedup reports no result of the retry's own. (While the original is
     // still running, the retry shares the one input's completion and reports
-    // the original's result.)
-    cursor_wait(&runtime, &ctx, &untracked["completion_baseline"]).await;
+    // the original's result.) A tracked sentinel queued behind it on this
+    // turn_driven member completes only after the original's turn has.
+    let sentinel = rpc(
+        &runtime,
+        &ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "sentinel", "track_turn": true}),
+    )
+    .await;
+    let sentinel_ticket = sentinel["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the sentinel is tracked: {sentinel}"))
+        .to_string();
+    await_turn(&runtime, &ctx, &sentinel_ticket).await;
     let retry = rpc(
         &runtime,
         &ctx,
