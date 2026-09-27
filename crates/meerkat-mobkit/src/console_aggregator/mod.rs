@@ -416,8 +416,8 @@ async fn recover_member_provenance(
     session_id: Option<&str>,
     key: (String, String, Option<String>),
 ) -> Option<ConsoleFrameMemberProvenance> {
-    // One reset can be retried. Repeated mutation or read failure fails closed
-    // and leaves the next caller free to search again.
+    // Retry an unsuccessful search once if its prefix changed. A recovered
+    // policy witness remains usable across unrelated concurrent appends.
     for _ in 0..2 {
         let revision = inner.store.history_prefix_revision().await.ok()?;
         let observed_through = match inner.store.latest_cursor().await.ok()? {
@@ -490,9 +490,11 @@ async fn recover_member_provenance(
                 }
             }
         }
-        // A clear/rebuild can preserve both a cursor and identical last row.
-        // Only the store can certify that the searched prefix still exists.
-        if inner.store.history_prefix_revision().await.ok()? != revision {
+        // Only absence needs a continuous searched prefix. SQLite external
+        // appends also change this revision, but cannot erase a witness we
+        // already read. Dropping it would admit the next row without the
+        // retained member visibility policy.
+        if recovered.is_none() && inner.store.history_prefix_revision().await.ok()? != revision {
             continue;
         }
         let entries = inner

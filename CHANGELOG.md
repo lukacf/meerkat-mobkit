@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
+  for cached unsuccessful provenance searches. Its default returns `None`, so
+  existing custom stores continue to rescan. Implementations must change the
+  witness when stored provenance or cursor positions are replaced or removed.
+- Typed compaction summaries remain runtime context and no longer project as
+  human conversation rows. Ordinary user messages with identical text remain
+  visible; the distinction comes from their typed origin.
 - `runtime_notice_snapshot` carries complete `SystemNotice` bodies, including
   notice text and structured blocks. `ConsoleVisibilityPolicy` implementations
   that redact notices must cover this frame kind as well as `system_notice`;

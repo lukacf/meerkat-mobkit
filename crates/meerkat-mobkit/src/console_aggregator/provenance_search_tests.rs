@@ -17,6 +17,121 @@ struct SearchStore {
     replacement_rows: std::sync::Mutex<Vec<NewConsoleFrame>>,
 }
 
+struct SqliteAppendingSearchStore {
+    inner: SqliteConsoleLogStore,
+    writer: SqliteConsoleLogStore,
+    session: String,
+    queries: std::sync::Mutex<Vec<Option<u64>>>,
+    query_count: AtomicUsize,
+}
+
+impl SqliteAppendingSearchStore {
+    fn open(path: &std::path::Path, session: &str) -> ConsoleLogResult<Self> {
+        Ok(Self {
+            inner: SqliteConsoleLogStore::open(path)?,
+            writer: SqliteConsoleLogStore::open(path)?,
+            session: session.into(),
+            queries: std::sync::Mutex::new(Vec::new()),
+            query_count: AtomicUsize::new(0),
+        })
+    }
+
+    fn query_afters(&self) -> ConsoleLogResult<Vec<Option<u64>>> {
+        Ok(self
+            .queries
+            .lock()
+            .map_err(|_| std::io::Error::other("SQLite provenance query log lock poisoned"))?
+            .clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl ConsoleLogStore for SqliteAppendingSearchStore {
+    async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
+        self.inner.append_if_absent(frame).await
+    }
+
+    async fn update_frame_status(
+        &self,
+        id: &str,
+        status: ConsoleFrameStatus,
+    ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+        self.inner.update_frame_status(id, status).await
+    }
+
+    async fn query_frames(
+        &self,
+        query: ConsoleTimelineQuery,
+    ) -> ConsoleLogResult<ConsoleTimelinePage> {
+        let call = self.query_count.fetch_add(1, Ordering::SeqCst) + 1;
+        self.queries
+            .lock()
+            .map_err(|_| std::io::Error::other("SQLite provenance query log lock poisoned"))?
+            .push(query.after.as_ref().and_then(ConsoleCursor::seq));
+        let before = self.inner.history_prefix_revision().await?;
+        let page = self.inner.query_frames(query).await?;
+        // Commit through a genuinely separate SQLite connection after the
+        // page read, before recovery can inspect its closing revision. Every
+        // scan gets a write, so retrying twice cannot hide the regression.
+        self.writer
+            .append_if_absent(history_row(
+                &format!("external-append-during-query-{call}"),
+                &self.session,
+            ))
+            .await?;
+        assert_ne!(
+            self.inner.history_prefix_revision().await?,
+            before,
+            "the external plain append must change the reader's SQLite data version"
+        );
+        Ok(page)
+    }
+
+    async fn query_windowed_frames(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        // Public visibility queries use the same real store without injecting
+        // extra writes unrelated to the provenance-recovery interleaving.
+        self.inner.query_windowed_frames(query).await
+    }
+
+    async fn frame_by_dedupe_key(&self, key: &str) -> ConsoleLogResult<Option<ConsoleFrame>> {
+        self.inner.frame_by_dedupe_key(key).await
+    }
+
+    async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
+        self.inner.latest_cursor().await
+    }
+
+    async fn history_prefix_revision(&self) -> ConsoleLogResult<Option<String>> {
+        self.inner.history_prefix_revision().await
+    }
+
+    async fn clear_frames(&self) -> ConsoleLogResult<()> {
+        self.inner.clear_frames().await
+    }
+
+    async fn record_source_watermark(
+        &self,
+        runtime: &str,
+        kind: ConsoleFrameSourceKind,
+        cursor: &str,
+    ) -> ConsoleLogResult<()> {
+        self.inner
+            .record_source_watermark(runtime, kind, cursor)
+            .await
+    }
+
+    async fn source_watermark(
+        &self,
+        runtime: &str,
+        kind: ConsoleFrameSourceKind,
+    ) -> ConsoleLogResult<Option<String>> {
+        self.inner.source_watermark(runtime, kind).await
+    }
+}
+
 impl SearchStore {
     fn new(supports_revision: bool) -> Self {
         Self {
@@ -124,7 +239,7 @@ impl ConsoleLogStore for SearchStore {
 }
 
 fn aggregator_with_entry(
-    store: Arc<SearchStore>,
+    store: Arc<dyn ConsoleLogStore>,
     runtime: &UnifiedRuntime,
 ) -> ConsoleLogResult<(MobKitConsoleAggregator, RuntimeEntry)> {
     let aggregator = MobKitConsoleAggregator::new_with_options(
@@ -167,6 +282,19 @@ fn witness(session: &str) -> ConsoleFrameMemberProvenance {
     }
 }
 
+fn delegate_witness(session: &str) -> ConsoleFrameMemberProvenance {
+    let mut provenance = witness(session);
+    provenance.source_mob_id = "historical-delegate".into();
+    provenance.member.role = "delegate".into();
+    provenance.member.labels = BTreeMap::from([
+        ("role".into(), "delegate".into()),
+        ("source_mob_id".into(), provenance.source_mob_id.clone()),
+    ]);
+    provenance.identity.labels = provenance.member.labels.clone();
+    provenance.identity.visibility = ConsoleVisibility::RetiredReadable;
+    provenance
+}
+
 fn history_row(key: &str, session: &str) -> NewConsoleFrame {
     NewConsoleFrame {
         id: None,
@@ -199,6 +327,114 @@ async fn lookup(
     session: Option<&str>,
 ) -> Option<ConsoleFrameMemberProvenance> {
     member_provenance_for_identity(&aggregator.inner, entry, IDENTITY, session, false).await
+}
+
+#[tokio::test]
+async fn provenance_sqlite_external_append_keeps_a_found_delegate_witness() -> ConsoleLogResult<()>
+{
+    let (_runtime_temp, runtime, _) = super::tests::build_stress_runtime(0, Duration::ZERO).await;
+    let temp = tempfile::tempdir()?;
+    let session = SessionId::new().to_string();
+    let store = Arc::new(SqliteAppendingSearchStore::open(
+        &temp.path().join("console.sqlite"),
+        &session,
+    )?);
+    let (aggregator, entry) = aggregator_with_entry(store.clone(), &runtime)?;
+    let expected = delegate_witness(&session);
+    let mut retained = history_row("retained-delegate-witness", &session);
+    retained.source.member_provenance = Some(expected.clone());
+    store.append_if_absent(retained).await?;
+
+    assert_eq!(
+        lookup(&aggregator, &entry, Some(&session)).await,
+        Some(expected.clone()),
+        "a real external append cannot discard the already found private-member witness"
+    );
+    assert_eq!(
+        store.query_afters()?,
+        vec![None],
+        "a positive witness needs no second full scan after an external append"
+    );
+    assert_eq!(
+        lookup(&aggregator, &entry, Some(&session)).await,
+        Some(expected)
+    );
+    assert_eq!(store.query_afters()?, vec![None]);
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn provenance_sqlite_external_append_during_admission_keeps_delegate_history_hidden()
+-> ConsoleLogResult<()> {
+    let (_runtime_temp, runtime, _) = super::tests::build_stress_runtime(0, Duration::ZERO).await;
+    let temp = tempfile::tempdir()?;
+    let session = SessionId::new().to_string();
+    let store = Arc::new(SqliteAppendingSearchStore::open(
+        &temp.path().join("console.sqlite"),
+        &session,
+    )?);
+    let (aggregator, _entry) = aggregator_with_entry(store.clone(), &runtime)?;
+    let expected = delegate_witness(&session);
+    let mut retained = history_row("retained-delegate-witness", &session);
+    retained.source.member_provenance = Some(expected.clone());
+    store.append_if_absent(retained).await?;
+
+    // Admission must recover its own witness from a cold cache. A preceding
+    // direct lookup would mask the privacy regression in this path.
+    let outcome = append_and_emit_with_policy(
+        &aggregator.inner,
+        history_row("new-private-delegate-history", &session),
+        Arc::new(AllowAllConsoleVisibilityPolicy),
+    )
+    .await?;
+    let persisted = store
+        .frame_by_dedupe_key("new-private-delegate-history")
+        .await?
+        .ok_or("admitted delegate history was not stored")?;
+    let restricted =
+        aggregator.policy_view(Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy));
+    assert!(
+        !frame_is_visible(&restricted.inner, &persisted, true, &[]).await?,
+        "a retired implicit delegate's newly admitted row must stay hidden after the external append"
+    );
+    assert_eq!(persisted, outcome.frame);
+    assert_eq!(persisted.source.member_provenance, Some(expected));
+    assert_eq!(
+        store.query_afters()?,
+        vec![None],
+        "cold admission must retain its first positive search result"
+    );
+    let query = ConsoleTimelineQuery {
+        identity: Some(IDENTITY.into()),
+        after: Some(ConsoleCursor::from_seq(
+            persisted
+                .cursor
+                .seq()
+                .ok_or("stored cursor has no sequence")?
+                - 1,
+        )),
+        limit: 100,
+        ..Default::default()
+    };
+    assert!(
+        restricted
+            .query_timeline(query.clone())
+            .await?
+            .frames
+            .is_empty()
+    );
+    assert!(
+        aggregator
+            .query_timeline(query)
+            .await?
+            .frames
+            .iter()
+            .any(|frame| frame.id == persisted.id),
+        "the same admitted row remains readable under the open policy"
+    );
+    runtime.mob_handle().stop().await?;
+    Ok(())
 }
 
 #[tokio::test]
