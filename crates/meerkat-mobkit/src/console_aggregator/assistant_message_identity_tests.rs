@@ -350,7 +350,10 @@ async fn assistant_identity_live_events_preserve_carriers_without_inheriting_the
     let replay = events
         .replay_all(None)
         .await
-        .map_err(|error| std::io::Error::other(format!("replay: {error:?}")))?;
+        .map_err(|error| std::io::Error::other(format!("replay: {error:?}")))?
+        .into_iter()
+        .filter(|event| event.identity == IDENTITY)
+        .collect::<Vec<_>>();
     assert_eq!(replay.len(), 13);
     for envelope in replay {
         let frame = frame_from_console_event(&entry, envelope);
@@ -978,6 +981,48 @@ async fn assistant_identity_pending_refresh_retries_unchanged_head_through_disco
         machine.contains_session(&typed_session_id).await,
         "fixture session must be registered with its real machine"
     );
+    // Spawn acknowledges admission, so await the fresh fixture's initial
+    // turn before testing recovery. A terminal run witness also rules out
+    // the idle gap before queued input starts; commit status alone cannot.
+    let handle = entry.runtime.handle();
+    let member_id =
+        crate::member_comms_id::roster_member_id_for_supplied_id(&record.runtime_member_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut last_observation = String::from("startup observation not completed");
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            let execution =
+                meerkat_mob::MobSessionService::execution_snapshot(&service, &typed_session_id)
+                    .await?;
+            let status = crate::member_status_observation::observe_member_status_until(
+                &handle, &member_id, deadline,
+            )
+            .await?;
+            let pending = entry.runtime.session_commit_pending(&session_id).await;
+            last_observation = format!(
+                "execution={execution:?}, session={:?}, progress={:?}, commit_pending={pending:?}",
+                status.current_session_id, status.progress,
+            );
+            if execution.as_ref().is_some_and(|snapshot| {
+                snapshot.turn_terminal && snapshot.terminal_run_id.is_some()
+            }) && status.current_session_id.as_ref() == Some(&typed_session_id)
+                && status.progress.as_ref().is_some_and(|progress| {
+                    progress.run_state == meerkat_mob::MemberRunState::Idle
+                        && progress.in_flight_work == 0
+                })
+                && pending == Some(false)
+            {
+                return Ok::<(), ConsoleLogError>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::other(format!(
+            "fixture initial turn did not commit before recovery: {last_observation}"
+        ))
+    })??;
     assert_eq!(
         entry.runtime.session_commit_pending(&session_id).await,
         Some(false),
