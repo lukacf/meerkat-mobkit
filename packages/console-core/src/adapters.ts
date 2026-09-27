@@ -1,5 +1,5 @@
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
-import { assistantMessageKey, hasAssistantMessageIdCarrier } from "./assistant-message-identity";
+import { assistantMessageKey, assistantMessageRenderKey, hasAssistantMessageIdCarrier } from "./assistant-message-identity";
 import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "./assistant-message-projection";
 import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
@@ -4122,14 +4122,27 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
+  const renderKeys = new Map(orderedFrames.filter(frame => frame.event === "text_delta"
+    || frame.event === "text_complete" || frame.event === "assistant_message")
+    .map(frame => [frame.id, assistantMessageRenderKey(frame)]));
+  const renderParts = new Map<string, number>();
   return entries.filter((entry) => entry.kind !== "message"
     || entry.blocks?.length !== 1
     || entry.blocks[0].type !== "thinking"
     || entry.blocks[0].text.trim()).map((entry) => {
-    if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    if (entry.kind !== "message") return entry;
+    const key = entry.identity.role === "assistant" ? renderKeys.get(entry.id) : undefined;
+    if (key) {
+      // A live occurrence can contain separately rendered text segments.
+      // Preserve their order without conflating source frame provenance.
+      const part = renderParts.get(key) ?? 0;
+      renderParts.set(key, part + 1);
+      entry = { ...entry, renderKey: part === 0 ? key : `${key}:part:${part}` };
+    }
+    if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
-      ? { ...block, id: `${entry.id}:text:${textIndex++}` }
+      ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` }
       : block) };
   });
 }

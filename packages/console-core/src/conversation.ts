@@ -59,6 +59,9 @@ export interface ConversationEmptyStateSpec {
 
 interface ConversationTimelineEntryBase {
   id: string;
+  /** Stable presentation identity from the typed assistant occurrence. The
+   * source frame ID remains in `id` for quotes and provenance. */
+  renderKey?: string;
   identity: ConversationIdentity;
   createdAt?: string;
   copyText?: string;
@@ -713,7 +716,7 @@ export function groupConversationTimelineEntries(
     const anchorEntry = conversationGroupSubstantiveEntries(group.entries)[0] || group.entries[0];
     const base = reconciliationAnchor
       ? `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`
-      : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.id}`;
+      : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.renderKey ?? anchorEntry.id}`;
     let id = base;
     // React keys must be unique. Same-anchor twins keep the unsuffixed id on
     // the FIRST occurrence — the common single-group case stays stable across
@@ -726,7 +729,7 @@ export function groupConversationTimelineEntries(
     const runAnchor = conversationGroupSubstantiveEntries(group.entries)
       .find(entry => entry.kind === "message" && entry.runId?.trim());
     let discriminator = runAnchor?.kind === "message" && runAnchor.runId?.trim()
-      ? `run-${runAnchor.runId.trim()}` : anchorEntry.id;
+      ? `run-${runAnchor.runId.trim()}` : anchorEntry.renderKey ?? anchorEntry.id;
     while (seenIds.has(id)) {
       id = `${base}-dup-${discriminator}`;
       discriminator = `${discriminator}x`;

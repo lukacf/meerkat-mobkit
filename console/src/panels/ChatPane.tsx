@@ -127,6 +127,7 @@ type MsgKind = "origin" | "event" | "user" | "agent" | "tool" | "thought" | "gat
 
 interface Msg {
   id: string;
+  renderKey?: string;
   /** Stable transcript anchor independent of rich-block grouping length. */
   scrollRowId?: string;
   sourceEntryId?: string;
@@ -235,7 +236,7 @@ function buildChatTurns(messages: Msg[]): ChatTurn[] {
     const current = turns.at(-1);
     if (!current || message.kind === "user") {
       turns.push({
-        id: `turn-${message.id}`,
+        id: `turn-${message.renderKey ?? message.id}`,
         messages: [message],
       });
       continue;
@@ -391,12 +392,14 @@ function flattenEntry(
   if (rows.length === 0) return rows;
   const source = describeConversationEntrySource(entry, options);
   const dayKey = transcriptDayKey(entry.createdAt);
+  const rowKey = entry.renderKey ?? entry.id;
   return rows.map((row, index) => ({
     ...row,
+    renderKey: entry.renderKey === undefined ? undefined : index === 0 ? entry.renderKey : `${entry.renderKey}:row:${index}`,
     sourceEntryId: entry.id,
     interactionId: entry.interactionId,
     runId: entry.kind === "message" ? entry.runId || undefined : undefined,
-    scrollRowId: index === 0 ? entry.id : `${entry.id}:row:${index}`,
+    scrollRowId: index === 0 ? rowKey : `${rowKey}:row:${index}`,
     source,
     dayKey,
     showHeader: index === 0,
@@ -872,6 +875,7 @@ function msgSignature(message: Msg): string {
   if (signature !== undefined) return signature;
   const parts = [
     message.id,
+    message.renderKey ?? "",
     message.sourceEntryId ?? "",
     message.interactionId ?? "",
     message.kind,
@@ -1170,7 +1174,7 @@ const TranscriptView = React.memo(function TranscriptView({
               aria-label={label}
               className="conv__day"
               data-testid={`chat-day:${identity}:${day}`}
-              key={`day:${day}:${message.id}`}
+              key={`day:${day}:${message.renderKey ?? message.id}`}
               role="separator"
             >
               <span>{label}</span>

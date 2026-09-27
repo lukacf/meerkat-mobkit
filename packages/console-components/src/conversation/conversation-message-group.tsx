@@ -99,7 +99,7 @@ export function ConversationMessageGroup({
     return (
       <>
         {group.entries.map((entry) => (
-          <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+          <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
             <ConversationMessageView
               compact={compact}
               entry={entry}
@@ -140,10 +140,10 @@ export function ConversationMessageGroup({
       ) : null}
       <div className="cc-message-group__body">
         {groupRoutineToolRows(group.entries, (entry) => entry.kind === "message" && !entry.taskKind && !entry.taskLabel && entry.variant === "rich" ? entry.blocks : undefined).map((run) => {
-          const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+          const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
             <ConversationMessageView compact={compact} entry={entry} Icon={Icon} onFlowRunMessageMember={onFlowRunMessageMember} onFlowRunRestore={onFlowRunRestore} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
           </div>);
-          return <Fragment key={run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
+          return <Fragment key={run.rows[0].renderKey ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
         })}
       </div>
       {showGroupCopy ? (

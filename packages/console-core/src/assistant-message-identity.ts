@@ -28,6 +28,13 @@ export function assistantMessageKey(frame: ConsoleFrame): string | undefined {
     : undefined;
 }
 
+/** Presentation identity survives replacement of an event by canonical history. */
+export function assistantMessageRenderKey(frame: ConsoleFrame): string | undefined {
+  const key = assistantMessageKey(frame);
+  return key === undefined ? undefined
+    : `assistant:${JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, key])}`;
+}
+
 /** Numeric ConsoleCursor ordering without losing any of the native u64 range. */
 export function assistantMessageCursorSequence(value: unknown): bigint | undefined {
   if (typeof value !== "string" || /^console:[0-9]+$/.exec(value)?.[0] !== value) return undefined;

@@ -635,6 +635,10 @@ function assistantMessageKey(frame) {
   const id = assistantMessageId(frame);
   return id !== void 0 && typeof frame.sessionId === "string" && frame.sessionId.trim().length > 0 ? JSON.stringify([frame.sessionId, id]) : void 0;
 }
+function assistantMessageRenderKey(frame) {
+  const key = assistantMessageKey(frame);
+  return key === void 0 ? void 0 : `assistant:${JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, key])}`;
+}
 function assistantMessageCursorSequence(value) {
   if (typeof value !== "string" || /^console:[0-9]+$/.exec(value)?.[0] !== value) return void 0;
   const sequence = BigInt(value.slice(8));
@@ -28393,10 +28397,19 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   flushPendingReasoning(false);
   flushPendingText(false);
   attachCompletedRunDurations(entries, frames);
+  const renderKeys = new Map(orderedFrames.filter((frame) => frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message").map((frame) => [frame.id, assistantMessageRenderKey(frame)]));
+  const renderParts = /* @__PURE__ */ new Map();
   return entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
-    if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    if (entry.kind !== "message") return entry;
+    const key = entry.identity.role === "assistant" ? renderKeys.get(entry.id) : void 0;
+    if (key) {
+      const part = renderParts.get(key) ?? 0;
+      renderParts.set(key, part + 1);
+      entry = { ...entry, renderKey: part === 0 ? key : `${key}:part:${part}` };
+    }
+    if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
-    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.id}:text:${textIndex++}` } : block) };
+    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
   });
 }
 var LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console", originKind: "operator" };
@@ -37454,7 +37467,7 @@ function buildChatTurns(messages) {
     const current = turns.at(-1);
     if (!current || message.kind === "user") {
       turns.push({
-        id: `turn-${message.id}`,
+        id: `turn-${message.renderKey ?? message.id}`,
         messages: [message]
       });
       continue;
@@ -37529,12 +37542,14 @@ function flattenEntry(entry, options = {}) {
   if (rows.length === 0) return rows;
   const source = describeConversationEntrySource(entry, options);
   const dayKey = transcriptDayKey(entry.createdAt);
+  const rowKey = entry.renderKey ?? entry.id;
   return rows.map((row, index2) => ({
     ...row,
+    renderKey: entry.renderKey === void 0 ? void 0 : index2 === 0 ? entry.renderKey : `${entry.renderKey}:row:${index2}`,
     sourceEntryId: entry.id,
     interactionId: entry.interactionId,
     runId: entry.kind === "message" ? entry.runId || void 0 : void 0,
-    scrollRowId: index2 === 0 ? entry.id : `${entry.id}:row:${index2}`,
+    scrollRowId: index2 === 0 ? rowKey : `${rowKey}:row:${index2}`,
     source,
     dayKey,
     showHeader: index2 === 0
@@ -37879,6 +37894,7 @@ function msgSignature(message) {
   if (signature !== void 0) return signature;
   const parts = [
     message.id,
+    message.renderKey ?? "",
     message.sourceEntryId ?? "",
     message.interactionId ?? "",
     message.kind,
@@ -38104,7 +38120,7 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
             role: "separator",
             children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: label })
           },
-          `day:${day}:${message.id}`
+          `day:${day}:${message.renderKey ?? message.id}`
         );
       };
       return windowedTurns.map((turn, offset) => {
