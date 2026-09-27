@@ -476,6 +476,7 @@ fn init_accepts_host_runnables_and_rejects_duplicates() {
 mod cross_provider_open {
     use std::sync::Arc;
 
+    use meerkat::SessionServiceHistoryExt as _;
     use meerkat::test_fixtures::realtime::ScriptedRealtimeSessionFactory;
     use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
     use meerkat_client::TestClient;
