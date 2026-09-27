@@ -2081,6 +2081,28 @@ async fn submit_internal_bridge_work(
         });
     }
     if matches!(mode, BridgeSubmitMode::CompletionBearing) {
+        // meerkat refuses a completion sender for an autonomous_host member's
+        // conversational work (`validate_member_turn_carriers`: "tracked turn
+        // completion is not supported by autonomous inbox delivery"). Decide
+        // from the LIVE roster entry, the value meerkat checks: it is fixed at
+        // spawn and kept on restore, so it can differ from MobKit's desired
+        // spec (a same-profile override hot reload, a repair respawn that
+        // drops the override, a profile MobKit cannot read). Refused typed
+        // BEFORE anything is submitted, so a tracked delivery falls back to
+        // the ingress lane; meerkat's own refusal stays the backstop.
+        if entry.runtime_mode == meerkat_mob::MobRuntimeMode::AutonomousHost {
+            return Err(BridgeError::UnsupportedForMode {
+                identity: member_id.clone(),
+                mode: entry.runtime_mode,
+                detail: meerkat_mob::MobError::UnsupportedForMode {
+                    mode: entry.runtime_mode,
+                    reason: "tracked turn completion is not supported by autonomous inbox \
+                             delivery"
+                        .to_string(),
+                }
+                .to_string(),
+            });
+        }
         // meerkat 0.8.43 has no deadline-taking `start_work*` variant, and it
         // needs none here: the stale-queued-work protection the
         // `submit_work*_bounded` verbs below give is reached the same way on

@@ -353,6 +353,20 @@ class TestExplicitFallback:
         assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
 
     @pytest.mark.asyncio
+    async def test_an_undelivered_send_raises_instead_of_waiting(self):
+        sent = _sent(None, turns=0)
+        sent["turn"] = None
+        sent["turn_unavailable"] = {
+            "code": "not_delivered", "reason": "no session bridge", "delivered": False,
+        }
+        transport = TicketTransport(sends=[sent])
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.raises(RuntimeError, match="was not delivered"):
+            await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        assert transport.params_of("mobkit/inspect_identity") == []
+
+    @pytest.mark.asyncio
     async def test_plain_send_does_not_request_tracking(self):
         transport = TicketTransport(sends=[_sent(None)])
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
@@ -373,9 +387,12 @@ class TestModels:
         )
         assert unavailable.turn_ticket is None
         assert unavailable.turn_unavailable == TurnUnavailable(
-            code="no bridge", reason="because no bridge"
+            code="no bridge", reason="because no bridge", delivered=True
         )
         assert DispatchResult.from_dict(unavailable.to_dict()) == unavailable
+        # Older payloads without the flag: only not_delivered means undelivered.
+        assert TurnUnavailable.from_wire({"code": "not_delivered", "reason": "x"}).delivered is False
+        assert TurnUnavailable.from_wire({"code": "autonomous_host", "reason": "x"}).delivered is True
 
     def test_turn_result_parses_every_state(self):
         completed = TurnResult.from_dict(

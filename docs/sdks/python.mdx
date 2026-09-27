@@ -175,8 +175,11 @@ if sent.turn_ticket is not None:
     turn = await luka.wait_for_turn(sent.turn_ticket, timeout=90)
     if turn.output_status is TurnOutputStatus.TEXT:
         answer = turn.output  # turn.output_truncated says whether it was cut
+elif sent.turn_unavailable is not None:
+    # e.g. "autonomous_host"; delivered is False only for "not_delivered"
+    print("untracked:", sent.turn_unavailable.code, sent.turn_unavailable.delivered)
 else:
-    print("untracked:", sent.turn_unavailable.code)  # e.g. "autonomous_host"
+    print("untracked: the gateway predates turn tickets")
 
 # Observation (no mob_handle, no member IDs needed)
 inspection = await triage.inspect()   # output_preview, completion_cursor, peers
@@ -204,16 +207,24 @@ ticket the gateway does not know (for example after a gateway restart) raises
 `None` with `TurnOutputUnavailableWarning`. `wait_for_turn` returns the typed
 `TurnResult` (`output_status`, `output`, `output_truncated`) instead.
 
-When the turn cannot be tracked, the delivery still happens exactly once and
-the call falls back to the identity-wide completion cursor, emitting
-`TurnTrackingUnavailableWarning` with the typed `turn_unavailable.code`:
-`autonomous_host` (members in `autonomous_host` mode, the default: the runtime
-reports no per-turn completion for autonomous inbox delivery, so on those
-members the wait stays identity-wide; also reported when a member still runs
-`autonomous_host` after its profile changed without a respawn),
-`externally_bound`, `host_human_input`, `bridge_cannot_report_output`,
-`runtime_refused`, or a gateway that predates turn tickets. Run a member with `runtime_mode = "turn_driven"` for
-per-admission results.
+When the turn cannot be tracked, the call falls back to the identity-wide
+completion cursor, emitting `TurnTrackingUnavailableWarning` with the typed
+`turn_unavailable.code`. Every code but `not_delivered` means the delivery
+still happened, exactly once:
+
+- `autonomous_host`: the member runs in `autonomous_host` mode (the default),
+  read from the runtime's live roster entry, so a profile or override changed
+  without a respawn does not count until the member respawns. The runtime
+  reports no per-turn completion for autonomous inbox delivery, so on these
+  members the wait stays identity-wide.
+- `runtime_refused`: the runtime refused per-turn completion for the member's
+  live mode for another reason.
+- `externally_bound`, `host_human_input`, `bridge_cannot_report_output`.
+- A gateway that predates turn tickets returns no `turn_unavailable` at all.
+
+`not_delivered` means nothing was delivered (no session bridge or no bound
+runtime), so the call raises instead of waiting. Run a member with
+`runtime_mode = "turn_driven"` for per-admission results.
 
 `wait_for_completion(baseline)` and `wait_for_output(after=cursor)` remain
 identity-wide primitives: any completion on the identity after the baseline

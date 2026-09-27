@@ -1269,6 +1269,12 @@ export class MobKitRuntime {
       return textOfTurn(identity, turn, operation);
     }
     const unavailable = result.turnUnavailable;
+    if (unavailable != null && !unavailable.delivered) {
+      throw new Error(
+        `${operation} for identity ${identity} was not delivered ` +
+          `(${unavailable.code}: ${unavailable.reason}); there is no turn to wait for`,
+      );
+    }
     const reason =
       unavailable != null
         ? `${unavailable.code}: ${unavailable.reason}`

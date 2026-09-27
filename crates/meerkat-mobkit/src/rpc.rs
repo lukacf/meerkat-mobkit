@@ -5728,10 +5728,10 @@ fn rpc_track_turn_requested(params: &Value) -> bool {
 }
 
 /// A tracked delivery's `turn`: `{"ticket": ...}` when the admitted turn is
-/// tracked; `turn: null` plus `turn_unavailable: {"code", "reason"}` when it
-/// was admitted but cannot be tracked (`code` is the stable
-/// `TurnUntrackable` code, for example `autonomous_host`). Nothing when
-/// tracking was not requested.
+/// tracked; `turn: null` plus `turn_unavailable: {"code", "reason",
+/// "delivered"}` when it cannot be tracked (`code` is the stable
+/// `TurnUntrackable` code, for example `autonomous_host`; `delivered` is
+/// false only for `not_delivered`). Nothing when tracking was not requested.
 fn insert_turn_tracking(result: &mut Value, turn: Option<&crate::identity_first::TurnTracking>) {
     let (Some(turn), Value::Object(fields)) = (turn, result) else {
         return;
@@ -5747,7 +5747,11 @@ fn insert_turn_tracking(result: &mut Value, turn: Option<&crate::identity_first:
             fields.insert("turn".to_string(), Value::Null);
             fields.insert(
                 "turn_unavailable".to_string(),
-                serde_json::json!({ "code": reason.code(), "reason": reason.to_string() }),
+                serde_json::json!({
+                    "code": reason.code(),
+                    "reason": reason.to_string(),
+                    "delivered": reason.delivered(),
+                }),
             );
         }
     }

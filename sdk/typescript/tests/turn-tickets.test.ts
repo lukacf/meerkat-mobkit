@@ -357,6 +357,24 @@ describe("explicit fallback", () => {
     assert.match(warnings[0] ?? "", /autonomous_host/);
   });
 
+  it("an undelivered send throws instead of waiting", async () => {
+    const { rt, paramsOf } = await makeRuntime({
+      sends: [
+        sent(null, {
+          turn: null,
+          turn_unavailable: {
+            code: "not_delivered",
+            reason: "no session bridge",
+            delivered: false,
+          },
+        }),
+      ],
+    });
+
+    await assert.rejects(rt.sendAndWait("keeper", "alpha", FAST), /was not delivered/);
+    assert.deepEqual(paramsOf("mobkit/inspect_identity"), []);
+  });
+
   it("a plain send does not request tracking", async () => {
     const { rt, paramsOf } = await makeRuntime({ sends: [sent(null)] });
 
@@ -383,6 +401,7 @@ describe("models", () => {
     assert.deepEqual(unavailable.turnUnavailable, {
       code: "not_delivered",
       reason: "no bridge",
+      delivered: false,
     });
     assert.deepEqual(
       parseDispatchResult(dispatchResultToDict(unavailable)),

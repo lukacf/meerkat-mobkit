@@ -59,28 +59,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the runtime mints for that one admission and keeps the admitted turn's own
   completion handle under (the caller's interaction id and a dispatch's
   correlation id still ride unchanged; neither names the ticket, since both
-  may repeat across admissions). When the turn cannot be tracked the
-  delivery still happens, exactly once on the ingress lane, and the result
-  carries `"turn": null` plus `"turn_unavailable": {"code", "reason"}`; the
-  stable codes are `autonomous_host` (meerkat reports no per-turn completion
-  for autonomous inbox delivery, the default runtime mode),
-  `externally_bound`, `host_human_input`, `bridge_cannot_report_output`,
-  `not_delivered` and `runtime_refused`. A member whose profile
-  `runtime_mode` changed without a respawn still runs in its spawn mode; when
-  meerkat refuses the tracked admission for that actual mode (typed
-  `MobError::UnsupportedForMode`, before anything is delivered, now carried as
+  may repeat across admissions). When the turn cannot be tracked the result
+  carries `"turn": null` plus `"turn_unavailable": {"code", "reason",
+  "delivered"}`. Every code but `not_delivered` means the delivery still
+  happened, exactly once, on the ingress lane: `autonomous_host` (the
+  member's live roster entry, the mode meerkat checks, says autonomous_host;
+  meerkat reports no per-turn completion for autonomous inbox delivery, the
+  default runtime mode), `runtime_refused` (meerkat refused per-turn
+  completion for the member's live mode for another reason),
+  `externally_bound`, `host_human_input` and `bridge_cannot_report_output`.
+  `not_delivered` (`delivered: false`) means nothing was delivered.
+  Trackability is decided from the live roster entry right before admission,
+  never from MobKit's desired spec, so a same-profile `runtime_mode_override`
+  hot reload, a repair respawn that drops the override, or a profile MobKit
+  cannot read never turns into a failed send: an `autonomous_host` member is
+  refused typed before anything is submitted and delivered once untracked.
+  meerkat's own refusal (`MobError::UnsupportedForMode`, now carried typed as
   `BridgeError::UnsupportedForMode` / `BridgeAdmissionError::UnsupportedForMode`
-  instead of a mob-error string), the delivery falls back to the ingress lane,
-  still exactly once, and reports `autonomous_host` (or `runtime_refused`) with
-  a reason that names the respawn. An idempotent re-dispatch of a key whose tracked
-  admission is still pending or completed names the original's ticket. The
-  new `mobkit/turn_result {identity, ticket}` reports that turn as
-  `pending`, `completed`, `failed` (with `error`) or a typed `unknown`; a
+  instead of a mob-error string) takes the same fallback. An idempotent
+  re-dispatch of a key whose tracked admission to the identity's current
+  session is still pending or completed names the original's ticket (meerkat
+  deduplicates per session ledger, so after a session rotation it is a turn of
+  its own). The new `mobkit/turn_result {identity, ticket}` reports that turn
+  as `pending`, `completed`, `failed` (with `error`) or a typed `unknown`; a
   completed turn carries `output_status`: `text` (its own `output`, from the
   turn's committed run result via meerkat's exact-turn `wait_bounded`,
   bounded to 256 KiB with `output_truncated`), `empty`, `no_own_result` (the
   runtime folded the input into a run already in progress or deduplicated it
-  onto an earlier admission) or `unavailable`. Rust:
+  onto an earlier admission that had ended; a deduplicated retry of a still
+  running input shares that input's result) or `unavailable`. Rust:
   `IdentityRuntime::send_with_turn_ticket`, `dispatch_with_turn_ticket`,
   `turn_outcome` and `wait_for_turn`, with `TurnTicket`, `TurnOutput`,
   `TurnOutcome`, `TurnTracking`, `TurnUntrackable` and `Ticketed`;
@@ -89,8 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `wait_with_output`, `wait_turn_output` and `session_resolution_error` (the
   existing `new` / `wait` are unchanged). Python: `send` / `dispatch` /
   `dispatch_text` take `track_turn=`, results carry `turn_ticket` and
-  `turn_unavailable` (`TurnUnavailable`), and handles gain `turn_result`,
-  `wait_for_turn` (returns the typed `TurnResult`) and
+  `turn_unavailable` (`TurnUnavailable`, with `delivered`), and handles gain
+  `turn_result`, `wait_for_turn` (returns the typed `TurnResult`) and
   `wait_for_output(turn=...)`, with `TurnOutputStatus`, `TurnState`,
   `TurnFailedError`, `TurnUnknownError`, `TurnOutputUnavailableError`,
   `TurnTrackingUnavailableWarning`, `TurnOutputTruncatedWarning` and
@@ -120,8 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   predates turn tickets) it is still delivered exactly once, and the helpers
   fall back to the cursor wait with a `TurnTrackingUnavailableWarning`
   naming the typed reason (a Python warning; a Node process warning in
-  TypeScript). On an `autonomous_host` member that fallback wait is still
-  identity-wide. `wait_for_completion(baseline)` / `waitForCompletion` and
+  TypeScript); when nothing was delivered (`not_delivered`) they raise
+  instead. On an `autonomous_host` member (meerkat's default mode) that
+  fallback wait is still identity-wide, so the per-turn guarantee holds for
+  `turn_driven` members. `wait_for_completion(baseline)` / `waitForCompletion` and
   `wait_for_output(after=cursor)` remain identity-wide primitives: any
   completion on the identity after the baseline satisfies them and the
   returned preview is the session's latest output, not necessarily a given

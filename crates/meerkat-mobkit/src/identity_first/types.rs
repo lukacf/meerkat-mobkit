@@ -465,30 +465,35 @@ pub enum TurnOutcome {
     Unknown,
 }
 
-/// Why a delivery's turn cannot be tracked by ticket. The delivery itself
-/// still happens, exactly once, on the ingress lane.
+/// Why a delivery's turn cannot be tracked by ticket.
+///
+/// Delivery semantics differ by variant: [`Self::NotDelivered`] means nothing
+/// was delivered. Every other variant means the delivery happened, exactly
+/// once, on the ingress lane (a refused tracked admission is refused before
+/// anything is submitted, so the ingress delivery is the only one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnUntrackable {
-    /// The member runs in `autonomous_host` mode: meerkat does not report
-    /// per-turn completion for autonomous inbox delivery.
+    /// The member runs in `autonomous_host` mode, read from the runtime's
+    /// LIVE roster entry at delivery (the mode it was spawned with; a changed
+    /// `runtime_mode` takes effect on respawn). meerkat does not report
+    /// per-turn completion for autonomous inbox delivery. Delivered once on
+    /// the ingress lane.
     AutonomousHost,
-    /// MobKit's resolved mode allowed tracking, but meerkat refused the
-    /// completion-bearing admission for the member's ACTUAL mode before
-    /// anything was delivered, so the delivery went to the ingress lane. The
-    /// usual cause is a profile whose `runtime_mode` changed without a
-    /// respawn: the member still runs in the mode it was spawned with. Wire
-    /// code `autonomous_host` when that mode is `autonomous_host`, else
-    /// `runtime_refused`.
+    /// meerkat refused the tracked admission for the member's live mode for
+    /// another reason (the member runs `mode`), before anything was
+    /// submitted. Delivered once on the ingress lane.
     RefusedByRuntime { mode: meerkat_mob::MobRuntimeMode },
-    /// The member is externally bound; its deliveries keep the established
-    /// external wire semantics and are not ticketed.
+    /// The member is externally bound; its deliveries are not ticketed.
+    /// Delivered once on the ingress lane.
     ExternallyBound,
     /// Host human input rides the console human lane, which is not ticketed.
+    /// Delivered once on that lane.
     HostHumanInput,
-    /// The session bridge cannot report a turn's own output.
+    /// The session bridge cannot report a turn's own output. Delivered once
+    /// on the ingress lane.
     BridgeCannotReportOutput,
-    /// Nothing was delivered to track: the runtime has no session bridge, or
-    /// the identity has no bound agent runtime.
+    /// NOTHING was delivered: the runtime has no session bridge, or the
+    /// identity has no bound agent runtime. There is no turn to wait for.
     NotDelivered,
 }
 
@@ -497,10 +502,7 @@ impl TurnUntrackable {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::AutonomousHost
-            | Self::RefusedByRuntime {
-                mode: meerkat_mob::MobRuntimeMode::AutonomousHost,
-            } => "autonomous_host",
+            Self::AutonomousHost => "autonomous_host",
             Self::RefusedByRuntime { .. } => "runtime_refused",
             Self::ExternallyBound => "externally_bound",
             Self::HostHumanInput => "host_human_input",
@@ -508,32 +510,43 @@ impl TurnUntrackable {
             Self::NotDelivered => "not_delivered",
         }
     }
+
+    /// Whether the delivery happened (exactly once) despite being untracked.
+    /// `false` only for [`Self::NotDelivered`].
+    #[must_use]
+    pub const fn delivered(self) -> bool {
+        !matches!(self, Self::NotDelivered)
+    }
 }
 
 impl fmt::Display for TurnUntrackable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AutonomousHost => f.write_str(
-                "the member runs in autonomous_host mode, and the runtime does not report \
-                 per-turn completion for autonomous inbox delivery",
+                "the member runs in autonomous_host mode (its mode as spawned; a changed \
+                 runtime_mode takes effect on respawn), and the runtime does not report \
+                 per-turn completion for autonomous inbox delivery; delivered once, untracked",
             ),
             Self::RefusedByRuntime { mode } => write!(
                 f,
                 "the runtime refused per-turn completion for this member, which runs in {mode} \
-                 mode (if its profile's runtime_mode changed, respawn the member to apply it)"
+                 mode; delivered once, untracked"
             ),
-            Self::ExternallyBound => {
-                f.write_str("the member is externally bound; its deliveries are not ticketed")
-            }
-            Self::HostHumanInput => {
-                f.write_str("host human input rides the console lane, which is not ticketed")
-            }
-            Self::BridgeCannotReportOutput => {
-                f.write_str("the session bridge cannot report a turn's own output")
-            }
-            Self::NotDelivered => f.write_str(
-                "nothing was delivered to track (no session bridge or no bound agent runtime)",
+            Self::ExternallyBound => f.write_str(
+                "the member is externally bound; its deliveries are not ticketed; delivered \
+                 once, untracked",
             ),
+            Self::HostHumanInput => f.write_str(
+                "host human input rides the console lane, which is not ticketed; delivered \
+                 once, untracked",
+            ),
+            Self::BridgeCannotReportOutput => f.write_str(
+                "the session bridge cannot report a turn's own output; delivered once, \
+                 untracked",
+            ),
+            Self::NotDelivered => {
+                f.write_str("nothing was delivered (no session bridge or no bound agent runtime)")
+            }
         }
     }
 }
@@ -543,9 +556,12 @@ impl fmt::Display for TurnUntrackable {
 pub enum TurnTracking {
     /// The turn is tracked under this ticket.
     Tracked(TurnTicket),
-    /// The delivery was admitted but its turn cannot be tracked. A caller that
+    /// The turn cannot be tracked, and the variant says whether the delivery
+    /// happened ([`TurnUntrackable::delivered`]). When it did, a caller that
     /// needs a completion falls back to the identity-wide
-    /// [`CompletionCursor`], knowing it is not request-correlated.
+    /// [`CompletionCursor`], knowing it is not request-correlated; when it
+    /// did not ([`TurnUntrackable::NotDelivered`]), there is nothing to wait
+    /// for.
     Unavailable(TurnUntrackable),
 }
 

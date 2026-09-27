@@ -994,27 +994,40 @@ def _turn_ticket_from(data: dict[str, Any]) -> str | None:
 
 @dataclass(frozen=True)
 class TurnUnavailable:
-    """Why a delivery that asked for ``track_turn`` could not be tracked. The
-    delivery itself still happened, exactly once.
+    """Why a delivery that asked for ``track_turn`` could not be tracked, and
+    whether it was delivered at all.
 
-    ``code`` is stable: ``autonomous_host`` (the member runs in
-    ``autonomous_host`` mode, whose inbox delivery reports no per-turn
-    completion, including a member whose profile changed without a respawn),
-    ``externally_bound``, ``host_human_input``,
-    ``bridge_cannot_report_output``, ``not_delivered`` or ``runtime_refused``.
-    ``reason`` is the human-readable detail.
+    ``code`` is stable. Every code but ``not_delivered`` means the delivery
+    happened, exactly once, untracked: ``autonomous_host`` (the member runs
+    in ``autonomous_host`` mode, read from the runtime's live roster entry;
+    its inbox delivery reports no per-turn completion), ``runtime_refused``
+    (the runtime refused per-turn completion for the member's live mode for
+    another reason), ``externally_bound``, ``host_human_input`` or
+    ``bridge_cannot_report_output``. ``not_delivered`` means NOTHING was
+    delivered (no session bridge or no bound runtime), so there is no turn to
+    wait for. ``delivered`` says which; ``reason`` is the human-readable
+    detail.
     """
 
     code: str
     reason: str
+    delivered: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"code": self.code, "reason": self.reason}
+        return {"code": self.code, "reason": self.reason, "delivered": self.delivered}
 
     @classmethod
     def from_wire(cls, raw: Any) -> TurnUnavailable | None:
         if isinstance(raw, dict):
-            return cls(code=str(raw.get("code", "")), reason=str(raw.get("reason", "")))
+            code = str(raw.get("code", ""))
+            delivered = raw.get("delivered")
+            return cls(
+                code=code,
+                reason=str(raw.get("reason", "")),
+                delivered=(
+                    delivered if isinstance(delivered, bool) else code != "not_delivered"
+                ),
+            )
         return None
 
 

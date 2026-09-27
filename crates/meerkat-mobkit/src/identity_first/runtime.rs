@@ -131,22 +131,20 @@ enum DeliveryStep {
     Tracked(super::bridge::BridgeTurnReceipt),
 }
 
-/// Why a tracked delivery's turn cannot be tracked, or `None` to track it.
-/// Decided from typed state before anything is delivered, so an untrackable
-/// turn is delivered once on the ingress lane, never attempted on the tracked
-/// lane first.
+/// Why a tracked delivery's turn cannot be tracked, or `None` to attempt the
+/// tracked lane. Decided from typed state before anything is delivered, so
+/// these untrackable turns go to the ingress lane without a tracked attempt.
 ///
-/// `runtime_mode` is resolved as meerkat resolves it at spawn (override,
-/// inline profile, default). An `autonomous_host` member refuses a
-/// completion-bearing admission (meerkat-mob `validate_member_turn_carriers`:
-/// "tracked turn completion is not supported by autonomous inbox delivery"),
-/// so it is never attempted. A profile MobKit cannot read resolves to the
-/// default `autonomous_host`, which errs toward the ingress lane.
+/// The member's runtime mode is deliberately NOT decided here: MobKit's spec
+/// is the desired mode, but meerkat checks the live roster entry's mode
+/// (fixed at spawn), and the two can disagree. The bridge reads the live
+/// entry right before admission and refuses an `autonomous_host` member typed
+/// ([`BridgeAdmissionError::UnsupportedForMode`]), before anything is
+/// submitted; the tracked lanes then fall back to the ingress lane.
 fn turn_untrackable(
     delivered: bool,
     external_binding: bool,
     local_human: bool,
-    runtime_mode: meerkat_mob::MobRuntimeMode,
     bridge_tracks_turn_output: bool,
 ) -> Option<TurnUntrackable> {
     if !delivered {
@@ -157,8 +155,6 @@ fn turn_untrackable(
         Some(TurnUntrackable::ExternallyBound)
     } else if !bridge_tracks_turn_output {
         Some(TurnUntrackable::BridgeCannotReportOutput)
-    } else if runtime_mode == meerkat_mob::MobRuntimeMode::AutonomousHost {
-        Some(TurnUntrackable::AutonomousHost)
     } else {
         None
     }
@@ -167,22 +163,28 @@ fn turn_untrackable(
 /// How often [`IdentityRuntime::wait_for_turn`] looks at a pending turn.
 const TURN_WAIT_POLL: Duration = Duration::from_millis(25);
 
-/// meerkat refused a tracked admission for the member's ACTUAL runtime mode,
-/// before admission, so nothing was delivered: the delivery falls back to the
-/// ingress lane, reported untracked with the typed reason.
+/// The tracked admission was refused for the member's LIVE runtime mode
+/// (by the bridge's pre-submit check of the live roster entry, or by meerkat
+/// itself), before anything was delivered: the delivery falls back to the
+/// ingress lane, reported untracked with the typed reason. An
+/// `autonomous_host` member is [`TurnUntrackable::AutonomousHost`]; a refusal
+/// in any other mode is [`TurnUntrackable::RefusedByRuntime`].
 fn runtime_refused_tracking(
     identity: &AgentIdentity,
     mode: meerkat_mob::MobRuntimeMode,
     detail: &str,
 ) -> TurnTracking {
-    tracing::warn!(
+    tracing::debug!(
         identity = %identity,
         runtime_mode = %mode,
         detail,
-        "the runtime refused a tracked admission for the member's actual runtime mode; \
-         delivering untracked on the ingress lane"
+        "tracked admission refused for the member's live runtime mode; delivering untracked \
+         on the ingress lane"
     );
-    TurnTracking::Unavailable(TurnUntrackable::RefusedByRuntime { mode })
+    TurnTracking::Unavailable(match mode {
+        meerkat_mob::MobRuntimeMode::AutonomousHost => TurnUntrackable::AutonomousHost,
+        mode => TurnUntrackable::RefusedByRuntime { mode },
+    })
 }
 
 /// Tracking reported for a ticketed delivery whose lane recorded none (the
@@ -1995,17 +1997,20 @@ const SETTLED_TURN_RETENTION: Duration = Duration::from_mins(10);
 #[derive(Default)]
 struct TurnOutcomes {
     turns: BTreeMap<TurnTicket, TrackedTurn>,
-    /// Tracked dispatches by the work identity meerkat deduplicates on (the
-    /// member incarnation plus the dispatch's idempotency key), so a
-    /// re-dispatch of one key names the original admission's ticket.
-    by_delivery: BTreeMap<DeliveryKey, TurnTicket>,
+    /// Tracked dispatches by the scope meerkat deduplicates in (the member
+    /// incarnation's session runtime ledger) plus the dispatch's idempotency
+    /// key, so a re-dispatch of one key names the original admission's ticket.
+    by_delivery: HashMap<DeliveryKey, TurnTicket>,
     admitted: u64,
 }
 
-/// A dispatch's runtime work identity: the member incarnation it was admitted
-/// to and its idempotency key. A reset mints a new incarnation, whose runtime
-/// deduplicates afresh.
-type DeliveryKey = (AgentRuntimeId, String);
+/// A dispatch's dedup identity as meerkat sees it: the member incarnation and
+/// the session whose runtime ledger admitted it, plus its idempotency key.
+/// meerkat deduplicates only within one session's runtime ledger, and a
+/// session rotation keeps the incarnation's `AgentRuntimeId`, so the session
+/// is part of the key: after a rotation (or a reset, which mints a new
+/// incarnation) a re-dispatch is tracked as an admission of its own.
+type DeliveryKey = (AgentRuntimeId, SessionId, String);
 
 struct TrackedTurn {
     identity: AgentIdentity,
@@ -8279,10 +8284,12 @@ impl IdentityRuntime {
     /// fork completion wake, another send reusing the interaction id) can
     /// satisfy them.
     ///
-    /// When the turn cannot be tracked ([`TurnUntrackable`]: an
-    /// `autonomous_host` member, an externally bound member, a bridge that
-    /// cannot report per-turn output), it is delivered exactly once, exactly
-    /// like [`Self::send_admission_tracked`], and [`Ticketed::turn`] says why.
+    /// When the turn cannot be tracked ([`TurnUntrackable`]: a member whose
+    /// LIVE runtime mode is `autonomous_host`, an externally bound member, a
+    /// bridge that cannot report per-turn output), it is delivered exactly
+    /// once, exactly like [`Self::send_admission_tracked`], and
+    /// [`Ticketed::turn`] says why; only [`TurnUntrackable::NotDelivered`]
+    /// (no bridge or no bound runtime) delivers nothing.
     pub async fn send_with_turn_ticket(
         self: &Arc<Self>,
         identity: &AgentIdentity,
@@ -8761,7 +8768,6 @@ impl IdentityRuntime {
                 self.bridge.is_some() && runtime_id.is_some(),
                 external_binding,
                 local_human,
-                memory_runtime_mode,
                 self.bridge
                     .as_ref()
                     .is_some_and(|bridge| bridge.tracks_turn_output()),
@@ -9371,6 +9377,7 @@ impl IdentityRuntime {
         let (
             is_durable,
             runtime_id,
+            current_session,
             memory_session_key,
             memory_generation,
             memory_runtime_mode,
@@ -9391,6 +9398,7 @@ impl IdentityRuntime {
             (
                 is_durable,
                 runtime_id,
+                entry.continuity.as_ref().map(|c| c.session_id.clone()),
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
                 self.effective_runtime_mode(&entry.spec),
@@ -9487,15 +9495,23 @@ impl IdentityRuntime {
         let mut dispatched_session_id = None;
         let mut turn = track_turn.then(untracked_delivery);
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            let delivery_key = delivery_identity
+            // The dedup scope a re-dispatch would land in: this incarnation's
+            // current session ledger.
+            let current_delivery_key = delivery_identity
                 .as_ref()
-                .map(|carrier| (rid.clone(), carrier.idempotency_key.clone()));
+                .zip(current_session.as_ref())
+                .map(|(carrier, session)| {
+                    (
+                        rid.clone(),
+                        session.clone(),
+                        carrier.idempotency_key.clone(),
+                    )
+                });
             let ticketed = track_turn
                 && match turn_untrackable(
                     true,
                     external_binding,
                     false,
-                    memory_runtime_mode,
                     bridge.tracks_turn_output(),
                 ) {
                     Some(reason) => {
@@ -9508,7 +9524,7 @@ impl IdentityRuntime {
                     // delivered on the ingress lane, so no second waiter can
                     // ever report the runtime's "deduplicated, no result of
                     // its own" terminal over the original's output.
-                    None => match delivery_key
+                    None => match current_delivery_key
                         .as_ref()
                         .and_then(|key| self.reusable_delivery_ticket(identity, key))
                     {
@@ -9559,7 +9575,20 @@ impl IdentityRuntime {
                 };
                 let resolved_session = receipt.resolved_session().cloned();
                 let resolution_error = receipt.session_resolution_error().map(ToString::to_string);
-                let ticket = self.track_turn(identity, delivery_key, receipt);
+                // Indexed under the session the turn was actually admitted onto;
+                // an unresolved session cannot name a dedup scope, so it is not
+                // indexed.
+                let admitted_delivery_key = delivery_identity
+                    .as_ref()
+                    .zip(resolved_session.as_ref())
+                    .map(|(carrier, session)| {
+                        (
+                            rid.clone(),
+                            session.clone(),
+                            carrier.idempotency_key.clone(),
+                        )
+                    });
+                let ticket = self.track_turn(identity, admitted_delivery_key, receipt);
                 turn = Some(TurnTracking::Tracked(ticket));
                 match resolved_session {
                     Some(session_id) => session_id,
@@ -9677,12 +9706,15 @@ impl IdentityRuntime {
     /// the correlation, which a fan-out or several keys may share.
     ///
     /// A re-dispatch of an idempotency key whose tracked admission to this
-    /// incarnation is still pending or completed is deduplicated by the
-    /// runtime onto that admission, so it names the original's ticket (and
-    /// the original's output). Any other re-dispatch the runtime deduplicates
-    /// (the original was untracked, failed, or aged out of the registry) is
-    /// tracked on its own and completes with
-    /// [`TurnOutput::NoOwnResult`], never with an output it does not own.
+    /// incarnation's current session is still pending or completed is
+    /// deduplicated by the runtime onto that admission, so it names the
+    /// original's ticket (and the original's output). Any other re-dispatch
+    /// the runtime deduplicates (the original was untracked, failed, aged out
+    /// of the registry, or ran before a session rotation this key does not
+    /// span) is tracked on its own and settles with what the runtime reports
+    /// for the deduplicated input: the ORIGINAL input's own result while that
+    /// input is still running (the runtime shares the one input's
+    /// completion), and [`TurnOutput::NoOwnResult`] once it has ended.
     pub async fn dispatch_with_turn_ticket(
         self: &Arc<Self>,
         identity: &AgentIdentity,
@@ -16881,35 +16913,66 @@ mod turn_ticket_tests {
     }
 
     fn delivery_key(key: &str) -> DeliveryKey {
+        delivery_key_in(&SESSION, key)
+    }
+
+    static SESSION: std::sync::LazyLock<SessionId> = std::sync::LazyLock::new(SessionId::new);
+
+    fn delivery_key_in(session: &SessionId, key: &str) -> DeliveryKey {
         (
             AgentRuntimeId::parse("keeper-g1").expect("runtime id"),
+            session.clone(),
             key.to_string(),
         )
     }
 
     #[test]
-    fn autonomous_members_are_untrackable_and_turn_driven_ones_are_tracked() {
-        use meerkat_mob::MobRuntimeMode::{AutonomousHost, TurnDriven};
+    fn trackability_is_typed_and_leaves_the_runtime_mode_to_the_live_entry() {
+        assert_eq!(turn_untrackable(true, false, false, true), None);
         assert_eq!(
-            turn_untrackable(true, false, false, AutonomousHost, true),
-            Some(TurnUntrackable::AutonomousHost)
-        );
-        assert_eq!(turn_untrackable(true, false, false, TurnDriven, true), None);
-        assert_eq!(
-            turn_untrackable(false, false, false, TurnDriven, true),
+            turn_untrackable(false, false, false, true),
             Some(TurnUntrackable::NotDelivered)
         );
         assert_eq!(
-            turn_untrackable(true, false, true, TurnDriven, true),
+            turn_untrackable(true, false, true, true),
             Some(TurnUntrackable::HostHumanInput)
         );
         assert_eq!(
-            turn_untrackable(true, true, false, TurnDriven, true),
+            turn_untrackable(true, true, false, true),
             Some(TurnUntrackable::ExternallyBound)
         );
         assert_eq!(
-            turn_untrackable(true, false, false, TurnDriven, false),
+            turn_untrackable(true, false, false, false),
             Some(TurnUntrackable::BridgeCannotReportOutput)
+        );
+        let keeper = keeper();
+        assert_eq!(
+            runtime_refused_tracking(&keeper, meerkat_mob::MobRuntimeMode::AutonomousHost, "x"),
+            TurnTracking::Unavailable(TurnUntrackable::AutonomousHost)
+        );
+        assert_eq!(
+            runtime_refused_tracking(&keeper, meerkat_mob::MobRuntimeMode::TurnDriven, "x"),
+            TurnTracking::Unavailable(TurnUntrackable::RefusedByRuntime {
+                mode: meerkat_mob::MobRuntimeMode::TurnDriven
+            })
+        );
+    }
+
+    #[test]
+    fn a_redispatch_after_a_session_rotation_is_its_own_admission() {
+        let mut outcomes = TurnOutcomes::default();
+        let original = outcomes.admit(&keeper(), Some(delivery_key("evt-1")));
+        outcomes.settle(&keeper(), original, text("answer"));
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &delivery_key("evt-1")),
+            Some(original)
+        );
+        // Same incarnation and key, rotated session: its runtime ledger has
+        // never seen the key, so nothing is reused.
+        let rotated = SessionId::new();
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &delivery_key_in(&rotated, "evt-1")),
+            None
         );
     }
 

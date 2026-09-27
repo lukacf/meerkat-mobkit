@@ -99,11 +99,12 @@ struct TicketBridge {
     /// as meerkat refuses one for a member that actually runs in this mode.
     refuses_tracked_in: std::sync::Mutex<Option<meerkat_mob::MobRuntimeMode>>,
     refused: AtomicUsize,
-    session: meerkat_core::types::SessionId,
+    session: std::sync::Mutex<meerkat_core::types::SessionId>,
     ingress: std::sync::Mutex<Vec<Admission>>,
     tracked: std::sync::Mutex<Vec<Admission>>,
     finishers: std::sync::Mutex<Vec<Option<Finisher>>>,
-    seen_keys: std::sync::Mutex<HashSet<(AgentRuntimeId, String)>>,
+    /// Like meerkat's runtime ledger: one per session.
+    seen_keys: std::sync::Mutex<HashSet<(AgentRuntimeId, String, String)>>,
     latest_output: std::sync::Mutex<Option<String>>,
 }
 
@@ -122,13 +123,26 @@ impl TicketBridge {
             resolution_fails,
             refuses_tracked_in: std::sync::Mutex::new(None),
             refused: AtomicUsize::new(0),
-            session,
+            session: std::sync::Mutex::new(session),
             ingress: std::sync::Mutex::new(Vec::new()),
             tracked: std::sync::Mutex::new(Vec::new()),
             finishers: std::sync::Mutex::new(Vec::new()),
             seen_keys: std::sync::Mutex::new(HashSet::new()),
             latest_output: std::sync::Mutex::new(None),
         })
+    }
+
+    fn current_session(&self) -> meerkat_core::types::SessionId {
+        self.session.lock().unwrap().clone()
+    }
+
+    /// Rotate the member onto a fresh session (a repair's fresh spawn, a
+    /// legacy respawn): later deliveries resolve onto it, and its runtime
+    /// ledger has seen no idempotency key.
+    fn rotate_session(&self) -> meerkat_core::types::SessionId {
+        let rotated = meerkat_core::types::SessionId::new();
+        *self.session.lock().unwrap() = rotated.clone();
+        rotated
     }
 
     fn ingress_admissions(&self) -> Vec<Admission> {
@@ -153,12 +167,13 @@ impl TicketBridge {
             interaction_id: delivery.interaction_id.clone(),
             idempotency_key: key.clone(),
         });
+        let session = self.current_session().to_string();
         key.is_some_and(|key| {
             !self
                 .seen_keys
                 .lock()
                 .unwrap()
-                .insert((runtime_id.clone(), key))
+                .insert((runtime_id.clone(), session, key))
         })
     }
 
@@ -224,7 +239,7 @@ impl SessionBridge for TicketBridge {
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.record(runtime_id, &delivery, &self.ingress);
-        Ok(self.session.clone())
+        Ok(self.current_session())
     }
 
     fn tracks_turn_output(&self) -> bool {
@@ -260,7 +275,7 @@ impl SessionBridge for TicketBridge {
         let session_result = if self.resolution_fails {
             Err("the machine-state projection has no session for this member".to_string())
         } else {
-            Ok(self.session.clone())
+            Ok(self.current_session())
         };
         Ok(BridgeTurnReceipt::with_output(session_result, async move {
             finished
@@ -537,42 +552,6 @@ async fn an_untrackable_turn_is_delivered_once_on_the_ingress_lane() {
     );
 }
 
-/// An `autonomous_host` member (the default mode) refuses completion-bearing
-/// admission in meerkat, so a tracked send or dispatch to it is never
-/// attempted on the tracked lane: it is delivered exactly once on the ingress
-/// lane and reported untracked with the typed reason.
-#[tokio::test]
-async fn an_autonomous_member_is_delivered_once_on_the_ingress_lane() {
-    let session = meerkat_core::types::SessionId::new();
-    let bridge = TicketBridge::new(true, session.clone());
-    let runtime = make_runtime(Some(bridge.clone()));
-    let mut spec = make_spec("roamer");
-    spec.runtime_mode_override = None; // resolves to meerkat's default
-    let roamer = register_spec(&runtime, spec, &session).await;
-
-    let sent = runtime
-        .send_with_turn_ticket(&roamer, None, &content("alpha"), HandlingMode::Queue, None)
-        .await
-        .expect("send");
-    assert_eq!(
-        sent.turn,
-        TurnTracking::Unavailable(TurnUntrackable::AutonomousHost)
-    );
-    let dispatched = runtime
-        .dispatch_with_turn_ticket(&roamer, None, &correlated("beta", "evt-1", "chat-1"))
-        .await
-        .expect("dispatch");
-    assert_eq!(
-        dispatched.turn,
-        TurnTracking::Unavailable(TurnUntrackable::AutonomousHost)
-    );
-    assert_eq!(bridge.ingress_admissions().len(), 2);
-    assert!(
-        bridge.tracked_admissions().is_empty(),
-        "nothing was attempted on the tracked lane"
-    );
-}
-
 /// The caller's interaction id rides into the admission unchanged but never
 /// names the ticket: two sends reusing one interaction id get distinct
 /// tickets, and each reports its own turn.
@@ -800,47 +779,124 @@ async fn a_redispatch_names_the_original_ticket_and_never_overwrites_its_output(
     );
 }
 
-/// meerkat refusing the tracked admission for the member's ACTUAL mode (typed,
-/// pre-admission, nothing delivered) sends the delivery once on the ingress
-/// lane instead, reported untracked with the typed reason, for a send and a
-/// dispatch alike.
+/// A tracked admission refused typed for the member's LIVE runtime mode
+/// (`UnsupportedForMode`, before anything is submitted, as the bridge refuses
+/// an autonomous_host member and as meerkat itself refuses) sends the delivery
+/// once on the ingress lane instead, reported untracked with the typed
+/// reason, for a send and a dispatch alike. The runtime never decides the
+/// mode from its own spec: this member's spec even says turn_driven.
 #[tokio::test]
-async fn a_typed_runtime_refusal_falls_back_to_the_ingress_lane_once() {
+async fn a_live_mode_refusal_falls_back_to_the_ingress_lane_once() {
+    use meerkat_mob::MobRuntimeMode::{AutonomousHost, TurnDriven};
+    for (mode, expected) in [
+        (AutonomousHost, TurnUntrackable::AutonomousHost),
+        (
+            TurnDriven,
+            TurnUntrackable::RefusedByRuntime { mode: TurnDriven },
+        ),
+    ] {
+        let session = meerkat_core::types::SessionId::new();
+        let bridge = TicketBridge::new(true, session.clone());
+        *bridge.refuses_tracked_in.lock().unwrap() = Some(mode);
+        let runtime = make_runtime(Some(bridge.clone()));
+        let keeper = register_bound(&runtime, "keeper", &session).await;
+
+        let sent = runtime
+            .send_with_turn_ticket(&keeper, None, &content("alpha"), HandlingMode::Queue, None)
+            .await
+            .expect("the send is delivered on the ingress lane");
+        assert_eq!(sent.turn, TurnTracking::Unavailable(expected));
+        assert!(expected.delivered());
+        let dispatched = runtime
+            .dispatch_with_turn_ticket(&keeper, None, &correlated("beta", "evt-1", "chat-1"))
+            .await
+            .expect("the dispatch is delivered on the ingress lane");
+        assert_eq!(dispatched.turn, TurnTracking::Unavailable(expected));
+        assert_eq!(bridge.refused.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            bridge.ingress_admissions().len(),
+            2,
+            "each delivered exactly once"
+        );
+        assert!(bridge.tracked_admissions().is_empty());
+        assert!(
+            runtime
+                .member_health(&keeper)
+                .await
+                .expect("health")
+                .last_delivery_error
+                .is_none(),
+            "the fallback delivery succeeded; the refusal is not a delivery failure"
+        );
+    }
+    assert_eq!(TurnUntrackable::AutonomousHost.code(), "autonomous_host");
+    assert_eq!(
+        TurnUntrackable::RefusedByRuntime { mode: TurnDriven }.code(),
+        "runtime_refused"
+    );
+    assert!(!TurnUntrackable::NotDelivered.delivered());
+}
+
+/// meerkat deduplicates only within one session's runtime ledger, and a
+/// session rotation keeps the incarnation's runtime id. So after a rotation a
+/// re-dispatch of a completed tracked key is NOT given the original's ticket:
+/// it runs as a turn of its own on the new session and reports its own
+/// output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redispatch_after_a_session_rotation_runs_and_reports_its_own_turn() {
     let session = meerkat_core::types::SessionId::new();
     let bridge = TicketBridge::new(true, session.clone());
-    *bridge.refuses_tracked_in.lock().unwrap() = Some(meerkat_mob::MobRuntimeMode::AutonomousHost);
     let runtime = make_runtime(Some(bridge.clone()));
     let keeper = register_bound(&runtime, "keeper", &session).await;
 
-    let sent = runtime
-        .send_with_turn_ticket(&keeper, None, &content("alpha"), HandlingMode::Queue, None)
+    let original = runtime
+        .dispatch_with_turn_ticket(&keeper, None, &correlated("work", "evt-7", "evt-7"))
         .await
-        .expect("the send is delivered on the ingress lane");
-    let refused = TurnUntrackable::RefusedByRuntime {
-        mode: meerkat_mob::MobRuntimeMode::AutonomousHost,
-    };
-    assert_eq!(sent.turn, TurnTracking::Unavailable(refused));
-    assert_eq!(refused.code(), "autonomous_host");
-    let dispatched = runtime
-        .dispatch_with_turn_ticket(&keeper, None, &correlated("beta", "evt-1", "chat-1"))
-        .await
-        .expect("the dispatch is delivered on the ingress lane");
-    assert_eq!(dispatched.turn, TurnTracking::Unavailable(refused));
-    assert_eq!(bridge.refused.load(Ordering::SeqCst), 2);
+        .expect("original dispatch");
+    let original = tracked(&original.turn);
+    bridge.finish(0, Ok("first answer"));
     assert_eq!(
-        bridge.ingress_admissions().len(),
-        2,
-        "each delivered exactly once"
-    );
-    assert!(bridge.tracked_admissions().is_empty());
-    assert!(
         runtime
-            .member_health(&keeper)
+            .wait_for_turn(&keeper, original, Duration::from_secs(5))
+            .await,
+        completed("first answer")
+    );
+
+    // The member moves onto a fresh session; the next delivery reconciles the
+    // identity onto it.
+    let rotated = bridge.rotate_session();
+    runtime
+        .send_admission_tracked(&keeper, None, &content("ping"), HandlingMode::Queue, None)
+        .await
+        .expect("delivery after the rotation");
+    assert_eq!(
+        runtime
+            .status(&keeper)
             .await
-            .expect("health")
-            .last_delivery_error
-            .is_none(),
-        "the fallback delivery succeeded; the refusal is not a delivery failure"
+            .expect("status")
+            .session_id
+            .as_ref(),
+        Some(&rotated),
+        "the identity follows the rotated session"
+    );
+
+    let retry = runtime
+        .dispatch_with_turn_ticket(&keeper, None, &correlated("work", "evt-7", "evt-7"))
+        .await
+        .expect("re-dispatch after the rotation");
+    let retry = tracked(&retry.turn);
+    assert_ne!(retry, original, "the rotated ledger never saw the key");
+    assert_eq!(bridge.tracked_admissions().len(), 2);
+    bridge.finish(1, Ok("second answer"));
+    assert_eq!(
+        runtime
+            .wait_for_turn(&keeper, retry, Duration::from_secs(5))
+            .await,
+        completed("second answer")
+    );
+    assert_eq!(
+        runtime.turn_outcome(&keeper, original),
+        completed("first answer")
     );
 }
 
@@ -884,9 +940,11 @@ async fn a_session_resolution_failure_keeps_the_turns_own_output() {
 // ===========================================================================
 
 /// Replies to each message by the name it carries ("reply to: alpha"), and
-/// holds a turn whose name is held until the test releases it. The name is
-/// read off the newest non-assistant message, so a turn-driven member's user
-/// message and an autonomous member's inbox notice both count.
+/// holds a turn whose name is held until the test releases it. The names are
+/// read off every message after the last assistant message (the run's new
+/// input), so a turn-driven member's user message, an autonomous member's
+/// inbox notice, and several inputs an autonomous member batched into one run
+/// all count, each once per model call.
 #[derive(Clone, Default)]
 struct NamedReplyClient {
     holds: Arc<std::sync::Mutex<HashMap<&'static str, tokio::sync::oneshot::Receiver<()>>>>,
@@ -926,18 +984,26 @@ impl meerkat_client::LlmClient for NamedReplyClient {
         request: &'a LlmRequest,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let newest_input = request
+        let new_input_from = request
             .messages
             .iter()
-            .rev()
-            .find(|message| !matches!(message, meerkat_core::Message::BlockAssistant(_)))
-            .and_then(|message| serde_json::to_string(message).ok())
-            .unwrap_or_default();
-        let name = NAMES
+            .rposition(|message| matches!(message, meerkat_core::Message::BlockAssistant(_)))
+            .map_or(0, |last_reply| last_reply + 1);
+        let new_input = request.messages[new_input_from..]
+            .iter()
+            .filter_map(|message| serde_json::to_string(message).ok())
+            .collect::<String>();
+        let names = NAMES
             .into_iter()
-            .find(|name| newest_input.contains(name))
-            .unwrap_or("other");
-        *self.calls_by_name.lock().unwrap().entry(name).or_default() += 1;
+            .filter(|name| new_input.contains(name))
+            .collect::<Vec<_>>();
+        {
+            let mut calls = self.calls_by_name.lock().unwrap();
+            for name in &names {
+                *calls.entry(name).or_default() += 1;
+            }
+        }
+        let name = names.first().copied().unwrap_or("other");
         let held = self.holds.lock().unwrap().remove(name);
         let [usage, done] =
             llm_usage::usage_then_done(request, meerkat::Provider::OpenAI, StopReason::EndTurn);
@@ -1064,34 +1130,64 @@ async fn live_runtime(
     meerkat_mobkit::rpc::IdentityFirstContext,
     tempfile::TempDir,
 ) {
-    let (runtime, ctx, scratch, _mob_id) = live_runtime_with(
+    let live = live_runtime_with(
         runtime_mode,
-        runtime_mode == meerkat_mob::MobRuntimeMode::TurnDriven,
+        (runtime_mode == meerkat_mob::MobRuntimeMode::TurnDriven).then_some(runtime_mode),
         client,
     )
     .await;
-    (runtime, ctx, scratch)
+    (live.runtime, live.ctx, live.scratch)
 }
 
-/// [`live_runtime`], choosing whether the mode is also pinned as the spec
-/// override (unpinned, only the profile declares it), and returning the mob
-/// id so a test can rebuild the definition with another profile mode.
+/// One live test mob.
+struct LiveMob {
+    runtime: meerkat_mobkit::UnifiedRuntime,
+    ctx: meerkat_mobkit::rpc::IdentityFirstContext,
+    scratch: tempfile::TempDir,
+    mob_id: String,
+    roster: Arc<MutableRosterProvider>,
+}
+
+/// What a test reads off the live meerkat roster entry.
+struct LiveMember {
+    identity: meerkat_mob::ids::AgentIdentity,
+    role: meerkat_mob::ProfileName,
+    labels: BTreeMap<String, String>,
+    /// The runtime mode meerkat actually checks.
+    runtime_mode: meerkat_mob::MobRuntimeMode,
+    session: Option<meerkat_core::types::SessionId>,
+}
+
+impl LiveMob {
+    /// The one member's live meerkat roster entry.
+    async fn live_member(&self) -> LiveMember {
+        let members = self.runtime.mob_handle().list_all_members().await;
+        assert_eq!(members.len(), 1, "one live member");
+        let entry = members.into_iter().next().expect("one live member");
+        LiveMember {
+            session: entry.bridge_session_id().cloned(),
+            identity: entry.agent_identity,
+            role: entry.role,
+            labels: entry.labels,
+            runtime_mode: entry.runtime_mode,
+        }
+    }
+}
+
+/// [`live_runtime`] with the profile declaring `runtime_mode` and the spec
+/// pinning `override_mode` (or nothing), keeping the mob id and the mutable
+/// roster so a test can change the profile table or the spec.
 async fn live_runtime_with(
     runtime_mode: meerkat_mob::MobRuntimeMode,
-    pin_override: bool,
+    override_mode: Option<meerkat_mob::MobRuntimeMode>,
     client: &NamedReplyClient,
-) -> (
-    meerkat_mobkit::UnifiedRuntime,
-    meerkat_mobkit::rpc::IdentityFirstContext,
-    tempfile::TempDir,
-    String,
-) {
+) -> LiveMob {
     let scratch = tempfile::tempdir().expect("scratch dir");
     let mob_id = format!("turn-tickets-{}", uuid::Uuid::new_v4());
     let definition = worker_definition(&mob_id, runtime_mode);
     let mut spec = make_spec("keeper");
     spec.profile = "worker".into();
-    spec.runtime_mode_override = pin_override.then_some(runtime_mode);
+    spec.runtime_mode_override = override_mode;
     let roster = Arc::new(MutableRosterProvider::new(vec![spec]));
     let runtime = meerkat_mobkit::UnifiedRuntime::builder()
         .definition(definition)
@@ -1110,7 +1206,7 @@ async fn live_runtime_with(
         .expect("identity runtime");
     let ctx = meerkat_mobkit::rpc::IdentityFirstContext {
         runtime: identity_runtime,
-        roster_provider: roster,
+        roster_provider: roster.clone(),
         topology_provider: None,
         customizer: None,
         agent_memory_provider: None,
@@ -1121,7 +1217,45 @@ async fn live_runtime_with(
     // MobKit resolves an unpinned member's mode from this profile table, as
     // the gateway installs it at boot.
     flip_profile_table(&ctx, worker_definition(&mob_id, runtime_mode));
-    (runtime, ctx, scratch, mob_id)
+    LiveMob {
+        runtime,
+        ctx,
+        scratch,
+        mob_id,
+        roster,
+    }
+}
+
+/// Wait until the model has been called for the input named `name`, i.e. the
+/// delivery reached a turn, whichever lane carried it.
+async fn wait_for_model_call(client: &NamedReplyClient, name: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while client.calls_for(name) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the model never saw {name:?}"));
+}
+
+/// An untracked delivery to a live member: delivered exactly once (one model
+/// call for it, still one after the runtime settles), with the typed code.
+async fn assert_delivered_once_untracked(
+    client: &NamedReplyClient,
+    result: &Value,
+    name: &str,
+    code: &str,
+) {
+    assert!(result["turn"].is_null(), "{result}");
+    assert_eq!(result["turn_unavailable"]["code"], code, "{result}");
+    assert_eq!(result["turn_unavailable"]["delivered"], true, "{result}");
+    wait_for_model_call(client, name).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        client.calls_for(name),
+        1,
+        "{name} was delivered exactly once"
+    );
 }
 
 /// Wait until the identity-wide cursor passes `baseline`, then return the
@@ -1155,34 +1289,6 @@ async fn cursor_wait(
     .expect("the cursor passes the baseline")
 }
 
-/// Wait until the session's latest output is `expected`: the wait for a
-/// delivery the runtime does not track. The identity-wide cursor would also be
-/// satisfied by an autonomous member's own kickoff turn completing after the
-/// baseline was read, which is exactly the ambiguity turn tickets remove.
-async fn wait_for_reply(
-    runtime: &meerkat_mobkit::UnifiedRuntime,
-    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
-    expected: &str,
-) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let inspection = rpc(
-                runtime,
-                ctx,
-                "mobkit/inspect_identity",
-                json!({"identity": "keeper"}),
-            )
-            .await;
-            if inspection["output_preview"] == expected {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("the session never answered {expected:?}"));
-}
-
 /// End to end on a real runtime: an untracked dispatch to `keeper` is
 /// admitted first and held; two tracked sends queue behind it. When the
 /// dispatch finishes, the identity-wide cursor passes the first send's
@@ -1205,6 +1311,9 @@ async fn concurrent_gateway_sends_each_get_their_own_reply() {
         json!({"identity": "keeper", "dispatch_input": {"content": "foreign", "origin": "system"}}),
     )
     .await;
+    // The model is holding the foreign turn before the tracked sends go out,
+    // so their baselines are read while it is still running.
+    wait_for_model_call(&client, "foreign").await;
     let alpha = rpc(
         &runtime,
         &ctx,
@@ -1262,12 +1371,16 @@ async fn concurrent_gateway_sends_each_get_their_own_reply() {
 }
 
 /// The same gateway calls against an `autonomous_host` member (meerkat's
-/// default mode, which examples 001, 002 and 004 run): meerkat refuses
-/// completion-bearing admission for autonomous inbox delivery, so a
-/// `track_turn` send or dispatch is delivered exactly once on the ingress
-/// lane, answered, and reported untracked with the typed
-/// `turn_unavailable.code`, which is what lets the SDK helpers fall back
-/// instead of failing.
+/// default mode, which examples 001, 002 and 004 run). A tracked send or
+/// dispatch is refused for the live mode before anything is submitted and
+/// delivered once on the ingress lane, untracked. The assertions are only
+/// what that fallback guarantees: the typed code, exactly one model call per
+/// input, and that the identity-wide wait (all an untracked caller has)
+/// returns one of this identity's replies. It does NOT promise which one: an
+/// autonomous member's own kickoff turn, or the other delivery, can satisfy
+/// it (the SDK helpers warn about exactly this). On this meerkat pin an
+/// autonomous inbox delivery carries no interaction or run id, so there is no
+/// typed per-input correlation to assert.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_autonomous_member_through_the_gateway_is_delivered_once_untracked() {
     let client = NamedReplyClient::default();
@@ -1281,13 +1394,6 @@ async fn an_autonomous_member_through_the_gateway_is_delivered_once_untracked() 
         json!({"identity": "keeper", "content": "alpha", "track_turn": true}),
     )
     .await;
-    assert!(sent["turn"].is_null(), "{sent}");
-    assert_eq!(
-        sent["turn_unavailable"]["code"], "autonomous_host",
-        "{sent}"
-    );
-    wait_for_reply(&runtime, &ctx, "reply to: alpha").await;
-
     let dispatched = rpc(
         &runtime,
         &ctx,
@@ -1299,23 +1405,14 @@ async fn an_autonomous_member_through_the_gateway_is_delivered_once_untracked() 
         }),
     )
     .await;
-    assert!(dispatched["turn"].is_null(), "{dispatched}");
-    assert_eq!(
-        dispatched["turn_unavailable"]["code"], "autonomous_host",
-        "{dispatched}"
-    );
-    wait_for_reply(&runtime, &ctx, "reply to: beta").await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        client.calls_for("alpha"),
-        1,
-        "alpha was delivered exactly once"
-    );
-    assert_eq!(
-        client.calls_for("beta"),
-        1,
-        "beta was delivered exactly once"
+    assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
+    assert_delivered_once_untracked(&client, &dispatched, "beta", "autonomous_host").await;
+    let fallback = cursor_wait(&runtime, &ctx, &dispatched["completion_baseline"]).await;
+    assert!(
+        fallback
+            .as_deref()
+            .is_some_and(|reply| reply.starts_with("reply to: ")),
+        "the identity-wide wait returns one of this identity's replies: {fallback:?}"
     );
     runtime.shutdown().await;
 }
@@ -1379,7 +1476,12 @@ async fn a_live_redispatch_reads_the_original_reply_or_no_own_result() {
     )
     .await;
     assert!(untracked.get("turn").is_none(), "{untracked}");
-    wait_for_reply(&runtime, &ctx, "reply to: beta").await;
+    wait_for_model_call(&client, "beta").await;
+    // The untracked original has ENDED before the retry: then the runtime's
+    // dedup reports no result of the retry's own. (While the original is
+    // still running, the retry shares the one input's completion and reports
+    // the original's result.)
+    cursor_wait(&runtime, &ctx, &untracked["completion_baseline"]).await;
     let retry = rpc(
         &runtime,
         &ctx,
@@ -1406,68 +1508,61 @@ async fn a_live_redispatch_reads_the_original_reply_or_no_own_result() {
     runtime.shutdown().await;
 }
 
-/// The profile's `runtime_mode` flipped WITHOUT a respawn, both ways, on a
-/// real mob. Spawned `autonomous_host`, then the profile says `turn_driven`:
-/// MobKit now resolves the member as trackable, meerkat still runs it
-/// autonomous and refuses the tracked admission (typed, pre-admission), and
-/// the send falls back to the ingress lane: delivered exactly once, answered,
-/// and reported `turn_unavailable.code = autonomous_host` with the refusal's
-/// reason. Spawned `turn_driven`, then the profile says `autonomous_host`:
-/// MobKit resolves the member as untrackable and delivers once on the ingress
-/// lane without attempting the tracked admission at all.
+/// Trackability follows the LIVE member's runtime mode, the value meerkat
+/// checks, never MobKit's desired spec or profile table, on a real mob:
+///
+/// - spawned `autonomous_host`, then the profile table says `turn_driven`
+///   (no respawn): the member still runs autonomous, so a tracked send is
+///   refused for the live mode and delivered once, untracked, code
+///   `autonomous_host`;
+/// - spawned `turn_driven`, then the profile table says `autonomous_host`
+///   (no respawn): the member still runs turn_driven, so the send is tracked
+///   and reports its own reply;
+/// - a same-profile `runtime_mode_override` hot reload from autonomous_host to
+///   turn_driven (roster change plus `mobkit/reconcile_identity`, which swaps
+///   the spec without a respawn): delivered once, untracked;
+/// - a delivery-repair-shaped respawn (role, labels and `Resume` only, which
+///   drops the override): the member comes back `autonomous_host` although
+///   its spec pins turn_driven, and the send is delivered once, untracked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_profile_mode_flipped_without_respawn_still_delivers_once() {
+async fn trackability_follows_the_live_runtime_mode() {
     use meerkat_mob::MobRuntimeMode::{AutonomousHost, TurnDriven};
 
-    // Spawned autonomous_host; profile flipped to turn_driven.
+    // Spawned autonomous_host; profile table flipped to turn_driven.
     let client = NamedReplyClient::default();
-    let (runtime, ctx, _scratch, mob_id) = live_runtime_with(AutonomousHost, false, &client).await;
+    let live = live_runtime_with(AutonomousHost, None, &client).await;
     let first = rpc(
-        &runtime,
-        &ctx,
+        &live.runtime,
+        &live.ctx,
         "mobkit/send",
         json!({"identity": "keeper", "content": "foreign", "track_turn": true}),
     )
     .await;
-    assert_eq!(
-        first["turn_unavailable"]["code"], "autonomous_host",
-        "{first}"
-    );
-    wait_for_reply(&runtime, &ctx, "reply to: foreign").await;
-    flip_profile_table(&ctx, worker_definition(&mob_id, TurnDriven));
+    assert_delivered_once_untracked(&client, &first, "foreign", "autonomous_host").await;
+    flip_profile_table(&live.ctx, worker_definition(&live.mob_id, TurnDriven));
+    assert_eq!(live.live_member().await.runtime_mode, AutonomousHost);
     let sent = rpc(
-        &runtime,
-        &ctx,
+        &live.runtime,
+        &live.ctx,
         "mobkit/send",
         json!({"identity": "keeper", "content": "alpha", "track_turn": true}),
     )
     .await;
-    assert!(sent["turn"].is_null(), "{sent}");
-    assert_eq!(
-        sent["turn_unavailable"]["code"], "autonomous_host",
-        "{sent}"
-    );
+    assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
     assert!(
         sent["turn_unavailable"]["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("refused") && reason.contains("respawn")),
+            .is_some_and(|reason| reason.contains("respawn")),
         "{sent}"
     );
-    wait_for_reply(&runtime, &ctx, "reply to: alpha").await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        client.calls_for("alpha"),
-        1,
-        "alpha was delivered exactly once"
-    );
-    runtime.shutdown().await;
+    live.runtime.shutdown().await;
 
-    // Spawned turn_driven; profile flipped to autonomous_host.
+    // Spawned turn_driven; profile table flipped to autonomous_host.
     let client = NamedReplyClient::default();
-    let (runtime, ctx, _scratch, mob_id) = live_runtime_with(TurnDriven, false, &client).await;
+    let live = live_runtime_with(TurnDriven, None, &client).await;
     let tracked = rpc(
-        &runtime,
-        &ctx,
+        &live.runtime,
+        &live.ctx,
         "mobkit/send",
         json!({"identity": "keeper", "content": "foreign", "track_turn": true}),
     )
@@ -1477,28 +1572,108 @@ async fn a_profile_mode_flipped_without_respawn_still_delivers_once() {
         .unwrap_or_else(|| panic!("a turn_driven member is tracked: {tracked}"))
         .to_string();
     assert_eq!(
-        await_turn(&runtime, &ctx, &ticket).await["output"],
+        await_turn(&live.runtime, &live.ctx, &ticket).await["output"],
         "reply to: foreign"
     );
-    flip_profile_table(&ctx, worker_definition(&mob_id, AutonomousHost));
-    let sent = rpc(
-        &runtime,
-        &ctx,
+    flip_profile_table(&live.ctx, worker_definition(&live.mob_id, AutonomousHost));
+    let tracked = rpc(
+        &live.runtime,
+        &live.ctx,
         "mobkit/send",
         json!({"identity": "keeper", "content": "beta", "track_turn": true}),
     )
     .await;
-    assert!(sent["turn"].is_null(), "{sent}");
+    let ticket = tracked["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the live member still runs turn_driven: {tracked}"))
+        .to_string();
     assert_eq!(
-        sent["turn_unavailable"]["code"], "autonomous_host",
-        "{sent}"
+        await_turn(&live.runtime, &live.ctx, &ticket).await["output"],
+        "reply to: beta"
     );
-    wait_for_reply(&runtime, &ctx, "reply to: beta").await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    live.runtime.shutdown().await;
+
+    // Same-profile override hot reload, autonomous_host -> turn_driven.
+    let client = NamedReplyClient::default();
+    let live = live_runtime_with(AutonomousHost, None, &client).await;
+    let first = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "foreign", "track_turn": true}),
+    )
+    .await;
+    assert_delivered_once_untracked(&client, &first, "foreign", "autonomous_host").await;
+    let mut reloaded = make_spec("keeper");
+    reloaded.profile = "worker".into();
+    reloaded.runtime_mode_override = Some(TurnDriven);
+    live.roster.upsert(reloaded);
+    rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/reconcile_identity",
+        json!({}),
+    )
+    .await;
     assert_eq!(
-        client.calls_for("beta"),
-        1,
-        "beta was delivered exactly once"
+        live.live_member().await.runtime_mode,
+        AutonomousHost,
+        "the hot reload swapped the spec without respawning"
     );
-    runtime.shutdown().await;
+    let sent = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "alpha", "track_turn": true}),
+    )
+    .await;
+    assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
+    live.runtime.shutdown().await;
+
+    // A repair-shaped respawn drops the override. The profile declares
+    // autonomous_host; only the spec override pins turn_driven.
+    let client = NamedReplyClient::default();
+    let live = live_runtime_with(AutonomousHost, Some(TurnDriven), &client).await;
+    let tracked = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "foreign", "track_turn": true}),
+    )
+    .await;
+    let ticket = tracked["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("spawned with the turn_driven override: {tracked}"))
+        .to_string();
+    await_turn(&live.runtime, &live.ctx, &ticket).await;
+    let member = live.live_member().await;
+    assert_eq!(member.runtime_mode, TurnDriven);
+    let session = member.session.clone().expect("bridge session");
+    let handle = live.runtime.mob_handle();
+    handle
+        .retire(member.identity.clone())
+        .await
+        .expect("repair retire");
+    let mut respawn =
+        meerkat_mob::SpawnMemberSpec::new(member.role.clone(), member.identity.clone())
+            .with_labels(member.labels.clone());
+    respawn.launch_mode = meerkat_mob::MemberLaunchMode::Resume {
+        bridge_session_id: session,
+        resume_from_role: None,
+    };
+    handle.spawn_spec(respawn).await.expect("repair respawn");
+    assert_eq!(
+        live.live_member().await.runtime_mode,
+        AutonomousHost,
+        "the repair-shaped respawn dropped the override"
+    );
+    let sent = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "alpha", "track_turn": true}),
+    )
+    .await;
+    assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
+    live.runtime.shutdown().await;
 }

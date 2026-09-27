@@ -2917,24 +2917,35 @@ function parseTurnTicket(d: Record<string, unknown>): string | null {
 }
 
 /**
- * Why a delivery that asked for `trackTurn` could not be tracked. The
- * delivery itself still happened, exactly once.
+ * Why a delivery that asked for `trackTurn` could not be tracked, and whether
+ * it was delivered at all.
  *
- * `code` is stable: `autonomous_host` (the member runs in `autonomous_host`
- * mode, whose inbox delivery reports no per-turn completion, including a
- * member whose profile changed without a respawn), `externally_bound`,
- * `host_human_input`, `bridge_cannot_report_output`, `not_delivered` or
- * `runtime_refused`. `reason` is the human-readable detail.
+ * `code` is stable. Every code but `not_delivered` means the delivery
+ * happened, exactly once, untracked: `autonomous_host` (the member runs in
+ * `autonomous_host` mode, read from the runtime's live roster entry; its
+ * inbox delivery reports no per-turn completion), `runtime_refused` (the
+ * runtime refused per-turn completion for the member's live mode for another
+ * reason), `externally_bound`, `host_human_input` or
+ * `bridge_cannot_report_output`. `not_delivered` means NOTHING was delivered
+ * (no session bridge or no bound runtime), so there is no turn to wait for.
+ * `delivered` says which; `reason` is the human-readable detail.
  */
 export interface TurnUnavailable {
   readonly code: string;
   readonly reason: string;
+  readonly delivered: boolean;
 }
 
 function parseTurnUnavailable(raw: unknown): TurnUnavailable | null {
   if (typeof raw !== "object" || raw === null) return null;
   const d = raw as Record<string, unknown>;
-  return { code: String(d.code ?? ""), reason: String(d.reason ?? "") };
+  const code = String(d.code ?? "");
+  return {
+    code,
+    reason: String(d.reason ?? ""),
+    delivered:
+      typeof d.delivered === "boolean" ? d.delivered : code !== "not_delivered",
+  };
 }
 
 function turnTrackingToDict(
@@ -2949,6 +2960,7 @@ function turnTrackingToDict(
     out.turn_unavailable = {
       code: turnUnavailable.code,
       reason: turnUnavailable.reason,
+      delivered: turnUnavailable.delivered,
     };
   }
 }

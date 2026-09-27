@@ -1320,6 +1320,11 @@ class IdentityAgentHandle:
             return self._text_of_turn(turn, operation)
         from .errors import TurnTrackingUnavailableWarning
         unavailable = getattr(result, "turn_unavailable", None)
+        if unavailable is not None and not unavailable.delivered:
+            raise RuntimeError(
+                f"{operation} for identity {self._identity!r} was not delivered "
+                f"({unavailable.code}: {unavailable.reason}); there is no turn to wait for"
+            )
         reason = (
             f"{unavailable.code}: {unavailable.reason}"
             if unavailable is not None
