@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { performance } = require("node:perf_hooks");
+const { setTimeout: delay } = require("node:timers/promises");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc, snapshot } = require("../acceptance-runtime.cjs");
 
@@ -62,6 +64,83 @@ function assertStartupLineage(frames, historyPages) {
   return owners;
 }
 
+// Member readiness and a live UI do not prove the requested reply committed.
+// Observe its exact terminal and durable owner under one deadline.
+async function waitForStartupLineage({ timeline, durableHistory, expectedInteractionId, onObservation = () => {}, timeoutMs = 20_000, pollIntervalMs = 50 }) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  const deadline = performance.now() + timeoutMs;
+  let last;
+  const timeoutError = () => new Error(`Timed out: startup Acceptance reply has completed with exact durable lineage${last ? `: ${last.message}` : ""}`);
+  function checkDeadline() {
+    if (!signal.aborted && performance.now() >= deadline) controller.abort(timeoutError());
+    signal.throwIfAborted();
+  }
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError());
+      reject(signal.reason);
+    }, timeoutMs);
+  });
+  async function observe() {
+    while (true) {
+      checkDeadline();
+      try {
+        const { frames } = await timeline({ signal });
+        checkDeadline();
+        onObservation({ frames });
+        checkDeadline();
+        const history = await durableHistory(frames, { signal });
+        checkDeadline();
+        onObservation({ frames, history });
+        const owners = assertStartupLineage(frames, history);
+        if (expectedInteractionId) {
+          assert.equal(owners.filter(owner => owner.interactionId === expectedInteractionId).length, 1,
+            `accepted startup interaction completed with exact durable lineage: ${expectedInteractionId}`);
+        }
+        checkDeadline();
+        return { frames, history, owners };
+      } catch (error) {
+        signal.throwIfAborted();
+        last = error;
+        checkDeadline();
+      }
+      await delay(Math.min(pollIntervalMs, Math.max(0, deadline - performance.now())), undefined, { signal });
+    }
+  }
+  try {
+    return await Promise.race([observe(), expired]);
+  } catch (error) {
+    // A cancelled fetch or delay can reject before the deadline promise wins.
+    signal.throwIfAborted();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    // Cancel response bodies and sibling history reads as well as pending polls.
+    controller.abort();
+  }
+}
+
+function startupLineageReaders({ baseUrl, backendUrl }) {
+  return {
+    async timeline({ signal } = {}) {
+      const response = await fetch(`${baseUrl}/console/timeline?identity=${encodeURIComponent(agentIdentity)}&mode=recent&limit=1000`, { signal });
+      assert.equal(response.status, 200);
+      return response.json();
+    },
+    async durableHistory(frames, { signal } = {}) {
+      const sessions = [...new Set(frames.filter(frame => frame.identity === agentIdentity && frame.session_id).map(frame => frame.session_id))];
+      assert(sessions.length > 0, "canonical runtime frames identify the actual session to read");
+      return Promise.all(sessions.map(async sessionId => {
+        const response = await fetch(`${backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(sessionId)}`, { signal });
+        assert.equal(response.status, 200, "fixture-only reader returns actual runtime session history");
+        return response.json();
+      }));
+    },
+  };
+}
+
 function assertStartupRendering(rendered, owners) {
   const replies = rendered.quotes.filter(quote => quote.source === source);
   assert.equal(replies.length, owners.length, "one complete startup reply per actual canonical run");
@@ -106,20 +185,7 @@ async function startupLineage(host) {
       result.expectedCancellations.push({ ...detail, reason: allowance });
     } else result.errors.push(detail);
   });
-  async function timeline() {
-    const response = await fetch(`${fixture.baseUrl}/console/timeline?identity=${encodeURIComponent(agentIdentity)}&mode=recent&limit=1000`);
-    assert.equal(response.status, 200);
-    return response.json();
-  }
-  async function durableHistory(frames) {
-    const sessions = [...new Set(frames.filter(frame => frame.identity === agentIdentity && frame.session_id).map(frame => frame.session_id))];
-    assert(sessions.length > 0, "canonical runtime frames identify the actual session to read");
-    return Promise.all(sessions.map(async sessionId => {
-      const response = await fetch(`${fixture.backendUrl}/__fixture/session-history?session_id=${encodeURIComponent(sessionId)}`);
-      assert.equal(response.status, 200, "fixture-only reader returns actual runtime session history");
-      return response.json();
-    }));
-  }
+  const { timeline, durableHistory } = startupLineageReaders(fixture);
   async function open(reload = false) {
     allowance = "initialization";
     if (reload) await page.reload(); else await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/console"));
@@ -152,10 +218,27 @@ async function startupLineage(host) {
     return rendered;
   }
   try {
+    // Kickoff notifications only reach peers already wired at that instant.
+    // Request the report explicitly after readiness and retain its real receipt.
+    result.startupRequest = {
+      identity: agentIdentity, origin: "console:startup-lineage-acceptance", origin_kind: "operator",
+      content: "Give the startup report for this console session.", idempotency_key: randomUUID(), handling_mode: "queue",
+    };
+    result.startupSend = await rpc(fixture.baseUrl, "mobkit/console/send", result.startupRequest);
+    assert.equal(result.startupSend.status, 200);
+    assert(result.startupSend.body.result?.interaction_id && result.startupSend.body.result?.input_frame_id,
+      JSON.stringify(result.startupSend.body));
+    result.startupAccepted = result.startupSend.body.result;
     await open();
-    result.initialFrames = (await timeline()).frames;
-    result.initialHistory = await durableHistory(result.initialFrames);
-    result.initialOwners = assertStartupLineage(result.initialFrames, result.initialHistory);
+    const initial = await waitForStartupLineage({
+      timeline, durableHistory, expectedInteractionId: result.startupAccepted.interaction_id,
+      onObservation: ({ frames, history }) => {
+        result.initialFrames = frames;
+        if (history) result.initialHistory = history;
+        else delete result.initialHistory;
+      },
+    });
+    result.initialOwners = initial.owners;
     await inspect("initial", result.initialOwners);
     result.snapshot = await snapshot(fixture.backendUrl, `?identity=${encodeURIComponent(agentIdentity)}`);
     const snapshotFrames = result.snapshot.flatMap(item => item.data?.frame ? [item.data.frame] : []);
@@ -214,5 +297,5 @@ async function startupLineage(host) {
 }
 
 const scenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-startup-lineage`, family: "real-presentation", backend: "real", run: () => startupLineage(host) }));
-module.exports = { scenarios, assertStartupLineage, assertStartupRendering, source };
+module.exports = { scenarios, assertStartupLineage, assertStartupRendering, waitForStartupLineage, startupLineageReaders, source };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
