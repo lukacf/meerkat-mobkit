@@ -104,6 +104,19 @@ fn classify_submit_mob_error(
     deadline: &ActorAdmissionDeadline,
 ) -> BridgeError {
     match error {
+        // meerkat's pre-admission carrier refusal for the member's actual
+        // runtime mode (for example a completion-bearing admission to an
+        // autonomous_host member). Typed, so a tracked delivery can fall back
+        // to the ingress lane on the variant, never on its text.
+        meerkat_mob::MobError::UnsupportedForMode { mode, reason } => {
+            BridgeError::UnsupportedForMode {
+                identity: member_id.clone(),
+                mode,
+                // meerkat's own rendering ("unsupported for runtime mode
+                // {mode}: {reason}"), so the message is unchanged.
+                detail: meerkat_mob::MobError::UnsupportedForMode { mode, reason }.to_string(),
+            }
+        }
         // meerkat 0.8.34: the durability-degraded refusal is typed at the mob
         // boundary. Matched BEFORE the text fallback so the reason text can
         // change without losing the class.
@@ -570,6 +583,18 @@ pub enum BridgeError {
     HostHumanInput(HostHumanInputError),
     /// The underlying mob operation failed.
     Mob(String),
+    /// meerkat refused the delivery's carriers for the member's ACTUAL runtime
+    /// mode, before admission, so nothing was delivered
+    /// (`MobError::UnsupportedForMode`, read typed). `mode` is meerkat's, from
+    /// the member's roster entry, and can differ from the mode MobKit resolves
+    /// from the current profile when that profile changed without a respawn.
+    /// `detail` is meerkat's rendering, shown exactly as the untyped mob error
+    /// was.
+    UnsupportedForMode {
+        identity: MobAgentIdentity,
+        mode: meerkat_mob::MobRuntimeMode,
+        detail: String,
+    },
     /// A required field was missing or invalid.
     InvalidInput(String),
     /// Resume was rejected while a durable session row exists. The identity →
@@ -757,7 +782,9 @@ impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HostHumanInput(error) => write!(f, "{error}"),
-            Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
+            Self::Mob(msg) | Self::UnsupportedForMode { detail: msg, .. } => {
+                write!(f, "session bridge mob error: {msg}")
+            }
             Self::CompletionFailed(msg) => write!(
                 f,
                 "session bridge turn was admitted and then failed: {msg}; the turn RAN - \
@@ -882,6 +909,18 @@ pub enum BridgeAdmissionError {
     CompletionUnsupported(String),
     /// The underlying mob operation failed before a receipt was observed.
     Mob(String),
+    /// meerkat refused the delivery's carriers for the member's ACTUAL runtime
+    /// mode, before admission, so nothing was delivered
+    /// (`MobError::UnsupportedForMode`, read typed). `mode` is meerkat's, from
+    /// the member's roster entry, and can differ from the mode MobKit resolves
+    /// from the current profile when that profile changed without a respawn.
+    /// `detail` is meerkat's rendering, shown exactly as the untyped mob error
+    /// was.
+    UnsupportedForMode {
+        identity: MobAgentIdentity,
+        mode: meerkat_mob::MobRuntimeMode,
+        detail: String,
+    },
     /// A required field was missing or invalid before admission.
     InvalidInput(String),
     /// Resume was rejected before the delivery could be admitted.
@@ -959,7 +998,9 @@ impl std::fmt::Display for BridgeAdmissionError {
                 "session bridge does not support completion-bearing delivery: {msg}; \
                  nothing was submitted"
             ),
-            Self::Mob(msg) => write!(f, "session bridge mob error before receipt: {msg}"),
+            Self::Mob(msg) | Self::UnsupportedForMode { detail: msg, .. } => {
+                write!(f, "session bridge mob error before receipt: {msg}")
+            }
             Self::InvalidInput(msg) => {
                 write!(f, "session bridge invalid input before admission: {msg}")
             }
@@ -1048,6 +1089,15 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::HostHumanInput(error) => Self::HostHumanInput(error),
             BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
             BridgeError::Mob(detail) => Self::Mob(detail),
+            BridgeError::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            } => Self::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            },
             BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
             // The registration reload surfaced the same typed fact the resume
@@ -1143,6 +1193,15 @@ impl From<BridgeAdmissionError> for BridgeError {
                 Self::CompletionUnsupported(detail)
             }
             BridgeAdmissionError::Mob(detail) => Self::Mob(detail),
+            BridgeAdmissionError::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            } => Self::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            },
             BridgeAdmissionError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeAdmissionError::ResumeRejected { kind, detail } => {
                 Self::ResumeRejected { kind, detail }
@@ -1895,6 +1954,57 @@ enum BridgeSubmitMode {
     CompletionBearing,
 }
 
+/// What a completion-bearing receipt yields once its turn is terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptOutput {
+    /// Only the terminal ([`BridgeTurnReceipt::wait`]).
+    Terminal,
+    /// The terminal plus the turn's own output, projected from its committed
+    /// run result ([`BridgeTurnReceipt::wait_with_output`]).
+    TurnOutput,
+}
+
+/// The admitted turn's own output: meerkat's bounded projection of THIS work
+/// item's committed run result.
+///
+/// A successful terminal WITHOUT a run result (`CompletedWithoutResult`) is
+/// NOT "no text". meerkat reports it when the input was consumed without a
+/// run of its own: folded into a run already in progress (a live-boundary
+/// join) or deduplicated onto an earlier admission whose turn had already
+/// ended (meerkat-runtime `CompletionOutcome::CompletedWithoutResult`: "the
+/// input was consumed but produced no RunResult"). It is reported as
+/// [`TurnOutput::NoOwnResult`](super::types::TurnOutput::NoOwnResult), so a
+/// deduplicated re-admission can never overwrite or impersonate the output of
+/// the turn that did run.
+async fn project_turn_output(
+    turn: meerkat_mob::WorkTurnHandle,
+    spec: meerkat_mob::BoundedResultSpec,
+) -> Result<super::types::TurnOutput, String> {
+    match turn.wait_bounded(spec).await {
+        Ok(result) => {
+            let bounded = result.result().result();
+            let text = bounded.text();
+            Ok(if text.is_empty() {
+                super::types::TurnOutput::Empty
+            } else {
+                super::types::TurnOutput::Text {
+                    text: text.to_string(),
+                    truncated: matches!(
+                        bounded.status(),
+                        meerkat_mob::BoundedHelperResultStatus::CompletedTruncated
+                    ),
+                }
+            })
+        }
+        Err(error) => match error.failure() {
+            meerkat_mob::BoundedTurnFailure::CompletedWithoutResult { .. } => {
+                Ok(super::types::TurnOutput::NoOwnResult)
+            }
+            _ => Err(error.to_string()),
+        },
+    }
+}
+
 /// Admit one internal bridge delivery.
 ///
 /// [`BridgeSubmitMode::AdmissionOnly`] is the ingress-only path and is
@@ -2002,6 +2112,41 @@ async fn submit_internal_bridge_work(
         });
     }
     if matches!(mode, BridgeSubmitMode::CompletionBearing) {
+        // meerkat refuses a completion sender for an autonomous_host member's
+        // conversational work (`validate_member_turn_carriers`: "tracked turn
+        // completion is not supported by autonomous inbox delivery"). Decide
+        // from the LIVE roster entry, the value meerkat checks: it is fixed at
+        // spawn and kept on restore, so it can differ from MobKit's desired
+        // spec (a same-profile override hot reload, a repair respawn that
+        // drops the override, a profile MobKit cannot read). Refused typed
+        // BEFORE anything is submitted, so a tracked delivery falls back to
+        // the ingress lane; meerkat's own refusal stays the backstop.
+        if entry.runtime_mode == meerkat_mob::MobRuntimeMode::AutonomousHost {
+            return Err(BridgeError::UnsupportedForMode {
+                identity: member_id.clone(),
+                mode: entry.runtime_mode,
+                detail: meerkat_mob::MobError::UnsupportedForMode {
+                    mode: entry.runtime_mode,
+                    reason: "tracked turn completion is not supported by autonomous inbox \
+                             delivery"
+                        .to_string(),
+                }
+                .to_string(),
+            });
+        }
+        // meerkat 0.8.43 has no deadline-taking `start_work*` variant, and it
+        // needs none here: the stale-queued-work protection the
+        // `submit_work*_bounded` verbs below give is reached the same way on
+        // this path. On timeout `deadline.bound` DROPS the admission future;
+        // `start_work*` sends its `SubmitWork` from a task spawned by
+        // `meerkat_runtime::stack_relief::relieve_caller_stack`, whose
+        // `AbortOnDrop` guard aborts that task and so drops the reply
+        // receiver; and the mob actor skips a `SubmitWork` whose reply channel
+        // is closed before dispatch, recording no ingress ("the caller left
+        // between dequeue and dispatch", meerkat-mob actor.rs). The bounded
+        // submit verbs reach the same skip by dropping their receiver on their
+        // own reply deadline. Neither can retract an admission the actor has
+        // already dispatched, so neither timeout proves nonexecution.
         let turn = match work.delivery_identity {
             Some(delivery_identity) => deadline
                 .bound(
@@ -2421,8 +2566,11 @@ pub struct BridgeTurnReceipt {
     session_result: Result<meerkat_core::types::SessionId, String>,
     /// `'static` because the receipt is held across an UNLOCK, so it must not
     /// borrow from the bridge or from any guard. `Send` because the runtime's
-    /// send future must stay `Send`.
-    completion: std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>,
+    /// send future must stay `Send`. Yields the turn's own output when the
+    /// receipt was built with [`Self::with_output`], `None` otherwise.
+    completion: std::pin::Pin<
+        Box<dyn Future<Output = Result<Option<super::types::TurnOutput>, String>> + Send + 'static>,
+    >,
 }
 
 impl std::fmt::Debug for BridgeTurnReceipt {
@@ -2454,9 +2602,34 @@ impl BridgeTurnReceipt {
     {
         Self {
             session_result: session_result.map_err(|error| error.to_string()),
-            completion: Box::pin(
-                async move { completion.await.map_err(|error| error.to_string()) },
-            ),
+            completion: Box::pin(async move {
+                completion
+                    .await
+                    .map(|()| None)
+                    .map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    /// [`Self::new`] for a completion that also yields the admitted turn's own
+    /// output, read by [`Self::wait_with_output`].
+    pub fn with_output<F, ResolutionError, CompletionError>(
+        session_result: Result<meerkat_core::types::SessionId, ResolutionError>,
+        completion: F,
+    ) -> Self
+    where
+        F: Future<Output = Result<super::types::TurnOutput, CompletionError>> + Send + 'static,
+        ResolutionError: std::fmt::Display,
+        CompletionError: std::fmt::Display,
+    {
+        Self {
+            session_result: session_result.map_err(|error| error.to_string()),
+            completion: Box::pin(async move {
+                completion
+                    .await
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            }),
         }
     }
 
@@ -2466,6 +2639,27 @@ impl BridgeTurnReceipt {
     /// decide it failed, and return without awaiting the running turn.
     pub fn resolved_session(&self) -> Option<&meerkat_core::types::SessionId> {
         self.session_result.as_ref().ok()
+    }
+
+    /// Why post-admission session resolution failed, if it did. Read-only,
+    /// like [`Self::resolved_session`].
+    pub fn session_resolution_error(&self) -> Option<&str> {
+        self.session_result.as_ref().err().map(String::as_str)
+    }
+
+    /// Await this turn's terminal and return its own outcome and output,
+    /// INDEPENDENT of post-admission session resolution.
+    ///
+    /// The per-turn output comes from the turn's exact completion and never
+    /// needs the session id; resolution only feeds session reconciliation, and
+    /// a caller that reads it separately ([`Self::session_resolution_error`])
+    /// reports that failure on its own channel. So a turn that ran and
+    /// succeeded is reported as such even when its session could not be
+    /// projected, instead of as a failure a retrying caller would run twice.
+    pub async fn wait_turn_output(self) -> Result<super::types::TurnOutput, String> {
+        self.completion
+            .await
+            .map(|output| output.unwrap_or(super::types::TurnOutput::Unavailable))
     }
 
     /// Await this turn's terminal, then map the (resolution, terminal) pair.
@@ -2480,14 +2674,29 @@ impl BridgeTurnReceipt {
     /// There is no early return: the turn is already running, so its terminal
     /// is always awaited before any error is produced.
     pub async fn wait(self) -> Result<meerkat_core::types::SessionId, BridgeTurnError> {
+        self.wait_with_output()
+            .await
+            .map(|(session_id, _output)| session_id)
+    }
+
+    /// [`Self::wait`], also returning the turn's own output
+    /// ([`TurnOutput::Unavailable`](super::types::TurnOutput::Unavailable)
+    /// when the receipt was built with [`Self::new`], i.e. the bridge cannot
+    /// report per-turn output). Same (resolution, terminal) mapping.
+    pub async fn wait_with_output(
+        self,
+    ) -> Result<(meerkat_core::types::SessionId, super::types::TurnOutput), BridgeTurnError> {
         let terminal_result = self.completion.await;
         match (self.session_result, terminal_result) {
-            (Ok(session_id), Ok(())) => Ok(session_id),
+            (Ok(session_id), Ok(output)) => Ok((
+                session_id,
+                output.unwrap_or(super::types::TurnOutput::Unavailable),
+            )),
             (Ok(_), Err(err)) => Err(BridgeTurnError::CompletionFailed(err)),
             (Err(resolve_err), Err(err)) => Err(BridgeTurnError::CompletionFailed(format!(
                 "{err}; post-admission session resolution also failed: {resolve_err}"
             ))),
-            (Err(resolve_err), Ok(())) => {
+            (Err(resolve_err), Ok(_)) => {
                 Err(BridgeTurnError::PostAdmissionResolutionFailed(resolve_err))
             }
         }
@@ -2766,6 +2975,40 @@ pub trait SessionBridge: Send + Sync {
     ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
         Err(BridgeAdmissionError::CompletionUnsupported(
             "this bridge implements ingress-only delivery".to_string(),
+        ))
+    }
+
+    /// Whether [`Self::begin_delivery_with_output`] is implemented: turns this
+    /// bridge admits can report their own output, so a delivery can be
+    /// tracked by ticket. The identity runtime decides the lane from this
+    /// before delivering, so an untracked bridge is never attempted and then
+    /// retried.
+    fn tracks_turn_output(&self) -> bool {
+        false
+    }
+
+    /// Admit `delivery` and hand back a receipt whose completion carries the
+    /// admitted turn's own output ([`BridgeTurnReceipt::wait_turn_output`]).
+    ///
+    /// The receipt holds the admitted turn's own completion, so the output
+    /// comes from that turn's committed run result, never from the session's
+    /// latest text, and never needs the delivery's `interaction_id` to name
+    /// the turn (the caller's interaction id rides unchanged). A successful
+    /// terminal without a run result of its own is
+    /// [`TurnOutput::NoOwnResult`](super::types::TurnOutput::NoOwnResult),
+    /// never an empty output. Same admission contract as
+    /// [`Self::begin_awaiting_commit`]; the receipt is awaited later, outside
+    /// any lock.
+    ///
+    /// Defaults to [`BridgeAdmissionError::CompletionUnsupported`] BEFORE any
+    /// delivery, matching [`Self::tracks_turn_output`]'s `false`.
+    async fn begin_delivery_with_output(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _delivery: BridgeDelivery,
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        Err(BridgeAdmissionError::CompletionUnsupported(
+            "this bridge cannot report per-turn output".to_string(),
         ))
     }
 
@@ -5819,7 +6062,13 @@ impl SessionBridge for MobSessionBridge {
         // an immediate Ok and propagating the resolution result here drops
         // nothing. Identical to the pre-receipt behaviour.
         let receipt = self
-            .deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly, None)
+            .deliver_admitted_inner(
+                runtime_id,
+                delivery,
+                BridgeSubmitMode::AdmissionOnly,
+                None,
+                ReceiptOutput::Terminal,
+            )
             .await
             .map_err(BridgeError::from)?;
         receipt.wait().await.map_err(BridgeError::from)
@@ -5837,6 +6086,7 @@ impl SessionBridge for MobSessionBridge {
                 delivery,
                 BridgeSubmitMode::AdmissionOnly,
                 Some(expected_session),
+                ReceiptOutput::Terminal,
             )
             .await
             .map_err(BridgeError::from)?;
@@ -5866,6 +6116,26 @@ impl SessionBridge for MobSessionBridge {
             delivery,
             BridgeSubmitMode::CompletionBearing,
             None,
+            ReceiptOutput::Terminal,
+        )
+        .await
+    }
+
+    fn tracks_turn_output(&self) -> bool {
+        true
+    }
+
+    async fn begin_delivery_with_output(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        delivery: BridgeDelivery,
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        self.deliver_admitted_inner(
+            runtime_id,
+            delivery,
+            BridgeSubmitMode::CompletionBearing,
+            None,
+            ReceiptOutput::TurnOutput,
         )
         .await
     }
@@ -6136,7 +6406,20 @@ impl MobSessionBridge {
         delivery: BridgeDelivery,
         mode: BridgeSubmitMode,
         host_human_session: Option<&meerkat_core::SessionId>,
+        output: ReceiptOutput,
     ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        // Validated before anything is submitted, so an invalid projection can
+        // never cost an admitted turn.
+        let output_spec = match output {
+            ReceiptOutput::Terminal => None,
+            ReceiptOutput::TurnOutput => Some(
+                meerkat_mob::BoundedResultSpec::new(
+                    "turn_output",
+                    super::types::TURN_OUTPUT_MAX_BYTES,
+                )
+                .map_err(|error| BridgeAdmissionError::Mob(error.to_string()))?,
+            ),
+        };
         let content = &delivery.content;
         let handling_mode = delivery.handling_mode;
         let system_prompt = delivery.system_prompt.as_deref();
@@ -6230,6 +6513,11 @@ impl MobSessionBridge {
             // Per-member backpressure: the member is healthy, its lane is full.
             // Retryable by the caller; never repair, never reload.
             Err(err @ BridgeError::AdmissionBacklogFull { .. }) => return Err(err.into()),
+            // meerkat refused the carriers for the member's actual runtime
+            // mode before admission. Nothing is stale and nothing was
+            // delivered: hand it up typed so a tracked delivery can fall back
+            // to the ingress lane; never repair, never `Mob(String)`.
+            Err(err @ BridgeError::UnsupportedForMode { .. }) => return Err(err.into()),
             Err(err)
                 if host_human_session.is_none()
                     && is_repairable_bridge_delivery_error(&err.to_string()) =>
@@ -6288,15 +6576,24 @@ impl MobSessionBridge {
             )
             .await;
 
-        Ok(BridgeTurnReceipt::new(session_result, async move {
-            match pending_turn {
-                // The LLM turn. Awaited by the CALLER, after it has released
-                // whatever lock it holds - never here, never under a lock.
-                Some(turn) => turn.wait().await.map(|_| ()).map_err(|err| err.to_string()),
-                // Admission-only: nothing to wait for.
-                None => Ok::<(), String>(()),
-            }
-        }))
+        match (pending_turn, output_spec) {
+            // The LLM turn and its own output. Awaited by the CALLER, after it
+            // has released whatever lock it holds.
+            (Some(turn), Some(spec)) => Ok(BridgeTurnReceipt::with_output(
+                session_result,
+                project_turn_output(turn, spec),
+            )),
+            (pending_turn, _) => Ok(BridgeTurnReceipt::new(session_result, async move {
+                match pending_turn {
+                    // The LLM turn. Awaited by the CALLER, after it has
+                    // released whatever lock it holds - never here, never
+                    // under a lock.
+                    Some(turn) => turn.wait().await.map(|_| ()).map_err(|err| err.to_string()),
+                    // Admission-only: nothing to wait for.
+                    None => Ok::<(), String>(()),
+                }
+            })),
+        }
     }
 }
 

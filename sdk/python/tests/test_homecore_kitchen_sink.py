@@ -1,14 +1,14 @@
 """HomeCore Kitchen Sink: School Closure + Calendar Conflict + Household Coordination.
 
-Exercises the identity-first control plane on top of real autonomous multi-agent
+Exercises the identity-first control plane on top of real multi-agent
 coordination: triage receives connector events and fans out to domain agents via
 comms, gate evaluates proposed actions, family-facing delivery goes to addressable
 identities. Runtime shutdown/restore, respawn, and roster reconciliation happen
 mid-incident.
 
-Agents run in autonomous mode (the default) with comms wiring via role_wiring
-rules. The test dispatches events to triage and waits for the agent graph to
-process — agents use the comms `send` tool to coordinate, not test puppeting.
+Agents explicitly use turn_driven mode, matching HomeCore, with comms wiring via
+role_wiring rules. The test dispatches events to triage and waits for the agent
+graph to process - agents use the comms `send` tool to coordinate.
 
 Run:
     PYTHONPATH=sdk/python ANTHROPIC_API_KEY=... \
@@ -21,8 +21,10 @@ import copy
 import json
 import os
 import re
+import warnings
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 import pytest
 
@@ -32,7 +34,7 @@ from meerkat_mobkit.identity_first_models import (
     DurableAgentSpec,
     ManagedPeerEdge,
 )
-from meerkat_mobkit.errors import RpcError
+from meerkat_mobkit.errors import RpcError, TurnTrackingUnavailableWarning
 
 # ---------------------------------------------------------------------------
 # Environment / skip helpers
@@ -74,7 +76,7 @@ _skip_no_binary = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Mob definition — autonomous agents with comms wiring
+# Mob definition - turn-driven agents with comms wiring
 # ---------------------------------------------------------------------------
 
 _HOUSEHOLD_MOB_TOML = """\
@@ -110,12 +112,13 @@ a = "gate"
 b = "family_group"
 
 # --- Profiles ---
-# All profiles use autonomous_host mode (the default). When a message is injected
-# via the identity-first bridge, the autonomous loop picks it up and processes it.
-# Agents can use the comms send tool to forward messages to wired peers.
+# All profiles explicitly use turn_driven mode, matching HomeCore. The runtime
+# schedules admitted messages as turns. Agents can use the comms send tool to
+# forward messages to wired peers.
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["personal_role"]
 external_addressable = true
 
@@ -125,6 +128,7 @@ comms = true
 
 [profiles.family_group]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["family_group_role"]
 external_addressable = true
 
@@ -134,6 +138,7 @@ comms = true
 
 [profiles.triage]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["triage_role"]
 external_addressable = false
 
@@ -143,6 +148,7 @@ comms = true
 
 [profiles.school]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["school_role"]
 external_addressable = false
 
@@ -152,6 +158,7 @@ comms = true
 
 [profiles.calendar]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["calendar_role"]
 external_addressable = false
 
@@ -161,6 +168,7 @@ comms = true
 
 [profiles.gate]
 model = "claude-sonnet-4-5"
+runtime_mode = "turn_driven"
 skills = ["gate_role"]
 external_addressable = false
 
@@ -548,6 +556,28 @@ async def _send_console_and_wait(runtime, identity, session_id, content, key, *,
     )
 
 
+async def _dispatch_sdk_and_wait(agent, dispatch_input, *, deadline):
+    """Require this fixture's admission ticket under the phase's total budget."""
+    remaining = max(0, deadline - _timeline_time())
+    admission = await asyncio.wait_for(
+        agent.dispatch(dispatch_input, track_turn=True), timeout=remaining,
+    )
+    ticket = getattr(admission, "turn_ticket", None)
+    assert isinstance(ticket, str) and ticket, (
+        f"dispatch returned no turn ticket: {getattr(admission, 'turn_unavailable', None)}"
+    )
+    try:
+        UUID(ticket)
+    except ValueError as error:
+        raise AssertionError(f"dispatch returned malformed turn ticket: {ticket!r}") from error
+    # Ticket ownership comes from the admission receipt. Correlation remains
+    # the independent committed-history oracle; never derive one from the other.
+    remaining = max(0, deadline - _timeline_time())
+    return await asyncio.wait_for(
+        agent.wait_for_output(turn=ticket, timeout=remaining), timeout=remaining,
+    )
+
+
 async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *, timeout):
     """Exercise the public SDK waiter and verify its output against committed history.
 
@@ -556,7 +586,11 @@ async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *,
     reply returned by the SDK is an assertion failure, never a substitute result.
     """
     deadline = _timeline_time() + timeout
-    sdk_output = await asyncio.wait_for(agent.send_and_wait(content, timeout=timeout), timeout=timeout)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TurnTrackingUnavailableWarning)
+        sdk_output = await asyncio.wait_for(
+            agent.send_and_wait(content, timeout=timeout), timeout=timeout,
+        )
 
     def committed(frames):
         inputs = [frame for frame in frames if (
@@ -979,6 +1013,138 @@ async def test_kitchen_sdk_completion_must_match_the_requested_committed_run(mon
     assert calls == [("Unique SDK input", 60)]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ticket", [
+    None, "", 17, "not-a-uuid", "adc2b7b0-f82a-44f4-a452-c01dd93f75b7",
+], ids=["missing", "empty", "wrong-type", "malformed-uuid", "opaque-ticket"])
+async def test_kitchen_dispatch_requires_its_ticket_and_one_deadline(monkeypatch, ticket):
+    from types import SimpleNamespace
+    clock = [0.0]
+    calls = []
+    wait_budgets = []
+    original_wait_for = asyncio.wait_for
+
+    async def timed_wait(awaitable, timeout):
+        wait_budgets.append(timeout)
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    async def dispatch(dispatch_input, *, track_turn):
+        calls.append(("dispatch", dispatch_input, track_turn))
+        clock[0] = 5
+        return SimpleNamespace(turn_ticket=ticket, turn_unavailable="unsupported bridge")
+
+    async def wait_for_output(*, turn, timeout):
+        calls.append(("wait", turn, timeout))
+        clock[0] = 15
+        return "incident processed"
+
+    async def read_page(runtime, params, remaining):
+        assert remaining == 45
+        return {"frames": _interaction_fixture(interaction=_SCHOOL_DISPATCH_ID),
+                "exhausted": True}
+
+    monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    monkeypatch.setattr(asyncio, "wait_for", timed_wait)
+    dispatch_input = DispatchInput(
+        content="School closed", origin="connector", correlation_id=_SCHOOL_DISPATCH_ID,
+        idempotency_key="school:school-closure-1",
+    )
+    agent = SimpleNamespace(dispatch=dispatch, wait_for_output=wait_for_output)
+    operation = _dispatch_sdk_and_wait(agent, dispatch_input, deadline=60)
+    if ticket != "adc2b7b0-f82a-44f4-a452-c01dd93f75b7":
+        with pytest.raises(AssertionError, match="turn ticket"):
+            await operation
+        assert calls == [("dispatch", dispatch_input, True)]
+        assert wait_budgets == [60]
+        return
+
+    assert ticket != dispatch_input.correlation_id
+    output = await operation
+    result = await _wait_for_timeline(
+        object(), "triage:main",
+        lambda frames: _completed_interaction(
+            frames, "triage:main", "triage-session", _SCHOOL_DISPATCH_ID,
+        ),
+        deadline=60,
+    )
+    assert output == result["output"]
+    assert calls == [("dispatch", dispatch_input, True), ("wait", ticket, 55)]
+    assert wait_budgets == [60, 55, 45]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_input", [False, True])
+async def test_kitchen_sdk_ticket_ignores_identical_foreign_output(monkeypatch, duplicate_input):
+    from functools import partial
+    from meerkat_mobkit.runtime import IdentityAgentHandle
+    from .test_identity_first_turn_tickets import (
+        TicketTransport, _completed, _inspection, _make_runtime, _sent,
+    )
+    ticket = "ac8832d0-ce0e-43cb-810a-fbd30f65be4f"
+    requested_interaction = "e2b7d28d-4108-4425-a6a6-3e77eb2b33c2"
+    transport = TicketTransport(
+        sends=[_sent(ticket)],
+        turn_results={ticket: [{"state": "pending"}, _completed("incident processed")]},
+        inspections=[_inspection("incident processed", turns=2)],
+    )
+    handle = IdentityAgentHandle(_make_runtime(transport), "identity:luka")
+    monkeypatch.setattr(handle, "send_and_wait", partial(handle.send_and_wait, poll_interval=0.001))
+
+    async def read_page(runtime, params, remaining):
+        assert len(transport.params_of("mobkit/turn_result")) == 2
+        frames = _interaction_fixture("identity:luka", "luka-session", "previous-input", "previous-run")
+        frames += _interaction_fixture("identity:luka", "luka-session", requested_interaction, "requested-run")
+        for interaction, content in [
+            ("previous-input", "Unique SDK input" if duplicate_input else "Earlier input"),
+            (requested_interaction, "Unique SDK input"),
+        ]:
+            frames.append({"id": f"user-{interaction}", "identity": "identity:luka",
+                           "session_id": "luka-session", "interaction_id": interaction,
+                           "kind": "user_input", "source": {"kind": "session_history"},
+                           "payload": {"content": content}})
+        return {"frames": frames, "exhausted": True}
+
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    operation = _send_sdk_and_verify(
+        object(), handle, "identity:luka", "luka-session", "Unique SDK input", timeout=60,
+    )
+    if duplicate_input:
+        with pytest.raises(AssertionError, match="admitted more than once"):
+            await operation
+    else:
+        assert (await operation)["run_id"] == "requested-run"
+    assert transport.params_of("mobkit/send")[0]["track_turn"] is True
+    assert transport.params_of("mobkit/inspect_identity") == []
+    assert transport.params_of("mobkit/turn_result") == [
+        {"identity": "identity:luka", "ticket": ticket},
+        {"identity": "identity:luka", "ticket": ticket},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kitchen_sdk_rejects_cursor_fallback_even_with_matching_output(monkeypatch):
+    from meerkat_mobkit.runtime import IdentityAgentHandle
+    from .test_identity_first_turn_tickets import TicketTransport, _inspection, _make_runtime, _sent
+    transport = TicketTransport(
+        sends=[_sent(None)],
+        inspections=[_inspection("incident processed", turns=1)],
+    )
+    handle = IdentityAgentHandle(_make_runtime(transport), "identity:luka")
+
+    async def read_page(*args):
+        pytest.fail("an untracked send must fail before any history comparison")
+
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    with pytest.raises(TurnTrackingUnavailableWarning):
+        await _send_sdk_and_verify(
+            object(), handle, "identity:luka", "luka-session", "Unique SDK input", timeout=60,
+        )
+    assert transport.params_of("mobkit/send")[0]["track_turn"] is True
+    assert transport.params_of("mobkit/inspect_identity") == []
+    assert transport.params_of("mobkit/turn_result") == []
+
+
 # ===========================================================================
 # THE KITCHEN SINK
 # ===========================================================================
@@ -990,7 +1156,7 @@ class TestHouseholdIncident:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(300)
-    async def test_school_closure_with_autonomous_coordination(self, tmp_path):
+    async def test_school_closure_with_turn_driven_coordination(self, tmp_path):
         state_dir = str(tmp_path / "state")
         os.makedirs(state_dir, exist_ok=True)
 
@@ -1045,22 +1211,19 @@ class TestHouseholdIncident:
                 await rt.send("gate:main", "should fail")
             print("[Phase 1] InternalOnly enforcement OK for triage, school, gate")
 
-            # Wait for autonomous kickoff turns to complete
-            await rt.wait_until_ready([
-                "triage:main", "domain:school", "domain:calendar",
-                "gate:main", "identity:luka", "identity:louise",
-                "family-group:main",
-            ], timeout=30)
+            # Turn-driven members are ready before they complete any work.
+            startup = await rt.wait_identity_bootstrap(
+                target="startup_ready", timeout=30
+            )
+            assert startup.startup_ready is True, startup.to_dict()
 
             # =============================================================
             # Phase 2: School closure → triage → ASSERT domain fan-out
             # =============================================================
-            print("\n--- Phase 2: School closure + autonomous fan-out ---")
+            print("\n--- Phase 2: School closure + peer fan-out ---")
 
             triage_deadline = _timeline_time() + 90
-            school_baseline = (await school.inspect()).completion_cursor
-            assert school_baseline is not None
-            triage_admission = await asyncio.wait_for(triage.dispatch(DispatchInput(
+            triage_sdk_output = await _dispatch_sdk_and_wait(triage, DispatchInput(
                 content=(
                     "URGENT from school connector: Hillside Elementary closed tomorrow "
                     "due to pipe burst. All students must stay home. This affects the "
@@ -1069,12 +1232,7 @@ class TestHouseholdIncident:
                 origin="connector",
                 correlation_id=_SCHOOL_DISPATCH_ID,
                 idempotency_key="school:school-closure-1",
-            )), timeout=max(0, triage_deadline - _timeline_time()))
-
-            triage_sdk_output = await triage.wait_for_output(
-                after=triage_admission.completion_baseline,
-                timeout=max(0, triage_deadline - _timeline_time()),
-            )
+            ), deadline=triage_deadline)
             # Independently require this dispatch's committed run and accepted
             # school send. Another completion returned by the SDK must fail.
             fanout = await _wait_for_timeline(
@@ -1090,7 +1248,6 @@ class TestHouseholdIncident:
             # Match the accepted envelope's interaction, then insist the exact
             # incident and assistant output are committed within the same budget.
             school_deadline = _timeline_time() + 60
-            school_sdk_output = await school.wait_for_output(after=school_baseline, timeout=60)
             school_result = await _wait_for_timeline(
                 rt, "domain:school",
                 lambda frames: _school_incident_result(
@@ -1098,7 +1255,6 @@ class TestHouseholdIncident:
                 ),
                 deadline=school_deadline,
             )
-            assert school_sdk_output == school_result["output"], "SDK school waiter returned an unrelated turn"
             received = school_result["incident_history"]
             print(f"[Phase 2] school accepted triage incident in history frame {received['id']}")
             print(f"[Phase 2] domain:school received comms: {school_result['output']}")
@@ -1119,18 +1275,16 @@ class TestHouseholdIncident:
 
             # Dispatch to gate for policy evaluation
             gate_deadline = _timeline_time() + 60
-            gate_admission = await asyncio.wait_for(gate.dispatch_text(
-                "Proposed action: notify family group that school is closed tomorrow "
-                "and Luka's dentist at 09:00 conflicts with childcare. "
-                "Evaluate whether this notification is appropriate to send.",
+            gate_sdk_output = await _dispatch_sdk_and_wait(gate, DispatchInput(
+                content=(
+                    "Proposed action: notify family group that school is closed tomorrow "
+                    "and Luka's dentist at 09:00 conflicts with childcare. "
+                    "Evaluate whether this notification is appropriate to send."
+                ),
                 origin="system",
                 correlation_id=_GATE_DISPATCH_ID,
                 idempotency_key="school:gate-evaluation-1",
-            ), timeout=max(0, gate_deadline - _timeline_time()))
-            gate_sdk_output = await gate.wait_for_output(
-                after=gate_admission.completion_baseline,
-                timeout=max(0, gate_deadline - _timeline_time()),
-            )
+            ), deadline=gate_deadline)
             gate_result = await _wait_for_timeline(
                 rt, "gate:main",
                 lambda frames: _completed_interaction(
@@ -1192,9 +1346,8 @@ class TestHouseholdIncident:
                 )
             print("[Phase 5] All 7 actors restored with stable IDs")
 
-            # A resumed member does not replay its one-time kickoff turn.
-            # Wait on the typed lifecycle readiness barrier rather than output
-            # previews, which may stay empty until fresh work is delivered.
+            # Wait on the same typed lifecycle readiness barrier after restore.
+            # Output previews may stay empty until fresh work is delivered.
             startup = await rt2.wait_identity_bootstrap(
                 target="startup_ready", timeout=30
             )

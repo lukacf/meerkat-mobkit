@@ -101,6 +101,7 @@ export type {
   JobsListOptions,
   JobSubscriptionOptions,
   MonitorStartOptions,
+  TurnWarningType,
 } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------
@@ -168,6 +169,8 @@ export {
   WorkGraphConflictError,
   ContractMismatchError,
   NotConnectedError,
+  TurnFailedError,
+  TurnUnknownError,
   MobkitRpcError,
   isRpcError,
   isMobEventsStaleError,
@@ -279,6 +282,7 @@ export {
   parseCompletionCursor,
   completionCursorToDict,
   completionProgressSince,
+  parseTurnResult,
   parseContinuityRecord,
   continuityRecordToDict,
   parseContinuityFailure,
@@ -436,6 +440,10 @@ export type {
   DispatchResult,
   CompletionCursor,
   CompletionProgress,
+  TurnOutputStatus,
+  TurnResult,
+  TurnState,
+  TurnUnavailable,
   LeaseInfo,
   DurabilityPolicy,
   ContinuityHealth,
