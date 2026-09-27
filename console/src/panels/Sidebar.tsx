@@ -1,3 +1,5 @@
+import { ApprovalAttention } from "../../../packages/console-components/src/conversation/approval-card";
+import type { PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 import React from "react";
 import {
   SECTION_COLLAPSE_STORAGE_PREFIX,
@@ -57,6 +59,8 @@ interface SidebarProps {
   grouping?: ConsoleAgentListConfig;
   storageNamespace?: string;
   pinnedAgentIds?: Set<string>;
+  approvals?: PendingApprovalSnapshot;
+  onOpenApproval?: (pendingId?: string) => void;
   onSelect: (agent: ConsoleAgent) => void;
   onTogglePinnedAgent?: (agent: ConsoleAgent, familyPinIds?: Set<string>) => void;
   onOpenControl: (kind: NavKind) => void;
@@ -1254,9 +1258,12 @@ export const Sidebar = React.memo(function Sidebar({
   onSelect,
   onTogglePinnedAgent,
   onOpenControl,
+  approvals,
+  onOpenApproval,
 }: SidebarProps): React.JSX.Element {
   countRender("Sidebar");
   const [q, setQ] = React.useState("");
+  const [activityFilter, setActivityFilter] = React.useState<"all" | "working" | "quiet" | "unknown">("all");
   const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
   const [dragPreview, setDragPreview] = React.useState<SidebarDragPreview | null>(null);
@@ -1286,15 +1293,16 @@ export const Sidebar = React.memo(function Sidebar({
   }, [visibleControls]);
 
   const filtered = React.useMemo(() => {
-    if (!q) return agents;
     const needle = q.toLowerCase();
-    return agents.filter((a) =>
-      a.label.toLowerCase().includes(needle) ||
-      (a.identity || "").toLowerCase().includes(needle) ||
-      (a.member_id || "").toLowerCase().includes(needle) ||
-      (a.role || "").toLowerCase().includes(needle),
-    );
-  }, [agents, q]);
+    return agents.filter((agent) => {
+      // Null is an owner-reported quiet phase; absent activity stays unknown.
+      const activity = agent.response_phase === null ? "quiet"
+        : agent.response_phase === "waiting" || agent.response_phase === "tool-executing" || agent.response_phase === "generating"
+          ? "working" : "unknown";
+      return (activityFilter === "all" || activity === activityFilter) && (!needle ||
+        [agent.label, agent.identity, agent.member_id, agent.role].some(value => value?.toLowerCase().includes(needle)));
+    });
+  }, [agents, q, activityFilter]);
 
   const grouped = React.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
@@ -1514,9 +1522,9 @@ export const Sidebar = React.memo(function Sidebar({
       pinnedAgentIds,
       sectionOrder,
       subgroupOrder,
-      searchActive: Boolean(q),
+      searchActive: Boolean(q) || activityFilter !== "all",
     });
-  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
+  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q, activityFilter]);
   const virtualRows = React.useMemo<SidebarVirtualRow[]>(
     () => sidebarNavigationRows(sidebarNavigationModel),
     [sidebarNavigationModel],
@@ -1527,7 +1535,7 @@ export const Sidebar = React.memo(function Sidebar({
   React.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, listRef]);
+  }, [q, activityFilter, grouping, listRef]);
   const visibleRange = React.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
@@ -1612,6 +1620,7 @@ export const Sidebar = React.memo(function Sidebar({
       >
         {orderAnnouncement}
       </div>
+      {approvals ? <ApprovalAttention snapshot={approvals} onOpen={onOpenApproval || (() => onOpenControl("gating"))} /> : null}
       <div className="sidebar__mast">
         <div>
           <div className="sidebar__mast-title">Roster</div>
@@ -1625,6 +1634,14 @@ export const Sidebar = React.memo(function Sidebar({
           onChange={(e) => setQ(e.target.value)}
           data-testid="sidebar-search"
         />
+        <div className="sidebar__activity-filters" role="group" aria-label="Agent activity">
+          {(["all", "working", "quiet", "unknown"] as const).map(filter => (
+            <button key={filter} type="button" aria-pressed={activityFilter === filter}
+              onClick={() => setActivityFilter(filter)}>
+              {filter[0].toUpperCase() + filter.slice(1)}
+            </button>
+          ))}
+        </div>
       </div>
 
       {(navKinds.length > 0 || customSidebarButtons.length > 0) && (
@@ -1691,6 +1708,7 @@ export const Sidebar = React.memo(function Sidebar({
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         data-testid="sidebar-agent-list"
       >
+        {filtered.length === 0 && (q || activityFilter !== "all") ? <div className="sidebar__empty" role="status">No matching agents.</div> : null}
         <div className="sidebar__virtual-space" style={{ height: `${virtualOffsets.total}px` }}>
           {visibleRows.map((row, index) => {
             const rowIndex = visibleRange.start + index;

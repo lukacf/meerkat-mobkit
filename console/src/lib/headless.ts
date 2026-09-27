@@ -1,3 +1,5 @@
+import { subscribeTimelineWithRecovery } from "../../../packages/console-core/src/timeline-recovery";
+import type { ConsoleTimelineSubscriptionOptions, ConsoleTransportState } from "../../../packages/console-core/src/timeline-subscription";
 import {
   type ConsoleTopologyControlCapabilities,
   type ConsoleWorkbenchTarget,
@@ -54,6 +56,7 @@ export interface ConsoleCapabilities {
 }
 
 export interface ConsoleTimelineQueryInput {
+  signal?: AbortSignal;
   identity?: string;
   conversationId?: string;
   after?: string;
@@ -63,6 +66,8 @@ export interface ConsoleTimelineQueryInput {
 }
 
 export interface ConsoleTimelineSubscribeInput {
+  signal?: AbortSignal;
+  onTransportState?: (state: ConsoleTransportState) => void;
   identity?: string;
   conversationId?: string;
   after?: string;
@@ -145,7 +150,6 @@ type ConsoleCommandSpec = {
 };
 
 const LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
-const MIN_TIMELINE_DEDUP_KEYS = 1_000;
 
 const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
@@ -350,6 +354,7 @@ export function consoleCommandMethod(command: ConsoleCommandName): string {
 }
 
 export interface ConsoleCommandRequest {
+  signal?: AbortSignal;
   command: ConsoleCommandName;
   target: ConsoleWorkbenchTarget;
   params?: Record<string, unknown>;
@@ -369,6 +374,7 @@ export interface MobKitConsoleTransport {
   subscribeTimeline(
     input: ConsoleTimelineSubscribeInput,
     onFrame: (frame: ConsoleFrame) => void,
+    options?: ConsoleTimelineSubscriptionOptions,
   ): () => void;
   send(input: ConsoleSendInput): Promise<ConsoleTimelineAccepted>;
   executeCommand?(input: ConsoleCommandRequest): Promise<ConsoleCommandResult>;
@@ -425,8 +431,10 @@ export function createHttpConsoleTransport({
     capabilities: async () => normalizeCapabilities(
       await callConsoleRpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.capabilities, {}, timeout()),
     ),
-    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit, timeout()),
-    subscribeTimeline: (input, onFrame) => subscribeTimelineEvents(baseUrl, input, onFrame),
+    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit, timeout(), input.signal),
+    subscribeTimeline: (input, onFrame, options) => subscribeTimelineEvents(baseUrl, input, onFrame, {
+      signal: input.signal, onTransportState: input.onTransportState, ...options,
+    }),
     send: (input) => {
       const handlingMode = input.handlingMode ?? "queue";
       if (input.attachments?.length) {
@@ -463,7 +471,7 @@ export function createHttpConsoleTransport({
       }
       let result: unknown;
       try {
-        result = await callConsoleRpc<unknown>(baseUrl, spec.method, params, timeout());
+        result = await callConsoleRpc<unknown>(baseUrl, spec.method, params, timeout(), input.signal);
       } catch (error) {
         if (
           spec.method !== CONSOLE_RPC_METHODS.inspectIdentity ||
@@ -471,7 +479,7 @@ export function createHttpConsoleTransport({
         ) {
           throw error;
         }
-        result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params, timeout());
+        result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params, timeout(), input.signal);
       }
       return {
         command: input.command,
@@ -565,6 +573,7 @@ function createConsoleCommandSurface(
       });
     },
     async execute(input) {
+      input.signal?.throwIfAborted();
       if (!isMobKitTarget(input.target)) {
         throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
       }
@@ -573,6 +582,7 @@ function createConsoleCommandSurface(
         throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
       }
       await requireFreshCapability(spec.method);
+      input.signal?.throwIfAborted();
       if (!transport.executeCommand) {
         throw new Error(`transport does not implement command ${input.command}`);
       }
@@ -593,88 +603,15 @@ function createTimelineController(
         cursor: page.latestCursor || page.nextCursor,
       });
     },
-    async subscribeWithBackfill(input, onFrame, onReplayGap) {
-      const delivered = createBoundedTimelineDedupSet(input.limit);
-      const deliver = (frame: ConsoleFrame) => {
-        const key = timelineDedupKey(frame);
-        if (key && !delivered.add(key)) return;
-        onFrame(facts.mobkit(frame, {
+    subscribeWithBackfill(input, onFrame, onReplayGap) {
+      return subscribeTimelineWithRecovery(transport, input, (frame) => {
+        return onFrame(facts.mobkit(frame, {
           routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
           cursor: frame.cursor,
         }));
-      };
-      const seed = await transport.queryTimeline({
-        ...input,
-        mode: "recent",
-      });
-      seed.frames.forEach(deliver);
-      const after = seed.latestCursor || seed.nextCursor || input.after;
-      const unsubscribe = transport.subscribeTimeline({ ...input, after }, (frame) => {
-        if (frame.event === "replay_unavailable") {
-          void transport.queryTimeline({ ...input, mode: "recent" }).then((page) => {
-            page.frames.forEach(deliver);
-            // The synthetic gap frame never reaches `onFrame`; identity
-            // scoped consumers repair from their own cursors through here.
-            onReplayGap?.();
-          });
-          return;
-        }
-        deliver(frame);
-      });
-      return unsubscribe;
+      }, onReplayGap);
     },
   };
-}
-
-function createBoundedTimelineDedupSet(limit: number | undefined): { add(key: string): boolean } {
-  const max = Math.max(MIN_TIMELINE_DEDUP_KEYS, (limit || 400) * 4);
-  const keys = new Set<string>();
-  const order: string[] = [];
-  return {
-    add(key) {
-      if (keys.has(key)) {
-        return false;
-      }
-      keys.add(key);
-      order.push(key);
-      while (order.length > max) {
-        const oldest = order.shift();
-        if (oldest) {
-          keys.delete(oldest);
-        }
-      }
-      return true;
-    },
-  };
-}
-
-function timelineDedupKey(frame: ConsoleFrame): string | null {
-  const id = frame.id?.trim();
-  if (id) return `id:${id}`;
-  const cursor = frame.cursor?.trim();
-  if (cursor) return `cursor:${cursor}`;
-  const timestamp = frame.timestampMs;
-  if (typeof timestamp === "number") {
-    return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
-  }
-  return null;
-}
-
-function stableDedupText(value: unknown): string {
-  try {
-    return JSON.stringify(value, (_key, nested) => {
-      if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
-        return nested;
-      }
-      return Object.fromEntries(
-        Object.entries(nested as Record<string, unknown>).sort(([left], [right]) => (
-          left.localeCompare(right)
-        )),
-      );
-    });
-  } catch {
-    return String(value);
-  }
 }
 
 function createFactFactory(): MobKitConsoleController["facts"] {
@@ -715,9 +652,20 @@ function normalizeCapabilities(value: unknown): ConsoleCapabilities {
   };
 }
 
+/** Fresh capability evidence, distinct from an unavailable network response. */
+export class ConsoleCapabilityUnavailableError extends Error {
+  readonly kind = "console-capability-unavailable";
+  readonly availableMethods: readonly string[];
+  constructor(readonly method: string, capabilities: ConsoleCapabilities) {
+    super(`MobKit capability missing for ${method}`);
+    this.name = "ConsoleCapabilityUnavailableError";
+    this.availableMethods = [...capabilities.methods];
+  }
+}
+
 function requireCapability(capabilities: ConsoleCapabilities, method: string) {
   if (!hasCapability(capabilities, method)) {
-    throw new Error(`MobKit capability missing for ${method}`);
+    throw new ConsoleCapabilityUnavailableError(method, capabilities);
   }
 }
 

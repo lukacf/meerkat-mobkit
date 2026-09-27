@@ -940,6 +940,17 @@ pub struct GatingEvaluateResult {
     pub fallback_reason: Option<String>,
 }
 
+/// Origin supplied by the host at the action boundary, never inferred from
+/// actor_id or accepted from ordinary gating RPC parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatingOrigin {
+    pub identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingPendingEntry {
     pub pending_id: String,
@@ -959,6 +970,10 @@ pub struct GatingPendingEntry {
     pub approval_delivery_id: Option<String>,
     pub created_at_ms: u64,
     pub deadline_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<GatingOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1005,6 +1020,40 @@ pub struct GatingAuditEntry {
     pub outcome: GatingOutcome,
     pub detail: Value,
 }
+
+/// Versioned owner state for a trusted host's scoped persistence adapter.
+/// Exporting this value does not enable persistence by itself. Hosts must save
+/// atomically after mutations and restore before exposing their runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatingStateSnapshot {
+    pub version: u32,
+    /// The next owner sequence, including IDs no longer retained in the log.
+    pub next_sequence: u64,
+    /// In the owner's insertion order, including unattributed legacy records.
+    pub pending: Vec<GatingPendingEntry>,
+    pub audit: Vec<GatingAuditEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatingStateRestoreError {
+    RuntimeNotPristine,
+    UnsupportedVersion(u32),
+    InvalidSnapshot(&'static str),
+}
+
+impl std::fmt::Display for GatingStateRestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RuntimeNotPristine => write!(f, "gating restore requires a pristine owner"),
+            Self::UnsupportedVersion(version) => {
+                write!(f, "unsupported gating snapshot version: {version}")
+            }
+            Self::InvalidSnapshot(reason) => write!(f, "invalid gating snapshot: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for GatingStateRestoreError {}
 
 /// One resolved gating pending entry (decision or timeout), pushed
 /// synchronously to registered observers. The gating subsystem itself is

@@ -9,3 +9,6 @@
 @import "./composer.css";
 @import "./pending-stack.css";
 @import "./topology.css";
+
+@import "../conversation/approvals.css";
+@import "./transport.css";

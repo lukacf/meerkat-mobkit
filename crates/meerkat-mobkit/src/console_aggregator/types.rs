@@ -103,9 +103,24 @@ impl ConsoleFrameSourceKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleFrameSource {
+    /// Owner-captured member context for applying policy after a member retires.
+    /// Absent on frames written before provenance support. Storage serialization
+    /// preserves this witness; policy-checked transport projections remove it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_provenance: Option<ConsoleFrameMemberProvenance>,
     pub kind: ConsoleFrameSourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_cursor: Option<String>,
+}
+
+/// Member context captured when the canonical console owner admits a frame.
+/// Policy decisions remain per-view; this stores their inputs, not a verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleFrameMemberProvenance {
+    pub identity: ConsoleIdentityRecord,
+    pub member: crate::runtime::ConsoleMember,
+    pub primary_mob_id: String,
+    pub source_mob_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -300,7 +315,7 @@ pub enum ConsoleVisibility {
     Unreachable,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleIdentityRecord {
     pub identity: String,
     pub display_name: String,

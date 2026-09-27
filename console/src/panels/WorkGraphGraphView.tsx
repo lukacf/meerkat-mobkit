@@ -1,4 +1,6 @@
 import React from "react";
+import { CopyButton } from "../../../packages/console-components/src/copy-button";
+import { CopyGlyph } from "../../../packages/console-components/src/copy-glyph";
 
 import type { WorkGraphWireBinding, WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 import {
@@ -218,20 +220,39 @@ function nodeHoverText(node: WorkGraphLayoutNode, item: WorkGraphWireItem | unde
   return lines.join("\n");
 }
 
-function selectionSummary(
-  itemId: string,
-  items: WorkGraphWireItem[],
-  attention: WorkGraphWireBinding[],
-): string {
-  const item = items.find((candidate) => candidate.id === itemId);
-  if (!item) return itemId;
-  const parts = [itemId, item.status || "open"];
-  const owner = workGraphItemOwnerLabel(item);
-  if (owner) parts.push(owner);
-  if (item.labels && item.labels.length > 0) parts.push(item.labels.join(", "));
-  if (attention.some((binding) => binding.work_ref?.item_id === itemId)) parts.push("attention-bound");
-  if (item.description) parts.push(item.description);
-  return parts.join(" · ");
+function ItemCopyIcon({ name }: { name: string }) {
+  return <CopyGlyph state={name === "i-check" ? "copied" : "idle"} />;
+}
+
+function WorkItemDetails({ itemId, item, hasAttention }: {
+  itemId: string;
+  item: WorkGraphWireItem | undefined;
+  hasAttention: boolean;
+}) {
+  const owner = item ? workGraphItemOwnerLabel(item) : "";
+  const status = item?.status?.replaceAll("_", " ");
+  return <>
+    <div className="workgraph-graph__detail-heading">
+      <h4 className="workgraph-graph__detail-title">{item?.title || (item ? "Untitled work item" : "Work item unavailable in this snapshot")}</h4>
+      {status ? <span className="workgraph-graph__detail-status" data-status={item?.status}>
+        <span className={`workgraph__dot is-${item?.status}`} aria-hidden="true" />
+        {status[0].toUpperCase() + status.slice(1)}
+      </span> : null}
+    </div>
+    {item?.description ? <p className="workgraph-graph__detail-description">{item.description}</p> : null}
+    {owner ? <p className="workgraph-graph__detail-owner">Owner <span>{owner}</span></p> : null}
+    <details className="workgraph-graph__metadata">
+      <summary>Item details</summary>
+      <dl>
+        <dt>ID</dt>
+        <dd className="workgraph-graph__detail-id"><code>{itemId}</code>
+          <CopyButton text={itemId} label="Copy work item ID" copiedLabel="Work item ID copied" Icon={ItemCopyIcon} />
+        </dd>
+        {item?.labels?.length ? <><dt>Labels</dt><dd>{item.labels.join(", ")}</dd></> : null}
+        {hasAttention ? <><dt>Attention</dt><dd>Bound to this item</dd></> : null}
+      </dl>
+    </details>
+  </>;
 }
 
 export function WorkGraphGraphView({
@@ -438,7 +459,7 @@ export function WorkGraphGraphView({
       </svg>
       <div className="workgraph-graph__detail" data-testid="workgraph-graph-detail">
         {selectedId
-          ? selectionSummary(selectedId, items, attention)
+          ? <WorkItemDetails key={selectedId} itemId={selectedId} item={itemById.get(selectedId)} hasAttention={boundItemIds.has(selectedId)} />
           : "Click a node to inspect it."}
       </div>
     </div>
@@ -450,5 +471,4 @@ export const __workGraphGraphViewTest = {
   fitViewport,
   FIT_MIN_SCALE,
   nodeMetaLine,
-  selectionSummary,
 };

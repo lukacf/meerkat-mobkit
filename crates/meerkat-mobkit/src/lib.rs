@@ -39,6 +39,7 @@ pub mod http_sse;
 pub mod live_contracts;
 pub mod live_wiring;
 pub mod member_comms_id;
+pub(crate) mod member_status_observation;
 pub mod member_tool_policy;
 pub mod memory;
 pub mod memory_wiring;
@@ -100,13 +101,14 @@ pub use compaction_policy::{
 pub use config_convention::ConventionalPaths;
 pub use console_aggregator::{
     AllowAllConsoleVisibilityPolicy, AppendDisposition, AppendOutcome, ConsoleAggregatorOptions,
-    ConsoleCursor, ConsoleFrame, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
-    ConsoleIdentityInspection, ConsoleIdentityRecord,
+    ConsoleCursor, ConsoleFrame, ConsoleFrameMemberProvenance, ConsoleFrameSource,
+    ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted, ConsoleLogError,
     ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleRuntimeRegistration,
     ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelinePage,
-    ConsoleTimelineQuery, ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleTurnOrigin,
-    ConsoleVisibility, ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    ConsoleTimelineQuery, ConsoleTimelineQueryError, ConsoleTimelineQueryResult,
+    ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleTurnOrigin, ConsoleVisibility,
+    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
     InMemoryConsoleLogStore, MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect,
     ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect, SendState, SendTransition,
     SourceIngestionEffect, SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
@@ -211,9 +213,10 @@ pub use runtime::{
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, DecisionRuntimeError,
     ElephantMemoryBackendConfig, ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError,
     GatingDecideRequest, GatingDecision, GatingDecisionResult, GatingEvaluateRequest,
-    GatingEvaluateResult, GatingOutcome, GatingPendingEntry, GatingRiskTier, InMemoryMetadataStore,
-    JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent,
-    LifecycleStage, LocalJsonMemoryBackendConfig, LocalJsonMemoryStoreError, McpBoundaryError,
+    GatingEvaluateResult, GatingOrigin, GatingOutcome, GatingPendingEntry, GatingRiskTier,
+    GatingStateRestoreError, GatingStateSnapshot, InMemoryMetadataStore, JsonFileSessionStore,
+    JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
+    LocalJsonMemoryBackendConfig, LocalJsonMemoryStoreError, McpBoundaryError,
     MemberIdleRetireOverrideRecord, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal,
     MemoryIndexError, MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult,
     MemoryStoreInfo, MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle,

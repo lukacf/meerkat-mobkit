@@ -152,21 +152,19 @@ test("console HTTP errors expose bounded response previews", async () => {
   }
 });
 
-test("timeline stream HTTP errors expose bounded response previews", async () => {
+test("timeline stream HTTP errors expose bounded previews as transport state, without replay frames", async () => {
   const originalFetch = globalThis.fetch;
   const body = `prefix-${"x".repeat(700)}-secret-tail`;
   globalThis.fetch = (async () => new Response(body, { status: 502 })) as typeof fetch;
   const frames: ConsoleFrame[] = [];
-  const unsubscribe = subscribeTimelineEvents(
-    "http://127.0.0.1:7000",
-    {},
-    (frame) => frames.push(frame),
-  );
-
+  const errors: unknown[] = [];
+  const unsubscribe = subscribeTimelineEvents("http://127.0.0.1:7000", {}, (frame) => frames.push(frame), {
+    onTransportState: (state) => { if (state.error) errors.push(state.error); },
+  });
   try {
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(frames.length > 0, true);
-    const message = String((frames[0]?.data as { message?: unknown } | undefined)?.message || "");
+    assert.equal(frames.length, 0);
+    const message = String((errors[0] as Error)?.message || "");
     assert.match(message, /interaction stream request failed 502/);
     assert.match(message, /prefix-/);
     assert.doesNotMatch(message, /secret-tail/);
@@ -681,7 +679,7 @@ test("subscribeTimelineEvents reconnects with the latest aggregate cursor", asyn
   }
 });
 
-test("subscribeTimelineEvents recovers from stale timeline cursors", async () => {
+test("subscribeTimelineEvents reports stale cursor without adopting an unaccepted latest cursor", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   const lastEventIds: Array<string | undefined> = [];
@@ -726,16 +724,16 @@ test("subscribeTimelineEvents recovers from stale timeline cursors", async () =>
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.deepEqual(lastEventIds, ["bad", "console:99"]);
-    assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(lastEventIds, ["bad"]);
+    assert.deepEqual(seen, ["replay_unavailable"]);
   } finally {
     unsubscribe();
     globalThis.fetch = originalFetch;
   }
 });
 
-test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", async () => {
+test("subscribeTimelineEvents delegates in-stream gap recovery without skipping history", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   const lastEventIds: Array<string | undefined> = [];
@@ -780,9 +778,9 @@ test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", asy
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.deepEqual(lastEventIds, [undefined, "console:99"]);
-    assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(lastEventIds, [undefined]);
+    assert.deepEqual(seen, ["replay_unavailable"]);
   } finally {
     unsubscribe();
     globalThis.fetch = originalFetch;

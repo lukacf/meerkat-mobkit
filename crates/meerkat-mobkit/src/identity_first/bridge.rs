@@ -1701,6 +1701,37 @@ impl ActorAdmissionDeadline {
         }
     }
 
+    /// Keep inspection inside the bridge's existing health and deadline
+    /// boundary while retrying only refused member-status observations.
+    async fn observe_member_status<T, Read, ReadFuture>(
+        &self,
+        identity: &MobAgentIdentity,
+        read: Read,
+    ) -> Result<T, BridgeError>
+    where
+        Read: FnMut() -> ReadFuture,
+        ReadFuture: Future<Output = Result<T, meerkat_mob::MobError>>,
+    {
+        self.bound(
+            "inspect.member_status",
+            identity,
+            crate::member_status_observation::retry_member_status_observation(self.deadline, read),
+        )
+        .await?
+        .map_err(|error| match error {
+            meerkat_mob::MobError::ActorCommandTimedOut {
+                command_kind: "MemberStatus",
+                stage: "member_status_observation",
+            } => BridgeError::ActorAdmissionTimeout {
+                operation: "inspect.member_status",
+                identity: identity.clone(),
+                waited: self.started.elapsed(),
+                command: None,
+            },
+            other => BridgeError::Mob(other.to_string()),
+        })
+    }
+
     /// Await one actor round trip under the attempt's remaining budget. A
     /// responsive actor takes the `timeout_at` pass-through: no added
     /// latency, no allocation, no behavioural change. Expiry is the only path
@@ -5999,11 +6030,10 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await?;
-        let snap = self
-            .handle
-            .member_status(&mid)
-            .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?;
+        let deadline = self.admission_deadline();
+        let snap = deadline
+            .observe_member_status(&mid, || self.handle.member_status(&mid))
+            .await?;
         let peer_reachable_count =
             match peer_reachable_count_from_connectivity(snap.peer_connectivity.as_ref()) {
                 Some(count) => count,
@@ -8371,6 +8401,90 @@ mod tests {
             parse_bridge_actor_admission_budget(Some("999999")),
             Duration::from_hours(1)
         );
+    }
+
+    fn inspect_observation_contention() -> meerkat_mob::MobError {
+        meerkat_mob::MobError::LifecycleOperationAdmissionPending {
+            intent: "member_status_observation".to_string(),
+            stage: "observation_lane_saturated",
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inspect_observation_waits_for_actual_snapshot_and_preserves_other_errors() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_secs(1));
+        let member = MobAgentIdentity::from("original-member");
+        let mut calls = 0;
+        let actual = deadline
+            .observe_member_status(&member, || {
+                calls += 1;
+                std::future::ready(if calls == 1 {
+                    Err(inspect_observation_contention())
+                } else {
+                    Ok("actual owner snapshot")
+                })
+            })
+            .await
+            .expect("read succeeds after typed contention");
+        assert_eq!(actual, "actual owner snapshot");
+        assert_eq!(calls, 2);
+        let mut calls = 0;
+        let error = deadline
+            .observe_member_status(&member, || {
+                calls += 1;
+                std::future::ready(Err::<(), _>(meerkat_mob::MobError::Internal(
+                    "original owner failure".to_string(),
+                )))
+            })
+            .await
+            .expect_err("unrelated owner failure must remain failure");
+        assert!(
+            matches!(error, BridgeError::Mob(message) if message == "internal error: original owner failure")
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inspect_observation_uses_bridge_budget_and_existing_health_refusal() {
+        let start = tokio::time::Instant::now();
+        let deadline = ActorAdmissionDeadline::new(Duration::from_millis(51));
+        let member = MobAgentIdentity::from("original-member");
+        let mut calls = 0;
+        let error = deadline
+            .observe_member_status(&member, || {
+                calls += 1;
+                std::future::ready(Err::<(), _>(inspect_observation_contention()))
+            })
+            .await
+            .expect_err("contention cannot extend the bridge deadline");
+        assert!(
+            matches!(error, BridgeError::ActorAdmissionTimeout { operation: "inspect.member_status", identity, .. } if identity == member)
+        );
+        assert_eq!(start.elapsed(), Duration::from_millis(51));
+        assert!(calls > 1);
+
+        let health = ActorLoopHealth::shared();
+        let deadline =
+            ActorAdmissionDeadline::with_health(Duration::from_secs(10), Some(health.clone()));
+        let mut calls = 0;
+        let error = deadline
+            .observe_member_status(&member, || {
+                calls += 1;
+                health.mark_stalled(73);
+                std::future::ready(Err::<(), _>(inspect_observation_contention()))
+            })
+            .await
+            .expect_err("opening stall must cancel pending observation retry");
+        assert!(matches!(
+            error,
+            BridgeError::ActorLoopStalled {
+                operation: "inspect.member_status",
+                stall_id: 73,
+                observation: ActorCallObservation::InFlight,
+                ..
+            }
+        ));
+        assert_eq!(calls, 1);
     }
 
     #[tokio::test]

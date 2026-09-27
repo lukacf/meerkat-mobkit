@@ -7,7 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking (Rust source)
+
+- `ConsoleAgentLiveSnapshot.response_phase` is now `Option<Option<String>>`:
+  `None` means no activity observation, `Some(None)` means known quiet, and
+  `Some(Some(phase))` carries the recorded activity phase. JSON keeps the
+  existing string phase and now preserves explicit null separately from a
+  missing field. Update Rust constructors that set an active phase accordingly.
+
+- `ConsoleFrameSource` adds `member_provenance`; `GatingPendingEntry` adds
+  `rationale` and `origin`. Update Rust struct literals for these fields.
+- `MobKitConsoleAggregator::query_timeline_windowed` returns
+  `ConsoleTimelineQueryResult<ConsoleTimelineWindowPage>`. Custom
+  `ConsoleLogStore` implementations must preserve member provenance when
+  storing and reading frames so retired-member visibility remains enforceable.
+- Hosts can initialize the shared console projection with a fixed ingestion
+  redaction policy before creating request views. Later view policies cannot
+  replace that host policy or change another view's authorized data.
+
+### Storage and wire compatibility
+
+- `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
+  for cached unsuccessful provenance searches. Its default returns `None`, so
+  existing custom stores continue to rescan. Implementations must change the
+  witness when stored provenance or cursor positions are replaced or removed.
+- Typed compaction summaries remain runtime context and no longer project as
+  human conversation rows. Ordinary user messages with identical text remain
+  visible; the distinction comes from their typed origin.
+- `runtime_notice_snapshot` carries complete `SystemNotice` bodies, including
+  notice text and structured blocks. `ConsoleVisibilityPolicy` implementations
+  that redact notices must cover this frame kind as well as `system_notice`;
+  the fixed host policy runs before snapshot storage and broadcast. Compaction
+  snapshots use the existing complete `history_positions` map over their
+  `observed_through` boundary, while older sparse snapshots remain readable.
+- The console SQLite store migrates to schema v3, including normalized member
+  provenance. Migration accepts v1 and development v2 stores. This is a
+  one-way upgrade: MobKit 0.8.42 cannot open the upgraded store. Keep a backup
+  before upgrading if rollback to that release is required.
+- Timeline storage faults now return HTTP 500 / RPC `-32000` with
+  `timeline_unavailable`. Cursor replay loss remains HTTP 409 / RPC `-32013`
+  with `replay_unavailable`; consumers must distinguish recovery from failure.
+- Public timelines retain both live and canonical history rows with typed
+  lineage. Consumers reconcile their message ownership using the typed
+  source/run/interaction identity; authored text is not a deduplication key.
+- Authorized `/console/experience` responses provide an opaque `storage_scope`
+  for runtime/principal-separated browser drafts and queues. Explicit host
+  `storageNamespace` values continue to take precedence.
+
 ### Changed
+
+- Improve console reading and composition in the stock and reusable hosts:
+  preserve the reading position while output streams, render complete Markdown
+  with exact source copy, and use a compact latest-message arrow that animates
+  during agent work. Quoting appears beside a selection; quoted context can be
+  edited before sending and is displayed as readable cards after delivery.
+- Add roster activity filters, shared approval state with precisely correlated
+  conversation cards, and durable text/quote send attempts that reconcile lost
+  acknowledgements without erasing a newer draft.
+- Preserve repeated authored text, reasoning and tool outcomes across live
+  output, history paging and reconnection. Saved assistant messages no longer
+  create synthetic run-completion events. Fold only routine tool activity with
+  matched successful outcomes, and keep failures and unknown outcomes visible.
 
 - **BEHAVIOR CHANGE: `idle_retire_secs: null` on the `delegate`, `fork_off`
   and `mob_spawn_member` agent tools now means the same as omitting it.** It
@@ -28,7 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stays: `member_idle_retire` rows an earlier version persisted with it
   still load and still keep their member, and host-side code may still set
   it.
-- Bind the Meerkat family to published 0.8.43: `fork_off` and council
+
+- Bind the Meerkat family to published 0.8.44, including durable runtime-notice
+  origin and transcript lineage. The 0.8.43 lifecycle changes remain included:
+  `fork_off` and council
   completions arrive in the owner's transcript as a persisted `BackgroundJob`
   notice delivered in-turn (MobKit's callers are all mob members, so no
   `DetachedOwnerHost` is needed), with the typed `no_owner_revival_host`
@@ -53,6 +116,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Show canonical peer display names while preserving exact peer identities in
+  details. Keep empty WorkGraph query results inspectable, and avoid duplicate
+  tool rows when event polls are already represented by a work card. WorkGraph
+  event and deadline displays use the same local clock as the conversation.
+- Calculate assistant work duration only from matching run-start and successful
+  completion evidence. System notices never inherit assistant timing, and
+  messages with unknown run timing omit the duration.
+- Observe restored identity edges after eager continuity attachment so the
+  bootstrap report reflects the wired sessions. Lazy restore remains deferred.
+- Project durable runtime notices during their original active run and reconcile
+  them against saved history without duplicating or reordering the instruction.
+
+- Complete deferred activation before persistent gateway and builder startup
+  returns. Classic compositions explicitly resume; identity compositions
+  register continuity owners before resuming preserved sessions.
+- Keep queued console sends, identity inspection and startup readiness within
+  their existing deadlines when the owner's member-observation lane is busy.
+  Only refused reads retry; message admission and delivery are not repeated.
+- Keep persistent gateway identity stable when a storage directory beneath a
+  symlink is created between launches by resolving its existing parent first.
+- Preserve a streamed response across an overlapping queued steer, including
+  its exact source and the subsequent reply's assistant header.
+- Let Python text-dispatch helpers carry caller-supplied idempotency keys with
+  correlation IDs, including the completion-waiting helper.
 - `fork_off` children sent with `idle_retire_secs: null` are idle-retired on
   the runtime default. The null disabled retirement for the child, so a model
   that filled in every optional field with null pinned each fork child until

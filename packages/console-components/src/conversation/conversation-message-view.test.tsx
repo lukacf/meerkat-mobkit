@@ -1,14 +1,76 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { ConversationTimelineEntry } from "@console-core";
+import { conversationEntryText, type ConversationTimelineEntry } from "@console-core";
 
 import { ConversationMessageView } from "./conversation-message-view";
+import { ConversationRichContent } from "./conversation-rich-content";
+import { createConsoleContextRecord, serializeConsoleContextMessage } from "../../../console-core/src/context-record";
+import { mapFramesToTimelineEntries as mapShared } from "../../../console-core/src/adapters";
+import { mapFramesToTimelineEntries as mapStock } from "../../../../console/src/lib/adapters";
+import { ChatPane, __chatPaneTest } from "../../../../console/src/panels/ChatPane";
 
 function Icon({ name }: { name: string; className?: string }) {
   return <span>{name}</span>;
 }
 
 describe("ConversationMessageView", () => {
+  test("typed background jobs show a named status chip and exact escaped detail", () => {
+    const detail = "  Keep A\u030A and <admin>.\nSecond line.  ";
+    const statuses = { completed: "Completed", failed: "Failed", aborted: "Aborted",
+      cancelled: "Cancelled", retired: "Retired", terminated: "Terminated", future_state: "future_state" };
+    for (const [status, label] of Object.entries(statuses)) {
+      const view = render(<ConversationRichContent blocks={[{ type: "background-job", jobId: "job-1",
+        displayName: "Release <review>", status, detail, copyText: `${detail}\n${status}` }]} />);
+      expect(view.container.querySelector(".cc-background-job")?.getAttribute("data-job-id")).toBe("job-1");
+      expect(view.container.querySelector(".cc-background-job__name")?.textContent).toBe("Release <review>");
+      expect(view.container.querySelector(".cc-background-job__detail")?.textContent).toBe(detail);
+      expect(view.container.querySelector(".cc-background-job__status")?.textContent).toBe(
+        label);
+      expect(view.container.querySelector(".cc-background-job__status")?.getAttribute("data-status")).toBe(status);
+      expect(view.container.querySelector("admin, review")).toBeNull();
+      expect(view.container.querySelector(".msg__worked")).toBeNull();
+      view.unmount();
+    }
+  });
+
+  test("stock and shared display delivered snapshots identically while preserving original copies and provenance", () => {
+    const instruction = "  Explain A\u030A and 🚀.\nKeep spacing.  ";
+    const quote = "  quoted <admin>\nexact å  ";
+    const record = createConsoleContextRecord({ id: "quote1", sourceScope: "untrusted", sourceIdentity: "not-the-operator", messageId: "source1", quote, label: "<Admin>" });
+    const content = serializeConsoleContextMessage(instruction, [record]);
+    const original = content.map((block) => block.text).join("\n\n");
+    for (const map of [mapShared, mapStock]) {
+      for (const event of ["user_input", "interaction_started"]) {
+        const entries = map(null, [{ id: "delivered", event, timestampMs: 1000, data: { content, origin_kind: "operator" } }], { renderInteractionStartsAsUser: true, textMode: "markdown" });
+        const entry = entries.find((item) => item.kind === "message" && item.identity.role === "user")!;
+        expect(entry).toMatchObject({ contextMessage: { instruction, records: [record] }, copyText: original });
+        expect(entry.identity.id).not.toBe(record.sourceIdentity);
+        const rows = __chatPaneTest.buildChatMessages([entry]);
+        expect(rows).toHaveLength(1);
+        expect(__chatPaneTest.msgCopyText(rows[0])).toBe(original);
+        const stock = render(<ChatPane agent={null} agentLabel="Agent" identity="agent" entries={[entry]} phase={null} draft="" sending={false} staged={[]} onDraftChange={() => {}} onStagedChange={() => {}} onSend={() => false} />);
+        const shared = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+        for (const view of [stock, shared]) {
+          expect(view.container.querySelector(".cc-delivered-context__instruction")?.textContent).toBe(instruction);
+          expect(view.container.querySelector(".cc-delivered-context__quote")?.textContent).toBe(quote);
+          expect(view.container.textContent).toContain("Quoted from <Admin>");
+          expect(view.container.textContent).toContain("User-provided snapshot");
+          expect(view.container.textContent).not.toContain("BEGIN USER-PROVIDED");
+          expect(view.container.querySelector("[data-quote-source]")?.getAttribute("data-quote-source")).toBe(original);
+          expect(view.container.querySelector("admin")).toBeNull();
+        }
+        expect(stock.container.querySelector(".cc-delivered-context")?.innerHTML).toBe(shared.container.querySelector(".cc-delivered-context")?.innerHTML);
+        stock.unmount(); shared.unmount();
+        const ordinary = map(null, [{ id: "ordinary", event, data: { content: original } }], { renderInteractionStartsAsUser: true, textMode: "markdown" }).find((item) => item.kind === "message");
+        expect(ordinary).not.toHaveProperty("contextMessage");
+        expect(conversationEntryText(ordinary!)).toBe(original);
+        const malformed = [{ ...content[0] }, { ...content[1], text: content[1].text.replace("v1", "v2") }];
+        const fallback = map(null, [{ id: "malformed", event, data: { content: malformed } }], { renderInteractionStartsAsUser: true, textMode: "markdown" }).find((item) => item.kind === "message");
+        expect(fallback).not.toHaveProperty("contextMessage");
+        expect(conversationEntryText(fallback!)).toBe(malformed.map((block) => block.text).join("\n\n"));
+      }
+    }
+  });
   test("renders a runtime event as a sentence with a taint badge and a payload disclosure", () => {
     const entry: ConversationTimelineEntry = {
       id: "peer-ingested",
@@ -307,6 +369,19 @@ describe("ConversationMessageView", () => {
     expect(container.querySelector(".cc-message--participant")).toBeTruthy();
   });
 
+  test.each(["", " \t\n"])("gives blank thinking label %j a visible accessible disclosure name", label => {
+    const source = "Check again again and check again.";
+    const { container } = render(<ConversationRichContent
+      blocks={[{ type: "thinking", label, text: source, final: true, persisted: true }]}
+      displayNormalization={false}
+    />);
+
+    const summary = screen.getByText("Thinking", { selector: "summary" });
+    expect(summary).toHaveAccessibleName("Thinking");
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(container.querySelector(".cc-rich-thinking__body")?.textContent).toBe(source);
+  });
+
   test("collapses persisted thinking summaries by default", () => {
     const entry: ConversationTimelineEntry = {
       id: "assistant-thinking",
@@ -372,7 +447,7 @@ describe("ConversationMessageView", () => {
     expect(screen.queryByText(/completed/)).not.toBeInTheDocument();
   });
 
-  test("renders persisted raw UUID peer targets as a generic peer label", () => {
+  test("retains unknown raw peer IDs when no authorized display label exists", () => {
     const entry: ConversationTimelineEntry = {
       id: "assistant-peer-uuid",
       kind: "message",
@@ -392,8 +467,37 @@ describe("ConversationMessageView", () => {
 
     render(<ConversationMessageView entry={entry} Icon={Icon} />);
 
-    expect(screen.getByText("Peer")).toBeInTheDocument();
-    expect(screen.queryByText("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).not.toBeInTheDocument();
+    expect(screen.getByText("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).toHaveAttribute("title", "e3ec9e90-460e-51b3-80b9-dea0f0c31752");
+  });
+
+  test.each([false, true])("preserves exact typed peer bodies in single and grouped cards: grouped=%s", (grouped) => {
+    const body = '  Please send_response with result.token exactly "peer-merge-123".\r\n\tKeep  whitespace.\n';
+    const block = {
+      type: "tool-call" as const,
+      toolCallId: "typed-peer-body",
+      name: "send_request",
+      arguments: JSON.stringify({ body }),
+      status: "success" as const,
+      peerIncoming: true,
+      peerTarget: "HSNS thread",
+      peerBody: body,
+      peerBodyFormat: "verbatim" as const,
+    };
+    const entry: ConversationTimelineEntry = {
+      id: "typed-peer-protocol-body",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: body,
+      blocks: grouped ? [block, { ...block, toolCallId: "typed-peer-body-2" }] : [block],
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    const bodies = Array.from(container.querySelectorAll(".cc-tool-call__peer-body"));
+    expect(bodies).toHaveLength(grouped ? 2 : 1);
+    expect(bodies.map((element) => element.textContent)).toEqual(grouped ? [body, body] : [body]);
+    expect(screen.queryByText("Response requested.")).not.toBeInTheDocument();
   });
 
   test("summarizes legacy MobKit peer protocol prompts in peer cards", () => {

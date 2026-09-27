@@ -396,6 +396,7 @@ class TestHC02DispatchRouting:
                 content="Telegram DM from Luka: Can you remind me about dentist?",
                 origin="connector",
                 correlation_id="msg-1",
+                idempotency_key="telegram:msg-1",
             )
             await rt.dispatch("identity:luka", di_luka)
 
@@ -404,6 +405,7 @@ class TestHC02DispatchRouting:
                 content="Unknown WhatsApp sender asked about package delivery",
                 origin="connector",
                 correlation_id="msg-2",
+                idempotency_key="whatsapp:msg-2",
             )
             await rt.dispatch("triage:main", di_triage)
 
@@ -647,33 +649,17 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            # Under M4b a healthy head-canonical reset reports EXACTLY 2, and
-            # the writer is the CREATION-WINDOW FLUSH of the replacement
-            # session, not reset's retire cleanup (this comment previously
-            # guessed cleanup; the trace disproved that — cleanup only no-ops
-            # against the superseded OLD session and the new record has
-            # already committed when the debt runs). The initial session
-            # document rides the delta channel as TWO mutations —
-            # append_messages plus the adopting save_head — each minting one
-            # checkpoint version from the session's single allocator:
-            # append = 1, head adoption = 2. First boot reports the same 2
-            # with no reset anywhere near it, and reset() commits the flush
-            # BEFORE it returns, so this status read cannot race it. Pinned
-            # deterministically in Rust (reset record, post-reset status, and
-            # the durable continuity record all assert exactly 2):
+            # The replacement's empty initial document is born through one
+            # head-canonical create-CAS write. There are no messages to append,
+            # so this creation flush advances its fresh allocator exactly once
+            # before reset returns. Retire cleanup targets the superseded old
+            # session and cannot advance the replacement's checkpoint.
+            # Rust pins first boot, reset return, status and the durable record:
             #   crates/meerkat-mobkit/tests/identity_first_builder.rs
             #     reset_checkpoint_version_is_the_initial_document_flush_not_cleanup
-            #   crates/meerkat-mobkit/src/identity_first/adapters.rs
-            #     incremental_mutations_park_before_registration_and_flush_on_register
-            #
-            # This bound was previously `in (0, 1, 2, None)`, which admitted
-            # the exact failure shapes this end-to-end lane exists to catch
-            # on the shipped rpc_gateway: None/0 means the creation-window
-            # flush never landed durably by status time, and 1 means the
-            # whole-blob (pre-M4b) fallback wrote the document as a single
-            # mutation. If this assertion fires with one of those values,
-            # that is the finding — not test flake.
-            assert after.checkpoint_version == 2
+            # Keep this exact: None/0 would lose the durable creation flush;
+            # 2 would be the older nonempty append-plus-head write shape.
+            assert after.checkpoint_version == 1
         finally:
             await rt.shutdown()
 

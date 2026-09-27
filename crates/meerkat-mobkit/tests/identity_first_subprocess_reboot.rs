@@ -154,6 +154,9 @@ impl Gateway {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rpc_gateway"));
         command
             .arg("--persistent")
+            // This oracle observes the default INFO-level boot declaration.
+            // An ambient RUST_LOG must not suppress the event under test.
+            .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

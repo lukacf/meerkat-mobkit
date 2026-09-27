@@ -1,17 +1,24 @@
+import { QuoteSelectionAction } from "./quote-selection-action";
+import { JumpToLatest } from "./jump-to-latest";
+import { ConversationApprovals, type ConversationApprovalProps } from "./conversation-approvals";
+import type { ConsoleQuoteSelection } from "./context-selection";
+import { ConversationHeader, ConversationPresentationProvider, type ConversationDisplayLabels, type ConversationHeaderProps } from "./presentation-policy";
 import clsx from "clsx";
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 
 import type { ConversationViewState } from "@console-core";
 
+import { useConversationScrollController, type ConversationScrollControllerOptions, type ConversationViewportKey } from "./scroll-controller";
 import { ConversationEmptyState } from "./conversation-empty-state";
 import { ConversationTranscript } from "./conversation-transcript";
+import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import type { FlowRunRestoreHandler } from "./flow-run-card";
 import type { WorkGraphCardActions } from "./work-graph-card";
 import {
@@ -20,10 +27,19 @@ import {
 } from "./conversation-turns";
 import type { IconRenderer } from "../shared";
 
-export type ConversationPaneProps = {
+export type ConversationPaneProps = ConversationApprovalProps & {
   viewState: ConversationViewState;
+  viewportKey?: ConversationViewportKey;
+  submittedRowId?: string | null;
+  onRevealAnchor?: ConversationScrollControllerOptions["revealAnchor"];
+  markdownUrlPolicy?: MarkdownUrlPolicy;
+  displayLabels?: ConversationDisplayLabels;
+  header?: ConversationHeaderProps;
   Icon?: IconRenderer | null;
   footer?: ReactNode;
+  contextSlot?: ReactNode;
+  onQuoteSelection?: (quote: ConsoleQuoteSelection) => void;
+  isWorking?: boolean;
   scrollTail?: ReactNode;
   className?: string;
   scrollClassName?: string;
@@ -51,6 +67,18 @@ function visibleTranscriptGroups(viewState: ConversationViewState, maxGroups: nu
 
 export function ConversationPane({
   viewState,
+  approvalSnapshot,
+  approvalIdentity,
+  onApprovalDecision,
+  contextSlot,
+  onQuoteSelection,
+  isWorking,
+  viewportKey,
+  submittedRowId,
+  onRevealAnchor,
+  markdownUrlPolicy,
+  displayLabels,
+  header,
   Icon,
   footer = null,
   scrollTail = null,
@@ -68,40 +96,24 @@ export function ConversationPane({
   workGraphActions = null,
   showTurnRail: showTurnRailProp = true,
 }: ConversationPaneProps) {
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  useEffect(() => { setQuoteError(null); }, [submittedRowId, viewState.conversationId, viewportKey?.authority, viewportKey?.identity, viewportKey?.conversation, viewportKey?.pane]);
   const scrollRef = useRef<HTMLElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
+  const [railHeight, setRailHeight] = useState<number | null>(null);
+  const [railPage, setRailPage] = useState<{ conversationId: string; firstTurnId: string } | null>(null);
+  const [railInsets, setRailInsets] = useState({ top: 0, bottom: 0 });
+  const scroll = useConversationScrollController({
+    viewportRef: scrollRef, contentRef, viewportKey,
+    conversationId: viewState.conversationId, contentVersion: viewState, submittedRowId,
+    revealAnchor: onRevealAnchor,
+  });
   const [visibleTurnIndexes, setVisibleTurnIndexes] = useState<number[]>([]);
   const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
   const showEmptyState = Boolean(viewState.emptyState && viewState.entries.length === 0 && !canRenderTurnDiff);
-  const previousConversationRef = useRef<string | null>(null);
-  const previousEntryCountRef = useRef(0);
-
-  useLayoutEffect(() => {
-    const scrollEl = scrollRef.current;
-    if (!scrollEl) {
-      return;
-    }
-
-    const isNewConversation = previousConversationRef.current !== viewState.conversationId;
-    const entryCount = viewState.entries.length;
-    const appended = entryCount >= previousEntryCountRef.current;
-    const distanceFromBottom = scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop;
-    const shouldStickToBottom = isNewConversation || appended || distanceFromBottom < 96;
-
-    previousConversationRef.current = viewState.conversationId;
-    previousEntryCountRef.current = entryCount;
-
-    if (!shouldStickToBottom) {
-      return;
-    }
-
-    scrollEl.scrollTop = scrollEl.scrollHeight;
-  }, [
-    viewState.conversationId,
-    viewState.entries.length,
-    viewState.groups.length,
-    viewState.turnDiff,
-  ]);
-
   const visibleTurns = useMemo(
     () => groupConversationTranscriptTurns(visibleTranscriptGroups(viewState, maxGroups)),
     [maxGroups, viewState],
@@ -112,6 +124,35 @@ export function ConversationPane({
       ? [{ id: "turn-diff", groups: [] }]
       : [];
   const showTurnRail = showTurnRailProp && !showEmptyState && railTurns.length > 1;
+  // Bound the rail to its measured band. Page controls keep every source turn
+  // individually reachable, while stable turn IDs survive history prepends.
+  const railSlots = railHeight === null || railHeight <= 0
+    ? 48 : Math.max(3, Math.min(48, Math.floor((railHeight - 8) / 10) - 1));
+  const railCapacity = Math.max(1, railSlots - 2);
+  const requestedRailStart = railPage?.conversationId === viewState.conversationId
+    ? railTurns.findIndex(turn => turn.id === railPage.firstTurnId) : -1;
+  const railStart = railTurns.length <= railSlots ? 0
+    : Math.min(Math.max(0, railTurns.length - railCapacity), requestedRailStart < 0 ? railTurns.length - railCapacity : requestedRailStart);
+  const railEnd = railTurns.length <= railSlots ? railTurns.length : Math.min(railTurns.length, railStart + railCapacity);
+  const pageRail = (start: number) => {
+    const turn = railTurns[Math.max(0, Math.min(start, railTurns.length - railCapacity))];
+    if (turn) setRailPage({ conversationId: viewState.conversationId, firstTurnId: turn.id });
+  };
+
+  useEffect(() => { setRailPage(null); }, [viewState.conversationId, viewportKey?.authority, viewportKey?.identity, viewportKey?.conversation, viewportKey?.pane]);
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail || !showTurnRail) return;
+    const measure = () => setRailHeight(rail.getBoundingClientRect().height);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(entries => {
+      const entry = entries.find(item => item.target === rail);
+      if (entry) setRailHeight(entry.contentRect.height);
+    });
+    observer?.observe(rail);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [showTurnRail]);
 
   useEffect(() => {
     const scrollNode = scrollRef.current;
@@ -186,26 +227,38 @@ export function ConversationPane({
     };
   }, [railTurns.length]);
 
-  function scrollToTurn(turnIndex: number) {
-    const scrollNode = scrollRef.current;
-    const turnNode = scrollNode?.querySelector<HTMLElement>(
-      `[data-cc-conversation-turn-index="${turnIndex}"]`,
-    );
-    if (!turnNode) {
-      return;
-    }
-    turnNode.scrollIntoView({
-      block: "start",
-      behavior: "smooth",
+  useEffect(() => {
+    const measure = () => setRailInsets((previous) => {
+      const next = { top: headerRef.current?.getBoundingClientRect().height ?? 0, bottom: footerRef.current?.getBoundingClientRect().height ?? 0 };
+      return next.top === previous.top && next.bottom === previous.bottom ? previous : next;
     });
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (headerRef.current) observer?.observe(headerRef.current);
+    if (footerRef.current) observer?.observe(footerRef.current);
+    return () => observer?.disconnect();
+  }, [header, footer, contextSlot, onQuoteSelection, scroll.awayFromEnd, scroll.missingAnchor, scroll.revealingAnchor]);
+
+  function scrollToTurn(turnIndex: number) {
+    const rowId = visibleTurns[turnIndex]?.groups[0]?.entries[0]?.id;
+    if (rowId) scroll.jumpToRow(rowId);
   }
 
   return (
-    <div className={clsx("cc-theme-scope", "cc-conversation-pane", className)}>
+    <ConversationPresentationProvider labels={displayLabels} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
+    <div className={clsx("cc-theme-scope", "cc-conversation-pane", header && "cc-conversation-pane--header", className)} style={{ "--cc-conversation-header-height": `${railInsets.top}px`, "--cc-conversation-footer-height": `${railInsets.bottom}px` } as CSSProperties}>
+      {header ? <div ref={headerRef}><ConversationHeader {...header} /></div> : null}
       {showTurnRail ? (
-        <nav className="cc-conversation-turn-rail" aria-label="Conversation turns">
+        <nav ref={railRef} className="cc-conversation-turn-rail" aria-label="Conversation turns">
           <ol className="cc-conversation-turn-rail__list">
-            {railTurns.map((turn, turnIndex) => {
+            {railStart > 0 ? <li className="cc-conversation-turn-rail__item">
+              <button type="button" className="cc-conversation-turn-rail__button cc-conversation-turn-rail__page"
+                aria-label="Show earlier turns" title="Show earlier turns" onClick={() => pageRail(railStart - railCapacity)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4 10 4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </li> : null}
+            {railTurns.slice(railStart, railEnd).map((turn, railIndex) => {
+              const turnIndex = railStart + railIndex;
               const isLastVisibleTurn = turnIndex === visibleTurns.length - 1;
               const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
               const preview = visibleTurns[turnIndex]
@@ -262,16 +315,23 @@ export function ConversationPane({
                 </li>
               );
             })}
+            {railEnd < railTurns.length ? <li className="cc-conversation-turn-rail__item">
+              <button type="button" className="cc-conversation-turn-rail__button cc-conversation-turn-rail__page"
+                aria-label="Show later turns" title="Show later turns" onClick={() => pageRail(railStart + railCapacity)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </li> : null}
           </ol>
         </nav>
       ) : null}
-      <section ref={scrollRef} className={clsx("cc-conversation-pane__scroll", scrollClassName)}>
-        <div className={clsx("cc-conversation-pane__body", bodyClassName)}>
+      <section ref={scrollRef} tabIndex={0} aria-label="Conversation transcript" className={clsx("cc-conversation-pane__scroll", scrollClassName)}>
+        <div ref={contentRef} className={clsx("cc-conversation-pane__body", bodyClassName)}>
           {showEmptyState && viewState.emptyState ? (
             <ConversationEmptyState Icon={Icon} onApplySuggestion={onApplySuggestion} state={viewState.emptyState} />
           ) : (
             <ConversationTranscript
               Icon={Icon}
+              markdownUrlPolicy={markdownUrlPolicy}
               compact={compact}
               expandedDiffFile={expandedDiffFile}
               maxGroups={maxGroups}
@@ -281,12 +341,27 @@ export function ConversationPane({
               onToggleDiffFile={onToggleDiffFile}
               showTurnDiff={showTurnDiff}
               viewState={viewState}
+              approvalSnapshot={approvalSnapshot}
+              approvalIdentity={approvalIdentity ?? viewportKey?.identity}
+              onApprovalDecision={onApprovalDecision}
             />
           )}
+          {showEmptyState ? <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={approvalIdentity ?? viewportKey?.identity} onApprovalDecision={onApprovalDecision} conversationId={viewState.conversationId} /> : null}
           {scrollTail}
         </div>
       </section>
-      {footer ? <div className="cc-conversation-pane__footer">{footer}</div> : null}
+      {onQuoteSelection ? <QuoteSelectionAction key={`${viewState.conversationId}:${viewportKey?.authority ?? ""}:${viewportKey?.identity ?? ""}`} viewportRef={scrollRef} onQuote={onQuoteSelection} onError={setQuoteError} /> : null}
+      {scroll.awayFromEnd ? <JumpToLatest onClick={scroll.jumpToLatest} working={isWorking ?? viewState.entries.some((entry) => entry.kind === "message" && entry.richStyle === "streaming")} /> : null}
+      {scroll.missingAnchor || scroll.revealingAnchor || footer || contextSlot || quoteError ? (
+        <div ref={footerRef} className="cc-conversation-pane__footer" onInputCapture={() => { if (quoteError) setQuoteError(null); }}>
+          {scroll.revealingAnchor ? <div role="status">Restoring earlier position...</div> : null}
+          {scroll.missingAnchor ? <div role="status">Earlier position is unavailable. Load older history to see more.</div> : null}
+          {quoteError ? <p role="alert">{quoteError}</p> : null}
+          {contextSlot}
+          {footer}
+        </div>
+      ) : null}
     </div>
+    </ConversationPresentationProvider>
   );
 }

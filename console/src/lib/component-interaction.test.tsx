@@ -1260,3 +1260,36 @@ test("tool-call copy over plain http shows a FAILURE mark rather than an unearne
     root!.unmount();
   });
 });
+
+test("distinct assistant runs expose independent response copy actions", async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  const writes: string[] = [];
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async (text: string) => { writes.push(text); } } } });
+  const host = dom.window.document.getElementById("root")!;
+  const root = createRoot(host);
+  const identity = { id: "router:main", label: "Router", role: "assistant" as const };
+  const entries: ConversationTimelineEntry[] = [
+    { id: "review-tail", kind: "message", variant: "plain", identity, interactionId: "review", runId: "run-1", text: "The review finished." },
+    { id: "steer-reply", kind: "message", variant: "plain", identity, interactionId: "steer", runId: "run-2", text: "Steering acknowledged." },
+  ];
+  try {
+    flushSync(() => root.render(<ConversationTranscript viewState={{ groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null }} />));
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('button[aria-label="Copy response"]')];
+    assert.equal(buttons.length, 2, "each typed response has its own copy action");
+    for (const button of buttons) {
+      await React.act(async () => { button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    }
+    assert.deepEqual(writes, ["The review finished.", "Steering acknowledged."], "copy cannot combine separate runs");
+    assert.deepEqual([...host.querySelectorAll("[data-conversation-row-id]")].map(node => node.getAttribute("data-conversation-row-id")), ["review-tail", "steer-reply"]);
+  } finally {
+    root.unmount(); globalThis.window = previousWindow; globalThis.document = previousDocument;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else Reflect.deleteProperty(globalThis, "navigator");
+    dom.window.close();
+  }
+});

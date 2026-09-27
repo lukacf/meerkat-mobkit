@@ -138,7 +138,8 @@ test("headless timeline controller seeds, subscribes after cursor, backfills rep
   );
 
   assert.deepEqual(delivered.map((frame) => frame.id), ["seed"]);
-  assert.deepEqual(transport.subscriptions, [{ identity: "identity:lead", after: "console:1" }]);
+  assert.deepEqual(transport.subscriptions.map((subscription) => { const { signal: _signal, ...scope } = subscription as { signal?: AbortSignal }; return scope; }), [{ identity: "identity:lead", after: "console:1" }]);
+  assert.ok((transport.subscriptions[0] as { signal?: AbortSignal }).signal);
 
   transport.live?.({ id: "gap", event: "replay_unavailable", data: {} });
   await new Promise((resolve) => setTimeout(resolve, 0));

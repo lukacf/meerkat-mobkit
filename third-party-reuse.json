@@ -1,0 +1,17 @@
+[
+  {
+    "project": "T3 Code",
+    "repository": "https://github.com/pingdotgg/t3code",
+    "revision": "d06f0ff1048d42a156824765316c5a2dc54f5bca",
+    "license": "MIT",
+    "sources": [
+      "apps/web/src/components/chat/timelineScrollAnchoring.ts",
+      "apps/web/src/components/chat/timelineScrollTarget.ts"
+    ],
+    "destinations": [
+      "packages/console-components/src/conversation/scroll-geometry.ts",
+      "packages/console-components/src/conversation/scroll-controller.ts"
+    ],
+    "adaptation": "Stable row geometry, bounded position cache, and nested-scroll gesture ownership, adapted to DOM measurement and MobKit viewport scope."
+  }
+]

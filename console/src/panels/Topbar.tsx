@@ -2,6 +2,7 @@ import React from "react";
 
 interface TopbarProps {
   mobName: string;
+  connectionStatus?: React.ReactNode;
   brandLabel?: string;
   brandLogoUrl?: string;
   brandLogoAlt?: string;
@@ -41,6 +42,7 @@ function PanelGlyph({ side, open }: { side: "left" | "right"; open: boolean }): 
 
 export function Topbar({
   mobName,
+  connectionStatus,
   brandLabel = "MobKit",
   brandLogoUrl,
   brandLogoAlt,
@@ -83,6 +85,7 @@ export function Topbar({
         <span>{environment}</span>
       </div>
       <div className="mobkit-topbar__spacer" />
+      {connectionStatus}
       <div className="mobkit-topbar__util">
         <button
           type="button"

@@ -128,6 +128,284 @@ fn mobkit_gateway_bootstraps_persistent_runtime() {
     assert_bootstraps(true);
 }
 
+/// Keep the actual HTTP host alive through a clean stop. Hard-kill is only an
+/// unwind guard; a successful test must observe graceful cleanup and MobStopped.
+#[cfg(unix)]
+struct RestartGateway {
+    child: std::process::Child,
+    _stdin: std::process::ChildStdin,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+    http_base_url: String,
+    bearer: Option<String>,
+}
+
+#[cfg(unix)]
+impl RestartGateway {
+    fn start(workspace: &Path, store: &Path, identity_first: bool, voice: bool) -> Self {
+        let mut params = json!({
+            "workspace_root": workspace,
+            "store_path": store,
+            "persistent_sessions": true,
+            "identity_first": identity_first,
+        });
+        if identity_first {
+            params["identity_roster"] = json!([{
+                "identity": "personal:alice", "profile": "alpha"
+            }]);
+        }
+        let bearer = voice.then(|| {
+            params["auth_config"] = json!({
+                "provider": "jwt", "shared_secret": "test-console-signing-key",
+                "email_allowlist": ["voice@example.com"]
+            });
+            params["console_voice"] = json!({
+                "principal": "voice@example.com", "realm": "voice",
+                "auth_binding": {"realm": "voice", "binding": "openai"},
+                "voice": "marin"
+            });
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::default(),
+                &json!({
+                    "iss": "http://127.0.0.1/mobkit-gateway",
+                    "aud": "persistent-gateway", "sub": "voice@example.com",
+                    "email": "voice@example.com",
+                    "exp": chrono::Utc::now().timestamp() + 600,
+                }),
+                &jsonwebtoken::EncodingKey::from_secret(b"test-console-signing-key"),
+            )
+            .expect("sign console token")
+        });
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mobkit_gateway"))
+            .current_dir(workspace)
+            .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+            .env("OPENAI_API_KEY", "sk-regression-test")
+            .env("XDG_STATE_HOME", workspace.join("xdg-state"))
+            .env("RUST_LOG", "info")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn persistent HTTP gateway");
+        let stdin = child.stdin.take().expect("gateway stdin");
+        let stdout = child.stdout.take().expect("gateway stdout");
+        let mut stderr = child.stderr.take().expect("gateway stderr");
+        let stderr = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            bytes
+        });
+        let mut gateway = Self {
+            child,
+            _stdin: stdin,
+            stderr: Some(stderr),
+            http_base_url: String::new(),
+            bearer,
+        };
+        writeln!(
+            gateway._stdin,
+            "{}",
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "mobkit/init", "params": params
+            })
+        )
+        .expect("write persistent init");
+        gateway._stdin.flush().expect("flush persistent init");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = BufReader::new(stdout).read_line(&mut line);
+            let _ = tx.send(line);
+        });
+        let line = rx
+            .recv_timeout(Duration::from_secs(45))
+            .expect("persistent init timeout");
+        let response: Value = serde_json::from_str(&line).expect("persistent init JSON");
+        assert!(
+            response.get("error").is_none(),
+            "persistent init failed: {response}"
+        );
+        assert_eq!(response["result"]["launch_state"], "created", "{response}");
+        gateway.http_base_url = response["result"]["http_base_url"]
+            .as_str()
+            .expect("HTTP base URL")
+            .to_owned();
+        gateway
+    }
+
+    fn rpc(&self, method: &str, params: Value) -> Value {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("HTTP client");
+        let mut request = client
+            .post(format!("{}/console/rpc", self.http_base_url))
+            .json(&json!({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}));
+        if let Some(bearer) = &self.bearer {
+            request = request.bearer_auth(bearer);
+        }
+        let response: Value = request
+            .send()
+            .expect("HTTP RPC")
+            .error_for_status()
+            .expect("HTTP RPC status")
+            .json()
+            .expect("HTTP RPC JSON");
+        assert!(
+            response.get("error").is_none(),
+            "{method} failed: {response}"
+        );
+        response["result"].clone()
+    }
+
+    fn stop(mut self) {
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status()
+                .expect("signal gateway")
+                .success()
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("gateway exit status") {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "graceful shutdown timed out"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let bytes = self
+            .stderr
+            .take()
+            .expect("stderr task")
+            .join()
+            .expect("stderr drain");
+        let stderr = String::from_utf8_lossy(&bytes);
+        assert!(status.success(), "gateway exit {status}: {stderr}");
+        assert!(
+            stderr.contains("mobkit_gateway shutdown complete; exiting"),
+            "{stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RestartGateway {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if std::thread::panicking()
+            && let Some(stderr) = self.stderr.take()
+            && let Ok(bytes) = stderr.join()
+        {
+            eprintln!(
+                "persistent HTTP gateway stderr: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+fn assert_persistent_http_restart(identity_first: bool, voice: bool) {
+    let workspace = TempDir::new().expect("restart workspace");
+    let store = workspace.path().join("store");
+    let layout = meerkat_mobkit::storage_layout::MobKitStorageLayout::standalone_from_store_path(
+        &store,
+        workspace.path().join("xdg-state"),
+    );
+    let mut first_binding = None;
+    for boot in 1..=2 {
+        let gateway = RestartGateway::start(workspace.path(), &store, identity_first, voice);
+        // HTTP status reads the actual MobMachine state, not module activity.
+        assert_eq!(gateway.rpc("mobkit/status", json!({}))["running"], true);
+        let fallback = gateway.rpc("mobkit/member_status", json!({"member_id": "alpha"}));
+        assert!(fallback["current_session_id"].is_string(), "{fallback}");
+        let binding = if identity_first {
+            let identity = gateway.rpc(
+                "mobkit/status_identity",
+                json!({"identity": "personal:alice"}),
+            );
+            assert_eq!(identity["state"], "active", "{identity}");
+            assert!(identity["session_id"].is_string(), "{identity}");
+            assert!(identity["agent_runtime_id"].is_string(), "{identity}");
+            let member = gateway.rpc(
+                "mobkit/member_status",
+                json!({
+                    "member_id": identity["agent_runtime_id"]
+                }),
+            );
+            assert_eq!(member["current_session_id"], identity["session_id"]);
+            json!([identity["agent_runtime_id"], identity["session_id"]])
+        } else {
+            fallback["current_session_id"].clone()
+        };
+        if let Some(first) = &first_binding {
+            assert_eq!(
+                &binding, first,
+                "second boot must preserve the real session binding"
+            );
+        } else {
+            first_binding = Some(binding);
+        }
+        // Exercise the activated owner without any provider call. A successful
+        // status projection alone would not establish that membership works.
+        let worker = format!("restart-worker-{boot}");
+        gateway.rpc(
+            "mobkit/ensure_member",
+            json!({
+                "role": "worker", "agent_identity": worker, "plane": "worker"
+            }),
+        );
+        let member = gateway.rpc("mobkit/member_status", json!({"member_id": worker}));
+        assert!(member["current_session_id"].is_string(), "{member}");
+        gateway.stop();
+
+        // Each boot must start from a genuinely persisted Stopped mob. Inspect
+        // the stored event envelope, not a shutdown log or a mocked state.
+        let db = rusqlite::Connection::open_with_flags(
+            layout.event_log_db(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("durable mob event log");
+        let stopped: u32 = db.query_row(
+            "SELECT COUNT(*) FROM mob_events WHERE json_extract(CAST(event_json AS TEXT), '$.event.kind.type') = 'mob_stopped'",
+            [], |row| row.get(0),
+        ).expect("count durable stop events");
+        assert_eq!(
+            stopped, boot,
+            "each clean shutdown must persist exactly one MobStopped"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_http_restarts_classic_without_voice() {
+    assert_persistent_http_restart(false, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_http_restarts_identity_without_voice() {
+    assert_persistent_http_restart(true, false);
+}
+
+#[cfg(all(unix, feature = "openai-live"))]
+#[test]
+fn persistent_http_restarts_classic_with_voice() {
+    assert_persistent_http_restart(false, true);
+}
+
+#[cfg(all(unix, feature = "openai-live"))]
+#[test]
+fn persistent_http_restarts_identity_with_voice() {
+    assert_persistent_http_restart(true, true);
+}
+
 /// Both gateway binaries must self-identify via `--version` (name + version),
 /// so operators can tell which of the two they have without hashing the file —
 /// the gap that turned a mislabeled binary into a multi-day investigation.

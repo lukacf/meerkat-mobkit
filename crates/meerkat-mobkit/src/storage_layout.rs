@@ -578,6 +578,46 @@ fn gateway_home_from(
         .join(GATEWAY_HOME_DIR_NAME))
 }
 
+/// Resolve a supplied storage root or file override to its physical path.
+///
+/// Existing paths use filesystem canonicalization. For an absent path, resolve
+/// its deepest existing ancestor and append the missing components without
+/// creating them. This keeps the storage identity stable when its directories
+/// or database file are first created. Relative paths anchor at the current
+/// working directory, exactly where the store would create them.
+///
+/// Filesystem errors other than a missing path are returned unchanged. A
+/// parent traversal above a missing component is refused because its physical
+/// identity cannot be established by removing path components textually.
+pub fn canonicalize_storage_root(path: &Path) -> std::io::Result<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if existing.as_os_str().is_empty() {
+            existing = std::env::current_dir()?;
+            continue;
+        }
+        match std::fs::canonicalize(&existing) {
+            Ok(mut canonical) => {
+                for component in missing_tail.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
+                    // A `..` or root ending above a missing component cannot
+                    // be resolved textually without lying about identity.
+                    return Err(error);
+                };
+                missing_tail.push(name);
+                existing = existing.parent().map(PathBuf::from).unwrap_or_default();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// The sanctioned per-process scratch root for
 /// [`MobKitStorageLayout::declared_ephemeral`] layouts: a pid-suffixed
 /// directory under the OS temp directory (per-process, so two gateways on
@@ -597,6 +637,91 @@ mod tests {
 
     fn durable_layout(dir: &Path) -> MobKitStorageLayout {
         MobKitStorageLayout::with_injected_roots(dir.to_path_buf(), None)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_storage_root_is_stable_before_and_after_nested_directory_creation() {
+        let temp = tempfile::tempdir().expect("scratch directory");
+        let physical = temp.path().join("physical");
+        std::fs::create_dir(&physical).expect("physical parent");
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&physical, &alias).expect("symlinked parent");
+        let supplied = alias.join("not-created/nested/state");
+        let expected = physical
+            .canonicalize()
+            .expect("canonical physical parent")
+            .join("not-created/nested/state");
+
+        let before = canonicalize_storage_root(&supplied).expect("resolve absent nested root");
+        assert_eq!(before, expected);
+        assert!(
+            !supplied.exists(),
+            "path resolution must not create storage"
+        );
+        std::fs::create_dir_all(&supplied).expect("create storage after resolution");
+        assert_eq!(
+            canonicalize_storage_root(&supplied).expect("resolve existing root"),
+            before,
+            "creating the same physical root must not change its identity"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_storage_root_preserves_an_absent_session_file_override() {
+        let temp = tempfile::tempdir().expect("scratch directory");
+        let physical = temp.path().join("physical");
+        std::fs::create_dir(&physical).expect("physical parent");
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&physical, &alias).expect("symlinked parent");
+        let supplied = alias.join("not-created/sessions.sqlite3");
+        let before = canonicalize_storage_root(&supplied).expect("resolve absent file override");
+        assert_eq!(
+            before,
+            physical
+                .canonicalize()
+                .expect("canonical physical parent")
+                .join("not-created/sessions.sqlite3")
+        );
+        assert!(!supplied.exists(), "resolving a DB path must not create it");
+        std::fs::create_dir_all(supplied.parent().expect("DB parent")).expect("create DB parent");
+        std::fs::write(&supplied, b"").expect("create DB override");
+        assert_eq!(
+            canonicalize_storage_root(&supplied).expect("existing DB override"),
+            before
+        );
+        let layout =
+            MobKitStorageLayout::standalone_from_store_path(&before, temp.path().join("gateway"));
+        assert_eq!(
+            layout.session_db().expect("resolve session override").path,
+            before
+        );
+    }
+
+    #[test]
+    fn canonical_storage_root_refuses_parent_traversal_above_a_missing_component() {
+        let temp = tempfile::tempdir().expect("scratch directory");
+        let supplied = temp.path().join("not-created/../state");
+        let error =
+            canonicalize_storage_root(&supplied).expect_err("unresolved parent is ambiguous");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!temp.path().join("not-created").exists());
+        assert!(!temp.path().join("state").exists());
+    }
+
+    #[test]
+    fn canonical_storage_root_preserves_non_missing_filesystem_errors() {
+        let temp = tempfile::tempdir().expect("scratch directory");
+        let file = temp.path().join("file");
+        std::fs::write(&file, b"not a directory").expect("create regular file");
+        let supplied = file.join("state");
+        let actual = canonicalize_storage_root(&supplied).expect_err("file cannot contain a root");
+        let direct = supplied
+            .canonicalize()
+            .expect_err("filesystem rejects file parent");
+        assert_eq!(actual.kind(), direct.kind());
+        assert_eq!(actual.raw_os_error(), direct.raw_os_error());
     }
 
     #[test]

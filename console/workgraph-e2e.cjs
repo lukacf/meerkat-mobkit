@@ -308,7 +308,7 @@ async function runBrowserChecks(page, baseUrl, seeded) {
   const detail =
     (await page.locator('[data-testid="workgraph-graph-detail"]').textContent()) ?? "";
   assert.ok(detail.includes(seeded.claimedId), `detail names the item: ${detail}`);
-  assert.ok(detail.includes("in_progress"), `detail carries the status: ${detail}`);
+  assert.ok(detail.includes("In progress"), `detail carries the readable status: ${detail}`);
 
   const screenshotPath = path.join(screenshotDir, "workgraph-graph.png");
   await page.screenshot({ path: screenshotPath, fullPage: true });
