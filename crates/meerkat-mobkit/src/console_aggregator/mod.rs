@@ -8546,7 +8546,14 @@ mod tests {
         read_calls: Arc<AtomicUsize>,
         active_reads: Arc<AtomicUsize>,
         max_active_reads: Arc<AtomicUsize>,
+        first_read_wave: Arc<std::sync::Mutex<Option<HistoryReadWave>>>,
         scripted_reads: Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedHistoryRead>>>,
+    }
+
+    #[derive(Clone)]
+    struct HistoryReadWave {
+        count: usize,
+        barrier: Arc<tokio::sync::Barrier>,
     }
 
     pub(super) struct ScriptedHistoryRead {
@@ -8584,6 +8591,7 @@ mod tests {
                 read_calls: Arc::new(AtomicUsize::new(0)),
                 active_reads: Arc::new(AtomicUsize::new(0)),
                 max_active_reads: Arc::new(AtomicUsize::new(0)),
+                first_read_wave: Arc::new(std::sync::Mutex::new(None)),
                 scripted_reads: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             }
         }
@@ -8601,6 +8609,14 @@ mod tests {
 
         fn max_active_reads(&self) -> usize {
             self.max_active_reads.load(Ordering::SeqCst)
+        }
+
+        fn synchronize_first_history_reads(&self, count: usize) {
+            assert_eq!(self.read_calls(), 0, "configure before any history reads");
+            *self.first_read_wave.lock().expect("first read wave lock") = Some(HistoryReadWave {
+                count,
+                barrier: Arc::new(tokio::sync::Barrier::new(count)),
+            });
         }
     }
 
@@ -8815,9 +8831,17 @@ mod tests {
             id: &SessionId,
             query: SessionHistoryQuery,
         ) -> Result<SessionHistoryPage, SessionError> {
-            self.read_calls.fetch_add(1, Ordering::SeqCst);
+            let read_index = self.read_calls.fetch_add(1, Ordering::SeqCst);
             let active = self.active_reads.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active_reads.fetch_max(active, Ordering::SeqCst);
+            let first_wave = self
+                .first_read_wave
+                .lock()
+                .expect("first read wave lock")
+                .clone();
+            if let Some(wave) = first_wave.filter(|wave| read_index < wave.count) {
+                wave.barrier.wait().await;
+            }
             let scripted = self
                 .scripted_reads
                 .lock()
@@ -15054,8 +15078,17 @@ comms = true
     async fn refresh_session_history_parallelizes_slow_member_backfills_at_scale() {
         const MEMBER_COUNT: usize = 32;
         let (_temp, runtime, delayed_service) =
-            build_stress_runtime(MEMBER_COUNT, Duration::from_millis(40)).await;
+            build_stress_runtime(MEMBER_COUNT, Duration::ZERO).await;
         let aggregator = MobKitConsoleAggregator::in_memory();
+        let permit_limit = ConsoleAggregatorOptions::default().max_concurrent_session_backfills;
+        assert!(
+            MEMBER_COUNT > permit_limit,
+            "fixture must oversubscribe the limiter for the peak to be decidable"
+        );
+        // Hold every read in the first wave until the entire permit pool has
+        // entered. This proves overlap independently of scheduler speed; serial
+        // or under-filled fan-out cannot release the barrier and times out.
+        delayed_service.synchronize_first_history_reads(permit_limit);
         aggregator
             .inner
             .runtimes
@@ -15066,34 +15099,18 @@ comms = true
                 runtime_entry_for_test("runtime-stress", &runtime),
             );
 
-        aggregator
-            .refresh_session_history()
-            .await
-            .expect("stress refresh");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            aggregator.refresh_session_history(),
+        )
+        .await
+        .expect("session history backfill must fill the first concurrent read wave")
+        .expect("stress refresh");
 
         assert!(
             delayed_service.read_calls() >= MEMBER_COUNT,
             "expected at least one history read per member, saw {}",
             delayed_service.read_calls()
-        );
-        // Fan-out is asserted on the OBSERVED PEAK, not on wall-clock elapsed.
-        // `backfill_session_history_targets` collects all MEMBER_COUNT targets
-        // up front and spawns every one into the JoinSet before joining any, so
-        // each task's first act is to take a `session_backfill_permits` permit
-        // and increment `active_reads` before its 40ms read. With more members
-        // than permits the peak is therefore structurally the permit count: a
-        // lower peak would require a holder to finish its whole 40ms read
-        // before a sibling that already holds a permit was ever polled.
-        //
-        // The old check was `elapsed < 600ms`. That only separated concurrency
-        // >= 3 from <= 2 (32 members * 40ms is 1280ms serial, 80ms at the full
-        // limit), and any ceiling generous enough to survive full-suite CPU
-        // starvation would have stopped discriminating regressions at all. The
-        // peak assertion is strictly sharper AND load-independent.
-        let permit_limit = ConsoleAggregatorOptions::default().max_concurrent_session_backfills;
-        assert!(
-            MEMBER_COUNT > permit_limit,
-            "fixture must oversubscribe the limiter for the peak to be decidable"
         );
         assert_eq!(
             delayed_service.max_active_reads(),
