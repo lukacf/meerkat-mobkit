@@ -809,6 +809,52 @@ comms = true
         assert_eq!(members, vec!["early-fork", "fork-child"]);
     }
 
+    /// A `disabled` opt-in row an older MobKit persisted (from a model's
+    /// `idle_retire_secs: null`, before null meant "same as omitting") still
+    /// loads and still keeps its member out of retirement: the sweep counts
+    /// the member as opted in and finds no idle window.
+    #[tokio::test]
+    async fn a_persisted_disabled_opt_in_still_loads_and_disables_retirement() {
+        use crate::SqliteMetadataStore;
+        use meerkat_core::types::SessionId;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.sqlite3");
+        drop(SqliteMetadataStore::open(&path).expect("create metadata store"));
+        let session = SessionId::new();
+        // The row exactly as an older version wrote it (no `recorded_at`).
+        rusqlite::Connection::open(&path)
+            .expect("open metadata file")
+            .execute(
+                "INSERT INTO mobkit_metadata (mob_id, key, value) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "mob-a",
+                    "member_idle_retire/helper",
+                    serde_json::json!({"session_id": session, "policy": "disabled"}).to_string()
+                ],
+            )
+            .expect("insert older disabled row");
+
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let restored = overrides
+            .attach_durable_store(Arc::new(
+                SqliteMetadataStore::open(&path).expect("reopen metadata store"),
+            ))
+            .await;
+        assert_eq!(restored, 1);
+        let policy = overrides
+            .reconcile_seated("mob-a", "helper", Some(&session))
+            .await;
+        assert_eq!(policy, Some(DelegateIdleRetireOverride::Disabled));
+
+        let labels = std::collections::BTreeMap::new();
+        assert!(idle_retirement_candidate(true, false, &labels, policy));
+        assert_eq!(
+            delegate_member_idle_retire_after(&labels, policy, Some(Duration::from_mins(5))),
+            None
+        );
+    }
+
     /// An unreadable store restores nothing but still receives the opt-ins
     /// set before the attach.
     #[tokio::test]

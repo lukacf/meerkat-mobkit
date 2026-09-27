@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BEHAVIOR CHANGE: `idle_retire_secs: null` on the `delegate`, `fork_off`
+  and `mob_spawn_member` agent tools now means the same as omitting it.** It
+  used to disable idle retirement for the spawned member. MobKit's argument
+  was the lone exception to the rule every other optional tool argument
+  follows (meerkat's own tool args, such as `fork_off`'s `message_count` and
+  `max_run_secs`, are `Option` fields where null and absent both mean "not
+  set"), and models routinely send null for optional fields. Now: omitted or
+  null on `delegate` uses the runtime default, on `fork_off` opts the child
+  in on the runtime default, and on `mob_spawn_member` leaves the member out
+  of retirement; an integer is that many idle seconds on all three; any
+  other value is still refused as invalid arguments. There is no
+  model-facing way to disable retirement any more: a host that wants
+  spawned members kept sets `implicit_delegate_idle_retire_secs` to `null`
+  (Python `.implicit_delegate_idle_retirement(None)`, TypeScript
+  `.implicitDelegateIdleRetirement(null)`). The tool descriptions and schemas
+  say so; the schema still accepts null. `DelegateIdleRetireOverride::Disabled`
+  stays: `member_idle_retire` rows an earlier version persisted with it
+  still load and still keep their member, and host-side code may still set
+  it.
 - Bind the Meerkat family to published 0.8.43: `fork_off` and council
   completions arrive in the owner's transcript as a persisted `BackgroundJob`
   notice delivered in-turn (MobKit's callers are all mob members, so no
@@ -33,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Fixed
+
+- `fork_off` children sent with `idle_retire_secs: null` are idle-retired on
+  the runtime default. The null disabled retirement for the child, so a model
+  that filled in every optional field with null pinned each fork child until
+  the session ceiling refused new work, the very outcome `fork_off`'s
+  runtime-default opt-in exists to prevent (reported by HomeCore). Helpers
+  sent through `delegate` with a null had the same problem. See the behavior
+  change under Changed.
 
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either
