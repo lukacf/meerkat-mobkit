@@ -62,6 +62,19 @@ function assertStartupLineage(frames, historyPages) {
   return owners;
 }
 
+// Member readiness and a live UI do not prove the asynchronous peer reply has
+// committed. Observe the exact terminal and durable owner under one deadline.
+async function waitForStartupLineage({ timeline, durableHistory, onObservation = () => {} }, poll = eventually) {
+  return poll(async () => {
+    const { frames } = await timeline();
+    onObservation({ frames });
+    const history = await durableHistory(frames);
+    onObservation({ frames, history });
+    const owners = assertStartupLineage(frames, history);
+    return { frames, history, owners };
+  }, "startup Acceptance reply has completed with exact durable lineage", 20_000);
+}
+
 function assertStartupRendering(rendered, owners) {
   const replies = rendered.quotes.filter(quote => quote.source === source);
   assert.equal(replies.length, owners.length, "one complete startup reply per actual canonical run");
@@ -153,9 +166,15 @@ async function startupLineage(host) {
   }
   try {
     await open();
-    result.initialFrames = (await timeline()).frames;
-    result.initialHistory = await durableHistory(result.initialFrames);
-    result.initialOwners = assertStartupLineage(result.initialFrames, result.initialHistory);
+    const initial = await waitForStartupLineage({
+      timeline, durableHistory,
+      onObservation: ({ frames, history }) => {
+        result.initialFrames = frames;
+        if (history) result.initialHistory = history;
+        else delete result.initialHistory;
+      },
+    });
+    result.initialOwners = initial.owners;
     await inspect("initial", result.initialOwners);
     result.snapshot = await snapshot(fixture.backendUrl, `?identity=${encodeURIComponent(agentIdentity)}`);
     const snapshotFrames = result.snapshot.flatMap(item => item.data?.frame ? [item.data.frame] : []);
@@ -214,5 +233,5 @@ async function startupLineage(host) {
 }
 
 const scenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-startup-lineage`, family: "real-presentation", backend: "real", run: () => startupLineage(host) }));
-module.exports = { scenarios, assertStartupLineage, assertStartupRendering, source };
+module.exports = { scenarios, assertStartupLineage, assertStartupRendering, waitForStartupLineage, source };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
