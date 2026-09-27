@@ -840,6 +840,10 @@ fn no_op_pre_build_hook() -> PreBuildHook {
 #[serde(rename_all = "snake_case")]
 pub enum DelegateIdleRetireOverride {
     /// Never idle-retire the member.
+    ///
+    /// No agent tool produces this any more (`idle_retire_secs: null` means
+    /// "not set"); it stays for host-side callers and for opt-in rows an
+    /// earlier MobKit persisted with it, which must keep loading.
     Disabled,
     /// Idle-retire the member after this many idle seconds.
     Seconds(u64),
@@ -1942,7 +1946,8 @@ impl AutoWireParentMobToolDispatcher {
     /// `fork_off` seats the child in the caller's own mob, where idle
     /// retirement is opt-in. A fork that nobody retires holds one of the
     /// bounded sessions forever, so the child is opted in on the runtime
-    /// default unless the caller passes `idle_retire_secs` explicitly.
+    /// default unless the caller passes an integer `idle_retire_secs` (null
+    /// is the same as omitting it).
     async fn dispatch_fork_off(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -2268,6 +2273,17 @@ impl meerkat_mob::RealmProfileStore for DefinitionSeededRealmProfileStore {
     }
 }
 
+/// Strip and parse the model-facing `idle_retire_secs` argument of
+/// `delegate` and `mob_spawn_member` (and, through
+/// [`fork_off_idle_retire_override_from_args`], `fork_off`).
+///
+/// JSON null means "not set", exactly like an omitted field, as for every
+/// `Option` argument of meerkat's own tools: models routinely send null for
+/// optional fields, and a null must not silently pin a helper or fork child
+/// forever. There is no model-facing "disable"; hosts that want no
+/// retirement use the runtime default (`implicit_delegate_idle_retire_secs`).
+/// [`DelegateIdleRetireOverride::Disabled`] stays for persisted rows and
+/// host-side callers.
 fn delegate_idle_retire_override_from_args(
     tool_name: &str,
     args: &mut Value,
@@ -2275,27 +2291,24 @@ fn delegate_idle_retire_override_from_args(
     let Some(object) = args.as_object_mut() else {
         return Ok(None);
     };
-    let Some(value) = object.remove("idle_retire_secs") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(Some(DelegateIdleRetireOverride::Disabled));
+    match object.remove("idle_retire_secs") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(DelegateIdleRetireOverride::Seconds)
+            .map(Some)
+            .ok_or_else(|| {
+                meerkat_core::ToolError::invalid_arguments(
+                    tool_name,
+                    "idle_retire_secs must be a non-negative integer, or null to use the default",
+                )
+            }),
     }
-    value
-        .as_u64()
-        .map(DelegateIdleRetireOverride::Seconds)
-        .map(Some)
-        .ok_or_else(|| {
-            meerkat_core::ToolError::invalid_arguments(
-                tool_name,
-                "idle_retire_secs must be a non-negative integer or null",
-            )
-        })
 }
 
-/// `fork_off` idle policy: an explicit `idle_retire_secs` behaves exactly as
-/// for `delegate`; an omitted one opts the fork child into the runtime
-/// default instead of leaving it out of retirement.
+/// `fork_off` idle policy: an integer `idle_retire_secs` behaves exactly as
+/// for `delegate`; an omitted or null one opts the fork child into the
+/// runtime default instead of leaving it out of retirement.
 fn fork_off_idle_retire_override_from_args(
     tool_name: &str,
     args: &mut Value,
@@ -2327,7 +2340,7 @@ fn delegate_tool_def_with_idle_retire_secs(
             "\n\nIDLE RETIREMENT:\n\
              Omit idle_retire_secs to use the runtime default. Pass an integer \
              number of seconds to override idle auto-retirement for this helper. \
-             Pass null to disable auto-retirement for this helper.",
+             null is the same as omitting it.",
         );
     }
     if let Some(properties) = patched
@@ -2339,7 +2352,7 @@ fn delegate_tool_def_with_idle_retire_secs(
             .entry("idle_retire_secs".to_string())
             .or_insert_with(|| {
                 serde_json::json!({
-                    "description": "Override idle auto-retirement for this helper. Omit to use the runtime default, use an integer number of seconds to override, or null to disable auto-retirement for this helper.",
+                    "description": "Override idle auto-retirement for this helper: an integer number of seconds. Omit to use the runtime default; null is the same as omitting it.",
                     "anyOf": [
                         {"type": "integer", "minimum": 0},
                         {"type": "null"}
@@ -2359,7 +2372,7 @@ fn mob_spawn_tool_def_with_idle_retire_secs(
             "\n\nIDLE RETIREMENT:\n\
              Omit idle_retire_secs to leave this spawned member out of auto-retirement. \
              Pass an integer number of seconds to retire the member after it has been \
-             idle for that long. Pass null to explicitly disable auto-retirement.",
+             idle for that long. null is the same as omitting it.",
         );
     }
     if let Some(properties) = patched
@@ -2371,7 +2384,7 @@ fn mob_spawn_tool_def_with_idle_retire_secs(
             .entry("idle_retire_secs".to_string())
             .or_insert_with(|| {
                 serde_json::json!({
-                    "description": "Opt this spawned member into idle auto-retirement. Omit to keep the member indefinitely, use an integer number of seconds to retire after that much idle time, or null to explicitly disable auto-retirement.",
+                    "description": "Opt this spawned member into idle auto-retirement: an integer number of seconds to retire after that much idle time. Omit to keep the member indefinitely; null is the same as omitting it.",
                     "anyOf": [
                         {"type": "integer", "minimum": 0},
                         {"type": "null"}
@@ -11005,6 +11018,17 @@ mod tests {
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+        assert_null_described_as_omitting(&patched.description, idle_retire_secs);
+    }
+
+    /// The tool text tells the model null is the same as omitting, and no
+    /// longer offers a model-facing way to disable retirement.
+    fn assert_null_described_as_omitting(description: &str, schema: &Value) {
+        let schema_description = schema["description"].as_str().expect("schema description");
+        for text in [description, schema_description] {
+            assert!(text.contains("null is the same as omitting it"), "{text}");
+            assert!(!text.contains("disable"), "{text}");
+        }
     }
 
     #[test]
@@ -11059,6 +11083,7 @@ mod tests {
         );
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+        assert_null_described_as_omitting(&fork_off.description, idle_retire_secs);
     }
 
     #[test]
@@ -11078,13 +11103,15 @@ mod tests {
         );
         assert!(seconds.get("idle_retire_secs").is_none());
 
-        let mut disabled = serde_json::json!({"task": "inspect", "idle_retire_secs": null});
+        // null is the same as omitting: models emit null for optional
+        // fields, and a null must not pin the fork child forever.
+        let mut null = serde_json::json!({"task": "inspect", "idle_retire_secs": null});
         assert_eq!(
-            fork_off_idle_retire_override_from_args("fork_off", &mut disabled)
+            fork_off_idle_retire_override_from_args("fork_off", &mut null)
                 .expect("null arg is valid"),
-            DelegateIdleRetireOverride::Disabled
+            DelegateIdleRetireOverride::RuntimeDefault
         );
-        assert!(disabled.get("idle_retire_secs").is_none());
+        assert!(null.get("idle_retire_secs").is_none());
 
         let mut invalid = serde_json::json!({"task": "inspect", "idle_retire_secs": "soon"});
         assert!(fork_off_idle_retire_override_from_args("fork_off", &mut invalid).is_err());
@@ -11116,6 +11143,7 @@ mod tests {
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+        assert_null_described_as_omitting(&patched.description, idle_retire_secs);
     }
 
     #[tokio::test]
@@ -11284,7 +11312,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_idle_retire_secs_null_disables_member_retirement() {
+    fn delegate_idle_retire_secs_null_is_the_same_as_omitting() {
         let mut args = serde_json::json!({
             "task": "inspect",
             "idle_retire_secs": null
@@ -11293,8 +11321,177 @@ mod tests {
         let parsed = delegate_idle_retire_override_from_args("delegate", &mut args)
             .expect("valid idle retire arg");
 
-        assert_eq!(parsed, Some(DelegateIdleRetireOverride::Disabled));
-        assert!(args.get("idle_retire_secs").is_none());
+        assert_eq!(parsed, None);
+        assert_eq!(args, serde_json::json!({"task": "inspect"}));
+    }
+
+    /// The model-facing `idle_retire_secs` argument, per tool: JSON null
+    /// means "not set" exactly like an omitted field (as for meerkat's own
+    /// `Option` tool args), an integer is that many seconds, and anything
+    /// else is refused. The argument never reaches the inner tool.
+    #[test]
+    fn idle_retire_secs_arg_parses_per_tool_with_null_as_omitted() {
+        /// What each tool's dispatch registers for one argument value.
+        fn parse(
+            tool: &str,
+            args: &mut Value,
+        ) -> Result<Option<DelegateIdleRetireOverride>, meerkat_core::ToolError> {
+            match tool {
+                "fork_off" => fork_off_idle_retire_override_from_args(tool, args).map(Some),
+                _ => delegate_idle_retire_override_from_args(tool, args),
+            }
+        }
+
+        for (tool, unset) in [
+            // delegate: no override, the implicit mob's runtime default applies.
+            ("delegate", None),
+            // mob_spawn_member: not opted in, the member is kept.
+            ("mob_spawn_member", None),
+            // fork_off: opted in on the runtime default.
+            ("fork_off", Some(DelegateIdleRetireOverride::RuntimeDefault)),
+        ] {
+            let mut omitted = serde_json::json!({"task": "inspect"});
+            assert_eq!(
+                parse(tool, &mut omitted).expect("omitted is valid"),
+                unset,
+                "{tool}: omitted"
+            );
+            assert_eq!(omitted, serde_json::json!({"task": "inspect"}));
+
+            let mut null = serde_json::json!({"task": "inspect", "idle_retire_secs": null});
+            assert_eq!(
+                parse(tool, &mut null).expect("null is valid"),
+                unset,
+                "{tool}: null must mean the same as omitting"
+            );
+            assert_eq!(null, serde_json::json!({"task": "inspect"}));
+
+            for seconds in [42_u64, 0] {
+                let mut args = serde_json::json!({"task": "inspect", "idle_retire_secs": seconds});
+                assert_eq!(
+                    parse(tool, &mut args).expect("integer is valid"),
+                    Some(DelegateIdleRetireOverride::Seconds(seconds)),
+                    "{tool}: {seconds}"
+                );
+                assert_eq!(args, serde_json::json!({"task": "inspect"}));
+            }
+
+            for invalid in [
+                serde_json::json!(-1),
+                serde_json::json!("soon"),
+                serde_json::json!("42"),
+                serde_json::json!(1.5),
+                serde_json::json!(true),
+                serde_json::json!({"secs": 1}),
+            ] {
+                let mut args = serde_json::json!({"task": "inspect", "idle_retire_secs": invalid});
+                let error = parse(tool, &mut args).expect_err("non-integer is refused");
+                assert!(
+                    error.to_string().contains(
+                        "idle_retire_secs must be a non-negative integer, or null to use the default"
+                    ),
+                    "{tool}: {invalid}: {error}"
+                );
+            }
+        }
+    }
+
+    /// Dispatch-level: `idle_retire_secs: null` on each tool yields that
+    /// tool's default policy, the same as omitting it, and never reaches
+    /// the inner tool. An integer still registers its override, which shows
+    /// the registration path is live.
+    #[tokio::test]
+    async fn idle_retire_secs_null_dispatches_as_the_tools_default_policy() {
+        use meerkat_core::AgentToolDispatcher as _;
+
+        /// Stands in for meerkat's spawning tools: answers every call with
+        /// the spawned member's typed result and records the forwarded args.
+        struct SpawningTools(std::sync::Mutex<Vec<Value>>);
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for SpawningTools {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Arc::from(Vec::new())
+            }
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                let args: Value = serde_json::from_str(call.args.get()).expect("args");
+                let member = args["member_id"].as_str().expect("member_id").to_string();
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(args);
+                Ok(meerkat_core::ToolDispatchOutcome::sync_result(
+                    meerkat_core::types::ToolResult::new(
+                        call.id.to_string(),
+                        serde_json::json!({"mob_id": "ob3", "agent_identity": member}).to_string(),
+                        false,
+                    ),
+                ))
+            }
+        }
+
+        for (tool, unset) in [
+            ("delegate", None),
+            ("mob_spawn_member", None),
+            ("fork_off", Some(DelegateIdleRetireOverride::RuntimeDefault)),
+        ] {
+            let overrides = ImplicitDelegateRetirementOverrides::default();
+            let inner = Arc::new(SpawningTools(std::sync::Mutex::new(Vec::new())));
+            let dispatcher = AutoWireParentMobToolDispatcher {
+                inner: Arc::clone(&inner) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+                ..wrapper_with_overrides(overrides.clone())
+            };
+            for (member, idle_retire_secs) in [
+                ("null-child", Value::Null),
+                ("counted-child", serde_json::json!(90)),
+            ] {
+                let args = serde_json::value::RawValue::from_string(
+                    serde_json::json!({
+                        "mob_id": "ob3",
+                        "member_id": member,
+                        "task": "inspect",
+                        "idle_retire_secs": idle_retire_secs,
+                    })
+                    .to_string(),
+                )
+                .expect("raw args");
+                dispatcher
+                    .dispatch_with_context(
+                        meerkat_core::types::ToolCallView {
+                            id: "spawn-1",
+                            name: tool,
+                            args: &args,
+                        },
+                        &meerkat_core::ToolDispatchContext::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("{tool} dispatch: {error}"));
+            }
+            assert_eq!(
+                overrides.get("ob3", "null-child").await,
+                unset,
+                "{tool}: null must register the same policy as omitting"
+            );
+            assert_eq!(
+                overrides.get("ob3", "counted-child").await,
+                Some(DelegateIdleRetireOverride::Seconds(90)),
+                "{tool}: an integer still registers its override"
+            );
+            let forwarded = inner
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(forwarded.len(), 2, "{tool}");
+            assert!(
+                forwarded
+                    .iter()
+                    .all(|args| args.get("idle_retire_secs").is_none()),
+                "{tool}: idle_retire_secs is MobKit's, never forwarded"
+            );
+        }
     }
 
     #[test]
