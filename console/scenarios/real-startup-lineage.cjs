@@ -159,6 +159,33 @@ async function waitForStartupLineage({ timeline, durableHistory, expectedInterac
   }
 }
 
+async function observeStartupPhase(phase, { result, timeline, durableHistory, readRendered, timeoutMs, pollIntervalMs }) {
+  assert(["initial", "repeated", "reconnected", "reloaded"].includes(phase), "known startup observation phase");
+  assert.equal(typeof readRendered, "function", "every startup phase observes its actual rendered sources");
+  const accepted = phase === "initial" ? result.startupAccepted : phase === "repeated" ? result.accepted : undefined;
+  if (phase === "initial" || phase === "repeated") assert(accepted?.interaction_id, `${phase}: actual accepted interaction`);
+  const expectedOwners = phase === "reconnected" || phase === "reloaded" ? result.repeatedOwners : undefined;
+  if (phase === "reconnected" || phase === "reloaded") assert(expectedOwners?.length, `${phase}: previously committed startup owners`);
+  // A durable reply can precede its canonical timeline carrier. Every phase
+  // retries the timeline, history and DOM together under the existing deadline.
+  const observation = await waitForStartupLineage({
+    timeline, durableHistory, readRendered, expectedInteractionId: accepted?.interaction_id,
+    expectedOwners, timeoutMs, pollIntervalMs,
+    onObservation: ({ frames, history, rendered }) => {
+      result[`${phase}Frames`] = frames;
+      if (history) result[`${phase}History`] = history;
+      else delete result[`${phase}History`];
+      if (rendered) result[`${phase}Rendered`] = rendered;
+      else delete result[`${phase}Rendered`];
+    },
+  });
+  if (phase === "repeated") assert.equal(observation.owners.length, result.initialOwners.length + 1,
+    "same words belong to one additional canonical run");
+  result[`${phase}Owners`] = observation.owners;
+  result.rendered[phase] = observation.rendered;
+  return observation;
+}
+
 function startupLineageReaders({ baseUrl, backendUrl }) {
   return {
     async timeline({ signal } = {}) {
@@ -239,13 +266,8 @@ async function startupLineage(host) {
         quotes: [...node.querySelectorAll("[data-quote-message-id]")].map(quote => ({ id: quote.dataset.quoteMessageId, source: quote.dataset.quoteSource })),
         tables: node.querySelectorAll("table").length,
       }));
-  async function inspect(label, owners, observedRendered) {
-    const rendered = observedRendered ?? await eventually(async () => {
-      const actual = await readRendered();
-      assertStartupRendering(actual, owners);
-      return actual;
-    }, `${host} ${label}: exact startup replies with no duplicate fragment`);
-    assertStartupRendering(rendered, owners);
+  async function inspect(label) {
+    const observation = await observeStartupPhase(label, { result, timeline, durableHistory, readRendered });
     const heading = viewport().getByRole("heading", { name: "Acceptance reply", exact: true }).last();
     await heading.scrollIntoViewIfNeeded();
     const bounds = await heading.boundingBox(), viewBounds = await viewport().boundingBox();
@@ -253,8 +275,7 @@ async function startupLineage(host) {
       `${host} ${label}: complete reply heading is in the visible transcript`);
     await fs.mkdir(evidence, { recursive: true });
     await page.screenshot({ path: path.join(evidence, `${host}-real-startup-lineage-${label}.png`), fullPage: true });
-    result.rendered[label] = rendered;
-    return rendered;
+    return observation;
   }
   try {
     // Kickoff notifications only reach peers already wired at that instant.
@@ -269,16 +290,7 @@ async function startupLineage(host) {
       JSON.stringify(result.startupSend.body));
     result.startupAccepted = result.startupSend.body.result;
     await open();
-    const initial = await waitForStartupLineage({
-      timeline, durableHistory, expectedInteractionId: result.startupAccepted.interaction_id,
-      onObservation: ({ frames, history }) => {
-        result.initialFrames = frames;
-        if (history) result.initialHistory = history;
-        else delete result.initialHistory;
-      },
-    });
-    result.initialOwners = initial.owners;
-    await inspect("initial", result.initialOwners);
+    await inspect("initial");
     result.snapshot = await snapshot(fixture.backendUrl, `?identity=${encodeURIComponent(agentIdentity)}`);
     const snapshotFrames = result.snapshot.flatMap(item => item.data?.frame ? [item.data.frame] : []);
     assert.deepEqual(assertStartupLineage(snapshotFrames, result.initialHistory).map(owner => owner.runId).sort(), result.initialOwners.map(owner => owner.runId).sort(), "real SSE replay preserves canonical startup runs");
@@ -290,47 +302,17 @@ async function startupLineage(host) {
     });
     assert(sent.body.result?.interaction_id, JSON.stringify(sent.body));
     result.accepted = sent.body.result;
-    const completed = await eventually(async () => {
-      const owner = await timeline();
-      if (!owner.frames.some(frame => frame.interaction_id === sent.body.result.interaction_id
-        && frame.source?.kind === "console_event" && frame.kind === "interaction_complete")) return null;
-      owner.history = await durableHistory(owner.frames);
-      assertStartupLineage(owner.frames, owner.history);
-      return owner;
-    }, "separate repeated reply completes in the actual runtime");
-    result.repeatedFrames = completed.frames;
-    result.repeatedHistory = completed.history;
-    result.repeatedOwners = assertStartupLineage(completed.frames, completed.history);
-    assert.equal(result.repeatedOwners.length, result.initialOwners.length + 1, "same words belong to one additional canonical run");
-    await inspect("repeated", result.repeatedOwners);
+    await inspect("repeated");
 
     allowance = "disconnect";
     const streamsBefore = fixture.observations.filter(item => item.path.includes("/timeline/stream") && item.status === 200).length;
     fixture.disconnectStreams();
     await eventually(() => fixture.observations.filter(item => item.path.includes("/timeline/stream") && item.status === 200).length > streamsBefore, "browser reconnect opens another successful real stream");
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor(); allowance = null;
-    // The completed run can be durable before its canonical timeline carrier
-    // arrives. Refresh the source IDs while retaining the exact committed owners.
-    const reconnected = await waitForStartupLineage({
-      timeline, durableHistory, expectedOwners: result.repeatedOwners, readRendered,
-      onObservation: ({ frames, history, rendered }) => {
-        result.reconnectedFrames = frames;
-        if (history) result.reconnectedHistory = history;
-        else delete result.reconnectedHistory;
-        if (rendered) result.reconnectedRendered = rendered;
-        else delete result.reconnectedRendered;
-      },
-    });
-    result.reconnectedOwners = reconnected.owners;
-    await inspect("reconnected", reconnected.owners, reconnected.rendered);
+    await inspect("reconnected");
     assert.deepEqual(result.rendered.reconnected.rowIds, result.rendered.repeated.rowIds, "reconnect preserves source row identity");
     await open(true);
-    result.reloadedFrames = (await timeline()).frames;
-    result.reloadedHistory = await durableHistory(result.reloadedFrames);
-    result.reloadedOwners = assertStartupLineage(result.reloadedFrames, result.reloadedHistory);
-    assert.deepEqual(result.reloadedOwners.map(owner => [owner.runId, owner.historyOffset]),
-      result.repeatedOwners.map(owner => [owner.runId, owner.historyOffset]), "reload preserves exact committed runs and transcript positions");
-    await inspect("reloaded", result.reloadedOwners);
+    await inspect("reloaded");
     assert.deepEqual(result.rendered.reloaded.rowIds, result.rendered.repeated.rowIds, "reload preserves source row identity");
     assert.deepEqual(result.errors, [], "no unexpected browser or network failures");
   } catch (error) {
@@ -349,5 +331,5 @@ async function startupLineage(host) {
 }
 
 const scenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-startup-lineage`, family: "real-presentation", backend: "real", run: () => startupLineage(host) }));
-module.exports = { scenarios, assertStartupLineage, assertStartupRendering, waitForStartupLineage, startupLineageReaders, source };
+module.exports = { scenarios, assertStartupLineage, assertStartupRendering, waitForStartupLineage, observeStartupPhase, startupLineageReaders, source };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
