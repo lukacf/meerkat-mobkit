@@ -252,6 +252,71 @@ export class NotConnectedError extends MobKitError {
   }
 }
 
+// -- Ticketed turns -------------------------------------------------------
+
+/**
+ * The turn a ticket names ran and failed (`mobkit/turn_result` state
+ * `failed`). `reason` carries the runtime's typed detail.
+ */
+export class TurnFailedError extends MobKitError {
+  readonly identity: string;
+  readonly ticket: string;
+  readonly reason: string;
+
+  constructor(identity: string, ticket: string, reason: string) {
+    super(`turn ${ticket} of identity ${identity} failed: ${reason}`);
+    this.name = "TurnFailedError";
+    this.identity = identity;
+    this.ticket = ticket;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The gateway knows no turn with this ticket for this identity: never
+ * admitted there, another identity's, aged out, or the gateway restarted
+ * since. Never guessed in either direction.
+ */
+export class TurnUnknownError extends MobKitError {
+  readonly identity: string;
+  readonly ticket: string;
+
+  constructor(identity: string, ticket: string) {
+    super(
+      `no turn ${ticket} is known for identity ${identity} (never admitted ` +
+        `there, aged out, or the gateway restarted)`,
+    );
+    this.name = "TurnUnknownError";
+    this.identity = identity;
+    this.ticket = ticket;
+  }
+}
+
+/**
+ * A `trackTurn` delivery was NOT delivered at all (`turnUnavailable.code ===
+ * "not_delivered"`: the gateway has no session bridge, or the identity has no
+ * bound runtime). Nothing ran and there is no turn to wait for, so retrying
+ * is safe, unlike a failed or unknown turn.
+ */
+export class TurnNotDeliveredError extends MobKitError {
+  readonly identity: string;
+  readonly operation: string;
+  readonly code: string;
+  readonly reason: string;
+
+  constructor(identity: string, operation: string, code: string, reason: string) {
+    super(
+      `${operation} for identity ${identity} was not delivered ` +
+        `(${code}: ${reason}); there is no turn to wait for`,
+    );
+    this.name = "TurnNotDeliveredError";
+    this.identity = identity;
+    this.operation = operation;
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
 // -- Cross-module identity helpers ---------------------------------------
 
 /**

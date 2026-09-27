@@ -23,6 +23,13 @@ from meerkat_mobkit.identity_first_models import (
 )
 from meerkat_mobkit.runtime import IdentityAgentHandle, MobKitRuntime
 
+# These scripts model a gateway that returns no turn ticket, so the
+# ``*_and_wait`` calls here run the explicit identity-wide fallback (the
+# ticketed path is covered in test_identity_first_turn_tickets.py).
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::meerkat_mobkit.errors.TurnTrackingUnavailableWarning"
+)
+
 
 class ScriptedTransport:
     """Transport that answers each RPC method from a scripted queue.

@@ -182,9 +182,13 @@ rt = await (
 triage = rt.agent("triage:main")
 luka = rt.agent("identity:luka")
 
-# send_and_wait / dispatch_and_wait wait on the turn's completion cursor.
-# Never wait by comparing output text: an agent may answer the same thing
-# twice, and a text comparison then reports "nothing happened" until timeout.
+# On turn_driven members (runtime_mode = "turn_driven"), send_and_wait /
+# dispatch_and_wait wait for the turn they started, by its turn ticket, and
+# return that turn's own output. On autonomous_host members (the default
+# mode) the delivery still happens once, but the call falls back to the
+# identity-wide wait with a TurnTrackingUnavailableWarning, and another
+# delivery can satisfy it. Never wait by comparing output text: an agent may
+# answer the same thing twice.
 output = await triage.dispatch_text_and_wait(
     "New event from connector", origin="connector", timeout=60,
 )

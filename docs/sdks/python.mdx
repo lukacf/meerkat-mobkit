@@ -140,7 +140,7 @@ For household-style apps (HomeCore), the identity-first API provides durable lif
 Agents are addressed by stable identities (`identity:luka`, `triage:main`), not member IDs.
 
 ```python
-from meerkat_mobkit import MobKit
+from meerkat_mobkit import MobKit, TurnOutputStatus
 from meerkat_mobkit.identity_first_models import DispatchInput, DurableAgentSpec, ManagedPeerEdge
 
 # Boot with roster provider
@@ -164,10 +164,25 @@ luka = rt.agent("identity:luka")
 await luka.send("Hello")                                          # Addressable only
 await triage.dispatch_text("School closed", origin="connector")   # Any identity
 
-# Wait for an identity completion after the pre-delivery cursor baseline,
-# even if consecutive answers have identical text. This is not request
-# correlation: concurrent/in-flight work can satisfy the same barrier.
+# On a turn_driven member (runtime_mode = "turn_driven"): send, then wait for
+# THAT turn and return its own output. The send carries a turn ticket, so
+# another delivery to the identity (a peer message, a scheduled turn, a fork
+# completion wake) cannot satisfy the wait. On an autonomous_host member (the
+# default mode) the send is still delivered once, but the call falls back to
+# the identity-wide wait with a TurnTrackingUnavailableWarning.
 answer = await luka.send_and_wait("Hello", timeout=90)
+
+# The same, in two steps: track the turn, then wait on its ticket.
+sent = await luka.send("Hello", track_turn=True)
+if sent.turn_ticket is not None:
+    turn = await luka.wait_for_turn(sent.turn_ticket, timeout=90)
+    if turn.output_status is TurnOutputStatus.TEXT:
+        answer = turn.output  # turn.output_truncated says whether it was cut
+elif sent.turn_unavailable is not None:
+    # e.g. "autonomous_host"; delivered is False only for "not_delivered"
+    print("untracked:", sent.turn_unavailable.code, sent.turn_unavailable.delivered)
+else:
+    print("untracked: the gateway predates turn tickets")
 
 # Observation (no mob_handle, no member IDs needed)
 inspection = await triage.inspect()   # output_preview, completion_cursor, peers
@@ -183,11 +198,50 @@ await rt.agent("domain:calendar").respawn()  # Non-destructive recovery
 await rt.reconcile()                  # In-process roster reconciliation
 ```
 
-`send_and_wait` returns the `output_preview` observed after that identity's
-completion cursor advances; the preview is not request-correlated. Interpret
-it as this send's answer only if you exclude all other completion-producing
-work for the identity throughout the wait, including already-running kickoff
-turns and peer or background work.
+`send_and_wait`, `dispatch_and_wait` and `dispatch_text_and_wait` are
+per-admission: the runtime mints a turn ticket for the delivery and keeps the
+admitted turn's own completion handle under it, and the wait reads
+`mobkit/turn_result` for that ticket, which reports that turn's own output
+from its committed run result. A failed turn raises `TurnFailedError`, and a
+ticket the gateway does not know (for example after a gateway restart) raises
+`TurnUnknownError`. Text cut at the 256 KiB bound emits
+`TurnOutputTruncatedWarning`; a turn that completed without output of its own
+(the runtime folded it into a run in progress, or deduplicated it) returns
+`None` with `TurnOutputUnavailableWarning`. `wait_for_turn` returns the typed
+`TurnResult` (`output_status`, `output`, `output_truncated`) instead.
+
+When the turn cannot be tracked, the call falls back to the identity-wide
+completion cursor, emitting `TurnTrackingUnavailableWarning` with the typed
+`turn_unavailable.code`. Every code but `not_delivered` means the delivery
+still happened, exactly once:
+
+- `autonomous_host`: the member runs in `autonomous_host` mode (the default),
+  read from the runtime's live roster entry, so a profile or override changed
+  without a respawn does not count until the member respawns. The runtime
+  reports no per-turn completion for autonomous inbox delivery, so on these
+  members the wait stays identity-wide.
+- `runtime_refused`: the runtime refused per-turn completion for the member's
+  live mode for another reason.
+- `externally_bound`, `host_human_input`, `bridge_cannot_report_output`.
+- A gateway that predates turn tickets returns no `turn_unavailable` at all.
+
+`not_delivered` means nothing was delivered (no session bridge or no bound
+runtime), so the call raises `TurnNotDeliveredError` instead of waiting
+(nothing ran, so a retry is safe). `session_rotated` means a re-dispatch
+landed on a different session after a repair or respawn and ran as its own
+turn. Run a member with
+`runtime_mode = "turn_driven"` for per-admission results.
+
+Do not mix ticket waits and cursor waits on one identity: a ticket can settle
+before the identity health monitor counts the same turn on the cursor, so a
+later `wait_for_output(after=baseline)` can be satisfied by an earlier
+`send_and_wait` turn.
+
+`wait_for_completion(baseline)` and `wait_for_output(after=cursor)` remain
+identity-wide primitives: any completion on the identity after the baseline
+satisfies them, and the returned `output_preview` is the session's latest
+output, not necessarily a specific send's answer. Use `wait_for_turn(ticket)`
+or `wait_for_output(turn=ticket)` to wait for one specific turn.
 
 ### DurableAgentSpec fields
 

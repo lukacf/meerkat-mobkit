@@ -31,8 +31,12 @@ triage = rt.agent("triage:main")
 luka = rt.agent("identity:luka")
 
 await triage.dispatch_text("New event", origin="connector")
-# send_and_wait waits on the turn's completion cursor, so it is correct even
-# when the agent answers the same thing twice.
+# On a turn_driven member (runtime_mode = "turn_driven"), send_and_wait waits
+# for THIS send's turn by its ticket and returns that turn's own output,
+# whatever else the identity is doing. An autonomous_host member (the default
+# mode) cannot be tracked per turn: the send is still delivered once, and the
+# call falls back to the identity-wide wait with a
+# TurnTrackingUnavailableWarning (another delivery can satisfy that wait).
 output = await luka.send_and_wait("What's happening?", timeout=60)
 ```
 

@@ -38,7 +38,8 @@ use super::types::{
     IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus,
     LeaseGrant, LeaseInfo, ManagedPeerEdge, MemberHealthReport, MemberReloadDisposition,
     MemberReloadOutcome, NotAddressable, ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext,
-    SendAdmission, SessionRepairRequired, SessionRepairScope, SessionSnapshot, TopologyContext,
+    SendAdmission, SessionRepairRequired, SessionRepairScope, SessionSnapshot, Ticketed,
+    TopologyContext, TurnOutcome, TurnOutput, TurnTicket, TurnTracking, TurnUntrackable,
 };
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
@@ -104,6 +105,101 @@ enum SendCommitMode {
     /// Return only after this exact turn has committed its terminal boundary.
     /// Fails closed when completion cannot be observed.
     AwaitCommit,
+    /// Return once the work is admitted, like `Ingress`, with the admitted
+    /// turn's own completion handle kept under a [`TurnTicket`] minted for
+    /// this admission; the turn's own output is recorded when it completes.
+    /// The caller's interaction id rides unchanged. Falls back to `Ingress`
+    /// (reported as [`TurnTracking::Unavailable`]) when the turn cannot be
+    /// tracked.
+    TrackTurn,
+}
+
+/// Which bridge verb a send's delivery step calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryLane {
+    Ingress,
+    AwaitCommit,
+    Ticketed,
+}
+
+/// A send's delivery step once the tracked admission, if the lane called for
+/// one, has been attempted.
+enum DeliveryStep {
+    Ingress,
+    AwaitCommit,
+    /// Admitted on the tracked lane; the receipt carries the admitted turn.
+    Tracked(super::bridge::BridgeTurnReceipt),
+}
+
+/// Why a tracked delivery's turn cannot be tracked, or `None` to attempt the
+/// tracked lane. Decided from typed state before anything is delivered, so
+/// these untrackable turns go to the ingress lane without a tracked attempt.
+///
+/// The member's runtime mode is deliberately NOT decided here: MobKit's spec
+/// is the desired mode, but meerkat checks the live roster entry's mode
+/// (fixed at spawn), and the two can disagree. The bridge reads the live
+/// entry right before admission and refuses an `autonomous_host` member typed
+/// ([`BridgeAdmissionError::UnsupportedForMode`]), before anything is
+/// submitted; the tracked lanes then fall back to the ingress lane.
+fn turn_untrackable(
+    delivered: bool,
+    external_binding: bool,
+    local_human: bool,
+    bridge_tracks_turn_output: bool,
+) -> Option<TurnUntrackable> {
+    if !delivered {
+        Some(TurnUntrackable::NotDelivered)
+    } else if local_human {
+        Some(TurnUntrackable::HostHumanInput)
+    } else if external_binding {
+        Some(TurnUntrackable::ExternallyBound)
+    } else if !bridge_tracks_turn_output {
+        Some(TurnUntrackable::BridgeCannotReportOutput)
+    } else {
+        None
+    }
+}
+
+/// How often [`IdentityRuntime::wait_for_turn`] looks at a pending turn.
+const TURN_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// The tracked admission was refused for the member's LIVE runtime mode
+/// (by the bridge's pre-submit check of the live roster entry, or by meerkat
+/// itself), before anything was delivered: the delivery falls back to the
+/// ingress lane, reported untracked with the typed reason. An
+/// `autonomous_host` member is [`TurnUntrackable::AutonomousHost`]; a refusal
+/// in any other mode is [`TurnUntrackable::RefusedByRuntime`].
+fn runtime_refused_tracking(
+    identity: &AgentIdentity,
+    mode: meerkat_mob::MobRuntimeMode,
+    detail: &str,
+) -> TurnTracking {
+    tracing::debug!(
+        identity = %identity,
+        runtime_mode = %mode,
+        detail,
+        "tracked admission refused for the member's live runtime mode; delivering untracked \
+         on the ingress lane"
+    );
+    TurnTracking::Unavailable(match mode {
+        meerkat_mob::MobRuntimeMode::AutonomousHost => TurnUntrackable::AutonomousHost,
+        mode => TurnUntrackable::RefusedByRuntime { mode },
+    })
+}
+
+/// Tracking reported for a ticketed delivery whose lane recorded none (the
+/// identity has no session bridge or no bound runtime, so nothing was
+/// delivered to track).
+fn untracked_delivery() -> TurnTracking {
+    TurnTracking::Unavailable(TurnUntrackable::NotDelivered)
+}
+
+/// What [`IdentityRuntime::send_core`] settled on.
+struct SendCoreOutcome {
+    token: FencingToken,
+    completion_baseline: CompletionCursor,
+    /// `Some` exactly when the send asked for [`SendCommitMode::TrackTurn`].
+    turn: Option<TurnTracking>,
 }
 
 /// One invocation of the shared identity delivery state machine.
@@ -144,6 +240,7 @@ fn admission_phase_error(
             IdentityRuntimeError::CompletionUnavailable { identity, reason }
         }
         BridgeAdmissionError::Mob(detail)
+        | BridgeAdmissionError::UnsupportedForMode { detail, .. }
         | BridgeAdmissionError::InvalidInput(detail)
         | BridgeAdmissionError::InvariantViolation(detail) => {
             IdentityRuntimeError::AdmissionFailed { identity, detail }
@@ -1877,6 +1974,205 @@ pub struct IdentityRuntime {
     /// cursor must never do. The map is bounded by the identities this process
     /// has seen, i.e. by roster size.
     completion_cursors: StdMutex<BTreeMap<AgentIdentity, CompletionCursor>>,
+    /// Outcomes of turns admitted under a [`TurnTicket`]
+    /// ([`Self::send_with_turn_ticket`], [`Self::dispatch_with_turn_ticket`]).
+    /// Shared with the waiter tasks that settle them.
+    turn_outcomes: Arc<StdMutex<TurnOutcomes>>,
+}
+
+/// How many ticketed turns are remembered at once.
+const TRACKED_TURNS_CAP: usize = 4096;
+
+/// How long a settled ticketed turn stays readable.
+const SETTLED_TURN_RETENTION: Duration = Duration::from_mins(10);
+
+/// Ticketed turns, bounded by [`TRACKED_TURNS_CAP`] and
+/// [`SETTLED_TURN_RETENTION`].
+///
+/// Keyed by a ticket this registry mints once per admission, so two admissions
+/// can never share a record: interaction and delivery correlation ids repeat
+/// across admissions by design. A ticket read for any identity other than the
+/// one it was admitted for is `Unknown`, and only the waiter that owns a
+/// pending record settles it.
+#[derive(Default)]
+struct TurnOutcomes {
+    turns: BTreeMap<TurnTicket, TrackedTurn>,
+    /// Tracked dispatches by the scope meerkat deduplicates in (the member
+    /// incarnation's session runtime ledger) plus the dispatch's idempotency
+    /// key, so a re-dispatch of one key names the original admission's ticket.
+    by_delivery: HashMap<DeliveryKey, TurnTicket>,
+    admitted: u64,
+}
+
+/// A dispatch's dedup identity as meerkat sees it: the member incarnation and
+/// the session whose runtime ledger admitted it, plus its idempotency key.
+/// meerkat deduplicates only within one session's runtime ledger, and a
+/// session rotation keeps the incarnation's `AgentRuntimeId`, so the session
+/// is part of the key: after a rotation (or a reset, which mints a new
+/// incarnation) a re-dispatch is tracked as an admission of its own.
+type DeliveryKey = (AgentRuntimeId, SessionId, String);
+
+struct TrackedTurn {
+    identity: AgentIdentity,
+    delivery_key: Option<DeliveryKey>,
+    /// Admission order: evicts the oldest pending turn when the cap is full
+    /// of pending turns.
+    admitted: u64,
+    state: TrackedTurnState,
+}
+
+enum TrackedTurnState {
+    Pending,
+    Settled {
+        at: Instant,
+        outcome: Result<TurnOutput, String>,
+    },
+}
+
+impl TurnOutcomes {
+    /// Record a newly admitted turn as pending under a freshly minted ticket.
+    fn admit(&mut self, identity: &AgentIdentity, delivery_key: Option<DeliveryKey>) -> TurnTicket {
+        self.prune();
+        let ticket = loop {
+            let ticket = TurnTicket::mint();
+            if !self.turns.contains_key(&ticket) {
+                break ticket;
+            }
+        };
+        self.admitted += 1;
+        if let Some(key) = &delivery_key {
+            // A later admission under the same key (the earlier one failed)
+            // takes over the index; the earlier record stays readable under
+            // its own ticket.
+            self.by_delivery.insert(key.clone(), ticket);
+        }
+        self.turns.insert(
+            ticket,
+            TrackedTurn {
+                identity: identity.clone(),
+                delivery_key,
+                admitted: self.admitted,
+                state: TrackedTurnState::Pending,
+            },
+        );
+        ticket
+    }
+
+    /// The ticket of the tracked admission a re-dispatch under `key` is
+    /// deduplicated onto, while that admission is still pending or completed.
+    /// A settled failure is not reused: whether the runtime replays a failed
+    /// key is its decision, so the retry is tracked as an admission of its own
+    /// (and reads [`TurnOutput::NoOwnResult`] if it is deduplicated after all).
+    fn reusable_delivery_ticket(
+        &mut self,
+        identity: &AgentIdentity,
+        key: &DeliveryKey,
+    ) -> Option<TurnTicket> {
+        self.prune();
+        let ticket = *self.by_delivery.get(key)?;
+        let turn = self.turns.get(&ticket)?;
+        let reusable = &turn.identity == identity
+            && matches!(
+                turn.state,
+                TrackedTurnState::Pending | TrackedTurnState::Settled { outcome: Ok(_), .. }
+            );
+        reusable.then_some(ticket)
+    }
+
+    /// Settle the pending record `ticket` names for `identity`. Called once,
+    /// by the waiter that owns the record; a record that is gone, already
+    /// settled, or another identity's is left untouched.
+    fn settle(
+        &mut self,
+        identity: &AgentIdentity,
+        ticket: TurnTicket,
+        outcome: Result<TurnOutput, String>,
+    ) {
+        if let Some(turn) = self.turns.get_mut(&ticket)
+            && &turn.identity == identity
+            && matches!(turn.state, TrackedTurnState::Pending)
+        {
+            turn.state = TrackedTurnState::Settled {
+                at: Instant::now(),
+                outcome,
+            };
+        }
+    }
+
+    fn outcome(&self, identity: &AgentIdentity, ticket: TurnTicket) -> TurnOutcome {
+        match self.turns.get(&ticket) {
+            Some(turn) if &turn.identity == identity => match &turn.state {
+                TrackedTurnState::Pending => TurnOutcome::Pending,
+                TrackedTurnState::Settled {
+                    outcome: Ok(output),
+                    ..
+                } => TurnOutcome::Completed {
+                    output: output.clone(),
+                },
+                TrackedTurnState::Settled {
+                    outcome: Err(reason),
+                    ..
+                } => TurnOutcome::Failed {
+                    reason: reason.clone(),
+                },
+            },
+            _ => TurnOutcome::Unknown,
+        }
+    }
+
+    fn remove(&mut self, ticket: TurnTicket) {
+        if let Some(turn) = self.turns.remove(&ticket)
+            && let Some(key) = turn.delivery_key
+            && self.by_delivery.get(&key) == Some(&ticket)
+        {
+            self.by_delivery.remove(&key);
+        }
+    }
+
+    /// Drop settled turns past their retention; then, while at the cap, the
+    /// turn that settled LONGEST AGO (settle time, not admission order, so a
+    /// long turn that just settled keeps its full retention). Only a cap full
+    /// of pending turns evicts a pending one, the oldest admitted; its waiter
+    /// then reads `Unknown`, never a wrong output.
+    fn prune(&mut self) {
+        let turns = &mut self.turns;
+        turns.retain(|_, turn| match turn.state {
+            TrackedTurnState::Pending => true,
+            TrackedTurnState::Settled { at, .. } => at.elapsed() < SETTLED_TURN_RETENTION,
+        });
+        let turns = &self.turns;
+        self.by_delivery
+            .retain(|_, ticket| turns.contains_key(ticket));
+        while self.turns.len() >= TRACKED_TURNS_CAP {
+            let settled_longest_ago = self
+                .turns
+                .iter()
+                .filter_map(|(ticket, turn)| match turn.state {
+                    TrackedTurnState::Settled { at, .. } => Some((at, *ticket)),
+                    TrackedTurnState::Pending => None,
+                })
+                .min_by_key(|(at, _)| *at)
+                .map(|(_, ticket)| ticket);
+            let evicted = settled_longest_ago.or_else(|| {
+                self.turns
+                    .iter()
+                    .min_by_key(|(_, turn)| turn.admitted)
+                    .map(|(ticket, _)| *ticket)
+            });
+            let Some(evicted) = evicted else {
+                break;
+            };
+            if settled_longest_ago.is_none() {
+                tracing::warn!(
+                    ticket = %evicted,
+                    cap = TRACKED_TURNS_CAP,
+                    "ticketed turns at capacity with every one still pending; the oldest is \
+                     forgotten and reads as unknown"
+                );
+            }
+            self.remove(evicted);
+        }
+    }
 }
 
 /// One generated member alias plus the lifecycle lock owned by its durable
@@ -1914,6 +2210,8 @@ pub(crate) struct DispatchOutcome {
     admission: DispatchAdmission,
     pub(crate) session_id: Option<SessionId>,
     pub(crate) incarnation: CapturedIncarnation,
+    /// `Some` exactly when the dispatch asked to track its turn.
+    turn: Option<TurnTracking>,
 }
 
 /// Exact result of the one concrete embodiment door shared by eager restore,
@@ -2051,6 +2349,7 @@ impl IdentityRuntime {
             pending_reset_bridge_cleanups: Arc::new(RwLock::new(BTreeMap::new())),
             reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
             completion_cursors: StdMutex::new(BTreeMap::new()),
+            turn_outcomes: Arc::default(),
         }
     }
 
@@ -7856,7 +8155,7 @@ impl IdentityRuntime {
             },
         )
         .await
-        .map(|(token, _)| token)
+        .map(|outcome| outcome.token)
     }
 
     /// [`Self::send_awaiting_commit`] carrying one ordinary System message
@@ -7887,7 +8186,7 @@ impl IdentityRuntime {
             },
         )
         .await
-        .map(|(token, _)| token)
+        .map(|outcome| outcome.token)
     }
 
     /// Send conversational content to an addressable identity.
@@ -7971,6 +8270,174 @@ impl IdentityRuntime {
                 })
         })
         .await
+    }
+
+    /// Cancellation-safe send whose admitted turn is tracked by ticket.
+    ///
+    /// The same delivery as [`Self::send_admission_tracked`] (same admission,
+    /// same interaction id, same session reconciliation, same completion
+    /// baseline), returning once the work is admitted. The runtime keeps the
+    /// admitted turn's own completion handle under a [`TurnTicket`] minted for
+    /// this admission alone; [`Self::turn_outcome`] and
+    /// [`Self::wait_for_turn`] then report THAT turn and its own output. No
+    /// other delivery to the identity (a peer message, a scheduled turn, a
+    /// fork completion wake, another send reusing the interaction id) can
+    /// satisfy them.
+    ///
+    /// When the turn cannot be tracked ([`TurnUntrackable`]: a member whose
+    /// LIVE runtime mode is `autonomous_host`, an externally bound member, a
+    /// bridge that cannot report per-turn output), it is delivered exactly
+    /// once, exactly like [`Self::send_admission_tracked`], and
+    /// [`Ticketed::turn`] says why; only [`TurnUntrackable::NotDelivered`]
+    /// (no bridge or no bound runtime) delivers nothing.
+    pub async fn send_with_turn_ticket(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<Ticketed<SendAdmission>, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(ToString::to_string);
+        let content = content.clone();
+        let interaction_id = interaction_id.map(ToString::to_string);
+        self.run_tracked_foreground(async move {
+            let outcome = runtime
+                .send_core(
+                    &identity,
+                    SendRequest {
+                        expected_alias: expected_alias.as_deref(),
+                        content: &content,
+                        system_prompt: None,
+                        handling_mode,
+                        interaction_id: interaction_id.as_deref(),
+                        commit_mode: SendCommitMode::TrackTurn,
+                        console_human: None,
+                    },
+                )
+                .await?;
+            Ok(Ticketed {
+                admission: SendAdmission {
+                    fencing_token: outcome.token,
+                    completion_baseline: outcome.completion_baseline,
+                },
+                turn: outcome.turn.unwrap_or_else(untracked_delivery),
+            })
+        })
+        .await
+    }
+
+    /// Where the turn admitted under `ticket` for `identity` stands. A ticket
+    /// of another identity, or one this runtime never admitted (or has
+    /// forgotten), is [`TurnOutcome::Unknown`].
+    pub fn turn_outcome(&self, identity: &AgentIdentity, ticket: TurnTicket) -> TurnOutcome {
+        self.turn_outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .outcome(identity, ticket)
+    }
+
+    /// Wait until the turn admitted under `ticket` settles, then return its
+    /// outcome ([`TurnOutcome::Completed`] carries the turn's own output).
+    /// Returns [`TurnOutcome::Unknown`] at once for an unknown ticket, and
+    /// [`TurnOutcome::Pending`] if `timeout` elapses first.
+    pub async fn wait_for_turn(
+        &self,
+        identity: &AgentIdentity,
+        ticket: TurnTicket,
+        timeout: Duration,
+    ) -> TurnOutcome {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let outcome = self.turn_outcome(identity, ticket);
+            if outcome != TurnOutcome::Pending || Instant::now() >= deadline {
+                return outcome;
+            }
+            tokio::time::sleep(
+                TURN_WAIT_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
+        }
+    }
+
+    /// Record the admitted turn as pending under a freshly minted ticket and
+    /// hand `receipt` to a waiter that settles THAT record with the turn's own
+    /// outcome. The waiter holds only the outcome registry, never a lock or
+    /// the runtime, and ends when the turn reaches its terminal (or its
+    /// completion channel closes).
+    ///
+    /// The outcome is the turn's own, whatever post-admission session
+    /// resolution did: a resolution failure is reported on the delivery-error
+    /// channel by the caller ([`Self::report_ticketed_resolution_failure`]),
+    /// never as a failure of a turn that ran and succeeded.
+    fn track_turn(
+        &self,
+        identity: &AgentIdentity,
+        delivery_key: Option<DeliveryKey>,
+        receipt: super::bridge::BridgeTurnReceipt,
+    ) -> TurnTicket {
+        let ticket = self
+            .turn_outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admit(identity, delivery_key);
+        let outcomes = Arc::clone(&self.turn_outcomes);
+        let owner = identity.clone();
+        tokio::spawn(async move {
+            let outcome = receipt.wait_turn_output().await;
+            outcomes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .settle(&owner, ticket, outcome);
+        });
+        ticket
+    }
+
+    /// The tracked admission a re-dispatch under `key` is deduplicated onto,
+    /// if it is still pending or completed; see
+    /// [`TurnOutcomes::reusable_delivery_ticket`].
+    fn reusable_delivery_ticket(
+        &self,
+        identity: &AgentIdentity,
+        key: &DeliveryKey,
+    ) -> Option<TurnTicket> {
+        self.turn_outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reusable_delivery_ticket(identity, key)
+    }
+
+    /// A ticketed turn was admitted and is tracked, but projecting its session
+    /// failed, so its session is not reconciled. The turn's own outcome is
+    /// unaffected (see [`Self::track_turn`]); the resolution failure is
+    /// recorded typed on the identity's delivery-error channel, where an
+    /// operator reads it, instead of failing the admission or the turn.
+    async fn report_ticketed_resolution_failure(
+        &self,
+        identity: &AgentIdentity,
+        ticket: TurnTicket,
+        detail: &str,
+    ) {
+        tracing::warn!(
+            identity = %identity,
+            ticket = %ticket,
+            detail,
+            "ticketed turn admitted but its session could not be resolved; the turn is \
+             tracked, its session is not reconciled"
+        );
+        self.record_delivery_error(
+            identity,
+            &IdentityRuntimeError::PostAdmissionResolutionFailed {
+                identity: identity.clone(),
+                detail: format!(
+                    "ticketed turn {ticket} was admitted and is tracked, but its session could \
+                     not be resolved, so it was not reconciled: {detail}"
+                ),
+            },
+        )
+        .await;
     }
 
     /// Cancellation-safe explicit-mode send for RPC/host request boundaries.
@@ -8065,7 +8532,7 @@ impl IdentityRuntime {
                     },
                 )
                 .await
-                .map(|(token, _)| token)
+                .map(|outcome| outcome.token)
         })
         .await
     }
@@ -8115,19 +8582,21 @@ impl IdentityRuntime {
             },
         )
         .await
+        .map(|outcome| (outcome.token, outcome.completion_baseline))
     }
 
-    /// The ONE send body. Both lanes run it; the only difference is which
-    /// bridge verb the delivery step calls, which is exactly the part that must
-    /// not drift. A second copy would let the completion lane diverge from the
-    /// ingress lane on lease acquisition, alias pinning, memory injection,
-    /// defanging or session reconciliation - every one of which is load-bearing
-    /// and none of which is visible from a test.
+    /// The ONE send body. Every lane (ingress, await-commit, ticketed) runs
+    /// it; the only difference is which bridge verb the delivery step calls,
+    /// which is exactly the part that must not drift. A second copy would let
+    /// the completion lanes diverge from the ingress lane on lease
+    /// acquisition, alias pinning, memory injection, defanging or session
+    /// reconciliation - every one of which is load-bearing and none of which
+    /// is visible from a test.
     async fn send_core(
         &self,
         identity: &AgentIdentity,
         request: SendRequest<'_>,
-    ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
+    ) -> Result<SendCoreOutcome, IdentityRuntimeError> {
         let SendRequest {
             expected_alias,
             content,
@@ -8214,6 +8683,7 @@ impl IdentityRuntime {
             memory_runtime_mode,
             local_human,
             human_session,
+            external_binding,
         ) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -8234,6 +8704,7 @@ impl IdentityRuntime {
                 self.effective_runtime_mode(&entry.spec),
                 console_human.is_some() && !durable_spec_uses_external_binding(&entry.spec),
                 entry.continuity.as_ref().map(|c| c.session_id.clone()),
+                durable_spec_uses_external_binding(&entry.spec),
             )
         };
         if local_human
@@ -8285,11 +8756,96 @@ impl IdentityRuntime {
                 },
             });
         }
+        // Whether a tracked send can be tracked is decided here, from typed
+        // state, before anything is delivered: a turn that cannot be tracked
+        // is delivered on the ingress lane and reported as such, never
+        // attempted on one lane and retried on the other.
+        let mut turn_tracking = None;
+        let lane = match commit_mode {
+            SendCommitMode::Ingress => DeliveryLane::Ingress,
+            SendCommitMode::AwaitCommit => DeliveryLane::AwaitCommit,
+            SendCommitMode::TrackTurn => match turn_untrackable(
+                self.bridge.is_some() && runtime_id.is_some(),
+                external_binding,
+                local_human,
+                self.bridge
+                    .as_ref()
+                    .is_some_and(|bridge| bridge.tracks_turn_output()),
+            ) {
+                None => DeliveryLane::Ticketed,
+                Some(reason) => {
+                    turn_tracking = Some(TurnTracking::Unavailable(reason));
+                    DeliveryLane::Ingress
+                }
+            },
+        };
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            let delivered_session_id = match commit_mode {
+            // Validated -> Admitted(receipt). A tracked send is admitted
+            // before the lane dispatch below, under the lock like every lane,
+            // so meerkat's typed pre-admission refusal (the member's ACTUAL
+            // runtime mode refuses per-turn completion: a profile whose
+            // runtime_mode changed without a respawn) can still take the
+            // ingress lane. Nothing was delivered by the refused attempt, so
+            // the send is still delivered exactly once.
+            let step = match lane {
+                DeliveryLane::Ingress => DeliveryStep::Ingress,
+                DeliveryLane::AwaitCommit => DeliveryStep::AwaitCommit,
+                DeliveryLane::Ticketed => {
+                    let mut delivery = super::bridge::BridgeDelivery::new(
+                        content_to_deliver.clone(),
+                        handling_mode,
+                    );
+                    delivery.system_prompt = system_prompt.map(ToString::to_string);
+                    delivery.injected_context = injected_context.clone();
+                    delivery.interaction_id = bridge_interaction_id.map(ToString::to_string);
+                    // One automatic non-destructive reload on a typed
+                    // reload-required refusal, then the typed failure (same
+                    // rule as the other lanes).
+                    let mut reload_attempted = false;
+                    loop {
+                        let attempt = match bridge
+                            .begin_delivery_with_output(rid, delivery.clone())
+                            .await
+                        {
+                            Err(BridgeAdmissionError::UnsupportedForMode {
+                                mode, detail, ..
+                            }) => {
+                                turn_tracking =
+                                    Some(runtime_refused_tracking(identity, mode, &detail));
+                                break DeliveryStep::Ingress;
+                            }
+                            attempt => attempt.map_err(|err| admission_phase_error(identity, err)),
+                        };
+                        match attempt {
+                            Ok(receipt) => {
+                                self.record_delivery_success(identity).await;
+                                break DeliveryStep::Tracked(receipt);
+                            }
+                            Err(err) => {
+                                self.record_delivery_error(identity, &err).await;
+                                if !reload_attempted
+                                    && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
+                                {
+                                    reload_attempted = true;
+                                    if let Err(reload_error) =
+                                        self.reload_for_delivery_locked(identity, &err).await
+                                    {
+                                        self.record_delivery_error(identity, &reload_error).await;
+                                        return Err(reload_error);
+                                    }
+                                    token = self.ensure_active_lease(identity).await?;
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
+            };
+            let delivered_session_id = match step {
                 // Validated -> Delivered. One await, all of it bounded, all of
                 // it under the lock. Unchanged.
-                SendCommitMode::Ingress => {
+                DeliveryStep::Ingress => {
                     // One automatic non-destructive reload on a typed
                     // reload-required refusal, then the typed failure. Never a
                     // loop: a second refusal after a reload is an operator
@@ -8360,6 +8916,42 @@ impl IdentityRuntime {
                     }
                 }
 
+                // Admitted(receipt) -> Tracked -> Delivered. The admission and
+                // its bounded session resolution ran under the lock exactly
+                // like the ingress lane, and the send returns at the same
+                // point. The turn is NOT awaited here: its receipt moves to a
+                // waiter that records the turn's own output under the ticket.
+                DeliveryStep::Tracked(receipt) => {
+                    let resolved_session = receipt.resolved_session().cloned();
+                    let resolution_error =
+                        receipt.session_resolution_error().map(ToString::to_string);
+                    // Recorded before the send returns, so the caller's first
+                    // look at the ticket never reads `Unknown`.
+                    let ticket = self.track_turn(identity, None, receipt);
+                    turn_tracking = Some(TurnTracking::Tracked(ticket));
+                    match resolved_session {
+                        Some(session_id) => session_id,
+                        // The turn is admitted and tracked, and its outcome is
+                        // its own; the resolution failure is reported on its
+                        // own channel. There is no session to reconcile onto.
+                        None => {
+                            self.report_ticketed_resolution_failure(
+                                identity,
+                                ticket,
+                                resolution_error
+                                    .as_deref()
+                                    .unwrap_or("no session was resolved"),
+                            )
+                            .await;
+                            return Ok(SendCoreOutcome {
+                                token,
+                                completion_baseline,
+                                turn: turn_tracking,
+                            });
+                        }
+                    }
+                }
+
                 // Validated -> Admitted(receipt) -> [UNLOCK] -> Terminal ->
                 // [RELOCK] -> Revalidated -> Reconciled | Superseded.
                 //
@@ -8368,7 +8960,7 @@ impl IdentityRuntime {
                 // same-identity sends behind a model call and block every
                 // lifecycle operation - reset, retire, alias rebind - for the
                 // turn's whole duration.
-                SendCommitMode::AwaitCommit => {
+                DeliveryStep::AwaitCommit => {
                     // ADMITTED. Bounded; still under the lock. One automatic
                     // non-destructive reload on a typed reload-required
                     // refusal, then the typed failure (same rule as the
@@ -8515,7 +9107,11 @@ impl IdentityRuntime {
                             {
                                 token = rebound_token;
                             }
-                            Ok((token, completion_baseline))
+                            Ok(SendCoreOutcome {
+                                token,
+                                completion_baseline,
+                                turn: None,
+                            })
                         }
                     };
                 }
@@ -8528,7 +9124,11 @@ impl IdentityRuntime {
             }
         }
 
-        Ok((token, completion_baseline))
+        Ok(SendCoreOutcome {
+            token,
+            completion_baseline,
+            turn: turn_tracking,
+        })
     }
 
     /// The exact incarnation a delivery was admitted onto.
@@ -8698,6 +9298,21 @@ impl IdentityRuntime {
         expected: Option<&CapturedIncarnation>,
         input: &DispatchInput,
     ) -> Result<DispatchOutcome, IdentityRuntimeError> {
+        self.dispatch_core(identity, expected_alias, expected, input, false)
+            .await
+    }
+
+    /// The ONE dispatch body. `track_turn` admits the work under a
+    /// [`TurnTicket`] (see [`Self::dispatch_with_turn_ticket`]); everything
+    /// else is identical.
+    async fn dispatch_core(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        expected: Option<&CapturedIncarnation>,
+        input: &DispatchInput,
+        track_turn: bool,
+    ) -> Result<DispatchOutcome, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -8759,7 +9374,15 @@ impl IdentityRuntime {
         // Same pre-delivery baseline contract as the send path — see
         // `send_with_mode_and_interaction_with_expected_member_alias`.
         let completion_baseline = self.rebase_completion_cursor(identity, token);
-        let (is_durable, runtime_id, memory_session_key, memory_generation, memory_runtime_mode) = {
+        let (
+            is_durable,
+            runtime_id,
+            current_session,
+            memory_session_key,
+            memory_generation,
+            memory_runtime_mode,
+            external_binding,
+        ) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -8775,9 +9398,11 @@ impl IdentityRuntime {
             (
                 is_durable,
                 runtime_id,
+                entry.continuity.as_ref().map(|c| c.session_id.clone()),
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
                 self.effective_runtime_mode(&entry.spec),
+                durable_spec_uses_external_binding(&entry.spec),
             )
         };
 
@@ -8862,30 +9487,168 @@ impl IdentityRuntime {
 
         // Deliver through the session bridge when available. When the dedup
         // carrier is present its correlation id also rides as the
-        // interaction id.
+        // interaction id (meerkat requires the two to agree), tracked or not.
+        // A tracked dispatch's ticket is minted per admission and never
+        // derived from the correlation, which several admissions may share
+        // (a fan-out to several identities, several keys under one
+        // correlation).
         let mut dispatched_session_id = None;
+        let mut turn = track_turn.then(untracked_delivery);
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
+            // The dedup scope a re-dispatch would land in: this incarnation's
+            // current session ledger.
+            let current_delivery_key = delivery_identity
+                .as_ref()
+                .zip(current_session.as_ref())
+                .map(|(carrier, session)| {
+                    (
+                        rid.clone(),
+                        session.clone(),
+                        carrier.idempotency_key.clone(),
+                    )
+                });
+            let ticketed = track_turn
+                && match turn_untrackable(
+                    true,
+                    external_binding,
+                    false,
+                    bridge.tracks_turn_output(),
+                ) {
+                    Some(reason) => {
+                        turn = Some(TurnTracking::Unavailable(reason));
+                        false
+                    }
+                    // A re-dispatch of a key whose tracked admission is still
+                    // pending or completed is deduplicated by the runtime onto
+                    // that admission: it names the original's ticket and is
+                    // delivered on the ingress lane, so no second waiter can
+                    // ever report the runtime's "deduplicated, no result of
+                    // its own" terminal over the original's output.
+                    None => match current_delivery_key
+                        .as_ref()
+                        .and_then(|key| self.reusable_delivery_ticket(identity, key))
+                    {
+                        Some(original) => {
+                            turn = Some(TurnTracking::Tracked(original));
+                            false
+                        }
+                        None => true,
+                    },
+                };
             let mut delivery =
                 super::bridge::BridgeDelivery::new(content_to_deliver.clone(), HandlingMode::Queue);
             delivery.injected_context = injected_context.clone();
             delivery.interaction_id = delivery_identity
                 .as_ref()
-                .map(|identity| identity.correlation_id.clone());
+                .map(|carrier| carrier.correlation_id.clone());
             delivery.delivery_identity = delivery_identity.clone();
-            let attempt = bridge
-                .deliver_admitted(rid, delivery)
-                .await
-                .map_err(|error| ingress_phase_error(identity, error));
-            let delivered_session_id = match attempt {
-                Ok(delivered) => {
-                    self.record_delivery_success(identity).await;
-                    delivered
+            // meerkat's typed pre-admission refusal of the tracked admission
+            // (the member's ACTUAL runtime mode) sends the dispatch down the
+            // ingress lane below: nothing was delivered by the refused attempt.
+            let tracked_attempt = if ticketed {
+                match bridge
+                    .begin_delivery_with_output(rid, delivery.clone())
+                    .await
+                {
+                    Err(BridgeAdmissionError::UnsupportedForMode { mode, detail, .. }) => {
+                        turn = Some(runtime_refused_tracking(identity, mode, &detail));
+                        None
+                    }
+                    attempt => Some(attempt),
                 }
-                Err(error) => {
-                    self.record_delivery_error(identity, &error).await;
-                    return Err(error);
+            } else {
+                None
+            };
+            let delivered_session_id = if let Some(attempt) = tracked_attempt {
+                // Same admission and reconciliation as the ingress arm; the
+                // receipt moves to a waiter that records the turn's own output.
+                let attempt = attempt.map_err(|error| admission_phase_error(identity, error));
+                let receipt = match attempt {
+                    Ok(receipt) => {
+                        self.record_delivery_success(identity).await;
+                        receipt
+                    }
+                    Err(error) => {
+                        self.record_delivery_error(identity, &error).await;
+                        return Err(error);
+                    }
+                };
+                let resolved_session = receipt.resolved_session().cloned();
+                let resolution_error = receipt.session_resolution_error().map(ToString::to_string);
+                // Indexed under the session the turn was actually admitted onto;
+                // an unresolved session cannot name a dedup scope, so it is not
+                // indexed.
+                let admitted_delivery_key = delivery_identity
+                    .as_ref()
+                    .zip(resolved_session.as_ref())
+                    .map(|(carrier, session)| {
+                        (
+                            rid.clone(),
+                            session.clone(),
+                            carrier.idempotency_key.clone(),
+                        )
+                    });
+                let ticket = self.track_turn(identity, admitted_delivery_key, receipt);
+                turn = Some(TurnTracking::Tracked(ticket));
+                match resolved_session {
+                    Some(session_id) => session_id,
+                    None => {
+                        self.report_ticketed_resolution_failure(
+                            identity,
+                            ticket,
+                            resolution_error
+                                .as_deref()
+                                .unwrap_or("no session was resolved"),
+                        )
+                        .await;
+                        return Ok(DispatchOutcome {
+                            admission: DispatchAdmission {
+                                fencing_token: token,
+                                durable: is_durable,
+                                completion_baseline,
+                            },
+                            session_id: None,
+                            incarnation: self.capture_incarnation(identity).await?,
+                            turn,
+                        });
+                    }
+                }
+            } else {
+                let attempt = bridge
+                    .deliver_admitted(rid, delivery)
+                    .await
+                    .map_err(|error| ingress_phase_error(identity, error));
+                match attempt {
+                    Ok(delivered) => {
+                        self.record_delivery_success(identity).await;
+                        delivered
+                    }
+                    Err(error) => {
+                        self.record_delivery_error(identity, &error).await;
+                        return Err(error);
+                    }
                 }
             };
+            // A reused ticket claims the runtime deduplicated this delivery
+            // onto the original. That holds only if it landed on the session
+            // whose ledger admitted the original: delivery repair or a respawn
+            // can move the member onto a new session under the same runtime
+            // id, and that ledger has never seen the key, so the delivery ran
+            // as a turn of its own. Then the original's ticket would name the
+            // wrong turn: report it untracked instead.
+            if let (Some(TurnTracking::Tracked(_)), Some((_, reused_session, _)), false) =
+                (&turn, current_delivery_key.as_ref(), ticketed)
+                && reused_session != &delivered_session_id
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    reused_session = %reused_session,
+                    delivered_session = %delivered_session_id,
+                    "re-dispatch landed on a different session than the admission it was to be \
+                     deduplicated onto; it ran as its own turn and is reported untracked"
+                );
+                turn = Some(TurnTracking::Unavailable(TurnUntrackable::SessionRotated));
+            }
             dispatched_session_id = Some(delivered_session_id.clone());
             if let Some(rebound_token) = self
                 .reconcile_delivered_session_locked(identity, delivered_session_id)
@@ -8903,6 +9666,7 @@ impl IdentityRuntime {
             },
             session_id: dispatched_session_id,
             incarnation: self.capture_incarnation(identity).await?,
+            turn,
         })
     }
 
@@ -8950,6 +9714,45 @@ impl IdentityRuntime {
                 .dispatch_with_expected_member_alias(&identity, expected_alias.as_deref(), &input)
                 .await
                 .map(|outcome| outcome.admission)
+        })
+        .await
+    }
+
+    /// Cancellation-safe dispatch whose admitted turn is tracked by ticket.
+    /// Dispatch counterpart of [`Self::send_with_turn_ticket`]: the same
+    /// delivery as [`Self::dispatch_admission_tracked`] (the correlation id
+    /// still rides as the interaction id), with the admitted turn tracked
+    /// under a [`TurnTicket`] minted for this admission, never derived from
+    /// the correlation, which a fan-out or several keys may share.
+    ///
+    /// A re-dispatch of an idempotency key whose tracked admission to this
+    /// incarnation's current session is still pending or completed is
+    /// deduplicated by the runtime onto that admission, so it names the
+    /// original's ticket (and the original's output). Any other re-dispatch
+    /// the runtime deduplicates (the original was untracked, failed, aged out
+    /// of the registry, or ran before a session rotation this key does not
+    /// span) is tracked on its own and settles with what the runtime reports
+    /// for the deduplicated input: the ORIGINAL input's own result while that
+    /// input is still running (the runtime shares the one input's
+    /// completion), and [`TurnOutput::NoOwnResult`] once it has ended.
+    pub async fn dispatch_with_turn_ticket(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        input: &DispatchInput,
+    ) -> Result<Ticketed<DispatchAdmission>, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(ToString::to_string);
+        let input = input.clone();
+        self.run_tracked_foreground(async move {
+            runtime
+                .dispatch_core(&identity, expected_alias.as_deref(), None, &input, true)
+                .await
+                .map(|outcome| Ticketed {
+                    admission: outcome.admission,
+                    turn: outcome.turn.unwrap_or_else(untracked_delivery),
+                })
         })
         .await
     }
@@ -16110,6 +16913,206 @@ mod reset_reprofile_tests {
             Some(LeaseAcquireResult::Acquired(_))
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod turn_ticket_tests {
+    use super::*;
+
+    fn keeper() -> AgentIdentity {
+        AgentIdentity::parse("keeper").expect("identity")
+    }
+
+    fn text(text: &str) -> Result<TurnOutput, String> {
+        Ok(TurnOutput::Text {
+            text: text.to_string(),
+            truncated: false,
+        })
+    }
+
+    fn delivery_key(key: &str) -> DeliveryKey {
+        delivery_key_in(&SESSION, key)
+    }
+
+    static SESSION: std::sync::LazyLock<SessionId> = std::sync::LazyLock::new(SessionId::new);
+
+    fn delivery_key_in(session: &SessionId, key: &str) -> DeliveryKey {
+        (
+            AgentRuntimeId::parse("keeper-g1").expect("runtime id"),
+            session.clone(),
+            key.to_string(),
+        )
+    }
+
+    #[test]
+    fn trackability_is_typed_and_leaves_the_runtime_mode_to_the_live_entry() {
+        assert_eq!(turn_untrackable(true, false, false, true), None);
+        assert_eq!(
+            turn_untrackable(false, false, false, true),
+            Some(TurnUntrackable::NotDelivered)
+        );
+        assert_eq!(
+            turn_untrackable(true, false, true, true),
+            Some(TurnUntrackable::HostHumanInput)
+        );
+        assert_eq!(
+            turn_untrackable(true, true, false, true),
+            Some(TurnUntrackable::ExternallyBound)
+        );
+        assert_eq!(
+            turn_untrackable(true, false, false, false),
+            Some(TurnUntrackable::BridgeCannotReportOutput)
+        );
+        let keeper = keeper();
+        assert_eq!(
+            runtime_refused_tracking(&keeper, meerkat_mob::MobRuntimeMode::AutonomousHost, "x"),
+            TurnTracking::Unavailable(TurnUntrackable::AutonomousHost)
+        );
+        assert_eq!(
+            runtime_refused_tracking(&keeper, meerkat_mob::MobRuntimeMode::TurnDriven, "x"),
+            TurnTracking::Unavailable(TurnUntrackable::RefusedByRuntime {
+                mode: meerkat_mob::MobRuntimeMode::TurnDriven
+            })
+        );
+    }
+
+    #[test]
+    fn a_redispatch_after_a_session_rotation_is_its_own_admission() {
+        let mut outcomes = TurnOutcomes::default();
+        let original = outcomes.admit(&keeper(), Some(delivery_key("evt-1")));
+        outcomes.settle(&keeper(), original, text("answer"));
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &delivery_key("evt-1")),
+            Some(original)
+        );
+        // Same incarnation and key, rotated session: its runtime ledger has
+        // never seen the key, so nothing is reused.
+        let rotated = SessionId::new();
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &delivery_key_in(&rotated, "evt-1")),
+            None
+        );
+    }
+
+    #[test]
+    fn every_admission_gets_its_own_ticket() {
+        let mut outcomes = TurnOutcomes::default();
+        let first = outcomes.admit(&keeper(), Some(delivery_key("k")));
+        let second = outcomes.admit(&keeper(), Some(delivery_key("k")));
+        assert_ne!(first, second);
+        outcomes.settle(&keeper(), first, text("first"));
+        assert_eq!(outcomes.outcome(&keeper(), second), TurnOutcome::Pending);
+    }
+
+    #[test]
+    fn only_the_owning_pending_record_is_settled() {
+        let louise = AgentIdentity::parse("louise").expect("identity");
+        let mut outcomes = TurnOutcomes::default();
+        let ticket = outcomes.admit(&keeper(), None);
+        // Another identity's waiter can never settle this record.
+        outcomes.settle(&louise, ticket, text("louise's reply"));
+        assert_eq!(outcomes.outcome(&keeper(), ticket), TurnOutcome::Pending);
+        outcomes.settle(&keeper(), ticket, text("keeper's reply"));
+        // A settled record is final: nothing overwrites it.
+        outcomes.settle(&keeper(), ticket, Ok(TurnOutput::NoOwnResult));
+        assert_eq!(
+            outcomes.outcome(&keeper(), ticket),
+            TurnOutcome::Completed {
+                output: TurnOutput::Text {
+                    text: "keeper's reply".to_string(),
+                    truncated: false,
+                }
+            }
+        );
+        assert_eq!(outcomes.outcome(&louise, ticket), TurnOutcome::Unknown);
+    }
+
+    #[test]
+    fn a_redispatch_reuses_a_pending_or_completed_admission_but_not_a_failed_one() {
+        let louise = AgentIdentity::parse("louise").expect("identity");
+        let mut outcomes = TurnOutcomes::default();
+        let key = delivery_key("evt-1");
+        let original = outcomes.admit(&keeper(), Some(key.clone()));
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &key),
+            Some(original)
+        );
+        assert_eq!(outcomes.reusable_delivery_ticket(&louise, &key), None);
+        outcomes.settle(&keeper(), original, text("answer"));
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &key),
+            Some(original)
+        );
+
+        let failed_key = delivery_key("evt-2");
+        let failed = outcomes.admit(&keeper(), Some(failed_key.clone()));
+        outcomes.settle(&keeper(), failed, Err("boom".to_string()));
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &failed_key),
+            None
+        );
+    }
+
+    #[test]
+    fn a_full_registry_forgets_settled_turns_before_pending_ones() {
+        let mut outcomes = TurnOutcomes::default();
+        let pending = outcomes.admit(&keeper(), None);
+        let mut settled = Vec::new();
+        for _ in 1..TRACKED_TURNS_CAP {
+            let ticket = outcomes.admit(&keeper(), None);
+            outcomes.settle(&keeper(), ticket, Ok(TurnOutput::Empty));
+            settled.push(ticket);
+        }
+        // At the cap: the next admission forgets a SETTLED turn, never the
+        // older pending one.
+        let newest = outcomes.admit(&keeper(), None);
+        assert_eq!(outcomes.outcome(&keeper(), pending), TurnOutcome::Pending);
+        assert_eq!(outcomes.outcome(&keeper(), newest), TurnOutcome::Pending);
+        let forgotten = settled
+            .iter()
+            .filter(|ticket| outcomes.outcome(&keeper(), **ticket) == TurnOutcome::Unknown)
+            .count();
+        assert_eq!(forgotten, 1);
+    }
+
+    #[test]
+    fn a_long_turn_that_just_settled_is_not_the_next_eviction() {
+        let mut outcomes = TurnOutcomes::default();
+        // Admitted first, settles last.
+        let long = outcomes.admit(&keeper(), Some(delivery_key("long")));
+        let mut short = Vec::new();
+        for _ in 2..TRACKED_TURNS_CAP {
+            let ticket = outcomes.admit(&keeper(), None);
+            outcomes.settle(&keeper(), ticket, Ok(TurnOutput::Empty));
+            short.push(ticket);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        outcomes.settle(&keeper(), long, text("long answer"));
+        // Fill to the cap, then one more admission evicts one record: the one
+        // settled longest ago, not the one admitted first.
+        outcomes.admit(&keeper(), None);
+        outcomes.admit(&keeper(), None);
+        assert_eq!(
+            outcomes.outcome(&keeper(), long),
+            TurnOutcome::Completed {
+                output: TurnOutput::Text {
+                    text: "long answer".to_string(),
+                    truncated: false,
+                }
+            }
+        );
+        let forgotten = short
+            .iter()
+            .filter(|ticket| outcomes.outcome(&keeper(), **ticket) == TurnOutcome::Unknown)
+            .count();
+        assert_eq!(forgotten, 1);
+        // The index follows the records it names.
+        assert_eq!(
+            outcomes.reusable_delivery_ticket(&keeper(), &delivery_key("long")),
+            Some(long)
+        );
     }
 }
 

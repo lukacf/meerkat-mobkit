@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `BridgeError` and `BridgeAdmissionError` gain an `UnsupportedForMode {
+  identity, mode, detail }` variant: meerkat's typed pre-admission refusal
+  (`MobError::UnsupportedForMode`) for the member's live runtime mode, which
+  was flattened into `Mob(String)` before. Both enums are public and not
+  `#[non_exhaustive]`, so exhaustive matches (custom `SessionBridge`
+  implementations, callers mapping bridge errors) must add the arm, as with
+  `ProviderAuthRejected`. The `Display` text is unchanged from the former
+  `Mob` rendering.
+
 - `ConsoleAgentLiveSnapshot.response_phase` is now `Option<Option<String>>`:
   `None` means no activity observation, `Some(None)` means known quiet, and
   `Some(Some(phase))` carries the recorded activity phase. JSON keeps the
@@ -114,7 +123,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   flow-editor build scripts, the Bazel labels and the docs point at the new
   paths.
 
+### Added
+
+- Turn tickets: per-admission completion for identity deliveries.
+  `mobkit/send`, `mobkit/interact` and `mobkit/dispatch` accept
+  `"track_turn": true` and then return `"turn": {"ticket": ...}`, a ticket
+  the runtime mints for that one admission and keeps the admitted turn's own
+  completion handle under (the caller's interaction id and a dispatch's
+  correlation id still ride unchanged; neither names the ticket, since both
+  may repeat across admissions). When the turn cannot be tracked the result
+  carries `"turn": null` plus `"turn_unavailable": {"code", "reason",
+  "delivered"}`. Every code but `not_delivered` means the delivery still
+  happened, exactly once, on the ingress lane: `autonomous_host` (the
+  member's live roster entry, the mode meerkat checks, says autonomous_host;
+  meerkat reports no per-turn completion for autonomous inbox delivery, the
+  default runtime mode), `runtime_refused` (meerkat refused per-turn
+  completion for the member's live mode for another reason),
+  `externally_bound`, `host_human_input`, `bridge_cannot_report_output` and
+  `session_rotated` (a re-dispatch meant to be deduplicated onto a tracked
+  admission landed on a different session after a repair or respawn, so it
+  ran as its own turn). `not_delivered` (`delivered: false`) means nothing
+  was delivered.
+  Trackability is decided from the live roster entry right before admission,
+  never from MobKit's desired spec, so a same-profile `runtime_mode_override`
+  hot reload, a repair respawn that drops the override, or a profile MobKit
+  cannot read never turns into a failed send: an `autonomous_host` member is
+  refused typed before anything is submitted and delivered once untracked.
+  meerkat's own refusal (`MobError::UnsupportedForMode`, now carried typed as
+  `BridgeError::UnsupportedForMode` / `BridgeAdmissionError::UnsupportedForMode`
+  instead of a mob-error string) takes the same fallback. An idempotent
+  re-dispatch of a key whose tracked admission to the identity's current
+  session is still pending or completed names the original's ticket (meerkat
+  deduplicates per session ledger, so after a session rotation it is a turn of
+  its own). The new `mobkit/turn_result {identity, ticket}` reports that turn
+  as `pending`, `completed`, `failed` (with `error`) or a typed `unknown`; a
+  completed turn carries `output_status`: `text` (its own `output`, from the
+  turn's committed run result via meerkat's exact-turn `wait_bounded`,
+  bounded to 256 KiB with `output_truncated`), `empty`, `no_own_result` (the
+  runtime folded the input into a run already in progress or deduplicated it
+  onto an earlier admission that had ended; a deduplicated retry of a still
+  running input shares that input's result) or `unavailable`. Rust:
+  `IdentityRuntime::send_with_turn_ticket`, `dispatch_with_turn_ticket`,
+  `turn_outcome` and `wait_for_turn`, with `TurnTicket`, `TurnOutput`,
+  `TurnOutcome`, `TurnTracking`, `TurnUntrackable` and `Ticketed`;
+  `SessionBridge` gains `tracks_turn_output` and `begin_delivery_with_output`
+  (default: untracked) and `BridgeTurnReceipt` gains `with_output`,
+  `wait_with_output`, `wait_turn_output` and `session_resolution_error` (the
+  existing `new` / `wait` are unchanged). Python: `send` / `dispatch` /
+  `dispatch_text` take `track_turn=`, results carry `turn_ticket` and
+  `turn_unavailable` (`TurnUnavailable`, with `delivered`), and handles gain
+  `turn_result`, `wait_for_turn` (returns the typed `TurnResult`) and
+  `wait_for_output(turn=...)`, with `TurnOutputStatus`, `TurnState`,
+  `TurnFailedError`, `TurnUnknownError`, `TurnOutputUnavailableError`,
+  `TurnTrackingUnavailableWarning`, `TurnOutputTruncatedWarning` and
+  `TurnOutputUnavailableWarning`. TypeScript: `send` / `dispatch` take
+  `{ trackTurn }`, results carry `turnTicket` and `turnUnavailable`, plus
+  `turnResult`, `waitForTurn` (resolves the typed `TurnResult`),
+  `TurnOutputStatus`, `TurnUnavailable`, `TurnFailedError` and
+  `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
+
 ### Fixed
+
+- `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
+  and `sendAndWait` / `dispatchAndWait` (TypeScript) return the output of the
+  turn they started. They waited until the identity-wide completion cursor
+  passed the send's baseline and returned the session's latest
+  `output_preview`, so a concurrent delivery to the same identity (a peer
+  message, a scheduled turn, a fork completion wake) could satisfy the wait
+  and hand the caller someone else's output. They now send with
+  `track_turn` and wait on the turn ticket through `mobkit/turn_result`;
+  signatures and return types are unchanged. A failed turn raises
+  `TurnFailedError`, and an unknown ticket (for example after a gateway
+  restart) raises `TurnUnknownError`. Text cut at the 256 KiB bound, and a
+  turn that completed without output of its own, are never returned
+  silently: each emits a typed warning (`TurnOutputTruncatedWarning`,
+  `TurnOutputUnavailableWarning`). When a delivery cannot be tracked (an
+  `autonomous_host` member, an externally bound member, a gateway that
+  predates turn tickets) it is still delivered exactly once, and the helpers
+  fall back to the cursor wait with a `TurnTrackingUnavailableWarning`
+  naming the typed reason (a Python warning; a Node process warning in
+  TypeScript); when nothing was delivered (`not_delivered`) they raise the
+  typed `TurnNotDeliveredError` instead (nothing ran, so a retry is safe). On an `autonomous_host` member (meerkat's default mode) that
+  fallback wait is still identity-wide, so the per-turn guarantee holds for
+  `turn_driven` members. `wait_for_completion(baseline)` / `waitForCompletion` and
+  `wait_for_output(after=cursor)` remain identity-wide primitives: any
+  completion on the identity after the baseline satisfies them and the
+  returned preview is the session's latest output, not necessarily a given
+  send's answer; use `wait_for_turn` / `waitForTurn` for one specific turn.
+  Do not mix ticket waits and cursor waits on one identity: a ticket can
+  settle before the identity health monitor counts the same turn on the
+  cursor, so a later `send` followed by `wait_for_output(after=baseline)` can
+  be satisfied by the earlier `send_and_wait` turn.
 
 - Show canonical peer display names while preserving exact peer identities in
   details. Keep empty WorkGraph query results inspectable, and avoid duplicate
@@ -140,6 +239,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   its exact source and the subsequent reply's assistant header.
 - Let Python text-dispatch helpers carry caller-supplied idempotency keys with
   correlation IDs, including the completion-waiting helper.
+
 - `fork_off` children sent with `idle_retire_secs: null` are idle-retired on
   the runtime default. The null disabled retirement for the child, so a model
   that filled in every optional field with null pinned each fork child until

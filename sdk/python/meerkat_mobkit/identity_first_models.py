@@ -985,19 +985,86 @@ def _completion_cursor_from(data: dict[str, Any], key: str) -> CompletionCursor 
     return CompletionCursor.from_dict(raw) if isinstance(raw, dict) else None
 
 
+def _turn_ticket_from(data: dict[str, Any]) -> str | None:
+    """Read the ``turn.ticket`` a tracked delivery returned, if any."""
+    turn = data.get("turn")
+    ticket = turn.get("ticket") if isinstance(turn, dict) else None
+    return ticket if isinstance(ticket, str) else None
+
+
+@dataclass(frozen=True)
+class TurnUnavailable:
+    """Why a delivery that asked for ``track_turn`` could not be tracked, and
+    whether it was delivered at all.
+
+    ``code`` is stable. Every code but ``not_delivered`` means the delivery
+    happened, exactly once, untracked: ``autonomous_host`` (the member runs
+    in ``autonomous_host`` mode, read from the runtime's live roster entry;
+    its inbox delivery reports no per-turn completion), ``runtime_refused``
+    (the runtime refused per-turn completion for the member's live mode for
+    another reason), ``externally_bound``, ``host_human_input``,
+    ``bridge_cannot_report_output`` or ``session_rotated`` (a re-dispatch that
+    landed on a new session after a repair and ran as its own turn). ``not_delivered`` means NOTHING was
+    delivered (no session bridge or no bound runtime), so there is no turn to
+    wait for. ``delivered`` says which; ``reason`` is the human-readable
+    detail.
+    """
+
+    code: str
+    reason: str
+    delivered: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "reason": self.reason, "delivered": self.delivered}
+
+    @classmethod
+    def from_wire(cls, raw: Any) -> TurnUnavailable | None:
+        if isinstance(raw, dict):
+            code = str(raw.get("code", ""))
+            delivered = raw.get("delivered")
+            return cls(
+                code=code,
+                reason=str(raw.get("reason", "")),
+                delivered=(
+                    delivered if isinstance(delivered, bool) else code != "not_delivered"
+                ),
+            )
+        return None
+
+
+def _turn_tracking_to_dict(
+    result: dict[str, Any],
+    turn_ticket: str | None,
+    turn_unavailable: TurnUnavailable | None,
+) -> None:
+    if turn_ticket is not None:
+        result["turn"] = {"ticket": turn_ticket}
+    elif turn_unavailable is not None:
+        result["turn"] = None
+        result["turn_unavailable"] = turn_unavailable.to_dict()
+
+
 @dataclass(frozen=True)
 class SendResult:
     """Typed result from identity-first send()."""
 
     fencing_token: int
-    #: Cursor read before delivery. Wait for an inspection cursor that reports
-    #: COMPLETED against this. ``None`` when the gateway predates the field.
+    #: Cursor read before delivery: an IDENTITY-WIDE barrier. Another
+    #: delivery's completion also passes it, so it does not name this turn;
+    #: use :attr:`turn_ticket` for that. ``None`` when the gateway predates
+    #: the field.
     completion_baseline: CompletionCursor | None = None
+    #: The ticket naming THIS turn, when the send asked for ``track_turn`` and
+    #: the gateway could track it. Wait on it with ``wait_for_turn``.
+    turn_ticket: str | None = None
+    #: Why a requested ticket is unavailable (the turn was still delivered).
+    turn_unavailable: TurnUnavailable | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"fencing_token": self.fencing_token}
         if self.completion_baseline is not None:
             result["completion_baseline"] = self.completion_baseline.to_dict()
+        _turn_tracking_to_dict(result, self.turn_ticket, self.turn_unavailable)
         return result
 
     @classmethod
@@ -1005,6 +1072,8 @@ class SendResult:
         return cls(
             fencing_token=int(data.get("fencing_token", 0)),
             completion_baseline=_completion_cursor_from(data, "completion_baseline"),
+            turn_ticket=_turn_ticket_from(data),
+            turn_unavailable=TurnUnavailable.from_wire(data.get("turn_unavailable")),
         )
 
 
@@ -1016,6 +1085,10 @@ class DispatchResult:
     durable: bool
     #: See :attr:`SendResult.completion_baseline`.
     completion_baseline: CompletionCursor | None = None
+    #: See :attr:`SendResult.turn_ticket`.
+    turn_ticket: str | None = None
+    #: See :attr:`SendResult.turn_unavailable`.
+    turn_unavailable: TurnUnavailable | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -1024,6 +1097,7 @@ class DispatchResult:
         }
         if self.completion_baseline is not None:
             result["completion_baseline"] = self.completion_baseline.to_dict()
+        _turn_tracking_to_dict(result, self.turn_ticket, self.turn_unavailable)
         return result
 
     @classmethod
@@ -1032,6 +1106,102 @@ class DispatchResult:
             fencing_token=int(data.get("fencing_token", 0)),
             durable=bool(data.get("durable", False)),
             completion_baseline=_completion_cursor_from(data, "completion_baseline"),
+            turn_ticket=_turn_ticket_from(data),
+            turn_unavailable=TurnUnavailable.from_wire(data.get("turn_unavailable")),
+        )
+
+
+class TurnState(str, Enum):
+    """Where a ticketed turn stands (``mobkit/turn_result``)."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    #: No turn with this ticket is known for this identity.
+    UNKNOWN = "unknown"
+
+
+class TurnOutputStatus(str, Enum):
+    """What a completed ticketed turn yielded (``output_status``)."""
+
+    #: The turn's own final text is in ``output`` (see ``output_truncated``).
+    TEXT = "text"
+    #: The turn ran and committed a run result with no text.
+    EMPTY = "empty"
+    #: The admission completed without a run result of its own: the runtime
+    #: folded it into a run already in progress, or deduplicated it onto an
+    #: earlier admission whose turn had already ended. No output belongs to
+    #: it.
+    NO_OWN_RESULT = "no_own_result"
+    #: The gateway's session bridge cannot report per-turn output (also used
+    #: for a status this SDK does not know).
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """``mobkit/turn_result``: one ticketed turn's state and its OWN output,
+    from that turn's committed run result (never the session's latest text)."""
+
+    identity: str
+    ticket: str
+    state: TurnState
+    #: What a COMPLETED turn yielded; ``None`` in any other state.
+    output_status: TurnOutputStatus | None = None
+    #: The turn's own final text; set only when ``output_status`` is TEXT.
+    output: str | None = None
+    #: The text was cut at the gateway's bound (the runtime also appends a
+    #: truncation marker to it).
+    output_truncated: bool = False
+    #: The failure detail when ``state`` is FAILED.
+    error: str | None = None
+    #: The identity-wide cursor at read time (diagnostic only).
+    completion_cursor: CompletionCursor | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "identity": self.identity,
+            "ticket": self.ticket,
+            "state": self.state.value,
+        }
+        if self.output_status is not None:
+            result["output_status"] = self.output_status.value
+            result["output"] = self.output
+            result["output_truncated"] = self.output_truncated
+        if self.error is not None:
+            result["error"] = self.error
+        if self.completion_cursor is not None:
+            result["completion_cursor"] = self.completion_cursor.to_dict()
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TurnResult:
+        raw_state = data.get("state")
+        try:
+            state = TurnState(raw_state)
+        except ValueError:
+            state = TurnState.UNKNOWN
+        output_status: TurnOutputStatus | None = None
+        if state is TurnState.COMPLETED:
+            try:
+                output_status = TurnOutputStatus(data.get("output_status"))
+            except ValueError:
+                output_status = TurnOutputStatus.UNAVAILABLE
+        output = data.get("output")
+        error = data.get("error")
+        return cls(
+            identity=str(data.get("identity", "")),
+            ticket=str(data.get("ticket", "")),
+            state=state,
+            output_status=output_status,
+            output=(
+                output
+                if output_status is TurnOutputStatus.TEXT and isinstance(output, str)
+                else None
+            ),
+            output_truncated=bool(data.get("output_truncated", False)),
+            error=error if isinstance(error, str) else None,
+            completion_cursor=_completion_cursor_from(data, "completion_cursor"),
         )
 
 
