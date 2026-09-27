@@ -100,7 +100,7 @@ impl AgentLlmClient for ProbeClient {
         Provider::OpenAI
     }
 
-    fn model(&self) -> &str {
+    fn model(&self) -> &'static str {
         "prepared-probe"
     }
 
@@ -478,10 +478,7 @@ impl meerkat_client::LlmClient for IdentityChunks {
         &'a self,
         request: &'a meerkat_client::LlmRequest,
     ) -> meerkat_client::types::LlmStream<'a> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.messages.to_vec());
+        self.requests.lock().unwrap().push(request.messages.clone());
         let mut events = vec![
             meerkat_client::LlmEvent::TextDelta {
                 delta: "decorated ".into(),
