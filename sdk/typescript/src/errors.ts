@@ -292,6 +292,31 @@ export class TurnUnknownError extends MobKitError {
   }
 }
 
+/**
+ * A `trackTurn` delivery was NOT delivered at all (`turnUnavailable.code ===
+ * "not_delivered"`: the gateway has no session bridge, or the identity has no
+ * bound runtime). Nothing ran and there is no turn to wait for, so retrying
+ * is safe, unlike a failed or unknown turn.
+ */
+export class TurnNotDeliveredError extends MobKitError {
+  readonly identity: string;
+  readonly operation: string;
+  readonly code: string;
+  readonly reason: string;
+
+  constructor(identity: string, operation: string, code: string, reason: string) {
+    super(
+      `${operation} for identity ${identity} was not delivered ` +
+        `(${code}: ${reason}); there is no turn to wait for`,
+    );
+    this.name = "TurnNotDeliveredError";
+    this.identity = identity;
+    this.operation = operation;
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
 // -- Cross-module identity helpers ---------------------------------------
 
 /**

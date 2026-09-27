@@ -9629,6 +9629,26 @@ impl IdentityRuntime {
                     }
                 }
             };
+            // A reused ticket claims the runtime deduplicated this delivery
+            // onto the original. That holds only if it landed on the session
+            // whose ledger admitted the original: delivery repair or a respawn
+            // can move the member onto a new session under the same runtime
+            // id, and that ledger has never seen the key, so the delivery ran
+            // as a turn of its own. Then the original's ticket would name the
+            // wrong turn: report it untracked instead.
+            if let (Some(TurnTracking::Tracked(_)), Some((_, reused_session, _)), false) =
+                (&turn, current_delivery_key.as_ref(), ticketed)
+                && reused_session != &delivered_session_id
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    reused_session = %reused_session,
+                    delivered_session = %delivered_session_id,
+                    "re-dispatch landed on a different session than the admission it was to be \
+                     deduplicated onto; it ran as its own turn and is reported untracked"
+                );
+                turn = Some(TurnTracking::Unavailable(TurnUntrackable::SessionRotated));
+            }
             dispatched_session_id = Some(delivered_session_id.clone());
             if let Some(rebound_token) = self
                 .reconcile_delivered_session_locked(identity, delivered_session_id)
