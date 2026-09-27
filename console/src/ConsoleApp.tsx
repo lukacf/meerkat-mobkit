@@ -1698,6 +1698,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const autoDrainRequestedRef = React.useRef(new Map<string, { inFlight: boolean; token: string }>());
   const sendRetryEpochRef = React.useRef(0);
   const pendingStorageErrorRef = React.useRef<Record<string, string>>({});
+  const queueStorageBannerRef = React.useRef<{ scope: string; identity: string; message: string } | null>(null);
   const [contextDrafts, setContextDrafts] = React.useState<Record<string, ConsoleContextRecord[]>>({});
   const [submittedFrames, setSubmittedFrames] = React.useState<Record<string, string>>({});
   const loadedComposerDraftsRef = React.useRef<Record<string, { text: string; contexts: ConsoleContextRecord[] }>>({});
@@ -1740,6 +1741,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     pendingStackRef.current = {};
     autoDrainRequestedRef.current.clear();
     pendingStorageErrorRef.current = {};
+    queueStorageBannerRef.current = null;
     loadedComposerDraftsRef.current = {};
     for (const optimistic of Object.values(optimisticUserByPanelKeyRef.current)) {
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -1789,10 +1791,17 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         const saved = saveConsoleSendAttempts(storage, namespace, identity, clean(next), clean(previous), legacyImported);
         next = saved.map((attempt) => ({ ...next.find((item) => item.id === attempt.id), ...attempt }));
         delete pendingStorageErrorRef.current[identity];
+        const banner = queueStorageBannerRef.current;
+        if (banner?.scope === sendScopeRef.current && banner.identity === identity) {
+          setActionError((current) => current === banner.message ? "" : current);
+          queueStorageBannerRef.current = null;
+        }
       } catch (error) {
         // The composer or prior queue stays visible until persistence succeeds.
         pendingStorageErrorRef.current[identity] = errorMessage(error);
-        setActionError(`Message was not queued or dispatched: ${errorMessage(error)}`);
+        const message = `Queue could not be saved: ${errorMessage(error)}`;
+        queueStorageBannerRef.current = { scope: sendScopeRef.current, identity, message };
+        setActionError(message);
         forceRender();
         return false;
       }
@@ -3431,7 +3440,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
       if (pendingAttempt) {
         const state = submitError instanceof ConsoleCapabilityUnavailableError ? "definitely-rejected" : consoleSendFailureState(submitError);
+        // The saved row owns recovery instructions. Persistence failures retain
+        // their own banner instead of being overwritten by the transport error.
         await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
+      } else {
+        setActionError(errorMessage(submitError));
       }
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url),
@@ -3439,7 +3452,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {

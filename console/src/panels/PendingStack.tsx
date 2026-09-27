@@ -1,6 +1,7 @@
 import React from "react";
 import { QuoteContextChips } from "../../../packages/console-components/src/conversation/context-chips";
 import type { ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
+import { Icon } from "../icon";
 
 /// One row in the per-identity pending-message stack. Lives entirely
 /// in the browser until either auto-drain (busy → idle), explicit
@@ -65,7 +66,7 @@ function StackHead({
         <span className="stack__head-chev">{collapsed ? "▸" : "▾"}</span>
       </button>
       <span>Queue</span>
-      <span className="stack__head-count">{String(count).padStart(2, "0")}</span>
+      <span className="stack__head-count">{count}</span>
       {!collapsed && count > 1 && (
         <span className="stack__head-hint">· drains top → bottom</span>
       )}
@@ -170,8 +171,25 @@ function StackItem({
     }
   };
 
+  const isDraft = item.state === "draft";
+  const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
+  const statusLabel = item.state === "outcome-unknown" ? "Acceptance unknown"
+    : item.state === "definitely-rejected" ? "Not accepted"
+    : item.state === "attempting" ? "Awaiting acceptance"
+    : item.state === "accepted" ? "Accepted" : "Queued";
+  const explanation = item.state === "outcome-unknown"
+    ? "Your message may already have been accepted. Check its status before discarding it."
+    : item.state === "attempting"
+      ? "Waiting for confirmation. Checking acceptance will not send the message again."
+      : item.state === "definitely-rejected"
+        ? "This attempt was rejected. Retry sends the same saved message."
+        : undefined;
+  const previewId = React.useId();
+
   const cls = [
     "stk-item",
+    !isDraft ? "is-frozen" : "",
+    needsAcceptance ? "needs-acceptance" : "",
     isHead ? "is-head" : "",
     item.editing ? "is-editing" : "",
     item.status === "promoting" ? "is-promoting" : "",
@@ -207,10 +225,10 @@ function StackItem({
       }}
     >
       <div className="stk-item__lead">
-        <span className="stk-item__grip" aria-label="Drag to reorder" title="Drag to reorder">
+        {isDraft && <span className="stk-item__grip" aria-label="Drag to reorder" title="Drag to reorder">
           <span /><span /><span /><span /><span /><span />
-        </span>
-        <span className="stk-item__queue-glyph" aria-hidden="true">⤵</span>
+        </span>}
+        <span className="stk-item__queue-glyph" aria-hidden="true"><Icon name={item.state === "outcome-unknown" ? "i-info" : "i-clock"} /></span>
       </div>
 
       {item.editing ? (
@@ -250,8 +268,16 @@ function StackItem({
         </div>
       ) : (
         <div className="stk-item__body">
+          <div className="stk-item__meta">
+            {isHead && isDraft && <span className="stk-item__head-tag">Next</span>}
+            <span className="stk-item__state" role={needsAcceptance ? "status" : undefined}>{statusLabel}</span>
+            {item.contexts.length > 0 && <span>{item.contexts.length} {item.contexts.length === 1 ? "quote" : "quotes"}</span>}
+            <span className="stk-item__age">{timeAgo(item.addedAt)}</span>
+            {item.status === "promoting" && <span className="stk-item__sending">Sending...</span>}
+          </div>
           <div
-            className={`stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`}
+            id={previewId}
+            className={`stk-item__text ${longText && !item.expanded ? "stk-item__text--preview" : "stk-item__text--expanded"}`}
             onClick={longText ? () => onToggleExpand(item.id) : undefined}
             style={longText ? { cursor: "pointer" } : undefined}
             title={longText && !item.expanded ? item.text : undefined}
@@ -262,54 +288,45 @@ function StackItem({
             onEdit={item.state === "draft" && !item.envelopeJson && onEditContext ? (contextId, quote) => onEditContext(item.id, contextId, quote) : undefined}
             onRemove={item.state === "draft" ? (contextId) => onRemoveContext(item.id, contextId) : undefined}
             onReorder={item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : undefined} />}
-          <div className="stk-item__meta">
-            {isHead && item.state === "draft" && <span className="stk-item__head-tag">Next</span>}
-            <span>{item.state === "outcome-unknown" ? "Acceptance unknown - inspect conversation before discarding" : item.state === "definitely-rejected" ? "Rejected - retained for review" : item.state === "attempting" ? "Sending" : item.state === "accepted" ? "Accepted" : "Queued"}</span>
-            {item.contexts.length > 0 && <span>{item.contexts.length} quote(s)</span>}
-            {item.error && <span role="status">{item.error}</span>}
-            <span>{timeAgo(item.addedAt)}</span>
-            {item.status === "promoting" && (
-              <span className="stk-item__sending">SENDING…</span>
-            )}
-          </div>
+          {explanation && <p className="stk-item__explanation">{explanation}</p>}
+          {item.error && <details className="stk-item__error"><summary>Details</summary><p>{item.error}</p></details>}
         </div>
       )}
 
       {!item.editing && (
         <div className="stk-item__actions">
-          {item.state === "definitely-rejected" && <button type="button" className="stk-btn" onClick={() => onRetry(item.id)}>Retry same attempt</button>}
-          {(item.state === "outcome-unknown" || item.state === "attempting") && <button type="button" className="stk-btn" onClick={() => onReconcile(item.id)}>Check acceptance</button>}
-          <button
+          {item.state === "definitely-rejected" && <button type="button" className="stk-btn stk-btn--primary" onClick={() => onRetry(item.id)}>Retry same attempt</button>}
+          {needsAcceptance && <button type="button" className="stk-btn stk-btn--primary" onClick={() => onReconcile(item.id)}>Check acceptance</button>}
+          {longText && <button type="button" className="stk-btn stk-btn--expand" aria-expanded={Boolean(item.expanded)} aria-controls={previewId} onClick={() => onToggleExpand(item.id)}>{item.expanded ? "Hide saved message" : "Show saved message"}</button>}
+          {isDraft && <button
             type="button"
             className="stk-btn stk-btn--steer"
             onClick={() => onSteer(item.id)}
-            disabled={item.state !== "draft"}
             aria-label="Steer - send now and interrupt at next cooperative pause"
             title="Send now and interrupt at the next cooperative pause"
             data-testid={`pending-steer:${item.id}`}
           >
-            <span className="stk-btn__glyph">↪</span> Steer
-          </button>
-          <button
+            <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-bolt" /></span> Steer
+          </button>}
+          {isDraft && <button
             type="button"
             className="stk-btn stk-btn--icon"
             onClick={() => onEdit(item.id)}
-            disabled={item.state !== "draft"}
             aria-label="Edit message"
             title="Edit message"
             data-testid={`pending-edit:${item.id}`}
           >
-            <span className="stk-btn__glyph">✎</span>
-          </button>
+            <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-compose" /></span>
+          </button>}
           <button
             type="button"
             className="stk-btn stk-btn--icon stk-btn--trash"
             onClick={() => onTrash(item.id)}
             aria-label={item.state === "draft" ? "Remove from queue" : "Discard saved attempt"}
-            title="Remove from queue"
+            title={isDraft ? "Remove from queue" : "Discard saved attempt"}
             data-testid={`pending-trash:${item.id}`}
           >
-            <span className="stk-btn__glyph">×</span>
+            <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-close" /></span>
           </button>
         </div>
       )}
@@ -392,7 +409,7 @@ export function PendingStack({
 
   return (
     <section
-      className={`stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`}
+      className={`stack stack--console ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`}
       aria-label="Pending message queue"
       data-testid="pending-stack"
     >

@@ -1534,6 +1534,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-tool-call {
   border: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.08));
   border-radius: 8px;
+  background: color-mix(in srgb, var(--_cc-foreground) 4%, transparent);
   overflow: hidden;
   margin: 4px 0;
 }
@@ -1541,9 +1542,9 @@ span.cc-conversation-turn-preview__file-icon::after {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 9px 12px;
   width: 100%;
-  background: var(--_cc-surface-soft, rgba(255,255,255,0.04));
+  background: transparent;
   border: none;
   color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
   font: inherit;
@@ -1552,7 +1553,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   text-align: left;
 }
 .cc-tool-call__header:hover {
-  background: var(--_cc-surface-hover, rgba(255,255,255,0.06));
+  background: color-mix(in srgb, var(--_cc-foreground) 4%, transparent);
 }
 .cc-tool-call__header:focus-visible {
   outline: 2px solid color-mix(in oklab, var(--_cc-accent, #fbbf24) 70%, transparent);
@@ -1575,7 +1576,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 }
 .cc-tool-call__status {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 .cc-tool-call--success .cc-tool-call__status { color: var(--_cc-positive, #3fb950); }
@@ -1615,11 +1616,10 @@ span.cc-conversation-turn-preview__file-icon::after {
   object-fit: contain;
 }
 .cc-tool-call__section-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
-  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  margin-bottom: 4px;
 }
 .cc-tool-call__icon {
   font-size: 12px;
@@ -1629,8 +1629,8 @@ span.cc-conversation-turn-preview__file-icon::after {
   opacity: 0.7;
 }
 .cc-tool-call__preview {
-  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
-  font-size: 11px;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2630,7 +2630,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-background-job {
   border: 1px solid var(--_cc-border-soft);
   border-radius: 10px;
-  background: var(--_cc-surface-soft);
+  background: color-mix(in srgb, var(--_cc-foreground) 4%, transparent);
   overflow: hidden;
 }
 .cc-background-job__header {
@@ -2650,7 +2650,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-background-job__kind {
   display: block;
   color: var(--_cc-foreground-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .cc-background-job__name { display: block; font-size: 13px; overflow-wrap: anywhere; }
@@ -2662,7 +2662,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   border-radius: 999px;
   background: color-mix(in srgb, currentColor 8%, transparent);
   color: var(--_cc-foreground-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   max-width: 100%;
   overflow-wrap: anywhere;

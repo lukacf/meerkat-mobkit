@@ -38,9 +38,9 @@ async function recordedRequests(fixture) {
   assert.equal(response.status, 200);
   return response.json();
 }
-async function capture(page, name) {
+async function capture(page, name, options = {}) {
   await fs.mkdir(evidence, { recursive: true });
-  await page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true });
+  await page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true, ...options });
 }
 async function saveEvidence(fixture, name, extra) {
   await fs.mkdir(evidence, { recursive: true });
@@ -339,9 +339,31 @@ async function lostAcknowledgement(withQuote = false) {
     assert.equal(envelope.idempotency_key, saved.idempotencyKey);
     const content = withQuote ? [{ type: "text", text }, expectedContextBlock(saved.contexts[0])] : text;
     assert.deepEqual(envelope.content, content);
-    assert.equal(await page.getByTestId(`pending-steer:${saved.id}`).isEnabled(), false);
-    assert.equal(await page.getByTestId(`pending-edit:${saved.id}`).isEnabled(), false);
+    assert.equal(await page.getByTestId(`pending-steer:${saved.id}`).count(), 0, "frozen attempts do not offer steering");
+    assert.equal(await page.getByTestId(`pending-edit:${saved.id}`).count(), 0, "frozen attempts do not offer editing");
+    assert.equal(await page.getByTestId("console-action-error").count(), 0, "saved recovery owns the failure message");
+    for (const width of [1600, 1024]) {
+      await page.setViewportSize({ width, height: width === 1600 ? 1000 : 900 });
+      const row = page.getByTestId(`pending-item:${saved.id}`);
+      const bounds = await row.evaluate(node => {
+        const button = Array.from(node.querySelectorAll("button")).find(button => button.textContent.includes("Check acceptance"));
+        const rect = node.getBoundingClientRect();
+        const action = button?.getBoundingClientRect();
+        return { overflow: node.scrollWidth - node.clientWidth, left: rect.left, right: rect.right,
+          action: action && { left: action.left, right: action.right, width: action.width, height: action.height } };
+      });
+      assert(bounds.overflow <= 1 && bounds.action, `recovery fits at ${width}px`);
+      assert(bounds.action.left >= bounds.left && bounds.action.right <= bounds.right,
+        `Check acceptance stays within its row at ${width}px`);
+      assert(bounds.action.height >= 30, "recovery action has a usable target");
+      if (width === 1024) await capture(page, `${name}-saved-1024`);
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
     await capture(page, `${name}-saved`);
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
+    await capture(page, `${name}-saved-dark`, { animations: "disabled" });
+    await page.getByTestId("theme-toggle").click();
     await page.reload();
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
