@@ -1,7 +1,61 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, stoppedTools } = require("./real-routine-negative.cjs");
+const { assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, assertStoppedToolDisclosure, stoppedTools } = require("./real-routine-negative.cjs");
+
+function disclosure({ expanded = "false", status = "success", grouped = false, clickOpens = true } = {}) {
+  let clicks = 0;
+  const classes = new Set([`cc-tool-call--${status}`, ...(grouped ? ["cc-tool-call--group"] : [])]);
+  const header = {
+    first() { return this; },
+    async getAttribute(name) { assert.equal(name, "aria-expanded"); return expanded; },
+    async click() { clicks++; if (clickOpens) expanded = "true"; },
+  };
+  return {
+    locator(selector) { assert.equal(selector, ".cc-tool-call__header"); return header; },
+    async evaluate(read) { return read({ classList: { contains: name => classes.has(name) } }); },
+    clicks: () => clicks,
+  };
+}
+
+test("full reload can open a completed standalone call for exact result inspection", async () => {
+  const section = disclosure();
+  assert.deepEqual(await assertStoppedToolDisclosure(section, "success", { fullReload: true }),
+    { expandedBefore: "false", openedAfterReload: true });
+  assert.equal(section.clicks(), 1);
+  const alreadyOpen = disclosure({ expanded: "true" });
+  assert.deepEqual(await assertStoppedToolDisclosure(alreadyOpen, "success", { fullReload: true }),
+    { expandedBefore: "true", openedAfterReload: false });
+  assert.equal(alreadyOpen.clicks(), 0);
+});
+
+test("the stopped tool oracle cannot open unresolved, grouped, or live-transition calls", async () => {
+  for (const spec of [
+    { state: "success", fullReload: false },
+    ...["held", "unknown", "failure"].map(state => ({ state, fullReload: true })),
+    { state: "success", fullReload: true, grouped: true },
+    ...["pending", "error"].map(status => ({ state: "success", fullReload: true, status })),
+  ]) {
+    const section = disclosure(spec);
+    await assert.rejects(() => assertStoppedToolDisclosure(section, spec.state, { fullReload: spec.fullReload }), /stays disclosed/);
+    assert.equal(section.clicks(), 0, JSON.stringify(spec));
+  }
+});
+
+test("live success and unresolved calls must already be open without a test click", async () => {
+  for (const state of ["held", "unknown", "failure", "success"]) {
+    const section = disclosure({ expanded: "true" });
+    assert.deepEqual(await assertStoppedToolDisclosure(section, state),
+      { expandedBefore: "true", openedAfterReload: false });
+    assert.equal(section.clicks(), 0);
+  }
+});
+
+test("a successful reload click must actually reveal the call", async () => {
+  const section = disclosure({ clickOpens: false });
+  await assert.rejects(() => assertStoppedToolDisclosure(section, "success", { fullReload: true }), /stays disclosed/);
+  assert.equal(section.clicks(), 1);
+});
 
 function history() {
   const identity = { interaction_id: "earlier-interaction", run_id: "earlier-run" };

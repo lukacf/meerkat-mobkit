@@ -618,6 +618,100 @@ function realtimeMessageOrigin(frame) {
   return origin;
 }
 
+// ../packages/console-core/src/assistant-presentation.ts
+function toolScope(frame) {
+  if (!frame) return void 0;
+  const values = [frame.runtimeKey, frame.identity, frame.sessionId, frame.runId];
+  return values.every((value) => typeof value === "string" && Boolean(value.trim())) ? values : void 0;
+}
+function typedToolIds(frame) {
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  if (["tool_call_requested", "tool_call", "tool_execution_started"].includes(frame.event)) {
+    const id = data.tool_call_id ?? data.id;
+    return typeof id === "string" && id.trim() ? [id] : [];
+  }
+  const message = data.message && typeof data.message === "object" ? data.message : {};
+  if (frame.sourceKind !== "session_history" || !Array.isArray(message.blocks)) return [];
+  return message.blocks.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const block = value;
+    const data2 = block.data && typeof block.data === "object" ? block.data : block;
+    return (block.block_type ?? block.type) === "tool_use" && typeof data2.id === "string" && data2.id.trim() ? [data2.id] : [];
+  });
+}
+function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /* @__PURE__ */ new Map()) {
+  const ordinals = /* @__PURE__ */ new Map();
+  const scopedLiveTools = /* @__PURE__ */ new Set();
+  const canonicalOwners = /* @__PURE__ */ new Map();
+  for (const frame of sourceFrames.values()) {
+    const scope = toolScope(frame);
+    if (!scope) continue;
+    for (const id of typedToolIds(frame)) {
+      const key = JSON.stringify([...scope, id]);
+      if (frame.sourceKind !== "session_history") scopedLiveTools.add(key);
+      else if (["assistant_message", "text_complete"].includes(frame.event)) {
+        const owners = canonicalOwners.get(key) ?? /* @__PURE__ */ new Set();
+        owners.add(frame.id);
+        canonicalOwners.set(key, owners);
+      }
+    }
+  }
+  return entries.map((entry) => {
+    const occurrence = entry.kind === "message" && entry.identity.role === "assistant" ? occurrenceKeys.get(entry.id) : void 0;
+    if (entry.kind !== "message" || entry.identity.role !== "assistant") return entry;
+    const source = sourceFrames.get(entry.id);
+    const scope = toolScope(source);
+    const ownedToolIds = new Set(source ? typedToolIds(source) : []);
+    const toolKey = (block) => {
+      if (block.type !== "tool-call" || !scope || !block.toolCallId.trim()) return void 0;
+      const key = JSON.stringify([...scope, block.toolCallId]);
+      if ((canonicalOwners.get(key)?.size ?? 0) > 1) return void 0;
+      const owned = source && (ownedToolIds.has(block.toolCallId) || source.sourceKind !== "session_history" && ownedToolIds.size > 0 && scopedLiveTools.has(key));
+      return owned ? `tool:${key}` : void 0;
+    };
+    if (!occurrence && !entry.blocks?.some((block) => toolKey(block))) return entry;
+    const counters = ordinals.get(occurrence ?? entry.id) ?? /* @__PURE__ */ new Map();
+    ordinals.set(occurrence ?? entry.id, counters);
+    const nextKey = (lane) => {
+      const ordinal2 = counters.get(lane) ?? 0;
+      counters.set(lane, ordinal2 + 1);
+      const owner = occurrence ?? entry.renderKey ?? entry.id;
+      return lane === "text" ? ordinal2 === 0 ? owner : `${owner}:part:${ordinal2}` : `${owner}:${lane}:${ordinal2}`;
+    };
+    if (!entry.blocks?.length) return { ...entry, assistantOccurrenceKey: occurrence, renderKey: nextKey("text") };
+    const segments = [];
+    for (const block of entry.blocks) {
+      const lane = block.type === "thinking" ? "thinking" : block.type === "tool-call" ? "tool" : block.type === "image" ? "image" : "text";
+      const previous3 = segments.at(-1);
+      if (lane === "text" && block.type !== "markdown" && previous3?.lane === lane) {
+        previous3.blocks.push(block);
+      } else {
+        segments.push({ lane, blocks: [block] });
+      }
+    }
+    const presentationRows = segments.map((segment) => {
+      const renderKey = toolKey(segment.blocks[0]) ?? nextKey(segment.lane);
+      let textIndex = 0;
+      return { renderKey, blocks: segment.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${renderKey}:text:${textIndex++}` } : block) };
+    });
+    const onlyScopedTools = segments.every((segment) => segment.lane === "tool" && segment.blocks.every((block) => toolKey(block)));
+    return {
+      ...entry,
+      assistantOccurrenceKey: onlyScopedTools ? void 0 : occurrence,
+      renderKey: presentationRows[0].renderKey,
+      blocks: presentationRows.flatMap((row) => row.blocks),
+      presentationRows
+    };
+  });
+}
+function conversationPresentationRows(entries) {
+  return entries.flatMap((entry) => {
+    if (entry.kind !== "message" || !entry.presentationRows) return [entry];
+    const { presentationRows, ...source } = entry;
+    return presentationRows.map((row) => ({ ...source, ...row }));
+  });
+}
+
 // ../packages/console-core/src/assistant-message-identity.ts
 function carrier(frame) {
   const data = frame.data;
@@ -3037,6 +3131,30 @@ function applyConsoleSidebarOrder(items, storedOrder) {
 // ../packages/console-core/src/format.ts
 function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
+}
+
+// ../packages/console-core/src/user-message-identity.ts
+var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function userMessageRenderKey(frame) {
+  if (frame.event !== "user_input" && frame.event !== "interaction_started" && frame.event !== "run_started") return void 0;
+  if (isRealtimeHistoryMessage(frame)) {
+    const origin = realtimeMessageOrigin(frame);
+    return origin ? `user-realtime:${JSON.stringify([
+      frame.runtimeKey ?? null,
+      frame.identity ?? null,
+      origin.sessionId,
+      origin.channelId,
+      origin.canonicalRowSequence
+    ])}` : void 0;
+  }
+  const interaction = frame.interactionId;
+  if (typeof frame.sessionId !== "string" || !frame.sessionId.trim() || typeof interaction !== "string" || interaction.length !== 36 || !UUID_FORM.test(interaction)) return void 0;
+  return `user:${JSON.stringify([
+    frame.runtimeKey ?? null,
+    frame.identity ?? null,
+    frame.sessionId,
+    interaction.toLowerCase()
+  ])}`;
 }
 
 // ../packages/console-core/src/assistant-message-projection.ts
@@ -5480,7 +5598,9 @@ function useConversationScrollController(options) {
     if (!viewport || !session) return;
     let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
-      const submitted = rows.find((row) => row.id === session.pendingSubmittedRow);
+      const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
+      const submittedRowId = resolveSubmitted ? resolveSubmitted(session.pendingSubmittedRow) : session.pendingSubmittedRow;
+      const submitted = rows.find((row) => row.id === submittedRowId);
       if (submitted) {
         cancelReveal(session);
         session.missingAnchor = false;
@@ -20676,11 +20796,12 @@ function fileChangeCopyText(block) {
 function alignmentAttr(alignment) {
   return alignment || "left";
 }
-function renderThinkingBlock(block, displayNormalization = true) {
+function ThinkingBlock({ block, displayNormalization = true }) {
+  const initiallyOpen = (0, import_react7.useRef)(!(block.final && block.persisted));
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
-  const collapsedByDefault = Boolean(block.final && block.persisted);
+  const collapsedByDefault = !initiallyOpen.current;
   return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(
     "details",
     {
@@ -20690,7 +20811,7 @@ function renderThinkingBlock(block, displayNormalization = true) {
         block.persisted && "cc-rich-thinking--persisted",
         collapsedByDefault && "cc-rich-thinking--collapsed"
       ),
-      open: !collapsedByDefault,
+      open: initiallyOpen.current,
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("summary", { className: "cc-rich-thinking__label", children: block.label?.trim() ? block.label : "Thinking" }),
         /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("p", { className: "cc-rich-paragraph cc-rich-thinking__body", dangerouslySetInnerHTML: markdownHtml(block.text, displayNormalization) })
@@ -20865,11 +20986,7 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
   if (block.type === "tool-call") {
     return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ToolCallBlock, { block }, `tool-call-${index2}`);
   }
-  const thinking = renderThinkingBlock(block, displayNormalization);
-  if (!thinking) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { children: thinking }, `thinking-${index2}`);
+  return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ThinkingBlock, { block, displayNormalization }) }, `thinking-${index2}`);
 }
 var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function formatJsonIfPossible(text8) {
@@ -21009,7 +21126,7 @@ function ToolCallBlock({
   className
 }) {
   const insideDisclosure = useInsideCompletedToolDisclosure();
-  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
+  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "pending" || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
   const displayLabels = useConversationDisplayLabels();
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
@@ -26345,7 +26462,7 @@ function sameAssistantRunOwner(left, right) {
   if (leftRun || rightRun) {
     return Boolean(leftRun && leftRun === rightRun && !(leftInteraction && rightInteraction && leftInteraction !== rightInteraction));
   }
-  return UUID_FORM.test(leftInteraction) && UUID_FORM.test(rightInteraction) && leftInteraction.toLowerCase() === rightInteraction.toLowerCase();
+  return UUID_FORM2.test(leftInteraction) && UUID_FORM2.test(rightInteraction) && leftInteraction.toLowerCase() === rightInteraction.toLowerCase();
 }
 function sameTextStreamOwner(left, right) {
   if (left && (isRealtimeHistoryMessage(left) || isRealtimeHistoryMessage(right))) {
@@ -26363,7 +26480,7 @@ function assistantOwnerKey(frame) {
   if (hasAssistantMessageIdCarrier(frame)) return `unbound:${frame.id}`;
   if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
   const interaction = frame.interactionId?.trim() || "";
-  return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
+  return UUID_FORM2.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
 }
 function canonicalHistoryAssistantText(frame) {
   if (frame.sourceKind !== "session_history") return void 0;
@@ -26591,7 +26708,7 @@ function conversationEntryVisibleText(entry) {
     return "";
   }).filter(Boolean).join("\n");
 }
-var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var UUID_FORM2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function shouldSuppressRepeatedAssistantEntry(entry, priorEntries, protectedEntryIds) {
   if (entry.kind !== "message" || protectedEntryIds.has(entry.id)) return false;
   if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
@@ -26619,7 +26736,7 @@ function shouldSuppressRepeatedAssistantEntry(entry, priorEntries, protectedEntr
       if (entryRun === priorRun && entry.id === prior.id) return true;
       continue;
     }
-    if (UUID_FORM.test(entryInteraction) && UUID_FORM.test(priorInteraction)) {
+    if (UUID_FORM2.test(entryInteraction) && UUID_FORM2.test(priorInteraction)) {
       if (entryInteraction.toLowerCase() === priorInteraction.toLowerCase()) return true;
       continue;
     }
@@ -26707,6 +26824,8 @@ function userEntryDedupeKey(frame, entry) {
     const origin = realtimeMessageOrigin(frame);
     return origin ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}` : `unbound-realtime-user:${frame.id}`;
   }
+  const renderKey = userMessageRenderKey(frame);
+  if (renderKey) return renderKey;
   const interactionId = frame.interactionId?.trim();
   if (interactionId) return `interaction:${interactionId}`;
   const signature = userEntryTextSignature(entry);
@@ -28397,20 +28516,18 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   flushPendingReasoning(false);
   flushPendingText(false);
   attachCompletedRunDurations(entries, frames);
-  const renderKeys = new Map(orderedFrames.filter((frame) => frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message").map((frame) => [frame.id, assistantMessageRenderKey(frame)]));
-  const renderParts = /* @__PURE__ */ new Map();
-  return entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
+  const renderKeys = new Map(orderedFrames.filter((frame) => frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete").map((frame) => [frame.id, assistantMessageRenderKey(frame)]));
+  const userRenderKeys = new Map(orderedFrames.map((frame) => [frame.id, userMessageRenderKey(frame)]));
+  return assistantPresentationEntries(entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
     if (entry.kind !== "message") return entry;
-    const key = entry.identity.role === "assistant" ? renderKeys.get(entry.id) : void 0;
-    if (key) {
-      const part = renderParts.get(key) ?? 0;
-      renderParts.set(key, part + 1);
-      entry = { ...entry, renderKey: part === 0 ? key : `${key}:part:${part}` };
+    if (entry.identity.role === "user") {
+      const userKey = userRenderKeys.get(entry.id);
+      if (userKey) entry = { ...entry, renderKey: userKey };
     }
     if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
-  });
+  }), renderKeys, new Map(orderedFrames.map((frame) => [frame.id, frame])));
 }
 var LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console", originKind: "operator" };
 function createUserEntry2(message, images = [], options = {}) {
@@ -37474,6 +37591,11 @@ function buildChatTurns(messages) {
     }
     current.messages.push(message);
   }
+  for (const turn of turns) {
+    if (turn.messages[0]?.kind === "user") continue;
+    const occurrence = turn.messages.find((message) => message.assistantOccurrenceKey)?.assistantOccurrenceKey;
+    if (occurrence) turn.id = `turn-${occurrence}`;
+  }
   return turns;
 }
 var TURN_RAIL_TICK_PX = 10;
@@ -37547,6 +37669,7 @@ function flattenEntry(entry, options = {}) {
     ...row,
     renderKey: entry.renderKey === void 0 ? void 0 : index2 === 0 ? entry.renderKey : `${entry.renderKey}:row:${index2}`,
     sourceEntryId: entry.id,
+    assistantOccurrenceKey: entry.kind === "message" ? entry.assistantOccurrenceKey : void 0,
     interactionId: entry.interactionId,
     runId: entry.kind === "message" ? entry.runId || void 0 : void 0,
     scrollRowId: index2 === 0 ? rowKey : `${rowKey}:row:${index2}`,
@@ -37694,7 +37817,7 @@ function sameSource(a, b) {
   return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
 }
 function buildChatMessages(entries, options = {}) {
-  const flat = entries.flatMap((entry) => flattenEntry(entry, options));
+  const flat = conversationPresentationRows(entries).flatMap((entry) => flattenEntry(entry, options));
   const merged = [];
   for (const m of flat) {
     const last = merged[merged.length - 1];
@@ -38399,6 +38522,10 @@ function ChatPane({
     conversationId: identity,
     contentVersion: entries,
     submittedRowId,
+    resolveSubmittedRowId: (sourceId) => {
+      const message = messages.find((message2) => message2.sourceEntryId === sourceId || message2.id === sourceId || message2.scrollRowId === sourceId);
+      return message ? message.scrollRowId ?? message.id : null;
+    },
     revealAnchor: (rowId) => revealScrollAnchorRef.current(rowId)
   });
   const revealTurnsFrom = import_react40.default.useCallback(
@@ -44395,8 +44522,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         }
       ) : null
     ] });
-    const submittedFrameId = submittedFrames[draftKey];
-    const submittedRowId = submittedFrameId && sortedFrames.some((frame) => frame.id === submittedFrameId) ? entries.find((entry) => entry.kind === "message" && (entry.id === submittedFrameId || entry.id.startsWith(`${submittedFrameId}:`)))?.id : void 0;
+    const submittedRowId = submittedFrames[draftKey];
     const addQuote = (quote) => {
       if (sendScope !== sendScopeRef.current) return;
       try {

@@ -71,6 +71,89 @@ function historyPage(runId = "run-a") {
   ] };
 }
 
+function reconnectFixture() {
+  const messages = ["run-a", "run-b"].map((runId, index) => ({
+    role: "block_assistant", assistant_message_id: `assistant-${index}`,
+    identity: { run_id: runId, interaction_id: `interaction-${index}` },
+    blocks: [{ block_type: "text", data: { text: source } }],
+  }));
+  const frames = messages.flatMap((message, index) => runFrames(message.identity.run_id, message.identity.interaction_id).map(frame => ({
+    ...frame, payload: { ...frame.payload,
+      ...(frame.kind !== "run_started" ? { assistant_message_id: message.assistant_message_id } : {}),
+      ...(frame.source.kind === "session_history" ? { message: structuredClone(message) } : {}),
+    },
+  })));
+  const history = [{ session_id: "session", offset: 0, has_more: false, message_count: 2, messages }];
+  const priorFrames = frames.filter(frame => frame.id !== "run-b:history");
+  const owners = assertStartupLineage(priorFrames, history);
+  const rendered = { rowIds: ["stable-row-a", "stable-row-b"], tables: 2,
+    quotes: [{ id: "run-a:history", source }, { id: "run-b:history", source }] };
+  return { frames, priorFrames, history, owners, rendered };
+}
+
+test("startup reconnect refreshes canonical source IDs without changing durable owners", async () => {
+  const fixture = reconnectFixture();
+  assert.throws(() => assertStartupRendering(fixture.rendered, fixture.owners), /exact canonical run/);
+  let reads = 0;
+  const observations = [];
+  const refreshed = await waitForStartupLineage({
+    expectedOwners: fixture.owners, pollIntervalMs: 1,
+    timeline: async () => ({ frames: ++reads === 1 ? fixture.priorFrames : fixture.frames }),
+    durableHistory: async () => fixture.history,
+    readRendered: async () => fixture.rendered,
+    onObservation: value => observations.push(value),
+  });
+  assert.equal(reads, 2, "the current rendered canonical carrier must exist in a fresh authoritative observation");
+  assert.deepEqual(refreshed.frames, fixture.frames);
+  assert.deepEqual(refreshed.history, fixture.history);
+  assert.deepEqual(refreshed.rendered, fixture.rendered);
+  assert.deepEqual(assertStartupRendering(refreshed.rendered, refreshed.owners), ["run-a", "run-b"]);
+  assert.equal(fixture.owners[1].historyId, undefined, "the older owner snapshot stays unchanged");
+  assert.equal(refreshed.owners[1].historyId, "run-b:history");
+  assert.deepEqual(refreshed.owners.map(owner => [owner.runtimeKey, owner.identity, owner.sessionId, owner.runId,
+    owner.interactionId, owner.assistantMessageId, owner.historyOffset]), [
+    ["default", "router:main", "session", "run-a", "interaction-0", "assistant-0", 0],
+    ["default", "router:main", "session", "run-b", "interaction-1", "assistant-1", 1],
+  ]);
+  assert(observations.some(value => value.rendered === fixture.rendered), "the actual rendered observation is retained");
+});
+
+test("startup reconnect rejects unknown or reused rendered source owners", async () => {
+  for (const sourceId of ["unknown-canonical-frame", "run-a:history"]) {
+    const fixture = reconnectFixture();
+    const rendered = structuredClone(fixture.rendered);
+    rendered.quotes[1].id = sourceId;
+    await assert.rejects(waitForStartupLineage({
+      expectedOwners: fixture.owners, timeoutMs: 25, pollIntervalMs: 1,
+      timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+      readRendered: async () => rendered,
+    }), /exact canonical run|one rendered owner/);
+  }
+});
+
+test("startup reconnect rejects changed durable scope, occurrence, or transcript position", async () => {
+  for (const changed of ["runtimeKey", "identity", "sessionId", "runId", "interactionId", "assistantMessageId", "historyOffset"]) {
+    const fixture = reconnectFixture();
+    const expected = structuredClone(fixture.owners);
+    expected[1][changed] = changed === "historyOffset" ? 4 : `other-${changed}`;
+    await assert.rejects(waitForStartupLineage({
+      expectedOwners: expected, timeoutMs: 25, pollIntervalMs: 1,
+      timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+      readRendered: async () => fixture.rendered,
+    }), /same durable startup owners/);
+  }
+});
+
+test("startup reconnect rejects a canonical carrier with another assistant message identity", async () => {
+  const fixture = reconnectFixture();
+  fixture.frames.find(frame => frame.id === "run-b:history").payload.assistant_message_id = "foreign-assistant";
+  await assert.rejects(waitForStartupLineage({
+    expectedOwners: fixture.owners, timeoutMs: 25, pollIntervalMs: 1,
+    timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+    readRendered: async () => fixture.rendered,
+  }), /persisted assistant message owner/);
+});
+
 test("startup readiness waits past initial Ready and incomplete durable history", async () => {
   const full = runFrames("run-a");
   const ready = full.map(frame => ({ ...frame, payload: { ...frame.payload, result: "Ready.", delta: "Ready." } }));

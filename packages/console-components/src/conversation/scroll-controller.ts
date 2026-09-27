@@ -31,6 +31,9 @@ export type ConversationScrollControllerOptions = {
   contentVersion?: unknown;
   /** Canonical accepted row only. A queued draft is not a submitted row. */
   submittedRowId?: string | null;
+  /** Resolve an accepted source ID to its current DOM row without changing
+   * the receipt used to remember or cancel a pending submission. */
+  resolveSubmittedRowId?: (sourceId: string) => string | null;
   /**
    * Resolve after bounded history/reveal work completes, false when unavailable.
    * The controller verifies the row in the DOM; completion never proves existence.
@@ -119,7 +122,9 @@ export function useConversationScrollController(options: ConversationScrollContr
     if (!viewport || !session) return;
     let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
-      const submitted = rows.find((row) => row.id === session.pendingSubmittedRow);
+      const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
+      const submittedRowId = resolveSubmitted ? resolveSubmitted(session.pendingSubmittedRow) : session.pendingSubmittedRow;
+      const submitted = rows.find((row) => row.id === submittedRowId);
       if (submitted) {
         cancelReveal(session);
         session.missingAnchor = false;

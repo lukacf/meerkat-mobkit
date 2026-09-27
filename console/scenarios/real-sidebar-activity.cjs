@@ -5,6 +5,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { chromium } = require("playwright");
 const { startFixture, eventually } = require("../acceptance-runtime.cjs");
+const { assertSidebarCompletion, waitForExplicitIdleRoster, waitForSidebarCompletion } = require("../sidebar-activity-oracle.cjs");
 
 const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
 const router = "router:main";
@@ -41,7 +42,7 @@ async function sidebarActivity() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   page.setDefaultTimeout(15_000);
-  const result = { errors: [], expectedCancellations: [], checks: [], geometry: [] };
+  const result = { errors: [], expectedCancellations: [], checks: [], geometry: [], initialOwnerSamples: [], finalOwnerSamples: [], completionSamples: [] };
   let initializing = true;
   let barrierId;
   page.on("pageerror", error => result.errors.push(error.message));
@@ -94,10 +95,11 @@ async function sidebarActivity() {
     await page.screenshot({ path: path.join(evidence, `stock-sidebar-activity-${label}.png`), fullPage: true });
   }
   try {
-    result.initialOwner = await ownerRoster(fixture);
-    for (const agent of result.initialOwner) {
-      assert.equal(agent.response_phase, null, `known idle owner ${agent.identity} must explicitly report null, not omit response_phase`);
-    }
+    // Runtime startup readiness can precede the console's terminal phase projection.
+    result.initialOwner = await waitForExplicitIdleRoster({
+      readRoster: () => ownerRoster(fixture),
+      onObservation: agents => result.initialOwnerSamples.push({ at: Date.now(), agents }),
+    });
     await page.goto(`${fixture.baseUrl}/console`);
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await activity().waitFor();
@@ -157,27 +159,25 @@ async function sidebarActivity() {
     await capture("working-light-1280");
 
     result.released = await fixture.control("model-barrier", { action: "release", id: barrierId });
-    result.finalFrames = await eventually(async () => {
-      const frames = await timeline(fixture);
-      return frames.some(frame => frame.kind === "interaction_complete" && frame.payload?.result === answer) && frames;
-    }, "real model and WorkGraph readiness tool finish");
-    result.finalOwner = await eventually(async () => {
-      const agents = await ownerRoster(fixture);
-      return agents.every(agent => agent.response_phase === null) && agents;
-    }, "owner reports both agents explicitly idle after completion");
+    const toolId = `fixture-${barrierId}-peer-ready`;
+    // A live terminal frame can arrive before timeline backfill retains the tool pair.
+    result.finalFrames = await waitForSidebarCompletion({ toolId, answer,
+      readFrames: () => timeline(fixture),
+      onObservation: frames => result.completionSamples.push({ at: Date.now(), frameCount: frames.length,
+        completed: frames.some(frame => frame.kind === "interaction_complete" && frame.payload?.result === answer),
+        toolFrames: frames.filter(frame => frame.payload?.id === toolId) }),
+    });
+    result.finalOwner = await waitForExplicitIdleRoster({
+      readRoster: () => ownerRoster(fixture),
+      onObservation: agents => result.finalOwnerSamples.push({ at: Date.now(), agents }),
+    });
     await assertRows([], "Working clears automatically after owner completion");
     await choose("Quiet", baselineOrder, "completed router returns to Quiet without reordering");
     await choose("Unknown", []);
     await choose("All", baselineOrder);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await capture("completed-light-1600");
-    const toolId = `fixture-${barrierId}-peer-ready`;
-    const liveTool = result.finalFrames.filter(frame => frame.source?.kind === "console_event" && frame.payload?.id === toolId);
-    const savedTool = result.finalFrames.filter(frame => frame.source?.kind === "session_history" && frame.payload?.id === toolId);
-    assert.equal(liveTool.filter(frame => frame.kind === "tool_call_requested").length, 1, "one actual runtime tool call");
-    assert.equal(liveTool.filter(frame => frame.kind === "tool_result_received" && frame.payload?.is_error === false).length, 1, "one actual successful runtime tool result");
-    assert.equal(savedTool.filter(frame => frame.kind === "tool_call_requested").length, 1, "one retained tool-call source counterpart");
-    assert.equal(savedTool.filter(frame => frame.kind === "tool_execution_completed" && frame.payload?.is_error === false).length, 1, "one retained successful tool-result source counterpart");
+    assertSidebarCompletion(result.finalFrames, { toolId, answer });
     assert.deepEqual(result.errors, [], "no unexpected browser or network errors");
   } catch (error) {
     result.failure = error.stack || String(error);

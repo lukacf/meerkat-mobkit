@@ -4389,9 +4389,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         />
       ) : null}
     </>;
-    const submittedFrameId = submittedFrames[draftKey];
-    const submittedRowId = submittedFrameId && sortedFrames.some((frame) => frame.id === submittedFrameId)
-      ? entries.find((entry) => entry.kind === "message" && (entry.id === submittedFrameId || entry.id.startsWith(`${submittedFrameId}:`)))?.id : undefined;
+    const submittedRowId = submittedFrames[draftKey];
     const addQuote = (quote: ConsoleQuoteSelection) => {
       if (sendScope !== sendScopeRef.current) return;
       try {

@@ -70,7 +70,15 @@ export function groupCopyText(group: ConversationTimelineGroup): string {
   if (copyEntries.length === group.entries.length && group.copyText) {
     return group.copyText;
   }
-  return copyEntries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
+  // A canonical source can project into several display rows. Its explicit
+  // copy text still describes that source once, including after tool filtering.
+  const copiedSources = new Set<string>();
+  return copyEntries.filter(entry => {
+    if (entry.copyText === undefined) return true;
+    if (copiedSources.has(entry.id)) return false;
+    copiedSources.add(entry.id);
+    return true;
+  }).map((entry) => entry.copyText ?? conversationEntryText(entry)).filter(Boolean).join("\n\n");
 }
 
 type ConversationMessageGroupProps = {

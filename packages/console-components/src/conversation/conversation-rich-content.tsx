@@ -61,11 +61,13 @@ function alignmentAttr(alignment: ConversationTableAlignment | null | undefined)
   return alignment || "left";
 }
 
-function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormalization = true) {
+function ThinkingBlock({ block, displayNormalization = true }: { block: ConversationRichThinkingBlock; displayNormalization?: boolean }) {
+  // Hydration changes provenance, not the reader's disclosure choice.
+  const initiallyOpen = useRef(!(block.final && block.persisted));
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
-  const collapsedByDefault = Boolean(block.final && block.persisted);
+  const collapsedByDefault = !initiallyOpen.current;
   return (
     <details
       className={clsx(
@@ -74,7 +76,7 @@ function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormal
         block.persisted && "cc-rich-thinking--persisted",
         collapsedByDefault && "cc-rich-thinking--collapsed",
       )}
-      open={!collapsedByDefault}
+      open={initiallyOpen.current}
     >
       <summary className="cc-rich-thinking__label">{block.label?.trim() ? block.label : "Thinking"}</summary>
       <p className="cc-rich-paragraph cc-rich-thinking__body" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} />
@@ -273,11 +275,7 @@ function renderBlock(
     return <ToolCallBlock block={block} key={`tool-call-${index}`} />;
   }
 
-  const thinking = renderThinkingBlock(block, displayNormalization);
-  if (!thinking) {
-    return null;
-  }
-  return <div key={`thinking-${index}`}>{thinking}</div>;
+  return <div key={`thinking-${index}`}><ThinkingBlock block={block} displayNormalization={displayNormalization} /></div>;
 }
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
@@ -470,7 +468,7 @@ function ToolCallBlock({
   className?: string;
 }) {
   const insideDisclosure = useInsideCompletedToolDisclosure();
-  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
+  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "pending" || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
   const displayLabels = useConversationDisplayLabels();
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";

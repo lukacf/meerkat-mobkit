@@ -259,14 +259,25 @@ async function uploadImage() {
     const input = (await frames(fixture)).find(frame => frame.id === accepted.input_frame_id);
     assert.equal(input?.kind, "user_input");
     assert.equal(input?.interaction_id, accepted.interaction_id);
+    assert.equal(textContent(input.payload.content), instruction, "accepted image input retains the exact authored instruction");
     const image = input.payload.content.find(block => block.type === "image");
     assert(image?.blob_id, JSON.stringify(input));
     const response = await fetch(`${fixture.baseUrl}/blobs/${encodeURIComponent(image.blob_id)}`);
     assert.equal(response.status, 200); assert.match(response.headers.get("content-type"), /^image\/png/);
     assert.equal(digest(Buffer.from(await response.arrayBuffer())), digest(bytes));
     const displayed = await exactImage(page, image.blob_id);
-    const sourceRow = await displayed.evaluate(node => node.closest("[data-conversation-row-id]")?.dataset.conversationRowId);
-    assert.equal(sourceRow, input.id, "uploaded image belongs to exact accepted input row");
+    const sourceRow = await displayed.evaluate(node => {
+      const row = node.closest("[data-conversation-row-id]");
+      const quote = node.closest("[data-quote-source]");
+      return { id: row?.dataset.conversationRowId, sourceFrameId: quote?.dataset.quoteMessageId, source: quote?.dataset.quoteSource };
+    });
+    assert(sourceRow.id, "uploaded image has a visual row identity");
+    assert.equal(sourceRow.sourceFrameId, input.id, "uploaded image quote identifies the exact accepted input frame");
+    assert(sourceRow.source?.includes(instruction) && sourceRow.source.includes(image.blob_id), "uploaded image source retains the exact instruction and committed blob identity");
+    const imageRow = displayed.locator('xpath=ancestor::*[@data-conversation-row-id][1]');
+    assert.equal(await imageRow.getByText(instruction, { exact: true }).count(), 1, "uploaded image shares its row with the exact authored instruction");
+    assert.equal(await transcript(page).locator("[data-conversation-row-id]").evaluateAll((nodes, id) => nodes.filter(node => node.dataset.conversationRowId === id).length, sourceRow.id), 1,
+      "uploaded image visual row identity occurs exactly once");
     assert(await displayed.evaluate(node => node.naturalWidth === 520 && node.naturalHeight === 280));
     await exactReply(page, terminal.payload.result, await frames(fixture), accepted);
     const captures = [await capture(page, "stock-upload-committed", displayed)];
@@ -275,10 +286,21 @@ async function uploadImage() {
     await openStock(page, fixture, monitor, true);
     const restored = await exactImage(page, image.blob_id);
     assert(await restored.evaluate(node => node.naturalWidth === 520 && node.naturalHeight === 280), "exact upload decodes after reload");
-    assert.equal(await restored.evaluate(node => node.closest("[data-conversation-row-id]")?.dataset.conversationRowId), input.id);
+    const restoredRow = await restored.evaluate(node => {
+      const row = node.closest("[data-conversation-row-id]");
+      const quote = node.closest("[data-quote-source]");
+      return { id: row?.dataset.conversationRowId, sourceFrameId: quote?.dataset.quoteMessageId, source: quote?.dataset.quoteSource };
+    });
+    assert.equal(restoredRow.id, sourceRow.id, "reloaded upload retains its initial visual row identity");
+    assert.equal(restoredRow.sourceFrameId, input.id, "reloaded upload quote identifies the exact accepted input frame");
+    assert.equal(restoredRow.source, sourceRow.source, "reloaded upload retains the exact initial instruction and image source");
+    assert.equal(await restored.locator('xpath=ancestor::*[@data-conversation-row-id][1]').getByText(instruction, { exact: true }).count(), 1,
+      "reloaded image shares its row with the exact authored instruction");
+    assert.equal(await transcript(page).locator("[data-conversation-row-id]").evaluateAll((nodes, id) => nodes.filter(node => node.dataset.conversationRowId === id).length, sourceRow.id), 1,
+      "reloaded upload retains its initial visual row identity exactly once");
     captures.push(await capture(page, "stock-upload-restored", restored));
     assert.deepEqual(monitor.errors, []);
-    await fs.writeFile(path.join(evidence, "image-upload-evidence.json"), JSON.stringify({ sha256: digest(bytes), blobId: image.blob_id, accepted, inputFrameId: input.id, terminal,
+    await fs.writeFile(path.join(evidence, "image-upload-evidence.json"), JSON.stringify({ sha256: digest(bytes), blobId: image.blob_id, accepted, inputFrameId: input.id, sourceRow, restoredRow, terminal,
       model: ingress.request.model, exactModelBytesInSameUserMessage: true, captures, errors: monitor.errors, expectedFailures: monitor.expected }, null, 2));
   } catch (error) { await saveFailure("image-upload", fixture, page, error, monitor); throw error; }
   finally { await browser.close(); await fixture.close(); }

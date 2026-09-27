@@ -4,6 +4,7 @@ import {
   type ConversationRichBlock,
 } from "./rich-content";
 import type { ConsoleContextMessage } from "./context-record";
+import { conversationPresentationRows } from "./assistant-presentation";
 
 export type ConversationRole = "assistant" | "user" | "system" | "other";
 export type ConversationPresentation = "assistant" | "user" | "participant" | "system";
@@ -59,7 +60,7 @@ export interface ConversationEmptyStateSpec {
 
 interface ConversationTimelineEntryBase {
   id: string;
-  /** Stable presentation identity from the typed assistant occurrence. The
+  /** Stable presentation identity from the typed input or assistant occurrence. The
    * source frame ID remains in `id` for quotes and provenance. */
   renderKey?: string;
   identity: ConversationIdentity;
@@ -93,6 +94,10 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   variant: "plain" | "rich" | "meta";
   text?: string;
   blocks?: ConversationRichBlock[];
+  /** Stable display rows for live segments and a bundled canonical message. */
+  presentationRows?: { renderKey: string; blocks: ConversationRichBlock[] }[];
+  /** Parent display identity, independent of which content segment arrives first. */
+  assistantOccurrenceKey?: string;
   /** Display-only projection of a validated local quote envelope. */
   contextMessage?: ConsoleContextMessage;
   /** Live provider observations may join only this exact canonical witness. */
@@ -672,6 +677,7 @@ export function groupConversationTimelineEntries(
         turnAnchor =
           entry.groupReconciliationKey?.trim()
           || entry.reconciliationKey?.trim()
+          || entry.renderKey
           || entry.id;
       }
       turnAnchorsByGroup.push(turnAnchor);
@@ -714,9 +720,13 @@ export function groupConversationTimelineEntries(
     // through those transitions should supply reconciliation keys (or
     // interaction ids from the first frame, as the bundled adapter does).
     const anchorEntry = conversationGroupSubstantiveEntries(group.entries)[0] || group.entries[0];
+    const occurrenceAnchor = conversationGroupSubstantiveEntries(group.entries)
+      .find(entry => entry.kind === "message" && entry.assistantOccurrenceKey);
+    const displayAnchor = (occurrenceAnchor?.kind === "message" ? occurrenceAnchor.assistantOccurrenceKey : undefined)
+      ?? anchorEntry.renderKey ?? anchorEntry.id;
     const base = reconciliationAnchor
       ? `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`
-      : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.renderKey ?? anchorEntry.id}`;
+      : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${displayAnchor}`;
     let id = base;
     // React keys must be unique. Same-anchor twins keep the unsuffixed id on
     // the FIRST occurrence — the common single-group case stays stable across
@@ -729,12 +739,12 @@ export function groupConversationTimelineEntries(
     const runAnchor = conversationGroupSubstantiveEntries(group.entries)
       .find(entry => entry.kind === "message" && entry.runId?.trim());
     let discriminator = runAnchor?.kind === "message" && runAnchor.runId?.trim()
-      ? `run-${runAnchor.runId.trim()}` : anchorEntry.renderKey ?? anchorEntry.id;
+      ? `run-${runAnchor.runId.trim()}` : displayAnchor;
     while (seenIds.has(id)) {
       id = `${base}-dup-${discriminator}`;
       discriminator = `${discriminator}x`;
     }
     seenIds.add(id);
-    return { ...group, id };
+    return { ...group, id, entries: conversationPresentationRows(group.entries) };
   });
 }

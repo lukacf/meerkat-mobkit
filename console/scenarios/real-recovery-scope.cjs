@@ -131,7 +131,7 @@ async function scopeCancellation(host, phase) {
       oldScope: "scope-a", replacementScope: "scope-b", switchedAt, oldMarker, replacementMarker,
       held: held.map(item => item.observation), observations: proxy.observations,
       replacementFrames: (await timeline(owners["scope-b"])).frames,
-      replacementCursor: replacementHistory.latest_cursor,
+      prebrowserReplacementCursor: replacementHistory.latest_cursor,
       transcript: await transcript(page, host).innerText(),
       rows: await transcript(page, host).locator("[data-conversation-row-id]").evaluateAll(nodes => nodes.map(node => node.dataset.conversationRowId)),
       draft: await editor(page, host).inputValue(), contextCount: await page.locator(".cc-context-chip").count(),

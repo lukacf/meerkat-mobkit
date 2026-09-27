@@ -9,6 +9,7 @@ import {
 } from "@console-core";
 
 import { ConversationPane } from "./conversation-pane";
+import { ChatPane } from "../../../../console/src/panels/ChatPane";
 
 function Icon({ name }: { name: string; className?: string }) {
   return <span>{name}</span>;
@@ -307,5 +308,154 @@ describe("bounded conversation turn navigation", () => {
       expect(within(rail).getAllByRole("button").length).toBeLessThanOrEqual(8);
       expect(document.querySelectorAll("[data-conversation-row-id]")).toHaveLength(254);
     } finally { globalThis.ResizeObserver = previous; }
+  });
+});
+
+describe("pane navigation with separate source and presentation IDs", () => {
+  const viewportSelector = ".conv__body, .cc-conversation-pane__scroll";
+  const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600,
+    width: 600, x: 0, y: top, toJSON() {} });
+  const noop = () => {};
+  const entries = (): ConversationTimelineEntry[] => Array.from({ length: 10 }, (_, index) => ({
+    id: `source-${index}`, renderKey: `render-${index}`, kind: "message", variant: "plain",
+    identity: index % 2 === 0 ? { id: "user", label: "You", role: "user" } : { id: "agent", label: "Agent", role: "assistant" },
+    text: `Transcript row ${index}`,
+  }));
+  const state = (rows: ConversationTimelineEntry[]): ConversationViewState => ({
+    conversationId: "source-id-consumers", entries: rows, groups: groupConversationTimelineEntries(rows), turnDiff: null, emptyState: null,
+  });
+  function pane(surface: "stock" | "shared", rows: ConversationTimelineEntry[], submittedRowId?: string) {
+    return surface === "shared" ? <ConversationPane viewState={state(rows)} submittedRowId={submittedRowId} />
+      : <ChatPane agent={null} agentLabel="Agent" identity="agent" entries={rows} phase={null} draft="Unsent draft"
+          sending={false} staged={[]} onDraftChange={noop} onStagedChange={noop} onSend={() => false} submittedRowId={submittedRowId} />;
+  }
+  function viewport(container: HTMLElement): HTMLElement {
+    return container.querySelector<HTMLElement>(viewportSelector)!;
+  }
+  function userScroll(node: HTMLElement, top: number) {
+    node.scrollTop = top;
+    fireEvent.scroll(node);
+  }
+
+  beforeEach(() => {
+    vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) {
+      return this.matches(viewportSelector) ? this.querySelectorAll("[data-conversation-row-id]").length * 100 : 0;
+    });
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+      return this.matches(viewportSelector) ? 200 : 0;
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this.matches(viewportSelector)) return rect(0, 200);
+      const scrollNode = this.closest<HTMLElement>(viewportSelector);
+      if (scrollNode && this.matches("[data-conversation-row-id]")) {
+        const index = [...scrollNode.querySelectorAll("[data-conversation-row-id]")].indexOf(this);
+        return rect(index * 100 - scrollNode.scrollTop, 100);
+      }
+      return rect(0, 0);
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  for (const surface of ["stock", "shared"] as const) {
+    test(`${surface} anchors the accepted source ID at its rendered row and consumes it once`, () => {
+      const rows = entries();
+      const view = render(pane(surface, rows));
+      const scrollNode = viewport(view.container);
+      expect(scrollNode.scrollTop).toBe(800);
+      userScroll(scrollNode, 225);
+      view.rerender(pane(surface, rows, "source-6"));
+      expect(scrollNode.querySelector('[data-conversation-row-id="source-6"]')).toBeNull();
+      expect(scrollNode.querySelector('[data-conversation-row-id="render-6"]')).toBeInTheDocument();
+      expect(scrollNode.scrollTop, "the accepted row is anchored 24px below the viewport top").toBe(576);
+      const accepted = scrollNode.querySelector('[data-conversation-row-id="render-6"]')!;
+      expect(accepted.querySelector('[data-quote-message-id="source-6"]')).toBeInTheDocument();
+      userScroll(scrollNode, 300);
+      view.rerender(pane(surface, [...rows], "source-6"));
+      expect(scrollNode.scrollTop, "an already consumed source acceptance cannot pull the reader back").toBe(300);
+    });
+
+    test(`${surface} waits for a pending source acceptance until its differently keyed row arrives`, () => {
+      const rows = entries();
+      const view = render(pane(surface, rows));
+      const scrollNode = viewport(view.container);
+      userScroll(scrollNode, 225);
+      view.rerender(pane(surface, rows, "accepted-source"));
+      expect(scrollNode.scrollTop).toBe(225);
+      const accepted: ConversationTimelineEntry = { id: "accepted-source", renderKey: "accepted-render", kind: "message", variant: "plain",
+        identity: { id: "user", label: "You", role: "user" }, text: "Newly accepted instruction" };
+      const reply: ConversationTimelineEntry = { id: "new-reply", renderKey: "reply-render", kind: "message", variant: "plain",
+        identity: { id: "agent", label: "Agent", role: "assistant" }, text: "The new reply" };
+      view.rerender(pane(surface, [...rows, accepted, reply], "accepted-source"));
+      expect(scrollNode.scrollTop).toBe(976);
+      expect(scrollNode.querySelector('[data-conversation-row-id="accepted-render"]')!.getBoundingClientRect().top).toBe(24);
+    });
+
+    test(`${surface} lets an explicit scroll cancel an acceptance before its row arrives`, () => {
+      const rows = entries();
+      const view = render(pane(surface, rows));
+      const scrollNode = viewport(view.container);
+      userScroll(scrollNode, 225);
+      view.rerender(pane(surface, rows, "accepted-source"));
+      expect(scrollNode.scrollTop).toBe(225);
+      userScroll(scrollNode, 300);
+      const accepted: ConversationTimelineEntry = { id: "accepted-source", renderKey: "accepted-render", kind: "message", variant: "plain",
+        identity: { id: "user", label: "You", role: "user" }, text: "Newly accepted instruction" };
+      const reply: ConversationTimelineEntry = { id: "new-reply", renderKey: "reply-render", kind: "message", variant: "plain",
+        identity: { id: "agent", label: "Agent", role: "assistant" }, text: "The new reply" };
+      view.rerender(pane(surface, [...rows, accepted, reply], "accepted-source"));
+      expect(scrollNode.querySelector('[data-conversation-row-id="accepted-render"]')).toBeInTheDocument();
+      expect(scrollNode.scrollTop, "the user's later scroll cancels the pending acceptance").toBe(300);
+      expect(scrollNode.querySelector('[data-conversation-row-id="render-3"]')!.getBoundingClientRect().top).toBe(0);
+    });
+
+    test(`${surface} preserves source-only acceptance for legacy entries`, () => {
+      const rows = entries().map(({ renderKey: _renderKey, ...entry }) => entry);
+      const view = render(pane(surface, rows));
+      const scrollNode = viewport(view.container);
+      userScroll(scrollNode, 225);
+      view.rerender(pane(surface, rows, "source-6"));
+      expect(scrollNode.scrollTop).toBe(576);
+      expect(scrollNode.querySelector('[data-conversation-row-id="source-6"]')!.getBoundingClientRect().top).toBe(24);
+    });
+
+    test(`${surface} accepts an explicit presentation row ID`, () => {
+      const rows = entries();
+      const view = render(pane(surface, rows));
+      const scrollNode = viewport(view.container);
+      userScroll(scrollNode, 225);
+      view.rerender(pane(surface, rows, "render-6"));
+      expect(scrollNode.scrollTop).toBe(576);
+      expect(scrollNode.querySelector('[data-conversation-row-id="render-6"]')!.getBoundingClientRect().top).toBe(24);
+    });
+
+    test(`${surface} does not reconsume an accepted source ID when cleared rows rehydrate`, () => {
+      const rows = entries();
+      const view = render(pane(surface, rows, "source-6"));
+      const scrollNode = viewport(view.container);
+      expect(scrollNode.scrollTop).toBe(576);
+      userScroll(scrollNode, 300);
+      view.rerender(pane(surface, [], "source-6"));
+      expect(scrollNode.querySelectorAll("[data-conversation-row-id]")).toHaveLength(0);
+      view.rerender(pane(surface, rows, "source-6"));
+      expect(scrollNode.scrollTop, "rehydration cannot treat the same source acceptance as a new send").toBe(300);
+      expect(scrollNode.querySelector('[data-conversation-row-id="render-3"]')!.getBoundingClientRect().top).toBe(0);
+    });
+  }
+
+  test("shared turn navigation targets the presentation row while retaining quote provenance", () => {
+    const view = render(pane("shared", entries()));
+    const scrollNode = viewport(view.container);
+    const outerScroll = vi.fn();
+    const previous = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = outerScroll;
+    try {
+      fireEvent.click(within(view.container).getByTestId("conversation-turn-rail:2"));
+      expect(scrollNode.scrollTop).toBe(376);
+      const target = scrollNode.querySelector('[data-conversation-row-id="render-4"]')!;
+      expect(target.getBoundingClientRect().top).toBe(24);
+      expect(target.querySelector('[data-quote-message-id="source-4"]')).toBeInTheDocument();
+      expect(view.container.textContent).not.toContain("Earlier position is unavailable");
+      expect(outerScroll).not.toHaveBeenCalled();
+    } finally { HTMLElement.prototype.scrollIntoView = previous; }
   });
 });

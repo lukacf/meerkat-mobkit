@@ -19,6 +19,7 @@ import type {
 import {
   UNTRUSTED_SOURCE_DESCRIPTION,
   conversationEntryText,
+  conversationPresentationRows,
   conversationRichBlocksToText,
   describeConversationEntrySource,
   transcriptDayKey,
@@ -128,6 +129,7 @@ type MsgKind = "origin" | "event" | "user" | "agent" | "tool" | "thought" | "gat
 interface Msg {
   id: string;
   renderKey?: string;
+  assistantOccurrenceKey?: string;
   /** Stable transcript anchor independent of rich-block grouping length. */
   scrollRowId?: string;
   sourceEntryId?: string;
@@ -242,6 +244,13 @@ function buildChatTurns(messages: Msg[]): ChatTurn[] {
       continue;
     }
     current.messages.push(message);
+  }
+  // Before the first user message, a late tool/image must not replace the
+  // parent of an already mounted answer from the same assistant occurrence.
+  for (const turn of turns) {
+    if (turn.messages[0]?.kind === "user") continue;
+    const occurrence = turn.messages.find(message => message.assistantOccurrenceKey)?.assistantOccurrenceKey;
+    if (occurrence) turn.id = `turn-${occurrence}`;
   }
   return turns;
 }
@@ -397,6 +406,7 @@ function flattenEntry(
     ...row,
     renderKey: entry.renderKey === undefined ? undefined : index === 0 ? entry.renderKey : `${entry.renderKey}:row:${index}`,
     sourceEntryId: entry.id,
+    assistantOccurrenceKey: entry.kind === "message" ? entry.assistantOccurrenceKey : undefined,
     interactionId: entry.interactionId,
     runId: entry.kind === "message" ? entry.runId || undefined : undefined,
     scrollRowId: index === 0 ? rowKey : `${rowKey}:row:${index}`,
@@ -571,7 +581,7 @@ function buildChatMessages(
   // bubble). Walk the flattened message list and fold neighbouring
   // tool messages whose blocks all share the same tool `name` —
   // and, for peer tools, the same direction.
-  const flat = entries.flatMap((entry) => flattenEntry(entry, options));
+  const flat = conversationPresentationRows(entries).flatMap((entry) => flattenEntry(entry, options));
   const merged: Msg[] = [];
   for (const m of flat) {
     const last = merged[merged.length - 1];
@@ -1495,7 +1505,13 @@ export function ChatPane({
   const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,
-    submittedRowId, revealAnchor: (rowId) => revealScrollAnchorRef.current(rowId),
+    submittedRowId,
+    resolveSubmittedRowId: sourceId => {
+      const message = messages.find(message => message.sourceEntryId === sourceId
+        || message.id === sourceId || message.scrollRowId === sourceId);
+      return message ? message.scrollRowId ?? message.id : null;
+    },
+    revealAnchor: (rowId) => revealScrollAnchorRef.current(rowId),
   });
   /// Reveal turns down to `firstIndex`, keeping the content under the
   /// viewport in place (same anchor as an older-history prepend).

@@ -346,13 +346,28 @@ async function presentation(host) {
   const diagnostics = {};
   try {
     await fixture.control("model", { source: Array.from({ length: 12 }, (_, index) => prose(index)).join(""), delay_ms: 0, chunk_chars: 512 });
-    const first = await sendApi(fixture, "Review the workgraph and prepare peer-review evidence.");
+    const originalInstruction = "Review the workgraph and prepare peer-review evidence.";
+    const first = await sendApi(fixture, originalInstruction);
     await completed(fixture, "Investigation 11");
     await open(page, fixture, host, monitor);
     const viewport = transcript(page, host);
     await viewport.locator("table").first().waitFor();
     assert.equal(await viewport.locator('img[src*="example.com/tracker"]').count(), 0, "default Markdown cannot fetch external images");
     assert(await viewport.locator('a[href="https://example.com"]').count() > 0);
+    const initialPrompt = viewport.getByText(originalInstruction, { exact: true });
+    await initialPrompt.waitFor();
+    assert.equal(await initialPrompt.count(), 1, `${host} the original authored input is rendered exactly once`);
+    const initialInput = await initialPrompt.evaluate(node => {
+      const row = node.closest("[data-conversation-row-id]");
+      const quote = node.closest("[data-quote-source]");
+      return { id: row?.dataset.conversationRowId, sourceFrameId: quote?.dataset.quoteMessageId, source: quote?.dataset.quoteSource };
+    });
+    assert(initialInput.id, `${host} the original input has a visual row identity before streaming`);
+    assert.equal(initialInput.sourceFrameId, first.input_frame_id, `${host} the initial quote identifies the exact accepted input frame`);
+    assert.equal(initialInput.source, originalInstruction, `${host} the initial input preserves the exact authored source`);
+    assert.equal(await viewport.locator("[data-conversation-row-id]").evaluateAll((nodes, id) => nodes.filter(node => node.dataset.conversationRowId === id).length, initialInput.id), 1,
+      `${host} the initial visual row identity occurs exactly once`);
+    diagnostics.initialRenderedInput = initialInput;
     await capture(page, `${host}-1600-initial`);
 
     // Reading intent must survive a new, long stream through the real runtime.
@@ -468,7 +483,6 @@ async function presentation(host) {
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     }, initializationCancellation);
     const reloadedViewport = transcript(page, host);
-    const originalInstruction = "Review the workgraph and prepare peer-review evidence.";
     const ownerInput = (await timeline(fixture)).frames.find(frame => frame.id === first.input_frame_id);
     assert(ownerInput, `${host} owner retains the original accepted input frame`);
     assert.equal(ownerInput.kind, "user_input");
@@ -502,13 +516,17 @@ async function presentation(host) {
       await settle(page);
     }
     await originalPrompt.waitFor();
-    const originalRow = reloadedViewport.locator(`[data-conversation-row-id="${first.input_frame_id}"]`);
-    assert.equal(await originalRow.count(), 1, `${host} accepted input retains one exact rendered row identity after history paging`);
+    assert.equal(await originalPrompt.count(), 1, `${host} the original authored input remains rendered exactly once after history paging`);
+    const originalRow = originalPrompt.locator('xpath=ancestor::*[@data-conversation-row-id][1]');
+    assert.equal(await reloadedViewport.locator("[data-conversation-row-id]").evaluateAll((nodes, id) => nodes.filter(node => node.dataset.conversationRowId === id).length, initialInput.id), 1,
+      `${host} accepted input retains its initial visual row identity exactly once after history paging`);
     assert.equal(await originalRow.getByText(originalInstruction, { exact: true }).count(), 1);
-    geometry.reloadRenderedInput = await originalRow.evaluate(node => ({
-      id: node.dataset.conversationRowId,
-      source: (node.matches("[data-quote-source]") ? node : node.querySelector("[data-quote-source]"))?.dataset.quoteSource,
-    }));
+    geometry.reloadRenderedInput = await originalRow.evaluate(node => {
+      const quote = node.matches("[data-quote-source]") ? node : node.querySelector("[data-quote-source]");
+      return { id: node.dataset.conversationRowId, sourceFrameId: quote?.dataset.quoteMessageId, source: quote?.dataset.quoteSource };
+    });
+    assert.equal(geometry.reloadRenderedInput.id, initialInput.id, `${host} the exact original input retains its visual row identity after reload`);
+    assert.equal(geometry.reloadRenderedInput.sourceFrameId, first.input_frame_id, `${host} the reloaded quote identifies the exact accepted input frame`);
     assert.equal(geometry.reloadRenderedInput.source, originalInstruction, `${host} reloaded input preserves the exact authored source`);
     await originalPrompt.scrollIntoViewIfNeeded();
     await settle(page);

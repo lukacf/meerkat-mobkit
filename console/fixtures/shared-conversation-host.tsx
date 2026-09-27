@@ -1,3 +1,4 @@
+import { conversationPresentationRows } from "../../packages/console-core/src/assistant-presentation";
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -153,9 +154,9 @@ function SharedHost() {
 
   async function revealAnchor(rowId: string, signal: AbortSignal) {
     if (!await awaitHistory(historyLoad.ready, signal)) return false;
-    const hasRow = () => mapFramesToTimelineEntries(null, historyLoad.frames, {
+    const hasRow = () => conversationPresentationRows(mapFramesToTimelineEntries(null, historyLoad.frames, {
       textMode: "markdown", renderTextDeltas: true, renderInteractionStartsAsUser: true, blobBaseUrl: baseUrl,
-    }).some(entry => entry.id === rowId);
+    })).some(entry => (entry.renderKey ?? entry.id) === rowId);
     while (!signal.aborted) {
       if (hasRow()) return true;
       if (!historyLoad.loadOlder) return false;
@@ -214,7 +215,7 @@ function SharedHost() {
           }}
           viewportKey={{ authority: `${location.origin}/${scope}`, identity, conversation: identity, pane: String(pane) }}
           onRevealAnchor={revealAnchor}
-          submittedRowId={submitted ? entries.find(entry => entry.id === submitted || entry.id.startsWith(`${submitted}:`))?.id : null}
+          submittedRowId={submitted}
           footer={pane === 0 ? <form onSubmit={send}>
             <label>Message to {identity}<textarea aria-label="Message" value={draft} onChange={event => setDraft(event.target.value)} /></label>
             <button type="submit" disabled={!draft.trim()}>Send</button>

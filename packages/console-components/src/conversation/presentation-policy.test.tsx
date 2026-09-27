@@ -106,6 +106,8 @@ describe("conservative presentation", () => {
     const pending = tool("late", { status: "pending", result: undefined, completionEvidence: { outcome: "running", source: "runtime-start", toolCallId: "late" } });
     const view = render(<ConversationRichContent blocks={[pending]} />);
     const header = view.container.querySelector(".cc-tool-call__header")!;
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
     view.rerender(<ConversationRichContent blocks={[{ ...pending, status: outcome === "error" ? "error" : "pending", result: "Actionable detail", completionEvidence: { outcome, source: "runtime-result", toolCallId: "late" } }]} />);
     expect(header).toHaveAttribute("aria-expanded", "true");

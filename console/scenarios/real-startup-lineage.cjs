@@ -20,7 +20,14 @@ function assertStartupLineage(frames, historyPages) {
     assert(terminal.run_id, "live completion has a canonical run");
     assert.equal(terminal.source_event_id, terminal.id, "live source event identity survives projection");
     const runId = terminal.run_id;
+    const { runtime_key: runtimeKey, identity, session_id: sessionId } = terminal;
+    let assistantMessageId = terminal.payload?.assistant_message_id;
     const live = frames.filter(frame => frame.run_id === runId && frame.source?.kind === "console_event");
+    for (const frame of live) {
+      assert.equal(frame.runtime_key, runtimeKey, `${runId}: live runtime owner`);
+      assert.equal(frame.identity, identity, `${runId}: live agent owner`);
+      assert.equal(frame.session_id, sessionId, `${runId}: live session owner`);
+    }
     const starts = live.filter(frame => frame.kind === "run_started");
     assert.equal(starts.length, 1, `${runId}: one canonical start`);
     const interactionId = terminal.interaction_id;
@@ -54,11 +61,28 @@ function assertStartupLineage(frames, historyPages) {
       });
       assert.equal(matches.length, 1, `${runId}: exactly one actual committed reply`);
       assert.equal(matches[0].message.identity.interaction_id, interactionId, `${runId}: actual persisted interaction owner`);
+      if (assistantMessageId !== undefined) {
+        assert.equal(matches[0].message.assistant_message_id, assistantMessageId, `${runId}: actual persisted assistant message owner`);
+      } else assistantMessageId = matches[0].message.assistant_message_id;
       historyOffset = matches[0].offset;
+    }
+    if (assistantMessageId !== undefined) {
+      assert(typeof assistantMessageId === "string" && assistantMessageId.trim(), `${runId}: typed assistant message owner`);
+      for (const frame of deltas) assert.equal(frame.payload.assistant_message_id, assistantMessageId, `${runId}: delta assistant message owner`);
+    }
+    for (const projected of history) {
+      assert.equal(projected.runtime_key, runtimeKey, `${runId}: persisted runtime owner`);
+      assert.equal(projected.identity, identity, `${runId}: persisted agent owner`);
+      assert.equal(projected.session_id, sessionId, `${runId}: persisted session owner`);
+      if (assistantMessageId !== undefined) {
+        assert.equal(projected.payload.assistant_message_id, assistantMessageId, `${runId}: persisted assistant message owner`);
+        assert.equal(projected.payload.message.assistant_message_id, assistantMessageId, `${runId}: persisted message assistant owner`);
+      }
     }
     const frameIds = frames.filter(frame => frame.run_id === runId).map(frame => frame.id);
     assert.equal(new Set(frameIds).size, frameIds.length, `${runId}: source IDs are unique`);
-    return { runId, interactionId, frameIds, liveIds: live.map(frame => frame.id), historyId: history[0]?.id, historyOffset };
+    return { runtimeKey, identity, sessionId, runId, interactionId, assistantMessageId,
+      frameIds, liveIds: live.map(frame => frame.id), historyId: history[0]?.id, historyOffset };
   });
   assert.equal(new Set(owners.map(owner => owner.runId)).size, owners.length, "one canonical terminal per run");
   return owners;
@@ -66,7 +90,7 @@ function assertStartupLineage(frames, historyPages) {
 
 // Member readiness and a live UI do not prove the requested reply committed.
 // Observe its exact terminal and durable owner under one deadline.
-async function waitForStartupLineage({ timeline, durableHistory, expectedInteractionId, onObservation = () => {}, timeoutMs = 20_000, pollIntervalMs = 50 }) {
+async function waitForStartupLineage({ timeline, durableHistory, expectedInteractionId, expectedOwners, readRendered, onObservation = () => {}, timeoutMs = 20_000, pollIntervalMs = 50 }) {
   const controller = new AbortController();
   const { signal } = controller;
   const deadline = performance.now() + timeoutMs;
@@ -99,8 +123,21 @@ async function waitForStartupLineage({ timeline, durableHistory, expectedInterac
           assert.equal(owners.filter(owner => owner.interactionId === expectedInteractionId).length, 1,
             `accepted startup interaction completed with exact durable lineage: ${expectedInteractionId}`);
         }
+        if (expectedOwners) {
+          const identities = rows => rows.map(owner => [owner.runtimeKey, owner.identity, owner.sessionId,
+            owner.runId, owner.interactionId, owner.assistantMessageId, owner.historyOffset]);
+          assert.deepEqual(identities(owners), identities(expectedOwners), "same durable startup owners and transcript positions after refresh");
+        }
+        let rendered;
+        if (readRendered) {
+          checkDeadline();
+          rendered = await readRendered({ signal });
+          checkDeadline();
+          onObservation({ frames, history, rendered });
+          assertStartupRendering(rendered, owners);
+        }
         checkDeadline();
-        return { frames, history, owners };
+        return { frames, history, owners, ...(readRendered ? { rendered } : {}) };
       } catch (error) {
         signal.throwIfAborted();
         last = error;
@@ -197,16 +234,18 @@ async function startupLineage(host) {
     await viewport().waitFor();
     allowance = null;
   }
-  async function inspect(label, owners) {
-    const rendered = await eventually(async () => {
-      const actual = await viewport().evaluate(node => ({
+  const readRendered = () => viewport().evaluate(node => ({
         rowIds: [...node.querySelectorAll("[data-conversation-row-id]")].map(row => row.dataset.conversationRowId),
         quotes: [...node.querySelectorAll("[data-quote-message-id]")].map(quote => ({ id: quote.dataset.quoteMessageId, source: quote.dataset.quoteSource })),
         tables: node.querySelectorAll("table").length,
       }));
+  async function inspect(label, owners, observedRendered) {
+    const rendered = observedRendered ?? await eventually(async () => {
+      const actual = await readRendered();
       assertStartupRendering(actual, owners);
       return actual;
     }, `${host} ${label}: exact startup replies with no duplicate fragment`);
+    assertStartupRendering(rendered, owners);
     const heading = viewport().getByRole("heading", { name: "Acceptance reply", exact: true }).last();
     await heading.scrollIntoViewIfNeeded();
     const bounds = await heading.boundingBox(), viewBounds = await viewport().boundingBox();
@@ -270,7 +309,20 @@ async function startupLineage(host) {
     fixture.disconnectStreams();
     await eventually(() => fixture.observations.filter(item => item.path.includes("/timeline/stream") && item.status === 200).length > streamsBefore, "browser reconnect opens another successful real stream");
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor(); allowance = null;
-    await inspect("reconnected", result.repeatedOwners);
+    // The completed run can be durable before its canonical timeline carrier
+    // arrives. Refresh the source IDs while retaining the exact committed owners.
+    const reconnected = await waitForStartupLineage({
+      timeline, durableHistory, expectedOwners: result.repeatedOwners, readRendered,
+      onObservation: ({ frames, history, rendered }) => {
+        result.reconnectedFrames = frames;
+        if (history) result.reconnectedHistory = history;
+        else delete result.reconnectedHistory;
+        if (rendered) result.reconnectedRendered = rendered;
+        else delete result.reconnectedRendered;
+      },
+    });
+    result.reconnectedOwners = reconnected.owners;
+    await inspect("reconnected", reconnected.owners, reconnected.rendered);
     assert.deepEqual(result.rendered.reconnected.rowIds, result.rendered.repeated.rowIds, "reconnect preserves source row identity");
     await open(true);
     result.reloadedFrames = (await timeline()).frames;

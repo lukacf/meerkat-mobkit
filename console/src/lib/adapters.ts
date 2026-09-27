@@ -1,3 +1,5 @@
+import { assistantPresentationEntries, conversationPresentationRows } from "../../../packages/console-core/src/assistant-presentation";
+import { userMessageRenderKey } from "../../../packages/console-core/src/user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "../../../packages/console-core/src/realtime-message-identity";
 import { assistantMessageKey, assistantMessageRenderKey, hasAssistantMessageIdCarrier } from "../../../packages/console-core/src/assistant-message-identity";
 import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "../../../packages/console-core/src/assistant-message-projection";
@@ -2977,6 +2979,8 @@ function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntr
       ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}`
       : `unbound-realtime-user:${frame.id}`;
   }
+  const renderKey = userMessageRenderKey(frame);
+  if (renderKey) return renderKey;
   const interactionId = frame.interactionId?.trim();
   if (interactionId) return `interaction:${interactionId}`;
   const signature = userEntryTextSignature(entry);
@@ -5373,28 +5377,25 @@ export function mapFramesToTimelineEntries(
   flushPendingText(false);
   attachCompletedRunDurations(entries, frames);
   const renderKeys = new Map(orderedFrames.filter(frame => frame.event === "text_delta"
-    || frame.event === "text_complete" || frame.event === "assistant_message")
+    || frame.event === "text_complete" || frame.event === "assistant_message"
+    || frame.event === "reasoning_delta" || frame.event === "reasoning_complete")
     .map(frame => [frame.id, assistantMessageRenderKey(frame)]));
-  const renderParts = new Map<string, number>();
-  return entries.filter((entry) => entry.kind !== "message"
+  const userRenderKeys = new Map(orderedFrames.map(frame => [frame.id, userMessageRenderKey(frame)]));
+  return assistantPresentationEntries(entries.filter((entry) => entry.kind !== "message"
     || entry.blocks?.length !== 1
     || entry.blocks[0].type !== "thinking"
     || entry.blocks[0].text.trim()).map((entry) => {
     if (entry.kind !== "message") return entry;
-    const key = entry.identity.role === "assistant" ? renderKeys.get(entry.id) : undefined;
-    if (key) {
-      // A live occurrence can contain separately rendered text segments.
-      // Preserve their order without conflating source frame provenance.
-      const part = renderParts.get(key) ?? 0;
-      renderParts.set(key, part + 1);
-      entry = { ...entry, renderKey: part === 0 ? key : `${key}:part:${part}` };
+    if (entry.identity.role === "user") {
+      const userKey = userRenderKeys.get(entry.id);
+      if (userKey) entry = { ...entry, renderKey: userKey };
     }
     if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
       ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` }
       : block) };
-  });
+  }), renderKeys, new Map(orderedFrames.map(frame => [frame.id, frame])));
 }
 
 /// Optimistic composer entries are typed as this console's own sends, the
@@ -5664,7 +5665,7 @@ export function buildConversationViewState(args: {
   return {
     conversationId: args.memberId || "console",
     title: args.agentLabel,
-    entries: args.entries,
+    entries: conversationPresentationRows(args.entries),
     groups,
     turnDiff: null,
     emptyState: args.entries.length === 0 ? {

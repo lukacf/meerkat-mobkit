@@ -129,6 +129,22 @@ function assertStoppedHistory(page, spec) {
   return page;
 }
 
+async function assertStoppedToolDisclosure(section, state, { fullReload = false } = {}) {
+  const header = section.locator(".cc-tool-call__header").first();
+  const expandedBefore = await header.getAttribute("aria-expanded");
+  let openedAfterReload = false;
+  // A fresh successful standalone card may start closed. Held/unknown calls,
+  // failed groups, and the live success transition must retain their disclosure.
+  if (fullReload && state === "success" && expandedBefore === "false"
+    && await section.evaluate(node => node.classList.contains("cc-tool-call--success")
+      && !node.classList.contains("cc-tool-call--group"))) {
+    await header.click();
+    openedAfterReload = true;
+  }
+  assert.equal(await header.getAttribute("aria-expanded"), "true", "held/stopped call stays disclosed");
+  return { expandedBefore, openedAfterReload };
+}
+
 async function stoppedScenario(host, action) {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator's prebuilt fixture; this scenario must not invoke Cargo.");
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), `mobkit-routine-${action}-`));
@@ -147,13 +163,13 @@ async function stoppedScenario(host, action) {
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor(); await viewport().waitFor();
     });
   }
-  async function inspectTool(label, state) {
+  async function inspectTool(label, state, options) {
     const noResult = state !== "success";
     const late = stoppedTools(result.scenarioId).at(-1);
     const section = viewport().locator("section.cc-tool-call").filter({ hasText: "late-review.txt" }).last();
     await section.waitFor();
     assert.equal(await section.evaluate(node => Boolean(node.closest(".cc-completed-tools"))), false, "held/stopped call remains outside successful folding");
-    assert.equal(await section.locator(".cc-tool-call__header").first().getAttribute("aria-expanded"), "true", "unresolved or failed group stays disclosed");
+    const disclosure = await assertStoppedToolDisclosure(section, state, options);
     const detail = section.locator(".cc-tool-call__sub").filter({ hasText: '"path": "late-review.txt"' });
     const body = await detail.count() ? detail : section;
     const input = body.locator(".cc-tool-call__section").filter({ has: page.getByText("Input", { exact: true }) });
@@ -178,7 +194,7 @@ async function stoppedScenario(host, action) {
     const expectedCopy = grouped ? `$ ${missing.name}\nInput: ${JSON.stringify(missing.args)}\nResult: ${missing.result}\n${expectedLate}` : expectedLate;
     assert.equal(copied, expectedCopy, "clipboard preserves each exact source, with no invented cancellation/result text");
     assert.equal(await viewport().locator("details.cc-completed-tools").count(), 1, "only the actual initial successes fold");
-    await shot(label); return { label, state, grouped, copied };
+    await shot(label); return { label, state, grouped, copied, disclosure };
   }
   try {
     fixture = await startFixture({ mode: "identity", routineTools: true, stateDir });
@@ -252,7 +268,7 @@ async function stoppedScenario(host, action) {
     if (host) {
       const state = action === "interrupt" ? "unknown" : "success";
       result.stoppedView = await inspectTool("stopped", state);
-      await open(true); result.reloadedView = await inspectTool("reloaded", state);
+      await open(true); result.reloadedView = await inspectTool("reloaded", state, { fullReload: true });
       assert.deepEqual(assertStoppedHistory(await history(), result), result.history, "durable owner proof survives browser reload");
       result.reloadProof = assertStoppedFrames(await timeline(), result); assertProofRetained(result.replayProof, result.reloadProof);
       monitor.assertClean();
@@ -280,4 +296,4 @@ const hardInterruptDiagnostic = {
 const diagnosticMetadata = action => action === "interrupt" ? { diagnostic: hardInterruptDiagnostic } : {};
 const apiScenarios = actions.map(action => ({ id: `api-routine-${action.replaceAll("_", "-")}`, family: "routine-tools", backend: "real", ...diagnosticMetadata(action), run: () => stoppedScenario(null, action) }));
 const browserScenarios = ["stock", "shared"].flatMap(host => actions.map(action => ({ id: `real-${host}-routine-${action.replaceAll("_", "-")}`, family: "real-presentation", backend: "real", ...diagnosticMetadata(action), run: () => stoppedScenario(host, action) })));
-module.exports = { apiScenarios, browserScenarios, assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, stoppedTools };
+module.exports = { apiScenarios, browserScenarios, assertStoppedFrames, assertStoppedHistory, assertCompletedBaseline, assertProofRetained, assertStoppedToolDisclosure, stoppedTools };
