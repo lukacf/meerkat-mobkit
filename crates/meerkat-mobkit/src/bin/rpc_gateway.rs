@@ -4279,6 +4279,7 @@ actions = ["agent.view"]
                     session_id: session.clone(),
                 },
                 AgentEvent::RunCompleted {
+                    assistant_message_id: None,
                     identity: Default::default(),
                     session_id: session.clone(),
                     result: "done".to_string(),

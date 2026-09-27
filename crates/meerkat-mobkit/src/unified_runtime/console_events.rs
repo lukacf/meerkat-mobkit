@@ -2728,6 +2728,7 @@ mod tests {
         }
 
         let terminal = AgentEvent::RunCompleted {
+            assistant_message_id: None,
             session_id,
             identity: active.clone(),
             result: "Owner review finished".into(),

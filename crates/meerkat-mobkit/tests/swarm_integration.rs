@@ -68,14 +68,15 @@ struct UnifiedRuntimeFixture {
     runtime: UnifiedRuntime,
 }
 
-type SessionReadGate = (oneshot::Sender<()>, oneshot::Receiver<()>);
-
 #[derive(Clone)]
 struct CheckpointerCancelProbeSessionService {
     inner: Arc<dyn MobSessionService>,
     cancel_calls: Arc<AtomicUsize>,
-    read_calls: Arc<AtomicUsize>,
-    next_read_gate: Arc<std::sync::Mutex<Option<SessionReadGate>>>,
+    /// Member-status observations. meerkat 0.8.45 reads member status
+    /// through `observe_member_status_view`, not `read`: counted here, and
+    /// held while `observations_blocked` is true.
+    observe_calls: Arc<AtomicUsize>,
+    observations_blocked: tokio::sync::watch::Sender<bool>,
 }
 
 impl CheckpointerCancelProbeSessionService {
@@ -83,29 +84,26 @@ impl CheckpointerCancelProbeSessionService {
         Self {
             inner,
             cancel_calls: Arc::new(AtomicUsize::new(0)),
-            read_calls: Arc::new(AtomicUsize::new(0)),
-            next_read_gate: Arc::new(std::sync::Mutex::new(None)),
+            observe_calls: Arc::new(AtomicUsize::new(0)),
+            observations_blocked: tokio::sync::watch::channel(false).0,
         }
+    }
+
+    fn observe_calls(&self) -> usize {
+        self.observe_calls.load(Ordering::SeqCst)
+    }
+
+    /// Hold every member-status observation until [`Self::release_observations`].
+    fn block_observations(&self) {
+        self.observations_blocked.send_replace(true);
+    }
+
+    fn release_observations(&self) {
+        self.observations_blocked.send_replace(false);
     }
 
     fn cancel_calls(&self) -> usize {
         self.cancel_calls.load(Ordering::SeqCst)
-    }
-
-    fn read_calls(&self) -> usize {
-        self.read_calls.load(Ordering::SeqCst)
-    }
-
-    fn block_next_read(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
-        let (entered_tx, entered_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-        let replaced = self
-            .next_read_gate
-            .lock()
-            .expect("read gate mutex")
-            .replace((entered_tx, release_rx));
-        assert!(replaced.is_none(), "only one read gate may be armed");
-        (entered_rx, release_tx)
     }
 }
 
@@ -167,12 +165,6 @@ impl SessionService for CheckpointerCancelProbeSessionService {
     }
 
     async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
-        self.read_calls.fetch_add(1, Ordering::SeqCst);
-        let gate = self.next_read_gate.lock().expect("read gate mutex").take();
-        if let Some((entered_tx, release_rx)) = gate {
-            let _ = entered_tx.send(());
-            let _ = release_rx.await;
-        }
         self.inner.read(id).await
     }
 
@@ -220,6 +212,16 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    async fn observe_member_status_view(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+        self.observe_calls.fetch_add(1, Ordering::SeqCst);
+        let mut blocked = self.observations_blocked.subscribe();
+        let _ = blocked.wait_for(|blocked| !*blocked).await;
+        self.inner.observe_member_status_view(session_id).await
+    }
+
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,
@@ -525,11 +527,22 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
 }
 
 fn build_phase1_session_service(temp_dir: &tempfile::TempDir) -> Arc<dyn MobSessionService> {
+    build_phase1_session_service_with_capacity(temp_dir, 16)
+}
+
+fn build_phase1_session_service_with_capacity(
+    temp_dir: &tempfile::TempDir,
+    max_sessions: usize,
+) -> Arc<dyn MobSessionService> {
     let session_path = temp_dir.path().join("sessions");
     std::fs::create_dir_all(&session_path).expect("session path");
 
     let factory = AgentFactory::new(&session_path).comms(true);
-    Arc::new(build_ephemeral_service(factory, Config::default(), 16))
+    Arc::new(build_ephemeral_service(
+        factory,
+        Config::default(),
+        max_sessions,
+    ))
 }
 
 fn build_phase1_mob_spec_with_session_service(
@@ -666,13 +679,30 @@ async fn build_unified_runtime_fixture_with_agent_events(
     }
 }
 
+/// meerkat 0.8.45's member-status lane, end to end through
+/// `mobkit/member_status` (it replaced the one-permit fail-fast lane whose
+/// refusals and 30 s timeouts the previous version of this test pinned):
+///
+/// - concurrent reads of ONE member join one observation. A session view
+///   that does not answer ends at the 1 s observation deadline with the typed
+///   `preview_unavailable: "observation_deadline"` marker, as a snapshot
+///   rather than an error, and the inner service is read exactly once;
+/// - reads of different members run concurrently under a mob-wide capacity
+///   of 16. A read the session never answers keeps its unit until it
+///   finishes or is orphaned at the drain ceiling, so with all 16 held a
+///   17th member's read waits the bounded 2 s for capacity and is refused
+///   typed with `observation_lane_saturated`, without ever reading its
+///   session.
 #[tokio::test]
-async fn timed_out_member_status_requests_shed_abandoned_actor_observations() {
-    const SATURATED_REQUESTS: usize = 8;
+async fn member_status_reads_join_one_bounded_observation_and_wait_boundedly_for_capacity() {
+    const CAPACITY: usize = 16;
+    const JOINED_REQUESTS: usize = 9;
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
+    // One more member than the member-status capacity, so the session cap
+    // must not be what refuses.
     let probe = Arc::new(CheckpointerCancelProbeSessionService::new(
-        build_phase1_session_service(&temp_dir),
+        build_phase1_session_service_with_capacity(&temp_dir, CAPACITY + 4),
     ));
     let session_service: Arc<dyn MobSessionService> = probe.clone();
     let runtime = Arc::new(
@@ -681,7 +711,7 @@ async fn timed_out_member_status_requests_shed_abandoned_actor_observations() {
             MobKitConfig {
                 modules: vec![],
                 discovery: DiscoverySpec {
-                    namespace: "timed-out-member-status".to_string(),
+                    namespace: "bounded-member-status".to_string(),
                     modules: vec![],
                 },
                 pre_spawn: vec![],
@@ -691,112 +721,128 @@ async fn timed_out_member_status_requests_shed_abandoned_actor_observations() {
         .await
         .expect("bootstrap unified runtime"),
     );
-    let member_id = AgentIdentity::from("timeout-worker");
-    runtime
-        .mob_handle()
-        .spawn_spec(SpawnMemberSpec::new(
-            ProfileName::from("worker"),
-            member_id.clone(),
-        ))
-        .await
-        .expect("spawn timeout worker");
+    let members: Vec<AgentIdentity> = (0..=CAPACITY)
+        .map(|index| AgentIdentity::from(format!("status-worker-{index}")))
+        .collect();
+    for member in &members {
+        runtime
+            .mob_handle()
+            .spawn_spec(SpawnMemberSpec::new(
+                ProfileName::from("worker"),
+                member.clone(),
+            ))
+            .await
+            .expect("spawn status worker");
+    }
 
     tokio::time::pause();
-    let (head_entered_rx, release_head_tx) = probe.block_next_read();
-    let status_request = |id| {
+    let status_request = |member: &AgentIdentity, id: usize| {
         json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "mobkit/member_status",
-            "params": {"member_id": member_id.as_str()},
+            "params": {"member_id": member.as_str()},
         })
         .to_string()
     };
     let spawn_request = |runtime: Arc<UnifiedRuntime>, request: String| {
-        let (started_tx, started_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _ = started_tx.send(());
-            meerkat_mobkit::rpc::handle_unified_rpc_json(
+        tokio::spawn(async move {
+            let response = meerkat_mobkit::rpc::handle_unified_rpc_json(
                 runtime.as_ref(),
                 &request,
-                Duration::from_secs(1),
+                Duration::from_secs(10),
                 None,
                 None,
             )
-            .await
-        });
-        (started_rx, task)
+            .await;
+            serde_json::from_str::<serde_json::Value>(&response).expect("json-rpc response")
+        })
     };
 
-    let (_, head_request) = spawn_request(Arc::clone(&runtime), status_request(0));
-    head_entered_rx
-        .await
-        .expect("head request must enter the actor-owned session read");
-    assert_eq!(probe.read_calls(), 1, "only the head read has executed");
-
-    let mut saturated = Vec::with_capacity(SATURATED_REQUESTS);
-    for id in 1..=SATURATED_REQUESTS {
-        let (started_rx, task) = spawn_request(Arc::clone(&runtime), status_request(id));
-        started_rx.await.expect("request task must start");
-        saturated.push(task);
-    }
-
-    for task in saturated {
-        let response = task.await.expect("saturated request task");
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("typed admission response");
-        assert_eq!(response["error"]["code"], json!(-32000), "{response:#?}");
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("observation_lane_saturated")),
+    // Joined reads: every request for one member shares one observation.
+    probe.block_observations();
+    let joined: Vec<_> = (0..JOINED_REQUESTS)
+        .map(|id| spawn_request(Arc::clone(&runtime), status_request(&members[0], id)))
+        .collect();
+    for task in joined {
+        let response = task.await.expect("joined request task");
+        assert!(response.get("error").is_none(), "{response:#?}");
+        assert_eq!(
+            response["result"]["preview_unavailable"],
+            json!("observation_deadline"),
             "{response:#?}"
         );
     }
-
-    tokio::time::advance(Duration::from_secs(31)).await;
-    let head_response = head_request.await.expect("head request task");
-    let head_response: serde_json::Value =
-        serde_json::from_str(&head_response).expect("typed timeout response");
     assert_eq!(
-        head_response["error"]["code"],
-        json!(meerkat_mobkit::rpc::CONSOLE_READ_TIMEOUT_CODE),
-        "{head_response:#?}"
-    );
-    assert_eq!(
-        head_response["error"]["data"]["kind"],
-        json!("console_read_timeout"),
-        "{head_response:#?}"
-    );
-    assert_eq!(
-        probe.read_calls(),
+        probe.observe_calls(),
         1,
-        "the saturated observation lane must not execute any additional session reads"
+        "concurrent reads of one member join one observation"
     );
 
-    let _ = release_head_tx.send(());
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
+    // Bounded capacity: the first member's unanswered read still holds its
+    // unit; 15 more members' unanswered reads take the rest.
+    let holders: Vec<_> = members[1..CAPACITY]
+        .iter()
+        .enumerate()
+        .map(|(id, member)| spawn_request(Arc::clone(&runtime), status_request(member, 100 + id)))
+        .collect();
+    for task in holders {
+        let response = task.await.expect("capacity holder task");
+        assert_eq!(
+            response["result"]["preview_unavailable"],
+            json!("observation_deadline"),
+            "{response:#?}"
+        );
     }
-    let (live_started_rx, live_request) =
-        spawn_request(Arc::clone(&runtime), status_request(SATURATED_REQUESTS + 1));
-    live_started_rx.await.expect("live request task must start");
-    let live_response: serde_json::Value =
-        serde_json::from_str(&live_request.await.expect("live request task"))
-            .expect("live member-status response");
-    assert!(live_response["error"].is_null(), "{live_response:#?}");
+    assert_eq!(probe.observe_calls(), CAPACITY);
+    let started = tokio::time::Instant::now();
+    let refused = spawn_request(
+        Arc::clone(&runtime),
+        status_request(&members[CAPACITY], 999),
+    )
+    .await
+    .expect("over-capacity request task");
+    let waited = started.elapsed();
+    assert_eq!(refused["error"]["code"], json!(-32000), "{refused:#?}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("observation_lane_saturated")),
+        "{refused:#?}"
+    );
+    assert!(
+        waited >= Duration::from_secs(2),
+        "the refusal comes only after the bounded capacity wait: {waited:?}"
+    );
     assert_eq!(
-        probe.read_calls(),
-        2,
-        "the head executes once, abandoned observations execute zero times, and the live request executes once"
+        probe.observe_calls(),
+        CAPACITY,
+        "a read refused for capacity never reads its session"
     );
 
-    tokio::time::resume();
-    runtime
-        .mob_handle()
-        .stop()
-        .await
-        .expect("stop timeout test mob");
+    // Released, the held reads drain, and a fresh read is answered from the
+    // session.
+    probe.release_observations();
+    let answered = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = spawn_request(
+                Arc::clone(&runtime),
+                status_request(&members[CAPACITY], 1_000),
+            )
+            .await
+            .expect("post-release request task");
+            if response.get("error").is_none() {
+                return response;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("capacity frees once the held reads drain");
+    assert!(
+        answered["result"]["preview_unavailable"].is_null(),
+        "{answered:#?}"
+    );
 }
 
 #[tokio::test]

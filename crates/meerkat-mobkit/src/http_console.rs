@@ -10859,9 +10859,12 @@ async fn attach_member_progress(
                     .member_status(&identity)
                     .await
                     .map(|snapshot| {
-                        snapshot
-                            .progress
-                            .and_then(|progress| serde_json::to_value(progress).ok())
+                        progress_with_preview_marker(
+                            snapshot
+                                .progress
+                                .and_then(|progress| serde_json::to_value(progress).ok()),
+                            snapshot.preview_unavailable,
+                        )
                     })
                     .map_err(|error| error.to_string())
             })
@@ -10872,6 +10875,57 @@ async fn attach_member_progress(
 
 /// A member's serialized progress, or `None` when its status carries none.
 type MemberProgressRead<'a> = futures::future::BoxFuture<'a, Result<Option<Value>, String>>;
+
+/// A member's progress JSON with meerkat 0.8.45's typed `preview_unavailable`
+/// marker carried alongside, so the console can tell a status read whose
+/// session view did not answer (deadline, failure, absent session, retiring)
+/// from an observed one.
+fn progress_with_preview_marker(
+    progress: Option<Value>,
+    preview_unavailable: Option<meerkat_mob::MemberPreviewUnavailable>,
+) -> Option<Value> {
+    progress.map(|mut progress| {
+        if let (Some(marker), Value::Object(fields)) = (preview_unavailable, &mut progress)
+            && let Ok(marker) = serde_json::to_value(marker)
+        {
+            fields.insert("preview_unavailable".to_string(), marker);
+        }
+        progress
+    })
+}
+
+#[cfg(test)]
+mod progress_preview_marker_tests {
+    use super::*;
+
+    #[test]
+    fn the_preview_marker_rides_along_with_progress_and_nothing_else_changes() {
+        let progress = serde_json::json!({"run_state": "idle", "in_flight_work": 0});
+        assert_eq!(
+            progress_with_preview_marker(
+                Some(progress.clone()),
+                Some(meerkat_mob::MemberPreviewUnavailable::ObservationDeadline),
+            ),
+            Some(serde_json::json!({
+                "run_state": "idle",
+                "in_flight_work": 0,
+                "preview_unavailable": "observation_deadline",
+            }))
+        );
+        assert_eq!(
+            progress_with_preview_marker(Some(progress.clone()), None),
+            Some(progress)
+        );
+        assert_eq!(
+            progress_with_preview_marker(
+                None,
+                Some(meerkat_mob::MemberPreviewUnavailable::ReadFailed)
+            ),
+            None,
+            "no progress stays no progress (the caller falls back to the run state)"
+        );
+    }
+}
 
 /// [`attach_member_progress`] over `read_status`.
 async fn attach_member_progress_with<'a>(

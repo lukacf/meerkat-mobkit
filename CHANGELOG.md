@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Hosts can initialize the shared console projection with a fixed ingestion
   redaction policy before creating request views. Later view policies cannot
   replace that host policy or change another view's authorized data.
+- `identity_first::bridge::MemberInspection` gains `preview_unavailable:
+  Option<meerkat_mob::MemberPreviewUnavailable>` (see Added). The struct is
+  public and not `#[non_exhaustive]`, so struct literals (custom
+  `SessionBridge` implementations and test doubles) must set it, usually to
+  `None`.
 
 ### Storage and wire compatibility
 
@@ -124,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- `mobkit/inspect_identity` (and its raw-alias projection) and the console's
+  per-member progress carry `preview_unavailable` when meerkat could not
+  observe the member's session for its status (`observation_deadline`,
+  `read_failed`, `session_absent`, `not_observed_while_retiring`; meerkat
+  0.8.45 `MemberPreviewUnavailable`). When it is set, a missing
+  `output_preview` does not mean an empty member. Python
+  `IdentityInspection.preview_unavailable` and TypeScript
+  `IdentityInspection.previewUnavailable` carry it; unknown future values
+  pass through.
 
 - Turn tickets: per-admission completion for identity deliveries.
   `mobkit/send`, `mobkit/interact` and `mobkit/dispatch` accept
@@ -263,6 +278,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   times out, or carries no progress shows its run state from the runtime
   machine it runs on (`run_open`, `idle` or `unknown`) with the typed
   `unknown` health class, instead of being dropped.
+- A busy member's status returns its last committed preview. MobKit's session
+  service wrappers forward meerkat 0.8.45's member-status observation exactly,
+  so a status read joins meerkat's one bounded observation for that member
+  instead of reading the whole session behind a running turn.
 
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either

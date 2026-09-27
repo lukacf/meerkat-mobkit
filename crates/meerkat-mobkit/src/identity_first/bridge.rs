@@ -3169,6 +3169,11 @@ pub struct MemberInspection {
     pub output_preview: Option<String>,
     pub is_final: bool,
     pub peer_reachable_count: usize,
+    /// Why `output_preview` carries no observation of the member's session
+    /// view (meerkat 0.8.45's typed marker: the bounded read hit its
+    /// deadline, failed, found no session, or the member is retiring). When
+    /// set, a missing `output_preview` is not an empty member.
+    pub preview_unavailable: Option<meerkat_mob::MemberPreviewUnavailable>,
 }
 
 /// Which restored LLM-identity fields diverge from the profile declaration
@@ -6320,6 +6325,7 @@ impl SessionBridge for MobSessionBridge {
             output_preview: snap.output_preview.clone(),
             is_final: snap.is_final,
             peer_reachable_count,
+            preview_unavailable: snap.preview_unavailable,
         })
     }
 

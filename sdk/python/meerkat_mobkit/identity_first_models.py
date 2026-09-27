@@ -1213,6 +1213,12 @@ class IdentityInspection:
     output_preview: str | None = None
     is_final: bool = False
     peer_reachable_count: int = 0
+    #: Why ``output_preview`` is not an observation of the member's session
+    #: (``"observation_deadline"``, ``"read_failed"``, ``"session_absent"``,
+    #: ``"not_observed_while_retiring"``; unknown future values pass through).
+    #: When set, a missing preview is not an empty member. ``None`` when the
+    #: preview was observed, or the gateway predates the field.
+    preview_unavailable: str | None = None
     #: Live completion cursor. ``None`` for non-identity-first live aliases
     #: (no identity authority tracks their turns) and for gateways predating
     #: the field — in both cases the caller must not read absence as "no turns
@@ -1227,15 +1233,19 @@ class IdentityInspection:
         }
         if self.output_preview is not None:
             result["output_preview"] = self.output_preview
+        if self.preview_unavailable is not None:
+            result["preview_unavailable"] = self.preview_unavailable
         if self.completion_cursor is not None:
             result["completion_cursor"] = self.completion_cursor.to_dict()
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IdentityInspection:
+        unavailable = data.get("preview_unavailable")
         return cls(
             identity=data["identity"],
             output_preview=data.get("output_preview"),
+            preview_unavailable=unavailable if isinstance(unavailable, str) else None,
             is_final=bool(data.get("is_final", False)),
             peer_reachable_count=int(data.get("peer_reachable_count", 0)),
             completion_cursor=_completion_cursor_from(data, "completion_cursor"),

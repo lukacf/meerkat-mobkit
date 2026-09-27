@@ -309,6 +309,7 @@ impl SessionBridge for TicketBridge {
     ) -> Result<MemberInspection, BridgeError> {
         Ok(MemberInspection {
             output_preview: self.latest_output.lock().unwrap().clone(),
+            preview_unavailable: None,
             is_final: false,
             peer_reachable_count: 0,
         })

@@ -406,3 +406,77 @@ async fn a_turn_that_fails_after_admission_is_typed_and_not_retried() {
     );
     unified.shutdown().await;
 }
+
+/// meerkat 0.8.45 reads member status through `observe_member_status_view`,
+/// which MobKit's production session-service wrapper must forward to the
+/// persistent service (served from its live watch). A wrapper answering it
+/// with `read` would wait on the member's running turn, and every status read
+/// of a busy member would end at the observation deadline with
+/// `preview_unavailable = observation_deadline`. So: with a turn held in the
+/// model, a status read through the real mob returns the member's last
+/// COMMITTED preview, with no preview-unavailable marker.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_members_status_returns_its_committed_preview() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let client = ScriptedClient::immediate(true);
+    let (unified, bridge, runtime_id) = boot_one_member(
+        &temp.path().join("state"),
+        client.clone(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let deliver = |text: &'static str| {
+        let bridge = Arc::clone(&bridge);
+        let runtime_id = runtime_id.clone();
+        async move {
+            bridge
+                .deliver_awaiting_commit_with_mode_context_and_system_prompt(
+                    &runtime_id,
+                    &meerkat_core::ContentInput::Text(text.to_string()),
+                    None,
+                    &[],
+                    HandlingMode::Queue,
+                    None,
+                )
+                .await
+        }
+    };
+
+    // One committed turn: its reply ("ok") is the committed preview.
+    deliver("first, committed").await.expect("first turn");
+    let members = unified.mob_handle().list_all_members().await;
+    let member = members
+        .into_iter()
+        .next()
+        .expect("the booted member")
+        .agent_identity;
+
+    // A second turn, held in the model: the member is busy.
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *client.entered.lock().await = Some(entered_tx);
+    *client.release.lock().await = Some(release_rx);
+    let busy = tokio::spawn(deliver("second, held"));
+    entered_rx.await.expect("the second turn reaches the model");
+
+    let snapshot = unified
+        .mob_handle()
+        .member_status(&member)
+        .await
+        .expect("member status of a busy member");
+    assert_eq!(
+        snapshot.output_preview.as_deref(),
+        Some("ok"),
+        "the busy member's committed preview"
+    );
+    assert_eq!(
+        snapshot.preview_unavailable, None,
+        "the status read must not have waited on the running turn"
+    );
+
+    release_tx.send(()).expect("release the held turn");
+    busy.await
+        .expect("delivery task")
+        .expect("the held turn completes");
+    unified.shutdown().await;
+}

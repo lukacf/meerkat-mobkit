@@ -5714,6 +5714,17 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            // Forwarded exactly: the inner service answers from its live
+            // status watch without waiting on a running turn. A wrapper-level
+            // `read` would wait on the member's turn (meerkat 0.8.45 makes
+            // this method required for that reason).
+            async fn observe_member_status_view(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
+                self.inner.observe_member_status_view(session_id).await
+            }
+
             #[cfg(feature = "openai-live")]
             async fn validate_live_bridge_member_eligibility(
                 &self,
@@ -6778,6 +6789,15 @@ impl MobSessionService for AfterCreateMobSessionService {
         self.inner
             .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
             .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: the inner
+    // service answers from its live status watch without waiting on a turn.
+    async fn observe_member_status_view(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
+        self.inner.observe_member_status_view(session_id).await
     }
 
     #[cfg(feature = "openai-live")]
@@ -13642,6 +13662,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // In-memory double: `read` is its published state (meerkat 0.8.45).
+        async fn observe_member_status_view(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            meerkat_mob::observe_member_status_view_via_read(self, session_id).await
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,
@@ -13973,6 +14001,11 @@ comms = true
         );
     }
 
+    /// What `ForwardingProbe` answers for a member-status view, so a test can
+    /// tell a forwarded answer from a wrapper-level read.
+    const FORWARDED_STATUS_PREVIEW: &str = "committed preview from the inner service";
+    const FORWARDED_STATUS_TOKENS: u64 = 4242;
+
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
@@ -14178,6 +14211,17 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn observe_member_status_view(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberStatusSessionView, meerkat_core::SessionError> {
+            self.record("observe_member_status_view");
+            Ok(meerkat_mob::MemberStatusSessionView::live_watch(
+                Some(FORWARDED_STATUS_PREVIEW.to_string()),
+                FORWARDED_STATUS_TOKENS,
+            ))
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             machine: &meerkat_runtime::MeerkatMachine,
@@ -14763,6 +14807,50 @@ comms = true
                 "validate_live_bridge_member_eligibility",
                 "capture_live_bridge_execution_snapshot",
             ]
+        );
+    }
+
+    /// meerkat 0.8.45 made `observe_member_status_view` required so no
+    /// wrapper can answer it with a `read` that waits on the member's running
+    /// turn. Both production decorators must forward it exactly once and
+    /// return the inner service's view unchanged.
+    #[tokio::test]
+    async fn wrappers_forward_the_member_status_view_exactly() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            let view = wrapper
+                .observe_member_status_view(&session_id)
+                .await
+                .expect("the inner view is forwarded");
+            assert_eq!(
+                view.last_assistant_text.as_deref(),
+                Some(FORWARDED_STATUS_PREVIEW)
+            );
+            assert_eq!(view.total_tokens, FORWARDED_STATUS_TOKENS);
+            assert!(matches!(
+                view.source,
+                meerkat_mob::MemberStatusViewSource::LiveWatch
+            ));
+        }
+        assert_eq!(
+            probe.calls(),
+            vec!["observe_member_status_view", "observe_member_status_view"],
+            "each wrapper forwards exactly once and adds no read of its own"
         );
     }
 

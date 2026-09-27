@@ -118,6 +118,7 @@ impl SessionBridge for CountingInspectBridge {
         }
         Ok(MemberInspection {
             output_preview: committed.or_else(|| Some(format!("{runtime_id} read {read}"))),
+            preview_unavailable: None,
             is_final: false,
             peer_reachable_count: 0,
         })
