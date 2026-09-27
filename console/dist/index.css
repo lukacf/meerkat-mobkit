@@ -10962,14 +10962,13 @@ svg[data-svg=fit],
   }
 }
 .conv-turn--live {
-  border-left: 2px dashed var(--border, rgba(127, 127, 127, 0.5));
+  border-left: 1px solid var(--border, rgba(127, 127, 127, 0.5));
   padding-left: 8px;
-  opacity: 0.8;
 }
 .msg--live .msg__bubble {
-  font-style: italic;
+  font-style: normal;
   background: transparent;
-  border: 1px dashed var(--border, rgba(127, 127, 127, 0.5));
+  border: none;
 }
 .msg--live-user .msg__bubble {
   align-self: flex-end;
