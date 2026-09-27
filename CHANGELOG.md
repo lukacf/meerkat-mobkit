@@ -130,6 +130,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Fork lineage in `callback/build_agent` (meerkat 0.8.45). The build callback
+  options carry `fork_source`, meerkat's `SessionBuildOptions::fork_source`
+  forwarded as meerkat serializes it (`{"source_member": {"mob_id", "role",
+  "member"}, "source_session_id"}`), and `fork_source_identity`, the source's
+  durable identity (for example `domain:calendar`). meerkat sets the lineage
+  on the build that seats a durable fork (fork_off children, fork_member
+  children, local council participants) and on every later rebuild of that
+  member, so a host can build a fork child as its source. In a MobKit mob
+  `source_member.member` is MobKit's encoded roster id (`mk--...`), which is
+  why the identity rides beside it, resolved through MobKit's own roster
+  mapping (also public as `member_comms_id::durable_identity_for_roster_member`).
+  Both are null for every other build. The child's own labels and session
+  still name the child and never carry the source's `agent_identity`.
+  Lineage is not caller-mintable: a build response naming `fork_source` is
+  ignored. The Python `SessionBuildOptions` gains typed `fork_source`
+  (`ForkBuildSource`, `MobMemberBinding`) and `fork_source_identity`; the
+  TypeScript one gains `forkSource`, `forkSourceIdentity` and
+  `parseForkBuildSource`. Both are receive-only, never sent back, and ignore
+  fields a newer gateway adds.
+- TypeScript `SessionBuildOptions.resumeSessionId`, matching Python's
+  `resume_session_id`: the build callback's resume session is decoded, and a
+  builder can set it to ask the gateway to resume a session (persistent mode).
 - `mobkit/inspect_identity` (and its raw-alias projection) and the console's
   per-member progress carry `preview_unavailable` when meerkat could not
   observe the member's session for its status (`observation_deadline`,

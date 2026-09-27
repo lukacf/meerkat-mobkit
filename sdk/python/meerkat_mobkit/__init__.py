@@ -80,7 +80,15 @@ from .identity_first_models import (
 from .identity_first_providers import AgentCustomizerProtocol
 
 # Data models
-from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionCreatedContext, SessionQuery
+from .models import (
+    DiscoverySpec,
+    ForkBuildSource,
+    MobMemberBinding,
+    PreSpawnData,
+    SessionBuildOptions,
+    SessionCreatedContext,
+    SessionQuery,
+)
 
 # Agent builder protocol (public contract — CallbackDispatcher is internal)
 from .agent_builder import SessionAgentBuilder
@@ -293,6 +301,8 @@ __all__ = [
     "PreSpawnData",
     "SessionBuildOptions",
     "SessionCreatedContext",
+    "ForkBuildSource",
+    "MobMemberBinding",
     "SessionQuery",
     # Agent builder
     "SessionAgentBuilder",

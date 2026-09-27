@@ -688,6 +688,15 @@ resume). The gateway pre-fills `SessionBuildOptions` before it calls you:
 | `app_context` | The host context attached to the spawn, if any |
 | `session_id` | The spawn's `session_id` label when it carries one, else the resumed session's id |
 | `resume_session_id` | The resumed session's id on a resume; `None` on a mint |
+| `fork_source` | On a fork child's builds (meerkat 0.8.45+), a `ForkBuildSource`: the source member (`source_member.mob_id`, `.role`, and `.member`, MobKit's encoded roster id) and the source session it was forked from (`source_session_id`); `None` otherwise |
+| `fork_source_identity` | On a fork child's builds, the source's durable identity (for example `domain:calendar`), the key to resolve the source's grants by; `None` otherwise |
+
+meerkat sets the fork lineage on the build that seats a durable fork
+(`fork_off` children, `fork_member` children, local council participants) and
+on every later rebuild of that member, so a builder can build the child as its
+source. The child's own `labels` and `session_id` still name the child; they
+never carry the source's `agent_identity`. The lineage is receive-only: it is
+not sent back, and the gateway ignores it in a build response.
 
 Read `profile_name`, do not assign it. There is no way to select a profile
 from `build_agent`: the gateway applies only `additional_instructions` (mint
