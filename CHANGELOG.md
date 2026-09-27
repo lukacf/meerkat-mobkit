@@ -249,11 +249,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   repair, logged a "no repair admission holds" WARN and fell through to the
   plain projection save (HomeCore: about 3.6 s per pass across 16
   identities and one WARN per turn). A durable row that is the committed
-  transcript's digest-prefix past its last rewrite now goes straight to that
-  save. The at-head check also reads the rewrite generation off the loaded
-  row on stores without an incremental head, where it never matched, and
-  the WARN, which now fires only on unproven shapes, compares against the
-  head commit's parent and names the relations it tested.
+  transcript's digest-prefix past its last rewrite, at the committed rewrite
+  generation, now goes straight to that save. Reading the rewrite generation
+  off the loaded row on stores without an incremental head keeps the
+  at-head check correct there, and the WARN, which now fires only on
+  unproven shapes, compares against the head commit's parent and names the
+  relations it tested.
 
 - `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
   and `sendAndWait` / `dispatchAndWait` (TypeScript) return the output of the

@@ -3701,21 +3701,34 @@ impl SessionStoreBackedRuntimeStore {
     /// all under the runtime's driver mutex, on every turn (HomeCore, ~3.6 s
     /// per pass across 16 identities).
     ///
-    /// The proof is a typed digest comparison, no content heuristic: the
-    /// successor's first `d` messages digest-equal the whole durable row
-    /// (`d` = its length), and `d` is at least the last commit's
-    /// `messages_after`, so the durable row already holds that rewrite's
-    /// result and every row it has is the successor's own. Only the trailing
-    /// appends are missing, which the ordinary projection save lands; its
-    /// own guard stays the authority on the head. `false` when the seal has
-    /// no commit (those projections never reach the provers) or the row is
-    /// longer than the successor.
+    /// The proof has two typed parts, no content heuristic:
+    ///
+    /// - The durable row's rewrite generation equals the committed one. The
+    ///   digest alone cannot prove the durable row holds the last rewrite:
+    ///   the format-2 digest omits row identity and timestamps, so a row a
+    ///   missed rewrite removed and a re-appended row with the same content
+    ///   digest alike. Skipping the walk there would leave the rewrite
+    ///   uninstalled and the projection save refused on every boundary.
+    /// - The successor's first `d` messages digest-equal the whole durable
+    ///   row (`d` = its length), and `d` is at least the last commit's
+    ///   `messages_after`, so every row the durable row has is the
+    ///   successor's own, past that rewrite's result.
+    ///
+    /// Only the trailing appends are then missing, which the ordinary
+    /// projection save lands; its own guard stays the authority on the head.
+    /// `false` when the seal has no commit (those projections never reach
+    /// the provers) or the row is longer than the successor.
     fn durable_is_committed_append_prefix(
         sealed: &meerkat_core::ValidatedTranscriptHistory,
         durable_predecessor: &meerkat_core::Session,
         durable_revision: &str,
+        durable_generation: u64,
+        committed_generation: u64,
         successor: &meerkat_core::Session,
     ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        if durable_generation != committed_generation {
+            return Ok(false);
+        }
         let Some(last) = sealed.last_commit() else {
             return Ok(false);
         };
@@ -4067,27 +4080,27 @@ impl SessionStoreBackedRuntimeStore {
                 })?;
             // Whether the durable row needs no rewrite-chain prover: it is at
             // the committed head, or it is an ordinary append-prefix of it.
-            let skip_provers =
-                match sealed.as_ref() {
-                    Some(sealed) if sealed.commit_count() != 0 => {
-                        let durable_revision =
-                            durable_predecessor.transcript_revision().map_err(|e| {
-                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                                    "durable predecessor revision before rewrite-chain provers: {e}"
-                                ))
-                            })?;
-                        let committed_generation =
-                            successor.transcript_rewrite_generation().map_err(|e| {
-                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                                    "committed rewrite generation before rewrite-chain provers: {e}"
-                                ))
-                            })?;
-                        // A store without an incremental channel has no head row
-                        // to read; it loads whole blobs whose Session carries its
-                        // own history, so the generation is read there, as the
-                        // freshness probe does. Without this the at-head check
-                        // below was dead on every blob-only store.
-                        let durable_generation = match Self::durable_head_generation(
+            let skip_provers = match sealed.as_ref() {
+                Some(sealed) if sealed.commit_count() != 0 => {
+                    let durable_revision =
+                        durable_predecessor.transcript_revision().map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "durable predecessor revision before rewrite-chain provers: {e}"
+                            ))
+                        })?;
+                    let committed_generation =
+                        successor.transcript_rewrite_generation().map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "committed rewrite generation before rewrite-chain provers: {e}"
+                            ))
+                        })?;
+                    // A store without an incremental channel has no head row
+                    // to read; it loads whole blobs whose Session carries its
+                    // own history, so the generation is read there, as the
+                    // freshness probe does. That keeps the at-head check
+                    // (and the append-prefix generation check) correct on
+                    // blob-only stores.
+                    let durable_generation = match Self::durable_head_generation(
                         session_store,
                         successor.id(),
                         "committed->durable projection",
@@ -4095,67 +4108,72 @@ impl SessionStoreBackedRuntimeStore {
                     .await?
                     {
                         Some(generation) => generation,
-                        None => durable_predecessor.transcript_rewrite_generation().map_err(|e| {
-                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                                "durable rewrite generation before rewrite-chain provers: {e}"
-                            ))
-                        })?,
+                        None => durable_predecessor
+                            .transcript_rewrite_generation()
+                            .map_err(|e| {
+                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                    "durable rewrite generation before \
+                                     rewrite-chain provers: {e}"
+                                ))
+                            })?,
                     };
-                        // The sealed head is the revision AT the last rewrite commit;
-                        // every live row has messages appended since (production:
-                        // gen 34 with 198 rows), so compare the durable row against
-                        // the committed session's CURRENT transcript revision - the
-                        // same fact the freshness probe already matched.
-                        let committed_revision = successor.transcript_revision().map_err(|e| {
-                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                                "committed transcript revision before rewrite-chain provers: {e}"
-                            ))
-                        })?;
-                        let at_head = durable_revision == committed_revision
-                            && durable_generation == committed_generation;
-                        if at_head {
-                            // The provers below conclude exactly this for a row
-                            // whose head already carries the committed revision
-                            // and generation, at O(generations x transcript) each.
-                            // Production run-5 L1 (2026-09-03) paid that three
-                            // times per identity, 16 identities, 171 s, to learn
-                            // nothing was missing. Envelope currency alone needs
-                            // no chain walk; fall through to the projection save.
-                            tracing::debug!(
-                                runtime_id = %runtime_id,
-                                session_id = %successor.id(),
-                                rewrite_generation = committed_generation,
-                                "durable row already at the committed head; skipping the \
-                                 rewrite-chain provers"
-                            );
-                            self.at_head_skips
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            true
-                        } else if Self::durable_is_committed_append_prefix(
-                            sealed,
-                            durable_predecessor,
-                            &durable_revision,
-                            successor,
-                        )? {
-                            // An ordinary append boundary: nothing for the provers
-                            // to find (see `durable_is_committed_append_prefix`).
-                            tracing::debug!(
-                                runtime_id = %runtime_id,
-                                session_id = %successor.id(),
-                                durable_messages = durable_predecessor.messages().len(),
-                                committed_messages = successor.messages().len(),
-                                "durable row is the committed transcript's prefix past its \
-                                 last rewrite; skipping the rewrite-chain provers"
-                            );
-                            self.append_prefix_skips
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            true
-                        } else {
-                            false
-                        }
+                    // The sealed head is the revision AT the last rewrite commit;
+                    // every live row has messages appended since (production:
+                    // gen 34 with 198 rows), so compare the durable row against
+                    // the committed session's CURRENT transcript revision - the
+                    // same fact the freshness probe already matched.
+                    let committed_revision = successor.transcript_revision().map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                            "committed transcript revision before rewrite-chain provers: {e}"
+                        ))
+                    })?;
+                    let at_head = durable_revision == committed_revision
+                        && durable_generation == committed_generation;
+                    if at_head {
+                        // The provers below conclude exactly this for a row
+                        // whose head already carries the committed revision
+                        // and generation, at O(generations x transcript) each.
+                        // Production run-5 L1 (2026-09-03) paid that three
+                        // times per identity, 16 identities, 171 s, to learn
+                        // nothing was missing. Envelope currency alone needs
+                        // no chain walk; fall through to the projection save.
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            rewrite_generation = committed_generation,
+                            "durable row already at the committed head; skipping the \
+                             rewrite-chain provers"
+                        );
+                        self.at_head_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        true
+                    } else if Self::durable_is_committed_append_prefix(
+                        sealed,
+                        durable_predecessor,
+                        &durable_revision,
+                        durable_generation,
+                        committed_generation,
+                        successor,
+                    )? {
+                        // An ordinary append boundary: nothing for the provers
+                        // to find (see `durable_is_committed_append_prefix`).
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            durable_messages = durable_predecessor.messages().len(),
+                            committed_messages = successor.messages().len(),
+                            "durable row is the committed transcript's prefix past its \
+                             last rewrite; skipping the rewrite-chain provers"
+                        );
+                        self.append_prefix_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        true
+                    } else {
+                        false
                     }
-                    _ => false,
-                };
+                }
+                _ => false,
+            };
             if let Some(sealed) = sealed.as_ref()
                 && sealed.commit_count() != 0
                 && !skip_provers
@@ -17765,12 +17783,13 @@ comms = true
         );
     }
 
-    /// The fast path requires the durable row to hold at least the last
-    /// rewrite's result (its `messages_after` rows). A shorter row, here the
-    /// session's empty first save, is a digest-prefix of any transcript, so
-    /// without that bound it would skip the walk and the plain save would
-    /// meet a rewrite it cannot install. It must still take the walk, which
-    /// installs the rewrite.
+    /// A durable row shorter than the last rewrite's result, here the
+    /// session's empty first save, is a digest-prefix of any transcript. It
+    /// never saw the rewrite, so its generation differs and the fast path's
+    /// generation check keeps it on the walk, which installs the rewrite.
+    /// (The `messages_after` bound guards the same shape structurally; with
+    /// a consistent head, a row at the committed generation always holds that
+    /// rewrite's result, so the generation check decides first.)
     #[tokio::test]
     async fn a_durable_row_shorter_than_the_last_rewrite_result_takes_the_chain_walk() {
         let session_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
@@ -17830,11 +17849,164 @@ comms = true
         );
     }
 
+    /// Soundness review of the fast path: the content digest cannot prove the
+    /// durable row holds the last rewrite, because the format-2 digest omits
+    /// row identity and timestamps. A truncation rewrite (generation 2 drops
+    /// the last row) whose durable projection is missed, then a re-append of
+    /// a row with the same content plus one more: the successor's prefix
+    /// digests equal to the stale generation-1 row within the length bounds.
+    /// The generation check keeps that boundary on the walk, which installs
+    /// the rewrite; without it the plain save meets an uninstalled rewrite
+    /// and is refused on this and every later boundary.
+    #[tokio::test]
+    async fn a_missed_truncation_rewrite_with_a_digest_identical_reappend_still_replays() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:truncation-reappend").await;
+        let mut truncated = committed.clone();
+        let parent_revision = truncated
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        truncated
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 2, end: 3 },
+                Vec::new(),
+                meerkat_core::TranscriptRewriteReason::new("truncation"),
+                Some("truncation-reappend-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        // The truncation commits on the inner store only: its durable
+        // projection never ran.
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        truncated
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        truncated.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("after compaction two"),
+        ));
+        truncated.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("after the re-append"),
+        ));
+        let durable_len = committed.messages().len();
+        assert_eq!(
+            truncated
+                .transcript_prefix_digest(durable_len)
+                .unwrap_or_else(|error| panic!("{error}")),
+            committed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "precondition: the stale durable row digest-equals the successor's prefix"
+        );
+
+        let store = SessionStoreBackedRuntimeStore::new(inner, Arc::clone(&session_store));
+        commit_boundary_through(&store, &runtime_id, &truncated).await;
+
+        assert_eq!(
+            store.append_prefix_skip_count(),
+            0,
+            "a row behind a rewrite is never an append prefix, whatever its digest"
+        );
+        assert_eq!(store.chain_walk_count(), 1, "it takes the chain walk");
+        let durable = session_store
+            .load(truncated.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive"));
+        assert_eq!(
+            durable
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            truncated
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the boundary lands on the replayed row"
+        );
+        assert_eq!(
+            durable_head_rewrite_count(&session_store, truncated.id()).await,
+            truncated
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the truncation rewrite is installed on the durable head"
+        );
+    }
+
+    /// The fast path's digest comparison on its own: a durable row at the
+    /// committed generation and within the length bounds whose last row the
+    /// committed authority does not have (a projected turn the committed
+    /// runtime state later lost) is not an append prefix. It goes to the
+    /// walk and both admissions; what the injected store then does with the
+    /// unproven row is its own guard's decision, unchanged here.
+    #[tokio::test]
+    async fn a_same_generation_row_with_a_divergent_row_is_not_an_append_prefix() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:divergent-row").await;
+        let mut projected = committed.clone();
+        projected.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("projected, then lost"),
+        ));
+        let landing =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        commit_boundary_through(&landing, &runtime_id, &projected).await;
+        let mut diverged = committed.clone();
+        diverged.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("the committed turn"),
+        ));
+        diverged.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("and its follow-up"),
+        ));
+        assert!(
+            projected.messages().len() <= diverged.messages().len()
+                && diverged
+                    .transcript_rewrite_generation()
+                    .unwrap_or_else(|error| panic!("{error}"))
+                    == durable_head_rewrite_count(&session_store, projected.id()).await,
+            "precondition: same generation and within the fast path's length bounds"
+        );
+
+        let store = SessionStoreBackedRuntimeStore::new(inner, Arc::clone(&session_store));
+        let outcome = meerkat_runtime::RuntimeStore::commit_session_snapshot(
+            &store,
+            &runtime_id,
+            meerkat_runtime::store::SerializedSessionSnapshot {
+                session_snapshot: Arc::new(
+                    diverged
+                        .to_persisted_bytes()
+                        .unwrap_or_else(|error| panic!("{error}")),
+                ),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            store.append_prefix_skip_count(),
+            0,
+            "the digest comparison rejects a row whose content differs: {outcome:?}"
+        );
+        assert_eq!(store.at_head_skip_count(), 0);
+        assert_eq!(store.chain_walk_count(), 1, "it takes the chain walk");
+        assert_eq!(
+            store.rewrite_prover_run_count(),
+            2,
+            "and both admissions run"
+        );
+    }
+
     /// A store without an incremental channel has no head row to read: the
-    /// at-head check reads the rewrite generation off the whole-blob Session
-    /// it loaded, as the freshness probe does. A row at the committed head
-    /// then skips the provers through the at-head arm, which was dead on
-    /// such stores (the head read returned `None`).
+    /// rewrite generation is read off the whole-blob Session it loaded, as
+    /// the freshness probe does, which keeps the at-head check correct on
+    /// blob-only stores. A row at the committed head skips the provers
+    /// through the at-head arm.
     #[tokio::test]
     async fn a_blob_only_row_at_the_committed_head_skips_the_provers_at_head() {
         struct BlobOnlyStore {
