@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { startFixture, eventually, rpc, snapshot } = require("./acceptance-runtime.cjs");
 const { runScenarios } = require("./scenario-registry.cjs");
+const { boundaryRecords, expectedContextContent, assertExactContextMessage, serializeConsoleContextMessage } = require("./scenarios/quote-ingress-proof.cjs");
 
 async function faultClassification() {
   const fixture = await startFixture();
@@ -41,17 +42,32 @@ async function faultClassification() {
 }
 
 async function ingressAndResume(mode) {
+  assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator's prebuilt fixture for both final ingress paths.");
   const fixture = await startFixture({ mode });
+  const evidence = { mode, errors: [] };
   try {
     const source = "# Exact reply\n\nRepeated phrase, repeated phrase. A\u030A and \ud83d\ude80.\n\n```ts\nconst ready = true;\n```\n\n- [x] done\n";
     await fixture.control("model", { source, delay_ms: 1, chunk_chars: 4 });
-    const instruction = `Acceptance ${mode}: preserve exact context`;
-    const quote = 'exact quote\nmetadata: "not a field"\n\u00e5\u0301 \ud83d\ude80\n';
+    const instruction = `  Acceptance ${mode}: preserve exact context\nCompare every unverified snapshot.  `;
+    const sourceScope = `${fixture.baseUrl}/__context-source-must-not-fetch`;
+    const records = boundaryRecords(sourceScope);
+    const content = serializeConsoleContextMessage(instruction, records);
+    const expected = expectedContextContent(instruction, records);
+    assert.deepEqual(content, expected, "the actual serializer matches the independent v1 wire contract");
+    const beforeLimits = fixture.observations.length;
+    const serializeAndDispatch = values => rpc(fixture.baseUrl, "mobkit/console/send", {
+      identity: "router:main", content: serializeConsoleContextMessage(instruction, values),
+    });
+    assert.throws(() => serializeAndDispatch([...records, { ...records[7], id: "quote-8" }]), /at most 8 quotes/);
+    assert.throws(() => serializeAndDispatch(records.map((record, index) => index === 0 ? { ...record, quote: record.quote + "x" } : record)), /64 KiB/);
+    assert.equal(fixture.observations.length, beforeLimits, "out-of-limit drafts stop before HTTP dispatch");
+    evidence.limits = { records: records.length, recordUtf8Bytes: Buffer.byteLength(JSON.stringify(records)), blockedCount: 9, blockedUtf8Bytes: 65_537 };
     const envelope = {
       identity: "router:main", origin: "console:api-acceptance", origin_kind: "operator",
       idempotency_key: `acceptance-${mode}`, handling_mode: "queue",
-      content: [{ type: "text", text: instruction }, { type: "text", text: quote }],
+      content,
     };
+    evidence.envelope = envelope;
     const before = await snapshot(fixture.baseUrl);
     assert.equal(before[0].event, "snapshot_started");
     fixture.dropNextSendResponse();
@@ -65,17 +81,26 @@ async function ingressAndResume(mode) {
     assert.equal(replay.body.result?.input_frame_id, first.result.input_frame_id);
     const conflict = await rpc(fixture.baseUrl, "mobkit/console/send", { ...envelope, content: "changed" });
     assert(conflict.body.error, "same key with a changed envelope must be rejected");
-    const request = await eventually(async () => {
+    const messages = await eventually(async () => {
       const requests = await (await fetch(`${fixture.backendUrl}/__fixture/requests`)).json();
-      return requests.find(item => JSON.stringify(item.messages).includes(instruction));
+      const matching = requests.flatMap(request => request.messages).filter(message =>
+        message.role === "user" && Array.isArray(message.content) && message.content[0]?.text === instruction);
+      return matching.length ? matching : null;
     }, `${mode} final model ingress`);
-    const serialized = JSON.stringify(request.messages);
-    assert(serialized.includes(JSON.stringify(quote).slice(1, -1)), "quote bytes reach final model input unchanged");
+    for (const message of messages) assertExactContextMessage(message, expected);
+    evidence.finalModelMessages = messages;
+    evidence.first = first;
+    evidence.replay = replay;
+    evidence.conflict = conflict;
     const page = await eventually(async () => {
       const value = await (await fetch(`${fixture.baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=500`)).json();
       return value.frames?.some(frame => JSON.stringify(frame.payload).includes(JSON.stringify(source).slice(1, -1))) ? value : null;
     }, `${mode} completed source query`);
     assert.equal(page.frames.filter(frame => frame.id === first.result.input_frame_id).length, 1);
+    const inputFrame = page.frames.find(frame => frame.id === first.result.input_frame_id);
+    assert.equal(inputFrame.kind, "user_input");
+    assert.deepEqual(inputFrame.payload.content, expected, "durable timeline receipt retains the exact serialized context");
+    evidence.durableInputFrame = inputFrame;
     const full = await snapshot(fixture.baseUrl, "?identity=router%3Amain");
     const cursor = full.at(-1).data.cursor;
     assert(cursor, "completed snapshot supplies a resume frontier");
@@ -87,7 +112,19 @@ async function ingressAndResume(mode) {
       assert(Number(item.data.frame.cursor.split(":")[1]) > frontier, "late live events follow the accepted frontier");
     }
     assert(Number(resumed.at(-1).data.cursor.split(":")[1]) >= frontier);
-  } finally { await fixture.close(); }
+    assert(!fixture.observations.some(item => item.path.startsWith("/__context-source-must-not-fetch")),
+      "unverified source metadata never causes an implicit source fetch");
+    evidence.resumeCursor = cursor;
+  } catch (error) {
+    evidence.errors.push(error.stack || String(error));
+    throw error;
+  } finally {
+    try {
+      const dir = process.env.MOBKIT_API_EVIDENCE || path.join(__dirname, "../output/playwright/console-acceptance");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `api-${mode}-ingress.json`), JSON.stringify({ ...evidence, observations: fixture.observations, logs: fixture.logs() }, null, 2));
+    } finally { await fixture.close(); }
+  }
 }
 
 async function restartIngress(mode) {

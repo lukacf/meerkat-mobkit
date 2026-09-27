@@ -70,7 +70,15 @@ export function groupCopyText(group: ConversationTimelineGroup): string {
   if (copyEntries.length === group.entries.length && group.copyText) {
     return group.copyText;
   }
-  return copyEntries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
+  // A canonical source can project into several display rows. Its explicit
+  // copy text still describes that source once, including after tool filtering.
+  const copiedSources = new Set<string>();
+  return copyEntries.filter(entry => {
+    if (entry.copyText === undefined) return true;
+    if (copiedSources.has(entry.id)) return false;
+    copiedSources.add(entry.id);
+    return true;
+  }).map((entry) => entry.copyText ?? conversationEntryText(entry)).filter(Boolean).join("\n\n");
 }
 
 type ConversationMessageGroupProps = {
@@ -99,7 +107,7 @@ export function ConversationMessageGroup({
     return (
       <>
         {group.entries.map((entry) => (
-          <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+          <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
             <ConversationMessageView
               compact={compact}
               entry={entry}
@@ -140,10 +148,10 @@ export function ConversationMessageGroup({
       ) : null}
       <div className="cc-message-group__body">
         {groupRoutineToolRows(group.entries, (entry) => entry.kind === "message" && !entry.taskKind && !entry.taskLabel && entry.variant === "rich" ? entry.blocks : undefined).map((run) => {
-          const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.id} key={entry.id}>
+          const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
             <ConversationMessageView compact={compact} entry={entry} Icon={Icon} onFlowRunMessageMember={onFlowRunMessageMember} onFlowRunRestore={onFlowRunRestore} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
           </div>);
-          return <Fragment key={run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
+          return <Fragment key={run.rows[0].renderKey ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
         })}
       </div>
       {showGroupCopy ? (

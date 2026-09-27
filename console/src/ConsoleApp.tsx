@@ -692,16 +692,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [consoleTransport],
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
-  // Wall-clock start of the active voice call, used by the chat pane to keep
-  // the call's canonical rows hidden behind the live rows until the call ends.
-  const voiceCallStartedAtRef = React.useRef<number | null>(null);
-  React.useEffect(() => {
-    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
-      voiceCallStartedAtRef.current = Date.now();
-    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
-      voiceCallStartedAtRef.current = null;
-    }
-  }, [voiceState.phase]);
   const sampleVoiceWaveform = React.useCallback(
     (source: "microphone" | "speaker", samples: Float32Array<ArrayBuffer>) => voice?.sampleWaveform(source, samples),
     [voice],
@@ -1698,6 +1688,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const autoDrainRequestedRef = React.useRef(new Map<string, { inFlight: boolean; token: string }>());
   const sendRetryEpochRef = React.useRef(0);
   const pendingStorageErrorRef = React.useRef<Record<string, string>>({});
+  const queueStorageBannerRef = React.useRef<{ scope: string; identity: string; message: string } | null>(null);
   const [contextDrafts, setContextDrafts] = React.useState<Record<string, ConsoleContextRecord[]>>({});
   const [submittedFrames, setSubmittedFrames] = React.useState<Record<string, string>>({});
   const loadedComposerDraftsRef = React.useRef<Record<string, { text: string; contexts: ConsoleContextRecord[] }>>({});
@@ -1740,6 +1731,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     pendingStackRef.current = {};
     autoDrainRequestedRef.current.clear();
     pendingStorageErrorRef.current = {};
+    queueStorageBannerRef.current = null;
     loadedComposerDraftsRef.current = {};
     for (const optimistic of Object.values(optimisticUserByPanelKeyRef.current)) {
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -1789,10 +1781,17 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         const saved = saveConsoleSendAttempts(storage, namespace, identity, clean(next), clean(previous), legacyImported);
         next = saved.map((attempt) => ({ ...next.find((item) => item.id === attempt.id), ...attempt }));
         delete pendingStorageErrorRef.current[identity];
+        const banner = queueStorageBannerRef.current;
+        if (banner?.scope === sendScopeRef.current && banner.identity === identity) {
+          setActionError((current) => current === banner.message ? "" : current);
+          queueStorageBannerRef.current = null;
+        }
       } catch (error) {
         // The composer or prior queue stays visible until persistence succeeds.
         pendingStorageErrorRef.current[identity] = errorMessage(error);
-        setActionError(`Message was not queued or dispatched: ${errorMessage(error)}`);
+        const message = `Queue could not be saved: ${errorMessage(error)}`;
+        queueStorageBannerRef.current = { scope: sendScopeRef.current, identity, message };
+        setActionError(message);
         forceRender();
         return false;
       }
@@ -3431,7 +3430,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
       if (pendingAttempt) {
         const state = submitError instanceof ConsoleCapabilityUnavailableError ? "definitely-rejected" : consoleSendFailureState(submitError);
+        // The saved row owns recovery instructions. Persistence failures retain
+        // their own banner instead of being overwritten by the transport error.
         await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
+      } else {
+        setActionError(errorMessage(submitError));
       }
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url),
@@ -3439,7 +3442,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -4346,7 +4348,21 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const stackSlot = <>
       {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload"}</small> : null}
       {pendingStorageErrorRef.current[identity] && <p role="alert">{pendingStorageErrorRef.current[identity]}</p>}
-      {hasLegacyQueue && <button type="button" onClick={() => importLegacyPending(identity)}>Import legacy queue into this account</button>}
+      {hasLegacyQueue && (
+        <div className="queue-import" role="group" aria-label="Older queued messages" data-testid="legacy-queue-import">
+          <span className="queue-import__icon" aria-hidden="true"><Icon name="i-clock" /></span>
+          <span className="queue-import__text">
+            <span className="queue-import__title">Older queued messages</span>
+            <span>Resume them with this agent in this account.</span>
+          </span>
+          <button
+            type="button"
+            className="queue-import__action"
+            aria-label="Import and send older queued messages"
+            onClick={() => importLegacyPending(identity)}
+          >Import and send</button>
+        </div>
+      )}
       {stackItems.length > 0 ? (
         <PendingStack
           items={stackItems}
@@ -4373,9 +4389,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         />
       ) : null}
     </>;
-    const submittedFrameId = submittedFrames[draftKey];
-    const submittedRowId = submittedFrameId && sortedFrames.some((frame) => frame.id === submittedFrameId)
-      ? entries.find((entry) => entry.kind === "message" && (entry.id === submittedFrameId || entry.id.startsWith(`${submittedFrameId}:`)))?.id : undefined;
+    const submittedRowId = submittedFrames[draftKey];
     const addQuote = (quote: ConsoleQuoteSelection) => {
       if (sendScope !== sendScopeRef.current) return;
       try {
@@ -4488,9 +4502,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             ? voiceState.liveSpeech
             : undefined
         }
-        voiceCallStartedAt={
+        activeVoiceScope={
           voiceState.target?.identity === identity && voiceState.phase === "active"
-            ? voiceCallStartedAtRef.current
+            && agent?.session_id && voiceState.activeChannelId
+            ? { sessionId: agent.session_id, channelId: voiceState.activeChannelId }
             : null
         }
         workGraphActions={workGraphCardActionsFor(identity)}

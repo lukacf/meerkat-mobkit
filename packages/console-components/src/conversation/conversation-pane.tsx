@@ -109,6 +109,10 @@ export function ConversationPane({
   const scroll = useConversationScrollController({
     viewportRef: scrollRef, contentRef, viewportKey,
     conversationId: viewState.conversationId, contentVersion: viewState, submittedRowId,
+    resolveSubmittedRowId: sourceId => {
+      const entry = viewState.entries.find(entry => entry.id === sourceId || entry.renderKey === sourceId);
+      return entry ? entry.renderKey ?? entry.id : null;
+    },
     revealAnchor: onRevealAnchor,
   });
   const [visibleTurnIndexes, setVisibleTurnIndexes] = useState<number[]>([]);
@@ -240,7 +244,8 @@ export function ConversationPane({
   }, [header, footer, contextSlot, onQuoteSelection, scroll.awayFromEnd, scroll.missingAnchor, scroll.revealingAnchor]);
 
   function scrollToTurn(turnIndex: number) {
-    const rowId = visibleTurns[turnIndex]?.groups[0]?.entries[0]?.id;
+    const entry = visibleTurns[turnIndex]?.groups[0]?.entries[0];
+    const rowId = entry?.renderKey ?? entry?.id;
     if (rowId) scroll.jumpToRow(rowId);
   }
 

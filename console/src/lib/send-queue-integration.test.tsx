@@ -6,6 +6,7 @@ import type { MobKitConsoleTransport } from "./headless";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
+import { PendingStack, type PendingItem } from "../panels/PendingStack";
 
 const identity = "identity:queue-agent";
 function seed(twoPanes = false) {
@@ -105,14 +106,23 @@ describe("stock durable queue integration", () => {
     const view = render(<ConsoleApp {...props} />);
     const composer = await screen.findByTestId(`chat-composer:${identity}`);
     fireEvent.change(composer, { target: { value: "Unsent default embedded draft" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Import legacy queue into this account" }));
-    await screen.findByTestId("pending-stack");
+    const importNotice = await screen.findByRole("group", { name: "Older queued messages" });
+    const importButton = within(importNotice).getByRole("button", { name: "Import and send older queued messages" });
+    expect(importButton).toHaveTextContent(/^Import and send$/);
+    expect(within(importNotice).getByText("Resume them with this agent in this account.")).toBeVisible();
+    expect(screen.queryByTestId("pending-stack")).toBeNull();
+    expect(window.localStorage.getItem(`mobkit-pending-stack:${identity}`)).toBe(legacy);
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(importButton);
+    expect(within(await screen.findByTestId("pending-stack")).getByText("Preserve old queued instruction")).toBeVisible();
+    expect(composer).toHaveValue("Unsent default embedded draft");
+    expect(screen.queryByRole("group", { name: "Older queued messages" })).toBeNull();
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 160)); });
     view.unmount();
     render(<ConsoleApp {...props} />);
     await waitFor(() => expect((screen.getByTestId(`chat-composer:${identity}`) as HTMLTextAreaElement).value).toBe("Unsent default embedded draft"));
     await screen.findByTestId("pending-stack");
-    expect(screen.queryByRole("button", { name: "Import legacy queue into this account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import and send older queued messages" })).toBeNull();
     expect(window.localStorage.getItem(`mobkit-pending-stack:${identity}`)).toBe(legacy);
     expect(send).not.toHaveBeenCalled();
   });
@@ -464,8 +474,70 @@ describe("stock durable queue integration", () => {
     render(<ConsoleApp {...props} />);
     await waitFor(() => expect(screen.getByText(/Acceptance unknown/)).toBeTruthy());
     expect(send).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId(/^pending-steer:/)).toBeDisabled();
-    expect(screen.getByTestId(/^pending-edit:/)).toBeDisabled();
+    expect(screen.queryByTestId(/^pending-steer:/)).toBeNull();
+    expect(screen.queryByTestId(/^pending-edit:/)).toBeNull();
+  });
+  it("keeps a saved send failure in its recovery row without a duplicate global banner", async () => {
+    const send = vi.fn(async () => { throw new Error("response lost after dispatch"); });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
+    await compose("Keep this exact instruction");
+    await screen.findByText(/Acceptance unknown/);
+    expect(screen.queryByTestId("console-action-error")).toBeNull();
+    expect(screen.getByRole("button", { name: "Check acceptance", exact: true })).toBeEnabled();
+    const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!).attempts;
+    expect(saved).toHaveLength(1);
+    expect(saved[0].state).toBe("outcome-unknown");
+    expect(saved[0].error).toBe("response lost after dispatch");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("keeps the storage failure banner when saving a failed dispatched attempt fails", async () => {
+    let rejectSend!: (reason: Error) => void;
+    const send = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectSend = reject; }));
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
+    await compose("Already dispatched before storage fails");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    const key = consoleSendStorageKey("runtime/realm/principal", identity);
+    const frozen = JSON.parse(window.localStorage.getItem(key)!).attempts[0];
+    const original = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (storageKey, value) {
+      if (storageKey === key && JSON.parse(value).attempts.some((attempt: PendingItem) => attempt.state === "outcome-unknown")) {
+        throw new Error("post-dispatch quota exhausted");
+      }
+      original.call(this, storageKey, value);
+    });
+    await act(async () => { rejectSend(new Error("response lost after dispatch")); });
+    await waitFor(() => expect(screen.getByTestId("console-action-error")).toHaveTextContent("post-dispatch quota exhausted"));
+    expect(screen.getByTestId("console-action-error")).not.toHaveTextContent("not queued or dispatched");
+    const retained = JSON.parse(window.localStorage.getItem(key)!).attempts[0];
+    expect(retained.envelopeJson).toBe(frozen.envelopeJson);
+    expect(retained.idempotencyKey).toBe(frozen.idempotencyKey);
+    expect(screen.getByTestId(`pending-item:${retained.id}`)).toBeInTheDocument();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("clears a recovered queue storage failure before showing an unknown send outcome", async () => {
+    const send = vi.fn(async () => { throw new Error("response lost after dispatch"); });
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
+    await screen.findByTestId(`chat-composer:${identity}`);
+    const key = consoleSendStorageKey("runtime/realm/principal", identity);
+    const original = Storage.prototype.setItem;
+    let storageBlocked = true;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (storageKey, value) {
+      if (storageKey === key && storageBlocked) throw new Error("temporary queue quota failure");
+      original.call(this, storageKey, value);
+    });
+    const textarea = await compose("Keep the instruction through storage recovery");
+    await waitFor(() => expect(screen.getByTestId("console-action-error")).toHaveTextContent("temporary queue quota failure"));
+    expect(send).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("Keep the instruction through storage recovery");
+    storageBlocked = false;
+    await compose(textarea.value);
+    await screen.findByText(/Acceptance unknown/);
+    expect(screen.queryByTestId("console-action-error")).toBeNull();
+    const attempts = JSON.parse(window.localStorage.getItem(key)!).attempts;
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].state).toBe("outcome-unknown");
+    expect(attempts[0].text).toBe("Keep the instruction through storage recovery");
+    expect(send).toHaveBeenCalledTimes(1);
   });
   it("keeps composer visible when persistence fails before queue or dispatch", async () => {
     const send = vi.fn(async () => ({ interaction_id: "wrong", identity }));
@@ -797,6 +869,63 @@ describe("stock durable queue integration", () => {
     expect(documents.some(draft => draft.text === nextText)).toBe(true);
   });
 
+});
+
+describe("pending recovery actions", () => {
+  function renderAttempt(state: PendingItem["state"]) {
+    const draft = createConsoleSendAttempt({ id: "recovery-actions", scope: "recovery-actions-scope", destination: identity,
+      origin: "console:test", idempotencyKey: "recovery-actions-key", text: "  Keep A\u030A and 🚀 exact.\nSecond line.  ", now: Date.now() });
+    const attempted = beginConsoleSendAttempt(draft, { owner: "browser", now: Date.now(), handlingMode: "queue" });
+    const item: PendingItem = state === "draft" ? draft : { ...attempted, state,
+      ...(state !== "attempting" ? { lease: undefined } : {}), error: state === "outcome-unknown" ? "Response lost" : undefined };
+    const props = { items: [item], agentBusy: true, onSteer: vi.fn(), onRetry: vi.fn(), onReconcile: vi.fn(),
+      onRemoveContext: vi.fn(), onReorderContext: vi.fn(), onTrash: vi.fn(), onEdit: vi.fn(), onCommitEdit: vi.fn(),
+      onCancelEdit: vi.fn(), onReorder: vi.fn(), onClearAll: vi.fn(), onToggleExpand: vi.fn() };
+    render(<PendingStack {...props} />);
+    return { item, props };
+  }
+
+  it.each(["attempting", "outcome-unknown"] as const)("offers read-only recovery for a frozen %s attempt", state => {
+    const { item, props } = renderAttempt(state);
+    const row = screen.getByTestId(`pending-item:${item.id}`);
+    expect(row).toHaveAttribute("draggable", "false");
+    expect(row.querySelector(".stk-item__text")?.textContent).toBe(item.text);
+    expect(screen.queryByTestId(`pending-steer:${item.id}`)).toBeNull();
+    expect(screen.queryByTestId(`pending-edit:${item.id}`)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry same attempt" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Check acceptance", exact: true }));
+    expect(props.onReconcile).toHaveBeenCalledExactlyOnceWith(item.id);
+    expect(props.onSteer).not.toHaveBeenCalled();
+    expect(props.onRetry).not.toHaveBeenCalled();
+    expect(props.onEdit).not.toHaveBeenCalled();
+    const expand = screen.getByRole("button", { name: "Show saved message", exact: true });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(expand);
+    expect(props.onToggleExpand).toHaveBeenCalledExactlyOnceWith(item.id);
+    fireEvent.click(screen.getByRole("button", { name: "Discard saved attempt", exact: true }));
+    expect(props.onTrash).toHaveBeenCalledExactlyOnceWith(item.id);
+  });
+
+  it("keeps draft editing and steering available", () => {
+    const { item, props } = renderAttempt("draft");
+    fireEvent.click(screen.getByRole("button", { name: "Steer - send now and interrupt at next cooperative pause" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit message", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from queue", exact: true }));
+    expect(props.onSteer).toHaveBeenCalledExactlyOnceWith(item.id);
+    expect(props.onEdit).toHaveBeenCalledExactlyOnceWith(item.id);
+    expect(props.onTrash).toHaveBeenCalledExactlyOnceWith(item.id);
+    expect(screen.queryByRole("button", { name: "Check acceptance" })).toBeNull();
+  });
+
+  it("offers only the original retry mode after definite rejection", () => {
+    const { item, props } = renderAttempt("definitely-rejected");
+    fireEvent.click(screen.getByRole("button", { name: "Retry same attempt", exact: true }));
+    expect(props.onRetry).toHaveBeenCalledExactlyOnceWith(item.id);
+    expect(screen.queryByTestId(`pending-steer:${item.id}`)).toBeNull();
+    expect(screen.queryByTestId(`pending-edit:${item.id}`)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check acceptance" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Discard saved attempt" })).toBeEnabled();
+  });
 });
 
 describe("durable queued quote editing", () => {

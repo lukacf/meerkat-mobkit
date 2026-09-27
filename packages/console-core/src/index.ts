@@ -1,3 +1,7 @@
+export { realtimeMessageOrigin, hasRealtimeMessageOriginCarrier, isRealtimeHistoryMessage } from "./realtime-message-identity";
+export { conversationPresentationRows } from "./assistant-presentation";
+export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
+export type { AssistantHistorySnapshot } from "./assistant-message-identity";
 export type {
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,
@@ -47,6 +51,7 @@ export type {
   ConversationCouncilParticipantRow,
   ConversationIdentity,
   ConversationMessageEntry,
+  ConversationRealtimeOrigin,
   ConversationPresentation,
   ConversationRole,
   ConversationSummaryEntry,

@@ -52,6 +52,10 @@ use crate::storage_health::{
 #[path = "../tests/support/llm_usage.rs"]
 pub(crate) mod test_llm_usage;
 
+#[cfg(test)]
+#[path = "mob_handle_runtime_prepared_attempt_tests.rs"]
+mod prepared_attempt_tests;
+
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
 
@@ -343,6 +347,28 @@ impl ReplaySanitizingAgentLlmClient {
 
 #[async_trait]
 impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
+    fn prepare_request_attempt(
+        self: Arc<Self>,
+        messages: Arc<Vec<Message>>,
+        tools: Arc<[Arc<meerkat_core::ToolDef>]>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+        provider_params: Option<meerkat_core::ProviderParamsOverride>,
+    ) -> Result<Arc<dyn meerkat_core::AgentLlmRequestAttempt>, meerkat_core::AgentError> {
+        let sanitized = messages
+            .iter()
+            .cloned()
+            .map(sanitize_message_for_stateless_replay)
+            .collect();
+        self.inner.clone().prepare_request_attempt(
+            Arc::new(sanitized),
+            tools,
+            max_tokens,
+            temperature,
+            provider_params,
+        )
+    }
+
     // Forward the inner client's request-attempt authority. `AgentLlmClient`
     // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
     // omits it compiles cleanly and silently downgrades every wrapped client.

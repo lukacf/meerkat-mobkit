@@ -304,6 +304,10 @@ impl ConsoleLogStore for ObservedStore {
         self.inner.clear_frames().await
     }
 
+    async fn history_prefix_revision(&self) -> ConsoleLogResult<Option<String>> {
+        self.inner.history_prefix_revision().await
+    }
+
     async fn record_source_watermark(
         &self,
         runtime: &str,
@@ -2063,6 +2067,7 @@ async fn production_backfill_reuses_overcap_image_and_rebuilds_changed_image_bef
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.to_string());
     let target = SessionBackfillTarget {
+        assistant_refresh: AssistantHistoryRefreshReason::Recovery,
         provenance: Some(captured_backfill_test_provenance(&entry, &record)),
         entry: entry.clone(),
         record,
@@ -2373,6 +2378,7 @@ async fn production_backfill_caches_missing_rows_and_skips_sessions_without_noti
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.to_string());
     let target = SessionBackfillTarget {
+        assistant_refresh: AssistantHistoryRefreshReason::Recovery,
         provenance: Some(captured_backfill_test_provenance(&entry, &record)),
         entry: entry.clone(),
         record,

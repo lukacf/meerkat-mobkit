@@ -61,11 +61,13 @@ function alignmentAttr(alignment: ConversationTableAlignment | null | undefined)
   return alignment || "left";
 }
 
-function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormalization = true) {
+function ThinkingBlock({ block, displayNormalization = true }: { block: ConversationRichThinkingBlock; displayNormalization?: boolean }) {
+  // Hydration changes provenance, not the reader's disclosure choice.
+  const initiallyOpen = useRef(!(block.final && block.persisted));
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
-  const collapsedByDefault = Boolean(block.final && block.persisted);
+  const collapsedByDefault = !initiallyOpen.current;
   return (
     <details
       className={clsx(
@@ -74,7 +76,7 @@ function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormal
         block.persisted && "cc-rich-thinking--persisted",
         collapsedByDefault && "cc-rich-thinking--collapsed",
       )}
-      open={!collapsedByDefault}
+      open={initiallyOpen.current}
     >
       <summary className="cc-rich-thinking__label">{block.label?.trim() ? block.label : "Thinking"}</summary>
       <p className="cc-rich-paragraph cc-rich-thinking__body" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} />
@@ -273,11 +275,7 @@ function renderBlock(
     return <ToolCallBlock block={block} key={`tool-call-${index}`} />;
   }
 
-  const thinking = renderThinkingBlock(block, displayNormalization);
-  if (!thinking) {
-    return null;
-  }
-  return <div key={`thinking-${index}`}>{thinking}</div>;
+  return <div key={`thinking-${index}`}><ThinkingBlock block={block} displayNormalization={displayNormalization} /></div>;
 }
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
@@ -470,7 +468,7 @@ function ToolCallBlock({
   className?: string;
 }) {
   const insideDisclosure = useInsideCompletedToolDisclosure();
-  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
+  const { expanded, toggle } = useToolDisclosure([block], insideDisclosure || block.status === "pending" || block.status === "error" || ["cancelled", "interrupted", "unknown"].includes(block.completionEvidence?.outcome ?? ""));
   const displayLabels = useConversationDisplayLabels();
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
@@ -631,12 +629,15 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
             const result = block.result
               ? formatJsonIfPossible(block.result)
               : "";
+            const completionLabel = toolCompletionLabel(block);
+            const showCompletionLabel = ["unknown", "cancelled", "interrupted"].includes(block.completionEvidence?.outcome ?? "");
             return (
               <div className="cc-tool-call__sub" key={block.toolCallId || i}>
                 <div className="cc-tool-call__sub-head">
                   <span className="cc-tool-call__sub-index">#{i + 1}</span>
-                  <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
-                    {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
+                  <span className={clsx("cc-tool-call__peer-status", `cc-tool-call__peer-status--${block.status}`, showCompletionLabel && "cc-tool-call__peer-status--explicit")}
+                    role="status" aria-label={completionLabel} title={completionLabel}>
+                    {showCompletionLabel ? completionLabel : <span aria-hidden="true">{block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}</span>}
                   </span>
                 </div>
                 {args && (

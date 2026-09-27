@@ -63,8 +63,8 @@ use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::types::{AssistantBlock, Message, ToolDef};
 use meerkat_core::{
     AgentError, AgentLlmClient, AgentLlmFallbackSkippedTarget, AgentLlmFallbackSwitch,
-    CompiledSchema, LlmStreamResult, OutputSchema, ProviderParamsOverride, ProviderRequestPressure,
-    SchemaError, SessionLlmIdentity,
+    AgentLlmRequestAttempt, AssistantMessageId, CompiledSchema, LlmStreamResult, OutputSchema,
+    ProviderParamsOverride, ProviderRequestPressure, SchemaError, SessionLlmIdentity,
 };
 
 use crate::member_comms_id;
@@ -237,8 +237,64 @@ impl TaintObservingLlmClient {
     }
 }
 
+struct TaintObservingRequestAttempt {
+    client: Arc<TaintObservingLlmClient>,
+    inner: Arc<dyn AgentLlmRequestAttempt>,
+    messages: Arc<Vec<Message>>,
+    tools: Arc<[Arc<ToolDef>]>,
+}
+
+#[async_trait::async_trait]
+impl AgentLlmRequestAttempt for TaintObservingRequestAttempt {
+    fn request_pressure(&self) -> Result<Option<ProviderRequestPressure>, AgentError> {
+        self.inner.request_pressure()
+    }
+
+    async fn stream_response(
+        &self,
+        assistant_message_id: AssistantMessageId,
+    ) -> Result<LlmStreamResult, AgentError> {
+        if let Some(tracker) = self.client.slot.tracker() {
+            self.client
+                .mark_request_ingestions(&tracker, &self.messages, &self.tools);
+        }
+        let result = self.inner.stream_response(assistant_message_id).await?;
+        if let Some(tracker) = self.client.slot.tracker() {
+            for block in result.blocks() {
+                if let AssistantBlock::ServerToolContent { kind, .. } = block {
+                    tracker.observe_dispatched_server_tool(&self.client.identity, kind);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
 #[async_trait::async_trait]
 impl AgentLlmClient for TaintObservingLlmClient {
+    fn prepare_request_attempt(
+        self: Arc<Self>,
+        messages: Arc<Vec<Message>>,
+        tools: Arc<[Arc<ToolDef>]>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+        provider_params: Option<ProviderParamsOverride>,
+    ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
+        let inner = self.inner.clone().prepare_request_attempt(
+            messages.clone(),
+            tools.clone(),
+            max_tokens,
+            temperature,
+            provider_params,
+        )?;
+        Ok(Arc::new(TaintObservingRequestAttempt {
+            client: self,
+            inner,
+            messages,
+            tools,
+        }))
+    }
+
     // Forward the inner client's request-attempt authority. `AgentLlmClient`
     // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
     // omits it compiles cleanly and silently downgrades every wrapped client.

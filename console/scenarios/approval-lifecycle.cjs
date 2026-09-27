@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc } = require("../acceptance-runtime.cjs");
+const { browserFailureMonitor, navigation } = require("./browser-failure-monitor.cjs");
 const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
 
 function requirePrebuilt() {
@@ -65,13 +66,18 @@ async function withBrowser(name, run) {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   page.setDefaultTimeout(20_000);
-  const errors = []; page.on("pageerror", error => errors.push(error.message));
-  try { await run({ fixture, page }); assert.deepEqual(errors, []); await writeEvidence(name, fixture); }
-  catch (error) {
+  const monitor = browserFailureMonitor(page.context(), { origin: fixture.baseUrl });
+  const { errors, expected: expectedFailures, failures: requestFailures } = monitor;
+  try {
+    await run({ fixture, page });
+    monitor.assertClean();
+    await writeEvidence(name, fixture, { errors, expectedFailures, requestFailures });
+    monitor.assertClean();
+  } catch (error) {
     await capture(page, `${name}-failure`).catch(() => {});
-    await writeEvidence(`${name}-failure`, fixture, { error: String(error), errors }).catch(() => {});
+    await writeEvidence(`${name}-failure`, fixture, { error: String(error), errors, expectedFailures, requestFailures }).catch(() => {});
     throw error;
-  } finally { await browser.close(); await fixture.close(); }
+  } finally { monitor.stop(); await browser.close(); await fixture.close(); }
 }
 
 async function ownerRestart() {
@@ -189,7 +195,11 @@ async function composedApproval(host) {
     await page.getByTestId(`gating-action:${created.pending_id}:approve`).first().click();
     await eventually(async () => (await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length === 0, "owner approval resolution");
     await eventually(async () => await page.getByTestId(`gating-action:${created.pending_id}:approve`).count() === 0, "all approval copies settle");
-    await page.reload();
+    await navigation(page, "explicit approval host reload", async () => {
+      const response = await page.reload();
+      await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
+    });
     assert.equal((await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length, 0);
     assert.equal(decisions(fixture, created.pending_id).length, before + 1, "one UI decision dispatch settles all copies");
     await capture(page, `${host}-approval-settled`);
@@ -203,11 +213,14 @@ async function openConversation(page, fixture, host) {
     origin_kind: "operator", idempotency_key: "approval-turn", handling_mode: "queue",
   })).body.result;
   assert(accepted?.interaction_id, JSON.stringify(accepted));
-  await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
-  if (host === "stock" && !await page.getByTestId("chat-composer:router:main").count()) {
-    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
-  }
-  await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+  await navigation(page, `open ${host} approval host`, async () => {
+    const response = await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
+    if (host === "stock" && !await page.getByTestId("chat-composer:router:main").count()) {
+      await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
+    }
+    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    return response;
+  });
   // Real operator ingress and its correlated transcript must exist. A receipt
   // alone cannot substitute for this prerequisite when bootstrap is broken.
   await eventually(async () => {
@@ -325,7 +338,11 @@ async function accessRevocation(host) {
     await capture(page, `${host}-approval-access-revoked`);
     await fixture.control("access", { mode: "open" });
     assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
-    await page.reload();
+    await navigation(page, "explicit approval host reload", async () => {
+      const response = await page.reload();
+      await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
+    });
     if (host === "stock") await refreshApprovals(page, host);
     else await page.getByRole("button", { name: /^Needs you/ }).click();
     await page.getByTestId(`gating-pending:${created.pending_id}`).first().waitFor();
@@ -350,9 +367,18 @@ async function readOnlyApproval() {
     }, "read-only approval controls");
     assert.equal(decisions(fixture, created.pending_id).length, 0, "unsupported decision capability stops before dispatch");
     assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
+    await card.getByRole("status").filter({ hasText: /^Decision unavailable$/ }).waitFor();
+    assert.equal(await card.getAttribute("data-state"), "unavailable");
+    assert.equal(await page.getByText("Decision unconfirmed", { exact: true }).count(), 0,
+      "a known refusal before dispatch cannot claim an uncertain decision");
     await card.getByText("Complete request details", { exact: true }).click();
     await card.getByText("Read-only access", { exact: true }).waitFor();
     await capture(page, "stock-approval-read-only");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
+    await capture(page, "stock-approval-read-only-dark-1440");
+    assert.equal(decisions(fixture, created.pending_id).length, 0, "inspecting the refused request never sends a decision");
   });
 }
 

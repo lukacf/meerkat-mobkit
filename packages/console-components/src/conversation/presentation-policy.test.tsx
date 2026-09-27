@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import type { ConversationRichToolCallBlock } from "@console-core";
 import { readFileSync } from "node:fs";
@@ -106,6 +106,8 @@ describe("conservative presentation", () => {
     const pending = tool("late", { status: "pending", result: undefined, completionEvidence: { outcome: "running", source: "runtime-start", toolCallId: "late" } });
     const view = render(<ConversationRichContent blocks={[pending]} />);
     const header = view.container.querySelector(".cc-tool-call__header")!;
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
     view.rerender(<ConversationRichContent blocks={[{ ...pending, status: outcome === "error" ? "error" : "pending", result: "Actionable detail", completionEvidence: { outcome, source: "runtime-result", toolCallId: "late" } }]} />);
     expect(header).toHaveAttribute("aria-expanded", "true");
@@ -124,6 +126,41 @@ describe("conservative presentation", () => {
     view.rerender(<ConversationRichContent blocks={[pending("a"), pending("b"), pending("c")]} />);
     expect(header).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("#3")).toBeVisible();
+  });
+  test.each([
+    ["unknown", "Completion unknown"], ["interrupted", "Interrupted"], ["cancelled", "Cancelled"],
+  ] as const)("a mixed failed group exposes its %s child without inventing a result", async (outcome, label) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const failed = tool("missing", { status: "error", result: "File is missing", completionEvidence: { outcome: "error", source: "runtime-result", toolCallId: "missing" } });
+    const unresolved = tool("late", { status: "pending", result: undefined, arguments: '{"path":"late-review.txt"}', completionEvidence: { outcome, source: "runtime-start", toolCallId: "late" } });
+    const view = render(<ConversationRichContent blocks={[failed, unresolved]} />);
+    expect(screen.getByText("✗ Failed")).toBeVisible();
+    const children = view.container.querySelectorAll<HTMLElement>(".cc-tool-call__sub");
+    expect(children).toHaveLength(2);
+    const child = within(children[1]);
+    const status = child.getByRole("status", { name: label });
+    expect(status).toHaveTextContent(label);
+    expect(status).toBeVisible();
+    expect(status).toHaveAttribute("title", label);
+    expect(child.queryByText("Result", { exact: true })).toBeNull();
+    expect(view.container.querySelector(".cc-completed-tools")).toBeNull();
+    expect(canFoldCompletedTools([failed, unresolved])).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('$ read_file\nInput: {"path":"notes.txt"}\nResult: File is missing\n$ read_file\nInput: {"path":"late-review.txt"}'));
+  });
+  test("ordinary grouped outcomes retain compact icons with accessible labels", () => {
+    const view = render(<ConversationRichContent blocks={[
+      tool("done"),
+      tool("failed", { status: "error", completionEvidence: { outcome: "error", source: "runtime-result", toolCallId: "failed" } }),
+      tool("working", { status: "pending", result: undefined, completionEvidence: { outcome: "running", source: "runtime-start", toolCallId: "working" } }),
+    ]} />);
+    const children = view.container.querySelectorAll<HTMLElement>(".cc-tool-call__sub");
+    for (const [index, label, icon] of [[0, "Success", "✓"], [1, "Failed", "✗"], [2, "Running", "⋯"]] as const) {
+      const status = within(children[index]).getByRole("status", { name: label });
+      expect(status.textContent).toBe(icon);
+      expect(status).toHaveAttribute("title", label);
+    }
   });
   test("a collapsed peer group reopens with a late delivery failure result", () => {
     const peer = (id: string) => tool(id, { name: "send_message", status: "pending", result: undefined, peerIdentity: `peer:${id}`, peerBody: "Please review this.", completionEvidence: { outcome: "running", source: "runtime-start", toolCallId: id } });

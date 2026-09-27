@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const http = require("node:http");
 const { once } = require("node:events");
-const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, startupLineageReaders, source } = require("./real-startup-lineage.cjs");
+const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, observeStartupPhase, startupLineageReaders, source } = require("./real-startup-lineage.cjs");
 
 function runFrames(runId, interactionId) {
   const identity = { run_id: runId, ...(interactionId ? { interaction_id: interactionId } : {}) };
@@ -70,6 +70,266 @@ function historyPage(runId = "run-a") {
     { role: "block_assistant", identity: { run_id: runId }, blocks: [{ block_type: "text", data: { text: source } }] },
   ] };
 }
+
+function reconnectFixture() {
+  const messages = ["run-a", "run-b"].map((runId, index) => ({
+    role: "block_assistant", assistant_message_id: `assistant-${index}`,
+    identity: { run_id: runId, interaction_id: `interaction-${index}` },
+    blocks: [{ block_type: "text", data: { text: source } }],
+  }));
+  const frames = messages.flatMap((message, index) => runFrames(message.identity.run_id, message.identity.interaction_id).map(frame => ({
+    ...frame, payload: { ...frame.payload,
+      ...(frame.kind !== "run_started" ? { assistant_message_id: message.assistant_message_id } : {}),
+      ...(frame.source.kind === "session_history" ? { message: structuredClone(message) } : {}),
+    },
+  })));
+  const history = [{ session_id: "session", offset: 0, has_more: false, message_count: 2, messages }];
+  const priorFrames = frames.filter(frame => frame.id !== "run-b:history");
+  const owners = assertStartupLineage(priorFrames, history);
+  const rendered = { rowIds: ["stable-row-a", "stable-row-b"], tables: 2,
+    quotes: [{ id: "run-a:history", source }, { id: "run-b:history", source }] };
+  return { frames, priorFrames, history, owners, rendered };
+}
+
+function phaseResult(fixture) {
+  return {
+    startupAccepted: { interaction_id: "interaction-1" },
+    accepted: { interaction_id: "interaction-1" },
+    initialOwners: fixture.owners.slice(0, 1), repeatedOwners: fixture.owners,
+    rendered: { earlier: { rowIds: ["earlier-row"] } },
+  };
+}
+
+test("startup phase callers jointly refresh late canonical sources, history and DOM in every phase", async t => {
+  for (const phase of ["initial", "repeated", "reconnected", "reloaded"]) {
+    await t.test(phase, async () => {
+      const fixture = reconnectFixture();
+      const expectedOwners = structuredClone(fixture.owners);
+      const result = phaseResult(fixture);
+      const retainedEarlier = result.rendered.earlier;
+      let reads = 0;
+      const readOrder = [];
+      const signals = [];
+      const observation = await observeStartupPhase(phase, {
+        result, pollIntervalMs: 1,
+        timeline: async ({ signal }) => {
+          signals.push(signal); readOrder.push("timeline");
+          return { frames: ++reads === 1 ? fixture.priorFrames : fixture.frames };
+        },
+        durableHistory: async (frames, { signal }) => {
+          signals.push(signal); readOrder.push("history");
+          assert.equal(frames, reads === 1 ? fixture.priorFrames : fixture.frames);
+          assert.equal(result[`${phase}Frames`], frames);
+          assert.equal(result[`${phase}History`], undefined, "new frames cannot retain an older history observation");
+          assert.equal(result[`${phase}Rendered`], undefined, "new frames cannot retain an older DOM observation");
+          return fixture.history;
+        },
+        readRendered: async ({ signal }) => {
+          signals.push(signal); readOrder.push("rendered");
+          assert.equal(result[`${phase}History`], fixture.history);
+          return fixture.rendered;
+        },
+      });
+      assert.equal(reads, 2, `${phase} must refresh its authoritative sources when the rendered carrier arrives later`);
+      assert.deepEqual(readOrder, ["timeline", "history", "rendered", "timeline", "history", "rendered"]);
+      assert.equal(new Set(signals).size, 1, "every phase uses one deadline and cancellation signal for all reads");
+      assert.equal(signals[0].aborted, true, "success cancels the phase deadline");
+      assert.equal(observation.frames, fixture.frames);
+      assert.equal(result[`${phase}Frames`], fixture.frames);
+      assert.equal(result[`${phase}History`], fixture.history);
+      assert.equal(result[`${phase}Rendered`], fixture.rendered);
+      assert.equal(result[`${phase}Owners`], observation.owners);
+      assert.equal(result.rendered[phase], fixture.rendered);
+      assert.equal(result.rendered.earlier, retainedEarlier, "another phase keeps its own evidence");
+      assert.deepEqual(observation.owners.map(owner => [owner.runtimeKey, owner.identity, owner.sessionId,
+        owner.runId, owner.interactionId, owner.assistantMessageId, owner.historyOffset]), [
+        ["default", "router:main", "session", "run-a", "interaction-0", "assistant-0", 0],
+        ["default", "router:main", "session", "run-b", "interaction-1", "assistant-1", 1],
+      ]);
+      assert.deepEqual(fixture.owners, expectedOwners, "refresh does not mutate the previously committed owner snapshot");
+      assert.equal(observation.owners[1].historyId, "run-b:history");
+    });
+  }
+});
+
+test("startup phase callers reject missing, foreign and reused rendered source IDs in every phase", async t => {
+  for (const phase of ["initial", "repeated", "reconnected", "reloaded"]) {
+    await t.test(phase, async () => {
+      for (const id of [undefined, "foreign-canonical-frame", "run-a:history"]) {
+        const fixture = reconnectFixture();
+        const rendered = structuredClone(fixture.rendered);
+        rendered.quotes[1].id = id;
+        const result = phaseResult(fixture);
+        await assert.rejects(observeStartupPhase(phase, {
+          result, timeoutMs: 25, pollIntervalMs: 1,
+          timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+          readRendered: async () => rendered,
+        }), /Timed out: .*exact canonical run|Timed out: .*one rendered owner/);
+        assert.equal(result[`${phase}Rendered`], rendered, "rejected DOM stays available as failure evidence");
+        assert.equal(result.rendered[phase], undefined, "rejected output cannot become a successful phase observation");
+      }
+    });
+  }
+});
+
+test("startup initial and repeated phase callers require their actual accepted interaction", async t => {
+  for (const phase of ["initial", "repeated"]) {
+    await t.test(phase, async () => {
+      const fixture = reconnectFixture();
+      const result = phaseResult(fixture);
+      result[phase === "initial" ? "startupAccepted" : "accepted"].interaction_id = "missing-accepted-interaction";
+      let renderedReads = 0;
+      await assert.rejects(observeStartupPhase(phase, {
+        result, timeoutMs: 25, pollIntervalMs: 1,
+        timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+        readRendered: async () => { renderedReads++; return fixture.rendered; },
+      }), /accepted startup interaction completed with exact durable lineage: missing-accepted-interaction/);
+      assert.equal(renderedReads, 0, "an unrelated completed reply cannot advance to the rendering check");
+    });
+  }
+});
+
+test("startup repeated phase caller still requires exactly one additional canonical run", async () => {
+  const fixture = reconnectFixture();
+  const result = phaseResult(fixture);
+  result.initialOwners = fixture.owners;
+  await assert.rejects(observeStartupPhase("repeated", {
+    result, timeline: async () => ({ frames: fixture.frames }),
+    durableHistory: async () => fixture.history, readRendered: async () => fixture.rendered,
+  }), /same words belong to one additional canonical run/);
+  assert.equal(result.rendered.repeated, undefined);
+});
+
+test("startup reconnect and reload phase callers preserve every typed owner and transcript position", async t => {
+  for (const phase of ["reconnected", "reloaded"]) {
+    await t.test(phase, async () => {
+      for (const changed of ["runtimeKey", "identity", "sessionId", "runId", "interactionId", "assistantMessageId", "historyOffset"]) {
+        const fixture = reconnectFixture();
+        const result = phaseResult(fixture);
+        result.repeatedOwners = structuredClone(fixture.owners);
+        result.repeatedOwners[1][changed] = changed === "historyOffset" ? 4 : `foreign-${changed}`;
+        await assert.rejects(observeStartupPhase(phase, {
+          result, timeoutMs: 25, pollIntervalMs: 1,
+          timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+          readRendered: async () => fixture.rendered,
+        }), /same durable startup owners and transcript positions after refresh/);
+        assert.equal(result[`${phase}Owners`], undefined, "a changed owner cannot be published as a completed phase");
+      }
+    });
+  }
+});
+
+test("startup phase callers cancel a hanging DOM read under the same bounded deadline", { timeout: 2000 }, async t => {
+  for (const phase of ["initial", "repeated", "reconnected", "reloaded"]) {
+    await t.test(phase, async () => {
+      const fixture = reconnectFixture();
+      const result = phaseResult(fixture);
+      let reads = 0;
+      const signals = [];
+      let release;
+      const stalled = new Promise(resolve => { release = resolve; });
+      const pending = observeStartupPhase(phase, {
+        result, timeoutMs: 25, pollIntervalMs: 1,
+        timeline: async ({ signal }) => {
+          signals.push(signal);
+          reads++;
+          return { frames: fixture.frames };
+        },
+        durableHistory: async (_, { signal }) => { signals.push(signal); return fixture.history; },
+        readRendered: async ({ signal }) => {
+          signals.push(signal);
+          return stalled;
+        },
+      });
+      let guard;
+      try {
+        const outcome = await Promise.race([
+          pending.then(value => ({ value }), error => ({ error })),
+          new Promise(resolve => { guard = setTimeout(() => resolve({ overdue: true }), 250); }),
+        ]);
+        assert(!outcome.overdue, "the phase must settle while the DOM read remains pending");
+        assert.match(outcome.error?.message ?? "", /Timed out: .*startup Acceptance reply/);
+        assert.equal(reads, 1);
+        assert.equal(new Set(signals).size, 1, "timeline, history and DOM share the same deadline signal");
+        assert.equal(signals[0].aborted, true, "the pending DOM read receives cancellation");
+        assert.equal(result[`${phase}Frames`], fixture.frames);
+        assert.equal(result[`${phase}History`], fixture.history);
+        assert.equal(result[`${phase}Rendered`], undefined, "a pending DOM read cannot publish rendered evidence");
+        assert.equal(result.rendered[phase], undefined);
+      } finally {
+        clearTimeout(guard);
+        const retained = structuredClone(result);
+        release(fixture.rendered);
+        await pending.catch(() => {});
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(result, retained, "late DOM completion cannot alter a failed phase's evidence");
+      }
+    });
+  }
+});
+
+test("startup reconnect refreshes canonical source IDs without changing durable owners", async () => {
+  const fixture = reconnectFixture();
+  assert.throws(() => assertStartupRendering(fixture.rendered, fixture.owners), /exact canonical run/);
+  let reads = 0;
+  const observations = [];
+  const refreshed = await waitForStartupLineage({
+    expectedOwners: fixture.owners, pollIntervalMs: 1,
+    timeline: async () => ({ frames: ++reads === 1 ? fixture.priorFrames : fixture.frames }),
+    durableHistory: async () => fixture.history,
+    readRendered: async () => fixture.rendered,
+    onObservation: value => observations.push(value),
+  });
+  assert.equal(reads, 2, "the current rendered canonical carrier must exist in a fresh authoritative observation");
+  assert.deepEqual(refreshed.frames, fixture.frames);
+  assert.deepEqual(refreshed.history, fixture.history);
+  assert.deepEqual(refreshed.rendered, fixture.rendered);
+  assert.deepEqual(assertStartupRendering(refreshed.rendered, refreshed.owners), ["run-a", "run-b"]);
+  assert.equal(fixture.owners[1].historyId, undefined, "the older owner snapshot stays unchanged");
+  assert.equal(refreshed.owners[1].historyId, "run-b:history");
+  assert.deepEqual(refreshed.owners.map(owner => [owner.runtimeKey, owner.identity, owner.sessionId, owner.runId,
+    owner.interactionId, owner.assistantMessageId, owner.historyOffset]), [
+    ["default", "router:main", "session", "run-a", "interaction-0", "assistant-0", 0],
+    ["default", "router:main", "session", "run-b", "interaction-1", "assistant-1", 1],
+  ]);
+  assert(observations.some(value => value.rendered === fixture.rendered), "the actual rendered observation is retained");
+});
+
+test("startup reconnect rejects unknown or reused rendered source owners", async () => {
+  for (const sourceId of ["unknown-canonical-frame", "run-a:history"]) {
+    const fixture = reconnectFixture();
+    const rendered = structuredClone(fixture.rendered);
+    rendered.quotes[1].id = sourceId;
+    await assert.rejects(waitForStartupLineage({
+      expectedOwners: fixture.owners, timeoutMs: 25, pollIntervalMs: 1,
+      timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+      readRendered: async () => rendered,
+    }), /exact canonical run|one rendered owner/);
+  }
+});
+
+test("startup reconnect rejects changed durable scope, occurrence, or transcript position", async () => {
+  for (const changed of ["runtimeKey", "identity", "sessionId", "runId", "interactionId", "assistantMessageId", "historyOffset"]) {
+    const fixture = reconnectFixture();
+    const expected = structuredClone(fixture.owners);
+    expected[1][changed] = changed === "historyOffset" ? 4 : `other-${changed}`;
+    await assert.rejects(waitForStartupLineage({
+      expectedOwners: expected, timeoutMs: 25, pollIntervalMs: 1,
+      timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+      readRendered: async () => fixture.rendered,
+    }), /same durable startup owners/);
+  }
+});
+
+test("startup reconnect rejects a canonical carrier with another assistant message identity", async () => {
+  const fixture = reconnectFixture();
+  fixture.frames.find(frame => frame.id === "run-b:history").payload.assistant_message_id = "foreign-assistant";
+  await assert.rejects(waitForStartupLineage({
+    expectedOwners: fixture.owners, timeoutMs: 25, pollIntervalMs: 1,
+    timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
+    readRendered: async () => fixture.rendered,
+  }), /persisted assistant message owner/);
+});
 
 test("startup readiness waits past initial Ready and incomplete durable history", async () => {
   const full = runFrames("run-a");
