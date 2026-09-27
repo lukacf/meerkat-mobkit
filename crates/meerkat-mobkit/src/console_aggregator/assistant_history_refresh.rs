@@ -105,21 +105,61 @@ pub(super) async fn observe(
 ) -> AssistantHistoryRefreshGate {
     let member =
         crate::member_comms_id::roster_member_id_for_supplied_id(&record.runtime_member_id);
-    let handle = entry.runtime.handle();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     observe_with(
         requested,
         session_id,
         || async {
-            let status = crate::member_status_observation::observe_member_status_until(
-                &handle, &member, deadline,
-            )
+            tokio::time::timeout_at(deadline, async {
+                let expected_session = meerkat_core::SessionId::parse(session_id).ok()?;
+                let primary = entry.runtime.handle();
+                let (handle, member) = if primary.resolve_bridge_session_id(&member).await
+                    == Some(expected_session.clone())
+                {
+                    (primary, member)
+                } else {
+                    // Alias and source labels cannot distinguish identical
+                    // member names in different mobs. Recover the handle from
+                    // the existing member resolver and its runtime binding.
+                    let mut owner = None;
+                    for resolved in
+                        Box::pin(super::member_sources_for_entry_including_hidden(entry)).await
+                    {
+                        if resolved.member.agent_identity != member
+                            && resolved.runtime_identity != record.runtime_member_id
+                        {
+                            continue;
+                        }
+                        if resolved
+                            .handle
+                            .resolve_bridge_session_id(&resolved.member.agent_identity)
+                            .await
+                            != Some(expected_session.clone())
+                        {
+                            continue;
+                        }
+                        if owner.is_some() {
+                            return None;
+                        }
+                        owner = Some((resolved.handle, resolved.member.agent_identity));
+                    }
+                    owner?
+                };
+                // The binding only routes the observation. Fresh typed status
+                // must still prove that this exact session is idle.
+                let status = crate::member_status_observation::observe_member_status_until(
+                    &handle, &member, deadline,
+                )
+                .await
+                .ok()?;
+                Some((
+                    status.current_session_id?.to_string(),
+                    status.progress?.run_state,
+                ))
+            })
             .await
-            .ok()?;
-            Some((
-                status.current_session_id?.to_string(),
-                status.progress?.run_state,
-            ))
+            .ok()
+            .flatten()
         },
         || async {
             tokio::time::timeout_at(deadline, entry.runtime.session_commit_pending(session_id))
@@ -264,6 +304,167 @@ mod tests {
         .await;
         assert_eq!(gate, AssistantHistoryRefreshGate::PositiveOnly);
         assert!(calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn secondary_mob_refresh_uses_the_owner_of_the_exact_session() {
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "refresh-primary-{}"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+mob = true
+"#,
+            uuid::Uuid::new_v4()
+        ))
+        .expect("primary definition parses");
+        // The convenience builder composes the runtime-backed session service
+        // and installs agent mob tools over that same authority.
+        let runtime = crate::unified_runtime::UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(std::sync::Arc::new(
+                meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+            ))
+            .build()
+            .await
+            .expect("runtime with agent mob control builds");
+        runtime
+            .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                "worker".into(),
+                "agent-0".into(),
+                Some("Reply that the primary is ready.".into()),
+                None,
+                None,
+            ))
+            .await
+            .expect("primary member spawns");
+        let entry = super::super::tests::runtime_entry_for_test("refresh-owner", &runtime);
+        let primary = entry.runtime.handle();
+        let state = entry
+            .runtime
+            .agent_mob_mcp_state()
+            .expect("runtime exposes shared mob control");
+        let service = entry
+            .runtime
+            .session_service()
+            .expect("runtime exposes its session service");
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &service.runtime_adapter().expect("parent runtime machine"),
+                &state
+                    .session_service()
+                    .runtime_adapter()
+                    .expect("child runtime machine"),
+            ),
+            "agent-created mobs must share the parent's real runtime authority"
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "refresh-child-{}"
+
+[profiles.worker]
+realm_profile = "worker"
+"#,
+            uuid::Uuid::new_v4()
+        ))
+        .expect("child definition parses");
+        let mob_id = Box::pin(state.mob_create_definition(definition))
+            .await
+            .expect("child shares the runtime session service");
+        let member = crate::member_comms_id::roster_member_id_for_identity("agent-0");
+        Box::pin(state.mob_spawn_spec(
+            &mob_id,
+            meerkat_mob::SpawnMemberSpec::from_wire(
+                "worker".into(),
+                "agent-0".into(),
+                Some("Reply that the child is ready.".into()),
+                None,
+                None,
+            ),
+        ))
+        .await
+        .expect("child member spawns with the primary member's alias");
+        let child = state
+            .handle_for(&mob_id)
+            .await
+            .expect("child handle exists");
+        let row = child
+            .list_members_observation_snapshot()
+            .await
+            .into_iter()
+            .find(|row| row.agent_identity == member)
+            .expect("child member is in its owner's roster");
+        let mut record = super::super::identity_record_for_member(&entry, &child, &row)
+            .await
+            .expect("child identity projects");
+        let session_id = record.session_id.clone().expect("child session exists");
+        let typed_session = meerkat_core::SessionId::parse(&session_id)
+            .expect("child session is a typed runtime session");
+        let primary_session = primary
+            .resolve_bridge_session_id_observation(&member)
+            .await
+            .expect("primary member with the same alias has its own session");
+        assert_ne!(
+            primary_session, typed_session,
+            "the same alias in the primary mob must not select the child session"
+        );
+        // Source labels are display metadata, not authority to select a mob.
+        record
+            .labels
+            .insert("source_mob_id".into(), primary.mob_id().to_string());
+
+        // Spawn only acknowledges admission. Require a terminal run witness
+        // and the real shared commit authority before asserting settlement.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        tokio::time::timeout_at(deadline, async {
+            loop {
+                let execution = service
+                    .execution_snapshot(&typed_session)
+                    .await
+                    .expect("shared service observes the child session");
+                let status = crate::member_status_observation::observe_member_status_until(
+                    &child, &member, deadline,
+                )
+                .await
+                .expect("child status is observable");
+                if execution.as_ref().is_some_and(|snapshot| {
+                    snapshot.turn_terminal && snapshot.terminal_run_id.is_some()
+                }) && status.current_session_id.as_ref() == Some(&typed_session)
+                    && status.progress.as_ref().is_some_and(|progress| {
+                        progress.run_state == MemberRunState::Idle && progress.in_flight_work == 0
+                    })
+                    && entry.runtime.session_commit_pending(&session_id).await == Some(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("child's initial run commits before refreshing its history");
+
+        assert_eq!(
+            observe(&entry, &record, &session_id, true).await,
+            AssistantHistoryRefreshGate::Settled,
+            "a settled secondary member must authorize its own history refresh"
+        );
+        state
+            .mob_destroy(&mob_id)
+            .await
+            .expect("child is destroyed");
+        assert_eq!(
+            observe(&entry, &record, &session_id, true).await,
+            AssistantHistoryRefreshGate::Pending,
+            "the surviving primary alias cannot authorize the removed child's session"
+        );
+        primary.stop().await.expect("primary fixture stops");
     }
 
     #[tokio::test]

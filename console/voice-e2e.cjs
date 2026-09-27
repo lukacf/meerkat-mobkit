@@ -338,7 +338,7 @@ async function verifyVoiceTranscriptHandoff(page, fixture) {
       text, result: text, content: text,
       message: role === "user" ? { role, content: text } : {
         role: "block_assistant", blocks: [{ block_type: "transcript", data: { text, source: "spoken" } }],
-        ...(realtimeOrigin ? { realtime_origin: realtimeOrigin } : {}),
+        ...(realtimeOrigin ? { identity: { realtime_origin: realtimeOrigin } } : {}),
       },
     },
   });
@@ -588,7 +588,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+module.exports = { verifyVoiceTranscriptHandoff };
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

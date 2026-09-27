@@ -550,7 +550,7 @@ for (const [surface, map, merge, parse, query, subscribe] of [
     assert.equal(unmatched[0].id, ordinary.id, "an unmapped ordinary audit notice has no remaining old-position constraint");
   });
 
-  test(`${surface}: sparse history positions preserve unchanged coordinates and restore removed coordinates`, () => {
+  test(`${surface}: sparse history positions preserve unchanged coordinates and explicitly restore removed coordinates`, () => {
     const unchanged = wire("unchanged-row", "user_input", 100, { content: "Unchanged input." }, {
       source: { kind: "session_history", source_cursor: `${SESSION_A}:1` },
     });
@@ -574,12 +574,37 @@ for (const [surface, map, merge, parse, query, subscribe] of [
       "explicit removal drops its old zero coordinate while preserving audit content in source order");
     const restored = snapshot("restored-image", [{ offset: 3, message: notice() }], [], { cursor: "console:9000" });
     restored.payload.history_positions_mode = "sparse";
-    restored.payload.history_positions = [];
+    restored.payload.history_positions = [{ frame_id: removed.id, source_cursor: `${SESSION_A}:0` }];
     restored.payload.removed_history_frame_ids = [];
     assert.deepEqual(reconcileRuntimeAppendFrames(parse(sse([image, unchanged, removed, restored])))
       .map(frame => frame.id), [removed.id, unchanged.id, rows([saved("n", notice())])[0].id],
-      "the latest sparse image restores an unchanged original coordinate");
+      "an explicit sparse row restores its original coordinate");
     assert.equal(projected.find(frame => frame.id === moved.id)?.sourceCursor, `${SESSION_A}:10`);
+  });
+
+  test(`${surface}: sparse notice refreshes preserve full compaction positions and keep latest notice authority`, () => {
+    const history = (id: string, offset: number, cursor: number) => wire(id, "user_input", cursor, { content: id }, {
+      source: { kind: "session_history", source_cursor: `${SESSION_A}:${offset}` },
+    });
+    const removed = history("removed", 0, 10);
+    const kept = history("kept", 10, 20);
+    const appended = history("appended", 2, 150);
+    const compacted = snapshot("full-compaction", [{ offset: 0, message: notice({}, "Old notice body") }], [], { cursor: "console:110" });
+    compacted.payload.observed_through = "console:100";
+    compacted.payload.history_positions = [{ frame_id: kept.id, source_cursor: `${SESSION_A}:1` }];
+    const refreshed = snapshot("sparse-refresh", [{ offset: 0, message: notice({}, "Latest notice body") }], [], { cursor: "console:210" });
+    Object.assign(refreshed.payload, { observed_through: "console:200", history_positions_mode: "sparse", history_positions: [], removed_history_frame_ids: [] });
+    const noticeId = rows([saved("n", notice())])[0].id;
+    const ids = (frames: WireFrame[]) => reconcileRuntimeAppendFrames(parse(sse(frames))).map(row => row.id);
+    for (const images of [[compacted, refreshed], [refreshed, compacted]]) {
+      assert.deepEqual(ids([appended, kept, removed, ...images]), [removed.id, noticeId, kept.id, appended.id],
+        "an empty sparse notice refresh cannot reset moved or removed coordinates from the full image");
+      assert.deepEqual(project([compacted, refreshed]).map(conversationEntryText), ["Latest notice body"]);
+    }
+    const restored = snapshot("full-restoration", [{ offset: 0, message: notice() }], [], { cursor: "console:310" });
+    restored.payload.observed_through = "console:300";
+    restored.payload.history_positions = [removed, kept, appended].map((row, index) => ({ frame_id: row.id, source_cursor: `${SESSION_A}:${index + 1}` }));
+    assert.deepEqual(ids([appended, kept, removed, compacted, refreshed, restored]), [noticeId, removed.id, kept.id, appended.id]);
   });
 
   test(`${surface}: successive full compaction maps preserve removals with latest-only replay and explicit restoration`, () => {

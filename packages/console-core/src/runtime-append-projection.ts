@@ -24,6 +24,10 @@ type NoticeSnapshot = {
   sparseHistoryPositions: boolean;
   removedHistoryFrameIds: Set<string>;
 };
+type HistoryPositionImage = {
+  full?: NoticeSnapshot;
+  deltas: Map<string, { observedThrough: number; position?: Position }>;
+};
 
 function record(value: unknown): RecordValue | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : null;
@@ -220,15 +224,74 @@ function noticeSnapshot(frame: ConsoleFrame): NoticeSnapshot | null {
     sparseHistoryPositions, removedHistoryFrameIds };
 }
 
-/**
- * An assistant identity observation opts its matching complete position image
- * into current-transcript filtering. Older notice images remain audit views.
- * Reuse the notice owner's validation rather than inventing another map shape.
- */
+function sameHistoryPositions(left: NoticeSnapshot, right: NoticeSnapshot): boolean {
+  return left.observedThrough === right.observedThrough
+    && left.sparseHistoryPositions === right.sparseHistoryPositions
+    && left.historyPositions!.size === right.historyPositions!.size
+    && [...left.historyPositions!].every(([id, position]) => {
+      const other = right.historyPositions!.get(id);
+      return other !== undefined && comparePosition(position, other) === 0;
+    })
+    && left.removedHistoryFrameIds.size === right.removedHistoryFrameIds.size
+    && [...left.removedHistoryFrameIds].every(id => right.removedHistoryFrameIds.has(id));
+}
+
+/** Full images establish a base; sparse rows change only their explicit IDs. */
+function historyPositionImages(snapshots: NoticeSnapshot[], scope: (frame: ConsoleFrame) => string | null,
+  limits?: ReadonlyMap<string, bigint>): Map<string, HistoryPositionImage> {
+  const observations = new Map<string, Map<number, { snapshot: NoticeSnapshot; conflict: boolean }>>();
+  for (const snapshot of snapshots) {
+    const key = scope(snapshot.frame);
+    if (!key || !snapshot.historyPositions) continue;
+    const byCursor = observations.get(key) ?? new Map();
+    const prior = byCursor.get(snapshot.cursor);
+    if (!prior) byCursor.set(snapshot.cursor, { snapshot, conflict: false });
+    else if (!sameHistoryPositions(prior.snapshot, snapshot)) prior.conflict = true;
+    observations.set(key, byCursor);
+  }
+  const images = new Map<string, HistoryPositionImage>();
+  for (const [key, byCursor] of observations) {
+    const limit = limits?.get(key);
+    if (limits && limit === undefined) continue;
+    const image: HistoryPositionImage = { deltas: new Map() };
+    for (const { snapshot, conflict } of [...byCursor.values()].sort((a, b) => a.snapshot.cursor - b.snapshot.cursor)) {
+      if (conflict) {
+        // Either conflicting image could restore an older removed row. Earlier
+        // negative evidence stays unsafe until a later complete base resolves it.
+        image.full = undefined;
+        image.deltas.clear();
+        continue;
+      }
+      // Check all valid twins before settlement eligibility. A conflicting twin
+      // beyond the cutoff must not leave older negative evidence uncontested.
+      if (limit !== undefined && BigInt(snapshot.observedThrough) > limit) continue;
+      if (!snapshot.sparseHistoryPositions) {
+        image.full = snapshot;
+        image.deltas.clear();
+        continue;
+      }
+      for (const [id, position] of snapshot.historyPositions!) image.deltas.set(id, { observedThrough: snapshot.observedThrough, position });
+      for (const id of snapshot.removedHistoryFrameIds) image.deltas.set(id, { observedThrough: snapshot.observedThrough });
+    }
+    images.set(key, image);
+  }
+  return images;
+}
+
+function historyPosition(frame: ConsoleFrame, image: HistoryPositionImage | undefined): { position?: Position } | undefined {
+  const cursor = consoleCursor(frame.cursor);
+  if (!image || cursor === null) return undefined;
+  const delta = image.deltas.get(frame.id);
+  if (delta && cursor <= delta.observedThrough) return delta;
+  return image.full && cursor <= image.full.observedThrough
+    ? { position: image.full.historyPositions!.get(frame.id) } : undefined;
+}
+
+/** A settled assistant observation authorizes covered position evidence only. */
 export function reconcileAssistantHistoryPositions(frames: ConsoleFrame[]): ConsoleFrame[] {
   const scope = (frame: ConsoleFrame) => JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, frame.sessionId]);
   const assistants = new Map<string, { cursor: bigint; observedThrough: bigint; ids: ReadonlySet<string>; conflict: boolean }>();
-  const positions = new Map<string, NoticeSnapshot>();
+  const positions: NoticeSnapshot[] = [];
   for (const frame of frames) {
     const assistant = assistantHistorySnapshot(frame), cursor = assistantMessageCursorSequence(frame.cursor);
     if (assistant && cursor !== undefined) {
@@ -239,22 +302,20 @@ export function reconcileAssistantHistoryPositions(frames: ConsoleFrame[]): Cons
         || [...assistant.assistantMessageIds].some(id => !prior.ids.has(id)))) prior.conflict = true;
     }
     const position = noticeSnapshot(frame);
-    if (position?.historyPositions) {
-      const key = scope(frame), prior = positions.get(key);
-      if (!prior || position.cursor > prior.cursor) positions.set(key, position);
-    }
+    if (position?.historyPositions) positions.push(position);
   }
+  const images = historyPositionImages(positions, scope,
+    new Map([...assistants].filter(([, assistant]) => !assistant.conflict).map(([key, assistant]) => [key, assistant.observedThrough])));
   return frames.filter(frame => {
     if (frame.sourceKind !== "session_history") return true;
     const message = record(record(frame.data)?.message);
     if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
-    const key = scope(frame), assistant = assistants.get(key), position = positions.get(key);
+    const key = scope(frame), assistant = assistants.get(key);
     const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (!assistant || assistant.conflict || !position || BigInt(position.observedThrough) !== assistant.observedThrough
+    if (!assistant || assistant.conflict
       || cursor === undefined || cursor > assistant.observedThrough) return true;
-    return position.sparseHistoryPositions
-      ? !position.removedHistoryFrameIds.has(frame.id)
-      : position.historyPositions!.has(frame.id);
+    const observation = historyPosition(frame, images.get(key));
+    return observation === undefined || observation.position !== undefined;
   });
 }
 
@@ -412,13 +473,16 @@ function orderBySource(nodes: ProjectedFrame[]): ConsoleFrame[] {
 /** Project exact runtime appends over the caller's existing stable frame order. */
 export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): ConsoleFrame[] {
   const snapshots = new Map<string, NoticeSnapshot>();
+  const positionSnapshots: NoticeSnapshot[] = [];
   for (const frame of frames) {
     const snapshot = noticeSnapshot(frame);
     if (!snapshot) continue;
+    positionSnapshots.push(snapshot);
     const scope = scopeOf(frame)!;
     const previous = snapshots.get(scope);
     if (!previous || snapshot.cursor > previous.cursor) snapshots.set(scope, snapshot);
   }
+  const positionImages = historyPositionImages(positionSnapshots, scopeOf);
   const discarded = new Set<string>();
   for (const frame of frames) {
     if (frame.event !== "boundary_appends_discarded" || frame.sourceKind !== "console_event") continue;
@@ -469,14 +533,12 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
       continue;
     }
     const node = projected(frame);
-    if (observed && snapshot.historyPositions && frame.sourceKind === "session_history") {
-      // Sparse images override moved rows and explicitly invalidate removed
-      // coordinates. Unlisted rows retain their own canonical source cursor.
-      // Older full maps retain their existing omission semantics.
-      node.position = snapshot.sparseHistoryPositions
-        ? snapshot.removedHistoryFrameIds.has(frame.id) ? undefined
-          : snapshot.historyPositions.get(frame.id) ?? node.position
-        : snapshot.historyPositions.get(frame.id);
+    if (frame.sourceKind === "session_history" && scope) {
+      // A notice-only refresh does not replace the last complete position base.
+      // Rows beyond that base retain their own canonical coordinates until an
+      // explicit later position observation covers them.
+      const position = historyPosition(frame, positionImages.get(scope));
+      if (position) node.position = position.position;
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
       const message = record(data?.message), origin = originOf(message);

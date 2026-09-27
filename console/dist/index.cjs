@@ -3376,10 +3376,58 @@ function noticeSnapshot(frame) {
     removedHistoryFrameIds
   };
 }
+function sameHistoryPositions(left, right) {
+  return left.observedThrough === right.observedThrough && left.sparseHistoryPositions === right.sparseHistoryPositions && left.historyPositions.size === right.historyPositions.size && [...left.historyPositions].every(([id, position3]) => {
+    const other = right.historyPositions.get(id);
+    return other !== void 0 && comparePosition(position3, other) === 0;
+  }) && left.removedHistoryFrameIds.size === right.removedHistoryFrameIds.size && [...left.removedHistoryFrameIds].every((id) => right.removedHistoryFrameIds.has(id));
+}
+function historyPositionImages(snapshots, scope, limits) {
+  const observations = /* @__PURE__ */ new Map();
+  for (const snapshot of snapshots) {
+    const key = scope(snapshot.frame);
+    if (!key || !snapshot.historyPositions) continue;
+    const byCursor = observations.get(key) ?? /* @__PURE__ */ new Map();
+    const prior = byCursor.get(snapshot.cursor);
+    if (!prior) byCursor.set(snapshot.cursor, { snapshot, conflict: false });
+    else if (!sameHistoryPositions(prior.snapshot, snapshot)) prior.conflict = true;
+    observations.set(key, byCursor);
+  }
+  const images = /* @__PURE__ */ new Map();
+  for (const [key, byCursor] of observations) {
+    const limit = limits?.get(key);
+    if (limits && limit === void 0) continue;
+    const image3 = { deltas: /* @__PURE__ */ new Map() };
+    for (const { snapshot, conflict } of [...byCursor.values()].sort((a, b) => a.snapshot.cursor - b.snapshot.cursor)) {
+      if (conflict) {
+        image3.full = void 0;
+        image3.deltas.clear();
+        continue;
+      }
+      if (limit !== void 0 && BigInt(snapshot.observedThrough) > limit) continue;
+      if (!snapshot.sparseHistoryPositions) {
+        image3.full = snapshot;
+        image3.deltas.clear();
+        continue;
+      }
+      for (const [id, position3] of snapshot.historyPositions) image3.deltas.set(id, { observedThrough: snapshot.observedThrough, position: position3 });
+      for (const id of snapshot.removedHistoryFrameIds) image3.deltas.set(id, { observedThrough: snapshot.observedThrough });
+    }
+    images.set(key, image3);
+  }
+  return images;
+}
+function historyPosition(frame, image3) {
+  const cursor = consoleCursor(frame.cursor);
+  if (!image3 || cursor === null) return void 0;
+  const delta = image3.deltas.get(frame.id);
+  if (delta && cursor <= delta.observedThrough) return delta;
+  return image3.full && cursor <= image3.full.observedThrough ? { position: image3.full.historyPositions.get(frame.id) } : void 0;
+}
 function reconcileAssistantHistoryPositions(frames) {
   const scope = (frame) => JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, frame.sessionId]);
   const assistants = /* @__PURE__ */ new Map();
-  const positions = /* @__PURE__ */ new Map();
+  const positions = [];
   for (const frame of frames) {
     const assistant = assistantHistorySnapshot(frame), cursor = assistantMessageCursorSequence(frame.cursor);
     if (assistant && cursor !== void 0) {
@@ -3388,19 +3436,22 @@ function reconcileAssistantHistoryPositions(frames) {
       else if (cursor === prior.cursor && (assistant.observedThrough !== prior.observedThrough || assistant.assistantMessageIds.size !== prior.ids.size || [...assistant.assistantMessageIds].some((id) => !prior.ids.has(id)))) prior.conflict = true;
     }
     const position3 = noticeSnapshot(frame);
-    if (position3?.historyPositions) {
-      const key = scope(frame), prior = positions.get(key);
-      if (!prior || position3.cursor > prior.cursor) positions.set(key, position3);
-    }
+    if (position3?.historyPositions) positions.push(position3);
   }
+  const images = historyPositionImages(
+    positions,
+    scope,
+    new Map([...assistants].filter(([, assistant]) => !assistant.conflict).map(([key, assistant]) => [key, assistant.observedThrough]))
+  );
   return frames.filter((frame) => {
     if (frame.sourceKind !== "session_history") return true;
     const message = record2(record2(frame.data)?.message);
     if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
-    const key = scope(frame), assistant = assistants.get(key), position3 = positions.get(key);
+    const key = scope(frame), assistant = assistants.get(key);
     const cursor = assistantMessageCursorSequence(frame.cursor);
-    if (!assistant || assistant.conflict || !position3 || BigInt(position3.observedThrough) !== assistant.observedThrough || cursor === void 0 || cursor > assistant.observedThrough) return true;
-    return position3.sparseHistoryPositions ? !position3.removedHistoryFrameIds.has(frame.id) : position3.historyPositions.has(frame.id);
+    if (!assistant || assistant.conflict || cursor === void 0 || cursor > assistant.observedThrough) return true;
+    const observation = historyPosition(frame, images.get(key));
+    return observation === void 0 || observation.position !== void 0;
   });
 }
 function positionFromCursor(sessionId, sourceCursor) {
@@ -3531,13 +3582,16 @@ function orderBySource(nodes) {
 }
 function reconcileRuntimeAppendFrames(frames) {
   const snapshots = /* @__PURE__ */ new Map();
+  const positionSnapshots = [];
   for (const frame of frames) {
     const snapshot = noticeSnapshot(frame);
     if (!snapshot) continue;
+    positionSnapshots.push(snapshot);
     const scope = scopeOf(frame);
     const previous3 = snapshots.get(scope);
     if (!previous3 || snapshot.cursor > previous3.cursor) snapshots.set(scope, snapshot);
   }
+  const positionImages = historyPositionImages(positionSnapshots, scopeOf);
   const discarded = /* @__PURE__ */ new Set();
   for (const frame of frames) {
     if (frame.event !== "boundary_appends_discarded" || frame.sourceKind !== "console_event") continue;
@@ -3587,8 +3641,9 @@ function reconcileRuntimeAppendFrames(frames) {
       continue;
     }
     const node2 = projected(frame);
-    if (observed && snapshot.historyPositions && frame.sourceKind === "session_history") {
-      node2.position = snapshot.sparseHistoryPositions ? snapshot.removedHistoryFrameIds.has(frame.id) ? void 0 : snapshot.historyPositions.get(frame.id) ?? node2.position : snapshot.historyPositions.get(frame.id);
+    if (frame.sourceKind === "session_history" && scope) {
+      const position3 = historyPosition(frame, positionImages.get(scope));
+      if (position3) node2.position = position3.position;
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
       const message = record2(data?.message), origin = originOf(message);

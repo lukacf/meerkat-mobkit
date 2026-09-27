@@ -578,6 +578,31 @@ async def _dispatch_sdk_and_wait(agent, dispatch_input, *, deadline):
     )
 
 
+async def _wait_for_school_sdk_and_verify(
+    runtime, school, baseline, session_id, triage_peer_id, interaction_id, *, deadline,
+):
+    """Observe peer work through the SDK and verify the exact committed turn.
+
+    Comms receipts do not expose SDK turn tickets. The school cursor is captured
+    before triage dispatch and is only an identity-wide observation barrier;
+    the accepted peer interaction and committed run remain the ownership proof.
+    """
+    assert baseline is not None, "school completion cursor is required before peer delivery"
+    remaining = max(0, deadline - _timeline_time())
+    sdk_output = await asyncio.wait_for(
+        school.wait_for_output(after=baseline, timeout=remaining), timeout=remaining,
+    )
+    result = await _wait_for_timeline(
+        runtime, "domain:school",
+        lambda frames: _school_incident_result(
+            frames, session_id, triage_peer_id, interaction_id,
+        ),
+        deadline=deadline,
+    )
+    assert sdk_output == result["output"], "SDK school waiter returned an unrelated turn"
+    return result
+
+
 async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *, timeout):
     """Exercise the public SDK waiter and verify its output against committed history.
 
@@ -1074,6 +1099,70 @@ async def test_kitchen_dispatch_requires_its_ticket_and_one_deadline(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_output", ["incident processed", "unrelated peer reply"])
+async def test_kitchen_school_sdk_peer_output_requires_cursor_and_exact_history(monkeypatch, sdk_output):
+    from meerkat_mobkit.runtime import IdentityAgentHandle
+    from .test_identity_first_turn_tickets import TicketTransport, _inspection, _make_runtime
+
+    clock = [0.0]
+    calls = []
+    transport = TicketTransport(inspections=[
+        _inspection(None, turns=0),
+        # Matching text without cursor progress must not satisfy the SDK wait.
+        _inspection("incident processed", turns=0),
+        _inspection(sdk_output, turns=1),
+    ])
+    school = IdentityAgentHandle(_make_runtime(transport), "domain:school")
+    baseline = (await school.inspect()).completion_cursor
+    original_wait = school.wait_for_output
+
+    async def wait_for_output(*, after, timeout):
+        calls.append((after, timeout))
+        output = await original_wait(after=after, timeout=timeout, poll_interval=0.001)
+        clock[0] = 5
+        return output
+
+    async def read_page(runtime, params, remaining):
+        assert remaining == 55
+        assert len(transport.params_of("mobkit/inspect_identity")) == 3
+        frames = _interaction_fixture("domain:school", "school-session", "school-envelope")
+        frames.append({"id": "school-notice", **_school_history_fixture()})
+        return {"frames": frames, "exhausted": True}
+
+    monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    monkeypatch.setattr(school, "wait_for_output", wait_for_output)
+    operation = _wait_for_school_sdk_and_verify(
+        object(), school, baseline, "school-session", "triage-peer-id", "school-envelope",
+        deadline=60,
+    )
+    if sdk_output == "unrelated peer reply":
+        with pytest.raises(AssertionError, match="SDK school waiter returned an unrelated turn"):
+            await operation
+    else:
+        assert (await operation)["run_id"] == "incident-run"
+    assert calls == [(baseline, 60)]
+    assert transport.params_of("mobkit/turn_result") == []
+    assert transport.params_of("mobkit/dispatch") == []
+    assert transport.params_of("mobkit/send") == []
+
+
+@pytest.mark.asyncio
+async def test_kitchen_school_sdk_peer_wait_rejects_missing_baseline():
+    from types import SimpleNamespace
+
+    async def wait_for_output(**kwargs):
+        pytest.fail("missing school baseline must fail before an unscoped SDK wait")
+
+    with pytest.raises(AssertionError, match="school completion cursor"):
+        await _wait_for_school_sdk_and_verify(
+            object(), SimpleNamespace(wait_for_output=wait_for_output), None,
+            "school-session", "triage-peer-id", "school-envelope",
+            deadline=_timeline_time() + 60,
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("duplicate_input", [False, True])
 async def test_kitchen_sdk_ticket_ignores_identical_foreign_output(monkeypatch, duplicate_input):
     from functools import partial
@@ -1223,6 +1312,10 @@ class TestHouseholdIncident:
             print("\n--- Phase 2: School closure + peer fan-out ---")
 
             triage_deadline = _timeline_time() + 90
+            school_baseline = (await asyncio.wait_for(
+                school.inspect(), timeout=max(0, triage_deadline - _timeline_time()),
+            )).completion_cursor
+            assert school_baseline is not None, "school completion cursor is required before peer delivery"
             triage_sdk_output = await _dispatch_sdk_and_wait(triage, DispatchInput(
                 content=(
                     "URGENT from school connector: Hillside Elementary closed tomorrow "
@@ -1248,11 +1341,9 @@ class TestHouseholdIncident:
             # Match the accepted envelope's interaction, then insist the exact
             # incident and assistant output are committed within the same budget.
             school_deadline = _timeline_time() + 60
-            school_result = await _wait_for_timeline(
-                rt, "domain:school",
-                lambda frames: _school_incident_result(
-                    frames, school_session, triage_peer["peer_id"], fanout["interaction_id"],
-                ),
+            school_result = await _wait_for_school_sdk_and_verify(
+                rt, school, school_baseline, school_session,
+                triage_peer["peer_id"], fanout["interaction_id"],
                 deadline=school_deadline,
             )
             received = school_result["incident_history"]

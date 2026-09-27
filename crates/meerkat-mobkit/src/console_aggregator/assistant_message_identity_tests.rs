@@ -778,6 +778,210 @@ async fn assistant_identity_known_history_is_not_deduplicated_by_identical_text(
 }
 
 #[tokio::test]
+async fn assistant_identity_append_only_runs_do_not_repeat_full_position_maps()
+-> ConsoleLogResult<()> {
+    let (_temp, runtime, service) = super::tests::build_stress_runtime(1, Duration::ZERO).await;
+    let store = Arc::new(InMemoryConsoleLogStore::new());
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let mut entry = super::tests::runtime_entry_for_test(RUNTIME, &runtime);
+    entry.identity_namespace.clear();
+    let member = runtime
+        .mob_handle()
+        .list_members_observation_snapshot()
+        .await
+        .into_iter()
+        .next()
+        .ok_or("fixture member missing")?;
+    let record = identity_record_for_member(&entry, &runtime.mob_handle(), &member)
+        .await
+        .ok_or("fixture identity missing")?;
+    let session_id = record.session_id.clone().ok_or("fixture session missing")?;
+    let session = meerkat_core::types::SessionId::parse(&session_id)?;
+    let target = SessionBackfillTarget {
+        assistant_refresh: assistant_history_refresh::AssistantHistoryRefreshReason::Recovery,
+        provenance: None,
+        entry: entry.clone(),
+        record,
+        session_id: session_id.clone(),
+    };
+    aggregator
+        .inner
+        .runtimes
+        .write()
+        .map_err(|_| std::io::Error::other("runtime fixture lock"))?
+        .insert(RUNTIME.into(), entry);
+
+    let assistant = |ordinal: u128| -> ConsoleLogResult<Message> {
+        Ok(serde_json::from_value(assistant_row(
+            Some(&uuid::Uuid::from_u128(ordinal + 1_000).to_string()),
+            vec![text_block("Same answer")],
+        ))?)
+    };
+    let notice = |ordinal| {
+        let mut notice = meerkat_core::types::SystemNoticeMessage::new(
+            meerkat_core::types::SystemNoticeKind::Generic,
+            "New peer notice.",
+        );
+        notice.runtime_origin = Some(meerkat_core::types::RuntimeAppendOrigin {
+            session_id: session.clone(),
+            run_id: meerkat_core::lifecycle::RunId(uuid::Uuid::from_u128(ordinal)),
+            input_id: meerkat_core::lifecycle::InputId(uuid::Uuid::from_u128(ordinal + 100)),
+            append_ordinal: 0,
+        });
+        Message::SystemNotice(notice)
+    };
+    let mut messages = (0..64)
+        .map(assistant)
+        .collect::<ConsoleLogResult<Vec<_>>>()?;
+    let mut images = vec![(messages.clone(), 1)];
+    for ordinal in 64..68 {
+        messages.push(assistant(ordinal)?);
+        // Ordinary appended notices change the notice image too. They must
+        // not force the unchanged history-position prefix onto the wire.
+        messages.push(notice(ordinal));
+        images.push((messages.clone(), 1));
+    }
+    let before_compaction = messages.clone();
+    messages.drain(..32);
+    images.push((messages.clone(), 2));
+    for ordinal in 68..72 {
+        messages.push(assistant(ordinal)?);
+        messages.push(notice(ordinal));
+        images.push((messages.clone(), 2));
+    }
+    images.push((before_compaction.clone(), 3));
+    // Isolate restoration from relocation and removal: truncate a suffix,
+    // then restore it while all surviving rows retain their coordinates.
+    images.push((before_compaction[..32].to_vec(), 4));
+    images.push((before_compaction, 5));
+    let reads = service.read_calls();
+    let image_count = images.len();
+    for (index, (messages, expected_full_maps)) in images.into_iter().enumerate() {
+        if index % 2 == 1 {
+            // Exercise replay of full and sparse maps as well as the warm
+            // observation cache. Both must retain prior moved coordinates.
+            aggregator
+                .inner
+                .notice_observations
+                .lock()
+                .map_err(|_| std::io::Error::other("observation cache lock"))?
+                .entries
+                .clear();
+        }
+        let mut live = observed_live_frame(
+            &session_id,
+            "turn_completed",
+            &uuid::Uuid::from_u128(10_000 + index as u128).to_string(),
+        );
+        live.identity = target.record.identity.clone();
+        live.conversation_id = Some(live.identity.clone());
+        store.append_if_absent(live).await?;
+        service.script_history([super::tests::ScriptedHistoryRead {
+            page: Some(meerkat_core::service::SessionHistoryPage::from_messages(
+                session.clone(),
+                &messages,
+                meerkat_core::service::SessionHistoryQuery::default(),
+            )),
+            gate: None,
+        }]);
+        backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+        let rows = store
+            .query_frames(ConsoleTimelineQuery {
+                limit: 1_000,
+                ..Default::default()
+            })
+            .await?
+            .frames;
+        let full_maps = rows
+            .iter()
+            .filter(|frame| {
+                frame.kind == "runtime_notice_snapshot"
+                    && frame.payload.get("history_positions_mode").is_none()
+            })
+            .count();
+        assert_eq!(
+            full_maps, expected_full_maps,
+            "image {index}: full maps are only initial, compaction, and restoration"
+        );
+        let latest = rows
+            .iter()
+            .rev()
+            .find(|frame| frame.kind == "assistant_history_snapshot")
+            .ok_or("assistant image missing")?;
+        let ids: Vec<_> = messages
+            .iter()
+            .filter_map(|message| {
+                let Message::BlockAssistant(assistant) = message else {
+                    return None;
+                };
+                assistant.assistant_message_id.as_ref()
+            })
+            .collect();
+        assert_eq!(latest.payload["assistant_message_ids"], json!(ids));
+        assert!(latest.payload.get("history_positions").is_none());
+        for sparse in rows.iter().filter(|frame| {
+            frame.kind == "runtime_notice_snapshot"
+                && frame.payload["history_positions_mode"] == "sparse"
+        }) {
+            assert_eq!(sparse.payload["history_positions"], json!([]));
+            assert_eq!(sparse.payload["removed_history_frame_ids"], json!([]));
+        }
+        if index == image_count - 1 {
+            let full = rows
+                .iter()
+                .rev()
+                .find(|frame| frame.kind == "runtime_notice_snapshot")
+                .ok_or("restoration image missing")?;
+            assert_eq!(
+                full.payload["history_positions"].as_array().map(Vec::len),
+                Some(68)
+            );
+            let expected: BTreeMap<_, _> = messages
+                .iter()
+                .enumerate()
+                .filter_map(|(offset, message)| {
+                    let Message::BlockAssistant(assistant) = message else {
+                        return None;
+                    };
+                    Some((
+                        assistant.assistant_message_id.as_ref()?.to_string(),
+                        format!("{session_id}:{offset}"),
+                    ))
+                })
+                .collect();
+            let actual: BTreeMap<_, _> = full.payload["history_positions"]
+                .as_array()
+                .ok_or("positions missing")?
+                .iter()
+                .map(|position| {
+                    let row = rows
+                        .iter()
+                        .find(|row| row.id == position["frame_id"])
+                        .ok_or("restored frame missing")?;
+                    Ok((
+                        row.payload["assistant_message_id"]
+                            .as_str()
+                            .ok_or("restored ID missing")?
+                            .to_string(),
+                        position["source_cursor"]
+                            .as_str()
+                            .ok_or("restored cursor missing")?
+                            .to_string(),
+                    ))
+                })
+                .collect::<ConsoleLogResult<_>>()?;
+            assert_eq!(
+                actual, expected,
+                "restoration reuses every original assistant frame at its exact coordinate"
+            );
+        }
+    }
+    assert_eq!(service.read_calls(), reads + image_count);
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn assistant_identity_backfill_publishes_only_complete_current_images_and_restores_rows()
 -> ConsoleLogResult<()> {
     let (_temp, runtime, service) = super::tests::build_stress_runtime(1, Duration::ZERO).await;
@@ -1186,9 +1390,25 @@ async fn assistant_identity_pending_refresh_retries_unchanged_head_through_disco
             .rev()
             .find(|frame| frame.kind == "runtime_notice_snapshot")
             .ok_or("settled retry position map missing")?;
+        let cutoff = |frame: &ConsoleFrame| -> ConsoleLogResult<u64> {
+            ConsoleCursor::from(
+                frame.payload["observed_through"]
+                    .as_str()
+                    .ok_or("missing cutoff")?,
+            )
+            .seq()
+            .ok_or_else(|| "invalid cutoff".into())
+        };
+        assert!(
+            cutoff(position_map)? <= cutoff(latest)?,
+            "settled retry authorizes the unchanged prior position image"
+        );
         assert_eq!(
-            position_map.payload["observed_through"], latest.payload["observed_through"],
-            "retry must publish assistant membership and positions at the same cutoff"
+            rows.iter()
+                .filter(|frame| frame.kind == "runtime_notice_snapshot")
+                .count(),
+            1,
+            "settling an unchanged empty head must not repeat its full map"
         );
         assert!(position_map.payload.get("history_positions_mode").is_none());
         assert_eq!(position_map.payload["history_positions"], json!([]));

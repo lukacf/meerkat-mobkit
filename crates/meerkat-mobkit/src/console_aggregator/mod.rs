@@ -4190,7 +4190,8 @@ fn apply_notice_snapshot(observation: &mut RuntimeNoticeObservation, frame: &Con
             row.current_cursor = Some((*cursor).to_string());
             true
         } else if sparse && !removed.contains(row.id.as_str()) {
-            row.current_cursor = row.source_cursor.clone();
+            // A sparse image is a delta over the last map. An unchanged row
+            // retains its relocated coordinate, including after replay.
             true
         } else {
             false
@@ -4581,6 +4582,7 @@ fn canonical_history_order(
     let suffix = row
         .current_cursor
         .as_deref()
+        .or(row.source_cursor.as_deref())
         .and_then(|cursor| cursor.strip_prefix(&prefix))
         .unwrap_or("");
     (
@@ -4707,34 +4709,6 @@ fn assistant_history_snapshot_frame_inner(
     })
 }
 
-fn assistant_snapshot_has_matching_positions(observation: &RuntimeNoticeObservation) -> bool {
-    let (Some(assistant), Some(positions)) = (
-        observation.previous_assistant_snapshot.as_ref(),
-        observation.previous_snapshot.as_ref(),
-    ) else {
-        return false;
-    };
-    let assistant_cutoff = assistant
-        .dedupe_key
-        .strip_prefix(&format!(
-            "assistant-history-snapshot-v1:{}:{}:",
-            assistant.runtime_key,
-            assistant.session_id.as_deref().unwrap_or_default(),
-        ))
-        .and_then(|suffix| suffix.split(':').nth(2))
-        .and_then(|value| value.parse::<u64>().ok());
-    let positions_cutoff = positions
-        .dedupe_key
-        .strip_prefix(&format!(
-            "runtime-notice-snapshot-v2:{}:{}:",
-            positions.runtime_key,
-            positions.session_id.as_deref().unwrap_or_default(),
-        ))
-        .and_then(|suffix| suffix.split(':').nth(1))
-        .and_then(|value| value.parse::<u64>().ok());
-    assistant_cutoff.is_some() && assistant_cutoff == positions_cutoff
-}
-
 async fn assistant_history_prefix_is_current(
     inner: &AggregatorInner,
     identity: &str,
@@ -4845,7 +4819,10 @@ async fn restore_current_history_frames(
                 .seq()
                 .is_some_and(|seq| seq <= observation.observed_through)
         {
-            let retained = CanonicalHistoryFrame::from_frame(&frame);
+            let mut retained = CanonicalHistoryFrame::from_frame(&frame);
+            // This row was absent from the active map. Reactivating even its
+            // original coordinate must publish a new position image.
+            retained.current_cursor = None;
             observation.retained_bytes = observation
                 .retained_bytes
                 .saturating_add(retained.retained_bytes());
@@ -5000,10 +4977,11 @@ async fn restore_current_history_frames(
         observed_through: observation.observed_through,
     };
     let mut recovered_ids = BTreeSet::new();
-    for row in recovered.into_values().flatten() {
+    for mut row in recovered.into_values().flatten() {
         if !recovered_ids.insert(row.id.clone()) {
             continue;
         }
+        row.current_cursor = None;
         observation.retained_bytes = observation
             .retained_bytes
             .saturating_add(row.retained_bytes());
@@ -5166,26 +5144,6 @@ fn runtime_notice_snapshot_frame(
     settled_attempts: &BTreeSet<(String, String)>,
     messages: &[Message],
 ) -> Option<NewConsoleFrame> {
-    runtime_notice_snapshot_frame_inner(
-        runtime_key,
-        identity,
-        session_id,
-        observation,
-        settled_attempts,
-        messages,
-        false,
-    )
-}
-
-fn runtime_notice_snapshot_frame_inner(
-    runtime_key: &str,
-    identity: &str,
-    session_id: &str,
-    observation: &RuntimeNoticeObservation,
-    settled_attempts: &BTreeSet<(String, String)>,
-    messages: &[Message],
-    force: bool,
-) -> Option<NewConsoleFrame> {
     // A frontier-only cache is never an absence proof. The production path
     // either reuses its exact verified image or rebuilds before calling here.
     if !observation.history_index_complete {
@@ -5226,8 +5184,12 @@ fn runtime_notice_snapshot_frame_inner(
                 != position["source_cursor"].as_str()
         })
         .collect();
-    let full = observation.full_history_positions || !removed.is_empty() || !changes.is_empty();
     let previous = observation.previous_snapshot.as_ref();
+    // Crossing a compaction once enables restoration searches, but does not
+    // justify resending that full map on every later append or notice update.
+    let full = !removed.is_empty()
+        || !changes.is_empty()
+        || (previous.is_none() && observation.full_history_positions);
     let state_digest = to_hex(&Sha256::digest(
         serde_json::to_vec(&(notices.clone(), settled.clone())).ok()?,
     ));
@@ -5255,8 +5217,7 @@ fn runtime_notice_snapshot_frame_inner(
     // The witness is minted before host redaction and contains hashes only.
     // Its covered boundary keeps append-only rows from invalidating a prior
     // compaction image, while changed/restored covered rows still refresh it.
-    if !force
-        && let Some(previous) = previous
+    if let Some(previous) = previous
         && let Some(witness) = previous.dedupe_key.strip_prefix(&format!(
             "runtime-notice-snapshot-v2:{runtime_key}:{session_id}:"
         ))
@@ -5588,7 +5549,8 @@ where
         }
         let assistant_identity_history =
             history_has_assistant_identity(&notice_observation, &page.messages);
-        notice_observation.full_history_positions |= assistant_identity_history;
+        notice_observation.full_history_positions |=
+            assistant_identity_history && notice_observation.previous_snapshot.is_none();
         let reuse_verified_image =
             reuse_verified_history_image(&notice_observation, &page.messages, &settled_attempts)
                 && (!assistant_history_settled || notice_observation.verified_assistant_settled);
@@ -5653,7 +5615,7 @@ where
             if !runtime_entry_is_current(&inner, &entry) {
                 return Ok(());
             }
-            let mut notice_snapshot = runtime_notice_snapshot_frame(
+            let notice_snapshot = runtime_notice_snapshot_frame(
                 &entry.runtime_key,
                 &record.identity,
                 &session_id,
@@ -5672,33 +5634,22 @@ where
                     )
                 })
                 .flatten();
+            // A changed position image needs a matching settled identity
+            // boundary. An append-only identity update does not need another
+            // position image; consumers retain the last full map and deltas.
             if assistant_identity_history
                 && assistant_history_settled
-                && (notice_snapshot.is_some()
-                    || assistant_snapshot.is_some()
-                    || !assistant_snapshot_has_matching_positions(&notice_observation))
+                && notice_snapshot.is_some()
+                && assistant_snapshot.is_none()
             {
-                if notice_snapshot.is_none() {
-                    notice_snapshot = runtime_notice_snapshot_frame_inner(
-                        &entry.runtime_key,
-                        &record.identity,
-                        &session_id,
-                        &notice_observation,
-                        &settled_attempts,
-                        &page.messages,
-                        true,
-                    );
-                }
-                if assistant_snapshot.is_none() {
-                    assistant_snapshot = assistant_history_snapshot_frame_inner(
-                        &entry.runtime_key,
-                        &record.identity,
-                        &session_id,
-                        &notice_observation,
-                        &page.messages,
-                        true,
-                    );
-                }
+                assistant_snapshot = assistant_history_snapshot_frame_inner(
+                    &entry.runtime_key,
+                    &record.identity,
+                    &session_id,
+                    &notice_observation,
+                    &page.messages,
+                    true,
+                );
             }
             if let Some(mut snapshot) = notice_snapshot {
                 snapshot.source.member_provenance = provenance.clone();

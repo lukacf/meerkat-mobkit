@@ -182,7 +182,75 @@ for (const [surface, map] of [["stock", stock], ["shared", shared]] as const) {
     for (const markers of [[...rewrite, ...restore], [...restore, ...rewrite]]) {
       assert.deepEqual(assistantRows(project([original, edited, ...markers])).map(row => [row.id, text(row)]), [[original.id, "Original"]]);
     }
-    assert.deepEqual(assistantRows(project([original, edited, snapshot("different-observation", [A], 40), positions("old-positions", [[original.id, 0]], 30)])).map(row => row.id), [original.id, edited.id]);
+    assert.deepEqual(assistantRows(project([original, edited, snapshot("later-observation", [A], 40), positions("old-positions", [[original.id, 0]], 30)])).map(row => row.id), [original.id]);
+  });
+  test(`${surface}: assistant-only observations preserve compaction of no-ID rows without hiding new appends`, () => {
+    const removed = history("removed-no-id", null, "Removed legacy answer", { cursor: "console:5", sourceCursor: "session:0" });
+    const kept = history("kept", A, "Kept answer", { cursor: "console:10", sourceCursor: "session:1" });
+    const appended = history("appended", B, "Appended answer", { cursor: "console:25", sourceCursor: "session:1" });
+    const beyondObservation = history("newest-no-id", null, "Not observed yet", { cursor: "console:45", sourceCursor: "session:2" });
+    const compacted = positions("compacted", [[kept.id, 0]], 20);
+    const markers = [snapshot("compact-assistants", [A], 20), compacted, snapshot("appended-assistants", [A, B], 40)];
+    for (const order of [markers, [...markers].reverse()]) {
+      assert.deepEqual(assistantRows(project([removed, kept, appended, beyondObservation, ...order])).map(row => row.id),
+        [kept.id, appended.id, beyondObservation.id]);
+    }
+    const restored = positions("restored", [[removed.id, 0], [kept.id, 1], [appended.id, 2]], 50);
+    assert.deepEqual(assistantRows(project([removed, kept, appended, ...markers, restored, snapshot("restored-assistants", [A, B], 50)])).map(row => row.id),
+      [removed.id, kept.id, appended.id], "an explicit later full image restores the legacy row");
+  });
+  test(`${surface}: position filtering stops at the latest settled assistant observation and exact scope`, () => {
+    const old = history("old-no-id", null, "Still present", { cursor: "console:5", sourceCursor: "session:0" });
+    const settled = snapshot("settled", [], 20);
+    const initial = positions("initial", [[old.id, 0]], 20);
+    const unsettled = positions("unsettled-removal", [], 30);
+    for (const order of [[initial, unsettled], [unsettled, initial]]) {
+      assert.deepEqual(assistantRows(project([old, settled, ...order])).map(row => row.id), [old.id]);
+    }
+    assert.deepEqual(assistantRows(project([old, initial, unsettled, settled, snapshot("now-settled", [], 40)])).map(row => row.id), []);
+    for (const extra of [{ runtimeKey: "other" }, { identity: "other" }, { sessionId: "fork" }, { sourceKind: "console_event" }]) {
+      assert.deepEqual(assistantRows(project([old, settled, { ...positions("other-scope", [], 20), ...extra }])).map(row => row.id), [old.id]);
+    }
+    const malformed = positions("malformed", [], 20);
+    Object.assign(malformed.data as object, { history_positions_mode: "sparse", removed_history_frame_ids: [""] });
+    assert.deepEqual(assistantRows(project([old, settled, malformed])).map(row => row.id), [old.id]);
+    const conflict = positions("conflicting", [], 20);
+    for (const order of [[initial, conflict], [conflict, initial]]) {
+      assert.deepEqual(assistantRows(project([old, settled, ...order])).map(row => row.id), [old.id], "same-cursor conflict cannot prove absence");
+      assert.deepEqual(assistantRows(project([old, settled, positions("older-removal", [], 10), ...order])).map(row => row.id), [old.id],
+        "a conflicting restoration cannot inherit older negative position evidence");
+    }
+  });
+  test(`${surface}: sparse position refreshes retain no-ID removals and explicit restoration under assistant bounds`, () => {
+    const old = history("old-no-id", null, "Legacy answer", { cursor: "console:5", sourceCursor: "session:0" });
+    const appended = history("new-no-id", null, "New legacy answer", { cursor: "console:25", sourceCursor: "session:0" });
+    const compacted = positions("compacted", [], 20);
+    const refresh = positions("notice-only", [], 30);
+    Object.assign(refresh.data as object, { history_positions_mode: "sparse", removed_history_frame_ids: [] });
+    const settled = snapshot("settled", [], 40);
+    for (const images of [[compacted, refresh], [refresh, compacted]]) {
+      assert.deepEqual(assistantRows(project([old, appended, settled, ...images])).map(row => row.id), [appended.id]);
+    }
+    const restore = positions("restore-one", [[old.id, 0]], 50);
+    Object.assign(restore.data as object, { history_positions_mode: "sparse", removed_history_frame_ids: [appended.id] });
+    assert.deepEqual(assistantRows(project([old, appended, compacted, refresh, restore, settled])).map(row => row.id), [appended.id],
+      "a newer unsettled sparse observation cannot remove or restore assistant rows yet");
+    assert.deepEqual(assistantRows(project([old, appended, compacted, refresh, restore, settled, snapshot("settled-restore", [], 60)])).map(row => row.id), [old.id]);
+    const conflictingAssistant = snapshot("conflicting-settled", [A], 40);
+    assert.deepEqual(assistantRows(project([old, compacted, refresh, settled, conflictingAssistant])).map(row => row.id), [old.id]);
+  });
+  test(`${surface}: position conflicts across the settled boundary cannot hide the restoring twin`, () => {
+    const old = history("old-no-id", null, "Legacy answer", { cursor: "console:5", sourceCursor: "session:0" });
+    const settled = snapshot("settled", [], 25);
+    const removed = positions("removed", [], 20);
+    const restored = positions("restored", [[old.id, 0]], 30);
+    removed.cursor = restored.cursor = "console:50";
+    for (const twins of [[removed, restored], [restored, removed]]) {
+      assert.deepEqual(assistantRows(project([old, settled, ...twins])).map(row => row.id), [old.id],
+        "a conflicting twin beyond the settled cutoff still disqualifies negative evidence at the same cursor");
+      assert.deepEqual(assistantRows(project([old, settled, positions("earlier-removal", [], 10), ...twins])).map(row => row.id), [old.id],
+        "the cross-boundary conflict also invalidates older negative position evidence");
+    }
   });
   test(`${surface}: canonical source positions still order the rebound row among historical siblings`, () => {
     const draft = live("draft", "text_delta", A, { delta: "Draft" }, { cursor: "console:1", timestampMs: 1 });
