@@ -1,3 +1,7 @@
+#[cfg(test)]
+mod provenance_search_tests;
+#[cfg(test)]
+mod provenance_store_revision_tests;
 mod query_error;
 #[cfg(test)]
 mod runtime_notice_tests;
@@ -123,6 +127,15 @@ impl<K: Ord + Clone, V> BoundedProjectionCache<K, V> {
 
 type MemberProvenanceCache =
     BoundedProjectionCache<(String, String, Option<String>), Arc<ConsoleFrameMemberProvenance>>;
+type MemberProvenanceSearchCache =
+    BoundedProjectionCache<(String, String, Option<String>), MemberProvenanceSearch>;
+
+#[derive(Clone)]
+struct MemberProvenanceSearch {
+    registration_id: uuid::Uuid,
+    prefix_revision: String,
+    observed_through: u64,
+}
 type NoticeObservationCache =
     BoundedProjectionCache<(String, String, String), RuntimeNoticeObservation>;
 
@@ -152,6 +165,7 @@ struct AggregatorInner {
     /// runtime; a missing entry or an epoch-less runtime always reads.
     session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
     member_provenance: std::sync::Mutex<MemberProvenanceCache>,
+    member_provenance_searches: std::sync::Mutex<MemberProvenanceSearchCache>,
     notice_observations: std::sync::Mutex<NoticeObservationCache>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
@@ -390,45 +404,97 @@ async fn member_provenance_for_identity(
     if cached.is_some() {
         return cached;
     }
-    // Cache eviction cannot remove the durable policy witness of a retired
-    // member. Recover only the exact runtime/identity/session from stored rows.
-    let mut after = None;
-    let mut recovered = None;
-    loop {
-        let Ok(page) = inner
-            .store
-            .query_frames(ConsoleTimelineQuery {
-                identity: Some(identity.to_string()),
-                after: after.clone(),
-                limit: 1_000,
-                ..Default::default()
-            })
-            .await
-        else {
-            return None;
+    // A missing live member still needs its durable policy witness. Cache only
+    // a verified log prefix, never the absence of the member itself.
+    recover_member_provenance(inner, entry, identity, session_id, key).await
+}
+
+async fn recover_member_provenance(
+    inner: &AggregatorInner,
+    entry: &RuntimeEntry,
+    identity: &str,
+    session_id: Option<&str>,
+    key: (String, String, Option<String>),
+) -> Option<ConsoleFrameMemberProvenance> {
+    // One reset can be retried. Repeated mutation or read failure fails closed
+    // and leaves the next caller free to search again.
+    for _ in 0..2 {
+        let revision = inner.store.history_prefix_revision().await.ok()?;
+        let observed_through = match inner.store.latest_cursor().await.ok()? {
+            Some(cursor) => cursor.seq()?,
+            None => 0,
         };
-        let Some(last) = page.frames.last() else {
-            break;
-        };
-        if last.cursor.seq().is_none_or(|seq| {
-            after
-                .as_ref()
-                .and_then(ConsoleCursor::seq)
-                .is_some_and(|previous| seq <= previous)
-        }) {
-            return None;
-        }
-        after = Some(last.cursor.clone());
-        for frame in page.frames {
-            if frame.runtime_key == entry.runtime_key
-                && session_id.is_none_or(|id| frame.session_id.as_deref() == Some(id))
-                && let Some(provenance) = frame.source.member_provenance
-            {
-                recovered = Some(provenance);
+        let cached = inner
+            .member_provenance_searches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .get(&key)
+            .cloned()
+            .filter(|search| {
+                search.registration_id == entry.registration_id
+                    && Some(&search.prefix_revision) == revision.as_ref()
+                    && search.observed_through <= observed_through
+            });
+        let mut after = cached
+            .as_ref()
+            .filter(|search| search.observed_through > 0)
+            .map(|search| ConsoleCursor::from_seq(search.observed_through));
+        let mut recovered = None;
+        if cached
+            .as_ref()
+            .is_none_or(|search| search.observed_through != observed_through)
+        {
+            loop {
+                let page = inner
+                    .store
+                    .query_frames(ConsoleTimelineQuery {
+                        identity: Some(identity.to_string()),
+                        after: after.clone(),
+                        limit: 1_000,
+                        ..Default::default()
+                    })
+                    .await
+                    .ok()?;
+                let Some(last) = page.frames.last() else {
+                    break;
+                };
+                let last_sequence = last.cursor.seq()?;
+                if after
+                    .as_ref()
+                    .and_then(ConsoleCursor::seq)
+                    .is_some_and(|previous| last_sequence <= previous)
+                {
+                    return None;
+                }
+                after = Some(last.cursor.clone());
+                for frame in page.frames {
+                    let sequence = frame.cursor.seq()?;
+                    if sequence > observed_through {
+                        break;
+                    }
+                    if frame.runtime_key == entry.runtime_key
+                        && frame.identity == identity
+                        && session_id.is_none_or(|id| frame.session_id.as_deref() == Some(id))
+                        && let Some(provenance) = frame.source.member_provenance
+                        && provenance.identity.runtime_key == entry.runtime_key
+                        && provenance.identity.identity == identity
+                        && session_id
+                            .is_none_or(|id| provenance.identity.session_id.as_deref() == Some(id))
+                    {
+                        recovered = Some(provenance);
+                    }
+                }
+                if last_sequence >= observed_through {
+                    break;
+                }
             }
         }
-    }
-    if let Some(provenance) = &recovered {
+        // A clear/rebuild can preserve both a cursor and identical last row.
+        // Only the store can certify that the searched prefix still exists.
+        if inner.store.history_prefix_revision().await.ok()? != revision {
+            continue;
+        }
         let entries = inner
             .runtimes
             .read()
@@ -437,14 +503,30 @@ async fn member_provenance_for_identity(
             .get(&entry.runtime_key)
             .is_some_and(|current| current.registration_id == entry.registration_id)
         {
-            inner
-                .member_provenance
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key, Arc::new(provenance.clone()));
+            if let Some(provenance) = &recovered {
+                inner
+                    .member_provenance
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(key.clone(), Arc::new(provenance.clone()));
+            } else if let Some(prefix_revision) = revision {
+                inner
+                    .member_provenance_searches
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        key.clone(),
+                        MemberProvenanceSearch {
+                            registration_id: entry.registration_id,
+                            prefix_revision,
+                            observed_through,
+                        },
+                    );
+            }
         }
+        return recovered;
     }
-    recovered
+    None
 }
 
 fn retained_member_visible(
@@ -573,6 +655,9 @@ impl MobKitConsoleAggregator {
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
                 )),
+                member_provenance_searches: std::sync::Mutex::new(
+                    MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
+                ),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -645,6 +730,9 @@ impl MobKitConsoleAggregator {
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
                 )),
+                member_provenance_searches: std::sync::Mutex::new(
+                    MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
+                ),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -773,6 +861,11 @@ impl MobKitConsoleAggregator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(key, _, _), _| key != &runtime_key);
         self.inner
+            .member_provenance_searches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != &runtime_key);
+        self.inner
             .notice_observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -888,6 +981,11 @@ impl MobKitConsoleAggregator {
             .is_some();
         self.inner
             .member_provenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(key, _, _), _| key != runtime_key);
+        self.inner
+            .member_provenance_searches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(key, _, _), _| key != runtime_key);

@@ -2000,6 +2000,31 @@ fn script_backfill_pages(
     );
 }
 
+fn captured_backfill_test_provenance(
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+) -> ConsoleFrameMemberProvenance {
+    // Capture the target's member context so query counts isolate history
+    // restoration from the separate legacy provenance recovery path.
+    let mob_id = entry.runtime.handle().mob_id().to_string();
+    ConsoleFrameMemberProvenance {
+        identity: record.clone(),
+        member: ConsoleMember {
+            agent_identity: record.runtime_member_id.clone(),
+            role: "worker".into(),
+            state: "running".into(),
+            model_capabilities: Default::default(),
+            runtime_mode: None,
+            session_id: record.session_id.clone(),
+            wired_to: record.topology_peers.clone(),
+            labels: record.labels.clone(),
+            progress: None,
+        },
+        primary_mob_id: mob_id.clone(),
+        source_mob_id: mob_id,
+    }
+}
+
 fn force_frontier_only_cache(
     aggregator: &MobKitConsoleAggregator,
     session: &SessionId,
@@ -2038,7 +2063,7 @@ async fn production_backfill_reuses_overcap_image_and_rebuilds_changed_image_bef
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.to_string());
     let target = SessionBackfillTarget {
-        provenance: None,
+        provenance: Some(captured_backfill_test_provenance(&entry, &record)),
         entry: entry.clone(),
         record,
         session_id: session.to_string(),
@@ -2348,7 +2373,7 @@ async fn production_backfill_caches_missing_rows_and_skips_sessions_without_noti
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.to_string());
     let target = SessionBackfillTarget {
-        provenance: None,
+        provenance: Some(captured_backfill_test_provenance(&entry, &record)),
         entry: entry.clone(),
         record,
         session_id: session.to_string(),

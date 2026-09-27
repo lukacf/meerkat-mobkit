@@ -64,6 +64,13 @@ pub trait ConsoleLogStore: Send + Sync {
 
     async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>>;
 
+    /// An opaque witness that existing frame provenance and cursor positions
+    /// have not been replaced or removed. Appending rows may preserve it.
+    /// Stores without this guarantee return None, disabling prefix reuse.
+    async fn history_prefix_revision(&self) -> ConsoleLogResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn clear_frames(&self) -> ConsoleLogResult<()>;
 
     async fn record_source_watermark(
@@ -80,14 +87,20 @@ pub trait ConsoleLogStore: Send + Sync {
     ) -> ConsoleLogResult<Option<String>>;
 }
 
-#[derive(Default)]
 pub struct InMemoryConsoleLogStore {
     state: Mutex<InMemoryState>,
+}
+
+impl Default for InMemoryConsoleLogStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Default)]
 struct InMemoryState {
     next_seq: u64,
+    prefix_revision: uuid::Uuid,
     frames: BTreeMap<u64, ConsoleFrame>,
     dedupe_to_seq: HashMap<String, u64>,
     id_to_seq: HashMap<String, u64>,
@@ -101,6 +114,7 @@ impl InMemoryConsoleLogStore {
         Self {
             state: Mutex::new(InMemoryState {
                 next_seq: 1,
+                prefix_revision: uuid::Uuid::new_v4(),
                 frames: BTreeMap::new(),
                 dedupe_to_seq: HashMap::new(),
                 id_to_seq: HashMap::new(),
@@ -334,6 +348,14 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             .map(ConsoleCursor::from_seq))
     }
 
+    async fn history_prefix_revision(&self) -> ConsoleLogResult<Option<String>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| boxed_error("console log lock poisoned"))?;
+        Ok(Some(state.prefix_revision.to_string()))
+    }
+
     async fn clear_frames(&self) -> ConsoleLogResult<()> {
         let mut state = self
             .state
@@ -345,6 +367,7 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         state.identity_to_seqs.clear();
         state.conversation_to_seqs.clear();
         state.next_seq = 1;
+        state.prefix_revision = uuid::Uuid::new_v4();
         Ok(())
     }
 
@@ -454,6 +477,7 @@ where
 pub struct SqliteConsoleLogStore {
     conn: Arc<Mutex<Connection>>,
     watermarks: Arc<Mutex<HashMap<(String, String), String>>>,
+    prefix_revision: Mutex<uuid::Uuid>,
     /// Database file path; `:memory:` for in-memory stores (where the
     /// per-operation fence guard degrades to a no-op).
     db_path: PathBuf,
@@ -626,6 +650,7 @@ impl SqliteConsoleLogStore {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             watermarks: Arc::new(Mutex::new(watermarks)),
+            prefix_revision: Mutex::new(uuid::Uuid::new_v4()),
             db_path,
         })
     }
@@ -882,6 +907,24 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         Ok(seq.map(|value| ConsoleCursor::from_seq(value as u64)))
     }
 
+    async fn history_prefix_revision(&self) -> ConsoleLogResult<Option<String>> {
+        let _fence = self.operation_fence()?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| boxed_error("console log lock poisoned"))?;
+        // Other connections can replace an old prefix without changing its
+        // final cursor. Conservatively invalidate for any external commit.
+        let external_revision: i64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .map_err(into_boxed)?;
+        let local_revision = self
+            .prefix_revision
+            .lock()
+            .map_err(|_| boxed_error("console prefix revision lock poisoned"))?;
+        Ok(Some(format!("{local_revision}:{external_revision}")))
+    }
+
     async fn clear_frames(&self) -> ConsoleLogResult<()> {
         let _fence = self.operation_fence()?;
         let mut conn = self
@@ -899,6 +942,11 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         )
         .ok();
         tx.commit().map_err(into_boxed)?;
+        *self
+            .prefix_revision
+            .lock()
+            .map_err(|_| boxed_error("console prefix revision lock poisoned"))? =
+            uuid::Uuid::new_v4();
         Ok(())
     }
 
