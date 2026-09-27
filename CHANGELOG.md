@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still load and still keep their member, and host-side code may still set
   it.
 
+- Bind the Meerkat family to published 0.8.45: bounded per-member status
+  observations with a typed `preview_unavailable` reason, fork lineage on the
+  builds of fork-derived members (`SessionBuildOptions::fork_source`), the
+  runtime's uncommitted-run-input read, and assistant message ids on streamed
+  and committed events. See Added and Fixed for what MobKit surfaces.
 - Bind the Meerkat family to published 0.8.44, including durable runtime-notice
   origin and transcript lineage. The 0.8.43 lifecycle changes remain included:
   `fork_off` and council
