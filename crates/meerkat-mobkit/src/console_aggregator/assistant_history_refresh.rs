@@ -307,6 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::expect_used)]
     async fn secondary_mob_refresh_uses_the_owner_of_the_exact_session() {
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
