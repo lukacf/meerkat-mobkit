@@ -630,6 +630,166 @@ mod cross_provider_open {
         .await
     }
 
+    #[cfg(not(feature = "openai-live"))]
+    #[tokio::test]
+    async fn default_live_projection_routes_text_and_spoken_identity_through_attached_host() {
+        use meerkat_core::live_adapter::LiveAdapterObservation;
+        use meerkat_core::{
+            AssistantBlock, Message, StopReason, TranscriptSource, TurnUsage, Usage,
+        };
+        use meerkat_live::{LiveAdapterHostError, LiveChannelId, LiveProjectionError};
+
+        let _open_guard = LIVE_OPEN_TEST_LOCK.lock().await;
+        let stack = anthropic_member_stack().await;
+        let opened = open(
+            &stack,
+            json!({"provider": "openai", "model": "gpt-realtime-2"}),
+        )
+        .await;
+        assert!(
+            opened.error.is_none(),
+            "open default live stack: {opened:?}"
+        );
+        let result = opened.result.expect("live open result");
+        let channel_id =
+            LiveChannelId::new(result["channel_id"].as_str().expect("opened channel id"));
+
+        let rejected = stack
+            .ctx
+            .host
+            .apply_observation(
+                &channel_id,
+                &LiveAdapterObservation::AssistantTextDelta {
+                    provider_item_id: Some("incomplete-item".into()),
+                    previous_item_id: None,
+                    content_index: Some(0),
+                    response_id: None,
+                    delta_id: Some("incomplete-delta".into()),
+                    delta: "must not enter history".into(),
+                },
+            )
+            .await;
+        assert!(matches!(
+            rejected,
+            Err(LiveAdapterHostError::ProjectionError(
+                LiveProjectionError::Rejected(_)
+            ))
+        ));
+
+        let usage = || {
+            TurnUsage::host_declared(
+                meerkat_core::Provider::OpenAI,
+                "gateway-projection-test",
+                Usage::default(),
+            )
+        };
+        for observation in [
+            LiveAdapterObservation::AssistantTextDelta {
+                provider_item_id: Some("display-item".into()),
+                previous_item_id: None,
+                content_index: Some(0),
+                response_id: Some("display-response".into()),
+                delta_id: Some("display-delta".into()),
+                delta: "Visible response".into(),
+            },
+            LiveAdapterObservation::TurnCompleted {
+                response_id: Some("display-response".into()),
+                stop_reason: StopReason::EndTurn,
+                usage: usage(),
+            },
+            LiveAdapterObservation::AssistantTranscriptDelta {
+                provider_item_id: Some("spoken-item".into()),
+                previous_item_id: Some("display-item".into()),
+                content_index: Some(0),
+                response_id: Some("spoken-response".into()),
+                delta_id: Some("spoken-delta".into()),
+                delta: "Spoken draft".into(),
+            },
+            LiveAdapterObservation::AssistantTranscriptFinal {
+                provider_item_id: "spoken-item".into(),
+                previous_item_id: Some("display-item".into()),
+                content_index: Some(0),
+                response_id: Some("spoken-response".into()),
+                text: "Spoken response".into(),
+                stop_reason: StopReason::EndTurn,
+                usage: usage().into_inner(),
+            },
+            LiveAdapterObservation::TurnCompleted {
+                response_id: Some("spoken-response".into()),
+                stop_reason: StopReason::EndTurn,
+                usage: usage(),
+            },
+        ] {
+            stack
+                .ctx
+                .host
+                .apply_observation(&channel_id, &observation)
+                .await
+                .expect("project through the production-selected sink");
+        }
+
+        let closed = handle_live_method(
+            &stack.ctx,
+            &stack.service,
+            &stack.machine,
+            meerkat_mobkit::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
+            None,
+            "mobkit/live/close",
+            &json!({"channel_id": channel_id.as_str()}),
+            json!("close-projection-test"),
+        )
+        .await;
+        let history = stack
+            .service
+            .read_history(
+                &stack.session_id,
+                meerkat_core::service::SessionHistoryQuery {
+                    offset: 0,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("canonical history after live close");
+        stack.service.shutdown().await;
+
+        assert!(
+            closed.error.is_none(),
+            "close projected channel: {closed:?}"
+        );
+        assert!(!history.has_more);
+        let rows: Vec<_> = history
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::BlockAssistant(row) => Some(row),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 2, "no rejected or duplicate display rows");
+        assert!(
+            matches!(rows[0].blocks.as_slice(), [AssistantBlock::Text { text, .. }] if text == "Visible response")
+        );
+        assert!(
+            matches!(rows[1].blocks.as_slice(), [AssistantBlock::Transcript { text, source: TranscriptSource::Spoken, .. }] if text == "Spoken response")
+        );
+        for (row, item_id) in rows.iter().zip(["display-item", "spoken-item"]) {
+            assert_eq!(row.stop_reason, Some(StopReason::EndTurn));
+            assert!(
+                row.assistant_message_id.is_none(),
+                "realtime rows pair by provider item identity"
+            );
+            let origin = row
+                .identity
+                .realtime_origin
+                .as_ref()
+                .expect("default sink must retain realtime origin");
+            assert_eq!(origin.provider_item_ids(), &[item_id.to_string()]);
+            let wire = serde_json::to_value(origin).expect("origin wire");
+            assert_eq!(wire["session_id"], json!(stack.session_id));
+            assert_eq!(wire["channel_id"], json!(channel_id));
+        }
+    }
+
     /// (a) HomeCore regression: an Anthropic-profile member opens a live
     /// channel with `provider = "openai"` + a realtime-capable model. The
     /// channel identity's (provider, model) pair must be re-paired BEFORE
