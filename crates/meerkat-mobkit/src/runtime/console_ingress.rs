@@ -68,8 +68,13 @@ pub struct ConsoleAgentLiveSnapshot {
     pub session_id: Option<String>,
     #[serde(default)]
     pub model_capabilities: ConsoleModelCapabilities,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_phase: Option<String>,
+    /// Missing means activity is unavailable; explicit null means known quiet.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_response_phase"
+    )]
+    pub response_phase: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watched: Option<bool>,
     #[serde(
@@ -86,6 +91,15 @@ pub struct ConsoleAgentLiveSnapshot {
         rename = "degradedReason"
     )]
     pub degraded_reason: Option<String>,
+}
+
+// The wire contract distinguishes missing (unknown), null (quiet), and a phase.
+#[allow(clippy::option_option)]
+fn deserialize_response_phase<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -585,6 +599,21 @@ fn build_console_experience_contract(
     // agents) enumerate every individual agent, not just profile-level IDs.
     // Fall back to loaded_modules for module-only runtimes.
     let has_roster_members = live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty();
+    let response_phases: BTreeMap<&str, &Option<String>> = live_snapshot
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            agent.response_phase.as_ref().map(|phase| {
+                (
+                    agent
+                        .identity
+                        .as_deref()
+                        .unwrap_or(agent.member_id.as_str()),
+                    phase,
+                )
+            })
+        })
+        .collect();
     let sidebar_agents: Vec<Value> = if has_roster_members {
         let mut sorted_members: Vec<&ConsoleMember> = live_snapshot.members.iter().collect();
         sorted_members.sort_by(|a, b| a.agent_identity.cmp(&b.agent_identity));
@@ -629,7 +658,7 @@ fn build_console_experience_contract(
                         .get("group")
                         .cloned()
                         .unwrap_or_else(|| member.role.clone());
-                    serde_json::json!({
+                    let mut record = serde_json::json!({
                         "agent_id": member.agent_identity,
                         "member_id": member.agent_identity,
                         "identity": console_identity,
@@ -655,7 +684,11 @@ fn build_console_experience_contract(
                             "can_respawn": !is_read_only && !is_aggregate_console,
                             "runtime_mode": if is_aggregate_console { "console_aggregator" } else { "mob_agent" },
                         },
-                    })
+                    });
+                    if let Some(phase) = response_phases.get(console_identity) {
+                        record["response_phase"] = serde_json::json!(phase);
+                    }
+                    record
                 })
                 .collect()
     } else {
@@ -710,7 +743,7 @@ fn build_console_experience_contract(
                 if let Some(response_phase) = &agent.response_phase {
                     record.insert(
                         "response_phase".to_string(),
-                        Value::String(response_phase.clone()),
+                        serde_json::json!(response_phase),
                     );
                 }
                 if is_aggregate_console {
@@ -1109,8 +1142,8 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             if let Some(progress) = agent.get("progress").filter(|value| !value.is_null()) {
                 row["progress"] = progress.clone();
             }
-            if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
-                row["response_phase"] = Value::String(response_phase.to_string());
+            if let Some(response_phase) = agent.get("response_phase") {
+                row["response_phase"] = response_phase.clone();
             }
             if let Some(model_capabilities) = agent.get("model_capabilities") {
                 row["model_capabilities"] = model_capabilities.clone();

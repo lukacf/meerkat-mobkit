@@ -435,6 +435,37 @@ class TestDispatchMethod:
         assert params["dispatch_input"]["origin"] == "scheduler"
         assert params["dispatch_input"]["correlation_id"] == "c1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("through_handle", [False, True])
+    @pytest.mark.parametrize("with_pair", [False, True])
+    async def test_dispatch_text_preserves_caller_idempotency_pair(
+        self, through_handle, with_pair
+    ):
+        rt, transport = _make_runtime(result={"accepted": True})
+        pair = (
+            {"correlation_id": "school-event-1", "idempotency_key": "school:event-1"}
+            if with_pair else {}
+        )
+        if through_handle:
+            await rt.agent("gate:main").dispatch_text(
+                "School closed.\nKeep both paragraphs.", origin="connector", **pair
+            )
+        else:
+            await rt.dispatch_text(
+                "gate:main", "School closed.\nKeep both paragraphs.",
+                origin="connector", **pair,
+            )
+        assert len(transport.calls) == 1
+        assert transport.calls[0]["method"] == "mobkit/dispatch"
+        assert transport.calls[0]["params"] == {
+            "identity": "gate:main",
+            "dispatch_input": {
+                "content": "School closed.\nKeep both paragraphs.",
+                "origin": "connector",
+                **pair,
+            },
+        }
+
 
 class TestLifecycleMethods:
     """respawn, retire, reset, delete_identity delegate to RPC."""

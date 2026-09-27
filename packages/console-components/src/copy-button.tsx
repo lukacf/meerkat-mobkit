@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 
+import { CopyGlyph } from "./copy-glyph";
 import { copyTextToClipboard, type IconRenderer } from "./shared";
 
 type CopyButtonProps = {
@@ -60,7 +61,7 @@ export function CopyButton({
         void handleClick();
       }}
     >
-      {Icon ? <Icon name={copied ? "i-check" : "i-copy"} /> : (copied ? "Copied" : "Copy")}
+      {Icon ? <Icon name={copied ? "i-check" : "i-copy"} /> : <CopyGlyph state={copied ? "copied" : "idle"} />}
     </button>
   );
 }

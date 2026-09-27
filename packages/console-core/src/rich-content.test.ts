@@ -2,6 +2,8 @@ import { describe, expect, test } from "./test-support/vitest-shim";
 import assert from "node:assert/strict";
 
 import {
+  buildConversationMarkdownBlocks,
+  conversationRichBlockCopyText,
   conversationRichBlocksToText,
   conversationRichPeerBodyForDisplay,
   conversationRichPeerIntentForDisplay,
@@ -172,27 +174,30 @@ desktop/renderer/src/app/App.tsx +4 -3
     expect(conversationRichPeerIntentForDisplay("design-review")).toBe("design-review");
   });
 
-  test("summarizes legacy protocol peer bodies for display", () => {
-    expect(conversationRichPeerBodyForDisplay(
+  test("preserves authored peer bodies without protocol guesses", () => {
+    for (const source of [
       'Please send_response with result.token exactly "peer-merge-123".',
-    )).toBe("Response requested.");
-    expect(conversationRichPeerBodyForDisplay(
       "Please reply with ACK_FROM_PEER_peer-root-123 and do not edit files.",
-    )).toBe("Acknowledgement requested.");
-    expect(conversationRichPeerBodyForDisplay("ACKFROMPEER_peer-root-123")).toBe("Acknowledgement sent.");
-    expect(conversationRichPeerBodyForDisplay("peer-merge-123")).toBe("Response sent.");
+      "ACKFROMPEER_peer-root-123",
+      "peer-merge-123",
+      "e3ec9e90-460e-51b3-80b9-dea0f0c31752",
+      "  Acknowledged from my thread: peer-live-token.\n\nKeep  whitespace.\n",
+      "Peer response received and verified: `peer-merge-123`.",
+    ]) {
+      expect(conversationRichPeerBodyForDisplay(source)).toBe(source);
+    }
+    expect(conversationRichPeerBodyForDisplay("  ")).toBeUndefined();
+    expect(conversationRichPeerBodyForDisplay(null)).toBeUndefined();
   });
 
-  test("removes embedded machine peer tokens from visible peer text", () => {
-    expect(conversationRichPeerBodyForDisplay(
-      "MobKit live peer smoke peer-live-1781853108762. Please reply in your own thread. If you can, send a message containing peer-live-1781853108762.",
-    )).toBe("Peer check. Please reply in your own thread. If you can, send a message.");
-    expect(conversationRichPeerBodyForDisplay("Acknowledged from my thread: peer-live-token.")).toBe(
-      "Acknowledged from my thread.",
-    );
-    expect(conversationRichPeerBodyForDisplay("Peer response received and verified: `peer-merge-123`.")).toBe(
-      "Peer response received and verified.",
-    );
+  test("legacy peer format keeps protocol summaries without changing the source default", () => {
+    const source = 'Please send_response with result.token exactly "peer-merge-123".';
+    expect(conversationRichPeerBodyForDisplay(source, "legacy")).toBe("Response requested.");
+    expect(conversationRichPeerBodyForDisplay(source, "verbatim")).toBe(source);
+    expect(conversationRichPeerBodyForDisplay(source)).toBe(source);
+  });
+
+  test("legacy rich parser retains its explicit normalization compatibility", () => {
     expect(parseConversationRichBlocks("Please reply with ACK_FROM_PEER_peer-root-123 and do not edit files.")).toEqual([{
       type: "paragraph",
       text: "Please reply with acknowledgement and do not edit files.",
@@ -444,5 +449,25 @@ describe("machine peer-token boundary (audit regression)", () => {
   test("the public kind words survive in prose", () => {
     const scrubbed = normalizeConversationDisplayText("use peer_message to reach a member");
     expect(scrubbed).toContain("peer_message");
+  });
+});
+
+
+describe("whole Markdown documents", () => {
+  test("retains exact source and stable identity through stream completion", () => {
+    const source = "  # Heading\r\n\r\n- nested\n  - list\n\n[ref][late]\n\n[late]: https://example.test\n";
+    const live = buildConversationMarkdownBlocks(source, { documentId: "message:text:0", streaming: true });
+    const done = buildConversationMarkdownBlocks(source, { documentId: "message:text:0" });
+    assert.deepEqual(live, [{ type: "markdown", id: "message:text:0", source, streaming: true }]);
+    assert.deepEqual(done, [{ type: "markdown", id: "message:text:0", source, streaming: false }]);
+    assert.equal(conversationRichBlockCopyText(done[0]), source);
+    assert.equal(conversationRichBlocksToText(done), source);
+  });
+
+  test("does not infer execution cards from ordinary message text", () => {
+    for (const source of ["Created src/main.rs +3 -1", "$ rm -rf example", '{"status":"success"}']) {
+      assert.equal(buildConversationMarkdownBlocks(source)[0].type, "markdown");
+      assert.equal(conversationRichBlockCopyText(buildConversationMarkdownBlocks(source)[0]), source);
+    }
   });
 });

@@ -9,6 +9,10 @@ import { WorkGraphGraphView, __workGraphGraphViewTest } from "./WorkGraphGraphVi
 import type { WorkGraphPanelData } from "./WorkGraphPanel";
 import type { WorkGraphWireBinding, WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 
+function localDateTime(instant: string): string {
+  return new Intl.DateTimeFormat("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(instant));
+}
+
 const {
   buildWorkGraphPanelTree,
   workGraphBindingStatusLabel,
@@ -82,7 +86,7 @@ test("workgraph binding status labels cover active, paused-with-deadline, and te
   assert.equal(workGraphBindingStatusLabel(binding({ state: "paused" })), "paused");
   assert.equal(
     workGraphBindingStatusLabel(binding({ state: "paused", until: "2026-07-09T10:30:00Z" })),
-    "paused until 2026-07-09 10:30",
+    `paused until ${localDateTime("2026-07-09T10:30:00Z")}`,
   );
   assert.equal(workGraphBindingStatusLabel(binding({ state: "superseded" })), "superseded");
   assert.equal(workGraphBindingStatusLabel(binding({ state: "stopped" })), "stopped");
@@ -105,7 +109,7 @@ test("workgraph binding target labels cover session and lowered-owner targets", 
 test("workgraph event lines render timestamp, kind, and item id compactly", () => {
   assert.equal(
     workGraphEventLine({ kind: "item_claimed", at: "2026-07-08T09:15:30Z", item_id: "item-1" }),
-    "2026-07-08 09:15 · item claimed · item-1",
+    `${localDateTime("2026-07-08T09:15:30Z")} · item claimed · item-1`,
   );
   assert.equal(workGraphEventLine({}), "event");
 });
@@ -246,6 +250,32 @@ test("workgraph graph view draws nodes with status classes and typed edges", () 
   assert.ok(html.includes("child-run"));
 });
 
+test("selected work item exposes its full title and description before collapsed exact identifiers", () => {
+  const selected = item("work_01a0daba-4ca1-7073-8471-02f7df3d923e", "2026-07-08T08:00:00Z", {
+    title: "Publish the release candidate after both independent reviews have completed",
+    description: "Verify the source review and release badge.\nPreserve both reviewers' evidence before publishing the report.",
+    status: "in_progress",
+    owner: { display_name: "Release coordinator" },
+    labels: ["release:2026-09", "evidence:required"],
+  });
+  const html = renderToStaticMarkup(React.createElement(WorkGraphGraphView, {
+    items: [selected], edges: [], attention: [], selectedId: selected.id,
+  }));
+  const detail = html.slice(html.indexOf('data-testid="workgraph-graph-detail"'));
+  assert.ok(detail.includes(`<h4 class="workgraph-graph__detail-title">${selected.title}</h4>`), "selection has a full heading, independent of truncated node text");
+  assert.ok(detail.includes("Verify the source review and release badge.\nPreserve both reviewers&#x27; evidence before publishing the report."), "description keeps every source line");
+  assert.ok(detail.includes("In progress"));
+  assert.ok(detail.includes("Release coordinator"));
+  const disclosureStart = detail.indexOf("<details");
+  assert.ok(disclosureStart > detail.indexOf("workgraph-graph__detail-description"), "identifiers remain secondary to readable description");
+  const disclosure = detail.slice(disclosureStart);
+  assert.match(disclosure, /^<details[^>]*>/);
+  assert.doesNotMatch(disclosure.match(/^<details[^>]*>/)![0], /\bopen(?:=|\s|>)/, "metadata starts collapsed");
+  assert.ok(disclosure.includes(`<code>${selected.id}</code>`), "exact canonical id remains selectable");
+  assert.ok(disclosure.includes('aria-label="Copy work item ID"'), "exact id has a discoverable copy action");
+  assert.ok(disclosure.includes("release:2026-09") && disclosure.includes("evidence:required"));
+});
+
 test("workgraph tree view caps rendered rows with the graph's overflow honesty", () => {
   // The snapshot includes terminal rows, so it tracks the store's full
   // history; the tree must stay render-bounded like the graph is.
@@ -323,4 +353,28 @@ test("workgraph graph labels truncate by measured width with a character fallbac
   assert.ok(fitLabel(long, 132, wide, 21).length < fitted.length);
   // Without a measurer (server render) the character cap applies.
   assert.equal(fitLabel(long, 132, null, 21), `${long.slice(0, 20)}…`);
+});
+
+
+test("workgraph local timestamps retain the local date across midnight", () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const at = "2026-07-09T01:15:30Z";
+    assert.equal(workGraphEventLine({ kind: "item_claimed", at, item_id: "item-1" }), "2026-07-08 18:15 · item claimed · item-1");
+    assert.equal(workGraphBindingStatusLabel({ status: { state: "paused", until: at } }), "paused until 2026-07-08 18:15");
+    const html = renderToStaticMarkup(React.createElement(WorkGraphPanel, { data: panelData({ capturedAt: at }), canManage: false, onRefresh: () => {} }));
+    assert.match(html, /as of 2026-07-08 18:15:30/);
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
+});
+
+test("workgraph local timestamps omit invalid event pause and snapshot times", () => {
+  const at = "not-a-valid-time-but-long-enough";
+  assert.equal(workGraphEventLine({ kind: "item_claimed", at, item_id: "item-1" }), "item claimed · item-1");
+  assert.equal(workGraphBindingStatusLabel({ status: { state: "paused", until: at } }), "paused");
+  const html = renderToStaticMarkup(React.createElement(WorkGraphPanel, { data: panelData({ capturedAt: at }), canManage: false, onRefresh: () => {} }));
+  assert.doesNotMatch(html, /as of|workgraph__captured|Invalid Date|not-a-valid-time/);
 });

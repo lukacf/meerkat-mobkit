@@ -26,6 +26,7 @@ export interface ConsoleFrame {
   sessionId?: string;
   status?: string;
   sourceKind?: string;
+  sourceCursor?: string;
   frameVersion?: number;
   updatedAtMs?: number;
   turnId?: string;
@@ -257,6 +258,8 @@ export interface RuntimeCapabilities {
 }
 
 export interface ConsoleExperience {
+  /** Opaque server-owned runtime and authenticated principal scope for local drafts. */
+  storage_scope?: string;
   contract_version?: string;
   runtime_id?: string;
   console_config?: ConsoleUiConfig;

@@ -12,6 +12,7 @@ use meerkat_core::comms::EventStream;
 
 use crate::console_aggregator::{
     ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    MobKitConsoleAggregator,
 };
 use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
@@ -189,6 +190,51 @@ fn generation_authoritative_agent_event_stream(
 }
 
 impl UnifiedRuntime {
+    /// Establish the host-wide console payload policy before building views.
+    /// Redaction applies before persistence and broadcast. Identity and member
+    /// visibility remain per-view, so a restricted view cannot erase another
+    /// authorized view's history. A later call cannot replace this owner policy.
+    pub fn initialize_console_projection_with_policy(
+        &self,
+        policy: Arc<dyn ConsoleVisibilityPolicy>,
+    ) -> Result<(), &'static str> {
+        let mut initialized = false;
+        self.console_projection.get_or_init(|| {
+            initialized = true;
+            self.create_console_projection(policy)
+        });
+        if initialized {
+            Ok(())
+        } else {
+            Err("console projection policy is already initialized")
+        }
+    }
+
+    fn create_console_projection(
+        &self,
+        policy: Arc<dyn ConsoleVisibilityPolicy>,
+    ) -> MobKitConsoleAggregator {
+        struct HostPayloadPolicy(Arc<dyn ConsoleVisibilityPolicy>);
+        impl ConsoleVisibilityPolicy for HostPayloadPolicy {
+            fn redact_payload(
+                &self,
+                frame: &crate::console_aggregator::NewConsoleFrame,
+            ) -> Option<serde_json::Value> {
+                self.0.redact_payload(frame)
+            }
+        }
+        let aggregator = MobKitConsoleAggregator::new(self.console_log_store());
+        aggregator.register_runtime_handles_with_policy(
+            "default",
+            "",
+            self.mob_runtime.clone(),
+            self.identity_runtime().cloned(),
+            self.console_events(),
+            Arc::new(HostPayloadPolicy(policy)),
+        );
+        aggregator
+    }
+
     pub fn build_console_json_router(&self, decisions: RuntimeDecisionState) -> Router {
         self.build_console_json_router_with_policy(
             decisions,
@@ -201,6 +247,12 @@ impl UnifiedRuntime {
         decisions: RuntimeDecisionState,
         visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     ) -> Router {
+        // Existing single-policy hosts keep ingestion redaction. Hosts serving
+        // different views can initialize an explicit host policy first.
+        let projection = self
+            .console_projection
+            .get_or_init(|| self.create_console_projection(visibility_policy.clone()));
+        let view = projection.policy_view(visibility_policy.clone());
         console_json_router_with_runtime_events_and_policy(
             decisions,
             self.mob_runtime.clone(),
@@ -221,6 +273,7 @@ impl UnifiedRuntime {
             self.workgraph_service(),
             Some(self.topology_runtime_handle()),
             Some(Arc::clone(&self.job_health_projection)),
+            Some(view),
         )
     }
 
@@ -454,6 +507,193 @@ mod tests {
         LocalLeaseProvider, MutableRosterProvider,
     };
     use crate::unified_runtime::UnifiedRuntimeBuilder;
+
+    #[tokio::test]
+    async fn host_console_payload_policy_is_explicit_and_cannot_be_replaced_by_later_views() {
+        struct RedactHost;
+        impl crate::console_aggregator::ConsoleVisibilityPolicy for RedactHost {
+            fn redact_payload(
+                &self,
+                _: &crate::console_aggregator::NewConsoleFrame,
+            ) -> Option<serde_json::Value> {
+                Some(serde_json::json!({"host":"redacted"}))
+            }
+        }
+        let definition = MobDefinition::from_toml(
+            "[mob]\nid = \"host-policy-owner\"\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+        )
+        .expect("definition");
+        let runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime");
+        runtime
+            .initialize_console_projection_with_policy(Arc::new(RedactHost))
+            .expect("initial policy");
+        assert!(
+            runtime
+                .initialize_console_projection_with_policy(Arc::new(
+                    crate::console_aggregator::AllowAllConsoleVisibilityPolicy,
+                ))
+                .is_err(),
+            "a later view must not replace the ingestion policy"
+        );
+        let first = runtime
+            .console_projection
+            .get()
+            .expect("projection")
+            .store();
+        let decisions = crate::RuntimeDecisionState::local_console(
+            crate::ConsolePolicy {
+                require_app_auth: false,
+                ..Default::default()
+            },
+            None,
+        );
+        drop(runtime.build_console_json_router_with_policy(
+            decisions,
+            Arc::new(crate::console_aggregator::AllowAllConsoleVisibilityPolicy),
+        ));
+        assert!(Arc::ptr_eq(
+            &first,
+            &runtime
+                .console_projection
+                .get()
+                .expect("same owner")
+                .store()
+        ));
+        let mut stream = runtime.console_projection.get().expect("owner").subscribe();
+        let source = runtime
+            .console_events()
+            .append(
+                "_system",
+                None,
+                "text_delta",
+                serde_json::json!({"delta":"host-private-token"}),
+            )
+            .await;
+        let projected = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let crate::console_aggregator::ConsoleTimelineEvent::ConsoleFrame { frame } =
+                    stream.recv().await.expect("owner stream")
+                    && frame.source_event_id.as_deref() == Some(source.event_id.as_str())
+                {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("source reaches canonical owner");
+        assert_eq!(projected.payload, serde_json::json!({"host":"redacted"}));
+        assert_eq!(projected.status, crate::ConsoleFrameStatus::Redacted);
+        let stored = first
+            .frame_by_dedupe_key(&projected.dedupe_key)
+            .await
+            .expect("raw store")
+            .expect("persisted");
+        assert_eq!(
+            stored.payload, projected.payload,
+            "host redaction precedes both persistence and raw broadcast"
+        );
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn multiple_console_routers_reuse_one_runtime_projection() {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "shared-console-router-owner"
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition");
+        let runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime");
+        let decisions = crate::runtime::RuntimeDecisionState::local_console(
+            crate::ConsolePolicy {
+                require_app_auth: false,
+                ..Default::default()
+            },
+            None,
+        );
+        let _first = runtime.build_console_json_router(decisions.clone());
+        let first = runtime
+            .console_projection
+            .get()
+            .expect("projection")
+            .store();
+        let _second = runtime.build_console_json_router(decisions);
+        let second = runtime
+            .console_projection
+            .get()
+            .expect("same projection")
+            .store();
+        assert!(Arc::ptr_eq(&first, &second));
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn console_projection_tasks_release_replaced_and_shutdown_stores() {
+        async fn assert_released(
+            store: std::sync::Weak<crate::console_aggregator::InMemoryConsoleLogStore>,
+        ) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while store.upgrade().is_some() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("terminated console tasks must release their old store");
+        }
+
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "console-projector-lifecycle"
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition");
+        let mut runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime");
+        let decisions = crate::runtime::RuntimeDecisionState::local_console(
+            crate::ConsolePolicy {
+                require_app_auth: false,
+                ..Default::default()
+            },
+            None,
+        );
+        let old_store = Arc::new(crate::console_aggregator::InMemoryConsoleLogStore::new());
+        let old_weak = Arc::downgrade(&old_store);
+        runtime.set_console_log_store(old_store.clone());
+        drop(runtime.build_console_json_router(decisions.clone()));
+        drop(old_store);
+
+        let new_store = Arc::new(crate::console_aggregator::InMemoryConsoleLogStore::new());
+        let new_weak = Arc::downgrade(&new_store);
+        runtime.set_console_log_store(new_store.clone());
+        assert!(runtime.console_projection.get().is_none());
+        assert_released(old_weak).await;
+        drop(runtime.build_console_json_router(decisions.clone()));
+        drop(runtime.build_console_json_router(decisions));
+        drop(new_store);
+        runtime.shutdown().await;
+        drop(runtime);
+        assert_released(new_weak).await;
+    }
 
     #[test]
     fn reference_router_default_concurrency_allows_sse_fanout() {

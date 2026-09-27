@@ -112,13 +112,17 @@ test("stock console runtime path is backed by the headless controller", () => {
   assert.match(source, /\bcreateMobKitConsoleController\b/);
   assert.match(source, /\bconsoleController\.timeline\.query\b/);
   assert.match(source, /\bconsoleController\.timeline\.subscribeWithBackfill\b/);
-  assert.match(source, /\bconsoleController\.commands\.sendMessage\b/);
+  assert.match(source, /\bdispatchController\.commands\.sendMessage\b/);
+  assert.match(source, /dispatchController\s*=\s*sendControllerRef\.current/);
   assert.match(source, /\bconsoleController\.commands\.execute\b/);
   assert.match(source, /TopologyPanel[\s\S]*from\s+["']@console-components["']/);
   assert.doesNotMatch(source, /from\s+["']\.\/panels\/TopologyPanel["']/);
+  // A transport lifetime decorator may forward source.queryTimeline; the
+  // application still queries through the controller, never a raw helper.
+  assert.doesNotMatch(source, /(?<![\w.])queryTimeline\s*\(/);
+  assert.doesNotMatch(source, /import\s*\{[^}]*\bqueryTimeline\b[^}]*\}\s*from/s);
   for (const rawHelper of [
     "fetchJson",
-    "queryTimeline",
     "sendConsole",
     "sendConsoleMultipart",
     "subscribeTimelineEvents",

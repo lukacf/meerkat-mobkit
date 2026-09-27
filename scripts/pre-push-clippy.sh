@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pre-push clippy gate: lint only changed crates instead of the full workspace.
-# Falls back to workspace clippy when root Cargo.toml/Cargo.lock changes.
+# Falls back to workspace clippy for root build inputs or unowned Rust files.
 set -euo pipefail
 
 # Incremental compilation is OFF for the push gates.
@@ -36,50 +36,68 @@ if [ -z "$MERGE_BASE" ]; then
   exit $?
 fi
 
-CHANGED_FILES=$(git diff --name-only "$MERGE_BASE"..HEAD \
-  | grep -E '\.(rs|toml)$' || true)
+# Parse manifests without dependency resolution or an extra Cargo invocation.
+exec python3 - "$MERGE_BASE" "$CARGO" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tomllib
 
-if [ -z "$CHANGED_FILES" ]; then
-  echo "No Rust/TOML changes to push, skipping clippy."
-  exit 0
-fi
+merge_base, cargo = sys.argv[1:]
+root = Path(subprocess.check_output(
+    ["git", "rev-parse", "--show-toplevel"], text=True,
+).strip())
+# Disable rename folding so moving a source checks both affected packages.
+changed = {
+    os.fsdecode(path)
+    for path in subprocess.check_output([
+        "git", "diff", "--name-only", "--no-renames", "-z", f"{merge_base}..HEAD",
+    ]).split(b"\0") if path
+}
 
-# Root workspace manifest changes → full workspace clippy
-if echo "$CHANGED_FILES" | grep -qE '^Cargo\.(toml|lock)$'; then
-  echo "Workspace manifest changed — running full workspace clippy."
-  "$CARGO" clippy --workspace --all-targets -- -D warnings
-  exit $?
-fi
+if changed & {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain"}:
+    print("Workspace manifest, lockfile or toolchain changed - running full workspace clippy.", flush=True)
+    flags = ["--workspace"]
+else:
+    packages = set()
+    manifests = {}
+    unowned_rust = set()
+    for path in changed:
+        if Path(path).suffix not in {".rs", ".toml"}:
+            continue
+        directory = (root / path).parent
+        # The file and its parent directory may have been deleted.
+        while directory.is_relative_to(root):
+            manifest = directory / "Cargo.toml"
+            if manifest.is_file():
+                if manifest not in manifests:
+                    with manifest.open("rb") as source:
+                        manifests[manifest] = tomllib.load(source)
+                package = manifests[manifest].get("package")
+                if package is not None:
+                    name = package["name"]
+                    if not isinstance(name, str) or not name:
+                        raise ValueError(f"Invalid package name in {manifest}")
+                    packages.add(name)
+                    break
+            directory = directory.parent
+        else:
+            if Path(path).suffix == ".rs":
+                unowned_rust.add(path)
 
-# Extract crate directories from changed file paths (<name>/...)
-CHANGED_CRATES=$(echo "$CHANGED_FILES" \
-  | sed -n 's|^\([^/]*\)/.*|\1|p' \
-  | sort -u \
-  | while read -r dir; do
-      if [ -f "$dir/Cargo.toml" ]; then
-        echo "$dir"
-      fi
-    done)
+    if unowned_rust:
+        # Out-of-tree targets and support modules can belong to a package
+        # elsewhere in the workspace. Ancestor lookup cannot prove ownership.
+        print("Rust files without an owning ancestor package - running full workspace clippy: "
+              + ", ".join(sorted(unowned_rust)), flush=True)
+        flags = ["--workspace"]
+    elif not packages:
+        print("No changed Rust packages, skipping clippy.")
+        sys.exit(0)
+    else:
+        print("Clippy on changed packages: " + ", ".join(sorted(packages)), flush=True)
+        flags = [flag for package in sorted(packages) for flag in ("-p", package)]
 
-if [ -z "$CHANGED_CRATES" ]; then
-  echo "No testable crate changes detected, skipping clippy."
-  exit 0
-fi
-
-# Build -p flags for each changed crate
-PKG_FLAGS=""
-for crate_dir in $CHANGED_CRATES; do
-  pkg=$(grep '^name' "$crate_dir/Cargo.toml" | head -1 | sed 's/.*= *"//' | sed 's/".*//')
-  if [ -n "$pkg" ]; then
-    PKG_FLAGS="$PKG_FLAGS -p $pkg"
-  fi
-done
-
-if [ -z "$PKG_FLAGS" ]; then
-  echo "No testable crates changed, skipping clippy."
-  exit 0
-fi
-
-echo "Clippy on changed crates:$PKG_FLAGS"
-# shellcheck disable=SC2086
-"$CARGO" clippy $PKG_FLAGS --all-targets -- -D warnings
+os.execv(cargo, [cargo, "clippy", *flags, "--all-targets", "--", "-D", "warnings"])
+PY

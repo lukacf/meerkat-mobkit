@@ -491,6 +491,7 @@ fn fallback_events_and_resume_hold_keep_typed_console_payloads() {
         assert_eq!(console_agent_event_payload(&event), json!(event));
     }
     let event = AgentEvent::RunFailed {
+        identity: Default::default(),
         session_id: meerkat_core::SessionId::new(),
         error_report: report.clone(),
         terminal_cause_kind: None,

@@ -87,3 +87,18 @@ export type {
   ConsoleComposerToolbarButtonScope,
 } from "./composer/console-composer";
 export type { PendingDropWhere, PendingItem, PendingStackProps } from "./composer/pending-stack";
+
+export { ConversationMarkdown, resolveMarkdownLink, resolveMarkdownImage } from "./conversation/conversation-markdown";
+export type { MarkdownUrlPolicy, ConversationMarkdownProps } from "./conversation/conversation-markdown";
+
+export { useConversationScrollController } from "./conversation/scroll-controller";
+export type { ConversationViewportKey, ConversationScrollControllerOptions } from "./conversation/scroll-controller";
+export { ConsoleTransportStatus, consoleTransportLabel } from "./conversation/transport-status";
+
+export * from "./conversation/approval-card";
+
+export * from "./conversation/context-chips";
+
+export * from "./conversation/context-selection";
+
+export * from "./conversation/presentation-policy";

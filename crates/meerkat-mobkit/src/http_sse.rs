@@ -141,6 +141,7 @@ fn project_sse_payload(
         status: ConsoleFrameStatus::Completed,
         payload,
         source: ConsoleFrameSource {
+            member_provenance: None,
             kind: ConsoleFrameSourceKind::Synthetic,
             source_cursor: None,
         },

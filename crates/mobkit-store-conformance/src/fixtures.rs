@@ -41,6 +41,7 @@ pub fn console_frame(dedupe_key: &str, identity: &str, timestamp_ms: u64) -> New
         status: ConsoleFrameStatus::Completed,
         payload: serde_json::json!({ "marker": dedupe_key }),
         source: ConsoleFrameSource {
+            member_provenance: None,
             kind: ConsoleFrameSourceKind::Synthetic,
             source_cursor: None,
         },
@@ -51,6 +52,47 @@ pub fn console_frame(dedupe_key: &str, identity: &str, timestamp_ms: u64) -> New
         parent_frame_id: None,
         caused_by_frame_id: None,
     }
+}
+
+/// A member-scoped frame whose owner witness must survive every storage path.
+pub fn console_frame_with_member_provenance() -> NewConsoleFrame {
+    use meerkat_mobkit::runtime::ConsoleMember;
+    use meerkat_mobkit::{ConsoleFrameMemberProvenance, ConsoleIdentityRecord, ConsoleVisibility};
+    let mut frame = console_frame("conformance-provenance", "console:private-member", 1_500);
+    frame.session_id = Some("session-private-member".to_string());
+    let labels = [("visibility".to_string(), "private".to_string())]
+        .into_iter()
+        .collect();
+    frame.source.member_provenance = Some(ConsoleFrameMemberProvenance {
+        identity: ConsoleIdentityRecord {
+            identity: frame.identity.clone(),
+            display_name: "Private member".to_string(),
+            runtime_key: frame.runtime_key.clone(),
+            runtime_member_id: "private-member".to_string(),
+            session_id: frame.session_id.clone(),
+            visibility: ConsoleVisibility::Addressable,
+            addressable: true,
+            health: "ready".to_string(),
+            topology_peers: vec![],
+            labels,
+        },
+        member: ConsoleMember {
+            agent_identity: "private-member".to_string(),
+            role: "delegate".to_string(),
+            state: "running".to_string(),
+            model_capabilities: Default::default(),
+            runtime_mode: None,
+            session_id: frame.session_id.clone(),
+            wired_to: vec![],
+            labels: [("visibility".to_string(), "private".to_string())]
+                .into_iter()
+                .collect(),
+            progress: None,
+        },
+        primary_mob_id: "primary".to_string(),
+        source_mob_id: "private-lower-mob".to_string(),
+    });
+    frame
 }
 
 /// A deterministic persisted operational event with a caller-chosen id and

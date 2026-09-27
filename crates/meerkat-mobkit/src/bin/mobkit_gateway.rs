@@ -1379,6 +1379,7 @@ fn main() {
         // A refusal `run()` already answered on the request id must not be
         // followed by a second, id-less reply.
         if error.downcast_ref::<InitReplied>().is_none() {
+            tracing::error!(error = %format!("{error:#}"), "gateway startup failed");
             let response = init_error(Value::Null, -32603, error.to_string());
             print_json_line(&response);
         }
@@ -1460,7 +1461,17 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     let store_path = params
         .store_path
         .unwrap_or_else(|| runtime_root.join("state"));
-    let store_path = store_path.canonicalize().unwrap_or(store_path);
+    let store_path = meerkat_mobkit::storage_layout::canonicalize_storage_root(&store_path)
+        .map_err(|error| {
+            refuse_init(
+                &request_id,
+                -32602,
+                format!(
+                    "cannot resolve store_path {}: {error}",
+                    store_path.display()
+                ),
+            )
+        })?;
     // The path authority for this boot: the state dir (a `store_path` with a
     // file extension is the explicit session-DB override escape hatch) plus
     // the XDG gateway home (runtime registry + peer key).
@@ -1729,11 +1740,11 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             // never the session body).
             .with_runtime_archived_terminal_authority(runtime_store)
             .with_session_runtime_adapter(adapter.clone())
-            .with_workgraph_service(workgraph_service.clone());
+            .with_workgraph_service(workgraph_service.clone())
+            // This is the persistent session builder's shared agent-tool slot.
+            // Identity activation needs it even when console voice is absent.
+            .with_agent_mob_tools(Arc::clone(&voice_inputs.4));
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
-        if params.console_voice.is_some() {
-            spec = spec.with_agent_mob_tools(Arc::clone(&voice_inputs.4));
-        }
         if let Some((_, admission_slot, state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the tool-plane
             // admission slot and the sidecar lock beside the store.
@@ -1952,6 +1963,113 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     })?;
     runtime.set_gateway_peer_keys(peer_keys);
 
+    // Identity-first mode (meerkat-studio ask K0): give this gateway the
+    // durable-identity substrate — continuity records, lease-fenced
+    // embodiment, resume-first restore with the Broken-identity repair task,
+    // and the tolerant identity lifecycle paths. Default providers are
+    // constructed from the existing store paths; the roster is seeded from
+    // init params and extended at runtime by `mobkit/ensure_member`.
+    let _identity_roster_provider: Option<
+        Arc<meerkat_mobkit::identity_first::MutableRosterProvider>,
+    > =
+        if identity_first {
+            use meerkat_mobkit::identity_first::{
+                AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext,
+                IdentityRuntime, IdentityRuntimeConfig, MobSessionBridge, MutableRosterProvider,
+            };
+
+            let store_dir = layout.state_dir();
+            fs::create_dir_all(store_dir)
+                .with_context(|| format!("failed to create {}", store_dir.display()))?;
+            let continuity_db = layout.continuity_db().map_err(|e| anyhow!("{e}"))?.path;
+            let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+
+            let mob_handle = runtime.mob_handle();
+            let mut bridge =
+                if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+                    MobSessionBridge::with_session_service(mob_handle.clone(), session_service)
+                } else {
+                    MobSessionBridge::new(mob_handle.clone())
+                };
+            // Heal seam (2026-07-29 incident): the continuity repair supervisor
+            // asks this recoverer to commit the durable head before declaring an
+            // identity healed; without it, heal is a cosmetic entry reset that
+            // the next materialization re-Breaks.
+            if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
+                bridge = bridge.with_committed_boundary_recoverer(recoverer);
+            }
+            if let Some((identity, first, second)) =
+                meerkat_mobkit::identity_first::conflicting_role_migration_declaration(
+                    &role_migration_declarations,
+                )
+            {
+                anyhow::bail!(
+                    "role_migrations declares '{identity}' twice with different predecessor roles \
+                 ('{first}' and '{second}'); migration authority cannot be resolved by order"
+                );
+            }
+            // A declared migration restamps a member's durable role, comms name
+            // and binding, so the boot record must name every one the host armed.
+            for declaration in &role_migration_declarations {
+                tracing::info!(
+                    identity = %declaration.identity,
+                    from_role = %declaration.from_role,
+                    "activation declares a member role migration"
+                );
+            }
+            bridge = bridge.with_role_migration_declarations(role_migration_declarations);
+            let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(bridge);
+
+            let irt = IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: substrate.continuity_store,
+                lease_provider: substrate.lease_provider,
+                runtime_instance_id: format!("mobkit-gateway-{}", std::process::id()),
+                has_runtime_store: persistent_sessions,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge),
+                default_timeout: None,
+            })
+            .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone()));
+            // A member parked with a session repair hold names the exact
+            // `rkat session repair-wholeblob` commands for the runtime store this
+            // launch opened; the ephemeral launch has nothing to repair.
+            irt.set_session_repair_scope(runtime.resolved_storage().as_ref().and_then(
+                meerkat_mobkit::identity_first::SessionRepairScope::from_resolved_storage,
+            ));
+
+            let roster = Arc::new(MutableRosterProvider::new(identity_roster_seed));
+            let mob_definition = mob_handle.definition().clone();
+            let irt = Arc::new(irt);
+            // Register continuity owners before a stopped mob resumes, then apply
+            // the roster. The installer owns cleanup if either stage fails.
+            runtime.set_console_identity_roster(roster.clone());
+            let context = Arc::new(IdentityFirstRuntimeContext::new(
+                irt,
+                roster.clone(),
+                None,
+                None,
+                Some(mob_definition),
+            ));
+            runtime
+                .install_and_bootstrap_identity_first_context(context, &roster.snapshot())
+                .await
+                .context("identity-first bootstrap failed")?;
+            tracing::info!(
+                roster = roster.snapshot().len(),
+                continuity_db = %continuity_db.display(),
+                "identity-first gateway mode active"
+            );
+            Some(roster)
+        } else {
+            runtime
+                .activate_without_identity_context()
+                .await
+                .context("failed to activate classic local runtime")?;
+            None
+        };
+
     if !used_workspace_config {
         let mut labels = BTreeMap::new();
         labels.insert("surface".to_string(), "tux".to_string());
@@ -1968,110 +2086,6 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             .await
             .map_err(|error| anyhow!("failed to spawn fallback alpha meerkat: {error}"))?;
     }
-
-    // Identity-first mode (meerkat-studio ask K0): give this gateway the
-    // durable-identity substrate — continuity records, lease-fenced
-    // embodiment, resume-first restore with the Broken-identity repair task,
-    // and the tolerant identity lifecycle paths. Default providers are
-    // constructed from the existing store paths; the roster is seeded from
-    // init params and extended at runtime by `mobkit/ensure_member`.
-    let _identity_roster_provider: Option<
-        Arc<meerkat_mobkit::identity_first::MutableRosterProvider>,
-    > = if identity_first {
-        use meerkat_mobkit::identity_first::{
-            AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
-            IdentityRuntimeConfig, MobSessionBridge, MutableRosterProvider, restore_flow,
-        };
-
-        let store_dir = layout.state_dir();
-        fs::create_dir_all(store_dir)
-            .with_context(|| format!("failed to create {}", store_dir.display()))?;
-        let continuity_db = layout.continuity_db().map_err(|e| anyhow!("{e}"))?.path;
-        let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
-
-        let mob_handle = runtime.mob_handle();
-        let mut bridge =
-            if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
-                MobSessionBridge::with_session_service(mob_handle.clone(), session_service)
-            } else {
-                MobSessionBridge::new(mob_handle.clone())
-            };
-        // Heal seam (2026-07-29 incident): the continuity repair supervisor
-        // asks this recoverer to commit the durable head before declaring an
-        // identity healed; without it, heal is a cosmetic entry reset that
-        // the next materialization re-Breaks.
-        if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
-            bridge = bridge.with_committed_boundary_recoverer(recoverer);
-        }
-        if let Some((identity, first, second)) =
-            meerkat_mobkit::identity_first::conflicting_role_migration_declaration(
-                &role_migration_declarations,
-            )
-        {
-            anyhow::bail!(
-                "role_migrations declares '{identity}' twice with different predecessor roles \
-                 ('{first}' and '{second}'); migration authority cannot be resolved by order"
-            );
-        }
-        // A declared migration restamps a member's durable role, comms name
-        // and binding, so the boot record must name every one the host armed.
-        for declaration in &role_migration_declarations {
-            tracing::info!(
-                identity = %declaration.identity,
-                from_role = %declaration.from_role,
-                "activation declares a member role migration"
-            );
-        }
-        bridge = bridge.with_role_migration_declarations(role_migration_declarations);
-        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(bridge);
-
-        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: substrate.continuity_store,
-            lease_provider: substrate.lease_provider,
-            runtime_instance_id: format!("mobkit-gateway-{}", std::process::id()),
-            has_runtime_store: persistent_sessions,
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(bridge),
-            default_timeout: None,
-        })
-        .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone()));
-        // A member parked with a session repair hold names the exact
-        // `rkat session repair-wholeblob` commands for the runtime store this
-        // launch opened; the ephemeral launch has nothing to repair.
-        irt.set_session_repair_scope(
-            runtime.resolved_storage().as_ref().and_then(
-                meerkat_mobkit::identity_first::SessionRepairScope::from_resolved_storage,
-            ),
-        );
-
-        let roster = Arc::new(MutableRosterProvider::new(identity_roster_seed));
-        let mob_definition = mob_handle.definition().clone();
-        let irt = Arc::new(irt);
-        restore_flow(&irt, &roster.snapshot(), None, None)
-            .await
-            .context("identity-first restore_flow failed")?;
-        // Attaching the context wires the console's identity RPC surface and
-        // spawns the Broken-identity repair task; the roster slot lets
-        // `mobkit/ensure_member` extend the desired roster at runtime.
-        runtime.set_console_identity_roster(roster.clone());
-        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
-            irt,
-            roster.clone(),
-            None,
-            None,
-            Some(mob_definition),
-        )));
-        tracing::info!(
-            roster = roster.snapshot().len(),
-            continuity_db = %continuity_db.display(),
-            "identity-first gateway mode active"
-        );
-        Some(roster)
-    } else {
-        None
-    };
 
     // Bind the cross-mob control listener after identity-first attachment so
     // its startup log reflects the final authority posture (the handler
@@ -2650,6 +2664,60 @@ mod tests {
             None,
         );
         assert!(without["result"]["http_public_base_url"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_fingerprint_keeps_absent_store_identity_after_creation() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace)?;
+        let alias = temp.path().join("workspace-alias");
+        std::os::unix::fs::symlink(&workspace, &alias)?;
+        let workspace = workspace.canonicalize()?;
+        let supplied = alias.join("future/nested/store");
+        let paths = conventional_paths(&workspace);
+        let fingerprint = |store: &Path| {
+            config_fingerprint(
+                &workspace,
+                None,
+                false,
+                "tux-auto",
+                true,
+                false,
+                &workspace,
+                store,
+                &workspace,
+                Some(&workspace),
+                None,
+                None,
+                meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+                None,
+                &paths,
+            )
+        };
+        let before = meerkat_mobkit::storage_layout::canonicalize_storage_root(&supplied)?;
+        let first_key = fingerprint(&before)?;
+        let (first_definition, _) = load_definition(&workspace, &first_key, &paths)?;
+        assert!(!supplied.exists());
+        fs::create_dir_all(&supplied)?;
+        let after = meerkat_mobkit::storage_layout::canonicalize_storage_root(&supplied)?;
+        let second_key = fingerprint(&after)?;
+        let (second_definition, _) = load_definition(&workspace, &second_key, &paths)?;
+        assert_eq!(
+            first_key, second_key,
+            "directory creation must not change the launch key"
+        );
+        assert_eq!(
+            first_definition, second_definition,
+            "the persisted mob definition must stay exact"
+        );
+        assert_ne!(
+            first_key,
+            fingerprint(&workspace.join("different-store"))?,
+            "a genuinely different storage location must retain a distinct launch key"
+        );
+        Ok(())
     }
 
     /// Like `--control-listen`, the HTTP listen address is part of the resume

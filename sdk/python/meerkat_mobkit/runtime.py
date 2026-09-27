@@ -851,11 +851,18 @@ class MobKitRuntime:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
         track_turn: bool = False,
     ) -> Any:
-        """Dispatch plain text without constructing DispatchInput manually."""
+        """Dispatch plain text; supply correlation and idempotency keys together.
+
+        ``track_turn`` as for :meth:`send`.
+        """
         from .identity_first_models import DispatchInput
-        di = DispatchInput(content=text, origin=origin, correlation_id=correlation_id)
+        di = DispatchInput(
+            content=text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+        )
         return await self.dispatch(identity, di, track_turn=track_turn)
 
     async def turn_result(self, identity: str, ticket: str) -> Any:
@@ -1109,6 +1116,7 @@ class IdentityAgentHandle:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
         track_turn: bool = False,
     ) -> Any:
         """Dispatch plain text without constructing DispatchInput."""
@@ -1117,6 +1125,7 @@ class IdentityAgentHandle:
             text,
             origin=origin,
             correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
             track_turn=track_turn,
         )
 
@@ -1293,12 +1302,14 @@ class IdentityAgentHandle:
         *,
         origin: str = "system",
         correlation_id: str | None = None,
+        idempotency_key: str | None = None,
         timeout: float = 90,
         poll_interval: float = 0.5,
     ) -> str | None:
         """:meth:`dispatch_text` plus the per-admission wait, in one call."""
         result = await self.dispatch_text(
-            text, origin=origin, correlation_id=correlation_id, track_turn=True,
+            text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key, track_turn=True,
         )
         return await self._wait_for_ticket_or_admission(
             result, "dispatch", timeout=timeout, poll_interval=poll_interval,

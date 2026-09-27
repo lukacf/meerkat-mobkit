@@ -318,6 +318,11 @@ async function main() {
     const fixture = await installConsoleFixture(page);
     await page.goto(`${url}/console`);
     await openAgent(page, "Alpha");
+    if (process.env.VOICE_SCREENSHOT_DIR) {
+      await fs.mkdir(process.env.VOICE_SCREENSHOT_DIR, { recursive: true });
+      await page.setViewportSize({ width: 1600, height: 1000 });
+      await page.screenshot({ path: path.join(process.env.VOICE_SCREENSHOT_DIR, "voice-idle-desktop.png") });
+    }
     await page.getByRole("button", { name: "Start voice with Alpha" }).click();
     await waitForVoice(page, fixture.requests);
     await page.getByRole("region", { name: "Voice with Alpha" }).waitFor();
@@ -429,6 +434,8 @@ async function main() {
     await page.getByRole("alert").filter({ hasText: "authenticate OpenAI" }).waitFor();
     // The microphone is requested with the click, concurrently with readiness; a
     // negative readiness releases that capture and opens no channel.
+    // The browser may grant the pending capture after the fast readiness error.
+    await page.waitForFunction((previous) => window.voiceFixture.microphoneTracks.length === previous + 1, capturesBeforeAuthLoss);
     assert.equal(await page.evaluate(() => window.voiceFixture.microphoneTracks.length), capturesBeforeAuthLoss + 1);
     await page.waitForFunction(() => window.voiceFixture.microphoneTracks.every((track) => track.readyState === "ended"));
     assert.equal(fixture.channels.size, openedBeforeAuthLoss);
