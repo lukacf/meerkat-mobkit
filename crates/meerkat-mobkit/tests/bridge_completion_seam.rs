@@ -410,9 +410,7 @@ async fn a_turn_that_fails_after_admission_is_typed_and_not_retried() {
 /// `MobRuntime::session_commit_pending` forwards meerkat's
 /// `session_has_uncommitted_run_input` on the real runtime machine: `false`
 /// once the member's turn is committed, `true` while a turn holds its input
-/// in the model, `false` again after that turn commits, and `None` (never a
-/// guessed `false`) for a session id that does not parse or that no runtime
-/// holds.
+/// in the model, and `false` again after that turn commits.
 #[tokio::test(flavor = "multi_thread")]
 async fn session_commit_pending_reads_the_members_run_input_phase() {
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -486,16 +484,82 @@ async fn session_commit_pending_reads_the_members_run_input_phase() {
         "the held turn's commit leaves nothing pending"
     );
 
+    unified.shutdown().await;
+}
+
+/// `session_commit_pending` fails closed (`None`, reconcile nothing) whenever
+/// no live runtime session answers: no runtime machine, a session id that
+/// does not parse, a session no runtime ever held, and a session that is
+/// gone because its member retired.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_commit_pending_fails_closed_without_a_live_runtime_session() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let client = ScriptedClient::immediate(true);
+    let (unified, bridge, runtime_id) = boot_one_member(
+        &temp.path().join("state"),
+        client.clone(),
+        Duration::from_secs(30),
+    )
+    .await;
+    bridge
+        .deliver_awaiting_commit_with_mode_context_and_system_prompt(
+            &runtime_id,
+            &meerkat_core::ContentInput::Text("committed".to_string()),
+            None,
+            &[],
+            HandlingMode::Queue,
+            None,
+        )
+        .await
+        .expect("a committed turn");
+    let member = unified
+        .mob_handle()
+        .list_all_members()
+        .await
+        .into_iter()
+        .next()
+        .expect("the booted member")
+        .agent_identity;
+    let session_id = unified
+        .mob_handle()
+        .get_member(&member)
+        .await
+        .expect("read the member")
+        .and_then(|entry| entry.bridge_session_id().cloned())
+        .expect("the member has a session")
+        .to_string();
+    let runtime = unified.mob_runtime();
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        Some(false),
+        "control: the live session answers"
+    );
+
+    // No runtime machine: a runtime adopted from a bare handle has none.
+    let bare = meerkat_mobkit::mob_handle_runtime::MobRuntime::from_handle(unified.mob_handle());
+    assert_eq!(bare.session_commit_pending(&session_id).await, None);
+    // A session id that does not parse.
     assert_eq!(
         runtime.session_commit_pending("not-a-session-id").await,
         None
     );
+    // A session no runtime ever held.
     assert_eq!(
         runtime
             .session_commit_pending(&meerkat_core::SessionId::new().to_string())
             .await,
+        None
+    );
+    // A session that is gone: its member retired.
+    unified
+        .mob_handle()
+        .retire(member)
+        .await
+        .expect("retire the member");
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
         None,
-        "a session no runtime holds is inconclusive, not false"
+        "a retired member's session is gone, not quiet"
     );
     unified.shutdown().await;
 }

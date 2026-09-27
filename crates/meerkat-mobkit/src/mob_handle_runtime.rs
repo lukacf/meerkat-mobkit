@@ -10784,31 +10784,61 @@ pub(crate) async fn send_console_human_on_mob(
 mod tests {
     use super::*;
 
-    /// `session_commit_pending` answers only what the runtime read concluded
-    /// within the bound: an error and a read still waiting (a boundary commit
-    /// holding the driver) are `None`, never a guessed `false`.
-    #[tokio::test(start_paused = true)]
-    async fn session_commit_pending_is_some_only_for_a_conclusive_read() {
-        let bound = SESSION_COMMIT_PENDING_READ_BOUND;
+    // `session_commit_pending` answers only what the runtime read concluded
+    // within the bound: one test per arm of its mapping. The real-machine
+    // arms (a missing runtime, an unknown or gone session) are in
+    // tests/bridge_completion_seam.rs.
+
+    #[tokio::test]
+    async fn session_commit_pending_reports_pending_input() {
         assert_eq!(
-            bounded_commit_pending(async { Ok::<_, ()>(true) }, bound).await,
+            bounded_commit_pending(
+                async { Ok::<_, ()>(true) },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn session_commit_pending_reports_no_pending_input() {
         assert_eq!(
-            bounded_commit_pending(async { Ok::<_, ()>(false) }, bound).await,
+            bounded_commit_pending(
+                async { Ok::<_, ()>(false) },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn session_commit_pending_fails_closed_on_a_runtime_error() {
         assert_eq!(
-            bounded_commit_pending(async { Err::<bool, _>("not ready") }, bound).await,
-            None
+            bounded_commit_pending(
+                async { Err::<bool, _>("session is not held by a runtime") },
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
+            None,
+            "an error is inconclusive, never a guessed false"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn session_commit_pending_fails_closed_when_the_read_outlasts_its_bound() {
         let started = tokio::time::Instant::now();
         assert_eq!(
-            bounded_commit_pending(std::future::pending::<Result<bool, ()>>(), bound).await,
+            bounded_commit_pending(
+                std::future::pending::<Result<bool, ()>>(),
+                SESSION_COMMIT_PENDING_READ_BOUND
+            )
+            .await,
             None,
-            "a read that never answers is inconclusive"
+            "a read still waiting (a boundary commit holds the driver) is inconclusive"
         );
-        assert_eq!(started.elapsed(), bound, "and ends exactly at the bound");
+        assert_eq!(started.elapsed(), SESSION_COMMIT_PENDING_READ_BOUND);
     }
 
     /// meerkat >= 0.7 `RunFailed` carries only the typed `error_report`; the
