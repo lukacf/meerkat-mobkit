@@ -122,13 +122,10 @@ pub(super) async fn observe(
             ))
         },
         || async {
-            tokio::time::timeout_at(
-                deadline,
-                entry.runtime.live_transcript_awaits_commit(session_id),
-            )
-            .await
-            .ok()
-            .flatten()
+            tokio::time::timeout_at(deadline, entry.runtime.session_commit_pending(session_id))
+                .await
+                .ok()
+                .flatten()
         },
     )
     .await

@@ -953,7 +953,7 @@ async fn assistant_identity_backfill_publishes_only_complete_current_images_and_
 }
 
 #[tokio::test]
-async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_through_discovery()
+async fn assistant_identity_pending_refresh_retries_unchanged_head_through_discovery()
 -> ConsoleLogResult<()> {
     let (_temp, runtime, service) = super::tests::build_stress_runtime(1, Duration::ZERO).await;
     let store = Arc::new(InMemoryConsoleLogStore::new());
@@ -971,6 +971,18 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
         .await
         .ok_or("fixture identity missing")?;
     let session_id = record.session_id.clone().ok_or("fixture session missing")?;
+    let machine = meerkat_mob::MobSessionService::runtime_adapter(&service)
+        .ok_or("fixture must expose the real runtime machine")?;
+    let typed_session_id = meerkat_core::SessionId::parse(&session_id)?;
+    assert!(
+        machine.contains_session(&typed_session_id).await,
+        "fixture session must be registered with its real machine"
+    );
+    assert_eq!(
+        entry.runtime.session_commit_pending(&session_id).await,
+        Some(false),
+        "settled retries must observe the real runtime commit authority"
+    );
     let mut target = SessionBackfillTarget {
         assistant_refresh: assistant_history_refresh::AssistantHistoryRefreshReason::Recovery,
         provenance: None,
@@ -984,7 +996,10 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
         .write()
         .map_err(|_| std::io::Error::other("runtime fixture lock"))?
         .insert(RUNTIME.into(), entry);
-    for (index, pending) in [Some(true), None].into_iter().enumerate() {
+    // Pending and unknown commit observations both map to Pending in the guard
+    // unit tests. Exercise that result at the orchestration boundary here, then
+    // use the production observer for settlement with either cache state.
+    for (index, evict_cache) in [false, true].into_iter().enumerate() {
         let mut live = observed_live_frame(&session_id, "text_delta", MESSAGE_A);
         live.identity = record.identity.clone();
         live.conversation_id = Some(record.identity.clone());
@@ -999,12 +1014,30 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
             .count();
         target.assistant_refresh =
             assistant_history_refresh::AssistantHistoryRefreshReason::Recovery;
-        service.script_pending_commit([pending]);
         service.script_history([super::tests::ScriptedHistoryRead {
             page: Some(history_page(&session_id, &[])?),
             gate: None,
         }]);
-        backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+        let mut pending_observations = 0;
+        let reads_before_pending = service.read_calls();
+        backfill_one_session_history_with_refresh_observer(
+            aggregator.inner.clone(),
+            target.clone(),
+            true,
+            |observed_entry, observed_record, observed_session, requested| {
+                assert!(requested, "recovery must request a settlement observation");
+                assert_eq!(observed_entry.registration_id, target.entry.registration_id);
+                assert_eq!(observed_record.identity, record.identity);
+                assert_eq!(observed_session, session_id);
+                pending_observations += 1;
+                Box::pin(std::future::ready(
+                    assistant_history_refresh::AssistantHistoryRefreshGate::Pending,
+                ))
+            },
+        )
+        .await?;
+        assert_eq!(pending_observations, 1);
+        assert_eq!(service.read_calls(), reads_before_pending + 1);
         assert_eq!(
             store
                 .query_frames(ConsoleTimelineQuery::default())
@@ -1049,7 +1082,7 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
             // freshness gating, with identical history and live frontier.
             observation.history_index_complete = false;
             observation.canonical_frames.clear();
-            if index == 1 {
+            if evict_cache {
                 for other in 0..17 {
                     cache.insert(
                         (
@@ -1066,17 +1099,28 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
                 );
             }
         }
-        if index == 1 {
+        if evict_cache {
             store.clear_frames().await?;
             store.append_if_absent(live).await?;
         }
         target.assistant_refresh =
             assistant_history_refresh::AssistantHistoryRefreshReason::PositiveOnly;
-        let reads = service.read_calls();
-        service.script_pending_commit(std::iter::repeat_n(
-            Some(false),
-            if index == 0 { 2 } else { 1 },
+        let watermark_runtime_key = session_history_watermark_runtime_key(RUNTIME, &session_id);
+        record_session_history_watermark(&aggregator.inner, &watermark_runtime_key, &session_id, 0)
+            .await?;
+        let watermark = store
+            .source_watermark(
+                &watermark_runtime_key,
+                ConsoleFrameSourceKind::SessionHistory,
+            )
+            .await?
+            .ok_or("fresh retry watermark missing")?;
+        assert!(session_history_watermark_is_fresh(
+            &watermark,
+            &session_id,
+            current_time_ms(),
         ));
+        let reads = service.read_calls();
         service.script_history([super::tests::ScriptedHistoryRead {
             page: Some(history_page(&session_id, &[])?),
             gate: None,
@@ -1092,11 +1136,22 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
             .find(|frame| frame.kind == "assistant_history_snapshot")
             .ok_or("settled retry snapshot missing")?;
         assert_eq!(latest.payload["assistant_message_ids"], json!([]));
+        let position_map = rows
+            .iter()
+            .rev()
+            .find(|frame| frame.kind == "runtime_notice_snapshot")
+            .ok_or("settled retry position map missing")?;
+        assert_eq!(
+            position_map.payload["observed_through"], latest.payload["observed_through"],
+            "retry must publish assistant membership and positions at the same cutoff"
+        );
+        assert!(position_map.payload.get("history_positions_mode").is_none());
+        assert_eq!(position_map.payload["history_positions"], json!([]));
         assert_eq!(
             rows.iter()
                 .filter(|frame| frame.kind == "assistant_history_snapshot")
                 .count(),
-            if index == 1 { 1 } else { before + 1 }
+            if evict_cache { 1 } else { before + 1 }
         );
         assert_eq!(
             service.read_calls(),
@@ -1112,10 +1167,6 @@ async fn assistant_identity_pending_or_unknown_commit_retries_unchanged_head_thr
                 .contains(&retry_key)
         );
     }
-    assert!(
-        service.pending_commit_calls() >= 5,
-        "actual runtime forwarding seam must be exercised"
-    );
     runtime.mob_handle().stop().await?;
     Ok(())
 }

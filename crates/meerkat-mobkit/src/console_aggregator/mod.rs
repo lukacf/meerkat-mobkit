@@ -5333,6 +5333,38 @@ async fn backfill_one_session_history(
     target: SessionBackfillTarget,
     force_refresh: bool,
 ) -> ConsoleLogResult<()> {
+    backfill_one_session_history_with_refresh_observer(
+        inner,
+        target,
+        force_refresh,
+        |entry, record, session_id, requested| {
+            Box::pin(assistant_history_refresh::observe(
+                entry, record, session_id, requested,
+            ))
+        },
+    )
+    .await
+}
+
+// Keep observation local to this backfill invocation so orchestration tests can
+// exercise a pending refresh without manufacturing session-service authority.
+async fn backfill_one_session_history_with_refresh_observer<Observe>(
+    inner: Arc<AggregatorInner>,
+    target: SessionBackfillTarget,
+    force_refresh: bool,
+    mut observe_refresh: Observe,
+) -> ConsoleLogResult<()>
+where
+    Observe: for<'a> FnMut(
+            &'a RuntimeEntry,
+            &'a ConsoleIdentityRecord,
+            &'a str,
+            bool,
+        ) -> futures::future::BoxFuture<
+            'a,
+            assistant_history_refresh::AssistantHistoryRefreshGate,
+        > + Send,
+{
     let _permit = inner
         .session_backfill_permits
         .clone()
@@ -5462,13 +5494,8 @@ async fn backfill_one_session_history(
         }
         // A complete read is not a commit barrier. An eligible refresh must
         // observe fresh typed idle status and no pending commit before reading.
-        let assistant_refresh_gate = assistant_history_refresh::observe(
-            &entry,
-            &record,
-            &session_id,
-            assistant_refresh_requested,
-        )
-        .await;
+        let assistant_refresh_gate =
+            observe_refresh(&entry, &record, &session_id, assistant_refresh_requested).await;
         let assistant_history_settled = matches!(
             assistant_refresh_gate,
             assistant_history_refresh::AssistantHistoryRefreshGate::Settled
@@ -8520,8 +8547,6 @@ mod tests {
         active_reads: Arc<AtomicUsize>,
         max_active_reads: Arc<AtomicUsize>,
         scripted_reads: Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedHistoryRead>>>,
-        scripted_pending_commit: Arc<std::sync::Mutex<std::collections::VecDeque<Option<bool>>>>,
-        pending_commit_calls: Arc<AtomicUsize>,
     }
 
     pub(super) struct ScriptedHistoryRead {
@@ -8560,10 +8585,6 @@ mod tests {
                 active_reads: Arc::new(AtomicUsize::new(0)),
                 max_active_reads: Arc::new(AtomicUsize::new(0)),
                 scripted_reads: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-                scripted_pending_commit: Arc::new(std::sync::Mutex::new(
-                    std::collections::VecDeque::new(),
-                )),
-                pending_commit_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -8576,17 +8597,6 @@ mod tests {
 
         pub(super) fn read_calls(&self) -> usize {
             self.read_calls.load(Ordering::SeqCst)
-        }
-
-        pub(super) fn script_pending_commit(&self, values: impl IntoIterator<Item = Option<bool>>) {
-            self.scripted_pending_commit
-                .lock()
-                .expect("pending commit fixture lock")
-                .extend(values);
-        }
-
-        pub(super) fn pending_commit_calls(&self) -> usize {
-            self.pending_commit_calls.load(Ordering::SeqCst)
         }
 
         fn max_active_reads(&self) -> usize {
@@ -8852,24 +8862,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
-        async fn live_transcript_awaits_commit(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<bool, SessionError> {
-            self.pending_commit_calls.fetch_add(1, Ordering::SeqCst);
-            let scripted = self
-                .scripted_pending_commit
-                .lock()
-                .expect("pending commit fixture lock")
-                .pop_front();
-            if let Some(value) = scripted {
-                return value.ok_or_else(|| SessionError::NotFound {
-                    id: session_id.clone(),
-                });
-            }
-            self.inner.live_transcript_awaits_commit(session_id).await
-        }
-
         async fn commit_live_delegation_final_transcript(
             &self,
             machine: &meerkat_runtime::MeerkatMachine,
