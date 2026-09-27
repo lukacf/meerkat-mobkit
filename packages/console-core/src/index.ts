@@ -1,3 +1,4 @@
+export { realtimeMessageOrigin, hasRealtimeMessageOriginCarrier, isRealtimeHistoryMessage } from "./realtime-message-identity";
 export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
 export type { AssistantHistorySnapshot } from "./assistant-message-identity";
 export type {
@@ -49,6 +50,7 @@ export type {
   ConversationCouncilParticipantRow,
   ConversationIdentity,
   ConversationMessageEntry,
+  ConversationRealtimeOrigin,
   ConversationPresentation,
   ConversationRole,
   ConversationSummaryEntry,

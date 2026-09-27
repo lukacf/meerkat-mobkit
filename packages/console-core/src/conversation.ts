@@ -76,6 +76,15 @@ interface ConversationTimelineEntryBase {
   groupReconciliationKey?: string | null;
 }
 
+/** Canonical realtime provenance validated against the containing history frame. */
+export interface ConversationRealtimeOrigin {
+  sessionId: string;
+  channelId: string;
+  canonicalRowSequence: number;
+  /** Empty on legacy rows; text and timestamps never substitute for these IDs. */
+  providerItemIds: string[];
+}
+
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
   kind: "message";
   variant: "plain" | "rich" | "meta";
@@ -83,6 +92,8 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   blocks?: ConversationRichBlock[];
   /** Display-only projection of a validated local quote envelope. */
   contextMessage?: ConsoleContextMessage;
+  /** Live provider observations may join only this exact canonical witness. */
+  realtimeOrigin?: ConversationRealtimeOrigin;
   richStyle?: "default" | "streaming";
   /**
    * Typed host-task metadata. System tasks stay distinct from operator turns

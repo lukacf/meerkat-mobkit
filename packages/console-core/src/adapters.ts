@@ -1,3 +1,4 @@
+import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
 import { assistantMessageKey, hasAssistantMessageIdCarrier } from "./assistant-message-identity";
 import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "./assistant-message-projection";
 import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
@@ -1394,6 +1395,9 @@ function sameAssistantRunOwner(left: AssistantFrameOwner, right: AssistantFrameO
 }
 
 function sameTextStreamOwner(left: AssistantFrameOwner | undefined, right: AssistantFrameOwner): boolean {
+  if (left && (isRealtimeHistoryMessage(left) || isRealtimeHistoryMessage(right))) {
+    return left === right;
+  }
   if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
     const key = assistantMessageKey(left);
     return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
@@ -1506,7 +1510,8 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
   const consumedHistory = new Set<string>();
   const deltaOverrides = new Map<string, string>();
   for (const history of frames) {
-    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)) continue;
+    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)
+      || isRealtimeHistoryMessage(history)) continue;
     const text = historyAssistantSource(history);
     if (!text) continue;
     const key = assistantOwnerKey(history);
@@ -1536,7 +1541,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     consumedHistory,
     deltaOverrides,
     consumeReasoning: (history, text) => {
-      if (hasAssistantMessageIdCarrier(history)) return false;
+      if (hasAssistantMessageIdCarrier(history) || isRealtimeHistoryMessage(history)) return false;
       const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text) || [];
       const completion = candidates.find((live) => !consumedReasoning.has(live.id)
         && sameAssistantRunOwner(history, live));
@@ -1717,8 +1722,9 @@ const UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 function shouldSuppressRepeatedAssistantEntry(
   entry: ConversationTimelineEntry,
   priorEntries: ConversationTimelineEntry[],
+  protectedEntryIds: ReadonlySet<string>,
 ): boolean {
-  if (entry.kind !== "message") return false;
+  if (entry.kind !== "message" || protectedEntryIds.has(entry.id)) return false;
   if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
     return false;
   }
@@ -1729,7 +1735,7 @@ function shouldSuppressRepeatedAssistantEntry(
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index = priorEntries.length - 1; index >= 0; index--) {
     const prior = priorEntries[index];
-    if (prior.kind !== "message") continue;
+    if (prior.kind !== "message" || protectedEntryIds.has(prior.id)) continue;
     if (prior.identity.id === USER_IDENTITY.id) {
       const userText = normalizeComparableText(conversationEntryVisibleText(prior));
       if (userText) return false;
@@ -1796,6 +1802,7 @@ function renderHistoryUserEntry(
   // Typed provenance only (send origin, persisted render class); the text
   // itself never decides what kind of message this is.
   const origin = entryOriginFromFrameData(record);
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   if (Array.isArray(content)) {
     const contextMessage = parseConsoleContextMessage(content);
     const blocks = contentToUserBlocks(content, blobBaseUrl, textMode);
@@ -1804,6 +1811,7 @@ function renderHistoryUserEntry(
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
+      ...(realtimeOrigin ? { realtimeOrigin } : {}),
       ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -1819,6 +1827,7 @@ function renderHistoryUserEntry(
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
+    ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
     variant: textMode === "markdown" ? "rich" : "plain",
     ...(textMode === "markdown" ? { blocks: messageTextBlocks(text, textMode) } : {}),
@@ -1858,6 +1867,12 @@ function userEntryTextSignature(entry: ConversationTimelineEntry): string {
 }
 
 function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
+  if (isRealtimeHistoryMessage(frame)) {
+    const origin = realtimeMessageOrigin(frame);
+    return origin
+      ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}`
+      : `unbound-realtime-user:${frame.id}`;
+  }
   const interactionId = frame.interactionId?.trim();
   if (interactionId) return `interaction:${interactionId}`;
   const signature = userEntryTextSignature(entry);
@@ -3396,11 +3411,12 @@ function renderSessionHistoryTextCompleteEntry(
     options.textMode,
   );
   const textMode = options.textMode ?? "legacy";
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   const canonicalText = textMode === "markdown" && !options.suppressAssistantText
     ? canonicalHistoryAssistantText(frame) : undefined;
   const text = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
-  if (!assistantMessageKey(frame)) {
+  if (!assistantMessageKey(frame) && !isRealtimeHistoryMessage(frame)) {
     // Legacy rows retain their established reasoning-first presentation.
     parsedBlocks.sort((left, right) => Number(right.type === "thinking") - Number(left.type === "thinking"));
   }
@@ -3442,6 +3458,7 @@ function renderSessionHistoryTextCompleteEntry(
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
+    ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(canonicalText !== undefined ? { copyText: canonicalText } : {}),
     variant: blocks.length > 0 ? "rich" : "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -3527,6 +3544,7 @@ export function mapFramesToTimelineEntries(
     ? sortFramesForTranscript(frames)
     : frames)));
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
+  const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map(frame => frame.id));
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -3968,7 +3986,7 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          assistantMessageKey(frame)
+          assistantMessageKey(frame) || isRealtimeHistoryMessage(frame)
             ? false
             : liveToolCallIds.has(block.toolCallId)
               || consumeToolSignatureCount(liveToolSignatureCounts, block)
@@ -3977,7 +3995,7 @@ export function mapFramesToTimelineEntries(
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || undefined;
-        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
@@ -4041,7 +4059,7 @@ export function mapFramesToTimelineEntries(
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || undefined;
-        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         entries.push(terminalEntry);

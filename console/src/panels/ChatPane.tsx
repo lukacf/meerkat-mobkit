@@ -93,19 +93,12 @@ interface ChatPaneProps extends ConversationApprovalProps {
   /**
    * Provisional speech for an active voice call on this identity, straight
    * from the provider's transcript deltas. Rendered as distinct "live" rows,
-   * never copied or persisted; the caller clears it when the call ends and the
-   * canonical transcript takes over.
+   * never copied or persisted. Canonical rows replace matching provider items;
+   * the caller clears the remaining provisional items when the call ends.
    */
   liveSpeech?: readonly LiveSpeechItem[];
-  /**
-   * When a voice call is active on this identity, the wall-clock start of the
-   * call. Canonical rows created after it are the call's own transcript rows
-   * arriving through history; they stay hidden until the call ends so the
-   * live rows are the only representation of the call while it is happening.
-   * A typed seam: once frames carry a realtime channel origin, hide by that
-   * channel id instead of by time.
-   */
-  voiceCallStartedAt?: number | null;
+  /** Actual runtime session and live channel for the visible speech items. */
+  activeVoiceScope?: { sessionId: string; channelId: string } | null;
   voiceActive?: boolean;
   voiceDisabled?: boolean;
   /// Operator actions for inline WorkGraph cards. ConsoleApp gates these on
@@ -541,21 +534,23 @@ function textSignatureForMsg(message: Msg): string {
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
 
-/**
- * A canonical message created after the active voice call started is the
- * call's own transcript row arriving through history. While the call is
- * active the live rows represent that speech; the canonical row is shown once
- * the call ends. Entries without a timestamp are never hidden.
- */
-export function isCanonicalVoiceRowDuringCall(
-  entry: ConversationTimelineEntry,
-  callStartedAt: number,
-): boolean {
-  if (entry.kind !== "message") return false;
-  if (entry.variant === "meta") return false;
-  const createdAt = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
-  if (!Number.isFinite(createdAt)) return false;
-  return createdAt >= callStartedAt;
+/** Retire only provisional speech that canonical history identifies exactly. */
+function uncommittedLiveSpeech(
+  entries: ConversationTimelineEntry[],
+  liveSpeech: readonly LiveSpeechItem[] | undefined,
+  scope: ChatPaneProps["activeVoiceScope"],
+): readonly LiveSpeechItem[] | undefined {
+  if (!liveSpeech?.length || !scope?.sessionId || !scope.channelId) return liveSpeech;
+  const committed = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind !== "message") continue;
+    const origin = entry.realtimeOrigin;
+    if (!origin || origin.sessionId !== scope.sessionId || origin.channelId !== scope.channelId) continue;
+    const speaker = entry.identity.role;
+    if (speaker !== "assistant" && speaker !== "user") continue;
+    for (const itemId of origin.providerItemIds) committed.add(JSON.stringify([speaker, itemId]));
+  }
+  return liveSpeech.filter(item => !committed.has(JSON.stringify([item.speaker, item.itemId])));
 }
 
 function sameSource(a: ConversationEntrySource | undefined, b: ConversationEntrySource | undefined): boolean {
@@ -1222,7 +1217,7 @@ const TranscriptView = React.memo(function TranscriptView({
               className={`msg msg--live msg--live-${item.speaker}`}
               data-live-final={item.final ? "true" : "false"}
               data-testid={`chat-live-row:${identity}:${item.itemId}`}
-              key={item.itemId}
+              key={`${item.speaker}:${item.itemId}`}
             >
               <div className="msg__head">
                 <span className="msg__source">{item.speaker === "user" ? "Operator (voice)" : "Assistant (voice)"}</span>
@@ -1376,7 +1371,7 @@ export function ChatPane({
   onQuoteSelection,
   entries,
   liveSpeech,
-  voiceCallStartedAt,
+  activeVoiceScope,
   phase,
   draft,
   sending,
@@ -1474,14 +1469,13 @@ export function ChatPane({
   const activeTurnFrameRef = React.useRef(0);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = React.useState<number[]>([]);
 
-  const messages = React.useMemo(() => {
-    const visible = voiceCallStartedAt
-      ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt))
-      : entries;
-    return buildChatMessages(visible, {
-      resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
-    });
-  }, [entries, voiceCallStartedAt, peerLabels]);
+  const visibleLiveSpeech = React.useMemo(
+    () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
+    [entries, liveSpeech, activeVoiceScope],
+  );
+  const messages = React.useMemo(() => buildChatMessages(entries, {
+    resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
+  }), [entries, peerLabels]);
   const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.
@@ -1712,7 +1706,7 @@ export function ChatPane({
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
-  }, [messages, liveSpeech, phase]);
+  }, [messages, visibleLiveSpeech, phase]);
 
   const railWindow = windowTurnRail(turns.length, railHeight);
   const turnRail = turns.length > 1 ? (
@@ -1970,7 +1964,7 @@ export function ChatPane({
         turns={turns}
         messages={messages}
         phase={phase}
-        liveSpeech={liveSpeech}
+        liveSpeech={visibleLiveSpeech}
         lastAgentMessageId={lastAgentMessageId}
         workGraphActions={workGraphActions}
         isLoadingHistory={isLoadingHistory}

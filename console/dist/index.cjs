@@ -567,6 +567,57 @@ function CopyButton({
 // packages/console-components/src/conversation/conversation-empty-state.tsx
 var import_jsx_runtime4 = require("react/jsx-runtime");
 
+// packages/console-core/src/realtime-message-identity.ts
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function identifier(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function canonicalMessage(frame) {
+  if (frame.sourceKind !== "session_history") return void 0;
+  const message = record(record(frame.data)?.message);
+  return message && ["assistant", "block_assistant", "user"].includes(String(message.role)) ? message : void 0;
+}
+function carriers(frame) {
+  const message = canonicalMessage(frame);
+  if (!message) return [];
+  const identity = record(message.identity);
+  return [message, identity].flatMap((value) => value && Object.hasOwn(value, "realtime_origin") ? [value.realtime_origin] : []);
+}
+function hasRealtimeMessageOriginCarrier(frame) {
+  return carriers(frame).some((value) => value !== null);
+}
+function isRealtimeHistoryMessage(frame) {
+  if (hasRealtimeMessageOriginCarrier(frame)) return true;
+  const message = canonicalMessage(frame);
+  return message?.role === "block_assistant" && Array.isArray(message.blocks) && message.blocks.some((value) => {
+    const block = record(value);
+    return (block?.block_type ?? block?.type) === "transcript";
+  });
+}
+function parse(value, sessionId) {
+  const origin = record(value);
+  if (!origin || origin.session_id !== sessionId || !identifier(origin.channel_id) || !Number.isSafeInteger(origin.canonical_row_sequence) || origin.canonical_row_sequence < 0) return void 0;
+  const items = origin.provider_item_ids === void 0 ? [] : origin.provider_item_ids;
+  if (!Array.isArray(items) || !items.every(identifier)) return void 0;
+  return {
+    sessionId,
+    channelId: origin.channel_id,
+    canonicalRowSequence: origin.canonical_row_sequence,
+    providerItemIds: [...items]
+  };
+}
+function realtimeMessageOrigin(frame) {
+  if (!identifier(frame.sessionId)) return void 0;
+  const values = carriers(frame);
+  if (values.length === 0) return void 0;
+  const parsed = values.map((value) => parse(value, frame.sessionId));
+  const origin = parsed[0];
+  if (!origin || parsed.some((value) => !value || JSON.stringify(value) !== JSON.stringify(origin))) return void 0;
+  return origin;
+}
+
 // packages/console-core/src/assistant-message-identity.ts
 function carrier(frame) {
   const data = frame.data;
@@ -605,16 +656,16 @@ function assistantHistorySnapshot(frame) {
 
 // packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
   return {
-    run_state: typeof record3.run_state === "string" && record3.run_state ? record3.run_state : "unknown",
-    in_flight_work: typeof record3.in_flight_work === "number" && Number.isFinite(record3.in_flight_work) ? record3.in_flight_work : 0,
-    last_progress_at_ms: typeof record3.last_progress_at_ms === "number" && Number.isFinite(record3.last_progress_at_ms) ? record3.last_progress_at_ms : 0,
-    last_progress_event: typeof record3.last_progress_event === "string" && record3.last_progress_event ? record3.last_progress_event : "unchanged",
-    health: typeof record3.health === "string" && record3.health ? record3.health : "unknown"
+    run_state: typeof record4.run_state === "string" && record4.run_state ? record4.run_state : "unknown",
+    in_flight_work: typeof record4.in_flight_work === "number" && Number.isFinite(record4.in_flight_work) ? record4.in_flight_work : 0,
+    last_progress_at_ms: typeof record4.last_progress_at_ms === "number" && Number.isFinite(record4.last_progress_at_ms) ? record4.last_progress_at_ms : 0,
+    last_progress_event: typeof record4.last_progress_event === "string" && record4.last_progress_event ? record4.last_progress_event : "unchanged",
+    health: typeof record4.health === "string" && record4.health ? record4.health : "unknown"
   };
 }
 var IDENTITY_STATE_NEEDS_REPAIR_LABEL = "needs repair";
@@ -664,32 +715,32 @@ function normalizeStringArray(value) {
   return normalized.length > 0 ? normalized : void 0;
 }
 function normalizeSidebarWatchFields(value) {
-  const record3 = value && typeof value === "object" ? value : {};
+  const record4 = value && typeof value === "object" ? value : {};
   const normalized = {};
-  if (typeof record3.watched === "boolean") {
-    normalized.watched = record3.watched;
+  if (typeof record4.watched === "boolean") {
+    normalized.watched = record4.watched;
   }
-  if (record3.alertLevel === "elevated" || record3.alertLevel === "critical" || record3.alertLevel === null) {
-    normalized.alertLevel = record3.alertLevel;
+  if (record4.alertLevel === "elevated" || record4.alertLevel === "critical" || record4.alertLevel === null) {
+    normalized.alertLevel = record4.alertLevel;
   }
-  if (typeof record3.degraded === "boolean") {
-    normalized.degraded = record3.degraded;
+  if (typeof record4.degraded === "boolean") {
+    normalized.degraded = record4.degraded;
   }
-  const degradedReason = trimString(record3.degradedReason);
+  const degradedReason = trimString(record4.degradedReason);
   if (degradedReason) {
     normalized.degradedReason = degradedReason;
   }
   return normalized;
 }
 function normalizeIdentitySessionRepair(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
-  const session_id = trimString(record3.session_id);
-  const hold = trimString(record3.hold);
-  const diagnose_command = trimString(record3.diagnose_command);
-  const apply_command = trimString(record3.apply_command);
+  const session_id = trimString(record4.session_id);
+  const hold = trimString(record4.hold);
+  const diagnose_command = trimString(record4.diagnose_command);
+  const apply_command = trimString(record4.apply_command);
   if (!session_id || !hold || !diagnose_command || !apply_command) {
     return null;
   }
@@ -698,20 +749,20 @@ function normalizeIdentitySessionRepair(value) {
     hold,
     diagnose_command,
     apply_command,
-    detail: trimString(record3.detail) ?? ""
+    detail: trimString(record4.detail) ?? ""
   };
 }
 function normalizeIdentityStatusRow(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
-  const identity = trimString(record3.identity);
-  const state = trimString(record3.state);
+  const identity = trimString(record4.identity);
+  const state = trimString(record4.state);
   if (!identity || !state) {
     return null;
   }
-  const addressability = record3.addressability === "internal_only" ? "internal_only" : record3.addressability === "addressable" ? "addressable" : null;
+  const addressability = record4.addressability === "internal_only" ? "internal_only" : record4.addressability === "addressable" ? "addressable" : null;
   if (!addressability) {
     return null;
   }
@@ -719,30 +770,30 @@ function normalizeIdentityStatusRow(value) {
     identity,
     state,
     addressability,
-    labels: stringRecord(record3.labels),
-    ...trimString(record3.display_name) ? { display_name: trimString(record3.display_name) } : {},
-    ...trimString(record3.role) ? { role: trimString(record3.role) } : {},
-    ...typeof record3.generation === "number" && Number.isFinite(record3.generation) ? { generation: record3.generation } : {},
-    ...typeof record3.checkpoint_version === "number" && Number.isFinite(record3.checkpoint_version) ? { checkpoint_version: record3.checkpoint_version } : {},
-    ...typeof record3.lease_healthy === "boolean" ? { lease_healthy: record3.lease_healthy } : {},
+    labels: stringRecord(record4.labels),
+    ...trimString(record4.display_name) ? { display_name: trimString(record4.display_name) } : {},
+    ...trimString(record4.role) ? { role: trimString(record4.role) } : {},
+    ...typeof record4.generation === "number" && Number.isFinite(record4.generation) ? { generation: record4.generation } : {},
+    ...typeof record4.checkpoint_version === "number" && Number.isFinite(record4.checkpoint_version) ? { checkpoint_version: record4.checkpoint_version } : {},
+    ...typeof record4.lease_healthy === "boolean" ? { lease_healthy: record4.lease_healthy } : {},
     ...(() => {
-      const progress = normalizeMemberProgress(record3.progress);
+      const progress = normalizeMemberProgress(record4.progress);
       return progress ? { progress } : {};
     })(),
     ...(() => {
-      const session_repair = normalizeIdentitySessionRepair(record3.session_repair);
+      const session_repair = normalizeIdentitySessionRepair(record4.session_repair);
       return session_repair ? { session_repair } : {};
     })()
   };
 }
 function normalizeIdentityInspectViewState(value) {
-  const record3 = value && typeof value === "object" ? value : null;
+  const record4 = value && typeof value === "object" ? value : null;
   const statusRow = normalizeIdentityStatusRow(value);
-  if (!record3 || !statusRow) {
+  if (!record4 || !statusRow) {
     return null;
   }
-  const continuityRecord = record3.continuity && typeof record3.continuity === "object" ? record3.continuity : {};
-  const leaseRecord = record3.lease && typeof record3.lease === "object" ? record3.lease : record3.lease === null ? null : void 0;
+  const continuityRecord = record4.continuity && typeof record4.continuity === "object" ? record4.continuity : {};
+  const leaseRecord = record4.lease && typeof record4.lease === "object" ? record4.lease : record4.lease === null ? null : void 0;
   return {
     ...statusRow,
     continuity: {
@@ -758,49 +809,49 @@ function normalizeIdentityInspectViewState(value) {
         healthy: leaseRecord.healthy
       }
     } : {},
-    ...trimString(record3.output_preview) !== void 0 ? { output_preview: trimString(record3.output_preview) ?? null } : {},
-    ...typeof record3.is_final === "boolean" || record3.is_final === null ? { is_final: record3.is_final } : {},
-    ...normalizeFiniteNumber(record3.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record3.peer_reachable_count) } : record3.peer_reachable_count === null ? { peer_reachable_count: null } : {},
-    ...normalizeStringArray(record3.topology_peers) ? { topology_peers: normalizeStringArray(record3.topology_peers) } : {},
-    ...Array.isArray(record3.recent_tool_calls) ? { recent_tool_calls: record3.recent_tool_calls } : {},
-    ...normalizeFiniteNumber(record3.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record3.last_activity_ms) } : record3.last_activity_ms === null ? { last_activity_ms: null } : {}
+    ...trimString(record4.output_preview) !== void 0 ? { output_preview: trimString(record4.output_preview) ?? null } : {},
+    ...typeof record4.is_final === "boolean" || record4.is_final === null ? { is_final: record4.is_final } : {},
+    ...normalizeFiniteNumber(record4.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record4.peer_reachable_count) } : record4.peer_reachable_count === null ? { peer_reachable_count: null } : {},
+    ...normalizeStringArray(record4.topology_peers) ? { topology_peers: normalizeStringArray(record4.topology_peers) } : {},
+    ...Array.isArray(record4.recent_tool_calls) ? { recent_tool_calls: record4.recent_tool_calls } : {},
+    ...normalizeFiniteNumber(record4.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record4.last_activity_ms) } : record4.last_activity_ms === null ? { last_activity_ms: null } : {}
   };
 }
 function normalizeGatingActionResult(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
-  const pendingId = trimString(record3.pending_id);
-  const actionId = trimString(record3.action_id);
-  const approverId = trimString(record3.approver_id);
-  const decidedAt = normalizeFiniteNumber(record3.decided_at_ms);
+  const pendingId = trimString(record4.pending_id);
+  const actionId = trimString(record4.action_id);
+  const approverId = trimString(record4.approver_id);
+  const decidedAt = normalizeFiniteNumber(record4.decided_at_ms);
   if (!pendingId || !actionId || !approverId || decidedAt === void 0) {
     return null;
   }
-  if (record3.decision !== "approve" && record3.decision !== "reject" && record3.decision !== "escalate") {
+  if (record4.decision !== "approve" && record4.decision !== "reject" && record4.decision !== "escalate") {
     return null;
   }
-  if (record3.outcome !== "allowed" && record3.outcome !== "safe_draft" && record3.outcome !== "pending_approval") {
+  if (record4.outcome !== "allowed" && record4.outcome !== "safe_draft" && record4.outcome !== "pending_approval") {
     return null;
   }
   return {
     pending_id: pendingId,
     action_id: actionId,
     approver_id: approverId,
-    decision: record3.decision,
-    outcome: record3.outcome,
+    decision: record4.decision,
+    outcome: record4.outcome,
     decided_at_ms: decidedAt,
-    ...trimString(record3.reason) ? { reason: trimString(record3.reason) } : {},
-    ...trimString(record3.next_pending_id) ? { next_pending_id: trimString(record3.next_pending_id) } : {}
+    ...trimString(record4.reason) ? { reason: trimString(record4.reason) } : {},
+    ...trimString(record4.next_pending_id) ? { next_pending_id: trimString(record4.next_pending_id) } : {}
   };
 }
 function normalizeRoutingSectionView(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
-  const routes = Array.isArray(record3.routes) ? record3.routes.map((entry) => {
+  const routes = Array.isArray(record4.routes) ? record4.routes.map((entry) => {
     const route = entry && typeof entry === "object" ? entry : null;
     if (!route) {
       return null;
@@ -823,7 +874,7 @@ function normalizeRoutingSectionView(value) {
       ...normalizeFiniteNumber(route.rate_limit_per_minute) !== void 0 ? { rate_limit_per_minute: normalizeFiniteNumber(route.rate_limit_per_minute) } : {}
     };
   }).filter((entry) => Boolean(entry)) : [];
-  const deliveries = Array.isArray(record3.deliveries) ? record3.deliveries.map((entry) => {
+  const deliveries = Array.isArray(record4.deliveries) ? record4.deliveries.map((entry) => {
     const delivery = entry && typeof entry === "object" ? entry : null;
     if (!delivery) {
       return null;
@@ -873,13 +924,13 @@ function normalizeRoutingSectionView(value) {
   return { routes, deliveries };
 }
 function normalizeReplayUnavailableError(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3 || record3.error !== "replay_unavailable" && record3.type !== "replay_unavailable") {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4 || record4.error !== "replay_unavailable" && record4.type !== "replay_unavailable") {
     return null;
   }
-  const explicitStream = record3.stream === "identity" || record3.stream === "all_events" || record3.stream === "timeline" ? record3.stream : null;
-  const requested = trimString(record3.requested_last_event_id) || trimString(record3.requested_cursor);
-  const latest = trimString(record3.latest_event_id) || trimString(record3.latest_cursor);
+  const explicitStream = record4.stream === "identity" || record4.stream === "all_events" || record4.stream === "timeline" ? record4.stream : null;
+  const requested = trimString(record4.requested_last_event_id) || trimString(record4.requested_cursor);
+  const latest = trimString(record4.latest_event_id) || trimString(record4.latest_cursor);
   const stream = explicitStream || (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
@@ -892,12 +943,12 @@ function normalizeReplayUnavailableError(value) {
   };
 }
 function normalizeConsoleInteractionRejectedError(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) {
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) {
     return null;
   }
-  const code4 = record3.code;
-  const message = trimString(record3.message);
+  const code4 = record4.code;
+  const message = trimString(record4.message);
   if (code4 !== -32001 && code4 !== -32002 && code4 !== -32003 && code4 !== -32004 && code4 !== -32602 && code4 !== -32603) {
     return null;
   }
@@ -1689,25 +1740,25 @@ function trimmedString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 function runtimeEventFromFrame(eventType, data) {
-  const record3 = recordOf(data);
-  const peerRecord = recordOf(record3?.peer);
+  const record4 = recordOf(data);
+  const peerRecord = recordOf(record4?.peer);
   const peer = peerRecord ? {
     id: trimmedString(peerRecord.id),
     displayName: trimmedString(peerRecord.display_name)
   } : null;
   return {
     eventType,
-    kind: trimmedString(record3?.kind),
+    kind: trimmedString(record4?.kind),
     peer: peer && (peer.id || peer.displayName) ? peer : null,
-    senderTaint: trimmedString(record3?.sender_taint),
+    senderTaint: trimmedString(record4?.sender_taint),
     payload: data
   };
 }
 function entryOriginFromFrameData(data) {
-  const record3 = recordOf(data);
-  const sendOrigin = trimmedString(record3?.origin);
-  const originKind = trimmedString(record3?.origin_kind);
-  const renderMetadata = recordOf(recordOf(record3?.message)?.render_metadata);
+  const record4 = recordOf(data);
+  const sendOrigin = trimmedString(record4?.origin);
+  const originKind = trimmedString(record4?.origin_kind);
+  const renderMetadata = recordOf(recordOf(record4?.message)?.render_metadata);
   const renderClass = trimmedString(renderMetadata?.class);
   if (!sendOrigin && !originKind && !renderClass) return null;
   return {
@@ -1720,8 +1771,8 @@ function runtimeEventText(event, options = {}) {
   if (event.peer) {
     return describeRuntimeEvent(event, null, options).sentence || "";
   }
-  const record3 = recordOf(event.payload);
-  const detail = trimmedString(record3?.message) || trimmedString(record3?.error) || trimmedString(record3?.reason) || trimmedString(record3?.text) || trimmedString(record3?.result) || trimmedString(record3?.delta);
+  const record4 = recordOf(event.payload);
+  const detail = trimmedString(record4?.message) || trimmedString(record4?.error) || trimmedString(record4?.reason) || trimmedString(record4?.text) || trimmedString(record4?.result) || trimmedString(record4?.delta);
   const title = humanizeRuntimeEventType(event.eventType);
   return detail ? `${title}: ${detail}` : `${title}.`;
 }
@@ -3140,10 +3191,10 @@ function reconcileAssistantMessageFrames(frames) {
 }
 
 // packages/console-core/src/runtime-append-projection.ts
-function record(value) {
+function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-function identifier(value) {
+function identifier2(value) {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
 }
 function ordinal(value) {
@@ -3160,7 +3211,7 @@ var optionalStrings = (value, keys2) => keys2.every((key) => optional(value[key]
 var operation = (value) => oneOf(value, ["add", "remove", "reload"]);
 var phase = (value) => oneOf(value, ["pending", "applied", "draining", "forced", "failed"]);
 function contentBlock(value) {
-  const block = record(value);
+  const block = record2(value);
   if (!block) return false;
   switch (block.type) {
     case "text":
@@ -3172,7 +3223,7 @@ function contentBlock(value) {
     case "structured":
       return Object.hasOwn(block, "data");
     case "skill_context": {
-      const key = record(block.skill_key);
+      const key = record2(block.skill_key);
       return string(block.text) && !!key && uuid(key.source_uuid) && string(key.skill_name) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key.skill_name);
     }
     default:
@@ -3180,7 +3231,7 @@ function contentBlock(value) {
   }
 }
 function toolConfigStatus(value) {
-  const status = record(value);
+  const status = record2(value);
   if (!status) return false;
   switch (status.kind) {
     case "boundary_applied":
@@ -3196,20 +3247,20 @@ function toolConfigStatus(value) {
   }
 }
 function toolConfig(value) {
-  const payload = record(value);
+  const payload = record2(value);
   return !!payload && operation(payload.operation) && string(payload.target) && boolean(payload.persisted) && toolConfigStatus(payload.status_info) && optional(payload.applied_at_turn, (value2) => ordinal(value2) && value2 <= 4294967295) && optional(payload.domain, (value2) => oneOf(value2, ["tool_scope", "deferred_catalog"])) && optional(payload.deferred_catalog_delta, (value2) => {
-    const delta = record(value2);
+    const delta = record2(value2);
     return !!delta && ["added_hidden_names", "removed_hidden_names", "pending_sources"].every((key) => defaulted(delta[key], strings));
   });
 }
 function noticeBlock(value) {
-  const block = record(value);
+  const block = record2(value);
   if (!block || !string(block.type)) return false;
   const content3 = (value2) => Array.isArray(value2) && value2.every(contentBlock);
   switch (block.type) {
     case "comms":
       return string(block.kind) && oneOf(block.direction, ["incoming", "outgoing", "internal"]) && optional(block.peer, (value2) => {
-        const peer = record(value2);
+        const peer = record2(value2);
         return !!peer && uuid(peer.id) && optional(peer.display_name, string);
       }) && optional(block.sender_taint, (value2) => oneOf(value2, ["clean", "tainted"])) && optionalStrings(block, ["request_id", "intent", "status", "summary"]) && defaulted(block.content, content3);
     case "external_event":
@@ -3249,11 +3300,11 @@ function consoleCursor(value) {
   return ordinal(cursor) ? cursor : null;
 }
 function originOf(message) {
-  const origin = record(message?.runtime_origin);
-  return origin && identifier(origin.session_id) && identifier(origin.run_id) && identifier(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
+  const origin = record2(message?.runtime_origin);
+  return origin && identifier2(origin.session_id) && identifier2(origin.run_id) && identifier2(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
 }
 function scopeOf(frame) {
-  return identifier(frame.runtimeKey) && identifier(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
+  return identifier2(frame.runtimeKey) && identifier2(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
 }
 function logicalKey(frame, origin) {
   return `runtime-notice:${JSON.stringify([
@@ -3266,20 +3317,20 @@ function logicalKey(frame, origin) {
 }
 function runtimeAppendNoticeKey(frame) {
   if (frame.event !== "system_notice" || !scopeOf(frame)) return null;
-  const origin = originOf(record(record(frame.data)?.message));
+  const origin = originOf(record2(record2(frame.data)?.message));
   return origin ? logicalKey(frame, origin) : null;
 }
 function attemptKey(scope, runId, inputId) {
   return JSON.stringify([scope, runId, inputId]);
 }
 function noticeSnapshot(frame) {
-  const data = record(frame.data), scope = scopeOf(frame);
+  const data = record2(frame.data), scope = scopeOf(frame);
   const cursor = consoleCursor(frame.cursor), observedThrough = consoleCursor(data?.observed_through);
   if (frame.event !== "runtime_notice_snapshot" || frame.sourceKind !== "session_history" || !scope || data?.session_id !== frame.sessionId || data.complete !== true || cursor === null || observedThrough === null || observedThrough >= cursor || !Array.isArray(data.notices) || !Array.isArray(data.settled_attempts)) return null;
   const notices = [];
   const offsets = /* @__PURE__ */ new Set(), identities = /* @__PURE__ */ new Set();
   for (const value of data.notices) {
-    const row = record(value), message = record(row?.message), origin = originOf(message);
+    const row = record2(value), message = record2(row?.message), origin = originOf(message);
     if (!row || !ordinal(row.offset) || !message || !origin || !canonicalNotice(message)) return null;
     const key = logicalKey(frame, origin);
     if (offsets.has(row.offset) || identities.has(key)) return null;
@@ -3289,8 +3340,8 @@ function noticeSnapshot(frame) {
   }
   const settled = /* @__PURE__ */ new Set();
   for (const value of data.settled_attempts) {
-    const attempt = record(value);
-    if (!attempt || !identifier(attempt.run_id) || !identifier(attempt.input_id)) return null;
+    const attempt = record2(value);
+    if (!attempt || !identifier2(attempt.run_id) || !identifier2(attempt.input_id)) return null;
     settled.add(attemptKey(scope, attempt.run_id, attempt.input_id));
   }
   let historyPositions;
@@ -3298,9 +3349,9 @@ function noticeSnapshot(frame) {
     if (!Array.isArray(data.history_positions)) return null;
     historyPositions = /* @__PURE__ */ new Map();
     for (const value of data.history_positions) {
-      const row = record(value);
+      const row = record2(value);
       const position3 = positionFromCursor(frame.sessionId, row?.source_cursor);
-      if (!row || !identifier(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
+      if (!row || !identifier2(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
       historyPositions.set(row.frame_id, position3);
     }
   }
@@ -3310,7 +3361,7 @@ function noticeSnapshot(frame) {
   if (sparseHistoryPositions) {
     if (!historyPositions || !Array.isArray(data.removed_history_frame_ids)) return null;
     for (const id of data.removed_history_frame_ids) {
-      if (!identifier(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
+      if (!identifier2(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
       removedHistoryFrameIds.add(id);
     }
   } else if (data.removed_history_frame_ids !== void 0) return null;
@@ -3344,7 +3395,7 @@ function reconcileAssistantHistoryPositions(frames) {
   }
   return frames.filter((frame) => {
     if (frame.sourceKind !== "session_history") return true;
-    const message = record(record(frame.data)?.message);
+    const message = record2(record2(frame.data)?.message);
     if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
     const key = scope(frame), assistant = assistants.get(key), position3 = positions.get(key);
     const cursor = assistantMessageCursorSequence(frame.cursor);
@@ -3360,10 +3411,10 @@ function positionFromCursor(sessionId, sourceCursor) {
   return parts.map((part) => /^\d+$/.test(part) ? Number(part) : part);
 }
 function canonicalPosition(frame) {
-  return frame.sourceKind === "session_history" && identifier(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
+  return frame.sourceKind === "session_history" && identifier2(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
 }
 function sourceSequence(frame) {
-  const value = record(frame.data)?.source_sequence;
+  const value = record2(frame.data)?.source_sequence;
   return frame.sourceKind === "console_event" && ordinal(value) ? value : void 0;
 }
 function comparePosition(left, right) {
@@ -3400,9 +3451,9 @@ function toolCounterpartKey(item) {
   const call = ["tool_call_requested", "tool_call", "tool_execution_started"].includes(item.frame.event);
   const result = ["tool_result_received", "tool_execution_completed"].includes(item.frame.event);
   if (!call && !result) return null;
-  const data = record(item.frame.data);
+  const data = record2(item.frame.data);
   const id = data?.tool_call_id ?? data?.id;
-  return identifier(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
+  return identifier2(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
 }
 function userCounterpartKey(item) {
   const id = item.frame.interactionId;
@@ -3490,9 +3541,9 @@ function reconcileRuntimeAppendFrames(frames) {
   const discarded = /* @__PURE__ */ new Set();
   for (const frame of frames) {
     if (frame.event !== "boundary_appends_discarded" || frame.sourceKind !== "console_event") continue;
-    const data = record(frame.data), scope = scopeOf(frame);
-    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
-    for (const input of data.input_ids) if (identifier(input)) discarded.add(attemptKey(scope, data.run_id, input));
+    const data = record2(frame.data), scope = scopeOf(frame);
+    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier2(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
+    for (const input of data.input_ids) if (identifier2(input)) discarded.add(attemptKey(scope, data.run_id, input));
   }
   const nodes = [];
   const candidates = /* @__PURE__ */ new Map();
@@ -3506,15 +3557,15 @@ function reconcileRuntimeAppendFrames(frames) {
   };
   for (const frame of frames) {
     if (frame.event === "boundary_appends_discarded" || frame.event === "runtime_notice_snapshot") continue;
-    const data = record(frame.data), scope = scopeOf(frame);
+    const data = record2(frame.data), scope = scopeOf(frame);
     const snapshot = scope ? snapshots.get(scope) : void 0;
     const cursor = consoleCursor(frame.cursor);
     const observed = snapshot && cursor !== null && cursor <= snapshot.observedThrough;
     if (frame.event === "boundary_append_applied") {
       if (!Array.isArray(data?.notices) || !data.notices.length) continue;
-      if (frame.sourceKind !== "console_event" || !scope || !identifier(frame.runId) || data.run_id !== frame.runId || !identifier(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
+      if (frame.sourceKind !== "console_event" || !scope || !identifier2(frame.runId) || data.run_id !== frame.runId || !identifier2(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
       for (const value of data.notices) {
-        const message = record(value), origin = originOf(message);
+        const message = record2(value), origin = originOf(message);
         if (!message || !origin || origin.session_id !== frame.sessionId || origin.run_id !== frame.runId || origin.input_id !== data.input_id || origin.append_ordinal >= data.append_count || !ordinal(data.transcript_start + origin.append_ordinal)) continue;
         const timestamp = typeof message.created_at === "string" ? Date.parse(message.created_at) : NaN;
         const noticeFrame = {
@@ -3540,7 +3591,7 @@ function reconcileRuntimeAppendFrames(frames) {
       node2.position = snapshot.sparseHistoryPositions ? snapshot.removedHistoryFrameIds.has(frame.id) ? void 0 : snapshot.historyPositions.get(frame.id) ?? node2.position : snapshot.historyPositions.get(frame.id);
     }
     if (frame.event === "system_notice" && frame.sourceKind === "session_history" && scope) {
-      const message = record(data?.message), origin = originOf(message);
+      const message = record2(data?.message), origin = originOf(message);
       if (origin) {
         if (observed) continue;
         node2.origin = origin;
@@ -3620,12 +3671,12 @@ var byteLength = (text8) => new TextEncoder().encode(text8).length;
 function validateConsoleContexts(records) {
   if (records.length > MAX_CONSOLE_CONTEXTS) throw new Error("A message can include at most 8 quotes.");
   const ids = /* @__PURE__ */ new Set();
-  for (const record3 of records) {
-    if (record3.version !== 1 || typeof record3.id !== "string" || !record3.id || ids.has(record3.id) || typeof record3.sourceScope !== "string" || !record3.sourceScope || typeof record3.sourceIdentity !== "string" || !record3.sourceIdentity || typeof record3.messageId !== "string" || !record3.messageId || typeof record3.quote !== "string" || !record3.quote || typeof record3.label !== "string" || !record3.label || record3.conversationId !== void 0 && typeof record3.conversationId !== "string") {
+  for (const record4 of records) {
+    if (record4.version !== 1 || typeof record4.id !== "string" || !record4.id || ids.has(record4.id) || typeof record4.sourceScope !== "string" || !record4.sourceScope || typeof record4.sourceIdentity !== "string" || !record4.sourceIdentity || typeof record4.messageId !== "string" || !record4.messageId || typeof record4.quote !== "string" || !record4.quote || typeof record4.label !== "string" || !record4.label || record4.conversationId !== void 0 && typeof record4.conversationId !== "string") {
       throw new Error("The quote context is invalid or has an unsupported version.");
     }
-    ids.add(record3.id);
-    if (record3.sourceRange && (record3.sourceRange.unit !== "utf16" || !Number.isSafeInteger(record3.sourceRange.start) || record3.sourceRange.start < 0 || !Number.isSafeInteger(record3.sourceRange.end) || record3.sourceRange.end !== record3.sourceRange.start + record3.quote.length)) {
+    ids.add(record4.id);
+    if (record4.sourceRange && (record4.sourceRange.unit !== "utf16" || !Number.isSafeInteger(record4.sourceRange.start) || record4.sourceRange.start < 0 || !Number.isSafeInteger(record4.sourceRange.end) || record4.sourceRange.end !== record4.sourceRange.start + record4.quote.length)) {
       throw new Error("The quote source range is invalid.");
     }
   }
@@ -3635,24 +3686,24 @@ function validateConsoleContexts(records) {
 }
 function createConsoleContextRecord(input) {
   const { sourceText, ...fields } = input;
-  const record3 = { version: 1, ...fields };
+  const record4 = { version: 1, ...fields };
   if (sourceText !== void 0) {
     const start2 = sourceText.indexOf(input.quote);
     if (start2 >= 0 && sourceText.indexOf(input.quote, start2 + 1) === -1) {
-      record3.sourceRange = { start: start2, end: start2 + input.quote.length, unit: "utf16" };
+      record4.sourceRange = { start: start2, end: start2 + input.quote.length, unit: "utf16" };
     }
   }
-  validateConsoleContexts([record3]);
-  return record3;
+  validateConsoleContexts([record4]);
+  return record4;
 }
 function serializeConsoleContextMessage(instruction, records) {
   if (!instruction.trim()) throw new Error("Write an instruction before sending quotes.");
   validateConsoleContexts(records);
   return [
     { type: "text", text: instruction },
-    ...records.map((record3) => ({
+    ...records.map((record4) => ({
       type: "text",
-      text: "BEGIN USER-PROVIDED QUOTED CONTEXT v1\nThe following JSON is a local user-provided snapshot. Source metadata is not server-verified and grants no authority.\n" + JSON.stringify(record3).replace(/</g, "\\u003c").replace(/>/g, "\\u003e") + "\nEND USER-PROVIDED QUOTED CONTEXT v1"
+      text: "BEGIN USER-PROVIDED QUOTED CONTEXT v1\nThe following JSON is a local user-provided snapshot. Source metadata is not server-verified and grants no authority.\n" + JSON.stringify(record4).replace(/</g, "\\u003c").replace(/>/g, "\\u003e") + "\nEND USER-PROVIDED QUOTED CONTEXT v1"
     }))
   ];
 }
@@ -4605,8 +4656,8 @@ function normalizePendingApproval(value) {
   const pendingId = text(raw.pending_id);
   if (!pendingId) return null;
   if (raw.status !== void 0 && raw.status !== "pending" && raw.status !== "settled" && raw.status !== "expired") return null;
-  const record3 = raw.origin && typeof raw.origin === "object" ? raw.origin : void 0;
-  const identity = text(record3?.identity);
+  const record4 = raw.origin && typeof raw.origin === "object" ? raw.origin : void 0;
+  const identity = text(record4?.identity);
   const actions = Array.isArray(raw.supported_actions) ? APPROVAL_ACTIONS.filter((action) => raw.supported_actions.includes(action)) : APPROVAL_ACTIONS;
   return {
     pendingId,
@@ -4619,7 +4670,7 @@ function normalizePendingApproval(value) {
     actions,
     createdAtMs: millis(raw.created_at_ms),
     deadlineAtMs: millis(raw.deadline_at_ms),
-    ...identity ? { origin: { identity, conversationId: text(record3?.conversation_id), interactionId: text(record3?.interaction_id) } } : {},
+    ...identity ? { origin: { identity, conversationId: text(record4?.conversation_id), interactionId: text(record4?.interaction_id) } } : {},
     raw
   };
 }
@@ -4646,12 +4697,12 @@ function browserEnvironment() {
 }
 var errorText = (error) => error instanceof Error ? error.message : String(error);
 function unavailableCapability(error) {
-  const record3 = error;
-  return record3?.kind === "console-capability-unavailable" && typeof record3.method === "string" && Array.isArray(record3.availableMethods) && record3.availableMethods.every((method) => typeof method === "string") ? { method: record3.method, availableMethods: record3.availableMethods } : null;
+  const record4 = error;
+  return record4?.kind === "console-capability-unavailable" && typeof record4.method === "string" && Array.isArray(record4.availableMethods) && record4.availableMethods.every((method) => typeof method === "string") ? { method: record4.method, availableMethods: record4.availableMethods } : null;
 }
 var isDenied = (error) => {
-  const record3 = error;
-  return record3?.httpStatus === 401 || record3?.httpStatus === 403 || record3?.rpcError?.code === -32030 || record3?.rpcError?.data?.kind === "access_denied";
+  const record4 = error;
+  return record4?.httpStatus === 401 || record4?.httpStatus === 403 || record4?.rpcError?.code === -32030 || record4?.rpcError?.data?.kind === "access_denied";
 };
 function createPendingApprovalResource(input) {
   const env2 = input.environment || browserEnvironment();
@@ -4937,10 +4988,10 @@ function reconcileConsoleSendReceipt(attempt, frame, resolution) {
 
 // packages/console-core/src/context-edit.ts
 function editConsoleContextQuote(records, id, quote) {
-  if (!records.some((record3) => record3.id === id)) throw new Error("This quote is no longer in the draft.");
-  const next = records.map((record3) => {
-    if (record3.id !== id || record3.quote === quote) return record3;
-    const { sourceRange: _sourceRange, ...snapshot } = record3;
+  if (!records.some((record4) => record4.id === id)) throw new Error("This quote is no longer in the draft.");
+  const next = records.map((record4) => {
+    if (record4.id !== id || record4.quote === quote) return record4;
+    const { sourceRange: _sourceRange, ...snapshot } = record4;
     return { ...snapshot, quote };
   });
   validateConsoleContexts(next);
@@ -5568,7 +5619,7 @@ function useConversationScrollController(options) {
     };
     observeRows();
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record3) => record3.type === "childList")) observeRows();
+      if (records.some((record4) => record4.type === "childList")) observeRows();
       notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
@@ -11535,7 +11586,7 @@ var titleBefore = {
 };
 function tokenizeDefinition(effects, ok3, nok) {
   const self2 = this;
-  let identifier2;
+  let identifier3;
   return start2;
   function start2(code4) {
     effects.enter("definition");
@@ -11554,7 +11605,7 @@ function tokenizeDefinition(effects, ok3, nok) {
     )(code4);
   }
   function labelAfter(code4) {
-    identifier2 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
+    identifier3 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
     if (code4 === 58) {
       effects.enter("definitionMarker");
       effects.consume(code4);
@@ -11588,7 +11639,7 @@ function tokenizeDefinition(effects, ok3, nok) {
   function afterWhitespace(code4) {
     if (code4 === null || markdownLineEnding(code4)) {
       effects.exit("definition");
-      self2.parser.defined.push(identifier2);
+      self2.parser.defined.push(identifier3);
       return ok3(code4);
     }
     return nok(code4);
@@ -13605,7 +13656,7 @@ function serializeChunks(chunks, expandTabs) {
 }
 
 // console/node_modules/micromark/lib/parse.js
-function parse(options) {
+function parse2(options) {
   const settings = options || {};
   const constructs2 = (
     /** @type {FullNormalizedExtension} */
@@ -13741,7 +13792,7 @@ function fromMarkdown(value, encoding, options) {
     options = encoding;
     encoding = void 0;
   }
-  return compiler(options)(postprocess(parse(options).document().write(preprocess()(value, encoding, true))));
+  return compiler(options)(postprocess(parse2(options).document().write(preprocess()(value, encoding, true))));
 }
 function compiler(options) {
   const config = {
@@ -19641,7 +19692,7 @@ function tokenizeGfmFootnoteCall(effects, ok3, nok) {
 function tokenizeDefinitionStart(effects, ok3, nok) {
   const self2 = this;
   const defined = self2.parser.gfmFootnotes || (self2.parser.gfmFootnotes = []);
-  let identifier2;
+  let identifier3;
   let size = 0;
   let data;
   return start2;
@@ -19677,7 +19728,7 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
     if (code4 === 93) {
       effects.exit("chunkString");
       const token = effects.exit("gfmFootnoteDefinitionLabelString");
-      identifier2 = normalizeIdentifier(self2.sliceSerialize(token));
+      identifier3 = normalizeIdentifier(self2.sliceSerialize(token));
       effects.enter("gfmFootnoteDefinitionLabelMarker");
       effects.consume(code4);
       effects.exit("gfmFootnoteDefinitionLabelMarker");
@@ -19704,8 +19755,8 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
       effects.enter("definitionMarker");
       effects.consume(code4);
       effects.exit("definitionMarker");
-      if (!defined.includes(identifier2)) {
-        defined.push(identifier2);
+      if (!defined.includes(identifier3)) {
+        defined.push(identifier3);
       }
       return factorySpace(effects, whitespaceAfter, "gfmFootnoteDefinitionWhitespace");
     }
@@ -21159,19 +21210,19 @@ function QuoteCopyIcon({ name: name2 }) {
 function DeliveredContextMessage({ message }) {
   return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "cc-delivered-context", children: [
     /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("p", { className: "cc-delivered-context__instruction", children: message.instruction }),
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-delivered-context__sources", "aria-label": "Quoted context", children: message.records.map((record3) => /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figure", { className: "cc-delivered-context__source", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-delivered-context__sources", "aria-label": "Quoted context", children: message.records.map((record4) => /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figure", { className: "cc-delivered-context__source", children: [
       /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("figcaption", { className: "cc-delivered-context__caption", children: [
         /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("span", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("strong", { children: [
             "Quoted from ",
-            record3.label
+            record4.label
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("small", { children: "User-provided snapshot" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record3.quote, label: `Copy quote from ${record3.label}`, copiedLabel: "Copied quote" })
+        /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyButton, { Icon: QuoteCopyIcon, text: record4.quote, label: `Copy quote from ${record4.label}`, copiedLabel: "Copied quote" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("blockquote", { className: "cc-delivered-context__quote", children: record3.quote })
-    ] }, record3.id)) })
+      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("blockquote", { className: "cc-delivered-context__quote", children: record4.quote })
+    ] }, record4.id)) })
   ] });
 }
 
@@ -22362,11 +22413,11 @@ function commsBlocksFromFrameData(data) {
   const blocks = [];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
-    const record3 = candidate;
-    const recordKind = textFromUnknown2(record3.kind);
-    if (recordKind === "comms") blocks.push(record3);
-    if (!Array.isArray(record3.blocks)) continue;
-    for (const block of record3.blocks) {
+    const record4 = candidate;
+    const recordKind = textFromUnknown2(record4.kind);
+    if (recordKind === "comms") blocks.push(record4);
+    if (!Array.isArray(record4.blocks)) continue;
+    for (const block of record4.blocks) {
       if (!block || typeof block !== "object") continue;
       const blockRecord = block;
       if (textFromUnknown2(blockRecord.type) === "comms") blocks.push(blockRecord);
@@ -24157,9 +24208,9 @@ function QuoteActionIcon({ action }) {
     /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "m10.8 5.2 4 4" })
   ] }) : action === "remove" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "m5 5 10 10M15 5 5 15" }) : action === "up" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "M10 16V4m-5 5 5-5 5 5" }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("path", { d: "M10 4v12m-5-5 5 5 5-5" }) });
 }
-function QuoteContextChip({ record: record3, index: index2, records, onEdit, onRemove, onReorder }) {
+function QuoteContextChip({ record: record4, index: index2, records, onEdit, onRemove, onReorder }) {
   const [editing, setEditing] = (0, import_react25.useState)(false);
-  const [draft, setDraft] = (0, import_react25.useState)(record3.quote);
+  const [draft, setDraft] = (0, import_react25.useState)(record4.quote);
   const [saving, setSaving] = (0, import_react25.useState)(false);
   const [error, setError] = (0, import_react25.useState)("");
   const editorRef = (0, import_react25.useRef)(null);
@@ -24187,10 +24238,10 @@ function QuoteContextChip({ record: record3, index: index2, records, onEdit, onR
   async function save() {
     if (!onEdit || saving) return;
     try {
-      editConsoleContextQuote(records, record3.id, draft);
+      editConsoleContextQuote(records, record4.id, draft);
       setSaving(true);
       setError("");
-      await onEdit(record3.id, draft);
+      await onEdit(record4.id, draft);
       cancel();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -24200,12 +24251,12 @@ function QuoteContextChip({ record: record3, index: index2, records, onEdit, onR
   }
   return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("li", { className: `cc-context-chip${editing && onEdit ? " cc-context-chip--editing" : ""}`, children: editing && onEdit ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "cc-context-chip__editor", children: [
     /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("label", { children: [
-      record3.label,
+      record4.label,
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
         "textarea",
         {
           ref: editorRef,
-          "aria-label": `Quote from ${record3.label}`,
+          "aria-label": `Quote from ${record4.label}`,
           value: draft,
           rows: 4,
           "aria-invalid": !!error,
@@ -24232,24 +24283,24 @@ function QuoteContextChip({ record: record3, index: index2, records, onEdit, onR
     ] })
   ] }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("details", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("summary", { children: record3.label }),
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("blockquote", { children: record3.quote }),
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("summary", { children: record4.label }),
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("blockquote", { children: record4.quote }),
       /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("small", { children: [
         "User-provided snapshot",
-        record3.sourceRange ? "" : "; original source range unavailable"
+        record4.sourceRange ? "" : "; original source range unavailable"
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "cc-context-chip__actions", children: [
       onReorder ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record3.id, "up"), "aria-label": `Move quote from ${record3.label} earlier`, title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "up" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record3.id, "down"), "aria-label": `Move quote from ${record3.label} later`, title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "down" }) })
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === 0, onClick: () => onReorder(record4.id, "up"), "aria-label": `Move quote from ${record4.label} earlier`, title: "Move quote earlier", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "up" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", disabled: index2 === records.length - 1, onClick: () => onReorder(record4.id, "down"), "aria-label": `Move quote from ${record4.label} later`, title: "Move quote later", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "down" }) })
       ] }) : null,
       onEdit ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", ref: editButtonRef, onClick: () => {
-        setDraft(record3.quote);
+        setDraft(record4.quote);
         setError("");
         setEditing(true);
-      }, "aria-label": `Edit quote from ${record3.label}`, title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
-      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: () => onRemove(record3.id), "aria-label": `Remove quote from ${record3.label}`, title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
+      }, "aria-label": `Edit quote from ${record4.label}`, title: "Edit quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "edit" }) }) : null,
+      onRemove ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: () => onRemove(record4.id), "aria-label": `Remove quote from ${record4.label}`, title: "Remove quote", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteActionIcon, { action: "remove" }) }) : null
     ] })
   ] }) });
 }
@@ -24260,7 +24311,7 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
       "Quoted context for ",
       destinationLabel
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("ul", { children: records.map((record3, index2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteContextChip, { record: record3, index: index2, records, ...actions }, record3.id)) })
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("ul", { children: records.map((record4, index2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(QuoteContextChip, { record: record4, index: index2, records, ...actions }, record4.id)) })
   ] });
 }
 
@@ -24284,8 +24335,8 @@ function canonicalConsoleIdentityFromMap(identity, aliases) {
   return aliases.get(normalized) ?? normalized;
 }
 function normalizeModelCapabilities(entry) {
-  const record3 = entry && typeof entry === "object" ? entry : {};
-  const caps = record3.model_capabilities && typeof record3.model_capabilities === "object" ? record3.model_capabilities : {};
+  const record4 = entry && typeof entry === "object" ? entry : {};
+  const caps = record4.model_capabilities && typeof record4.model_capabilities === "object" ? record4.model_capabilities : {};
   return { image_input: caps.image_input === true };
 }
 function normalizeAgents(experience, modules) {
@@ -24422,16 +24473,16 @@ function asNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 function frameToolName(frame) {
-  const record3 = asRecord(frame.data);
-  if (!record3) return void 0;
-  return asString(record3.name) || asString(record3.tool_name);
+  const record4 = asRecord(frame.data);
+  if (!record4) return void 0;
+  return asString(record4.name) || asString(record4.tool_name);
 }
 function isCouncilToolFrame(frame) {
   if (!COUNCIL_TOOL_EVENTS.has(frame.event)) return false;
   return frameToolName(frame) === COUNCIL_TOOL_NAME;
 }
-function parseResultPayload(record3) {
-  const raw = record3.result;
+function parseResultPayload(record4) {
+  const raw = record4.result;
   if (typeof raw === "string") {
     try {
       return asRecord(JSON.parse(raw));
@@ -24441,15 +24492,15 @@ function parseResultPayload(record3) {
   }
   return asRecord(raw);
 }
-function parseArgsPayload(record3) {
-  if (typeof record3.arguments === "string") {
+function parseArgsPayload(record4) {
+  if (typeof record4.arguments === "string") {
     try {
-      return asRecord(JSON.parse(record3.arguments));
+      return asRecord(JSON.parse(record4.arguments));
     } catch {
       return null;
     }
   }
-  return asRecord(record3.arguments) || asRecord(record3.args);
+  return asRecord(record4.arguments) || asRecord(record4.args);
 }
 function councilStatusFromExitReason(reason) {
   if (!reason) return "pending";
@@ -24526,16 +24577,16 @@ function artifactClaimRows(merge2) {
   });
 }
 function councilEntryFromFrame(frame, identity, argsByCallId) {
-  const record3 = asRecord(frame.data);
-  if (!record3) return null;
-  const payload = parseResultPayload(record3);
+  const record4 = asRecord(frame.data);
+  if (!record4) return null;
+  const payload = parseResultPayload(record4);
   if (!payload) return null;
   const result = asRecord(payload.result);
   if (!result) return null;
   const councilId = asString(result.council_id);
   if (!councilId) return null;
-  const callId = asString(record3.tool_call_id) || asString(record3.id);
-  const args = parseArgsPayload(record3) || (callId ? argsByCallId?.get(callId) ?? null : null);
+  const callId = asString(record4.tool_call_id) || asString(record4.id);
+  const args = parseArgsPayload(record4) || (callId ? argsByCallId?.get(callId) ?? null : null);
   const exit3 = asRecord(result.exit_reason);
   const exitReason = exit3 ? asString(exit3.reason) : void 0;
   const merge2 = asRecord(result.merge);
@@ -24585,11 +24636,11 @@ function councilArgsByCallId(frames) {
   const out = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (!isCouncilToolFrame(frame)) continue;
-    const record3 = asRecord(frame.data);
-    if (!record3) continue;
-    const callId = asString(record3.tool_call_id) || asString(record3.id);
+    const record4 = asRecord(frame.data);
+    if (!record4) continue;
+    const callId = asString(record4.tool_call_id) || asString(record4.id);
     if (!callId) continue;
-    const args = parseArgsPayload(record3);
+    const args = parseArgsPayload(record4);
     if (args && !out.has(callId)) out.set(callId, args);
   }
   return out;
@@ -24603,12 +24654,12 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value : "";
 }
 function summarizeFailureData(data) {
-  const record3 = recordOf2(data);
-  if (!record3) return { message: "", reasonType: "" };
-  const report = recordOf2(record3.error_report);
-  const reason = recordOf2(report?.reason) ?? recordOf2(record3.reason);
-  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record3.reason) || nonEmptyString(reason?.kind);
-  const message = nonEmptyString(report?.message) || nonEmptyString(record3.error) || nonEmptyString(record3.message);
+  const record4 = recordOf2(data);
+  if (!record4) return { message: "", reasonType: "" };
+  const report = recordOf2(record4.error_report);
+  const reason = recordOf2(report?.reason) ?? recordOf2(record4.reason);
+  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record4.reason) || nonEmptyString(reason?.kind);
+  const message = nonEmptyString(report?.message) || nonEmptyString(record4.error) || nonEmptyString(record4.message);
   return { message, reasonType };
 }
 function describeFailure(data, fallback = "error") {
@@ -24796,15 +24847,15 @@ function summarizeFrameData(data) {
     return data;
   }
   if (typeof data === "object" && data !== null) {
-    const record3 = data;
-    if (typeof record3.delta === "string") return record3.delta;
-    if (typeof record3.text === "string" && record3.text.trim()) return record3.text;
-    if (typeof record3.result === "string") return record3.result;
-    if (typeof record3.message === "string" && record3.message.trim()) return record3.message;
-    if (typeof record3.error === "string" && record3.error.trim()) return record3.error;
-    if (typeof record3.reason === "string" && record3.reason.trim()) return record3.reason;
-    if (typeof record3.kind === "string" && typeof record3.event_type === "string") return "";
-    return JSON.stringify(record3);
+    const record4 = data;
+    if (typeof record4.delta === "string") return record4.delta;
+    if (typeof record4.text === "string" && record4.text.trim()) return record4.text;
+    if (typeof record4.result === "string") return record4.result;
+    if (typeof record4.message === "string" && record4.message.trim()) return record4.message;
+    if (typeof record4.error === "string" && record4.error.trim()) return record4.error;
+    if (typeof record4.reason === "string" && record4.reason.trim()) return record4.reason;
+    if (typeof record4.kind === "string" && typeof record4.event_type === "string") return "";
+    return JSON.stringify(record4);
   }
   return String(data ?? "");
 }
@@ -24853,9 +24904,9 @@ function describeMemoryTimelineEvent2(event, data) {
     case "memory.quarantine.release_blocked": {
       const verdict = memoryString(data, "verdict");
       const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
-      const record3 = memoryString(data, "record_id");
+      const record4 = memoryString(data, "record_id");
       const cls = memoryString(data, "class");
-      return `Quarantine ${action} blocked${record3 ? ` for ${record3}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
+      return `Quarantine ${action} blocked${record4 ? ` for ${record4}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
     }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
@@ -24920,8 +24971,8 @@ function describeMemoryTimelineEvent2(event, data) {
 function isSteerDeliveryTerminalFrame(frame) {
   if (frame.event !== "interaction_complete") return false;
   if (!frame.data || typeof frame.data !== "object") return false;
-  const record3 = frame.data;
-  return record3.reason === "steer_delivered";
+  const record4 = frame.data;
+  return record4.reason === "steer_delivered";
 }
 function eventSortRank(event) {
   switch (event) {
@@ -25069,12 +25120,12 @@ function textFromReasoningValue(value) {
     return value.map((item) => textFromReasoningValue(item)).filter(Boolean).join("\n\n").trim();
   }
   if (!value || typeof value !== "object") return "";
-  const record3 = value;
+  const record4 = value;
   const parts = [];
-  appendDistinctText(parts, textFromReasoningValue(record3.summary));
-  appendDistinctText(parts, textFromReasoningValue(record3.text));
-  appendDistinctText(parts, textFromReasoningValue(record3.content));
-  appendDistinctText(parts, textFromReasoningValue(record3.delta));
+  appendDistinctText(parts, textFromReasoningValue(record4.summary));
+  appendDistinctText(parts, textFromReasoningValue(record4.text));
+  appendDistinctText(parts, textFromReasoningValue(record4.content));
+  appendDistinctText(parts, textFromReasoningValue(record4.delta));
   return parts.join("\n\n").trim();
 }
 function reasoningBlockText(block) {
@@ -25120,42 +25171,42 @@ function isoFromTimestampMs(timestampMs) {
   return new Date(timestampMs).toISOString();
 }
 function parseToolCallId(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
+    const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
     const type = typeof content3?.type === "string" ? content3.type : "";
     const isAnnotationPayload = type === "message_annotations" || Array.isArray(content3?.annotations);
-    const id2 = isAnnotationPayload ? content3?.item_id ?? record3?.item_id ?? record3?.tool_call_id : content3?.item_id ?? content3?.id ?? record3?.item_id ?? record3?.tool_call_id ?? record3?.id;
+    const id2 = isAnnotationPayload ? content3?.item_id ?? record4?.item_id ?? record4?.tool_call_id : content3?.item_id ?? content3?.id ?? record4?.item_id ?? record4?.tool_call_id ?? record4?.id;
     return typeof id2 === "string" && id2.trim() ? id2.trim() : null;
   }
-  const id = record3?.tool_call_id ?? record3?.id;
+  const id = record4?.tool_call_id ?? record4?.id;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 function parseToolName(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
-    const name2 = content3?.name ?? record3?.tool_name ?? record3?.name ?? record3?.kind;
+    const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+    const name2 = content3?.name ?? record4?.tool_name ?? record4?.name ?? record4?.kind;
     return typeof name2 === "string" && name2.trim() ? name2.trim() : "tool";
   }
-  return typeof record3?.name === "string" && record3.name.trim() ? record3.name : "tool";
+  return typeof record4?.name === "string" && record4.name.trim() ? record4.name : "tool";
 }
 function parseToolArguments(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
+    const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
     const action = content3?.action && typeof content3.action === "object" ? content3.action : null;
     const queries = Array.isArray(action?.queries) ? action.queries.filter((query2) => typeof query2 === "string" && query2.trim().length > 0) : [];
     const query = queries.length > 0 ? queries.join("\n") : content3?.query ?? content3?.input ?? action?.query;
     return typeof query === "string" && query.trim() ? query.trim() : "";
   }
-  if (typeof record3?.arguments === "string" && record3.arguments.trim()) {
-    return record3.arguments;
+  if (typeof record4?.arguments === "string" && record4.arguments.trim()) {
+    return record4.arguments;
   }
-  if ("args" in (record3 || {}) && record3?.args !== void 0) {
-    return JSON.stringify(record3.args);
+  if ("args" in (record4 || {}) && record4?.args !== void 0) {
+    return JSON.stringify(record4.args);
   }
-  return JSON.stringify(record3 || {});
+  return JSON.stringify(record4 || {});
 }
 function normalizeToolArgumentsForSignature(argumentsText) {
   const trimmed = (argumentsText || "").trim();
@@ -25248,16 +25299,16 @@ function summarizePeerPayload(value) {
     return parts.length ? parts.join(" ") : void 0;
   }
   if (value && typeof value === "object") {
-    const record3 = value;
-    const type = typeof record3.type === "string" ? record3.type : "";
+    const record4 = value;
+    const type = typeof record4.type === "string" ? record4.type : "";
     if (type === "image" || type === "image_ref" || type === "image_upload") {
-      return typeof record3.alt === "string" && record3.alt.trim() ? record3.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
+      return typeof record4.alt === "string" && record4.alt.trim() ? record4.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
     }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
-      const summary = summarizePeerPayload(record3[key]);
+      const summary = summarizePeerPayload(record4[key]);
       if (summary) return summary;
     }
-    return JSON.stringify(record3);
+    return JSON.stringify(record4);
   }
   return void 0;
 }
@@ -25291,10 +25342,10 @@ function peerTargetFromArgs(argsRecord, peerRegistry) {
   return registryName ? peerLastSegment2(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? peerLastSegment2(argsRecord.display_name.trim()) : typeof argsRecord?.to === "string" && argsRecord.to.trim() ? peerLastSegment2(argsRecord.to.trim()) : peerId ? peerId.slice(0, 8) : void 0;
 }
 function parseToolResult(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
   const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
-  const raw = record3?.result ?? record3?.content;
+  const raw = record4?.result ?? record4?.content;
   const result = toolResultTextFromContent(raw);
   return { ...result !== void 0 ? { result } : {}, status, completionEvidence };
 }
@@ -25478,7 +25529,7 @@ function workGraphToolNameOf(frame, namesByCallId) {
 function workGraphString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
-function workGraphOwnerLabel(record3) {
+function workGraphOwnerLabel(record4) {
   const fromOwner = (value) => {
     if (!value || typeof value !== "object") return void 0;
     const owner = value;
@@ -25487,14 +25538,14 @@ function workGraphOwnerLabel(record3) {
     const key = owner.key && typeof owner.key === "object" ? owner.key : null;
     return workGraphString(key?.id);
   };
-  const direct = fromOwner(record3.owner);
+  const direct = fromOwner(record4.owner);
   if (direct) return direct;
-  const claim = record3.claim && typeof record3.claim === "object" ? record3.claim : null;
+  const claim = record4.claim && typeof record4.claim === "object" ? record4.claim : null;
   return fromOwner(claim?.owner);
 }
-function workGraphEvidenceLines(record3) {
-  if (!Array.isArray(record3.evidence_refs) || record3.evidence_refs.length === 0) return void 0;
-  const lines = record3.evidence_refs.map((value) => {
+function workGraphEvidenceLines(record4) {
+  if (!Array.isArray(record4.evidence_refs) || record4.evidence_refs.length === 0) return void 0;
+  const lines = record4.evidence_refs.map((value) => {
     if (!value || typeof value !== "object") return "";
     const evidence = value;
     const label = workGraphString(evidence.label) || workGraphString(evidence.summary);
@@ -25507,10 +25558,10 @@ function workGraphEvidenceLines(record3) {
 }
 function foldWorkGraphItem(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record3 = value;
-  const itemId = workGraphString(record3.id);
+  const record4 = value;
+  const itemId = workGraphString(record4.id);
   if (!itemId) return null;
-  const revision = typeof record3.revision === "number" ? record3.revision : void 0;
+  const revision = typeof record4.revision === "number" ? record4.revision : void 0;
   const existing = state.items.get(itemId);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     if (frameIso) existing.lastEventAt = frameIso;
@@ -25518,26 +25569,26 @@ function foldWorkGraphItem(state, value, frameIso) {
   }
   state.items.set(itemId, {
     itemId,
-    title: workGraphString(record3.title) || itemId,
-    status: workGraphString(record3.status) || "open",
-    priority: workGraphString(record3.priority),
-    ownerLabel: workGraphOwnerLabel(record3),
+    title: workGraphString(record4.title) || itemId,
+    status: workGraphString(record4.status) || "open",
+    priority: workGraphString(record4.priority),
+    ownerLabel: workGraphOwnerLabel(record4),
     revision,
-    dueAt: workGraphString(record3.due_at),
-    description: workGraphString(record3.description),
-    labels: Array.isArray(record3.labels) ? record3.labels.filter((label) => typeof label === "string") : void 0,
-    evidence: workGraphEvidenceLines(record3),
-    createdAt: workGraphString(record3.created_at),
-    updatedAt: workGraphString(record3.updated_at),
+    dueAt: workGraphString(record4.due_at),
+    description: workGraphString(record4.description),
+    labels: Array.isArray(record4.labels) ? record4.labels.filter((label) => typeof label === "string") : void 0,
+    evidence: workGraphEvidenceLines(record4),
+    createdAt: workGraphString(record4.created_at),
+    updatedAt: workGraphString(record4.updated_at),
     lastEventAt: frameIso || existing?.lastEventAt
   });
   return itemId;
 }
 function workGraphBindingStatus(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  const state = workGraphString(record3?.state) || "active";
+  const record4 = value && typeof value === "object" ? value : null;
+  const state = workGraphString(record4?.state) || "active";
   if (state === "paused") {
-    const until = formatWorkGraphTimestamp(workGraphString(record3?.until), { date: true });
+    const until = formatWorkGraphTimestamp(workGraphString(record4?.until), { date: true });
     return {
       label: until ? `paused until ${until}` : "paused",
       active: false
@@ -25546,11 +25597,11 @@ function workGraphBindingStatus(value) {
   return { label: state, active: state === "active" };
 }
 function workGraphTargetLabel(value) {
-  const record3 = value && typeof value === "object" ? value : null;
-  if (!record3) return void 0;
-  const sessionId = workGraphString(record3.session_id);
+  const record4 = value && typeof value === "object" ? value : null;
+  if (!record4) return void 0;
+  const sessionId = workGraphString(record4.session_id);
   if (sessionId) return sessionId;
-  const ownerKey = record3.owner_key && typeof record3.owner_key === "object" ? record3.owner_key : null;
+  const ownerKey = record4.owner_key && typeof record4.owner_key === "object" ? record4.owner_key : null;
   if (ownerKey) {
     const kind = workGraphString(ownerKey.kind);
     const id = workGraphString(ownerKey.id);
@@ -25560,35 +25611,35 @@ function workGraphTargetLabel(value) {
 }
 function foldWorkGraphBinding(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record3 = value;
-  const bindingId = workGraphString(record3.binding_id);
+  const record4 = value;
+  const bindingId = workGraphString(record4.binding_id);
   if (!bindingId) return null;
-  const machineState = record3.machine_state && typeof record3.machine_state === "object" ? record3.machine_state : null;
+  const machineState = record4.machine_state && typeof record4.machine_state === "object" ? record4.machine_state : null;
   const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
   const existing = state.bindings.get(bindingId);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     return bindingId;
   }
-  const workRef = record3.work_ref && typeof record3.work_ref === "object" ? record3.work_ref : null;
-  const status = workGraphBindingStatus(record3.status);
+  const workRef = record4.work_ref && typeof record4.work_ref === "object" ? record4.work_ref : null;
+  const status = workGraphBindingStatus(record4.status);
   state.bindings.set(bindingId, {
     bindingId,
-    mode: workGraphString(record3.mode) || "pursue",
+    mode: workGraphString(record4.mode) || "pursue",
     statusLabel: status.label,
     active: status.active,
-    targetLabel: workGraphTargetLabel(record3.target),
+    targetLabel: workGraphTargetLabel(record4.target),
     revision,
     itemId: workGraphString(workRef?.item_id) || existing?.itemId,
-    updatedAt: workGraphString(record3.updated_at) || frameIso
+    updatedAt: workGraphString(record4.updated_at) || frameIso
   });
   return bindingId;
 }
 function foldWorkGraphEdge(state, value) {
   if (!value || typeof value !== "object") return;
-  const record3 = value;
-  if (workGraphString(record3.kind) !== "parent") return;
-  const child = workGraphString(record3.from_id);
-  const parent = workGraphString(record3.to_id);
+  const record4 = value;
+  if (workGraphString(record4.kind) !== "parent") return;
+  const child = workGraphString(record4.from_id);
+  const parent = workGraphString(record4.to_id);
   if (!child || !parent || child === parent) return;
   const first = state.parents.get(child);
   if (first === void 0) {
@@ -25602,13 +25653,13 @@ function foldWorkGraphEdge(state, value) {
 }
 function foldWorkGraphEvent(state, value) {
   if (!value || typeof value !== "object") return;
-  const record3 = value;
-  const kind = workGraphString(record3.kind);
+  const record4 = value;
+  const kind = workGraphString(record4.kind);
   if (!kind) return;
-  let dedupeKey = typeof record3.seq === "number" ? `seq:${record3.seq}` : "";
+  let dedupeKey = typeof record4.seq === "number" ? `seq:${record4.seq}` : "";
   if (!dedupeKey) {
     try {
-      dedupeKey = `content:${JSON.stringify(record3)}`;
+      dedupeKey = `content:${JSON.stringify(record4)}`;
     } catch {
       dedupeKey = "";
     }
@@ -25617,11 +25668,11 @@ function foldWorkGraphEvent(state, value) {
     if (state.seenEventKeys.has(dedupeKey)) return;
     state.seenEventKeys.add(dedupeKey);
   }
-  const at = workGraphString(record3.at);
+  const at = workGraphString(record4.at);
   const clock = formatWorkGraphTimestamp(at);
   state.events.push({
     at,
-    itemId: workGraphString(record3.item_id),
+    itemId: workGraphString(record4.item_id),
     text: [kind.replace(/_/g, " "), clock].filter(Boolean).join(" \xB7 ")
   });
 }
@@ -25631,8 +25682,8 @@ function workGraphFailureLine(name2, raw) {
   if (typeof raw === "string") {
     message = raw.trim();
   } else if (raw && typeof raw === "object") {
-    const record3 = raw;
-    message = workGraphString(record3.message) || workGraphString(record3.detail) || workGraphString(record3.error) || "";
+    const record4 = raw;
+    message = workGraphString(record4.message) || workGraphString(record4.detail) || workGraphString(record4.error) || "";
     if (!message) {
       try {
         message = JSON.stringify(raw);
@@ -25649,9 +25700,9 @@ function workGraphFailureLine(name2, raw) {
 var parsedWorkGraphResultCache = /* @__PURE__ */ new Map();
 var PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4e3;
 function parseWorkGraphResult(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  if (!record3 || record3.is_error === true) return null;
-  const raw = record3.result;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (!record4 || record4.is_error === true) return null;
+  const raw = record4.result;
   if (raw && typeof raw === "object") return raw;
   if (typeof raw !== "string") return null;
   const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
@@ -25820,8 +25871,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       bindingIds: [],
       outcome: void 0
     };
-    const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-    const args = record3?.args && typeof record3.args === "object" ? record3.args : null;
+    const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    const args = record4?.args && typeof record4.args === "object" ? record4.args : null;
     const toolCallId = parseToolCallId(frame);
     let argItemId = workGraphString(args?.id);
     let argBindingId = workGraphString(args?.binding_id);
@@ -25836,8 +25887,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     if (argBindingId) contribution.bindingIds.push(argBindingId);
     const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
-      const failed = record3?.is_error === true;
-      const isRefresh = record3?.refresh === true;
+      const failed = record4?.is_error === true;
+      const isRefresh = record4?.refresh === true;
       if (!isRefresh) {
         contribution.outcome = failed ? "error" : "ok";
       }
@@ -25848,8 +25899,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
           interactionId: contribution.interactionId,
           text: workGraphFailureLine(
-            isOperatorResult ? workGraphOperatorDisplayName(record3?.method) : workGraphToolNameOf(frame, namesByCallId),
-            record3?.result ?? record3?.content
+            isOperatorResult ? workGraphOperatorDisplayName(record4?.method) : workGraphToolNameOf(frame, namesByCallId),
+            record4?.result ?? record4?.content
           )
         });
       }
@@ -25887,8 +25938,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
           if (toolCallId) {
             eventItemIdsByCallId.set(toolCallId, result.events.map((event) => {
-              const record4 = event && typeof event === "object" ? event : null;
-              return workGraphString(record4?.kind) ? workGraphString(record4?.item_id) : void 0;
+              const record5 = event && typeof event === "object" ? event : null;
+              return workGraphString(record5?.kind) ? workGraphString(record5?.item_id) : void 0;
             }));
           }
         }
@@ -26198,9 +26249,9 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "", textMode 
 function terminalFrameVisibleText(frame) {
   if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
-    const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-    if (typeof record3?.content === "string") return record3.content;
-    if (typeof record3?.text === "string") return record3.text;
+    const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    if (typeof record4?.content === "string") return record4.content;
+    if (typeof record4?.text === "string") return record4.text;
   }
   if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete") {
     return summarizeFrameData(frame.data);
@@ -26222,6 +26273,9 @@ function sameAssistantRunOwner(left, right) {
   return UUID_FORM.test(leftInteraction) && UUID_FORM.test(rightInteraction) && leftInteraction.toLowerCase() === rightInteraction.toLowerCase();
 }
 function sameTextStreamOwner(left, right) {
+  if (left && (isRealtimeHistoryMessage(left) || isRealtimeHistoryMessage(right))) {
+    return left === right;
+  }
   if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
     const key = assistantMessageKey(left);
     return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
@@ -26238,18 +26292,18 @@ function assistantOwnerKey(frame) {
 }
 function canonicalHistoryAssistantText(frame) {
   if (frame.sourceKind !== "session_history") return void 0;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record3.message && typeof record3.message === "object" ? record3.message : {};
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record4.message && typeof record4.message === "object" ? record4.message : {};
   if (message.role !== "assistant" && message.role !== "block_assistant") return void 0;
-  if (typeof record3.text === "string") return record3.text;
-  if (typeof record3.result === "string") return record3.result;
+  if (typeof record4.text === "string") return record4.text;
+  if (typeof record4.result === "string") return record4.result;
   return void 0;
 }
 function historyAssistantSource(frame) {
   const canonical = canonicalHistoryAssistantText(frame);
   if (canonical !== void 0) return canonical;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const parsed = historyMessageText(record3.message);
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const parsed = historyMessageText(record4.message);
   return parsed.role === "assistant" ? parsed.text : terminalFrameVisibleText(frame);
 }
 function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
@@ -26310,7 +26364,7 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
   const consumedHistory = /* @__PURE__ */ new Set();
   const deltaOverrides = /* @__PURE__ */ new Map();
   for (const history of frames) {
-    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)) continue;
+    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history) || isRealtimeHistoryMessage(history)) continue;
     const text8 = historyAssistantSource(history);
     if (!text8) continue;
     const key = assistantOwnerKey(history);
@@ -26334,7 +26388,7 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
     consumedHistory,
     deltaOverrides,
     consumeReasoning: (history, text8) => {
-      if (hasAssistantMessageIdCarrier(history)) return false;
+      if (hasAssistantMessageIdCarrier(history) || isRealtimeHistoryMessage(history)) return false;
       const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text8) || [];
       const completion = candidates.find((live) => !consumedReasoning.has(live.id) && sameAssistantRunOwner(history, live));
       if (!completion) return false;
@@ -26344,8 +26398,8 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
   };
 }
 function historyHasAssistantSiblings(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record3.message && typeof record3.message === "object" ? record3.message : {};
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record4.message && typeof record4.message === "object" ? record4.message : {};
   return message.role === "block_assistant" && Array.isArray(message.blocks) && message.blocks.some((block) => {
     if (!block || typeof block !== "object") return false;
     const item = block;
@@ -26454,17 +26508,17 @@ function conversationEntryVisibleText(entry) {
   if (!("blocks" in entry) || !Array.isArray(entry.blocks)) return "";
   return entry.blocks.map((block) => {
     if (!block || typeof block !== "object") return "";
-    const record3 = block;
-    if (record3.type === "thinking") return "";
-    if (record3.type === "markdown" && typeof record3.source === "string") return record3.source;
-    if (typeof record3.text === "string") return record3.text;
-    if (typeof record3.peerBody === "string") return record3.peerBody;
+    const record4 = block;
+    if (record4.type === "thinking") return "";
+    if (record4.type === "markdown" && typeof record4.source === "string") return record4.source;
+    if (typeof record4.text === "string") return record4.text;
+    if (typeof record4.peerBody === "string") return record4.peerBody;
     return "";
   }).filter(Boolean).join("\n");
 }
 var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
-  if (entry.kind !== "message") return false;
+function shouldSuppressRepeatedAssistantEntry(entry, priorEntries, protectedEntryIds) {
+  if (entry.kind !== "message" || protectedEntryIds.has(entry.id)) return false;
   if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
     return false;
   }
@@ -26475,7 +26529,7 @@ function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index2 = priorEntries.length - 1; index2 >= 0; index2--) {
     const prior = priorEntries[index2];
-    if (prior.kind !== "message") continue;
+    if (prior.kind !== "message" || protectedEntryIds.has(prior.id)) continue;
     if (prior.identity.id === USER_IDENTITY.id) {
       const userText = normalizeComparableText(conversationEntryVisibleText(prior));
       if (userText) return false;
@@ -26509,9 +26563,10 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
   if (typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
-  const record3 = frame.data;
-  const content3 = record3.content;
-  const origin = entryOriginFromFrameData(record3);
+  const record4 = frame.data;
+  const content3 = record4.content;
+  const origin = entryOriginFromFrameData(record4);
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   if (Array.isArray(content3)) {
     const contextMessage = parseConsoleContextMessage(content3);
     const blocks = contentToUserBlocks(content3, blobBaseUrl, textMode);
@@ -26520,6 +26575,7 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
+      ...realtimeOrigin ? { realtimeOrigin } : {},
       ...frame.interactionId ? { interactionId: frame.interactionId } : {},
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -26535,6 +26591,7 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl, textMode = "markdow
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
+    ...realtimeOrigin ? { realtimeOrigin } : {},
     ...frame.interactionId ? { interactionId: frame.interactionId } : {},
     variant: textMode === "markdown" ? "rich" : "plain",
     ...textMode === "markdown" ? { blocks: messageTextBlocks(text8, textMode) } : {},
@@ -26571,6 +26628,10 @@ function userEntryTextSignature(entry) {
   return "";
 }
 function userEntryDedupeKey(frame, entry) {
+  if (isRealtimeHistoryMessage(frame)) {
+    const origin = realtimeMessageOrigin(frame);
+    return origin ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}` : `unbound-realtime-user:${frame.id}`;
+  }
   const interactionId = frame.interactionId?.trim();
   if (interactionId) return `interaction:${interactionId}`;
   const signature = userEntryTextSignature(entry);
@@ -26587,10 +26648,10 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
-  const record3 = frame.data;
+  const record4 = frame.data;
   const textMode = options.textMode ?? "markdown";
-  const promptBlocks = contentToUserBlocks(record3.prompt, options.blobBaseUrl, textMode);
-  const source = extractPromptText(record3.prompt);
+  const promptBlocks = contentToUserBlocks(record4.prompt, options.blobBaseUrl, textMode);
+  const source = extractPromptText(record4.prompt);
   const prompt = textMode === "markdown" ? source : source.trim();
   if (!prompt) {
     return [];
@@ -26643,9 +26704,9 @@ function extractTextFromContentBlocks(blocks) {
   return blocks.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record3 = block;
-    if (typeof record3.text === "string") return record3.text;
-    if (typeof record3.content === "string") return record3.content;
+    const record4 = block;
+    if (typeof record4.text === "string") return record4.text;
+    if (typeof record4.content === "string") return record4.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("");
 }
@@ -26655,9 +26716,9 @@ function extractPromptText(prompt) {
   return prompt.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record3 = block;
-    if (typeof record3.text === "string") return record3.text;
-    if (typeof record3.content === "string") return record3.content;
+    const record4 = block;
+    if (typeof record4.text === "string") return record4.text;
+    if (typeof record4.content === "string") return record4.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("\n");
 }
@@ -26675,18 +26736,18 @@ function contentToUserBlocks(content3, blobBaseUrl, textMode = "markdown") {
       continue;
     }
     if (!block || typeof block !== "object") continue;
-    const record3 = block;
-    const type = typeof record3.type === "string" ? record3.type : "";
+    const record4 = block;
+    const type = typeof record4.type === "string" ? record4.type : "";
     if (type === "text") {
-      const text8 = typeof record3.text === "string" ? record3.text : typeof record3.content === "string" ? record3.content : "";
+      const text8 = typeof record4.text === "string" ? record4.text : typeof record4.content === "string" ? record4.content : "";
       blocks.push(...messageTextBlocks(text8, textMode));
       continue;
     }
     if (type === "image" || type === "image_ref") {
-      const image3 = record3.image && typeof record3.image === "object" ? record3.image : record3;
+      const image3 = record4.image && typeof record4.image === "object" ? record4.image : record4;
       const blobRef = image3.blob_ref && typeof image3.blob_ref === "object" ? image3.blob_ref : image3.blobRef && typeof image3.blobRef === "object" ? image3.blobRef : null;
       const source = typeof image3.source === "string" ? image3.source : "";
-      const blobId = typeof record3.blob_id === "string" ? record3.blob_id : typeof image3.blob_id === "string" ? image3.blob_id : typeof record3.blobId === "string" ? record3.blobId : typeof image3.blobId === "string" ? image3.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
+      const blobId = typeof record4.blob_id === "string" ? record4.blob_id : typeof image3.blob_id === "string" ? image3.blob_id : typeof record4.blobId === "string" ? record4.blobId : typeof image3.blobId === "string" ? image3.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
       const mediaType = typeof image3.media_type === "string" ? image3.media_type : typeof image3.mediaType === "string" ? image3.mediaType : typeof blobRef?.media_type === "string" ? blobRef.media_type : typeof blobRef?.mediaType === "string" ? blobRef.mediaType : "image/png";
       const inlineData = typeof image3.data === "string" ? image3.data : typeof image3.base64 === "string" ? image3.base64 : "";
       const directSrc = typeof image3.src === "string" && image3.src.trim() ? image3.src.trim() : typeof image3.url === "string" && image3.url.trim() ? image3.url.trim() : "";
@@ -26725,8 +26786,8 @@ function summarizePeersResult(result) {
   const preview = [];
   for (const peer of peers) {
     if (!peer || typeof peer !== "object") continue;
-    const record3 = peer;
-    const rawName = typeof record3.name === "string" && record3.name.trim() ? record3.name.trim() : typeof record3.address?.endpoint === "string" ? String(record3.address.endpoint).trim() : typeof record3.peer_id === "string" ? record3.peer_id.trim() : "";
+    const record4 = peer;
+    const rawName = typeof record4.name === "string" && record4.name.trim() ? record4.name.trim() : typeof record4.address?.endpoint === "string" ? String(record4.address.endpoint).trim() : typeof record4.peer_id === "string" ? record4.peer_id.trim() : "";
     if (!rawName) continue;
     const parts = rawName.split("/").filter(Boolean);
     const role = parts.length >= 2 ? parts[parts.length - 2] : "peer";
@@ -26749,18 +26810,18 @@ function summarizeToolResultForDisplay(toolName2, result) {
 }
 function formatServerToolAnnotations(annotations) {
   return annotations.map((annotation, index2) => {
-    const record3 = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record3?.title === "string" && record3.title.trim() ? record3.title.trim() : typeof record3?.text === "string" && record3.text.trim() ? record3.text.trim() : `Source ${index2 + 1}`;
-    const url = typeof record3?.url === "string" && record3.url.trim() ? record3.url.trim() : "";
+    const record4 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record4?.title === "string" && record4.title.trim() ? record4.title.trim() : typeof record4?.text === "string" && record4.text.trim() ? record4.text.trim() : `Source ${index2 + 1}`;
+    const url = typeof record4?.url === "string" && record4.url.trim() ? record4.url.trim() : "";
     return url ? `${index2 + 1}. ${title}
 ${url}` : `${index2 + 1}. ${title}`;
   }).join("\n\n").trim();
 }
 function serverToolContentSummary(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record3?.type === "string" ? record3.type : "";
-  const status = typeof content3?.status === "string" ? content3.status : typeof record3?.status === "string" ? record3.status : "";
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record4?.status === "string" ? record4.status : "";
   if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
     return { status: "error" };
   }
@@ -26783,8 +26844,8 @@ function isActiveServerToolContentFrame(frame) {
   return serverToolContentSummary(frame)?.status === "pending";
 }
 function isTerminalServerToolContentFrame(frame) {
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
   const type = typeof content3?.type === "string" ? content3.type : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
   const status = serverToolContentSummary(frame)?.status;
@@ -26795,8 +26856,8 @@ function toolResultTextFromContent(content3) {
   if (content3 === void 0 || content3 === null) return void 0;
   if (Array.isArray(content3) && content3.length > 0 && content3.every((block) => {
     if (!block || typeof block !== "object") return false;
-    const record3 = block;
-    return record3.type === "text" && typeof record3.text === "string" && Object.keys(record3).every((key) => key === "type" || key === "text");
+    const record4 = block;
+    return record4.type === "text" && typeof record4.text === "string" && Object.keys(record4).every((key) => key === "type" || key === "text");
   })) {
     return content3.map((block) => block.text).join("");
   }
@@ -26972,9 +27033,9 @@ function stripBareCommsIntentBodyPrefix(text8) {
 }
 function isExternalEventOnlySystemNotice(message) {
   if (!message || typeof message !== "object") return false;
-  const record3 = message;
-  if (textFromUnknown3(record3.kind) === "external_event") return true;
-  const blocks = record3.blocks;
+  const record4 = message;
+  if (textFromUnknown3(record4.kind) === "external_event") return true;
+  const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
@@ -27007,19 +27068,19 @@ function commsNoticeMessageRecord(frame) {
   }
   const message = frame.data.message;
   if (!message || typeof message !== "object") return null;
-  const record3 = message;
-  return textFromUnknown3(record3.role) === "system_notice" ? record3 : null;
+  const record4 = message;
+  return textFromUnknown3(record4.role) === "system_notice" ? record4 : null;
 }
-function systemNoticeBlockRecords(record3) {
-  const blocks = record3.blocks;
+function systemNoticeBlockRecords(record4) {
+  const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates(record3) {
+function legacyPeerNoticeTextCandidates(record4) {
   const candidates = [];
-  const body = textFromUnknown3(record3.body).trim();
+  const body = textFromUnknown3(record4.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords(record3)) {
+  for (const block of systemNoticeBlockRecords(record4)) {
     const blockText = typedNoticeBlockText(block).trim();
     if (blockText) candidates.push(blockText);
     const content3 = block.content;
@@ -27160,9 +27221,9 @@ function commsKindFromText(text8) {
   return match?.[1]?.toLowerCase() || "";
 }
 function systemNoticeCommsSignatures(frame) {
-  const record3 = commsNoticeMessageRecord(frame);
-  if (!record3 || isExternalEventOnlySystemNotice(record3)) return [];
-  const isCommsNotice = textFromUnknown3(record3.kind) === "comms" || systemNoticeBlockRecords(record3).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record3) && legacyPeerNoticeTextCandidates(record3).some(isLegacyPeerNoticeText);
+  const record4 = commsNoticeMessageRecord(frame);
+  if (!record4 || isExternalEventOnlySystemNotice(record4)) return [];
+  const isCommsNotice = textFromUnknown3(record4.kind) === "comms" || systemNoticeBlockRecords(record4).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record4) && legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
   if (!isCommsNotice) return [];
   const signatures = [];
   const seenSignatures = /* @__PURE__ */ new Set();
@@ -27192,15 +27253,15 @@ function systemNoticeCommsSignatures(frame) {
       sourceKind: frame.sourceKind
     });
   };
-  const noticeOccurrenceId = textFromUnknown3(record3.request_id) || textFromUnknown3(record3.correlation_id) || textFromUnknown3(record3.id);
-  const noticeBlocks = systemNoticeBlockRecords(record3);
+  const noticeOccurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id);
+  const noticeBlocks = systemNoticeBlockRecords(record4);
   const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown3(block.type) === "comms");
   if (!typedCommsBlocks.length) {
-    for (const candidate of legacyPeerNoticeTextCandidates(record3)) {
+    for (const candidate of legacyPeerNoticeTextCandidates(record4)) {
       pushCandidate(candidate, [], noticeOccurrenceId);
     }
   }
-  const body = textFromUnknown3(record3.body);
+  const body = textFromUnknown3(record4.body);
   if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
   for (let index2 = 0; index2 < typedCommsBlocks.length; index2++) {
     const block = typedCommsBlocks[index2];
@@ -27346,8 +27407,8 @@ function commsNoticeDuplicateKey(key, frame, emitted) {
 function markCommsNoticeDedupeKey(key, frame, emitted) {
   emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
 }
-function commsNoticeDedupeKeysFromBlock(record3, fallbackBody, index2) {
-  const type = textFromUnknown3(record3.type);
+function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
+  const type = textFromUnknown3(record4.type);
   const keys2 = [];
   const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
     const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
@@ -27365,29 +27426,29 @@ function commsNoticeDedupeKeysFromBlock(record3, fallbackBody, index2) {
     if (!keys2.includes(key)) keys2.push(key);
   };
   if (type === "comms") {
-    const peer = record3.peer && typeof record3.peer === "object" ? record3.peer : {};
+    const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
     const peerAliases = normalizedPeerAliases(
       textFromUnknown3(peer.display_name),
       textFromUnknown3(peer.id)
     );
-    const contentText = typedNoticeContentBlocks(record3.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
-    const stableBodyText = typedCommsStableBodyText(record3);
-    const occurrenceId = textFromUnknown3(record3.request_id) || textFromUnknown3(record3.correlation_id) || textFromUnknown3(record3.id) || `${index2}`;
+    const contentText = typedNoticeContentBlocks(record4.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
+    const stableBodyText = typedCommsStableBodyText(record4);
+    const occurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id) || `${index2}`;
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
       occurrenceId,
-      textFromUnknown3(record3.kind) || "message",
-      textFromUnknown3(record3.direction) || "incoming"
+      textFromUnknown3(record4.kind) || "message",
+      textFromUnknown3(record4.direction) || "incoming"
     );
     return keys2;
   }
   if (type && type !== "text") return keys2;
-  const blockText = typedNoticeBlockText(record3).trim();
+  const blockText = typedNoticeBlockText(record4).trim();
   if (blockText && isLegacyPeerNoticeText(blockText)) {
     pushKey(blockText);
   }
-  const content3 = record3.content;
+  const content3 = record4.content;
   if (Array.isArray(content3)) {
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
@@ -27425,8 +27486,8 @@ function shouldSuppressDuplicateCommsNotice(frame, emitted) {
   if (duplicateCount === keys2.length) {
     return true;
   }
-  const record3 = systemNoticeMessageRecord(frame);
-  const hasBlockLevelComms = record3 ? systemNoticeBlockRecords(record3).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record3.body), index2).length > 0) : false;
+  const record4 = systemNoticeMessageRecord(frame);
+  const hasBlockLevelComms = record4 ? systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record4.body), index2).length > 0) : false;
   if (!hasBlockLevelComms) {
     for (const key of keys2) {
       markCommsNoticeDedupeKey(key, frame, emitted);
@@ -27440,20 +27501,20 @@ function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
   }
   return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
-function canUseLegacyPeerNoticeText(record3) {
-  const kind = textFromUnknown3(record3.kind);
+function canUseLegacyPeerNoticeText(record4) {
+  const kind = textFromUnknown3(record4.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords(record3).map((block) => textFromUnknown3(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords(record4).map((block) => textFromUnknown3(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState2(frame) {
-  const record3 = systemNoticeMessageRecord(frame);
-  if (!record3 || isExternalEventOnlySystemNotice(record3)) return false;
-  if (textFromUnknown3(record3.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords(record3);
+  const record4 = systemNoticeMessageRecord(frame);
+  if (!record4 || isExternalEventOnlySystemNotice(record4)) return false;
+  if (textFromUnknown3(record4.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record4);
   if (blocks.some((block) => textFromUnknown3(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText(record3)) return false;
-  return legacyPeerNoticeTextCandidates(record3).some(isLegacyPeerNoticeText);
+  if (!canUseLegacyPeerNoticeText(record4)) return false;
+  return legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock, textMode = "legacy") {
   const rich = [];
@@ -27466,33 +27527,33 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
   for (let index2 = 0; index2 < blocks.length; index2++) {
     const block = blocks[index2];
     if (!block || typeof block !== "object") continue;
-    const record3 = block;
-    const type = textFromUnknown3(record3.type);
+    const record4 = block;
+    const type = textFromUnknown3(record4.type);
     if (type === "comms") {
-      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record3, bodyText, index2);
+      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record4, bodyText, index2);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
         consumedDuplicateCommsBlock = true;
         continue;
       }
-      const peer = record3.peer && typeof record3.peer === "object" ? record3.peer : {};
+      const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
       const peerLabel = peerLastSegment2(textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id) || "peer");
       const peerAliases = normalizedPeerAliases(
         textFromUnknown3(peer.display_name),
         textFromUnknown3(peer.id)
       );
-      const kind = textFromUnknown3(record3.kind) || "message";
-      const direction = textFromUnknown3(record3.direction);
-      const intent = textFromUnknown3(record3.intent);
-      const requestId = textFromUnknown3(record3.request_id) || `typed-comms:${peerLabel}:${kind}`;
-      const contentBlocks2 = typedNoticeContentBlocks(record3.content, blobBaseUrl);
+      const kind = textFromUnknown3(record4.kind) || "message";
+      const direction = textFromUnknown3(record4.direction);
+      const intent = textFromUnknown3(record4.intent);
+      const requestId = textFromUnknown3(record4.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const contentBlocks2 = typedNoticeContentBlocks(record4.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
-      const displayBodySource = stripPeerTransportScaffold(contentText) || stripPeerTransportScaffold(typedCommsStableBodyText(record3)) || stripPeerTransportScaffold(bodyText);
+      const displayBodySource = stripPeerTransportScaffold(contentText) || stripPeerTransportScaffold(typedCommsStableBodyText(record4)) || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases
       );
-      const ownerContentText = typeof record3.content === "string" ? record3.content : Array.isArray(record3.content) ? record3.content.map((part) => {
+      const ownerContentText = typeof record4.content === "string" ? record4.content : Array.isArray(record4.content) ? record4.content.map((part) => {
         if (typeof part === "string") return part;
         if (!part || typeof part !== "object") return "";
         const textPart = part;
@@ -27500,7 +27561,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         return typeof textPart.text === "string" ? textPart.text : typeof textPart.content === "string" ? textPart.content : "";
       }).join("") : "";
       const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
-      const exactDisplayBody = !runtimeKickoff && ownerContentText || [record3.summary, record3.body, record3.detail].filter((part) => typeof part === "string").join("\n") || (typeof body === "string" ? body : "");
+      const exactDisplayBody = !runtimeKickoff && ownerContentText || [record4.summary, record4.body, record4.detail].filter((part) => typeof part === "string").join("\n") || (typeof body === "string" ? body : "");
       const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
         displayBodySource,
         preserveStructuredContentEnvelope ? [] : peerAliases
@@ -27509,7 +27570,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         type: "tool-call",
         toolCallId: requestId,
         name: `peer_${kind}`,
-        arguments: JSON.stringify(record3.payload ?? {}, null, 2),
+        arguments: JSON.stringify(record4.payload ?? {}, null, 2),
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
@@ -27522,7 +27583,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       });
       continue;
     }
-    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record3, bodyText, index2);
+    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record4, bodyText, index2);
     if (consumeCommsNoticeBlockDedupeKeys(legacyDedupeKeys, consumeDuplicateCommsBlock)) {
       consumedDuplicateCommsBlock = true;
       continue;
@@ -27531,34 +27592,34 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
-      const payload = record3.payload && typeof record3.payload === "object" ? record3.payload : record3;
+      const payload = record4.payload && typeof record4.payload === "object" ? record4.payload : record4;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text8 = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record3) || label;
+      const text8 = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record4) || label;
       rich.push({ type: "divider", text: text8 });
       continue;
     }
-    if (type === "background_job" && typeof record3.job_id === "string" && record3.job_id.trim() && typeof record3.status === "string" && record3.status.trim()) {
+    if (type === "background_job" && typeof record4.job_id === "string" && record4.job_id.trim() && typeof record4.status === "string" && record4.status.trim()) {
       rich.push({
         type: "background-job",
-        jobId: record3.job_id,
-        status: record3.status,
-        ...typeof record3.display_name === "string" ? { displayName: record3.display_name } : {},
-        detail: typeof record3.detail === "string" ? record3.detail : "",
-        copyText: typedNoticeBlockText(record3) || bodyText
+        jobId: record4.job_id,
+        status: record4.status,
+        ...typeof record4.display_name === "string" ? { displayName: record4.display_name } : {},
+        detail: typeof record4.detail === "string" ? record4.detail : "",
+        copyText: typedNoticeBlockText(record4) || bodyText
       });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
-      const text8 = typedNoticeBlockText(record3) || type.replace(/_/g, " ");
+      const text8 = typedNoticeBlockText(record4) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text: text8 });
       continue;
     }
-    const contentBlocks = typedNoticeContentBlocks(record3.content, blobBaseUrl);
+    const contentBlocks = typedNoticeContentBlocks(record4.content, blobBaseUrl);
     if (contentBlocks.length > 0) {
       rich.push(...contentBlocks);
       continue;
     }
-    rich.push({ type: "divider", text: typedNoticeBlockText(record3) || "Runtime metadata" });
+    rich.push({ type: "divider", text: typedNoticeBlockText(record4) || "Runtime metadata" });
   }
   if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
     rich.push({ type: "paragraph", text: bodyText });
@@ -27569,36 +27630,36 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
-  const record3 = message;
-  const role = typeof record3.role === "string" ? record3.role : null;
+  const record4 = message;
+  const role = typeof record4.role === "string" ? record4.role : null;
   switch (role) {
     case "user": {
-      const text8 = extractTextFromContentBlocks(record3.content);
+      const text8 = extractTextFromContentBlocks(record4.content);
       return { role: "user", text: text8 };
     }
     case "system_notice": {
       const blocks = typedSystemNoticeBlocksToRich(
-        record3.blocks,
-        record3.body,
+        record4.blocks,
+        record4.body,
         blobBaseUrl,
         sourceKind,
         consumeDuplicateCommsBlock,
         textMode
       );
       const duplicateCommsConsumed = Boolean(
-        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record3).some((block, index2) => commsNoticeDedupeKeysFromBlock(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(
           block,
-          textFromUnknown3(record3.body),
+          textFromUnknown3(record4.body),
           index2
         ).length > 0)
       );
-      const text8 = duplicateCommsConsumed ? "" : typeof record3.body === "string" ? record3.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      const text8 = duplicateCommsConsumed ? "" : typeof record4.body === "string" ? record4.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
       return { role: "meta", text: text8, ...blocks.length > 0 ? { blocks } : {} };
     }
     case "assistant":
-      return { role: "assistant", text: typeof record3.content === "string" ? record3.content : "" };
+      return { role: "assistant", text: typeof record4.content === "string" ? record4.content : "" };
     case "block_assistant": {
-      const blocks = Array.isArray(record3.blocks) ? record3.blocks : [];
+      const blocks = Array.isArray(record4.blocks) ? record4.blocks : [];
       const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode, blobBaseUrl);
       const text8 = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
@@ -27614,15 +27675,15 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
       return { role: "assistant", text: text8, ...richBlocks.length > 0 ? { blocks: richBlocks } : {} };
     }
     case "system":
-      return { role: "system", text: typeof record3.content === "string" ? record3.content : "" };
+      return { role: "system", text: typeof record4.content === "string" ? record4.content : "" };
     default:
       return { role: null, text: "" };
   }
 }
 function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = {}) {
   if (frame.sourceKind !== "session_history") return null;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record3.message && typeof record3.message === "object" ? record3.message : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record4.message && typeof record4.message === "object" ? record4.message : null;
   const projectedMessage = message?.role === "block_assistant" ? { ...message, blocks: Array.isArray(message.blocks) ? message.blocks.filter((block) => {
     if (!block || typeof block !== "object") return true;
     const item = block;
@@ -27630,7 +27691,7 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     if (kind === "text" && options.suppressAssistantText) return false;
     if (kind === "reasoning" && options.consumeDuplicateReasoningBlock?.(reasoningBlockText(item))) return false;
     return true;
-  }) : [] } : options.suppressAssistantText && message?.role === "assistant" ? { ...message, content: "" } : record3.message;
+  }) : [] } : options.suppressAssistantText && message?.role === "assistant" ? { ...message, content: "" } : record4.message;
   const parsed = historyMessageText(
     projectedMessage,
     options.peerRegistry,
@@ -27641,10 +27702,11 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     options.textMode
   );
   const textMode = options.textMode ?? "markdown";
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   const canonicalText = textMode === "markdown" && !options.suppressAssistantText ? canonicalHistoryAssistantText(frame) : void 0;
   const text8 = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
-  if (!assistantMessageKey(frame)) {
+  if (!assistantMessageKey(frame) && !isRealtimeHistoryMessage(frame)) {
     parsedBlocks.sort((left, right) => Number(right.type === "thinking") - Number(left.type === "thinking"));
   }
   if (parsed.role === "meta") {
@@ -27677,6 +27739,7 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
+    ...realtimeOrigin ? { realtimeOrigin } : {},
     ...canonicalText !== void 0 ? { copyText: canonicalText } : {},
     variant: blocks.length > 0 ? "rich" : "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -27685,14 +27748,14 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
 }
 function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const rawMessage = record3.message && typeof record3.message === "object" ? record3.message : null;
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const rawMessage = record4.message && typeof record4.message === "object" ? record4.message : null;
   const message = rawMessage ? textFromUnknown3(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
-    kind: record3.kind,
-    render_class: record3.render_class,
-    body: record3.body,
-    blocks: record3.blocks
+    kind: record4.kind,
+    render_class: record4.render_class,
+    body: record4.body,
+    blocks: record4.blocks
   };
   if (isExternalEventOnlySystemNotice(message)) return null;
   const parsed = historyMessageText(
@@ -27770,6 +27833,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const textMode = options.textMode ?? "markdown";
   const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames)));
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
+  const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map((frame) => frame.id));
   const entries = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
@@ -28164,12 +28228,12 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
           return false;
         },
-        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || assistantMessageKey(frame) ? cardToolCallIds.has(block.toolCallId) : liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || assistantMessageKey(frame) || isRealtimeHistoryMessage(frame) ? cardToolCallIds.has(block.toolCallId) : liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || void 0;
-        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
@@ -28210,7 +28274,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || void 0;
-        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         entries.push(terminalEntry);
@@ -28484,25 +28548,25 @@ function httpStatusCode(error) {
 // console/src/lib/conversation-visibility.ts
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
-  const record3 = block;
-  if (record3.type === "background-job") {
-    return typeof record3.jobId === "string" && record3.jobId.trim().length > 0 && typeof record3.status === "string" && record3.status.trim().length > 0;
+  const record4 = block;
+  if (record4.type === "background-job") {
+    return typeof record4.jobId === "string" && record4.jobId.trim().length > 0 && typeof record4.status === "string" && record4.status.trim().length > 0;
   }
-  if (record3.type === "markdown") return typeof record3.source === "string" && record3.source.trim().length > 0;
+  if (record4.type === "markdown") return typeof record4.source === "string" && record4.source.trim().length > 0;
   const scalarText = [
-    typeof record3.text === "string" ? record3.text : "",
-    typeof record3.label === "string" ? record3.label : "",
-    typeof record3.result === "string" ? record3.result : "",
-    typeof record3.body === "string" ? record3.body : "",
-    typeof record3.title === "string" ? record3.title : "",
-    typeof record3.name === "string" ? record3.name : ""
+    typeof record4.text === "string" ? record4.text : "",
+    typeof record4.label === "string" ? record4.label : "",
+    typeof record4.result === "string" ? record4.result : "",
+    typeof record4.body === "string" ? record4.body : "",
+    typeof record4.title === "string" ? record4.title : "",
+    typeof record4.name === "string" ? record4.name : ""
   ].join(" ").trim();
   if (scalarText.length > 0) return true;
-  if (record3.type === "image" && (typeof record3.src === "string" || typeof record3.blobId === "string"))
+  if (record4.type === "image" && (typeof record4.src === "string" || typeof record4.blobId === "string"))
     return true;
-  if (Array.isArray(record3.headers) && record3.headers.some((v) => String(v || "").trim().length > 0))
+  if (Array.isArray(record4.headers) && record4.headers.some((v) => String(v || "").trim().length > 0))
     return true;
-  if (Array.isArray(record3.rows) && record3.rows.some(
+  if (Array.isArray(record4.rows) && record4.rows.some(
     (row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0)
   ))
     return true;
@@ -28600,9 +28664,9 @@ function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
     return { data };
   }
-  const record3 = data;
-  if (typeof record3.type === "string" && "frame" in record3) {
-    const frame = timelineFrameToConsoleFrame(record3.frame);
+  const record4 = data;
+  if (typeof record4.type === "string" && "frame" in record4) {
+    const frame = timelineFrameToConsoleFrame(record4.frame);
     const isUpdateEnvelope = eventName === "frame_updated";
     return {
       id: frame.id,
@@ -28629,47 +28693,47 @@ function timelineFrameToConsoleFrame(raw) {
   if (!raw || typeof raw !== "object") {
     return { id: "", event: "event", data: raw };
   }
-  const record3 = raw;
-  const cursor = typeof record3.cursor === "string" ? record3.cursor : void 0;
-  const payload = "payload" in record3 ? record3.payload : record3;
-  const source = record3.source && typeof record3.source === "object" ? record3.source : null;
-  if (record3.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
+  const record4 = raw;
+  const cursor = typeof record4.cursor === "string" ? record4.cursor : void 0;
+  const payload = "payload" in record4 ? record4.payload : record4;
+  const source = record4.source && typeof record4.source === "object" ? record4.source : null;
+  if (record4.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
     const updated = timelineFrameToConsoleFrame(payload.frame);
     return {
-      id: String(record3.id || cursor || ""),
+      id: String(record4.id || cursor || ""),
       event: "frame_updated",
-      identity: typeof record3.identity === "string" ? record3.identity : updated.identity,
-      interactionId: typeof record3.interaction_id === "string" ? record3.interaction_id : updated.interactionId,
-      timestampMs: typeof record3.timestamp_ms === "number" ? record3.timestamp_ms : void 0,
+      identity: typeof record4.identity === "string" ? record4.identity : updated.identity,
+      interactionId: typeof record4.interaction_id === "string" ? record4.interaction_id : updated.interactionId,
+      timestampMs: typeof record4.timestamp_ms === "number" ? record4.timestamp_ms : void 0,
       cursor,
-      runtimeKey: typeof record3.runtime_key === "string" ? record3.runtime_key : updated.runtimeKey,
-      sessionId: typeof record3.session_id === "string" ? record3.session_id : updated.sessionId,
-      status: typeof record3.status === "string" ? record3.status : updated.status,
+      runtimeKey: typeof record4.runtime_key === "string" ? record4.runtime_key : updated.runtimeKey,
+      sessionId: typeof record4.session_id === "string" ? record4.session_id : updated.sessionId,
+      status: typeof record4.status === "string" ? record4.status : updated.status,
       sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
       sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : updated.sourceCursor,
-      frameVersion: typeof record3.frame_version === "number" ? record3.frame_version : updated.frameVersion,
-      updatedAtMs: typeof record3.updated_at_ms === "number" ? record3.updated_at_ms : updated.updatedAtMs,
-      turnId: typeof record3.turn_id === "string" ? record3.turn_id : updated.turnId,
-      runId: typeof record3.run_id === "string" ? record3.run_id : updated.runId,
+      frameVersion: typeof record4.frame_version === "number" ? record4.frame_version : updated.frameVersion,
+      updatedAtMs: typeof record4.updated_at_ms === "number" ? record4.updated_at_ms : updated.updatedAtMs,
+      turnId: typeof record4.turn_id === "string" ? record4.turn_id : updated.turnId,
+      runId: typeof record4.run_id === "string" ? record4.run_id : updated.runId,
       data: { frame: updated }
     };
   }
   return {
-    id: String(record3.id || cursor || ""),
-    event: String(record3.kind || "event"),
-    identity: typeof record3.identity === "string" ? record3.identity : void 0,
-    interactionId: typeof record3.interaction_id === "string" ? record3.interaction_id : void 0,
-    timestampMs: typeof record3.timestamp_ms === "number" ? record3.timestamp_ms : void 0,
+    id: String(record4.id || cursor || ""),
+    event: String(record4.kind || "event"),
+    identity: typeof record4.identity === "string" ? record4.identity : void 0,
+    interactionId: typeof record4.interaction_id === "string" ? record4.interaction_id : void 0,
+    timestampMs: typeof record4.timestamp_ms === "number" ? record4.timestamp_ms : void 0,
     cursor,
-    runtimeKey: typeof record3.runtime_key === "string" ? record3.runtime_key : void 0,
-    sessionId: typeof record3.session_id === "string" ? record3.session_id : void 0,
-    status: typeof record3.status === "string" ? record3.status : void 0,
+    runtimeKey: typeof record4.runtime_key === "string" ? record4.runtime_key : void 0,
+    sessionId: typeof record4.session_id === "string" ? record4.session_id : void 0,
+    status: typeof record4.status === "string" ? record4.status : void 0,
     sourceKind: source && typeof source.kind === "string" ? source.kind : void 0,
     sourceCursor: source && typeof source.source_cursor === "string" ? source.source_cursor : void 0,
-    frameVersion: typeof record3.frame_version === "number" ? record3.frame_version : void 0,
-    updatedAtMs: typeof record3.updated_at_ms === "number" ? record3.updated_at_ms : void 0,
-    turnId: typeof record3.turn_id === "string" ? record3.turn_id : void 0,
-    runId: typeof record3.run_id === "string" ? record3.run_id : void 0,
+    frameVersion: typeof record4.frame_version === "number" ? record4.frame_version : void 0,
+    updatedAtMs: typeof record4.updated_at_ms === "number" ? record4.updated_at_ms : void 0,
+    turnId: typeof record4.turn_id === "string" ? record4.turn_id : void 0,
+    runId: typeof record4.run_id === "string" ? record4.run_id : void 0,
     data: payload
   };
 }
@@ -28767,9 +28831,9 @@ function responseTextErrorPreview(text8) {
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object") {
-      const record3 = parsed;
-      const message = typeof record3.message === "string" ? record3.message : void 0;
-      const error = record3.error && typeof record3.error === "object" ? record3.error : null;
+      const record4 = parsed;
+      const message = typeof record4.message === "string" ? record4.message : void 0;
+      const error = record4.error && typeof record4.error === "object" ? record4.error : null;
       const errorMessage2 = error && typeof error.message === "string" ? error.message : void 0;
       const errorCode = error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : void 0;
       const selected = [
@@ -28935,14 +28999,14 @@ async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_C
   if (result.error) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-  const record3 = result.result && typeof result.result === "object" ? result.result : {};
-  const blobId = typeof record3.blob_id === "string" ? record3.blob_id : "";
+  const record4 = result.result && typeof result.result === "object" ? result.result : {};
+  const blobId = typeof record4.blob_id === "string" ? record4.blob_id : "";
   if (!blobId) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} returned an invalid blob payload`);
   }
   return {
     blob_id: blobId,
-    url: typeof record3.url === "string" ? record3.url : void 0
+    url: typeof record4.url === "string" ? record4.url : void 0
   };
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
@@ -28959,9 +29023,9 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   if (candidate === null || typeof candidate !== "object") {
     return allowUnscoped;
   }
-  const record3 = candidate;
-  const sessionId = record3.session_id ?? record3.sessionId;
-  const interactionId = record3.interaction_id ?? record3.interactionId;
+  const record4 = candidate;
+  const sessionId = record4.session_id ?? record4.sessionId;
+  const interactionId = record4.interaction_id ?? record4.interactionId;
   const hasScopedField = sessionId !== void 0 || interactionId !== void 0;
   if (!hasScopedField) {
     return allowUnscoped;
@@ -28975,8 +29039,8 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   return false;
 }
 function isTerminalTurnCompletedData(data) {
-  const record3 = data && typeof data === "object" ? data : {};
-  const stopReason = record3.stop_reason ?? record3.stopReason;
+  const record4 = data && typeof data === "object" ? data : {};
+  const stopReason = record4.stop_reason ?? record4.stopReason;
   return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 function isTerminalSseFrame(frame) {
@@ -29032,14 +29096,14 @@ async function queryTimeline2(baseUrl, target, limit = 400, timeoutMs = DEFAULT_
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
-  const record3 = result;
-  const rawFrames = Array.isArray(record3.frames) ? record3.frames : [];
+  const record4 = result;
+  const rawFrames = Array.isArray(record4.frames) ? record4.frames : [];
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
-    nextCursor: typeof record3.next_cursor === "string" ? record3.next_cursor : void 0,
-    latestCursor: typeof record3.latest_cursor === "string" ? record3.latest_cursor : void 0,
-    exhausted: record3.exhausted === true,
-    available: record3.available !== false
+    nextCursor: typeof record4.next_cursor === "string" ? record4.next_cursor : void 0,
+    latestCursor: typeof record4.latest_cursor === "string" ? record4.latest_cursor : void 0,
+    exhausted: record4.exhausted === true,
+    available: record4.available !== false
   };
 }
 async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey, handlingMode = "queue", timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
@@ -29055,22 +29119,22 @@ async function sendConsole2(baseUrl, identity, content3, origin, idempotencyKey,
   if (!accepted || typeof accepted !== "object") {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
-  const record3 = accepted;
-  return normalizeConsoleTimelineAccepted(record3);
+  const record4 = accepted;
+  return normalizeConsoleTimelineAccepted(record4);
 }
 function normalizeConsoleTimelineAccepted(accepted) {
-  const record3 = accepted && typeof accepted === "object" ? accepted : {};
-  if (typeof record3.interaction_id !== "string" || !record3.interaction_id.trim() || typeof record3.identity !== "string" || !record3.identity.trim() || "input_frame_id" in record3 && record3.input_frame_id != null && (typeof record3.input_frame_id !== "string" || !record3.input_frame_id.trim())) {
+  const record4 = accepted && typeof accepted === "object" ? accepted : {};
+  if (typeof record4.interaction_id !== "string" || !record4.interaction_id.trim() || typeof record4.identity !== "string" || !record4.identity.trim() || "input_frame_id" in record4 && record4.input_frame_id != null && (typeof record4.input_frame_id !== "string" || !record4.input_frame_id.trim())) {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
   return {
-    interaction_id: record3.interaction_id,
-    identity: record3.identity,
-    conversation_id: typeof record3.conversation_id === "string" ? record3.conversation_id : void 0,
-    session_id: typeof record3.session_id === "string" ? record3.session_id : void 0,
-    input_frame_id: typeof record3.input_frame_id === "string" ? record3.input_frame_id : void 0,
-    cursor: typeof record3.cursor === "string" ? record3.cursor : void 0,
-    status: typeof record3.status === "string" ? record3.status : void 0
+    interaction_id: record4.interaction_id,
+    identity: record4.identity,
+    conversation_id: typeof record4.conversation_id === "string" ? record4.conversation_id : void 0,
+    session_id: typeof record4.session_id === "string" ? record4.session_id : void 0,
+    input_frame_id: typeof record4.input_frame_id === "string" ? record4.input_frame_id : void 0,
+    cursor: typeof record4.cursor === "string" ? record4.cursor : void 0,
+    status: typeof record4.status === "string" ? record4.status : void 0
   };
 }
 async function callConsoleRpc2(baseUrl, method, params = {}, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2, signal) {
@@ -29549,15 +29613,15 @@ function createFactFactory() {
   };
 }
 function normalizeCapabilities(value) {
-  const record3 = value && typeof value === "object" ? value : {};
-  const methods = Array.isArray(record3.methods) ? Array.from(new Set(record3.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
+  const record4 = value && typeof value === "object" ? value : {};
+  const methods = Array.isArray(record4.methods) ? Array.from(new Set(record4.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
   return {
     methods,
-    version: typeof record3.version === "string" ? record3.version : void 0,
-    ...typeof record3.read_only === "boolean" ? { readOnly: record3.read_only } : {},
-    runtime_capabilities: record3.runtime_capabilities,
-    method_capabilities: record3.method_capabilities,
-    ...record3.topology_control && typeof record3.topology_control === "object" ? { topologyControl: record3.topology_control } : {}
+    version: typeof record4.version === "string" ? record4.version : void 0,
+    ...typeof record4.read_only === "boolean" ? { readOnly: record4.read_only } : {},
+    runtime_capabilities: record4.runtime_capabilities,
+    method_capabilities: record4.method_capabilities,
+    ...record4.topology_control && typeof record4.topology_control === "object" ? { topologyControl: record4.topology_control } : {}
   };
 }
 var ConsoleCapabilityUnavailableError2 = class extends Error {
@@ -31423,8 +31487,8 @@ function resolveMemoryTabAlias(tab2) {
   if (tab2 === "quarantine") return "pipeline";
   return MEMORY_TABS.includes(tab2) ? tab2 : null;
 }
-function realmOfRecord(record3) {
-  return record3.scope.realm;
+function realmOfRecord(record4) {
+  return record4.scope.realm;
 }
 function scopeGroupKey(scope) {
   switch (scope.scope) {
@@ -31464,19 +31528,19 @@ function scopeGroupRank(scope) {
 }
 function groupRecordsByScope(records) {
   const byKey = /* @__PURE__ */ new Map();
-  for (const record3 of records) {
-    const key = scopeGroupKey(record3.scope);
+  for (const record4 of records) {
+    const key = scopeGroupKey(record4.scope);
     let group = byKey.get(key);
     if (!group) {
       group = {
         key,
-        label: scopeGroupLabel(record3.scope),
-        scope: record3.scope,
+        label: scopeGroupLabel(record4.scope),
+        scope: record4.scope,
         records: []
       };
       byKey.set(key, group);
     }
-    group.records.push(record3);
+    group.records.push(record4);
   }
   return Array.from(byKey.values()).sort((a, b) => {
     const rankDelta = scopeGroupRank(a.scope) - scopeGroupRank(b.scope);
@@ -31713,16 +31777,16 @@ function createMemoryRecordsPager(deps) {
   return pager;
 }
 var DEAD_INJECTION_THRESHOLD = 3;
-function recordUtility(record3) {
-  const injected = record3.usage?.injected_count ?? 0;
-  const recalled = record3.usage?.explicit_recall_count ?? 0;
-  const useful = record3.usage?.judged_useful_count ?? 0;
+function recordUtility(record4) {
+  const injected = record4.usage?.injected_count ?? 0;
+  const recalled = record4.usage?.explicit_recall_count ?? 0;
+  const useful = record4.usage?.judged_useful_count ?? 0;
   return {
     injected,
     recalled,
     useful,
     ratio: injected > 0 ? useful / injected : null,
-    bytesSpent: injected * (record3.body_bytes ?? 0),
+    bytesSpent: injected * (record4.body_bytes ?? 0),
     dead: injected >= DEAD_INJECTION_THRESHOLD && useful === 0
   };
 }
@@ -31737,8 +31801,8 @@ function sortRecordsByUtility(records) {
     return ub.bytesSpent - ua.bytesSpent;
   });
 }
-function utilityLine(record3) {
-  const u = recordUtility(record3);
+function utilityLine(record4) {
+  const u = recordUtility(record4);
   const ratio = u.ratio === null ? "\u2014" : u.ratio.toFixed(2);
   return `inj ${u.injected} \xB7 recall ${u.recalled} \xB7 useful ${u.useful} \xB7 ratio ${ratio} \xB7 ~${formatBytes(u.bytesSpent)} spent`;
 }
@@ -31752,27 +31816,27 @@ var LATTICE_WALK_MAX_RECORDS = 2e3;
 var LATTICE_WALK_PAGE_LIMIT = 200;
 function latticeInvariants(records, options) {
   const llmCeilingViolations = [];
-  const byId = new Map(records.map((record3) => [record3.id, record3]));
-  for (const record3 of records) {
-    const author = record3.provenance?.author?.author;
-    const rank = record3.trust ? TRUST_RANK[record3.trust] : void 0;
+  const byId = new Map(records.map((record4) => [record4.id, record4]));
+  for (const record4 of records) {
+    const author = record4.provenance?.author?.author;
+    const rank = record4.trust ? TRUST_RANK[record4.trust] : void 0;
     if ((author === "agent" || author === "distiller" || author === "steward") && typeof rank === "number" && rank > TRUST_RANK.agent_observed) {
-      llmCeilingViolations.push({ id: record3.id, realm: realmOfRecord(record3) });
+      llmCeilingViolations.push({ id: record4.id, realm: realmOfRecord(record4) });
     }
   }
   const chainViolations = /* @__PURE__ */ new Map();
-  for (const record3 of records) {
-    const path2 = /* @__PURE__ */ new Set([record3.id]);
-    let cursor = record3.supersedes;
+  for (const record4 of records) {
+    const path2 = /* @__PURE__ */ new Set([record4.id]);
+    let cursor = record4.supersedes;
     while (cursor) {
       if (path2.has(cursor)) {
-        chainViolations.set(record3.id, { id: record3.id, realm: realmOfRecord(record3) });
+        chainViolations.set(record4.id, { id: record4.id, realm: realmOfRecord(record4) });
         break;
       }
       const parent = byId.get(cursor);
       if (!parent) {
         if (options.complete) {
-          chainViolations.set(record3.id, { id: record3.id, realm: realmOfRecord(record3) });
+          chainViolations.set(record4.id, { id: record4.id, realm: realmOfRecord(record4) });
         }
         break;
       }
@@ -31787,7 +31851,7 @@ function latticeInvariants(records, options) {
 }
 function latticeFingerprint(records, realms, baseCursor) {
   const rows = records.map(
-    (record3) => `${record3.id}:${record3.supersedes || ""}:${record3.trust}:${record3.status?.status || ""}:${record3.updated_at_ms || 0}`
+    (record4) => `${record4.id}:${record4.supersedes || ""}:${record4.trust}:${record4.status?.status || ""}:${record4.updated_at_ms || 0}`
   ).join("|");
   return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
 }
@@ -31896,8 +31960,8 @@ function computeVerdictTiles(inputs) {
       targetTab: "records"
     });
   } else {
-    const dead = inputs.records.filter((record3) => recordUtility(record3).dead);
-    const deadBytes = dead.reduce((sum, record3) => sum + recordUtility(record3).bytesSpent, 0);
+    const dead = inputs.records.filter((record4) => recordUtility(record4).dead);
+    const deadBytes = dead.reduce((sum, record4) => sum + recordUtility(record4).bytesSpent, 0);
     tiles.push({
       id: "recall",
       label: "RECALL",
@@ -31984,11 +32048,11 @@ function scopeOverviewRows(records) {
     const counts = { active: 0, quarantined: 0, superseded: 0, tombstoned: 0 };
     let bytes = 0;
     const trustCounts = /* @__PURE__ */ new Map();
-    for (const record3 of group.records) {
-      const status = record3.status?.status;
+    for (const record4 of group.records) {
+      const status = record4.status?.status;
       if (status && status in counts) counts[status] += 1;
-      bytes += record3.body_bytes ?? 0;
-      const trust = trustLabel(record3.trust);
+      bytes += record4.body_bytes ?? 0;
+      const trust = trustLabel(record4.trust);
       trustCounts.set(trust, (trustCounts.get(trust) || 0) + 1);
     }
     const trustMix = Array.from(trustCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([trust, count]) => `${count} ${trust}`).join(" \xB7 ");
@@ -32118,9 +32182,9 @@ function normalizeDreamRunDetail(detail) {
   return { phases, verdicts, skips, raw: null };
 }
 function lineageLane(chain, currentId) {
-  return [...chain].reverse().map((record3) => ({
-    record: record3,
-    current: record3.id === currentId
+  return [...chain].reverse().map((record4) => ({
+    record: record4,
+    current: record4.id === currentId
   }));
 }
 function dreamRunsTouching(dreams, recordId) {
@@ -32149,8 +32213,8 @@ function evidenceExcerptLines(entries, range, maxLines = 30) {
 }
 function identityOptions(records) {
   const identities = /* @__PURE__ */ new Set();
-  for (const record3 of records) {
-    if (record3.scope.scope === "identity") identities.add(record3.scope.identity);
+  for (const record4 of records) {
+    if (record4.scope.scope === "identity") identities.add(record4.scope.identity);
   }
   return Array.from(identities).sort((a, b) => a.localeCompare(b));
 }
@@ -32160,26 +32224,26 @@ function knowledgeComposition(records, identity) {
     {
       label: `identity:${identity}`,
       count: count(
-        (record3) => record3.scope.scope === "identity" && record3.scope.identity === identity
+        (record4) => record4.scope.scope === "identity" && record4.scope.identity === identity
       ),
       filter: { scope: "identity", key: identity },
       approximate: false
     },
     {
       label: "mob (all mobs)",
-      count: count((record3) => record3.scope.scope === "mob"),
+      count: count((record4) => record4.scope.scope === "mob"),
       filter: { scope: "mob" },
       approximate: true
     },
     {
       label: "operator",
-      count: count((record3) => record3.scope.scope === "operator"),
+      count: count((record4) => record4.scope.scope === "operator"),
       filter: { scope: "operator" },
       approximate: true
     },
     {
       label: "realm",
-      count: count((record3) => record3.scope.scope === "realm"),
+      count: count((record4) => record4.scope.scope === "realm"),
       filter: { scope: "realm" },
       approximate: true
     }
@@ -32218,28 +32282,28 @@ function SectionNote({
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-note", "data-testid": testid, children });
 }
 function RecordRow({
-  record: record3,
+  record: record4,
   utilityMode,
   onSelect
 }) {
-  const utility = utilityMode ? recordUtility(record3) : null;
+  const utility = utilityMode ? recordUtility(record4) : null;
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "button",
     {
       type: "button",
       className: "memory-row",
-      "data-testid": `memory-record:${record3.id}`,
+      "data-testid": `memory-record:${record4.id}`,
       onClick: onSelect,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record3.title || record3.id }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record4.title || record4.id }),
         /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-row__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record3.kind }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record3.trust), tone: trustTone(record3.trust) }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record3.status), tone: statusTone(record3.status) }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record4.kind }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record4.trust), tone: trustTone(record4.trust) }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record4.status), tone: statusTone(record4.status) }),
           utility?.dead ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: "DEAD", tone: "warning" }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record3.updated_at_ms) })
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record4.updated_at_ms) })
         ] }),
-        utility ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record3) }) : null
+        utility ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record4) }) : null
       ]
     }
   );
@@ -32254,16 +32318,16 @@ function BiographyView({
   onSelectRecord,
   onLoadEvidence
 }) {
-  const { record: record3, chain, injections } = detail;
-  const provenance = record3.provenance;
+  const { record: record4, chain, injections } = detail;
+  const provenance = record4.provenance;
   const evidence = provenance?.evidence || [];
   const verification = provenance?.verification;
-  const usage = record3.usage;
-  const lane = lineageLane(chain, record3.id);
-  const touchingRuns = dreamRunsTouching(dreams, record3.id);
+  const usage = record4.usage;
+  const lane = lineageLane(chain, record4.id);
+  const touchingRuns = dreamRunsTouching(dreams, record4.id);
   const [evidenceState, setEvidenceState] = import_react29.default.useState(null);
   const evidenceSeqRef = import_react29.default.useRef(0);
-  const recordIdentity = record3.scope.scope === "identity" ? record3.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
+  const recordIdentity = record4.scope.scope === "identity" ? record4.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
   async function openEvidence(ref, index2) {
     if (!onLoadEvidence) return;
     const key = evidenceKey(ref, index2);
@@ -32281,24 +32345,24 @@ function BiographyView({
   return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail", "data-testid": "memory-detail", children: [
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("button", { type: "button", className: "memory-back", onClick: onBack, "data-testid": "memory-detail-back", children: "\u2190 Back" }),
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("h3", { children: record3.title || record3.id }),
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("h3", { children: record4.title || record4.id }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-detail__chips", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record3.kind }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record3.trust), tone: trustTone(record3.trust) }),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record3.status), tone: statusTone(record3.status) })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: record4.kind }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record4.trust), tone: trustTone(record4.trust) }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: statusLabel(record4.status), tone: statusTone(record4.status) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         CopyButton,
         {
-          text: JSON.stringify(record3, null, 2),
+          text: JSON.stringify(record4, null, 2),
           label: "Copy record JSON",
           className: "memory-copy-json"
         }
       )
     ] }),
-    record3.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record3.description }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record3.body }),
-    record3.tags && record3.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record3.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
+    record4.description ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { className: "memory-detail__description", children: record4.description }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record4.body }),
+    record4.tags && record4.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__tags", children: record4.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-detail__label", children: "Born" }),
       /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-detail__line", children: authorLine(provenance?.author) }),
@@ -32916,23 +32980,23 @@ function MemoryPanel({
         pageLoading ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", children: "Loading records\u2026" }) : null,
         !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "gating__empty", "data-testid": "memory-records-empty", children: recordsDenied || listView.denied ? "Records: no grant." : "No memory records yet." }) : null,
         !pageLoading && listView.denied && listView.records.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(SectionNote, { testid: "memory-records-denied-note", children: "Further pages: no grant \u2014 the continuation of this query was denied for this principal." }) : null,
-        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group", children: listView.records.map((record3) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group", children: listView.records.map((record4) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
           RecordRow,
           {
-            record: record3,
+            record: record4,
             utilityMode: sortMode === "utility",
-            onSelect: () => onSelectRecord(realmOfRecord(record3), record3.id)
+            onSelect: () => onSelectRecord(realmOfRecord(record4), record4.id)
           },
-          record3.id
+          record4.id
         )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: group.label }),
-          group.records.map((record3) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          group.records.map((record4) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             RecordRow,
             {
-              record: record3,
-              onSelect: () => onSelectRecord(realmOfRecord(record3), record3.id)
+              record: record4,
+              onSelect: () => onSelectRecord(realmOfRecord(record4), record4.id)
             },
-            record3.id
+            record4.id
           ))
         ] }, group.key)) : null,
         listView.cursor && onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
@@ -33105,25 +33169,25 @@ function MemoryPanel({
           ] }) : null,
           quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", children: [
             /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "memory-group__label", children: "Quarantined records" }),
-            quarantineRecords.map((record3) => {
-              const reason = record3.status.status === "quarantined" ? record3.status.reason : void 0;
+            quarantineRecords.map((record4) => {
+              const reason = record4.status.status === "quarantined" ? record4.status.reason : void 0;
               return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
                 "button",
                 {
                   type: "button",
                   className: "memory-row",
-                  "data-testid": `memory-quarantine-record:${record3.id}`,
-                  onClick: () => onSelectRecord(realmOfRecord(record3), record3.id),
+                  "data-testid": `memory-quarantine-record:${record4.id}`,
+                  onClick: () => onSelectRecord(realmOfRecord(record4), record4.id),
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record3.title || record3.id }),
+                    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__title", children: record4.title || record4.id }),
                     /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-row__meta", children: [
                       reason ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__reason", children: reason }) : null,
-                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record3.trust), tone: trustTone(record3.trust) }),
-                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record3.created_at_ms) })
+                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Chip, { label: trustLabel(record4.trust), tone: trustTone(record4.trust) }),
+                      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "memory-row__age", children: relativeAge(record4.created_at_ms) })
                     ] })
                   ]
                 },
-                record3.id
+                record4.id
               );
             })
           ] }) : null
@@ -33298,8 +33362,8 @@ function stateLabel(state) {
 function displayPeer(peer) {
   if (typeof peer === "string") return peer.split("/").pop() || peer;
   if (peer && typeof peer === "object") {
-    const record3 = peer;
-    const value = record3.label ?? record3.display_name ?? record3.name ?? record3.identity ?? record3.member_id ?? record3.id;
+    const record4 = peer;
+    const value = record4.label ?? record4.display_name ?? record4.name ?? record4.identity ?? record4.member_id ?? record4.id;
     if (typeof value === "string") return value.split("/").pop() || value;
   }
   return "";
@@ -34623,8 +34687,8 @@ var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function historyBlockType(record3) {
-  const raw = record3.block_type ?? record3.type;
+function historyBlockType(record4) {
+  const raw = record4.block_type ?? record4.type;
   return typeof raw === "string" ? raw : void 0;
 }
 function sanitizeLogValue(value) {
@@ -36445,8 +36509,8 @@ function textFromValue(value) {
     return value.map(textFromValue).filter(Boolean).join(" ").trim();
   }
   if (value && typeof value === "object") {
-    const record3 = value;
-    const direct = record3.summary ?? record3.message ?? record3.text ?? record3.body ?? record3.reply ?? record3.result ?? record3.content ?? record3.subject ?? record3.request_subject ?? record3.prompt ?? record3.description ?? record3.token;
+    const record4 = value;
+    const direct = record4.summary ?? record4.message ?? record4.text ?? record4.body ?? record4.reply ?? record4.result ?? record4.content ?? record4.subject ?? record4.request_subject ?? record4.prompt ?? record4.description ?? record4.token;
     const text8 = textFromValue(direct);
     if (text8) return text8;
   }
@@ -36480,11 +36544,11 @@ function sessionHistoryAssistantReply(frame, data) {
   }
   const blocks = Array.isArray(message.blocks) ? message.blocks : [];
   const text8 = blocks.map((block) => {
-    const record3 = recordOf3(block);
-    const blockType = typeof record3.block_type === "string" ? record3.block_type : typeof record3.type === "string" ? record3.type : "";
+    const record4 = recordOf3(block);
+    const blockType = typeof record4.block_type === "string" ? record4.block_type : typeof record4.type === "string" ? record4.type : "";
     if (blockType !== "text") return "";
-    const blockData = recordOf3(record3.data);
-    return textFromValue(blockData.text ?? record3.text);
+    const blockData = recordOf3(record4.data);
+    return textFromValue(blockData.text ?? record4.text);
   }).filter(Boolean).join(" ").trim();
   return text8;
 }
@@ -36937,7 +37001,7 @@ var failureMessages = {
   cancelled: "Initial context preparation was cancelled.",
   authority_rejected: "The session authority refused the initial context; no fallback was attempted."
 };
-function record2(raw) {
+function record3(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("Invalid voice context status.");
   }
@@ -36952,10 +37016,10 @@ function isFailure(value) {
   return typeof value === "string" && Object.hasOwn(failureMessages, value);
 }
 function parseVoiceContextStatus(raw, scope) {
-  const result = record2(raw);
+  const result = record3(raw);
   exactKeys(result, ["identity", "request_id", "channel_id", "context_preparation"]);
   if (result.identity !== scope.identity || result.request_id !== scope.requestId || result.channel_id !== scope.channelId) throw new Error("Voice context status does not match the active call.");
-  const preparation = record2(result.context_preparation);
+  const preparation = record3(result.context_preparation);
   switch (preparation.phase) {
     case "not_requested":
     case "provider_acknowledged":
@@ -37527,12 +37591,18 @@ function textSignatureForMsg(message) {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
-function isCanonicalVoiceRowDuringCall(entry, callStartedAt) {
-  if (entry.kind !== "message") return false;
-  if (entry.variant === "meta") return false;
-  const createdAt = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
-  if (!Number.isFinite(createdAt)) return false;
-  return createdAt >= callStartedAt;
+function uncommittedLiveSpeech(entries, liveSpeech, scope) {
+  if (!liveSpeech?.length || !scope?.sessionId || !scope.channelId) return liveSpeech;
+  const committed = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    if (entry.kind !== "message") continue;
+    const origin = entry.realtimeOrigin;
+    if (!origin || origin.sessionId !== scope.sessionId || origin.channelId !== scope.channelId) continue;
+    const speaker = entry.identity.role;
+    if (speaker !== "assistant" && speaker !== "user") continue;
+    for (const itemId of origin.providerItemIds) committed.add(JSON.stringify([speaker, itemId]));
+  }
+  return liveSpeech.filter((item) => !committed.has(JSON.stringify([item.speaker, item.itemId])));
 }
 function sameSource(a, b) {
   return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
@@ -38022,7 +38092,7 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
               /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__text", children: item.text }) })
             ]
           },
-          item.itemId
+          `${item.speaker}:${item.itemId}`
         ))
       }
     ),
@@ -38139,7 +38209,7 @@ function ChatPane({
   onQuoteSelection,
   entries,
   liveSpeech,
-  voiceCallStartedAt,
+  activeVoiceScope,
   phase: phase2,
   draft,
   sending,
@@ -38225,12 +38295,13 @@ function ChatPane({
   const bodyRef = import_react40.default.useRef(null);
   const activeTurnFrameRef = import_react40.default.useRef(0);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react40.default.useState([]);
-  const messages = import_react40.default.useMemo(() => {
-    const visible = voiceCallStartedAt ? entries.filter((entry) => !isCanonicalVoiceRowDuringCall(entry, voiceCallStartedAt)) : entries;
-    return buildChatMessages(visible, {
-      resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null
-    });
-  }, [entries, voiceCallStartedAt, peerLabels]);
+  const visibleLiveSpeech = import_react40.default.useMemo(
+    () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
+    [entries, liveSpeech, activeVoiceScope]
+  );
+  const messages = import_react40.default.useMemo(() => buildChatMessages(entries, {
+    resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null
+  }), [entries, peerLabels]);
   const turns = import_react40.default.useMemo(() => buildChatTurns(messages), [messages]);
   const [revealedFrom, setRevealedFrom] = import_react40.default.useState(null);
   const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
@@ -38430,7 +38501,7 @@ function ChatPane({
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
-  }, [messages, liveSpeech, phase2]);
+  }, [messages, visibleLiveSpeech, phase2]);
   const railWindow = windowTurnRail(turns.length, railHeight);
   const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
     "nav",
@@ -38681,7 +38752,7 @@ function ChatPane({
         turns,
         messages,
         phase: phase2,
-        liveSpeech,
+        liveSpeech: visibleLiveSpeech,
         lastAgentMessageId,
         workGraphActions,
         isLoadingHistory,
@@ -40487,15 +40558,19 @@ function createVoiceSession(baseUrl, environment) {
     }
     if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
-      if (itemId) finalizeLiveSpeech(itemId, typeof event.text === "string" ? event.text : null);
+      if (itemId) finalizeLiveSpeech(
+        itemId,
+        type === "session.input_transcript.done" ? "user" : "assistant",
+        typeof event.text === "string" ? event.text : null
+      );
     }
   }
   function accumulateLiveSpeech(itemId, speaker, delta) {
-    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId);
+    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId && item.speaker === speaker);
     let next;
     if (existing) {
       next = snapshot.liveSpeech.map(
-        (item) => item.itemId === itemId ? { ...item, text: item.text + delta } : item
+        (item) => item.itemId === itemId && item.speaker === speaker ? { ...item, text: item.text + delta } : item
       );
     } else {
       next = [
@@ -40506,11 +40581,11 @@ function createVoiceSession(baseUrl, environment) {
     }
     publish({ liveSpeech: next });
   }
-  function finalizeLiveSpeech(itemId, text8) {
-    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId)) return;
+  function finalizeLiveSpeech(itemId, speaker, text8) {
+    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId && item.speaker === speaker)) return;
     publish({
       liveSpeech: snapshot.liveSpeech.map(
-        (item) => item.itemId === itemId ? { ...item, final: true, text: text8 !== null && text8.length >= item.text.length ? text8 : item.text } : item
+        (item) => item.itemId === itemId && item.speaker === speaker ? { ...item, final: true, text: text8 !== null && text8.length >= item.text.length ? text8 : item.text } : item
       )
     });
   }
@@ -41140,8 +41215,8 @@ function actionVisible(actions, key) {
 function normalizeConsoleInspectResult(value) {
   const direct = normalizeIdentityInspectViewState(value);
   if (direct) return direct;
-  const record3 = value && typeof value === "object" ? value : {};
-  const identityRecord = record3.identity && typeof record3.identity === "object" ? record3.identity : null;
+  const record4 = value && typeof value === "object" ? value : {};
+  const identityRecord = record4.identity && typeof record4.identity === "object" ? record4.identity : null;
   if (!identityRecord) return null;
   return normalizeIdentityInspectViewState({
     identity: identityRecord.identity,
@@ -41155,7 +41230,7 @@ function normalizeConsoleInspectResult(value) {
       session_id: identityRecord.session_id,
       agent_runtime_id: identityRecord.runtime_member_id
     },
-    topology_peers: Array.isArray(record3.peers) ? record3.peers : [],
+    topology_peers: Array.isArray(record4.peers) ? record4.peers : [],
     lease: null
   });
 }
@@ -41235,9 +41310,9 @@ function isTerminalTurnCompletedFrame(frame) {
 }
 function isActiveServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record3?.type === "string" ? record3.type : "";
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations) || type.includes(".completed") || type.includes(".done") || type.includes(".failed") || type.includes(".error")) {
     return false;
   }
@@ -41245,10 +41320,10 @@ function isActiveServerToolContentFrame2(frame) {
 }
 function isTerminalServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : typeof record3?.type === "string" ? record3.type : "";
-  const status = typeof content3?.status === "string" ? content3.status : typeof record3?.status === "string" ? record3.status : "";
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record4?.status === "string" ? record4.status : "";
   if (type === "message_annotations" || Array.isArray(content3?.annotations)) {
     return false;
   }
@@ -41416,14 +41491,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [consoleTransport]
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
-  const voiceCallStartedAtRef = import_react45.default.useRef(null);
-  import_react45.default.useEffect(() => {
-    if (voiceState.phase === "active" && voiceCallStartedAtRef.current === null) {
-      voiceCallStartedAtRef.current = Date.now();
-    } else if (voiceState.phase === "idle" || voiceState.phase === "error") {
-      voiceCallStartedAtRef.current = null;
-    }
-  }, [voiceState.phase]);
   const sampleVoiceWaveform = import_react45.default.useCallback(
     (source, samples) => voice?.sampleWaveform(source, samples),
     [voice]
@@ -41783,8 +41850,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function clearOptimisticUserByContent(identity, frame) {
     if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
       return false;
-    const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
-    const contentValue = frame.event === "run_started" ? record3.prompt : record3.content;
+    const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const contentValue = frame.event === "run_started" ? record4.prompt : record4.content;
     const content3 = typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content3) return false;
     const clearedPanelKeys = [];
@@ -43631,8 +43698,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     try {
       const inspection = await inspectIdentityViaHeadless(original.destination);
       if (!active()) return;
-      const record3 = inspection && typeof inspection === "object" ? inspection : null;
-      const owner = record3?.identity && typeof record3.identity === "object" ? record3.identity : record3;
+      const record4 = inspection && typeof inspection === "object" ? inspection : null;
+      const owner = record4?.identity && typeof record4.identity === "object" ? record4.identity : record4;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
         throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
       }
@@ -43672,7 +43739,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (!saved) throw new Error("The quote edit was not saved. Keep this draft and try again.");
   }
   function reorderContexts(contexts, id, direction) {
-    const index2 = contexts.findIndex((record3) => record3.id === id);
+    const index2 = contexts.findIndex((record4) => record4.id === id);
     const to = index2 + (direction === "up" ? -1 : 1);
     if (index2 < 0 || to < 0 || to >= contexts.length) return contexts;
     const next = contexts.slice();
@@ -44222,7 +44289,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             if (item?.envelopeJson) void dispatchPendingAttempt(identity, itemId, JSON.parse(item.envelopeJson).handling_mode, true);
           },
           onReconcile: (itemId) => onStackReconcile(identity, itemId),
-          onRemoveContext: (itemId, contextId) => updatePendingContexts(identity, itemId, (contexts) => contexts.filter((record3) => record3.id !== contextId)),
+          onRemoveContext: (itemId, contextId) => updatePendingContexts(identity, itemId, (contexts) => contexts.filter((record4) => record4.id !== contextId)),
           onEditContext: (itemId, contextId, quote) => editPendingContext(identity, itemId, contextId, quote),
           onReorderContext: (itemId, contextId, direction) => updatePendingContexts(identity, itemId, (contexts) => reorderContexts(contexts, contextId, direction)),
           onTrash: (itemId) => onStackTrash(identity, itemId),
@@ -44281,7 +44348,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           setContextDrafts((current) => ({ ...current, [draftKey]: next }));
         }, onRemove: (id) => {
           if (sendScope !== sendScopeRef.current) return;
-          const next = quotedContexts.filter((record3) => record3.id !== id);
+          const next = quotedContexts.filter((record4) => record4.id !== id);
           setContextDrafts((current) => ({ ...current, [draftKey]: next }));
           persistComposerDraft(identity, panelKey, draft, next);
         }, onReorder: (id, direction) => {
@@ -44329,7 +44396,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
         liveSpeech: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceState.liveSpeech : void 0,
-        voiceCallStartedAt: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceCallStartedAtRef.current : null,
+        activeVoiceScope: voiceState.target?.identity === identity && voiceState.phase === "active" && agent?.session_id && voiceState.activeChannelId ? { sessionId: agent.session_id, channelId: voiceState.activeChannelId } : null,
         workGraphActions: workGraphCardActionsFor(identity)
       },
       `${sendScope}:${panel.id}:${identity}`

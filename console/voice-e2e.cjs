@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
@@ -10,6 +11,7 @@ const agents = ["Alpha", "Beta"].map((label) => ({
   identity: `identity:${label.toLowerCase()}`,
   member_id: `identity:${label.toLowerCase()}`,
   agent_id: `identity:${label.toLowerCase()}`,
+  session_id: `session-${label.toLowerCase()}`,
   label,
   kind: "identity",
   state: "active",
@@ -34,6 +36,9 @@ function pendingHandle(channelId, identity) {
 }
 
 async function startServer() {
+  const timelineStreams = new Set();
+  let noteTimelineConnected;
+  const timelineConnected = new Promise(resolve => { noteTimelineConnected = resolve; });
   const files = new Map(await Promise.all([
     ["/console", "index.html", "text/html"],
     ["/console/assets/console-app.js", "console-app.js", "application/javascript"],
@@ -41,6 +46,15 @@ async function startServer() {
   ].map(async ([url, file, type]) => [url, { bytes: await fs.readFile(path.join(__dirname, "dist", file)), type }])));
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/console/timeline/stream") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      res.write(": connected\n\n");
+      res.write('id: console:0\nevent: snapshot_complete\ndata: {"type":"snapshot_complete","cursor":"console:0"}\n\n');
+      timelineStreams.add(res);
+      res.on("close", () => timelineStreams.delete(res));
+      noteTimelineConnected();
+      return;
+    }
     const file = files.get(url.pathname);
     if (file) {
       res.writeHead(200, { "content-type": file.type });
@@ -54,16 +68,33 @@ async function startServer() {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
-  return { server, url: `http://127.0.0.1:${server.address().port}` };
+  return {
+    server, url: `http://127.0.0.1:${server.address().port}`,
+    async publishTimeline(frames) {
+      await timelineConnected;
+      assert(timelineStreams.size > 0, "canonical rows need an active HTTP timeline stream");
+      for (const frame of frames) {
+        for (const stream of timelineStreams) {
+          stream.write(`id: ${frame.cursor}\nevent: ${frame.kind}\ndata: ${JSON.stringify({ type: "console_frame", frame })}\n\n`);
+        }
+      }
+    },
+  };
 }
 
-async function installConsoleFixture(page, { available = true } = {}) {
+async function installConsoleFixture(page, { available = true, publishTimeline = () => {} } = {}) {
   const requests = [];
+  let timeline = [];
   let sequence = 0;
   const channels = new Map();
   const replacements = new Map();
   const preparing = new Set();
   const cancelled = new Set();
+  const timelinePage = (identity) => {
+    const frames = identity ? timeline.filter(frame => frame.identity === identity) : timeline;
+    return { frames, available: true, exhausted: true, next_cursor: frames.at(-1)?.cursor ?? null,
+      latest_cursor: timeline.at(-1)?.cursor ?? null };
+  };
   await page.route("**/console/experience", (route) => route.fulfill({ json: {
     contract_version: "0.5.0",
     runtime_id: "voice-browser-fixture",
@@ -80,10 +111,8 @@ async function installConsoleFixture(page, { available = true } = {}) {
   } }));
   await page.route("**/console/modules", (route) => route.fulfill({ json: { modules: [] } }));
   await page.route("**/console/identities", (route) => route.fulfill({ json: { rows: agents } }));
-  await page.route("**/console/timeline?*", (route) => route.fulfill({ json: { frames: [], available: true } }));
-  await page.route("**/console/timeline/stream*", (route) => route.fulfill({
-    contentType: "text/event-stream",
-    body: ": fixture\n\n",
+  await page.route("**/console/timeline?*", route => route.fulfill({
+    json: timelinePage(new URL(route.request().url()).searchParams.get("identity")),
   }));
   await page.route("**/console/rpc", async (route) => {
     const { id, method, params = {} } = route.request().postDataJSON();
@@ -195,7 +224,7 @@ async function installConsoleFixture(page, { available = true } = {}) {
     if (method === "mobkit/console/send") {
       return respond({ interaction_id: `text-${++sequence}`, identity: params.identity, accepted: true });
     }
-    if (method === "mobkit/console/query_timeline") return respond({ frames: [], available: true });
+    if (method === "mobkit/console/query_timeline") return respond(timelinePage(params.identity));
     return route.fulfill({ json: { jsonrpc: "2.0", id, error: { code: -32601, message: `Fixture does not implement ${method}` } } });
   });
   await page.addInitScript(() => {
@@ -210,6 +239,7 @@ async function installConsoleFixture(page, { available = true } = {}) {
   return {
     requests,
     channels,
+    async setTimeline(frames) { timeline = frames; await publishTimeline(frames); },
     setAvailable(value) { available = value; },
     setContext(identity, preparation) {
       const channel = [...channels.values()].find((candidate) => candidate.identity === identity && !candidate.closed);
@@ -294,8 +324,88 @@ async function assertVoiceLayout(page) {
   assert.deepEqual(layout.overlappingHeaderText, [], JSON.stringify(layout));
 }
 
+async function verifyVoiceTranscriptHandoff(page, fixture) {
+  const identity = "identity:alpha";
+  const channelId = [...fixture.channels.entries()].find(([, channel]) => channel.identity === identity && !channel.closed)?.[0];
+  assert(channelId, "an active fixture channel is required");
+  const source = "## Spoken review\n\nKeep A\u030a, å and 🚀 exactly.\n\n| Check | Result |\n| --- | --- |\n| WorkGraph | Ready |";
+  const now = Date.now();
+  const row = (id, role, text, realtimeOrigin) => ({
+    id, cursor: `console:${id}`, kind: role === "user" ? "user_input" : "text_complete",
+    identity, runtime_key: "voice-browser-fixture", session_id: "session-alpha", timestamp_ms: now + id,
+    source: { kind: "session_history", source_cursor: `session-alpha:${id}` }, status: "completed",
+    payload: {
+      text, result: text, content: text,
+      message: role === "user" ? { role, content: text } : {
+        role: "block_assistant", blocks: [{ block_type: "transcript", data: { text, source: "spoken" } }],
+        ...(realtimeOrigin ? { realtime_origin: realtimeOrigin } : {}),
+      },
+    },
+  });
+  const origin = { session_id: "session-alpha", channel_id: channelId, canonical_row_sequence: 3,
+    provider_item_ids: ["spoken-first", "spoken-second"] };
+  await page.waitForFunction(() => window.voiceFixture.channels.at(-1)?.readyState === "open");
+  const speak = events => page.evaluate(events => {
+    const channel = window.voiceFixture.channels.at(-1);
+    for (const event of events) channel.send(JSON.stringify(event));
+  }, events);
+  await speak([
+    { type: "session.input_transcript.delta", item_id: "spoken-first", delta: "Keep my spoken instruction separate." },
+    { type: "session.output_transcript.delta", item_id: "spoken-first", delta: "The first provisional fragment" },
+    { type: "session.output_transcript.delta", item_id: "spoken-second", delta: "The second provisional fragment" },
+    { type: "session.output_transcript.delta", item_id: "still-speaking", delta: "Checking one more prerequisite..." },
+  ]);
+  const live = (item, speaker = "assistant") => page.locator(`.msg--live-${speaker}[data-testid="chat-live-row:${identity}:${item}"]`);
+  await live("spoken-first").waitFor();
+  await live("spoken-first", "user").waitFor();
+  await live("spoken-second").waitFor();
+  const composer = page.getByTestId(`chat-composer:${identity}`);
+  const draft = { text: "Keep this draft while the voice result arrives.", start: 5, end: 15 };
+  const assertDraft = async () => assert.deepEqual(
+    await composer.evaluate(node => ({ text: node.value, start: node.selectionStart, end: node.selectionEnd })), draft,
+  );
+  await composer.fill(draft.text);
+  await composer.evaluate((node, draft) => node.setSelectionRange(draft.start, draft.end), draft);
+  // Canonical history arrives over the actual HTTP event stream while the
+  // loopback WebRTC call and provider item buffers remain active.
+  await fixture.setTimeline([
+    row(1, "user", "Check the release graph while we talk."),
+    row(2, "assistant", "The typed WorkGraph check is ready."),
+    row(3, "assistant", source, origin),
+  ]);
+  await page.getByRole("heading", { name: "Spoken review", exact: true }).waitFor();
+  await live("spoken-first").waitFor({ state: "detached" });
+  await live("spoken-second").waitFor({ state: "detached" });
+  await live("still-speaking").waitFor();
+  assert.equal(await live("spoken-first", "user").locator(".msg__text").textContent(), "Keep my spoken instruction separate.",
+    "an assistant's canonical provider item cannot consume a user's item with the same ID");
+  await assertDraft();
+  const pane = page.getByTestId(`chat-pane:${identity}`);
+  const messageSources = pane.locator("[data-quote-source]");
+  assert(await messageSources.getByText("Check the release graph while we talk.", { exact: true }).isVisible());
+  assert(await messageSources.getByText("The typed WorkGraph check is ready.", { exact: true }).isVisible());
+  const canonical = pane.locator('[data-quote-source]').filter({ has: page.getByRole("heading", { name: "Spoken review", exact: true }) });
+  assert.equal(await canonical.getAttribute("data-quote-source"), source);
+  assert.equal(await canonical.locator("table").count(), 1);
+  await speak([
+    { type: "session.output_transcript.delta", item_id: "spoken-first", delta: " Late stale speech must stay hidden." },
+    { type: "session.output_transcript.delta", item_id: "after-late", delta: "The ordered channel delivered the late fragment." },
+  ]);
+  await live("after-late").waitFor();
+  assert.equal(await live("spoken-first").count(), 0, "late speech cannot replace its canonical row");
+  await assertDraft();
+  assert.equal(await pane.getByRole("heading", { name: "Spoken review", exact: true }).count(), 1);
+  if (process.env.VOICE_SCREENSHOT_DIR) {
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.screenshot({ path: path.join(process.env.VOICE_SCREENSHOT_DIR, "voice-canonical-handoff-1600.png") });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: path.join(process.env.VOICE_SCREENSHOT_DIR, "voice-canonical-handoff-1440.png") });
+  }
+  await composer.fill("");
+}
+
 async function main() {
-  const { server, url } = await startServer();
+  const { server, url, publishTimeline } = await startServer();
   let browser;
   try {
     browser = await chromium.launch({
@@ -315,7 +425,16 @@ async function main() {
     }
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const fixture = await installConsoleFixture(page);
+    const assetResponses = [];
+    page.on("response", response => {
+      const pathname = new URL(response.url()).pathname;
+      if (!["/console/assets/console-app.js", "/console/assets/console-app.css"].includes(pathname)) return;
+      assetResponses.push(response.body().then(bytes => ({
+        url: response.url(), status: response.status(), bytes: bytes.length,
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      })));
+    });
+    const fixture = await installConsoleFixture(page, { publishTimeline });
     await page.goto(`${url}/console`);
     await openAgent(page, "Alpha");
     if (process.env.VOICE_SCREENSHOT_DIR) {
@@ -333,6 +452,7 @@ async function main() {
     await sendText(page, "identity:alpha", "Keep working while we talk");
     await page.locator('[data-testid="voice-bar"][data-phase="active"]').waitFor();
     assert.ok(fixture.requests.some((request) => request.method === "mobkit/console/send" && request.params.identity === "identity:alpha"));
+    await verifyVoiceTranscriptHandoff(page, fixture);
     await page.getByRole("button", { name: "Mute microphone" }).click();
     assert.equal(await page.evaluate(() => window.voiceFixture.microphoneTracks.at(-1).enabled), false);
     await page.getByRole("button", { name: "Mute speakers" }).click();
@@ -376,6 +496,8 @@ async function main() {
     await page.getByRole("button", { name: "Unmute speakers" }).waitFor();
     assert.equal(await page.evaluate(() => window.voiceFixture.microphoneTracks.length), capturesBeforeRecovery);
     assert.equal(fixture.requests.filter((request) => request.method === "mobkit/console/voice/open").length, 1);
+    assert.equal(await page.getByRole("heading", { name: "Spoken review", exact: true }).count(), 1,
+      "saved speech remains visible after the channel replacement clears provisional items");
 
     await openAgent(page, "Beta");
     await page.getByRole("region", { name: "Voice with Alpha" }).waitFor();
@@ -387,6 +509,8 @@ async function main() {
     await sendText(page, "identity:beta", "A separate text task");
     await page.waitForFunction(() => document.querySelector('[data-testid="chat-composer:identity:beta"]').value === "");
     assert.ok(fixture.requests.some((request) => request.method === "mobkit/console/send" && request.params.identity === "identity:beta"));
+    assert.equal(await page.getByRole("heading", { name: "Spoken review", exact: true }).count(), 0,
+      "the separate agent has no canonical speech from Alpha's history");
 
     await assertVoiceLayout(page);
     if (process.env.VOICE_SCREENSHOT_DIR) {
@@ -449,8 +573,14 @@ async function main() {
     assert.equal(await unauthenticated.getByTestId("voice-start").count(), 0);
     assert.equal(await unauthenticated.evaluate(() => window.voiceFixture.microphoneTracks.length), 0);
     assert.ok(!noAuth.requests.some((request) => request.method === "mobkit/console/voice/open"));
+    const assets = await Promise.all(assetResponses);
+    assert.equal(assets.length, 2, "the browser fetched both production console assets");
+    assert(assets.every(asset => asset.status === 200));
+    if (process.env.VOICE_SCREENSHOT_DIR) {
+      await fs.writeFile(path.join(process.env.VOICE_SCREENSHOT_DIR, "voice-assets.json"), JSON.stringify(assets, null, 2) + "\n");
+    }
     await context.close();
-    console.log("Voice browser E2E passed: real WebRTC audio before context release, context acknowledgement/failure, mute, navigation, concurrent text, replacement, cleanup and auth gate.");
+    console.log("Voice browser E2E passed: real WebRTC audio before context release, context acknowledgement/failure, mute, navigation, concurrent text, canonical transcript handoff, replacement, cleanup and auth gate.");
   } finally {
     await browser?.close();
     server.closeAllConnections();

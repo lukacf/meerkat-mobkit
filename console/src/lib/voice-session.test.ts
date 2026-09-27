@@ -625,6 +625,50 @@ test("transcript deltas accumulate into provisional live speech keyed by provide
   assert.equal(h.controller.getSnapshot().activeChannelId, null);
 });
 
+test("live speech keeps interleaved user and assistant deltas separate when item ids collide", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  try {
+    const channel = h.peers[0].channel;
+    channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "User " });
+    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "Assistant " });
+    channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "question" });
+    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "answer" });
+    assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => [item.itemId, item.speaker, item.text, item.final]), [
+      ["shared-item", "user", "User question", false],
+      ["shared-item", "assistant", "Assistant answer", false],
+    ]);
+  } finally {
+    await h.controller.close();
+  }
+});
+
+test("live speech final events affect only their speaker when item ids collide", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  try {
+    const channel = h.peers[0].channel;
+    const items = () => h.controller.getSnapshot().liveSpeech.map((item) => [item.speaker, item.text, item.final]);
+    channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "User question" });
+    channel.emit({ type: "session.output_transcript.done", item_id: "shared-item", text: "Unrelated assistant final" });
+    assert.deepEqual(items(), [["user", "User question", false]], "an unknown speaker's final must not modify the other speaker");
+
+    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "Assistant answer" });
+    channel.emit({ type: "session.input_transcript.done", item_id: "shared-item", text: "User question?" });
+    assert.deepEqual(items(), [
+      ["user", "User question?", true],
+      ["assistant", "Assistant answer", false],
+    ]);
+    channel.emit({ type: "session.output_transcript.done", item_id: "shared-item", text: "Assistant answer." });
+    assert.deepEqual(items(), [
+      ["user", "User question?", true],
+      ["assistant", "Assistant answer.", true],
+    ]);
+  } finally {
+    await h.controller.close();
+  }
+});
+
 test("provisional live speech is dropped when the call is superseded or the provider is lost", async () => {
   const h = harness();
   await h.controller.start(target);
