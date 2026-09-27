@@ -1,7 +1,9 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, source } = require("./real-startup-lineage.cjs");
+const http = require("node:http");
+const { once } = require("node:events");
+const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, startupLineageReaders, source } = require("./real-startup-lineage.cjs");
 
 function runFrames(runId, interactionId) {
   const identity = { run_id: runId, ...(interactionId ? { interaction_id: interactionId } : {}) };
@@ -68,17 +70,6 @@ function historyPage(runId = "run-a") {
     { role: "block_assistant", identity: { run_id: runId }, blocks: [{ block_type: "text", data: { text: source } }] },
   ] };
 }
-function boundedPoll(attempts, beforeProbe = () => {}) {
-  return async (probe, label, timeout) => {
-    assert.equal(timeout, 20_000, "production readiness retains a bounded deadline");
-    let last;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      beforeProbe(attempt);
-      try { const value = await probe(); if (value) return value; } catch (error) { last = error; }
-    }
-    throw new Error(`Timed out: ${label}: ${last?.message ?? "no completed observation"}`);
-  };
-}
 
 test("startup readiness waits past initial Ready and incomplete durable history", async () => {
   const full = runFrames("run-a");
@@ -86,11 +77,12 @@ test("startup readiness waits past initial Ready and incomplete durable history"
   let attempt = 0;
   const observations = [];
   const result = await waitForStartupLineage({
-    timeline: async () => ({ frames: attempt === 0 ? ready : full }),
-    durableHistory: async () => [attempt < 2 ? { ...historyPage(), message_count: 0, messages: [] } : historyPage()],
+    pollIntervalMs: 1,
+    timeline: async () => ({ frames: ++attempt === 1 ? ready : full }),
+    durableHistory: async () => [attempt < 3 ? { ...historyPage(), message_count: 0, messages: [] } : historyPage()],
     onObservation: value => observations.push(value),
-  }, boundedPoll(3, value => { attempt = value; }));
-  assert.equal(attempt, 2, "neither member readiness nor a live terminal alone proves durable lineage");
+  });
+  assert.equal(attempt, 3, "neither member readiness nor a live terminal alone proves durable lineage");
   assert.deepEqual(result.frames, full);
   assert.deepEqual(result.history, [historyPage()]);
   assert.deepEqual(result.owners.map(owner => owner.runId), ["run-a"]);
@@ -98,15 +90,14 @@ test("startup readiness waits past initial Ready and incomplete durable history"
 });
 
 test("startup readiness keeps deadline failure when no expected terminal ever arrives", async () => {
-  let reads = 0;
   const ready = runFrames("ready").map(frame => ({ ...frame, payload: { ...frame.payload, result: "Ready." } }));
   const observations = [];
   await assert.rejects(waitForStartupLineage({
-    timeline: async () => { reads++; return { frames: ready }; },
+    timeoutMs: 25, pollIntervalMs: 1,
+    timeline: async () => ({ frames: ready }),
     durableHistory: async () => [{ ...historyPage(), message_count: 0, messages: [] }],
     onObservation: value => observations.push(value),
-  }, boundedPoll(3)), /Timed out: .*actual completed Acceptance reply/);
-  assert.equal(reads, 3);
+  }), /Timed out: .*actual completed Acceptance reply/);
   assert.deepEqual(observations.at(-1).frames, ready);
 });
 
@@ -115,8 +106,163 @@ test("startup readiness never accepts a durable owner mismatch or incomplete sou
     const frames = runFrames("run-a");
     if (corrupt === "delta") frames.find(frame => frame.kind === "text_delta").payload.delta = "partial";
     await assert.rejects(waitForStartupLineage({
+      timeoutMs: 25, pollIntervalMs: 1,
       timeline: async () => ({ frames }),
       durableHistory: async () => [historyPage(corrupt === "owner" ? "other-run" : "run-a")],
-    }, boundedPoll(2)), corrupt === "owner" ? /exactly one actual committed reply/ : /exact source deltas/);
+    }), corrupt === "owner" ? /exactly one actual committed reply/ : /exact source deltas/);
   }
+});
+
+
+test("startup production deadline aborts a hanging timeline read", { timeout: 2000 }, async () => {
+  const frames = runFrames("run-a");
+  let release;
+  const read = new Promise(resolve => { release = resolve; });
+  let signal;
+  let historyReads = 0;
+  const observations = [];
+  const pending = waitForStartupLineage({
+    timeoutMs: 25,
+    timeline: async options => { signal = options?.signal; return read; },
+    durableHistory: async () => { historyReads++; return [historyPage()]; },
+    onObservation: value => observations.push(value),
+  });
+  let guard;
+  try {
+    const result = await Promise.race([
+      pending.then(value => ({ value }), error => ({ error })),
+      new Promise(resolve => { guard = setTimeout(() => resolve({ overdue: true }), 250); }),
+    ]);
+    assert(!result.overdue, "production helper must settle while the read is still pending");
+    assert.match(result.error?.message ?? "", /Timed out: .*startup Acceptance reply/);
+    assert.equal(signal?.aborted, true, "the pending read receives cancellation");
+    assert.equal(historyReads, 0, "expired timeline work cannot start another read");
+  } finally {
+    clearTimeout(guard);
+    release({ frames });
+    await pending.catch(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(historyReads, 0, "late timeline resolution cannot start history after failure");
+    assert.deepEqual(observations, [], "late resolution cannot overwrite failure evidence");
+  }
+});
+
+test("startup production deadline rejects valid lineage observed after timer dispatch was delayed", async () => {
+  const frames = runFrames("run-a");
+  let historyReads = 0;
+  await assert.rejects(waitForStartupLineage({
+    timeoutMs: 10,
+    timeline: async () => {
+      // Hold the event loop beyond the budget: a timer alone cannot reject
+      // a late successful read before its continuation runs.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+      return { frames };
+    },
+    durableHistory: async () => { historyReads++; return [historyPage()]; },
+  }), /Timed out: .*startup Acceptance reply/);
+  assert.equal(historyReads, 0, "deadline is checked before recording or reading more state");
+});
+
+
+test("startup deadline cancels production HTTP headers and JSON body reads", { timeout: 5000 }, async t => {
+  for (const stalled of ["timeline headers", "timeline body", "history headers", "history body"]) {
+    await t.test(stalled, async () => {
+      const frames = runFrames("run-a");
+      let releaseClosed;
+      const closed = new Promise(resolve => { releaseClosed = resolve; });
+      let stalledRead = false;
+      const server = http.createServer((request, response) => {
+        const resource = request.url.startsWith("/console/timeline?") ? "timeline" : "history";
+        if (stalled.startsWith(resource)) {
+          stalledRead = true;
+          response.on("close", releaseClosed);
+          if (stalled.endsWith("body")) {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.write("{");
+          }
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(resource === "timeline" ? { frames } : historyPage()));
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const baseUrl = `http://127.0.0.1:${server.address().port}`;
+      let guard;
+      try {
+        await assert.rejects(waitForStartupLineage({
+          ...startupLineageReaders({ baseUrl, backendUrl: baseUrl }), timeoutMs: 150,
+        }), /Timed out: .*startup Acceptance reply/);
+        assert(stalledRead, "the deadline interrupted the intended actual HTTP read");
+        await Promise.race([
+          closed,
+          new Promise((_, reject) => { guard = setTimeout(() => reject(new Error("aborted HTTP read stayed open")), 500); }),
+        ]);
+      } finally {
+        clearTimeout(guard);
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+  }
+});
+
+test("startup deadline preserves the last assertion while a later read hangs", async () => {
+  const ready = runFrames("ready").map(frame => ({ ...frame, payload: { ...frame.payload, result: "Ready." } }));
+  const observations = [];
+  let reads = 0;
+  await assert.rejects(waitForStartupLineage({
+    timeoutMs: 25, pollIntervalMs: 1,
+    timeline: async ({ signal }) => {
+      if (++reads === 1) return { frames: ready };
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    },
+    durableHistory: async () => [historyPage()],
+    onObservation: value => observations.push(value),
+  }), /Timed out: .*actual completed Acceptance reply/);
+  assert.deepEqual(observations.at(-1), { frames: ready, history: [historyPage()] });
+});
+
+test("startup success uses one signal and cancels its deadline cleanup", async () => {
+  const frames = runFrames("run-a");
+  let timelineSignal;
+  let historySignal;
+  const result = await waitForStartupLineage({
+    timeline: async ({ signal }) => { timelineSignal = signal; return { frames }; },
+    durableHistory: async (_, { signal }) => { historySignal = signal; return [historyPage()]; },
+  });
+  assert.deepEqual(result.owners.map(owner => owner.runId), ["run-a"]);
+  assert.equal(historySignal, timelineSignal);
+  assert.equal(timelineSignal.aborted, true, "successful completion also releases pending read resources");
+});
+
+
+test("startup readiness rejects an unrelated completed reply while its accepted interaction is missing", async () => {
+  const frames = runFrames("other-run", "other-interaction");
+  const page = historyPage("other-run");
+  page.messages[0].identity.interaction_id = "other-interaction";
+  await assert.rejects(waitForStartupLineage({
+    expectedInteractionId: "accepted-interaction", timeoutMs: 25, pollIntervalMs: 1,
+    timeline: async () => ({ frames }), durableHistory: async () => [page],
+  }), /accepted startup interaction completed with exact durable lineage/);
+});
+
+
+test("startup readiness waits for its accepted durable owner while retaining other canonical replies", async () => {
+  const other = runFrames("other-run", "other-interaction");
+  const expected = runFrames("accepted-run", "accepted-interaction");
+  const otherPage = historyPage("other-run");
+  otherPage.messages[0].identity.interaction_id = "other-interaction";
+  const expectedPage = historyPage("accepted-run");
+  expectedPage.messages[0].identity.interaction_id = "accepted-interaction";
+  let reads = 0;
+  const result = await waitForStartupLineage({
+    expectedInteractionId: "accepted-interaction", pollIntervalMs: 1,
+    timeline: async () => ({ frames: ++reads === 1 ? other : [...other, ...expected] }),
+    durableHistory: async () => [reads < 3 ? otherPage : {
+      ...otherPage, message_count: 2, messages: [...otherPage.messages, ...expectedPage.messages],
+    }],
+  });
+  assert.equal(reads, 3, "unrelated completion and then non-durable expected completion both retry");
+  assert.deepEqual(result.owners.map(owner => owner.interactionId), ["other-interaction", "accepted-interaction"]);
 });
