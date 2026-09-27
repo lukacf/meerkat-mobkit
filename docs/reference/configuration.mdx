@@ -145,6 +145,23 @@ runtime default applies. Setting the runtime default to `null` therefore does
 not disable a member's explicit numeric timeout. See
 [roster and member lifecycle](/concepts/roster) for the identity/worker boundary.
 
+Agents set a per-member override with the `idle_retire_secs` argument of the
+`delegate`, `fork_off` and `mob_spawn_member` tools. A non-negative integer is
+that many idle seconds. JSON `null` is the same as omitting the argument, like
+every other optional tool argument:
+
+| Tool | Omitted or `null` | Integer |
+|------|-------------------|---------|
+| `delegate` | The runtime default | That many seconds |
+| `fork_off` | Opted in on the runtime default | That many seconds |
+| `mob_spawn_member` | Not opted in; the member is kept | Opted in with that many seconds |
+
+Any other value is refused as invalid arguments. Agents cannot disable
+retirement for the members they spawn; a host that wants helpers kept sets the
+runtime default to `null` (above). A `disabled` override persisted by an
+earlier MobKit, when `idle_retire_secs: null` meant disable, still loads and
+still keeps its member.
+
 ### Model fallback
 
 Automatic model fallback is **off by default**. An enabled policy requires an
