@@ -10858,13 +10858,11 @@ async fn attach_member_progress(
                 handle
                     .member_status(&identity)
                     .await
-                    .map(|snapshot| {
-                        progress_with_preview_marker(
-                            snapshot
-                                .progress
-                                .and_then(|progress| serde_json::to_value(progress).ok()),
-                            snapshot.preview_unavailable,
-                        )
+                    .map(|snapshot| MemberProgressObservation {
+                        progress: snapshot
+                            .progress
+                            .and_then(|progress| serde_json::to_value(progress).ok()),
+                        preview_unavailable: snapshot.preview_unavailable,
                     })
                     .map_err(|error| error.to_string())
             })
@@ -10873,8 +10871,14 @@ async fn attach_member_progress(
     .await;
 }
 
-/// A member's serialized progress, or `None` when its status carries none.
-type MemberProgressRead<'a> = futures::future::BoxFuture<'a, Result<Option<Value>, String>>;
+/// Keep the preview observation separate until progress fallback is resolved.
+struct MemberProgressObservation {
+    progress: Option<Value>,
+    preview_unavailable: Option<meerkat_mob::MemberPreviewUnavailable>,
+}
+
+type MemberProgressRead<'a> =
+    futures::future::BoxFuture<'a, Result<MemberProgressObservation, String>>;
 
 /// A member's progress JSON with meerkat 0.8.45's typed `preview_unavailable`
 /// marker carried alongside, so the console can tell a status read whose
@@ -10915,14 +10919,6 @@ mod progress_preview_marker_tests {
         assert_eq!(
             progress_with_preview_marker(Some(progress.clone()), None),
             Some(progress)
-        );
-        assert_eq!(
-            progress_with_preview_marker(
-                None,
-                Some(meerkat_mob::MemberPreviewUnavailable::ReadFailed)
-            ),
-            None,
-            "no progress stays no progress (the caller falls back to the run state)"
         );
     }
 }
@@ -10984,11 +10980,25 @@ async fn member_progress_or_fallback(
     read_timeout: Duration,
     read: MemberProgressRead<'_>,
 ) -> (usize, Option<Value>) {
-    let unreadable = match tokio::time::timeout(read_timeout, read).await {
-        Ok(Ok(Some(progress))) => return (index, Some(progress)),
-        Ok(Ok(None)) => "the status carries no progress".to_string(),
-        Ok(Err(error)) => error,
-        Err(_) => format!("no status within {read_timeout:?}"),
+    let (unreadable, preview_unavailable) = match tokio::time::timeout(read_timeout, read).await {
+        Ok(Ok(MemberProgressObservation {
+            progress: Some(progress),
+            preview_unavailable,
+        })) => {
+            return (
+                index,
+                progress_with_preview_marker(Some(progress), preview_unavailable),
+            );
+        }
+        Ok(Ok(MemberProgressObservation {
+            progress: None,
+            preview_unavailable,
+        })) => (
+            "the status carries no progress".to_string(),
+            preview_unavailable,
+        ),
+        Ok(Err(error)) => (error, None),
+        Err(_) => (format!("no status within {read_timeout:?}"), None),
     };
     tracing::debug!(
         agent_identity = %entry.agent_identity,
@@ -11001,7 +11011,10 @@ async fn member_progress_or_fallback(
     let run_state = console_member_run_state(runtime_machine, session.as_ref()).await;
     (
         index,
-        serde_json::to_value(ConsoleMemberProgress::from_run_state(run_state)).ok(),
+        progress_with_preview_marker(
+            serde_json::to_value(ConsoleMemberProgress::from_run_state(run_state)).ok(),
+            preview_unavailable,
+        ),
     )
 }
 
@@ -18122,12 +18135,18 @@ comms = true
                 let reported = reported.clone();
                 Box::pin(async move {
                     match identity.as_str() {
-                        "read" => Ok(Some(reported)),
+                        "read" => Ok(super::MemberProgressObservation {
+                            progress: Some(reported),
+                            preview_unavailable: None,
+                        }),
                         "refused" => Err("mob lifecycle operation admission is still pending at \
                                           observation_lane_saturated: member_status_observation"
                             .to_string()),
                         "slow" => std::future::pending().await,
-                        _ => Ok(None),
+                        _ => Ok(super::MemberProgressObservation {
+                            progress: None,
+                            preview_unavailable: None,
+                        }),
                     }
                 })
             },
@@ -18147,6 +18166,83 @@ comms = true
         });
         for id in ["refused", "slow", "empty"] {
             assert_eq!(console_progress_of(&members, id), Some(&fallback), "{id}");
+        }
+        Ok(())
+    }
+
+    /// Missing progress can still carry an authoritative reason why the
+    /// preview was not observed. Keep it when composing the runtime fallback.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn console_progress_preserves_preview_markers_through_fallback()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use meerkat_mob::MemberPreviewUnavailable;
+
+        let temp_dir = tempfile::tempdir()?;
+        let (runtime, runtime_machine) =
+            console_progress_runtime("console-preview-fallback", temp_dir.path(), &["solo"])
+                .await?;
+        let handle = runtime.handle();
+        let (mut members, _) = project_console_members_from_handle(
+            &handle,
+            runtime_machine.as_deref(),
+            None,
+            None,
+            &ConsoleSnapshotReadModelState::default(),
+            &BTreeMap::new(),
+        )
+        .await;
+        let entries = handle.list_members_including_retiring().await;
+        let observed = json!({
+            "run_state": "run_open",
+            "in_flight_work": 2,
+            "last_progress_at_ms": 42,
+            "last_progress_event": "execution_advanced",
+            "health": "degraded",
+        });
+        let fallback = json!({
+            "run_state": "idle",
+            "in_flight_work": 0,
+            "last_progress_at_ms": 0,
+            "last_progress_event": "unchanged",
+            "health": "unknown",
+        });
+        let mut retiring_fallback = fallback.clone();
+        retiring_fallback["preview_unavailable"] = json!("not_observed_while_retiring");
+        let mut unavailable_observed = observed.clone();
+        unavailable_observed["preview_unavailable"] = json!("read_failed");
+        for (progress, preview_unavailable, expected) in [
+            // Meerkat's nonterminal retiring-member status carries this pair.
+            (
+                None,
+                Some(MemberPreviewUnavailable::NotObservedWhileRetiring),
+                retiring_fallback,
+            ),
+            (
+                Some(observed.clone()),
+                Some(MemberPreviewUnavailable::ReadFailed),
+                unavailable_observed,
+            ),
+            (None, None, fallback),
+            (Some(observed.clone()), None, observed),
+        ] {
+            super::attach_member_progress_with(
+                &handle,
+                runtime_machine.as_deref(),
+                &entries,
+                &mut members,
+                Duration::from_millis(100),
+                |_| {
+                    let progress = progress.clone();
+                    Box::pin(async move {
+                        Ok(super::MemberProgressObservation {
+                            progress,
+                            preview_unavailable,
+                        })
+                    })
+                },
+            )
+            .await;
+            assert_eq!(console_progress_of(&members, "solo"), Some(&expected));
         }
         Ok(())
     }

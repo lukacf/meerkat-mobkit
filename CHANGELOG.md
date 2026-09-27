@@ -164,10 +164,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `resume_session_id`: the build callback's resume session is decoded, and a
   builder can set it to ask the gateway to resume a session (persistent mode).
 - `mobkit/inspect_identity` (and its raw-alias projection) and the console's
-  per-member progress carry `preview_unavailable` when meerkat could not
-  observe the member's session for its status (`observation_deadline`,
-  `read_failed`, `session_absent`, `not_observed_while_retiring`; meerkat
-  0.8.45 `MemberPreviewUnavailable`). When it is set, a missing
+  per-member progress (also when it falls back to the runtime machine's run
+  state, as for a retiring member) carry `preview_unavailable` when meerkat
+  could not observe the member's session for its status
+  (`observation_deadline`, `read_failed`, `session_absent`,
+  `not_observed_while_retiring`; meerkat 0.8.45 `MemberPreviewUnavailable`).
+  When it is set, a missing
   `output_preview` does not mean an empty member. Python
   `IdentityInspection.preview_unavailable` and TypeScript
   `IdentityInspection.previewUnavailable` carry it; unknown future values
