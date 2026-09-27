@@ -31,6 +31,7 @@ test("shipping runners discover every required real backend scenario and shard t
     require("./scenarios/real-conversation.cjs").scenarios,
     require("./scenarios/real-markdown-url-policy.cjs").scenarios,
     require("./scenarios/real-reasoning.cjs").scenarios,
+    require("./scenarios/real-assistant-identity.cjs").scenarios,
     require("./scenarios/real-startup-lineage.cjs").scenarios,
     require("./scenarios/real-routine-tools.cjs").browserScenarios,
     require("./scenarios/approval-lifecycle.cjs").browserScenarios,

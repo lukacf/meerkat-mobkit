@@ -452,6 +452,7 @@ async fn provenance_backfill_reuses_negative_prefix_and_recovers_a_later_witness
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.clone());
     let target = SessionBackfillTarget {
+        assistant_refresh: AssistantHistoryRefreshReason::Recovery,
         provenance: None,
         entry: entry.clone(),
         record,

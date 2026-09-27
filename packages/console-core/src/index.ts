@@ -1,3 +1,5 @@
+export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
+export type { AssistantHistorySnapshot } from "./assistant-message-identity";
 export type {
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,

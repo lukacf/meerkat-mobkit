@@ -1,4 +1,5 @@
 import type { ConsoleFrame } from "./runtime-types";
+import { assistantHistorySnapshot, assistantMessageCursorSequence } from "./assistant-message-identity";
 
 type RecordValue = Record<string, unknown>;
 type Origin = { session_id: string; run_id: string; input_id: string; append_ordinal: number };
@@ -217,6 +218,44 @@ function noticeSnapshot(frame: ConsoleFrame): NoticeSnapshot | null {
   } else if (data.removed_history_frame_ids !== undefined) return null;
   return { frame, cursor, observedThrough, notices, settled, historyPositions,
     sparseHistoryPositions, removedHistoryFrameIds };
+}
+
+/**
+ * An assistant identity observation opts its matching complete position image
+ * into current-transcript filtering. Older notice images remain audit views.
+ * Reuse the notice owner's validation rather than inventing another map shape.
+ */
+export function reconcileAssistantHistoryPositions(frames: ConsoleFrame[]): ConsoleFrame[] {
+  const scope = (frame: ConsoleFrame) => JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, frame.sessionId]);
+  const assistants = new Map<string, { cursor: bigint; observedThrough: bigint; ids: ReadonlySet<string>; conflict: boolean }>();
+  const positions = new Map<string, NoticeSnapshot>();
+  for (const frame of frames) {
+    const assistant = assistantHistorySnapshot(frame), cursor = assistantMessageCursorSequence(frame.cursor);
+    if (assistant && cursor !== undefined) {
+      const key = scope(frame), prior = assistants.get(key);
+      if (!prior || cursor > prior.cursor) assistants.set(key, { cursor, observedThrough: assistant.observedThrough, ids: assistant.assistantMessageIds, conflict: false });
+      else if (cursor === prior.cursor && (assistant.observedThrough !== prior.observedThrough
+        || assistant.assistantMessageIds.size !== prior.ids.size
+        || [...assistant.assistantMessageIds].some(id => !prior.ids.has(id)))) prior.conflict = true;
+    }
+    const position = noticeSnapshot(frame);
+    if (position?.historyPositions) {
+      const key = scope(frame), prior = positions.get(key);
+      if (!prior || position.cursor > prior.cursor) positions.set(key, position);
+    }
+  }
+  return frames.filter(frame => {
+    if (frame.sourceKind !== "session_history") return true;
+    const message = record(record(frame.data)?.message);
+    if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
+    const key = scope(frame), assistant = assistants.get(key), position = positions.get(key);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (!assistant || assistant.conflict || !position || BigInt(position.observedThrough) !== assistant.observedThrough
+      || cursor === undefined || cursor > assistant.observedThrough) return true;
+    return position.sparseHistoryPositions
+      ? !position.removedHistoryFrameIds.has(frame.id)
+      : position.historyPositions!.has(frame.id);
+  });
 }
 
 function positionFromCursor(sessionId: string, sourceCursor: unknown): Position | undefined {

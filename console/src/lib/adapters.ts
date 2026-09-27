@@ -1,4 +1,6 @@
-import { reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "../../../packages/console-core/src/runtime-append-projection";
+import { assistantMessageKey, hasAssistantMessageIdCarrier } from "../../../packages/console-core/src/assistant-message-identity";
+import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "../../../packages/console-core/src/assistant-message-projection";
+import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "../../../packages/console-core/src/runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "../../../packages/console-core/src/tool-completion";
 import { parseConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import {
@@ -901,7 +903,7 @@ function parseToolName(frame: ConsoleFrame): string {
     const content = record?.content && typeof record.content === "object"
       ? record.content as Record<string, unknown>
       : null;
-    const name = content?.name ?? record?.tool_name ?? record?.name;
+    const name = content?.name ?? record?.tool_name ?? record?.name ?? record?.kind;
     return typeof name === "string" && name.trim() ? name.trim() : "tool";
   }
   return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
@@ -2473,7 +2475,7 @@ function terminalFrameVisibleText(frame: ConsoleFrame): string {
   return "";
 }
 
-type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId">;
+type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId" | "data" | "id" | "event">;
 
 function ownerContextsConflict(left: AssistantFrameOwner, right: AssistantFrameOwner): boolean {
   return (["runtimeKey", "identity", "sessionId"] as const).some((key) => (
@@ -2496,6 +2498,10 @@ function sameAssistantRunOwner(left: AssistantFrameOwner, right: AssistantFrameO
 }
 
 function sameTextStreamOwner(left: AssistantFrameOwner | undefined, right: AssistantFrameOwner): boolean {
+  if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
+    const key = assistantMessageKey(left);
+    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
+  }
   return Boolean(left && !ownerContextsConflict(left, right)
     && (left.runId?.trim() || "") === (right.runId?.trim() || "")
     && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
@@ -2510,6 +2516,9 @@ type LiveAssistantTextOccurrence = {
 };
 
 function assistantOwnerKey(frame: AssistantFrameOwner): string {
+  const messageKey = assistantMessageKey(frame);
+  if (messageKey) return `assistant:${messageKey}`;
+  if (hasAssistantMessageIdCarrier(frame)) return `unbound:${frame.id}`;
   if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
   const interaction = frame.interactionId?.trim() || "";
   return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
@@ -2554,7 +2563,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     return occurrence;
   };
   for (const frame of frames) {
-    if (frame.sourceKind === "session_history") continue;
+    if (frame.sourceKind === "session_history" || hasAssistantMessageIdCarrier(frame)) continue;
     const key = assistantOwnerKey(frame);
     if (frame.event === "reasoning_complete" && frame.runId?.trim()) {
       const byText = reasoningByOwner.get(key) || new Map<string, ConsoleFrame[]>();
@@ -2601,7 +2610,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
   const consumedHistory = new Set<string>();
   const deltaOverrides = new Map<string, string>();
   for (const history of frames) {
-    if (history.sourceKind !== "session_history") continue;
+    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)) continue;
     const text = historyAssistantSource(history);
     if (!text) continue;
     const key = assistantOwnerKey(history);
@@ -2631,6 +2640,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     consumedHistory,
     deltaOverrides,
     consumeReasoning: (history, text) => {
+      if (hasAssistantMessageIdCarrier(history)) return false;
       const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text) || [];
       const completion = candidates.find((live) => !consumedReasoning.has(live.id)
         && sameAssistantRunOwner(history, live));
@@ -2660,7 +2670,7 @@ function buildBlobUrl(blobId: string, baseUrl?: string): string {
 }
 
 function renderAssistantImageEntry(
-  agent: ConsoleAgent,
+  agent: ConsoleAgent | null,
   frame: ConsoleFrame,
   entryId: string,
   blobBaseUrl?: string,
@@ -2751,12 +2761,15 @@ function renderGeneratedImageToolResultEntries(
   });
 }
 
-function imageEntryKey(entry: ConversationTimelineEntry): string | null {
+function imageEntryKey(entry: ConversationTimelineEntry, preferIdentity = false): string | null {
   if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
     return null;
   }
   const block = entry.blocks?.[0];
   if (!block || block.type !== "image") return null;
+  if (preferIdentity && typeof block.imageId === "string" && block.imageId.trim()) {
+    return `image:${block.imageId}`;
+  }
   if (typeof block.blobId === "string" && block.blobId.trim()) {
     return `blob:${block.blobId.trim()}`;
   }
@@ -3332,11 +3345,12 @@ function toolResultTextFromContent(content: unknown): string | undefined {
 function historyToolResults(
   frames: ConsoleFrame[],
   cardToolCallIds: Set<string>,
+  includeLive = false,
 ): Map<string, HistoryToolResult> {
   const results = new Map<string, HistoryToolResult>();
   for (const frame of frames) {
     if (
-      frame.sourceKind !== "session_history"
+      (!includeLive && frame.sourceKind !== "session_history")
       || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out")
     ) {
       continue;
@@ -3443,8 +3457,17 @@ function blockAssistantRichBlocks(
   peerRegistry?: Map<string, string>,
   toolResults?: Map<string, HistoryToolResult>,
   textMode: ConversationTextMode = "markdown",
+  blobBaseUrl?: string,
 ): ConversationRichBlock[] {
-  const reasoningBlocks: ConversationRichBlock[] = [];
+  const serverFrames = new Map<unknown, ConsoleFrame>();
+  for (const value of blocks) {
+    if (!value || typeof value !== "object") continue;
+    const block = value as Record<string, unknown>;
+    if ((block.block_type ?? block.type) !== "server_tool_content") continue;
+    serverFrames.set(value, { id: "", event: "server_tool_content", data: block.data } as ConsoleFrame);
+  }
+  const serverBlocks = buildToolBlocks([...serverFrames.values()], new Set());
+  const emittedServerTools = new Set<string>();
   const actionAndTextBlocks: ConversationRichBlock[] = [];
   let hasNonTextBlock = false;
   let toolIndex = 0;
@@ -3463,7 +3486,7 @@ function blockAssistantRichBlocks(
       const text = reasoningBlockText(item);
       if (text) {
         hasNonTextBlock = true;
-        reasoningBlocks.push({
+        actionAndTextBlocks.push({
           type: "thinking",
           label: "",
           text,
@@ -3482,7 +3505,32 @@ function blockAssistantRichBlocks(
       }
       continue;
     }
-    if (blockType === "text") {
+    if (blockType === "image") {
+      const imageFrame = { id: "", event: "assistant_image", data: { image: data } } as ConsoleFrame;
+      const imageEntry = renderAssistantImageEntry(null, imageFrame, "", blobBaseUrl);
+      if (imageEntry?.kind === "message" && imageEntry.blocks) {
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(...imageEntry.blocks);
+      }
+      continue;
+    }
+    if (blockType === "server_tool_content") {
+      const serverFrame = serverFrames.get(block)!;
+      const id = parseToolCallId(serverFrame), tool = id ? serverBlocks.get(id) : undefined;
+      if (tool && !emittedServerTools.has(tool.toolCallId)) {
+        emittedServerTools.add(tool.toolCallId);
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(tool);
+      } else if (!id) {
+        const result = serverToolContentSummary(serverFrame)?.result;
+        if (result && ![...serverBlocks.values()].some(tool => tool.result === result)) {
+          hasNonTextBlock = true;
+          actionAndTextBlocks.push({ type: "paragraph", text: result });
+        }
+      }
+      continue;
+    }
+    if (blockType === "text" || blockType === "transcript") {
       const text = typeof data.text === "string"
         ? data.text
         : typeof item.text === "string"
@@ -3497,7 +3545,7 @@ function blockAssistantRichBlocks(
       }
     }
   }
-  return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
+  return hasNonTextBlock || textMode === "markdown" ? actionAndTextBlocks : [];
 }
 
 function textFromUnknown(value: unknown): string {
@@ -4425,7 +4473,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode, blobBaseUrl);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -4500,6 +4548,10 @@ function renderSessionHistoryTextCompleteEntry(
     ? canonicalHistoryAssistantText(frame) : undefined;
   const text = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (!assistantMessageKey(frame)) {
+    // Legacy rows retain their established reasoning-first presentation.
+    parsedBlocks.sort((left, right) => Number(right.type === "thinking") - Number(left.type === "thinking"));
+  }
   if (parsed.role === "meta") {
     const filteredParsedBlocks = options.consumeDuplicateToolBlock
       ? parsedBlocks.filter((block) => {
@@ -4667,9 +4719,10 @@ export function mapFramesToTimelineEntries(
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
   const textMode = options.textMode ?? "markdown";
-  const orderedFrames = reconcileRuntimeAppendFrames(options.renderInteractionStartsAsUser
+  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
-    : frames);
+    : frames)));
+  const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const entries: ConversationTimelineEntry[] = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
@@ -4685,6 +4738,21 @@ export function mapFramesToTimelineEntries(
   const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames, cardToolCallIds);
+  const occurrenceToolResults = new Map<string, Map<string, HistoryToolResult>>();
+  function toolResultsForHistory(frame: ConsoleFrame): Map<string, HistoryToolResult> {
+    if (!assistantMessageKey(frame)) return sessionToolResults;
+    const scope = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId]);
+    let result = occurrenceToolResults.get(scope);
+    if (!result) {
+      const matching = orderedFrames.filter(other => !ownerContextsConflict(frame, other));
+      // Current history is authoritative when both views carry a result.
+      matching.sort((left, right) => Number(left.sourceKind === "session_history") - Number(right.sourceKind === "session_history"));
+      result = historyToolResults(matching, cardToolCallIds, true);
+      occurrenceToolResults.set(scope, result);
+    }
+    return result;
+  }
+
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -4775,6 +4843,9 @@ export function mapFramesToTimelineEntries(
   }
 
   function reasoningScope(frame: ConsoleFrame): { scope: string; scoped: boolean } {
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey) return { scoped: true, scope: JSON.stringify([frame.runtimeKey || "", frame.identity || "", messageKey]) };
+    if (hasAssistantMessageIdCarrier(frame)) return { scoped: false, scope: `unbound:${frame.id}` };
     const interactionId = frame.interactionId?.trim() || "";
     const runId = frame.runId?.trim() || "";
     const turnId = frame.turnId?.trim() || "";
@@ -4911,7 +4982,9 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) {
           continue;
         }
@@ -4962,6 +5035,7 @@ export function mapFramesToTimelineEntries(
     }
 
     const toolCallId = parseToolCallId(frame);
+    if (canonicalToolCounterparts.has(frame)) continue;
     if (
       toolCallId
       && (
@@ -5028,7 +5102,9 @@ export function mapFramesToTimelineEntries(
         options.blobBaseUrl,
       );
       for (const imageEntry of imageEntries) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) continue;
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
@@ -5118,7 +5194,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.sourceKind === "session_history" && (
-      frame.event === "text_complete" || frame.event === "interaction_complete"
+      frame.event === "assistant_message" || frame.event === "text_complete" || frame.event === "interaction_complete"
       || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed"
     )) {
       const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
@@ -5129,7 +5205,7 @@ export function mapFramesToTimelineEntries(
         textMode,
         peerRegistry,
         blobBaseUrl: options.blobBaseUrl,
-        toolResults: sessionToolResults,
+        toolResults: toolResultsForHistory(frame),
         consumeDuplicateCommsBlock: (key) => {
           const runtimeKey = runtimeAppendNoticeKey(frame);
           if (runtimeKey) key = `${runtimeKey}:${key}`;
@@ -5141,14 +5217,16 @@ export function mapFramesToTimelineEntries(
         },
         consumeDuplicateToolBlock: (block) => (
           cardToolCallIds.has(block.toolCallId)
-          || liveToolCallIds.has(block.toolCallId)
-          || consumeToolSignatureCount(liveToolSignatureCounts, block)
+          || assistantMessageKey(frame)
+            ? cardToolCallIds.has(block.toolCallId)
+            : liveToolCallIds.has(block.toolCallId)
+              || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
       });
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || undefined;
-        if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
           continue;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
@@ -5212,7 +5290,7 @@ export function mapFramesToTimelineEntries(
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || undefined;
-        if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
         }
         entries.push(terminalEntry);
@@ -5275,7 +5353,7 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
-  attachCompletedRunDurations(entries, orderedFrames);
+  attachCompletedRunDurations(entries, frames);
   return entries.filter((entry) => entry.kind !== "message"
     || entry.blocks?.length !== 1
     || entry.blocks[0].type !== "thinking"

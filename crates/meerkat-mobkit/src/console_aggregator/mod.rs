@@ -1,3 +1,8 @@
+mod assistant_history_refresh;
+use assistant_history_refresh::AssistantHistoryRefreshReason;
+
+#[cfg(test)]
+mod assistant_message_identity_tests;
 #[cfg(test)]
 mod provenance_search_tests;
 #[cfg(test)]
@@ -146,7 +151,8 @@ struct AggregatorInner {
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     has_registered_runtime: AtomicBool,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
-    active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
+    active_session_backfills:
+        tokio::sync::Mutex<BTreeMap<String, Option<AssistantHistoryRefreshReason>>>,
     // Each targeted worker owns one key and at most one pending forced read.
     // Pending targets retain the latest requested registration incarnation.
     targeted_session_backfills: tokio::sync::Mutex<BTreeMap<String, Option<SessionBackfillTarget>>>,
@@ -167,6 +173,9 @@ struct AggregatorInner {
     member_provenance: std::sync::Mutex<MemberProvenanceCache>,
     member_provenance_searches: std::sync::Mutex<MemberProvenanceSearchCache>,
     notice_observations: std::sync::Mutex<NoticeObservationCache>,
+    // Retry intent is independent of the bounded projection cache. It grants
+    // no absence authority; every retry rechecks fresh runtime observations.
+    assistant_history_retries: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -646,7 +655,7 @@ impl MobKitConsoleAggregator {
                 runtimes: RwLock::new(BTreeMap::new()),
                 has_registered_runtime: AtomicBool::new(false),
                 event_tx,
-                active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                active_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: Arc::new(Semaphore::new(
@@ -660,6 +669,7 @@ impl MobKitConsoleAggregator {
                 member_provenance_searches: std::sync::Mutex::new(
                     MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
                 ),
+                assistant_history_retries: std::sync::Mutex::new(BTreeSet::new()),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -723,7 +733,7 @@ impl MobKitConsoleAggregator {
                     owner.has_registered_runtime.load(Ordering::Acquire),
                 ),
                 event_tx: owner.event_tx.clone(),
-                active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                active_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 targeted_session_backfills: tokio::sync::Mutex::new(BTreeMap::new()),
                 opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: owner.session_backfill_permits.clone(),
@@ -735,6 +745,7 @@ impl MobKitConsoleAggregator {
                 member_provenance_searches: std::sync::Mutex::new(
                     MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
                 ),
+                assistant_history_retries: std::sync::Mutex::new(BTreeSet::new()),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -863,6 +874,11 @@ impl MobKitConsoleAggregator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(key, _, _), _| key != &runtime_key);
         self.inner
+            .assistant_history_retries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, key, _, _)| key != &runtime_key);
+        self.inner
             .member_provenance_searches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -953,7 +969,11 @@ impl MobKitConsoleAggregator {
                         .await;
                 }
             }
-            spawn_session_history_backfill(inner.clone(), runtime_key_for_replay.clone());
+            spawn_session_history_backfill(
+                inner.clone(),
+                runtime_key_for_replay.clone(),
+                AssistantHistoryRefreshReason::Recovery,
+            );
             spawn_session_history_discovery_loop(inner.clone(), runtime_key_for_replay.clone());
             if let Ok((next, _effects)) =
                 ingestion_state.apply(SourceIngestionTransition::BackfillComplete)
@@ -986,6 +1006,11 @@ impl MobKitConsoleAggregator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(key, _, _), _| key != runtime_key);
+        self.inner
+            .assistant_history_retries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, key, _, _)| key != runtime_key);
         self.inner
             .member_provenance_searches
             .lock()
@@ -1181,6 +1206,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
                         provenance: None,
                         entry,
                         record: record.clone(),
@@ -1266,6 +1292,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
                         provenance: None,
                         entry: entry.clone(),
                         record: record.clone(),
@@ -1360,6 +1387,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_target(
                     self.inner.clone(),
                     SessionBackfillTarget {
+                        assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
                         provenance: Some(retain_member_provenance(&self.inner, &resolved, &record)),
                         entry: resolved.entry.clone(),
                         record: record.clone(),
@@ -1660,7 +1688,12 @@ impl MobKitConsoleAggregator {
             probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
             let page = self.inner.store.query_windowed_frames(probe_query).await?;
             if explicit_identity_query_needs_session_history_backfill(&page.frames) {
-                spawn_session_history_backfill_for_identity(self.inner.clone(), identity, true);
+                spawn_session_history_backfill_for_identity(
+                    self.inner.clone(),
+                    identity,
+                    true,
+                    AssistantHistoryRefreshReason::Recovery,
+                );
             }
         }
         Box::pin(self.query_timeline_visible(query)).await
@@ -1853,11 +1886,15 @@ impl MobKitConsoleAggregator {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        let results =
-            join_all(runtime_keys.into_iter().map(|runtime_key| {
-                backfill_session_history(self.inner.clone(), runtime_key, true)
-            }))
-            .await;
+        let results = join_all(runtime_keys.into_iter().map(|runtime_key| {
+            backfill_session_history(
+                self.inner.clone(),
+                runtime_key,
+                true,
+                AssistantHistoryRefreshReason::Recovery,
+            )
+        }))
+        .await;
         for result in results {
             result?;
         }
@@ -3488,6 +3525,7 @@ fn spawn_identity_backfills_for_records(
         spawn_session_history_backfill_target(
             inner.clone(),
             SessionBackfillTarget {
+                assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
                 provenance: None,
                 entry,
                 record: record.clone(),
@@ -3832,6 +3870,7 @@ async fn backfill_session_history(
     inner: Arc<AggregatorInner>,
     runtime_key: String,
     force_refresh: bool,
+    assistant_refresh: AssistantHistoryRefreshReason,
 ) -> ConsoleLogResult<()> {
     let inner = inner.projection_owner.as_ref().unwrap_or(&inner).clone();
     if !inner.options.session_history_backfill_enabled {
@@ -3859,6 +3898,7 @@ async fn backfill_session_history(
         };
         let provenance = Some(retain_member_provenance(&inner, &resolved, &record));
         targets.push(SessionBackfillTarget {
+            assistant_refresh: assistant_refresh.clone(),
             provenance,
             entry: entry.clone(),
             record,
@@ -3870,6 +3910,7 @@ async fn backfill_session_history(
 
 #[derive(Clone)]
 struct SessionBackfillTarget {
+    assistant_refresh: AssistantHistoryRefreshReason,
     provenance: Option<ConsoleFrameMemberProvenance>,
     entry: RuntimeEntry,
     record: ConsoleIdentityRecord,
@@ -3920,12 +3961,19 @@ struct RuntimeNoticeObservation {
     relevant_frontier: u64,
     attempts: BTreeSet<(uuid::Uuid, uuid::Uuid)>,
     previous_snapshot: Option<ConsoleFrame>,
+    previous_assistant_snapshot: Option<ConsoleFrame>,
+    assistant_frontier: u64,
+    has_assistant_history: bool,
+    prefix_revision: Option<String>,
+    prefix_digest: Option<String>,
     has_notice_history: bool,
     canonical_frames: Vec<CanonicalHistoryFrame>,
     full_history_positions: bool,
     history_index_complete: bool,
     verified_history_digest: Option<String>,
     verified_relevant_frontier: u64,
+    verified_assistant_frontier: u64,
+    verified_assistant_settled: bool,
     verified_settled_digest: Option<String>,
     retained_bytes: usize,
     frontier_anchor: Option<(String, String)>,
@@ -3939,12 +3987,19 @@ impl Default for RuntimeNoticeObservation {
             relevant_frontier: 0,
             attempts: BTreeSet::new(),
             previous_snapshot: None,
+            previous_assistant_snapshot: None,
+            assistant_frontier: 0,
+            has_assistant_history: false,
+            prefix_revision: None,
+            prefix_digest: None,
             has_notice_history: false,
             canonical_frames: Vec::new(),
             full_history_positions: false,
             history_index_complete: true,
             verified_history_digest: None,
             verified_relevant_frontier: 0,
+            verified_assistant_frontier: 0,
+            verified_assistant_settled: false,
             verified_settled_digest: None,
             retained_bytes: 0,
             frontier_anchor: None,
@@ -3981,6 +4036,7 @@ fn observation_verifies_history(
     messages: &[Message],
 ) -> bool {
     observation.verified_relevant_frontier >= observation.relevant_frontier
+        && observation.verified_assistant_frontier >= observation.assistant_frontier
         && observation.verified_history_digest.as_deref()
             == Some(history_image_digest(messages).as_str())
 }
@@ -4170,6 +4226,7 @@ async fn observe_runtime_notice_attempts_with_cache(
     session_id: &str,
     use_cache: bool,
 ) -> ConsoleLogResult<RuntimeNoticeObservation> {
+    let prefix_revision = inner.store.history_prefix_revision().await?;
     let key = (
         runtime_key.to_string(),
         identity.to_string(),
@@ -4202,10 +4259,19 @@ async fn observe_runtime_notice_attempts_with_cache(
     } else {
         observation.observed_through == 0
     };
-    if observation.observed_through > observed_through || !anchor_valid {
+    if observation.observed_through > observed_through
+        || !anchor_valid
+        || prefix_revision.is_none()
+        || observation.prefix_revision != prefix_revision
+    {
         observation = RuntimeNoticeObservation::default();
     }
+    observation.prefix_revision = prefix_revision.clone();
+    let mut prefix_digest = Sha256::new();
     if observation.observed_through == observed_through {
+        if prefix_revision.is_none() {
+            observation.prefix_digest = Some(to_hex(&prefix_digest.finalize()));
+        }
         return Ok(observation);
     }
     let mut after = (observation.observed_through > 0)
@@ -4236,6 +4302,14 @@ async fn observe_runtime_notice_attempts_with_cache(
             )));
         }
         for frame in page.frames {
+            if prefix_revision.is_none()
+                && frame
+                    .cursor
+                    .seq()
+                    .is_some_and(|seq| seq <= observed_through)
+            {
+                prefix_digest.update(serde_json::to_vec(&frame)?);
+            }
             if frame
                 .cursor
                 .seq()
@@ -4251,6 +4325,27 @@ async fn observe_runtime_notice_attempts_with_cache(
                 || frame.session_id.as_deref() != Some(session_id)
             {
                 continue;
+            }
+            if frame.kind == "assistant_history_snapshot"
+                && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+            {
+                let mut retained = frame;
+                retained.payload = Value::Null;
+                retained.source.member_provenance = None;
+                observation.previous_assistant_snapshot = Some(retained);
+                continue;
+            }
+            if frame.payload.get("assistant_message_id").is_some_and(|id| {
+                serde_json::from_value::<meerkat_core::types::AssistantMessageId>(id.clone())
+                    .is_ok()
+            }) {
+                if frame.source.kind == ConsoleFrameSourceKind::ConsoleEvent {
+                    observation.assistant_frontier = observation
+                        .assistant_frontier
+                        .max(frame.cursor.seq().unwrap_or(0));
+                } else if frame.source.kind == ConsoleFrameSourceKind::SessionHistory {
+                    observation.has_assistant_history = true;
+                }
             }
             if frame.kind == "runtime_notice_snapshot"
                 && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
@@ -4331,6 +4426,15 @@ async fn observe_runtime_notice_attempts_with_cache(
         }
         after = Some(last_cursor);
     }
+    if inner.store.history_prefix_revision().await? != prefix_revision {
+        return Err(std::io::Error::other(
+            "console history prefix changed during assistant history observation; retry required",
+        )
+        .into());
+    }
+    if prefix_revision.is_none() {
+        observation.prefix_digest = Some(to_hex(&prefix_digest.finalize()));
+    }
     cache_notice_observation(inner, key, &observation);
     Ok(observation)
 }
@@ -4359,7 +4463,20 @@ fn cache_notice_observation(
                 + frame.runtime_key.len()
                 + frame.identity.len()
                 + frame.cursor.as_str().len()
-        }));
+        }))
+        .saturating_add(
+            observation
+                .previous_assistant_snapshot
+                .as_ref()
+                .map_or(0, |frame| {
+                    std::mem::size_of::<ConsoleFrame>()
+                        + frame.dedupe_key.len()
+                        + frame.id.len()
+                        + frame.runtime_key.len()
+                        + frame.identity.len()
+                        + frame.cursor.as_str().len()
+                }),
+        );
     if retained_bytes <= NOTICE_OBSERVATION_MAX_BYTES {
         cache.insert(key, observation.clone());
     } else {
@@ -4482,12 +4599,201 @@ fn history_can_publish_notice_snapshot(
     observation: &RuntimeNoticeObservation,
     messages: &[Message],
 ) -> bool {
-    !observation.attempts.is_empty()
+    history_has_assistant_identity(observation, messages)
+        || !observation.attempts.is_empty()
         || observation.has_notice_history
         || observation.previous_snapshot.is_some()
         || messages.iter().any(|message| {
             matches!(message, Message::SystemNotice(notice) if notice.runtime_origin.is_some())
         })
+}
+
+fn history_has_assistant_identity(
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> bool {
+    observation.assistant_frontier > 0
+        || observation.has_assistant_history
+        || observation.previous_assistant_snapshot.is_some()
+        || messages.iter().any(|message| {
+            matches!(message, Message::BlockAssistant(assistant) if assistant.assistant_message_id.is_some())
+        })
+}
+
+fn assistant_history_snapshot_frame(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> Option<NewConsoleFrame> {
+    assistant_history_snapshot_frame_inner(
+        runtime_key,
+        identity,
+        session_id,
+        observation,
+        messages,
+        false,
+    )
+}
+
+fn assistant_history_snapshot_frame_inner(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+    force: bool,
+) -> Option<NewConsoleFrame> {
+    if !history_has_assistant_identity(observation, messages) {
+        return None;
+    }
+    let ids: Vec<_> = messages
+        .iter()
+        .filter_map(|message| {
+            let Message::BlockAssistant(assistant) = message else {
+                return None;
+            };
+            assistant.assistant_message_id.as_ref()
+        })
+        .collect();
+    let digest = to_hex(&Sha256::digest(serde_json::to_vec(&ids).ok()?));
+    let prefix = format!("assistant-history-snapshot-v1:{runtime_key}:{session_id}:");
+    let previous = observation.previous_assistant_snapshot.as_ref();
+    // Persist the comparison witness before host redaction. Neither this
+    // marker's append nor unrelated live traffic creates a new identity image.
+    if !force
+        && let Some(witness) = previous.and_then(|frame| frame.dedupe_key.strip_prefix(&prefix))
+    {
+        let fields: Vec<_> = witness.split(':').collect();
+        if fields.len() == 4
+            && fields[1].parse::<u64>().ok() == Some(observation.assistant_frontier)
+            && fields[3] == digest
+        {
+            return None;
+        }
+    }
+    Some(NewConsoleFrame {
+        id: None,
+        dedupe_key: format!(
+            "{prefix}{}:{}:{}:{digest}",
+            previous.and_then(|frame| frame.cursor.seq()).unwrap_or(0),
+            observation.assistant_frontier,
+            observation.observed_through
+        ),
+        timestamp_ms: current_time_ms(),
+        runtime_key: runtime_key.to_string(),
+        identity: identity.to_string(),
+        conversation_id: Some(identity.to_string()),
+        session_id: Some(session_id.to_string()),
+        kind: "assistant_history_snapshot".to_string(),
+        status: ConsoleFrameStatus::Delivered,
+        payload: json!({
+            "session_id": session_id, "complete": true,
+            "observed_through": ConsoleCursor::from_seq(observation.observed_through),
+            "assistant_message_ids": ids,
+        }),
+        source: ConsoleFrameSource {
+            member_provenance: None,
+            kind: ConsoleFrameSourceKind::SessionHistory,
+            source_cursor: None,
+        },
+        source_event_id: None,
+        interaction_id: None,
+        turn_id: None,
+        run_id: None,
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    })
+}
+
+fn assistant_snapshot_has_matching_positions(observation: &RuntimeNoticeObservation) -> bool {
+    let (Some(assistant), Some(positions)) = (
+        observation.previous_assistant_snapshot.as_ref(),
+        observation.previous_snapshot.as_ref(),
+    ) else {
+        return false;
+    };
+    let assistant_cutoff = assistant
+        .dedupe_key
+        .strip_prefix(&format!(
+            "assistant-history-snapshot-v1:{}:{}:",
+            assistant.runtime_key,
+            assistant.session_id.as_deref().unwrap_or_default(),
+        ))
+        .and_then(|suffix| suffix.split(':').nth(2))
+        .and_then(|value| value.parse::<u64>().ok());
+    let positions_cutoff = positions
+        .dedupe_key
+        .strip_prefix(&format!(
+            "runtime-notice-snapshot-v2:{}:{}:",
+            positions.runtime_key,
+            positions.session_id.as_deref().unwrap_or_default(),
+        ))
+        .and_then(|suffix| suffix.split(':').nth(1))
+        .and_then(|value| value.parse::<u64>().ok());
+    assistant_cutoff.is_some() && assistant_cutoff == positions_cutoff
+}
+
+async fn assistant_history_prefix_is_current(
+    inner: &AggregatorInner,
+    identity: &str,
+    observation: &RuntimeNoticeObservation,
+) -> ConsoleLogResult<bool> {
+    let revision = inner.store.history_prefix_revision().await?;
+    if revision.is_some() || observation.prefix_revision.is_some() {
+        return Ok(revision == observation.prefix_revision);
+    }
+    // A custom store without revision support gets a fresh bounded scan, never
+    // cached absence. Hash the exact prefix again after the owner history read
+    // so resets or replacements cannot silently certify the wrong projection.
+    let mut digest = Sha256::new();
+    let mut after = None;
+    if observation.observed_through > 0 {
+        loop {
+            let page = inner
+                .store
+                .query_frames(ConsoleTimelineQuery {
+                    identity: Some(identity.to_string()),
+                    after: after.clone(),
+                    limit: 1_000,
+                    ..Default::default()
+                })
+                .await?;
+            let Some(last) = page.frames.last() else {
+                break;
+            };
+            let last_cursor = last.cursor.clone();
+            if last_cursor.seq().is_none_or(|sequence| {
+                after
+                    .as_ref()
+                    .and_then(ConsoleCursor::seq)
+                    .is_some_and(|old| sequence <= old)
+            }) {
+                return Err(std::io::Error::other(
+                    "assistant history verification made no cursor progress",
+                )
+                .into());
+            }
+            for frame in page.frames {
+                if frame
+                    .cursor
+                    .seq()
+                    .is_some_and(|seq| seq <= observation.observed_through)
+                {
+                    digest.update(serde_json::to_vec(&frame)?);
+                }
+            }
+            if last_cursor
+                .seq()
+                .is_none_or(|seq| seq >= observation.observed_through)
+            {
+                break;
+            }
+            after = Some(last_cursor);
+        }
+    }
+    Ok(observation.prefix_digest.as_deref() == Some(to_hex(&digest.finalize()).as_str()))
 }
 
 async fn restore_current_history_frames(
@@ -4756,6 +5062,7 @@ fn cache_current_history_image(
             * std::mem::size_of::<CanonicalHistoryFrame>();
     observation.verified_history_digest = Some(history_image_digest(messages));
     observation.verified_relevant_frontier = observation.relevant_frontier;
+    observation.verified_assistant_frontier = observation.assistant_frontier;
     observation.verified_settled_digest = Some(settled_attempts_digest(settled_attempts));
     cache_notice_observation(
         inner,
@@ -4859,6 +5166,26 @@ fn runtime_notice_snapshot_frame(
     settled_attempts: &BTreeSet<(String, String)>,
     messages: &[Message],
 ) -> Option<NewConsoleFrame> {
+    runtime_notice_snapshot_frame_inner(
+        runtime_key,
+        identity,
+        session_id,
+        observation,
+        settled_attempts,
+        messages,
+        false,
+    )
+}
+
+fn runtime_notice_snapshot_frame_inner(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    settled_attempts: &BTreeSet<(String, String)>,
+    messages: &[Message],
+    force: bool,
+) -> Option<NewConsoleFrame> {
     // A frontier-only cache is never an absence proof. The production path
     // either reuses its exact verified image or rebuilds before calling here.
     if !observation.history_index_complete {
@@ -4928,7 +5255,8 @@ fn runtime_notice_snapshot_frame(
     // The witness is minted before host redaction and contains hashes only.
     // Its covered boundary keeps append-only rows from invalidating a prior
     // compaction image, while changed/restored covered rows still refresh it.
-    if let Some(previous) = previous
+    if !force
+        && let Some(previous) = previous
         && let Some(witness) = previous.dedupe_key.strip_prefix(&format!(
             "runtime-notice-snapshot-v2:{runtime_key}:{session_id}:"
         ))
@@ -5016,6 +5344,7 @@ async fn backfill_one_session_history(
             )))
         })?;
     let SessionBackfillTarget {
+        assistant_refresh,
         provenance,
         entry,
         record,
@@ -5051,6 +5380,26 @@ async fn backfill_one_session_history(
     if !runtime_entry_is_current(&inner, &entry) {
         return Ok(());
     }
+    let assistant_retry_key = (
+        entry.registration_id,
+        entry.runtime_key.clone(),
+        record.identity.clone(),
+        session_id.clone(),
+    );
+    let assistant_retry_requested = inner
+        .assistant_history_retries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&assistant_retry_key);
+    let assistant_refresh_requested =
+        assistant_refresh.permits_session(&session_id) || assistant_retry_requested;
+    if assistant_refresh_requested {
+        inner
+            .assistant_history_retries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(assistant_retry_key.clone());
+    }
     // Steady-state gate: observe the runtime's per-session durable write
     // epoch BEFORE any read. If the last completed backfill saw this same
     // epoch, nothing durable moved through this process since — skip the
@@ -5059,7 +5408,10 @@ async fn backfill_one_session_history(
     // safe: a write racing this backfill lands a newer epoch, so the next
     // pass re-reads.
     let write_epoch = entry.runtime.session_document_write_epoch(&session_id);
-    if !force_refresh && let Some(epoch) = write_epoch {
+    if !force_refresh
+        && !assistant_refresh_requested
+        && let Some(epoch) = write_epoch
+    {
         let epochs = inner
             .session_backfill_epochs
             .lock()
@@ -5081,6 +5433,7 @@ async fn backfill_one_session_history(
         .and_then(|watermark| parse_session_history_watermark(watermark, &session_id))
         .unwrap_or(0);
     if !force_refresh
+        && !assistant_refresh_requested
         && watermark.as_deref().is_some_and(|watermark| {
             session_history_watermark_is_fresh(watermark, &session_id, now_ms)
         })
@@ -5106,6 +5459,67 @@ async fn backfill_one_session_history(
     loop {
         if !runtime_entry_is_current(&inner, &entry) {
             return Ok(());
+        }
+        // A complete read is not a commit barrier. An eligible refresh must
+        // observe fresh typed idle status and no pending commit before reading.
+        let assistant_refresh_gate = assistant_history_refresh::observe(
+            &entry,
+            &record,
+            &session_id,
+            assistant_refresh_requested,
+        )
+        .await;
+        let assistant_history_settled = matches!(
+            assistant_refresh_gate,
+            assistant_history_refresh::AssistantHistoryRefreshGate::Settled
+        );
+        if !matches!(
+            assistant_refresh_gate,
+            assistant_history_refresh::AssistantHistoryRefreshGate::PositiveOnly
+        ) && runtime_entry_is_current(&inner, &entry)
+        {
+            inner
+                .assistant_history_retries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(assistant_retry_key.clone());
+        }
+        if matches!(
+            assistant_refresh_gate,
+            assistant_history_refresh::AssistantHistoryRefreshGate::Pending
+        ) {
+            completed_cleanly = false;
+        }
+        cache_notice_observation(
+            &inner,
+            (
+                entry.runtime_key.clone(),
+                record.identity.clone(),
+                session_id.clone(),
+            ),
+            &notice_observation,
+        );
+        if assistant_history_settled
+            && !notice_observation.history_index_complete
+            && !notice_observation.verified_assistant_settled
+        {
+            // Settlement changed without a new transcript or event frontier.
+            // Rebuild the bounded index before the owner read, then recheck
+            // runtime status against that new cutoff. This needs one history
+            // read, not a speculative read followed by the same read again.
+            notice_observation = observe_runtime_notice_attempts_with_cache(
+                &inner,
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                false,
+            )
+            .await?;
+            settled_attempts = entry
+                .runtime
+                .settled_notice_attempts(&session_id, &notice_observation.attempt_strings())
+                .await;
+            continue;
         }
         let page = match entry
             .runtime
@@ -5145,8 +5559,12 @@ async fn backfill_one_session_history(
         if !runtime_entry_is_current(&inner, &entry) {
             return Ok(());
         }
+        let assistant_identity_history =
+            history_has_assistant_identity(&notice_observation, &page.messages);
+        notice_observation.full_history_positions |= assistant_identity_history;
         let reuse_verified_image =
-            reuse_verified_history_image(&notice_observation, &page.messages, &settled_attempts);
+            reuse_verified_history_image(&notice_observation, &page.messages, &settled_attempts)
+                && (!assistant_history_settled || notice_observation.verified_assistant_settled);
         if !notice_observation.history_index_complete && !reuse_verified_image {
             // A changed image cannot use a truncated index as absence proof.
             // Rebuild once, then obtain settlement before a fresh history read
@@ -5165,6 +5583,7 @@ async fn backfill_one_session_history(
                 .await;
             continue;
         }
+        let mut mapped_history_cursors = BTreeSet::new();
         if !reuse_verified_image {
             restore_current_history_frames(
                 &inner,
@@ -5173,20 +5592,116 @@ async fn backfill_one_session_history(
                 &session_id,
                 &mut notice_observation,
                 &page.messages,
-                Some(offset),
+                Some(if assistant_identity_history {
+                    0
+                } else {
+                    offset
+                }),
             )
             .await?;
-            if let Some(mut snapshot) = runtime_notice_snapshot_frame(
+            if assistant_identity_history {
+                if !assistant_history_prefix_is_current(
+                    &inner,
+                    &record.identity,
+                    &notice_observation,
+                )
+                .await?
+                {
+                    return Err(std::io::Error::other(
+                        "console history prefix changed before assistant snapshot publication; retry required",
+                    ).into());
+                }
+                mapped_history_cursors = current_history_mapping(
+                    &entry.runtime_key,
+                    &record.identity,
+                    &session_id,
+                    &notice_observation,
+                    &page.messages,
+                )
+                .0
+                .into_iter()
+                .filter_map(|position| position["source_cursor"].as_str().map(str::to_string))
+                .collect();
+            }
+            if !runtime_entry_is_current(&inner, &entry) {
+                return Ok(());
+            }
+            let mut notice_snapshot = runtime_notice_snapshot_frame(
                 &entry.runtime_key,
                 &record.identity,
                 &session_id,
                 &notice_observation,
                 &settled_attempts,
                 &page.messages,
-            ) {
+            );
+            let mut assistant_snapshot = assistant_history_settled
+                .then(|| {
+                    assistant_history_snapshot_frame(
+                        &entry.runtime_key,
+                        &record.identity,
+                        &session_id,
+                        &notice_observation,
+                        &page.messages,
+                    )
+                })
+                .flatten();
+            if assistant_identity_history
+                && assistant_history_settled
+                && (notice_snapshot.is_some()
+                    || assistant_snapshot.is_some()
+                    || !assistant_snapshot_has_matching_positions(&notice_observation))
+            {
+                if notice_snapshot.is_none() {
+                    notice_snapshot = runtime_notice_snapshot_frame_inner(
+                        &entry.runtime_key,
+                        &record.identity,
+                        &session_id,
+                        &notice_observation,
+                        &settled_attempts,
+                        &page.messages,
+                        true,
+                    );
+                }
+                if assistant_snapshot.is_none() {
+                    assistant_snapshot = assistant_history_snapshot_frame_inner(
+                        &entry.runtime_key,
+                        &record.identity,
+                        &session_id,
+                        &notice_observation,
+                        &page.messages,
+                        true,
+                    );
+                }
+            }
+            if let Some(mut snapshot) = notice_snapshot {
                 snapshot.source.member_provenance = provenance.clone();
                 append_and_emit_with_policy(&inner, snapshot, entry.visibility_policy.clone())
                     .await?;
+            }
+            if let Some(mut snapshot) = assistant_snapshot {
+                if !runtime_entry_is_current(&inner, &entry)
+                    || !assistant_history_prefix_is_current(
+                        &inner,
+                        &record.identity,
+                        &notice_observation,
+                    )
+                    .await?
+                {
+                    return Err(std::io::Error::other(
+                        "assistant history snapshot lost its registration or prefix witness; retry required",
+                    ).into());
+                }
+                snapshot.source.member_provenance = provenance.clone();
+                append_and_emit_with_policy(&inner, snapshot, entry.visibility_policy.clone())
+                    .await?;
+            }
+            notice_observation.verified_assistant_settled = assistant_history_settled;
+            if assistant_history_settled {
+                inner
+                    .assistant_history_retries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&assistant_retry_key);
             }
             cache_current_history_image(
                 &inner,
@@ -5198,9 +5713,30 @@ async fn backfill_one_session_history(
                 &settled_attempts,
             );
         }
+        if reuse_verified_image && assistant_history_settled {
+            inner
+                .assistant_history_retries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&assistant_retry_key);
+            cache_notice_observation(
+                &inner,
+                (
+                    entry.runtime_key.clone(),
+                    record.identity.clone(),
+                    session_id.clone(),
+                ),
+                &notice_observation,
+            );
+        }
         // The snapshot observes the complete image, while ordinary append-only
-        // backfill still skips the already-published prefix.
-        offset = offset.min(page.messages.len());
+        // backfill skips the prefix. Identity-aware images also project changed
+        // rows at old positions, including rewrites that deliberately remove IDs.
+        offset = if assistant_identity_history && !reuse_verified_image {
+            0
+        } else {
+            offset.min(page.messages.len())
+        };
         page.offset = offset;
         page.messages.drain(..offset);
         let page_value = match serde_json::to_value(page) {
@@ -5261,6 +5797,18 @@ async fn backfill_one_session_history(
                 message.clone(),
             );
             for mut frame in frames {
+                let current_canonical = assistant_identity_history
+                    && frame.identity == record.identity
+                    && frame.session_id.as_deref() == Some(session_id.as_str());
+                if current_canonical
+                    && frame
+                        .source
+                        .source_cursor
+                        .as_ref()
+                        .is_some_and(|cursor| mapped_history_cursors.contains(cursor))
+                {
+                    continue;
+                }
                 frame.source.member_provenance = if frame.identity == record.identity {
                     provenance.clone()
                 } else {
@@ -5273,7 +5821,9 @@ async fn backfill_one_session_history(
                     )
                     .await
                 };
-                if history_frame_has_existing_counterpart(&inner, &frame).await? {
+                if !current_canonical
+                    && history_frame_has_existing_counterpart(&inner, &frame).await?
+                {
                     continue;
                 }
                 append_and_emit_with_policy(&inner, frame, entry.visibility_policy.clone()).await?;
@@ -5355,32 +5905,45 @@ async fn record_session_history_watermark(
         .await
 }
 
-fn spawn_session_history_backfill(inner: Arc<AggregatorInner>, runtime_key: String) {
+fn spawn_session_history_backfill(
+    inner: Arc<AggregatorInner>,
+    runtime_key: String,
+    mut assistant_refresh: AssistantHistoryRefreshReason,
+) {
     if !inner.options.session_history_backfill_enabled {
         return;
     }
     tokio::spawn(async move {
         {
             let mut active = inner.active_session_backfills.lock().await;
-            if !active.insert(runtime_key.clone()) {
+            if !assistant_history_refresh::admit_runtime_refresh(
+                &mut active,
+                &runtime_key,
+                assistant_refresh.clone(),
+            ) {
                 return;
             }
         }
-        let result = Box::pin(backfill_session_history(
-            inner.clone(),
-            runtime_key.clone(),
-            false,
-        ))
-        .await;
-        let mut active = inner.active_session_backfills.lock().await;
-        active.remove(&runtime_key);
-        drop(active);
-        if let Err(err) = result {
-            tracing::warn!(
-                runtime_key = %runtime_key,
-                error = %err,
-                "console session-history backfill failed"
-            );
+        loop {
+            if let Err(err) = Box::pin(backfill_session_history(
+                inner.clone(),
+                runtime_key.clone(),
+                false,
+                assistant_refresh,
+            ))
+            .await
+            {
+                tracing::warn!(runtime_key = %runtime_key, error = %err,
+                    "console session-history backfill failed");
+            }
+            let mut active = inner.active_session_backfills.lock().await;
+            if let Some(pending) = active.get_mut(&runtime_key).and_then(Option::take) {
+                assistant_refresh = pending;
+                drop(active);
+                continue;
+            }
+            active.remove(&runtime_key);
+            break;
         }
     });
 }
@@ -5401,7 +5964,11 @@ fn spawn_session_history_discovery_loop(inner: Arc<AggregatorInner>, runtime_key
             if !runtime_still_registered {
                 break;
             }
-            spawn_session_history_backfill(inner.clone(), runtime_key.clone());
+            spawn_session_history_backfill(
+                inner.clone(),
+                runtime_key.clone(),
+                AssistantHistoryRefreshReason::PositiveOnly,
+            );
         }
     });
 }
@@ -5463,7 +6030,17 @@ async fn run_targeted_session_history_backfill(
         }
         match active.entry(active_key.clone()) {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
-                if force_refresh {
+                if force_refresh || target.assistant_refresh.permits_session(&target.session_id) {
+                    if !target.assistant_refresh.permits_session(&target.session_id)
+                        && let Some(previous) = entry.get().as_ref()
+                        && previous.entry.registration_id == target.entry.registration_id
+                        && previous.record.identity == target.record.identity
+                        && previous
+                            .assistant_refresh
+                            .permits_session(&target.session_id)
+                    {
+                        target.assistant_refresh = previous.assistant_refresh.clone();
+                    }
                     entry.insert(Some(target));
                 }
                 return Ok(());
@@ -5509,13 +6086,15 @@ fn spawn_session_history_backfill_for_identity(
     inner: Arc<AggregatorInner>,
     identity: String,
     force_refresh: bool,
+    assistant_refresh: AssistantHistoryRefreshReason,
 ) {
     let inner = inner.projection_owner.as_ref().unwrap_or(&inner).clone();
     if !inner.options.session_history_backfill_enabled {
         return;
     }
     tokio::spawn(async move {
-        for target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
+        for mut target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
+            target.assistant_refresh = assistant_refresh.clone();
             spawn_session_history_backfill_target(inner.clone(), target, force_refresh);
         }
     });
@@ -5595,6 +6174,7 @@ async fn session_backfill_targets_for_identity(
             };
             let provenance = Some(retain_member_provenance(inner, &resolved, &record));
             targets.push(SessionBackfillTarget {
+                assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
                 provenance,
                 entry: entry.clone(),
                 record,
@@ -5789,6 +6369,11 @@ async fn project_console_event(
         .source_event_id
         .clone()
         .unwrap_or_else(|| frame.dedupe_key.clone());
+    let assistant_refresh = AssistantHistoryRefreshReason::from_event(
+        &frame.kind,
+        frame.session_id.as_deref(),
+        &frame.payload,
+    );
     let refresh_identity = if console_event_should_refresh_session_history(&frame) {
         Some(frame.identity.clone())
     } else {
@@ -5811,7 +6396,12 @@ async fn project_console_event(
         )
         .await?;
     if let Some(identity) = refresh_identity {
-        spawn_session_history_backfill_for_identity(inner.clone(), identity, true);
+        spawn_session_history_backfill_for_identity(
+            inner.clone(),
+            identity,
+            true,
+            assistant_refresh,
+        );
     } else if let Some(identity) = opportunistic_refresh_identity {
         spawn_opportunistic_session_history_backfill_for_identity(inner.clone(), identity);
     }
@@ -5831,6 +6421,10 @@ fn console_event_should_refresh_session_history(frame: &NewConsoleFrame) -> bool
             | "boundary_appends_discarded"
             | "transcript_rewrite_committed"
             | "transcript_rewrite_audit_receipt_committed"
+            | "compaction_completed"
+            | "extraction_succeeded"
+            | "extraction_failed"
+            | "stream_truncated"
     )
 }
 
@@ -6303,7 +6897,7 @@ fn frames_from_session_history_message_with_namespace(
         // variant; all assistant history is block-shaped now.
         Message::BlockAssistant(assistant) => {
             let text = assistant.text_blocks().collect::<Vec<_>>().join("");
-            if text.is_empty() {
+            if text.is_empty() && assistant.assistant_message_id.is_none() {
                 // A text-less step is not a terminal. A tool-only step
                 // continues after its tool results; re-emitted as
                 // `interaction_complete` with `result: ""` it had no live twin
@@ -6340,7 +6934,11 @@ fn frames_from_session_history_message_with_namespace(
             // One committed assistant message can be an intermediate step.
             // Preserve authored text without fabricating a run terminal.
             (
-                "text_complete",
+                if text.is_empty() {
+                    "assistant_message"
+                } else {
+                    "text_complete"
+                },
                 assistant.created_at.timestamp_millis().max(0) as u64,
                 json!({
                     "result": text,
@@ -6390,6 +6988,18 @@ fn frames_from_session_history_message_with_namespace(
         caused_by_frame_id: None,
     }];
     if let Message::BlockAssistant(assistant) = &parsed {
+        if assistant.text_blocks().all(str::is_empty) {
+            frames.extend(tool_only_step_tool_call_frames(HistoryAssistantStep {
+                runtime_key,
+                identity,
+                session_id,
+                offset,
+                assistant,
+                payload_hash: &payload_hash,
+                interaction_id: history_interaction_id.as_deref(),
+                run_id: history_run_id.as_deref(),
+            }));
+        }
         frames.extend(spawn_initial_message_frames_from_assistant(
             runtime_key,
             identity,
@@ -6411,6 +7021,14 @@ fn frames_from_session_history_message_with_namespace(
                 run_id: history_run_id.as_deref(),
             },
         ));
+        if let Some(assistant_message_id) = assistant.assistant_message_id.as_ref() {
+            for frame in &mut frames {
+                // A child spawn input is a different message in another session.
+                if frame.identity == identity && frame.session_id.as_deref() == Some(session_id) {
+                    frame.payload["assistant_message_id"] = json!(assistant_message_id);
+                }
+            }
+        }
     }
     frames
 }
@@ -6743,6 +7361,15 @@ async fn history_frame_has_existing_counterpart(
     inner: &AggregatorInner,
     frame: &NewConsoleFrame,
 ) -> ConsoleLogResult<bool> {
+    // An occurrence ID is positive canonical identity, never a content key.
+    // Preserve its row even without interaction/run lineage or with equal text.
+    if frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+        && frame.payload.get("assistant_message_id").is_some_and(|id| {
+            serde_json::from_value::<meerkat_core::types::AssistantMessageId>(id.clone()).is_ok()
+        })
+    {
+        return Ok(false);
+    }
     let Some(category) = history_counterpart_category(&frame.kind) else {
         return Ok(false);
     };
@@ -7893,6 +8520,8 @@ mod tests {
         active_reads: Arc<AtomicUsize>,
         max_active_reads: Arc<AtomicUsize>,
         scripted_reads: Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedHistoryRead>>>,
+        scripted_pending_commit: Arc<std::sync::Mutex<std::collections::VecDeque<Option<bool>>>>,
+        pending_commit_calls: Arc<AtomicUsize>,
     }
 
     pub(super) struct ScriptedHistoryRead {
@@ -7931,6 +8560,10 @@ mod tests {
                 active_reads: Arc::new(AtomicUsize::new(0)),
                 max_active_reads: Arc::new(AtomicUsize::new(0)),
                 scripted_reads: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+                scripted_pending_commit: Arc::new(std::sync::Mutex::new(
+                    std::collections::VecDeque::new(),
+                )),
+                pending_commit_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -7943,6 +8576,17 @@ mod tests {
 
         pub(super) fn read_calls(&self) -> usize {
             self.read_calls.load(Ordering::SeqCst)
+        }
+
+        pub(super) fn script_pending_commit(&self, values: impl IntoIterator<Item = Option<bool>>) {
+            self.scripted_pending_commit
+                .lock()
+                .expect("pending commit fixture lock")
+                .extend(values);
+        }
+
+        pub(super) fn pending_commit_calls(&self) -> usize {
+            self.pending_commit_calls.load(Ordering::SeqCst)
         }
 
         fn max_active_reads(&self) -> usize {
@@ -8208,6 +8852,24 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn live_transcript_awaits_commit(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<bool, SessionError> {
+            self.pending_commit_calls.fetch_add(1, Ordering::SeqCst);
+            let scripted = self
+                .scripted_pending_commit
+                .lock()
+                .expect("pending commit fixture lock")
+                .pop_front();
+            if let Some(value) = scripted {
+                return value.ok_or_else(|| SessionError::NotFound {
+                    id: session_id.clone(),
+                });
+            }
+            self.inner.live_transcript_awaits_commit(session_id).await
+        }
+
         async fn commit_live_delegation_final_transcript(
             &self,
             machine: &meerkat_runtime::MeerkatMachine,
@@ -14727,6 +15389,7 @@ comms = true
         record.session_id = Some(session.to_string());
         record.visibility = ConsoleVisibility::RetiredReadable;
         SessionBackfillTarget {
+            assistant_refresh: AssistantHistoryRefreshReason::Recovery,
             provenance: None,
             entry,
             record,
@@ -14906,6 +15569,86 @@ comms = true
                 .await
                 .expect("snapshot visibility"),
             "a valid durable removal remains visible without a new history image"
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn queued_assistant_boundary_survives_later_positive_only_refreshes() {
+        let (_temp, runtime, service) = build_stress_runtime(0, Duration::ZERO).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let session = SessionId::new();
+        let entry = runtime_entry_for_test("assistant-refresh-queue", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(entry.runtime_key.clone(), entry.clone());
+        let mut target = registration_test_target(entry, &session);
+        target.assistant_refresh = AssistantHistoryRefreshReason::PositiveOnly;
+        let key = targeted_session_history_active_key(&target, true);
+        let gate = HistoryReadGate::new();
+        service.script_history([
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "First image")),
+                gate: Some(gate.clone()),
+            },
+            ScriptedHistoryRead {
+                page: Some(registration_test_page(&session, "Settled image")),
+                gate: None,
+            },
+        ]);
+        let reads_before = service.read_calls();
+        let worker = tokio::spawn(run_targeted_session_history_backfill(
+            aggregator.inner.clone(),
+            target.clone(),
+            true,
+        ));
+        gate.wait_until_entered().await;
+        let mut boundary = target.clone();
+        boundary.assistant_refresh = AssistantHistoryRefreshReason::SessionBoundary {
+            session_id: session.to_string(),
+        };
+        run_targeted_session_history_backfill(aggregator.inner.clone(), boundary, true)
+            .await
+            .expect("queue boundary");
+        for _ in 0..8 {
+            run_targeted_session_history_backfill(aggregator.inner.clone(), target.clone(), true)
+                .await
+                .expect("coalesce positive refresh");
+        }
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .get(&key)
+                .and_then(Option::as_ref)
+                .is_some_and(|pending| pending
+                    .assistant_refresh
+                    .permits_session(&session.to_string())),
+            "a later positive-only trigger must preserve the queued negative reconciliation request"
+        );
+        gate.release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("worker finishes")
+            .expect("worker joins")
+            .expect("history refresh succeeds");
+        assert_eq!(
+            service.read_calls(),
+            reads_before + 2,
+            "one trailing read coalesces the burst"
+        );
+        assert!(
+            aggregator
+                .inner
+                .targeted_session_backfills
+                .lock()
+                .await
+                .is_empty()
         );
         let _ = runtime.mob_handle().stop().await;
     }
