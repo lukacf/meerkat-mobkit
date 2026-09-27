@@ -237,7 +237,8 @@ struct ObservedStore {
     inner: InMemoryConsoleLogStore,
     append_after_cursor: std::sync::Mutex<Vec<NewConsoleFrame>>,
     query_count: AtomicUsize,
-    fail_query: Option<usize>,
+    fail_query: AtomicUsize,
+    query_afters: std::sync::Mutex<Vec<Option<u64>>>,
 }
 
 impl ObservedStore {
@@ -246,7 +247,8 @@ impl ObservedStore {
             inner: InMemoryConsoleLogStore::new(),
             append_after_cursor: std::sync::Mutex::new(append_after_cursor),
             query_count: AtomicUsize::new(0),
-            fail_query,
+            fail_query: AtomicUsize::new(fail_query.unwrap_or(0)),
+            query_afters: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -270,7 +272,11 @@ impl ConsoleLogStore for ObservedStore {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let call = self.query_count.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.fail_query == Some(call) {
+        self.query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .push(query.after.as_ref().and_then(ConsoleCursor::seq));
+        if self.fail_query.load(Ordering::SeqCst) == call {
             return Err(std::io::Error::other("injected later scan page failure").into());
         }
         self.inner.query_frames(query).await
@@ -1774,6 +1780,711 @@ async fn restored_tool_result_occurrences_survive_changed_numeric_subindices()
             json!({"frame_id":originals[1].id,"source_cursor":format!("{session}:1:0")}),
             json!({"frame_id":originals[0].id,"source_cursor":format!("{session}:1:1")}),
         ]
+    );
+    Ok(())
+}
+
+#[test]
+fn typed_compaction_summary_never_projects_as_a_human_history_row() -> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let summary = Message::User(meerkat_core::types::UserMessage::compaction_summary(
+        "Retained exact context.",
+    ));
+    let ordinary = Message::User(meerkat_core::types::UserMessage::text(
+        "Retained exact context.",
+    ));
+    assert!(
+        frames_from_session_history_message(
+            RUNTIME,
+            IDENTITY,
+            &session.to_string(),
+            0,
+            serde_json::to_value(summary)?
+        )
+        .is_empty()
+    );
+    let conversational =
+        current_history_projection(RUNTIME, IDENTITY, &session.to_string(), &[ordinary]);
+    assert_eq!(
+        conversational
+            .first()
+            .ok_or("conversational user history row missing")?
+            .kind,
+        "user_input"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn restoration_search_reuses_negative_frontier_and_rechecks_new_rows_and_requests()
+-> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let a = assistant_message("Missing canonical A.")?;
+    let b = assistant_message("Previously removed B.")?;
+    let original_b = append_canonical_message(&aggregator, &session, 20, &b)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    store
+        .append_if_absent(applied("search-anchor", &session, 10, 20))
+        .await?;
+    let mut observed = observe(&aggregator, &session).await?;
+    observed.full_history_positions = true;
+    observed.canonical_frames.clear();
+    observed.retained_bytes = 0;
+    let missing = [a.clone()];
+    let before = store.query_count.load(Ordering::SeqCst);
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &missing,
+        None,
+    )
+    .await?;
+    assert_eq!(store.query_count.load(Ordering::SeqCst), before + 1);
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &missing,
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        before + 1,
+        "same missing row must not rescan the old log"
+    );
+    let frontier = observed.observed_through;
+    let late_a = append_canonical_message(&aggregator, &session, 30, &a)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    observed.observed_through = late_a
+        .cursor
+        .seq()
+        .ok_or("stored row missing console sequence")?;
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &missing,
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store
+            .query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .last(),
+        Some(&Some(frontier)),
+        "later candidates are read from the searched frontier"
+    );
+    assert!(
+        observed
+            .canonical_frames
+            .iter()
+            .any(|row| row.id == late_a.id)
+    );
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &[a, b],
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store
+            .query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .last(),
+        Some(&None),
+        "a different restoration request must search old evidence again"
+    );
+    assert!(
+        observed
+            .canonical_frames
+            .iter()
+            .any(|row| row.id == original_b.id)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_restoration_search_does_not_cache_partial_absence() -> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    store
+        .append_if_absent(applied("failure-anchor", &session, 10, 20))
+        .await?;
+    let mut observed = observe(&aggregator, &session).await?;
+    observed.full_history_positions = true;
+    let current = [assistant_message("Not previously stored.")?];
+    let before = store.query_count.load(Ordering::SeqCst);
+    store.fail_query.store(before + 1, Ordering::SeqCst);
+    assert!(
+        restore_current_history_frames(
+            &aggregator.inner,
+            RUNTIME,
+            IDENTITY,
+            &session.to_string(),
+            &mut observed,
+            &current,
+            None
+        )
+        .await
+        .is_err()
+    );
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &current,
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        before + 2,
+        "failed search must be retried"
+    );
+    assert_eq!(
+        store
+            .query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .last(),
+        Some(&None)
+    );
+    Ok(())
+}
+
+fn backfill_test_page(
+    session: &SessionId,
+    messages: &[Message],
+) -> meerkat_core::service::SessionHistoryPage {
+    meerkat_core::service::SessionHistoryPage::from_messages(
+        session.clone(),
+        messages,
+        meerkat_core::service::SessionHistoryQuery::default(),
+    )
+}
+
+fn script_backfill_pages(
+    service: &super::tests::DelayedHistorySessionService,
+    pages: impl IntoIterator<Item = Option<meerkat_core::service::SessionHistoryPage>>,
+) {
+    service.script_history(
+        pages
+            .into_iter()
+            .map(|page| super::tests::ScriptedHistoryRead { page, gate: None }),
+    );
+}
+
+fn force_frontier_only_cache(
+    aggregator: &MobKitConsoleAggregator,
+    session: &SessionId,
+) -> ConsoleLogResult<()> {
+    let key = (
+        RUNTIME.to_string(),
+        IDENTITY.to_string(),
+        session.to_string(),
+    );
+    let mut observed = aggregator
+        .inner
+        .notice_observations
+        .lock()
+        .map_err(|_| std::io::Error::other("notice observation cache lock poisoned"))?
+        .entries
+        .get(&key)
+        .ok_or("verified observation missing from cache")?
+        .clone();
+    // Exercise the production cap branch with a scoped cache fixture. No global
+    // limit override or several thousand synthetic descriptors are needed.
+    observed.retained_bytes = NOTICE_OBSERVATION_MAX_BYTES + 1;
+    cache_notice_observation(&aggregator.inner, key, &observed);
+    Ok(())
+}
+
+#[tokio::test]
+async fn production_backfill_reuses_overcap_image_and_rebuilds_changed_image_before_publication()
+-> ConsoleLogResult<()> {
+    let (_temp, runtime, service) = super::tests::build_stress_runtime(0, Duration::ZERO).await;
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let mut entry = super::tests::runtime_entry_for_test(RUNTIME, &runtime);
+    entry.identity_namespace.clear();
+    let mut record = super::tests::identity_record_for_test(IDENTITY);
+    record.runtime_key = RUNTIME.into();
+    record.session_id = Some(session.to_string());
+    let target = SessionBackfillTarget {
+        provenance: None,
+        entry: entry.clone(),
+        record,
+        session_id: session.to_string(),
+    };
+    aggregator
+        .inner
+        .runtimes
+        .write()
+        .map_err(|_| std::io::Error::other("runtime registration lock poisoned"))?
+        .insert(RUNTIME.into(), entry);
+    let durable = Message::SystemNotice(notice(&session, 10, 20));
+    let a = assistant_message("Restored owner answer.")?;
+    let original = append_canonical_message(&aggregator, &session, 10, &a)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    append_canonical_message(&aggregator, &session, 11, &durable).await?;
+    store
+        .record_source_watermark(
+            &session_history_watermark_runtime_key(RUNTIME, &session.to_string()),
+            ConsoleFrameSourceKind::SessionHistory,
+            &format_session_history_watermark(&session.to_string(), 2, 0),
+        )
+        .await?;
+    let summary = Message::User(meerkat_core::types::UserMessage::compaction_summary(
+        "Compacted owner context.",
+    ));
+    let current = [summary.clone(), durable.clone()];
+    script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    observe(&aggregator, &session).await?;
+    force_frontier_only_cache(&aggregator, &session)?;
+    let queries = store.query_count.load(Ordering::SeqCst);
+    let reads = service.read_calls();
+    let before = store.inner.latest_cursor().await?;
+    script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    assert_eq!(
+        service.read_calls(),
+        reads + 1,
+        "verified frontier uses one owner history read"
+    );
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        queries,
+        "verified frontier does not reconstruct the timeline"
+    );
+    assert_eq!(
+        store.inner.latest_cursor().await?,
+        before,
+        "unchanged image does not republish a snapshot"
+    );
+    // The real ephemeral runtime reports no durable settlement. Seed an old
+    // verified settlement image to ensure its changed owner answer, with the
+    // exact same history, forces the production rebuild-and-reread branch.
+    {
+        let key = (
+            RUNTIME.to_string(),
+            IDENTITY.to_string(),
+            session.to_string(),
+        );
+        let mut cached = aggregator
+            .inner
+            .notice_observations
+            .lock()
+            .map_err(|_| std::io::Error::other("notice observation cache lock poisoned"))?;
+        cached
+            .entries
+            .get_mut(&key)
+            .ok_or("verified observation missing from cache")?
+            .verified_settled_digest = Some(settled_attempts_digest(&BTreeSet::from([(
+            uuid::Uuid::from_u128(10).to_string(),
+            uuid::Uuid::from_u128(20).to_string(),
+        )])));
+    }
+    script_backfill_pages(
+        &service,
+        [
+            Some(backfill_test_page(&session, &current)),
+            Some(backfill_test_page(&session, &current)),
+        ],
+    );
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    assert_eq!(
+        service.read_calls(),
+        reads + 3,
+        "fresh owner settlement invalidates even an unchanged history image"
+    );
+    assert_eq!(
+        store.inner.latest_cursor().await?,
+        before,
+        "settlement cache invalidation does not manufacture a new snapshot"
+    );
+    force_frontier_only_cache(&aggregator, &session)?;
+    let mut abandoned = notice(&session, 10, 20);
+    abandoned.body = Some("First read must never be published.".into());
+    let mut final_notice = notice(&session, 10, 20);
+    final_notice.body = Some("Fresh owner image after complete reconstruction.".into());
+    let final_image = [summary, a, Message::SystemNotice(final_notice)];
+    script_backfill_pages(
+        &service,
+        [
+            Some(backfill_test_page(
+                &session,
+                &[Message::SystemNotice(abandoned.clone())],
+            )),
+            None,
+        ],
+    );
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    let failed_rows = store
+        .inner
+        .query_frames(ConsoleTimelineQuery {
+            limit: 100,
+            ..Default::default()
+        })
+        .await?
+        .frames;
+    assert_eq!(
+        failed_rows
+            .iter()
+            .filter(|row| row.kind == "runtime_notice_snapshot")
+            .count(),
+        1,
+        "a failed fresh read after rebuilding cannot publish the abandoned image"
+    );
+    assert!(
+        failed_rows
+            .iter()
+            .any(|row| row.kind == "replay_unavailable")
+    );
+    force_frontier_only_cache(&aggregator, &session)?;
+    script_backfill_pages(
+        &service,
+        [
+            Some(backfill_test_page(
+                &session,
+                &[Message::SystemNotice(abandoned)],
+            )),
+            Some(backfill_test_page(&session, &final_image)),
+        ],
+    );
+    backfill_one_session_history(aggregator.inner.clone(), target, true).await?;
+    assert_eq!(
+        service.read_calls(),
+        reads + 7,
+        "both failed and successful changed images rebuild then obtain a fresh owner read"
+    );
+    let rows = store
+        .inner
+        .query_frames(ConsoleTimelineQuery {
+            limit: 100,
+            ..Default::default()
+        })
+        .await?
+        .frames;
+    let snapshots: Vec<_> = rows
+        .iter()
+        .filter(|row| row.kind == "runtime_notice_snapshot")
+        .collect();
+    assert_eq!(snapshots.len(), 2);
+    let latest = snapshots.last().ok_or("fresh snapshot missing")?;
+    assert_eq!(
+        latest.payload["notices"][0]["message"]["body"],
+        "Fresh owner image after complete reconstruction."
+    );
+    assert!(
+        latest.payload["history_positions"]
+            .as_array()
+            .ok_or("snapshot missing full history position array")?
+            .iter()
+            .any(|position| position["frame_id"] == original.id
+                && position["source_cursor"] == format!("{session}:1"))
+    );
+    assert!(
+        rows.iter().any(|row| row.kind == "system_notice"
+            && row.payload["message"]["body"]
+                == "Fresh owner image after complete reconstruction."
+            && row.source.source_cursor.as_deref() == Some(format!("{session}:2").as_str())),
+        "ordinary suffix backfill still appends the fresh owner notice"
+    );
+    assert!(
+        !rows.iter().any(|row| row.kind == "user_input"),
+        "typed summary is never projected as a human message"
+    );
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restoration_frontier_invalidates_when_candidate_multiplicity_or_reservations_change()
+-> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let answer = assistant_message("Equal repeated answer.")?;
+    let first = append_canonical_message(&aggregator, &session, 10, &answer)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    let second = append_canonical_message(&aggregator, &session, 20, &answer)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    store
+        .append_if_absent(applied("reservation-anchor", &session, 10, 20))
+        .await?;
+    let mut observed = observe(&aggregator, &session).await?;
+    observed.full_history_positions = true;
+    let current = [answer.clone(), answer.clone(), answer.clone()];
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &current,
+        None,
+    )
+    .await?;
+    let searched = store.query_count.load(Ordering::SeqCst);
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &current,
+        None,
+    )
+    .await?;
+    assert_eq!(store.query_count.load(Ordering::SeqCst), searched);
+    observed.canonical_frames.retain(|row| row.id != first.id);
+    // Still one unmatched occurrence, but a different reservation set now
+    // leaves the original frame eligible within the previously searched prefix.
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &[answer.clone(), answer.clone()],
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store
+            .query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .last(),
+        Some(&None)
+    );
+    assert!(
+        observed
+            .canonical_frames
+            .iter()
+            .any(|row| row.id == first.id)
+    );
+    assert!(
+        observed
+            .canonical_frames
+            .iter()
+            .any(|row| row.id == second.id)
+    );
+    let before = store.query_count.load(Ordering::SeqCst);
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &[answer.clone(), answer.clone(), answer.clone(), answer],
+        None,
+    )
+    .await?;
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        before + 1,
+        "new unmatched multiplicity rechecks historical candidates"
+    );
+    assert_eq!(
+        store
+            .query_afters
+            .lock()
+            .map_err(|_| std::io::Error::other("query cursor log lock poisoned"))?
+            .last(),
+        Some(&None)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn production_backfill_caches_missing_rows_and_skips_sessions_without_notice_images()
+-> ConsoleLogResult<()> {
+    let (_temp, runtime, service) = super::tests::build_stress_runtime(0, Duration::ZERO).await;
+    let session = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let mut entry = super::tests::runtime_entry_for_test(RUNTIME, &runtime);
+    entry.identity_namespace.clear();
+    entry.visibility_policy = Arc::new(RedactNoticeAndHistory);
+    let mut record = super::tests::identity_record_for_test(IDENTITY);
+    record.runtime_key = RUNTIME.into();
+    record.session_id = Some(session.to_string());
+    let target = SessionBackfillTarget {
+        provenance: None,
+        entry: entry.clone(),
+        record,
+        session_id: session.to_string(),
+    };
+    aggregator
+        .inner
+        .runtimes
+        .write()
+        .map_err(|_| std::io::Error::other("runtime registration lock poisoned"))?
+        .insert(RUNTIME.into(), entry);
+    let summary = Message::User(meerkat_core::types::UserMessage::compaction_summary(
+        "Context from runtime.",
+    ));
+    let missing = assistant_message("Not previously emitted at any coordinate.")?;
+    let current = [summary, missing];
+    store
+        .append_if_absent(frame(
+            "no-notice-anchor",
+            &session,
+            "run_completed",
+            json!({}),
+        ))
+        .await?;
+    let mut observed = observe(&aggregator, &session).await?;
+    observed.full_history_positions = true;
+    cache_notice_observation(
+        &aggregator.inner,
+        (RUNTIME.into(), IDENTITY.into(), session.to_string()),
+        &observed,
+    );
+    store
+        .record_source_watermark(
+            &session_history_watermark_runtime_key(RUNTIME, &session.to_string()),
+            ConsoleFrameSourceKind::SessionHistory,
+            &format_session_history_watermark(&session.to_string(), 2, 0),
+        )
+        .await?;
+    let queries = store.query_count.load(Ordering::SeqCst);
+    script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        queries,
+        "no possible notice snapshot needs no restoration search"
+    );
+    store
+        .append_if_absent(applied("now-has-notice", &session, 10, 20))
+        .await?;
+    script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    observe(&aggregator, &session).await?;
+    // The emitted snapshot is a new stored row. One suffix query may advance
+    // the prior negative frontier across it, then no old scan is repeated.
+    script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+    backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    let queries = store.query_count.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        script_backfill_pages(&service, [Some(backfill_test_page(&session, &current))]);
+        backfill_one_session_history(aggregator.inner.clone(), target.clone(), true).await?;
+    }
+    assert_eq!(
+        store.query_count.load(Ordering::SeqCst),
+        queries,
+        "unchanged missing canonical row reuses successful search after policy-filtered publication"
+    );
+    let rows = store
+        .inner
+        .query_frames(ConsoleTimelineQuery {
+            limit: 100,
+            ..Default::default()
+        })
+        .await?
+        .frames;
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.kind == "runtime_notice_snapshot")
+            .count(),
+        1
+    );
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restoration_search_is_session_scoped_and_store_reset_invalidates_its_frontier()
+-> ConsoleLogResult<()> {
+    let session = SessionId::new();
+    let foreign = SessionId::new();
+    let store = Arc::new(ObservedStore::new(Vec::new(), None));
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let current = [assistant_message("Identical bytes across sessions.")?];
+    append_canonical_message(&aggregator, &foreign, 10, &current[0]).await?;
+    store
+        .append_if_absent(applied("session-anchor", &session, 10, 20))
+        .await?;
+    let mut observed = observe(&aggregator, &session).await?;
+    observed.full_history_positions = true;
+    restore_current_history_frames(
+        &aggregator.inner,
+        RUNTIME,
+        IDENTITY,
+        &session.to_string(),
+        &mut observed,
+        &current,
+        None,
+    )
+    .await?;
+    assert!(
+        observed.canonical_frames.is_empty(),
+        "foreign equal-content history is not restoration evidence"
+    );
+    assert!(observed.restoration_search.is_some());
+    cache_notice_observation(
+        &aggregator.inner,
+        (RUNTIME.into(), IDENTITY.into(), session.to_string()),
+        &observed,
+    );
+    store.clear_frames().await?;
+    let original = append_canonical_message(&aggregator, &session, 10, &current[0])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("canonical fixture row missing")?;
+    store
+        .append_if_absent(applied("replacement-anchor", &session, 10, 20))
+        .await?;
+    let after_reset = observe(&aggregator, &session).await?;
+    assert!(
+        after_reset.restoration_search.is_none(),
+        "the old durable anchor invalidates the cached search even at an equal cursor"
+    );
+    assert!(
+        after_reset
+            .canonical_frames
+            .iter()
+            .any(|row| row.id == original.id)
     );
     Ok(())
 }

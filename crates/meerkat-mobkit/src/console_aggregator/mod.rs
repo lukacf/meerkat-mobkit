@@ -3829,6 +3829,7 @@ struct RuntimeNoticeObservation {
     verified_settled_digest: Option<String>,
     retained_bytes: usize,
     frontier_anchor: Option<(String, String)>,
+    restoration_search: Option<HistoryRestorationSearch>,
 }
 
 impl Default for RuntimeNoticeObservation {
@@ -3847,8 +3848,17 @@ impl Default for RuntimeNoticeObservation {
             verified_settled_digest: None,
             retained_bytes: 0,
             frontier_anchor: None,
+            restoration_search: None,
         }
     }
+}
+
+// A successful search proves only that this exact restoration request was
+// checked through a console cursor. It supplies no canonical history meaning.
+#[derive(Clone)]
+struct HistoryRestorationSearch {
+    request_digest: String,
+    observed_through: u64,
 }
 
 impl RuntimeNoticeObservation {
@@ -4237,17 +4247,19 @@ fn cache_notice_observation(
     // Attempt identities remain exact and independently retained: the owner
     // can settle an attempt without a corresponding console event. Only the
     // expensive history index is eligible for bounded frontier-only caching.
-    let retained_bytes =
-        observation
-            .retained_bytes
-            .saturating_add(observation.previous_snapshot.as_ref().map_or(0, |frame| {
-                std::mem::size_of::<ConsoleFrame>()
-                    + frame.dedupe_key.len()
-                    + frame.id.len()
-                    + frame.runtime_key.len()
-                    + frame.identity.len()
-                    + frame.cursor.as_str().len()
-            }));
+    let retained_bytes = observation
+        .retained_bytes
+        .saturating_add(observation.restoration_search.as_ref().map_or(0, |search| {
+            std::mem::size_of::<HistoryRestorationSearch>() + search.request_digest.len()
+        }))
+        .saturating_add(observation.previous_snapshot.as_ref().map_or(0, |frame| {
+            std::mem::size_of::<ConsoleFrame>()
+                + frame.dedupe_key.len()
+                + frame.id.len()
+                + frame.runtime_key.len()
+                + frame.identity.len()
+                + frame.cursor.as_str().len()
+        }));
     if retained_bytes <= NOTICE_OBSERVATION_MAX_BYTES {
         cache.insert(key, observation.clone());
     } else {
@@ -4255,6 +4267,9 @@ fn cache_notice_observation(
         frontier.canonical_frames = Vec::new();
         frontier.retained_bytes = 0;
         frontier.history_index_complete = false;
+        // A restoration witness was checked with exact active reservations.
+        // Dropping that index cannot carry its negative lookup forward.
+        frontier.restoration_search = None;
         cache.insert(key, frontier);
     }
 }
@@ -4363,6 +4378,18 @@ fn canonical_history_order(
     )
 }
 
+fn history_can_publish_notice_snapshot(
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> bool {
+    !observation.attempts.is_empty()
+        || observation.has_notice_history
+        || observation.previous_snapshot.is_some()
+        || messages.iter().any(|message| {
+            matches!(message, Message::SystemNotice(notice) if notice.runtime_origin.is_some())
+        })
+}
+
 async fn restore_current_history_frames(
     inner: &AggregatorInner,
     runtime_key: &str,
@@ -4372,7 +4399,9 @@ async fn restore_current_history_frames(
     messages: &[Message],
     appended_history_start: Option<usize>,
 ) -> ConsoleLogResult<()> {
-    if !observation.full_history_positions {
+    if !observation.full_history_positions
+        || !history_can_publish_notice_snapshot(observation, messages)
+    {
         return Ok(());
     }
     let mut present: BTreeSet<_> = observation
@@ -4404,6 +4433,7 @@ async fn restore_current_history_frames(
             && frame.runtime_key == runtime_key
             && frame.identity == identity
             && frame.session_id.as_deref() == Some(session_id)
+            && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
             && frame
                 .cursor
                 .seq()
@@ -4471,7 +4501,33 @@ async fn restore_current_history_frames(
             *capacities.entry(format!("source:{source}")).or_default() += 1;
         }
     }
-    let mut after: Option<ConsoleCursor> = None;
+    // A request changes when its needed source/payload multiplicities change
+    // or a matching active record becomes available for reuse. Unrelated new
+    // history rows must not invalidate this completed negative lookup.
+    let reserved: BTreeSet<_> = observation
+        .canonical_frames
+        .iter()
+        .filter(|row| {
+            capacities.contains_key(&format!("payload:{}", row.payload_key))
+                || row
+                    .source_key
+                    .as_ref()
+                    .is_some_and(|key| capacities.contains_key(&format!("source:{key}")))
+        })
+        .map(|row| (&row.id, &row.dedupe_key, &row.current_cursor))
+        .collect();
+    let request_digest = to_hex(&Sha256::digest(
+        serde_json::to_vec(&(&capacities, reserved)).unwrap_or_default(),
+    ));
+    let searched_through = observation
+        .restoration_search
+        .as_ref()
+        .filter(|search| search.request_digest == request_digest)
+        .map_or(0, |search| search.observed_through);
+    if searched_through >= observation.observed_through {
+        return Ok(());
+    }
+    let mut after = (searched_through > 0).then(|| ConsoleCursor::from_seq(searched_through));
     loop {
         let page = inner
             .store
@@ -4498,6 +4554,7 @@ async fn restore_current_history_frames(
         }
         for frame in page.frames {
             if frame.runtime_key != runtime_key
+                || frame.identity != identity
                 || frame.session_id.as_deref() != Some(session_id)
                 || frame.source.kind != ConsoleFrameSourceKind::SessionHistory
                 || frame
@@ -4529,6 +4586,13 @@ async fn restore_current_history_frames(
         }
         after = Some(last_cursor);
     }
+    // Failed/incomplete queries above never advance this witness. The enclosing
+    // observation cache already scopes it to the runtime, identity and session
+    // and validates a durable anchor before reuse, including after store reset.
+    let search = HistoryRestorationSearch {
+        request_digest,
+        observed_through: observation.observed_through,
+    };
     let mut recovered_ids = BTreeSet::new();
     for row in recovered.into_values().flatten() {
         if !recovered_ids.insert(row.id.clone()) {
@@ -4539,6 +4603,9 @@ async fn restore_current_history_frames(
             .saturating_add(row.retained_bytes());
         observation.canonical_frames.push(row);
     }
+    // A successful positive search changes reservations. Cache a negative
+    // frontier only after a scan recovers nothing under the exact request.
+    observation.restoration_search = recovered_ids.is_empty().then_some(search);
     Ok(())
 }
 
@@ -4708,11 +4775,7 @@ fn runtime_notice_snapshot_frame(
             Some(json!({ "offset": offset, "message": message }))
         })
         .collect();
-    if notices.is_empty()
-        && observation.attempts.is_empty()
-        && !observation.has_notice_history
-        && observation.previous_snapshot.is_none()
-    {
+    if !history_can_publish_notice_snapshot(observation, messages) {
         return None;
     }
     let settled: Vec<Value> = settled_attempts
@@ -6119,9 +6182,10 @@ fn frames_from_session_history_message_with_namespace(
         .map(|id| id.0.to_string());
     let (kind, timestamp_ms, payload) = match &parsed {
         Message::User(user) => {
-            // Ambient recall shares the user channel, not human authorship.
-            // Keep it in canonical history, never as a console human input.
-            if user.transcript_role == meerkat_core::types::TranscriptUserRole::InjectedContext
+            // Runtime summaries and injected context share the user channel,
+            // not human authorship. The runtime's typed role is authoritative;
+            // an ordinary user's identical text remains a conversational row.
+            if !user.transcript_role.is_conversational()
                 || session_history_user_message_is_scaffold(&message)
             {
                 return Vec::new();
@@ -7722,7 +7786,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct DelayedHistorySessionService {
+    pub(super) struct DelayedHistorySessionService {
         inner: Arc<dyn MobSessionService>,
         delay: Duration,
         read_calls: Arc<AtomicUsize>,
@@ -7731,12 +7795,12 @@ mod tests {
         scripted_reads: Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedHistoryRead>>>,
     }
 
-    struct ScriptedHistoryRead {
-        page: Option<SessionHistoryPage>,
-        gate: Option<Arc<HistoryReadGate>>,
+    pub(super) struct ScriptedHistoryRead {
+        pub(super) page: Option<SessionHistoryPage>,
+        pub(super) gate: Option<Arc<HistoryReadGate>>,
     }
 
-    struct HistoryReadGate {
+    pub(super) struct HistoryReadGate {
         entered: Semaphore,
         release: Semaphore,
     }
@@ -7770,14 +7834,14 @@ mod tests {
             }
         }
 
-        fn script_history(&self, reads: impl IntoIterator<Item = ScriptedHistoryRead>) {
+        pub(super) fn script_history(&self, reads: impl IntoIterator<Item = ScriptedHistoryRead>) {
             self.scripted_reads
                 .lock()
                 .expect("scripted history lock")
                 .extend(reads);
         }
 
-        fn read_calls(&self) -> usize {
+        pub(super) fn read_calls(&self) -> usize {
             self.read_calls.load(Ordering::SeqCst)
         }
 
@@ -9101,7 +9165,7 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
-    async fn build_stress_runtime(
+    pub(super) async fn build_stress_runtime(
         member_count: usize,
         history_delay: Duration,
     ) -> (
@@ -9174,7 +9238,10 @@ comms = true
         (temp_dir, runtime, delayed_service)
     }
 
-    fn runtime_entry_for_test(runtime_key: &str, runtime: &UnifiedRuntime) -> RuntimeEntry {
+    pub(super) fn runtime_entry_for_test(
+        runtime_key: &str,
+        runtime: &UnifiedRuntime,
+    ) -> RuntimeEntry {
         RuntimeEntry {
             registration_id: uuid::Uuid::new_v4(),
             runtime_key: runtime_key.to_string(),
@@ -9202,7 +9269,7 @@ comms = true
         }
     }
 
-    fn identity_record_for_test(identity: &str) -> ConsoleIdentityRecord {
+    pub(super) fn identity_record_for_test(identity: &str) -> ConsoleIdentityRecord {
         ConsoleIdentityRecord {
             identity: identity.to_string(),
             display_name: identity.to_string(),

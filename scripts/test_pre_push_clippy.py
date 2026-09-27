@@ -12,7 +12,7 @@ import unittest
 
 
 class PrePushClippyDispatchTests(unittest.TestCase):
-    def test_config_dispatches_rust_manifests_and_lockfiles(self):
+    def test_config_dispatches_rust_manifests_lockfiles_and_toolchains(self):
         config = (Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml").read_text()
         hook = re.search(
             r"^      - id: cargo-clippy\n(?P<fields>(?:^        [^\n]*\n)+)",
@@ -30,13 +30,14 @@ class PrePushClippyDispatchTests(unittest.TestCase):
         for path in (
             "crates/meerkat-mobkit/src/lib.rs", "src/main.rs", "build.rs",
             "Cargo.toml", "Cargo.lock", "crates/meerkat-mobkit/Cargo.toml",
-            "nested/Cargo.lock",
+            "nested/Cargo.lock", "rust-toolchain.toml", "rust-toolchain",
         ):
             with self.subTest(selected=path):
                 self.assertIsNotNone(selector.search(path))
         for path in (
             "README.md", "console/src/main.ts", "scripts/test_pre_push_clippy.py",
             "pyproject.toml", "src/lib.rs.md", "NotCargo.lock", "Cargo.lock.backup",
+            "rust-toolchain.toml.backup", "docs/rust-toolchain.md",
         ):
             with self.subTest(excluded=path):
                 self.assertIsNone(selector.search(path))
@@ -194,6 +195,16 @@ class PrePushClippyTests(unittest.TestCase):
     def test_root_manifest_change_runs_workspace(self):
         self.write("Cargo.toml", '[workspace]\nmembers = []\nresolver = "2"\n')
         self.commit("change workspace manifest")
+        self.assert_workspace()
+
+    def test_toolchain_toml_only_change_runs_workspace(self):
+        self.write("rust-toolchain.toml", '[toolchain]\nchannel = "stable"\n')
+        self.commit("change workspace toolchain")
+        self.assert_workspace()
+
+    def test_legacy_toolchain_only_change_runs_workspace(self):
+        self.write("rust-toolchain", "stable\n")
+        self.commit("change legacy workspace toolchain")
         self.assert_workspace()
 
     def test_unrelated_changes_skip_cargo(self):

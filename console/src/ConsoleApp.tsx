@@ -3601,7 +3601,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       canonicalIdentity = owner.identity;
       // The inspection supplies the alias correspondence. Timeline stores
       // filter exact canonical identities; querying the alias cannot find it.
-      ({ page } = await queryIdentityTimelinePage(canonicalIdentity, { mode: "recent", limit: 200 }));
+      // Defer both the log merge and its cursor until this check still owns
+      // the current scope and saved attempt when the query returns.
+      page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error) { if (active()) setActionError(errorMessage(error)); return; }
     if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
@@ -3612,6 +3614,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     // merged log, after its current query succeeded and the scope stayed live.
     const frames = [...page.frames, ...(identityLogRef.current[canonicalIdentity]?.events ?? [])];
     const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
+    const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
+    if (logChanged || metadataChanged) forceRender();
     if (!accepted) { setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically."); return; }
     if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
       await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));

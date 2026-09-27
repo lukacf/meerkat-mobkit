@@ -43388,7 +43388,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
       }
       canonicalIdentity = owner.identity;
-      ({ page } = await queryIdentityTimelinePage(canonicalIdentity, { mode: "recent", limit: 200 }));
+      page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error2) {
       if (active()) setActionError(errorMessage(error2));
       return;
@@ -43399,6 +43399,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
     const frames = [...page.frames, ...identityLogRef.current[canonicalIdentity]?.events ?? []];
     const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
+    const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
+    if (logChanged || metadataChanged) forceRender();
     if (!accepted) {
       setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically.");
       return;

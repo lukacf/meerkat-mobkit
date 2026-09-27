@@ -94,7 +94,7 @@ repos:
         name: cargo clippy (changed crates)
         entry: scripts/pre-push-clippy.sh
         language: script
-        files: (\.rs$|(^|/)Cargo\.(toml|lock)$)
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$)
         pass_filenames: false
         verbose: true
         stages: [pre-push]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pre-push clippy gate: lint only changed crates instead of the full workspace.
-# Falls back to workspace clippy for root manifest changes or unowned Rust files.
+# Falls back to workspace clippy for root build inputs or unowned Rust files.
 set -euo pipefail
 
 # Incremental compilation is OFF for the push gates.
@@ -56,8 +56,8 @@ changed = {
     ]).split(b"\0") if path
 }
 
-if changed & {"Cargo.toml", "Cargo.lock"}:
-    print("Workspace manifest or lockfile changed - running full workspace clippy.", flush=True)
+if changed & {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain"}:
+    print("Workspace manifest, lockfile or toolchain changed - running full workspace clippy.", flush=True)
     flags = ["--workspace"]
 else:
     packages = set()

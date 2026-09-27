@@ -1,5 +1,5 @@
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleApp } from "../ConsoleApp";
 import type { MobKitConsoleTransport } from "./headless";
@@ -167,6 +167,105 @@ describe("stock durable queue integration", () => {
     expect(send).not.toHaveBeenCalled();
     expect(unknown.envelopeJson).toBe(attempted.envelopeJson);
     expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts).toEqual([]);
+  });
+
+  it.each([true, false])("keeps the fresh acceptance page visible through a replay gap (exact receipt: %s)", async hasReceipt => {
+    const scope = "acceptance-page-scope";
+    const attempted = beginConsoleSendAttempt(createConsoleSendAttempt({ id: "lost-receipt", scope, destination: identity,
+      origin: "console:old-pane", idempotencyKey: "acceptance-page-key", text: "Check this saved instruction", now: 1 }),
+    { owner: "old-tab", now: 2, handlingMode: "steer" });
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [{ ...attempted, state: "outcome-unknown", lease: undefined }]);
+    const fake = transport(vi.fn());
+    fake.capabilities = async () => ({ methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] });
+    let checkingAcceptance = false;
+    fake.executeCommand = vi.fn(async input => {
+      checkingAcceptance = true;
+      return { command: input.command, accepted: true, result: { identity: { identity } } };
+    });
+    const before = { id: "before-check", event: "interaction_complete", identity, cursor: "console:1", timestampMs: 1,
+      interactionId: "before-check", data: { text: "Already loaded reply" } };
+    const queried = { id: "queried-reply", event: "interaction_complete", identity, cursor: "console:2", timestampMs: 2,
+      interactionId: "queried-turn", data: { text: "Reply found by acceptance check" } };
+    const receipt = { id: "queried-input", event: "user_input", identity, cursor: "console:3", timestampMs: 3,
+      interactionId: "accepted-turn", data: { ...JSON.parse(attempted.envelopeJson!),
+        ...(hasReceipt ? {} : { idempotency_key: "another-request" }) } };
+    const later = { id: "after-gap", event: "interaction_complete", identity, cursor: "console:4", timestampMs: 4,
+      interactionId: "after-gap", data: { text: "Reply after replay recovery" } };
+    fake.queryTimeline = vi.fn(async input => {
+      if (!input.identity) return { available: true, frames: [] };
+      if (input.mode === "since") return { available: true, frames: [later], nextCursor: "console:4" };
+      return checkingAcceptance
+        ? { available: true, frames: [queried, receipt], latestCursor: "console:3", exhausted: false }
+        : { available: true, frames: [before], latestCursor: "console:1", exhausted: false };
+    });
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
+    const pane = within(await screen.findByTestId(`chat-pane:${identity}`));
+    await pane.findByText("Already loaded reply", { selector: "p" });
+    await waitFor(() => expect(receive).toBeTypeOf("function"));
+    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
+    if (hasReceipt) await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+    else await screen.findByText(/No exact acceptance receipt is available/);
+    await pane.findByText("Reply found by acceptance check", { selector: "p" });
+    await act(async () => { receive?.({ event: "replay_unavailable", data: {} } as never); });
+    await waitFor(() => expect(fake.queryTimeline).toHaveBeenCalledWith(expect.objectContaining({ identity, mode: "since", after: "console:3" })));
+    await pane.findByText("Reply after replay recovery", { selector: "p" });
+    // Recovery correctly begins after the checked page. Its reply must already
+    // be retained locally, because the server will never return it in this gap.
+    expect(pane.getAllByText("Reply found by acceptance check", { selector: "p" })).toHaveLength(1);
+    expect(pane.getAllByText("Already loaded reply", { selector: "p" })).toHaveLength(1);
+    expect(fake.send).not.toHaveBeenCalled();
+    const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts;
+    expect(saved).toHaveLength(hasReceipt ? 0 : 1);
+    if (!hasReceipt) expect(saved[0].envelopeJson).toBe(attempted.envelopeJson);
+  });
+
+  it.each(["principal changed", "attempt removed"])("ignores a late acceptance page when the %s", async staleReason => {
+    const scope = "late-acceptance-scope";
+    const attempted = beginConsoleSendAttempt(createConsoleSendAttempt({ id: "late-receipt", scope, destination: identity,
+      origin: "console:old-pane", idempotencyKey: "late-acceptance-key", text: "Keep this attempt scoped", now: 1 }),
+    { owner: "old-tab", now: 2, handlingMode: "steer" });
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [{ ...attempted, state: "outcome-unknown", lease: undefined }]);
+    const fake = transport(vi.fn());
+    fake.capabilities = async () => ({ methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] });
+    let checkingAcceptance = false;
+    let finishCheck!: (page: Awaited<ReturnType<MobKitConsoleTransport["queryTimeline"]>>) => void;
+    fake.executeCommand = vi.fn(async input => {
+      checkingAcceptance = true;
+      return { command: input.command, accepted: true, result: { identity: { identity } } };
+    });
+    const before = { id: "before-late-check", event: "interaction_complete", identity, cursor: "console:1", timestampMs: 1,
+      interactionId: "before-late-check", data: { text: "Current authorized reply" } };
+    fake.queryTimeline = vi.fn(async input => {
+      if (!input.identity) return { available: true, frames: [] };
+      if (checkingAcceptance) {
+        checkingAcceptance = false;
+        return new Promise(resolve => { finishCheck = resolve; });
+      }
+      return { available: true, frames: [before], latestCursor: "console:1", exhausted: false };
+    });
+    let receive: ((frame: never) => void) | undefined;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    const view = render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
+    await within(await screen.findByTestId(`chat-pane:${identity}`)).findByText("Current authorized reply");
+    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
+    await waitFor(() => expect(finishCheck).toBeTypeOf("function"));
+    if (staleReason === "principal changed") {
+      view.rerender(<ConsoleApp baseUrl="" storageNamespace="next-acceptance-principal" transport={fake} />);
+      await within(await screen.findByTestId(`chat-pane:${identity}`)).findByText("Current authorized reply");
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Discard saved attempt" }));
+    }
+    await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+    await act(async () => { finishCheck({ available: true, frames: [{ id: "stale-check-reply", event: "interaction_complete", identity,
+      cursor: "console:50", timestampMs: 50, interactionId: "stale-check", data: { text: "Stale acceptance reply" } }], latestCursor: "console:50" }); });
+    expect(screen.queryByText("Stale acceptance reply")).toBeNull();
+    await act(async () => { receive?.({ event: "replay_unavailable", data: {} } as never); });
+    await waitFor(() => expect(fake.queryTimeline).toHaveBeenCalledWith(expect.objectContaining({ identity, mode: "since", after: "console:1" })));
+    expect(fake.queryTimeline).not.toHaveBeenCalledWith(expect.objectContaining({ after: "console:50" }));
+    expect(screen.queryByText("Stale acceptance reply")).toBeNull();
+    expect(fake.send).not.toHaveBeenCalled();
   });
 
   it.each(["denied", "missing identity"])("keeps the frozen alias attempt after %s owner resolution without resending", async failure => {

@@ -361,6 +361,7 @@ async function composedGraphAndPeer(host) {
     const accepted = await browserSend(page, host, sender, prompt);
     const graph = await graphEvidence(fixture, runId);
     await transcript(page, host, sender).getByRole("heading", { name: "WorkGraph scenario complete", exact: true }).waitFor();
+    await revealLatest(page, host, sender);
     await visibleContent(transcript(page, host, sender).getByText(graph.itemIds.publish, { exact: true }).last(), "completed WorkGraph item");
     await capture(page, `${host}-real-workgraph-1600`);
     if (host === "stock") {
