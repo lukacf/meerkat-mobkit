@@ -30649,32 +30649,6 @@ function payloadSummary(entry) {
   }
   return String(entry.summary || entry.reason || "");
 }
-function derivePolicies(audit) {
-  const byAction = /* @__PURE__ */ new Map();
-  for (const entry of audit) {
-    const r2 = entry;
-    const action = String(r2.action_id || r2.event_type || "unknown");
-    const decision = String(r2.decision || "").toLowerCase();
-    const approver = String(r2.approver_id || r2.actor || "");
-    const cur = byAction.get(action) || { approved: 0, rejected: 0, escalated: 0, approvers: /* @__PURE__ */ new Set() };
-    if (decision === "approve" || decision === "auto_approve") cur.approved++;
-    else if (decision === "reject") cur.rejected++;
-    else if (decision === "escalate") cur.escalated++;
-    if (approver) cur.approvers.add(approver);
-    byAction.set(action, cur);
-  }
-  return Array.from(byAction.entries()).map(([action, s], i) => ({
-    id: `pol-${i + 1}`,
-    action,
-    scope: "*",
-    state: s.approved + s.rejected > 0 ? "active" : "paused",
-    thresh: s.rejected > s.approved ? "High rejection rate" : "Auto on low risk",
-    approvers: Array.from(s.approvers),
-    approved: s.approved,
-    rejected: s.rejected,
-    escalated: s.escalated
-  }));
-}
 function GatingInboxPanel({
   pending,
   audit,
@@ -30702,7 +30676,6 @@ function GatingInboxPanel({
     selected?.scrollIntoView?.({ block: "nearest" });
     selected?.focus({ preventScroll: true });
   }, [selectedPendingId, selectedRequestAvailable, tab2]);
-  const policies = import_react27.default.useMemo(() => derivePolicies(audit), [audit]);
   const autoApproved = audit.filter((e) => {
     const r2 = e;
     return String(r2.decision || "").toLowerCase() === "auto_approve" || String(r2.event_type || "").includes("auto");
@@ -30716,9 +30689,7 @@ function GatingInboxPanel({
         pendingLabel,
         " pending \xB7 ",
         autoApproved.length,
-        " auto-approved \xB7 ",
-        policies.length,
-        " policies"
+        " auto-approved"
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__tabs", children: [
@@ -30758,16 +30729,13 @@ function GatingInboxPanel({
           ]
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
         "button",
         {
           className: `gating__tab ${tab2 === "policies" ? "is-active" : ""}`,
           onClick: () => setTab("policies"),
           "data-testid": "gating-tab:policies",
-          children: [
-            "Policies ",
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "n", children: policies.length })
-          ]
+          children: "Policies"
         }
       )
     ] }),
@@ -30776,35 +30744,7 @@ function GatingInboxPanel({
       onRefresh ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { type: "button", onClick: onRefresh, children: "Refresh approvals" }) : null,
       resource.status === "ready" && pendingRequests?.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { children: "No pending approvals." }) : null,
       resource.requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { tabIndex: -1, "data-approval-id": request.pendingId, "data-selected": selectedId === request.pendingId, className: selectedId === request.pendingId ? "is-selected" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ApprovalCard, { request, resourceStatus: resource.status, decision: resource.decisions[request.pendingId], readOnly: readOnly || resource.readOnly, onDecide }) }, request.pendingId))
-    ] }) : tab2 === "policies" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__policies", children: [
-      policies.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gating__empty", children: "No gate policies inferred from recent audit." }),
-      policies.map((policy) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gpolicy", "data-state": policy.state, "data-testid": `gating-policy:${policy.id}`, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gpolicy__head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gpolicy__action", children: policy.action }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: `gpolicy__state gpolicy__state--${policy.state}`, children: policy.state })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gpolicy__meta", children: [
-          "scope: ",
-          policy.scope
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gpolicy__rule", children: policy.thresh }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gpolicy__stats", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", { children: policy.approved }),
-            " approved"
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", { children: policy.rejected }),
-            " rejected"
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", { children: policy.escalated }),
-            " escalated"
-          ] })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gpolicy__approvers", children: policy.approvers.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "chip", children: "no approvers recorded" }) : policy.approvers.map((approver) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "chip", children: approver }, approver)) })
-      ] }, policy.id))
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+    ] }) : tab2 === "policies" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gating__empty", role: "status", children: "Policy details are not available in this console." }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
       currentList.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__empty", children: [
         "No ",
         tab2,
