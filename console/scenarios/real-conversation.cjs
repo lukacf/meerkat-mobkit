@@ -276,11 +276,74 @@ async function sendApi(fixture, text, key = text) {
   return accepted.body.result;
 }
 
+async function observePresentationStream(page) {
+  const session = await page.context().newCDPSession(page);
+  const streams = new Map();
+  session.on("Network.responseReceived", event => {
+    if (!new URL(event.response.url).pathname.endsWith("/timeline/stream") || streams.size >= 16) return;
+    streams.set(event.requestId, { url: event.response.url, status: event.response.status, headersAt: event.timestamp,
+      headersAtMs: Date.now(), chunks: 0, bytes: 0, first: [], last: [] });
+  });
+  session.on("Network.dataReceived", event => {
+    const stream = streams.get(event.requestId);
+    if (!stream) return;
+    stream.chunks += 1; stream.bytes += event.dataLength;
+    const sample = { at: event.timestamp, atMs: Date.now(), bytes: event.dataLength };
+    if (stream.first.length < 32) stream.first.push(sample);
+    stream.last.push(sample); if (stream.last.length > 32) stream.last.shift();
+  });
+  session.on("Network.loadingFailed", event => {
+    const stream = streams.get(event.requestId);
+    if (stream) stream.failure = { at: event.timestamp, error: event.errorText, canceled: event.canceled };
+  });
+  await session.send("Network.enable");
+  return { snapshot: () => [...streams.values()], close: () => session.detach() };
+}
+
+async function observePresentationDocument(viewport, selectedText) {
+  await viewport.evaluate((node, text) => {
+    const data = { startedAtMs: Date.now(), timeOrigin: performance.timeOrigin, mutations: 0, samples: 0, streamingSamples: 0, paragraphStreamingSamples: 0, first: [], last: [] };
+    let firstDocument; let firstParagraph; let previous;
+    const sample = reason => {
+      const documents = [...node.querySelectorAll(".cc-markdown-document")];
+      const paragraph = documents.flatMap(item => [...item.querySelectorAll("p")]).find(item => item.textContent === text);
+      const documentNode = paragraph?.closest(".cc-markdown-document");
+      if (documentNode && !firstDocument) { firstDocument = documentNode; firstParagraph = paragraph; }
+      const candidate = documentNode || documents.findLast(item => item.dataset.streaming === "true");
+      const box = paragraph?.getBoundingClientRect();
+      const state = { documentId: candidate?.dataset.markdownDocumentId, streaming: candidate?.dataset.streaming,
+        sourceChars: candidate?.textContent.length, paragraphFound: Boolean(paragraph),
+        sameDocument: Boolean(documentNode && documentNode === firstDocument), firstParagraphConnected: firstParagraph?.isConnected,
+        paragraphBox: box ? { x: box.x, y: box.y, width: box.width, height: box.height } : undefined,
+        paragraphVisibility: paragraph ? getComputedStyle(paragraph).visibility : undefined,
+        visibilityState: document.visibilityState, focused: document.hasFocus(),
+        streamingDocuments: documents.filter(item => item.dataset.streaming === "true").map(item => item.dataset.markdownDocumentId) };
+      const signature = JSON.stringify(state);
+      if (signature === previous && reason === "mutation") return;
+      previous = signature;
+      const item = { at: performance.now(), atMs: Date.now(), reason, ...state };
+      data.samples += 1;
+      if (state.streamingDocuments.length) data.streamingSamples += 1;
+      if (state.paragraphFound && state.streaming === "true") data.paragraphStreamingSamples += 1;
+      if (data.first.length < 64) data.first.push(item);
+      data.last.push(item); if (data.last.length > 64) data.last.shift();
+    };
+    const observer = new MutationObserver(() => { data.mutations += 1; sample("mutation"); });
+    observer.observe(node, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-streaming", "data-markdown-document-id"] });
+    const onVisibility = () => sample("visibility");
+    document.addEventListener("visibilitychange", onVisibility);
+    window.__presentationStreamDiagnostics = { data, stop() { sample("stop"); observer.disconnect(); document.removeEventListener("visibilitychange", onVisibility); return data; } };
+    sample("armed");
+  }, selectedText);
+}
+
 async function presentation(host) {
-  const fixture = await startFixture();
+  const fixture = await startFixture({ diagnoseStreams: true });
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, permissions: ["clipboard-read", "clipboard-write"] });
   const monitor = browserErrors(page);
+  const network = await observePresentationStream(page);
+  const diagnostics = {};
   try {
     await fixture.control("model", { source: Array.from({ length: 12 }, (_, index) => prose(index)).join(""), delay_ms: 0, chunk_chars: 512 });
     const first = await sendApi(fixture, "Review the workgraph and prepare peer-review evidence.");
@@ -316,7 +379,10 @@ async function presentation(host) {
     const selectedText = "Preserve this exact selection: A\u030A, \u00e5 and \ud83d\ude80.";
     const streamSource = `${selectedText}\n\n${prose(99).repeat(8)}Stream finished successfully.\n`;
     await fixture.control("model", { source: streamSource, delay_ms: 16, chunk_chars: 8 });
-    await sendApi(fixture, "Continue in the background while I inspect the earlier evidence.", "stream-anchor");
+    await observePresentationDocument(viewport, selectedText);
+    diagnostics.sendStartedAtMs = Date.now();
+    diagnostics.accepted = await sendApi(fixture, "Continue in the background while I inspect the earlier evidence.", "stream-anchor");
+    diagnostics.sendReturnedAtMs = Date.now();
     const streamingDocument = viewport.locator('.cc-markdown-document[data-streaming="true"]').last();
     await streamingDocument.getByText(selectedText, { exact: true }).waitFor();
     controls.working = await inspectJump(page, host, true);
@@ -351,6 +417,7 @@ async function presentation(host) {
     assert.equal(selection.streaming, "false");
     assert.equal(selection.completedSource, streamSource, `${host} the selected document becomes the exact complete reply`);
     assert.equal(await viewport.locator(".cc-markdown-document").filter({ hasText: selectedText }).count(), 1, `${host} history/live reconciliation does not duplicate the reply`);
+    diagnostics.document = await page.evaluate(() => window.__presentationStreamDiagnostics.stop());
     geometry.selection = selection;
     controls.completed = await inspectJump(page, host, false);
     geometry.controls = controls;
@@ -447,12 +514,13 @@ async function presentation(host) {
     await settle(page);
     await capture(page, `${host}-presentation-reloaded-original`);
     assert.deepEqual(monitor.errors, []);
-    await fs.writeFile(path.join(evidence, `${host}-geometry.json`), JSON.stringify({ geometry, errors: monitor.errors, expectedFailures: monitor.expected, observations: fixture.observations }, null, 2));
+    await fs.writeFile(path.join(evidence, `${host}-geometry.json`), JSON.stringify({ geometry, diagnostics: { ...diagnostics, network: network.snapshot(), proxy: fixture.streamDiagnostics }, errors: monitor.errors, expectedFailures: monitor.expected, observations: fixture.observations }, null, 2));
   } catch (error) {
+    diagnostics.document ??= await page.evaluate(() => window.__presentationStreamDiagnostics?.stop()).catch(() => undefined);
     await capture(page, `${host}-presentation-failure`).catch(() => {});
-    await fs.writeFile(path.join(evidence, `${host}-presentation-failure.json`), JSON.stringify({ error: error.stack, html: await page.content(), clipboard: await page.evaluate(() => ({ ...window.__clipboardEvidence, focused: document.hasFocus() })), frames: (await timeline(fixture)).frames, observations: fixture.observations, logs: fixture.logs() }, null, 2));
+    await fs.writeFile(path.join(evidence, `${host}-presentation-failure.json`), JSON.stringify({ error: error.stack, html: await page.content(), clipboard: await page.evaluate(() => ({ ...window.__clipboardEvidence, focused: document.hasFocus() })), diagnostics: { ...diagnostics, network: network.snapshot(), proxy: fixture.streamDiagnostics }, errors: monitor.errors, expectedFailures: monitor.expected, frames: (await timeline(fixture)).frames, observations: fixture.observations, logs: fixture.logs() }, null, 2));
     throw error;
-  } finally { await browser.close(); await fixture.close(); }
+  } finally { await network.close().catch(() => {}); await browser.close(); await fixture.close(); }
 }
 
 async function seedReadingHistory(fixture) {

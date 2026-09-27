@@ -42,7 +42,7 @@ async function stop(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function startFixture({ mode = "member", stateDir, liveImages = false, liveModel = false, routineTools = false, sharedAssets = path.join(__dirname, ".tmp/acceptance") } = {}) {
+async function startFixture({ mode = "member", stateDir, liveImages = false, liveModel = false, routineTools = false, diagnoseStreams = false, sharedAssets = path.join(__dirname, ".tmp/acceptance") } = {}) {
   // Freeze the built production UI for this fixture lifetime. UI-only iterations
   // reuse the real Rust backend without recompiling its embedded asset bytes.
   const consoleAssets = new Map(await Promise.all([
@@ -79,6 +79,7 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
   } catch (error) { await stop(child); throw new Error(`${error.message}\n${logs}`); }
 
   const observations = [];
+  const streamDiagnostics = [];
   const streams = new Set();
   let unavailableStreams = 0;
   let dropSend = false;
@@ -119,7 +120,42 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
       if (drop) res.flushHeaders();
       const stream = { incoming, response: res };
       if (isStream) streams.add(stream);
-      incoming.on("data", chunk => { if (!isStream && observation.response.length < 1_048_576) observation.response += chunk; });
+      const diagnostic = isStream && diagnoseStreams && streamDiagnostics.length < 16
+        ? { path: req.url, headersAtMs: Date.now(), chunks: 0, bytes: 0, frames: 0, kinds: {}, runs: {}, first: [], last: [], oversizedBlocks: 0, parseErrors: 0 }
+        : null;
+      if (diagnostic) streamDiagnostics.push(diagnostic);
+      const decoder = diagnostic ? new TextDecoder() : null;
+      let diagnosticBuffer = "";
+      incoming.on("data", chunk => {
+        if (!isStream && observation.response.length < 1_048_576) observation.response += chunk;
+        if (!diagnostic) return;
+        diagnostic.chunks += 1; diagnostic.bytes += chunk.length;
+        diagnosticBuffer += decoder.decode(chunk, { stream: true });
+        let end;
+        while ((end = diagnosticBuffer.indexOf("\n\n")) >= 0) {
+          const block = diagnosticBuffer.slice(0, end); diagnosticBuffer = diagnosticBuffer.slice(end + 2);
+          const source = block.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+          if (!source) continue;
+          try {
+            const value = JSON.parse(source);
+            const frame = value.frame || value;
+            const kind = frame.kind || frame.event || block.split("\n").find(line => line.startsWith("event:"))?.slice(6).trim();
+            const sample = { atMs: Date.now(), kind, id: frame.id, cursor: frame.cursor, timestampMs: frame.timestamp_ms, runId: frame.run_id, deltaChars: frame.payload?.delta?.length };
+            diagnostic.frames += 1; diagnostic.kinds[kind] = (diagnostic.kinds[kind] || 0) + 1;
+            if (sample.runId && (diagnostic.runs[sample.runId] || Object.keys(diagnostic.runs).length < 16)) {
+              const run = diagnostic.runs[sample.runId] ||= { firstAtMs: sample.atMs, frames: 0, deltas: 0, deltaChars: 0 };
+              run.lastAtMs = sample.atMs; run.frames += 1;
+              if (kind === "text_delta") {
+                run.deltas += 1; run.deltaChars += sample.deltaChars || 0;
+                run.firstDeltaAtMs ??= sample.atMs; run.lastDeltaAtMs = sample.atMs;
+              }
+            }
+            if (diagnostic.first.length < 32) diagnostic.first.push(sample);
+            diagnostic.last.push(sample); if (diagnostic.last.length > 32) diagnostic.last.shift();
+          } catch { diagnostic.parseErrors += 1; }
+        }
+        if (diagnosticBuffer.length > 65_536) { diagnosticBuffer = ""; diagnostic.oversizedBlocks += 1; }
+      });
       incoming.on("end", () => { streams.delete(stream); if (drop) { observation.dropped = true; res.destroy(); } });
       incoming.on("error", error => { streams.delete(stream); if (!res.destroyed) res.destroy(error); });
       res.on("close", () => { streams.delete(stream); incoming.destroy(); });
@@ -132,7 +168,7 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
   const port = await listen(proxy);
   const baseUrl = `http://127.0.0.1:${port}`;
   return {
-    baseUrl, backendUrl, observations,
+    baseUrl, backendUrl, observations, streamDiagnostics,
     async control(name, body) {
       const response = await fetch(`${backendUrl}/__fixture/${name}`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),

@@ -193,6 +193,61 @@ describe("stock durable queue integration", () => {
     expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts[0].envelopeJson).toBe(attempted.envelopeJson);
   });
 
+  it.each(["exact receipt", "foreign identity", "different request", "fresh query denied"])(
+    "checks acceptance beyond the recent 200 frames with %s", async evidence => {
+      const canonical = "canonical/queue-agent";
+      const scope = "older-receipt-scope";
+      const attempted = beginConsoleSendAttempt(createConsoleSendAttempt({ id: "older-receipt", scope, destination: identity,
+        origin: "console:old-pane", idempotencyKey: "older-key", text: "Preserve older acceptance", now: 1 }),
+      { owner: "old-tab", now: 2, handlingMode: "steer" });
+      const unknown = { ...attempted, state: "outcome-unknown" as const, lease: undefined };
+      saveConsoleSendAttempts(window.localStorage, scope, identity, [unknown]);
+      const fake = transport(vi.fn());
+      fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] }) as never;
+      const calls: string[] = [];
+      fake.executeCommand = vi.fn(async input => {
+        if (input.command !== "inspectIdentity" || !("identity" in input.target)) throw new Error("Unexpected command");
+        calls.push(`inspect:${input.target.identity}`);
+        return { command: input.command, accepted: true, result: { identity: { identity: canonical }, peers: [] } };
+      });
+      const receipt = { id: "older-canonical-receipt", event: "user_input", cursor: "console:1", timestampMs: 1,
+        identity: evidence === "foreign identity" ? "canonical/someone-else" : canonical,
+        interactionId: "older-accepted-turn", data: { ...JSON.parse(attempted.envelopeJson!), identity: canonical,
+          ...(evidence === "different request" ? { idempotency_key: "another-request" } : {}) } };
+      const newer = Array.from({ length: 201 }, (_, index) => ({ id: `newer-${index}`, event: "text_delta",
+        identity: canonical, cursor: `console:${index + 2}`, timestampMs: index + 2,
+        interactionId: "later-turn", data: { delta: "." } }));
+      fake.queryTimeline = vi.fn(async input => {
+        if (input.identity !== canonical) return { available: true, frames: [] };
+        calls.push(`query:${input.identity}`);
+        if (evidence === "fresh query denied") throw new Error("Fresh canonical query denied");
+        return { available: true, frames: newer.slice(-200), exhausted: false, latestCursor: "console:202" };
+      });
+      let receive: ((frame: never) => void) | undefined;
+      fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+      render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
+      const action = await screen.findByRole("button", { name: "Check acceptance" });
+      await waitFor(() => expect(receive).toBeTypeOf("function"));
+      // The current authorized stream loaded the receipt before 201 newer
+      // events. The fresh server page truthfully omits that older receipt.
+      await act(async () => { for (const frame of [receipt, ...newer]) receive?.(frame as never); });
+      fireEvent.click(action);
+      if (evidence === "exact receipt") {
+        await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+        expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts).toEqual([]);
+      } else {
+        await screen.findByText(evidence === "fresh query denied" ? "Fresh canonical query denied" : /No exact acceptance receipt is available/);
+        expect(screen.getByTestId("pending-stack")).toBeTruthy();
+        const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts;
+        expect(saved).toHaveLength(1);
+        expect(saved[0].state).toBe("outcome-unknown");
+        expect(saved[0].envelopeJson).toBe(attempted.envelopeJson);
+      }
+      expect(calls).toEqual([`inspect:${identity}`, `query:${canonical}`]);
+      expect(fake.send).not.toHaveBeenCalled();
+    },
+  );
+
   it("accepts canonical destination receipts for an alias without retrying", async () => {
     const send = vi.fn(async () => ({ interaction_id: "alias-accepted", identity: "canonical/queue-agent", input_frame_id: "canonical-input" }));
     render(<ConsoleApp baseUrl="" storageNamespace="alias-scope" transport={transport(send)} />);
@@ -247,6 +302,7 @@ describe("stock durable queue integration", () => {
     fake.capabilities = async () => ({ methods: ["mobkit/gating/pending", "mobkit/gating/decide", "mobkit/console/send"] });
     fake.executeCommand = async () => ({ result: { pending: [{ pending_id: "private-gate", action_id: "private-action", action: "Private principal approval", origin: { identity }, risk_tier: "r3" }] } }) as never;
     const view = render(<ConsoleApp baseUrl="" transport={fake} storageNamespace="old-principal" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Needs you, 1 pending approval" }));
     await screen.findAllByText("Private principal approval");
     fake.loadExperience = () => new Promise(() => {});
     view.rerender(<ConsoleApp baseUrl="" transport={fake} storageNamespace="new-principal" />);

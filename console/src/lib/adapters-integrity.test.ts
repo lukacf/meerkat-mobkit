@@ -228,3 +228,190 @@ for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const)
     });
   }
 }
+
+for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const) {
+  const owner = {
+    runId: "01900000-0000-7000-8000-000000000610",
+    interactionId: "01900000-0000-7000-8000-000000000611",
+    sessionId: "01900000-0000-7000-8000-000000000612",
+    runtimeKey: "runtime", identity: "router:main", sourceKind: "console_event",
+  };
+  const options = { renderInteractionStartsAsUser: true, renderTextDeltas: true, textMode: "markdown" as const };
+  const sources = (frames: ConsoleFrame[]) => mapper(null, frames, options)
+    .flatMap(entry => entry.kind === "message" && entry.identity.role === "assistant"
+      ? entry.blocks?.flatMap(block => block.type === "markdown" ? [block.source] : []) || [] : []);
+
+  for (const order of ["source-sequence", "console-cursor"] as const) {
+    for (const lastDeltaTies of [false, true]) {
+      test(`${surface}: equal timestamp completion precedes the tool boundary by ${order}, last delta tied=${lastDeltaTies}`, () => {
+        const events = [
+          ["u", "user_input", 1, { content: "What is it?" }],
+          ["d0", "text_delta", 10, { delta: lastDeltaTies ? "Let me " : "Let me check." }],
+          ...(lastDeltaTies ? [["d1", "text_delta", 20, { delta: "check." }] as const] : []),
+          ["c1", "text_complete", 20, { content: "Let me check." }],
+          ["t1", "tool_call_requested", 20, { id: "lookup", name: "lookup", args: {} }],
+          ["t2", "tool_execution_completed", 30, { id: "lookup", name: "lookup", content: "42", is_error: false }],
+          ["d2", "text_delta", 40, { delta: "The answer is 42." }],
+          ["c2", "text_complete", 50, { content: "The answer is 42." }],
+          ["done", "interaction_complete", 50, { result: "The answer is 42." }],
+        ] as const;
+        const frames = events.map(([id, event, timestampMs, data], index) => frame(id, event, {
+          ...data, ...(order === "source-sequence" ? { source_sequence: index + 1 } : {}),
+        }, { ...owner, timestampMs, cursor: `console:${order === "source-sequence" ? 20 - index : index + 1}` }));
+        for (const input of [frames, [...frames].reverse()]) {
+          assert.deepEqual(sources(input), ["Let me check.", "The answer is 42."]);
+        }
+      });
+    }
+  }
+
+  test(`${surface}: source sequence never orders unrelated runtime or session streams`, () => {
+    for (const conflict of [{ runtimeKey: "another-runtime" }, { sessionId: "another-session" }]) {
+      const first = frame("first", "text_complete", { content: "First.", source_sequence: 50 }, { ...owner });
+      const second = frame("second", "text_complete", { content: "Second.", source_sequence: 1 }, {
+        ...owner, ...conflict, runId: "another-run", interactionId: "another-interaction",
+      });
+      assert.deepEqual(sources([first, second]), ["First.", "Second."]);
+    }
+  });
+
+  for (const variant of ["split-text", "whitespace-block"] as const) {
+    test(`${surface}: canonical ${variant} history reconciles and copies exact assistant source`, () => {
+      const parts = variant === "split-text" ? ["Paris is the capital", " of France.\n"] : ["Alpha", "  \n", "Beta\n"];
+      const source = parts.join("");
+      const history = frame("saved-blocks", "text_complete", { text: source, result: source, message: {
+        role: "block_assistant", identity: { run_id: owner.runId, interaction_id: owner.interactionId },
+        blocks: parts.map(text => ({ block_type: "text", data: { text } })), stop_reason: "end_turn",
+      } }, { ...owner, sourceKind: "session_history", timestampMs: 50, sourceCursor: `${owner.sessionId}:4` });
+      const live = [
+        frame("delta", "text_delta", { delta: source }, { ...owner, timestampMs: 10 }),
+        frame("complete", "text_complete", { content: source }, { ...owner, timestampMs: 20 }),
+      ];
+      for (const input of [live.concat(history), [history, ...live], [history]]) {
+        const entries = mapper(null, input, options).filter(entry => entry.kind === "message" && entry.identity.role === "assistant");
+        assert.equal(entries.length, 1, "live/history handoff and cold reload each contain one assistant message");
+        assert.equal(conversationEntryText(entries[0]), source, "copy preserves every authored whitespace byte");
+        assert.deepEqual(sources(input), [source], "adjacent source blocks remain one Markdown document");
+      }
+    });
+  }
+
+  test(`${surface}: canonical server-tool split history does not repeat the live answer`, () => {
+    const source = "Paris is the capital of France.";
+    const events = [
+      ["u", "user_input", { content: "Capital?" }],
+      ["d1", "text_delta", { delta: "Paris is the capital" }],
+      ["st", "server_tool_content", { id: "srv", name: "web_search" }],
+      ["d2", "text_delta", { delta: " of France." }],
+      ["c", "text_complete", { content: source }],
+      ["done", "interaction_complete", { result: source }],
+    ] as const;
+    const live = events.map(([id, event, data], index) => frame(id, event, data, {
+      ...owner, cursor: `console:${index + 1}`, timestampMs: index + 1,
+    }));
+    const history = frame("h", "text_complete", { text: source, result: source, message: {
+      role: "block_assistant", identity: { run_id: owner.runId, interaction_id: owner.interactionId },
+      stop_reason: "end_turn", blocks: [
+        { block_type: "text", data: { text: "Paris is the capital" } },
+        { block_type: "server_tool_use", data: { id: "srv", name: "web_search", input: {} } },
+        { block_type: "text", data: { text: " of France." } },
+      ],
+    } }, { ...owner, sourceKind: "session_history", sourceCursor: `${owner.sessionId}:2`, cursor: "console:7", timestampMs: 7 });
+    for (const input of [[...live, history], [history, ...live]]) {
+      assert.equal(sources(input).join(""), source);
+    }
+    const reloaded = mapper(null, [history], options);
+    assert.equal(reloaded.length, 1);
+    assert.equal(conversationEntryText(reloaded[0]), source);
+  });
+
+  test(`${surface}: canonical assistant source preserves rich tool siblings and legacy formatting`, () => {
+    const parts = ["Before ", "\n\nAfter.\n"];
+    const source = parts.join("");
+    const history = frame("saved-rich", "text_complete", { text: source, result: source, message: {
+      role: "block_assistant", identity: { run_id: owner.runId, interaction_id: owner.interactionId },
+      blocks: [
+        { block_type: "text", data: { text: parts[0] } },
+        { block_type: "tool_use", data: { id: "read-1", name: "read_file", args: { path: "a" } } },
+        { block_type: "text", data: { text: parts[1] } },
+      ], stop_reason: "tool_use",
+    } }, { ...owner, sourceKind: "session_history", sourceCursor: `${owner.sessionId}:4` });
+    const entry = mapper(null, [history], options)[0];
+    assert(entry.kind === "message");
+    assert.deepEqual(entry.blocks?.map(block => block.type), ["markdown", "tool-call", "markdown"]);
+    assert.equal(conversationEntryText(entry), source, "message copy uses the owner's authored source, not a tool label or invented separator");
+    const legacy = mapper(null, [history], { ...options, textMode: "legacy" })[0];
+    assert(legacy.kind === "message");
+    assert.equal(legacy.copyText, undefined, "legacy formatting stays on its existing rich block copy path");
+    assert(legacy.blocks?.some(block => block.type === "tool-call"));
+  });
+}
+
+for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const) {
+  test(`${surface}: historical snapshot notices keep a new live document streaming and before its real tool boundary`, () => {
+    const sessionId = "01900000-0000-7000-8000-000000000701";
+    const oldRun = "01900000-0000-7000-8000-000000000702";
+    const runId = "01900000-0000-7000-8000-000000000703";
+    const interactionId = "01900000-0000-7000-8000-000000000704";
+    const owner = { runtimeKey: "runtime", identity: "router:main", sessionId };
+    const options = { renderInteractionStartsAsUser: true, renderTextDeltas: true, textMode: "markdown" as const };
+    const history = (id: string, text: string, offset: number, timestampMs: number) => frame(id, "text_complete", {
+      text, result: text, message: { role: "block_assistant", blocks: [{ block_type: "text", data: { text } }] },
+    }, { ...owner, runId: oldRun, timestampMs, cursor: `console:${offset + 1}`,
+      sourceKind: "session_history", sourceCursor: `${sessionId}:${offset}` });
+    const snapshot = frame("old-snapshot", "runtime_notice_snapshot", {
+      session_id: sessionId, complete: true, observed_through: "console:9", settled_attempts: [], notices: [{
+        offset: 1, message: { role: "system_notice", kind: "generic", body: "Earlier peer review.", blocks: [],
+          created_at: new Date(20).toISOString(), runtime_origin: { session_id: sessionId, run_id: oldRun,
+            input_id: "01900000-0000-7000-8000-000000000705", append_ordinal: 0 } },
+      }],
+    }, { ...owner, sourceKind: "session_history", timestampMs: 40, cursor: "console:10" });
+    const earlier = [history("old-before", "Earlier before.", 0, 10), history("old-after", "Earlier after.", 2, 30), snapshot];
+    const live = (id: string, event: string, data: object, sequence: number, timestampMs: number) => frame(id, event,
+      { ...data, source_sequence: sequence }, { ...owner, runId, interactionId, sourceKind: "console_event",
+        timestampMs, cursor: `console:${sequence + 10}` });
+    const start = live("new-start", "run_started", {}, 1, 100);
+    const first = live("new-delta", "text_delta", { delta: "Preserve this exact selection: A\u030A, \u00e5 and \u{1f680}.\n\n" }, 2, 110);
+    const next = live("new-delta-2", "text_delta", { delta: "More live source." }, 3, 120);
+    for (const input of [[...earlier, start, first, next], [...earlier, start, first, next].reverse()]) {
+      const entries = mapper(null, input, options);
+      assert.deepEqual(entries.slice(0, 3).map(conversationEntryText), ["Earlier before.", "Earlier peer review.", "Earlier after."]);
+      const current = entries.find(entry => entry.id === first.id);
+      assert(current?.kind === "message");
+      assert.deepEqual(current.blocks, [{ type: "markdown", id: `${first.id}:text:0`,
+        source: "Preserve this exact selection: A\u030A, \u00e5 and \u{1f680}.\n\nMore live source.", streaming: true }]);
+      assert.equal(entries.at(-1)?.id, first.id, "historical rows cannot migrate after a current stream");
+    }
+    const boundary = live("new-tool", "tool_call_requested", { id: "call-new", name: "lookup", args: {} }, 4, 130);
+    const result = live("new-result", "tool_execution_completed", { id: "call-new", name: "lookup", content: "ok", is_error: false }, 5, 140);
+    const answer = live("after-tool", "text_delta", { delta: "After the current tool." }, 6, 150);
+    const entries = mapper(null, [...earlier, start, first, next, boundary, result, answer], options);
+    const blocks = entries.flatMap(entry => entry.kind === "message" ? entry.blocks || [] : []);
+    const beforeTool = blocks.find(block => block.type === "markdown" && block.id === `${first.id}:text:0`);
+    const afterTool = blocks.find(block => block.type === "markdown" && block.id === `${answer.id}:text:0`);
+    assert(beforeTool?.type === "markdown" && !beforeTool.streaming, "the current owner's actual tool boundary closes its preceding document");
+    assert(afterTool?.type === "markdown" && afterTool.streaming);
+    assert(blocks.findIndex(block => block.type === "tool-call") > blocks.indexOf(beforeTool));
+    assert(blocks.indexOf(afterTool) > blocks.findIndex(block => block.type === "tool-call"));
+
+    const lateSnapshot = { ...snapshot, id: "late-snapshot", timestampMs: 160, cursor: "console:30" };
+    const lateHistory = mapper(null, [...earlier.slice(0, 2), start, first, next, lateSnapshot], options);
+    const lateCurrent = lateHistory.at(-1);
+    assert.equal(lateCurrent?.id, first.id, "snapshot publication after live deltas does not move its old authored notice");
+    assert(lateCurrent?.kind === "message" && lateCurrent.blocks?.[0].type === "markdown"
+      && lateCurrent.blocks[0].streaming);
+
+    const currentNotice = { role: "system_notice", kind: "generic", body: "Current durable notice.", blocks: [],
+      created_at: new Date(135).toISOString(), runtime_origin: { session_id: sessionId, run_id: runId,
+        input_id: "01900000-0000-7000-8000-000000000706", append_ordinal: 0 } };
+    const applied = live("current-append", "boundary_append_applied", { session_id: sessionId, run_id: runId,
+      input_id: currentNotice.runtime_origin.input_id, append_count: 1, transcript_start: 3, notices: [currentNotice] }, 5, 135);
+    const during = { ...lateSnapshot, data: { ...lateSnapshot.data as object,
+      notices: [{ offset: 3, message: currentNotice }], observed_through: "console:25" } };
+    const currentEntries = mapper(null, [boundary, applied, result, answer, during], options);
+    const noticeIndex = currentEntries.findIndex(entry => conversationEntryText(entry) === currentNotice.body);
+    const toolIndex = currentEntries.findIndex(entry => entry.kind === "message" && entry.blocks?.some(block => block.type === "tool-call"));
+    assert(noticeIndex > toolIndex, "a mid-run durable notice stays after its actual live tool boundary");
+    assert.equal(currentEntries.at(-1)?.id, answer.id, "later live text remains after the mid-run notice");
+  });
+}

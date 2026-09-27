@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pre-push clippy gate: lint only changed crates instead of the full workspace.
-# Falls back to workspace clippy when root Cargo.toml/Cargo.lock changes.
+# Falls back to workspace clippy for root manifest changes or unowned Rust files.
 set -euo pipefail
 
 # Incremental compilation is OFF for the push gates.
@@ -62,6 +62,7 @@ if changed & {"Cargo.toml", "Cargo.lock"}:
 else:
     packages = set()
     manifests = {}
+    unowned_rust = set()
     for path in changed:
         if Path(path).suffix not in {".rs", ".toml"}:
             continue
@@ -81,12 +82,22 @@ else:
                     packages.add(name)
                     break
             directory = directory.parent
+        else:
+            if Path(path).suffix == ".rs":
+                unowned_rust.add(path)
 
-    if not packages:
+    if unowned_rust:
+        # Out-of-tree targets and support modules can belong to a package
+        # elsewhere in the workspace. Ancestor lookup cannot prove ownership.
+        print("Rust files without an owning ancestor package - running full workspace clippy: "
+              + ", ".join(sorted(unowned_rust)), flush=True)
+        flags = ["--workspace"]
+    elif not packages:
         print("No changed Rust packages, skipping clippy.")
         sys.exit(0)
-    print("Clippy on changed packages: " + ", ".join(sorted(packages)), flush=True)
-    flags = [flag for package in sorted(packages) for flag in ("-p", package)]
+    else:
+        print("Clippy on changed packages: " + ", ".join(sorted(packages)), flush=True)
+        flags = [flag for package in sorted(packages) for flag in ("-p", package)]
 
 os.execv(cargo, [cargo, "clippy", *flags, "--all-targets", "--", "-D", "warnings"])
 PY

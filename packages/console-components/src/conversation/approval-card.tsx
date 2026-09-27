@@ -52,11 +52,20 @@ export function ApprovalAttention({ snapshot, onOpen }: {
 }) {
   if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
   const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
-  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  const ready = snapshot.status === "ready";
+  const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return (
-    <section className="cc-approval-attention" aria-label="Needs you" data-testid="approval-attention">
-      <button type="button" onClick={() => onOpen()}><strong>Needs you</strong><span role="status">{count}</span></button>
-      {requests.map((request) => <button type="button" key={request.pendingId} data-testid={`approval-attention:${request.pendingId}`} onClick={() => onOpen(request.pendingId)}>{request.action}</button>)}
+    <section className="cc-approval-attention" aria-label="Needs you" data-testid="approval-attention" data-state={snapshot.status} data-pending={ready && requests.length > 0}>
+      <button className="cc-approval-attention__open" type="button" aria-label={`Needs you, ${status}`} title={status}
+        onClick={() => onOpen(ready && requests.length === 1 ? requests[0].pendingId : undefined)}>
+        <svg className="cc-approval-attention__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m4 5-2 9v5h20v-5l-2-9H4Z" /><path d="M2 14h6l2 3h4l2-3h6" />
+        </svg>
+        <span className="cc-approval-attention__label">Needs you</span>
+        <span className="cc-approval-attention__count" aria-hidden="true">{ready ? requests.length : snapshot.status === "loading" ? "..." : "!"}</span>
+        <svg className="cc-approval-attention__chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
+      </button>
+      <span className="cc-approval-attention__status" role="status">{status}</span>
     </section>
   );
 }

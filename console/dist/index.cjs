@@ -3278,8 +3278,8 @@ function reconcileRuntimeAppendFrames(frames) {
   }
   const nodes = [];
   const candidates = /* @__PURE__ */ new Map();
-  const append = (node2) => {
-    nodes.push(node2);
+  const append = (node2, before = nodes.length) => {
+    nodes.splice(before, 0, node2);
     if (!node2.origin) return;
     const key = logicalKey(node2.frame, node2.origin);
     const twins = candidates.get(key) ?? [];
@@ -3343,7 +3343,11 @@ function reconcileRuntimeAppendFrames(frames) {
         timestampMs: Date.parse(String(message.created_at)),
         data: { message }
       };
-      append({ frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough });
+      const before = nodes.findIndex((node2) => typeof node2.frame.timestampMs === "number" && node2.frame.timestampMs > frame.timestampMs);
+      append(
+        { frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough },
+        before < 0 ? nodes.length : before
+      );
     }
   }
   const chosen = /* @__PURE__ */ new Map();
@@ -4892,13 +4896,29 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
 function ApprovalAttention({ snapshot, onOpen }) {
   if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
   const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
-  const count = snapshot.status === "ready" ? `${requests.length} pending` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { type: "button", onClick: () => onOpen(), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: "Needs you" }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { role: "status", children: count })
-    ] }),
-    requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { type: "button", "data-testid": `approval-attention:${request.pendingId}`, onClick: () => onOpen(request.pendingId), children: request.action }, request.pendingId))
+  const ready = snapshot.status === "ready";
+  const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", "data-state": snapshot.status, "data-pending": ready && requests.length > 0, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
+      "button",
+      {
+        className: "cc-approval-attention__open",
+        type: "button",
+        "aria-label": `Needs you, ${status}`,
+        title: status,
+        onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingId : void 0),
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("svg", { className: "cc-approval-attention__icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "m4 5-2 9v5h20v-5l-2-9H4Z" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "M2 14h6l2 3h4l2-3h6" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__label", children: "Needs you" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__count", "aria-hidden": "true", children: ready ? requests.length : snapshot.status === "loading" ? "..." : "!" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("svg", { className: "cc-approval-attention__chevron", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "m6 4 4 4-4 4" }) })
+        ]
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__status", role: "status", children: status })
   ] });
 }
 
@@ -24730,6 +24750,24 @@ function cursorSeq(cursor) {
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : null;
 }
+function transcriptSourceOrder(left, right) {
+  if (ownerContextsConflict(left, right)) return null;
+  const sameSession = Boolean(left.runtimeKey && left.runtimeKey === right.runtimeKey && left.sessionId && left.sessionId === right.sessionId);
+  if (sameSession && left.sourceKind === "console_event" && right.sourceKind === "console_event") {
+    const sequence = (frame) => {
+      const value = frame.data && typeof frame.data === "object" ? frame.data.source_sequence : void 0;
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    };
+    const a2 = sequence(left), b2 = sequence(right);
+    if (a2 !== null && b2 !== null && a2 !== b2) return a2 - b2;
+  }
+  const sameInteraction = Boolean(left.interactionId?.trim() && left.interactionId === right.interactionId);
+  const sameRun = Boolean(left.runId?.trim() && left.runId === right.runId);
+  if (!sameSession && !sameInteraction && !sameRun) return null;
+  if (left.sourceKind === "session_history" || right.sourceKind === "session_history") return null;
+  const a = cursorSeq(left.cursor), b = cursorSeq(right.cursor);
+  return a !== null && b !== null && a !== b ? a - b : null;
+}
 function sortFramesForTranscript(frames) {
   const interactionStartMs = /* @__PURE__ */ new Map();
   for (const frame of frames) {
@@ -24764,6 +24802,8 @@ function sortFramesForTranscript(frames) {
     if (leftTs !== rightTs) {
       return leftTs - rightTs;
     }
+    const sourceOrder = transcriptSourceOrder(left.frame, right.frame);
+    if (sourceOrder !== null) return sourceOrder;
     if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
       const leftRank = eventSortRank(left.frame.event);
       const rightRank = eventSortRank(right.frame.event);
@@ -25971,7 +26011,18 @@ function assistantOwnerKey(frame) {
   const interaction = frame.interactionId?.trim() || "";
   return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
 }
+function canonicalHistoryAssistantText(frame) {
+  if (frame.sourceKind !== "session_history") return void 0;
+  const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record3.message && typeof record3.message === "object" ? record3.message : {};
+  if (message.role !== "assistant" && message.role !== "block_assistant") return void 0;
+  if (typeof record3.text === "string") return record3.text;
+  if (typeof record3.result === "string") return record3.result;
+  return void 0;
+}
 function historyAssistantSource(frame) {
+  const canonical = canonicalHistoryAssistantText(frame);
+  if (canonical !== void 0) return canonical;
   const record3 = frame.data && typeof frame.data === "object" ? frame.data : {};
   const parsed = historyMessageText(record3.message);
   return parsed.role === "assistant" ? parsed.text : terminalFrameVisibleText(frame);
@@ -26610,7 +26661,13 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
     }
     if (blockType === "text") {
       const text8 = typeof data.text === "string" ? data.text : typeof item.text === "string" ? item.text : "";
-      if (text8.trim()) actionAndTextBlocks.push(...messageTextBlocks(text8, textMode));
+      if (textMode === "markdown" && text8) {
+        const previous3 = actionAndTextBlocks.at(-1);
+        if (previous3?.type === "markdown") previous3.source += text8;
+        else actionAndTextBlocks.push(...messageTextBlocks(text8, textMode));
+      } else if (textMode !== "markdown" && text8.trim()) {
+        actionAndTextBlocks.push(...messageTextBlocks(text8, textMode));
+      }
     }
   }
   return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
@@ -27322,7 +27379,8 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     options.textMode
   );
   const textMode = options.textMode ?? "markdown";
-  const text8 = textMode === "markdown" ? parsed.text : parsed.text.trim();
+  const canonicalText = textMode === "markdown" && !options.suppressAssistantText ? canonicalHistoryAssistantText(frame) : void 0;
+  const text8 = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
     const filteredParsedBlocks2 = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
@@ -27354,6 +27412,7 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
+    ...canonicalText !== void 0 ? { copyText: canonicalText } : {},
     variant: blocks.length > 0 ? "rich" : "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
     ...blocks.length > 0 ? { blocks } : { text: text8 }
@@ -43338,7 +43397,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
     if (!item || item.envelopeJson !== original.envelopeJson) return;
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
-    const accepted = page.frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const frames = [...page.frames, ...identityLogRef.current[canonicalIdentity]?.events ?? []];
+    const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
     if (!accepted) {
       setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically.");
       return;

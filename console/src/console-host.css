@@ -3018,7 +3018,7 @@ svg[data-svg="fit"],
 
 .composer > [role="alert"] { margin: 0 0 8px; color: var(--danger, #b64339); font-size: 12px; }
 .conv > small[role="status"] { display: block; padding: 4px 16px; color: var(--ink-dim); font-size: 10px; }
-.gating__list > div > button { margin: 8px 14px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper, #fff); color: var(--ink); font: inherit; cursor: pointer; }
+.gating__list > div > button { margin: 8px 14px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-elev-2); color: var(--ink); font: inherit; cursor: pointer; }
 .gating__list > div > button:hover { background: var(--bg); }
 .gating__list > div > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .composer__shell {

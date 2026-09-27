@@ -3607,7 +3607,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
     if (!item || item.envelopeJson !== original.envelopeJson) return;
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
-    const accepted = page.frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    // The latest page can omit an older receipt already loaded from the
+    // authorized stream or history. Search only the freshly resolved owner's
+    // merged log, after its current query succeeded and the scope stayed live.
+    const frames = [...page.frames, ...(identityLogRef.current[canonicalIdentity]?.events ?? [])];
+    const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
     if (!accepted) { setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically."); return; }
     if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
       await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));

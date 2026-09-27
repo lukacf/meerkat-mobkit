@@ -159,6 +159,33 @@ class PrePushClippyTests(unittest.TestCase):
         self.commit("change top-level manifest")
         self.assert_packages("actual-package")
 
+    def test_out_of_tree_example_source_falls_back_to_workspace(self):
+        self.package("crates/owner", "example-owner")
+        manifest = self.repo / "crates/owner/Cargo.toml"
+        manifest.write_text(manifest.read_text() +
+                            "[[example]]\nname = 'outside'\npath = '../../examples/outside.rs'\n")
+        self.write("examples/outside.rs", "fn main() {}\n")
+        self.commit("add out of tree example")
+        self.track_head()
+        self.write("examples/outside.rs", "fn main() { println!(\"changed\"); }\n")
+        self.commit("change only out of tree example")
+        self.assert_workspace()
+
+    def test_unowned_source_with_known_package_still_runs_workspace(self):
+        self.package("crates/owner", "known-package")
+        self.write("crates/owner/src/lib.rs", "pub fn changed() {}\n")
+        self.write("examples/support/helper.rs", "pub fn helper() {}\n")
+        self.commit("change package and out of tree support source")
+        self.assert_workspace()
+
+    def test_deleted_unowned_source_falls_back_to_workspace(self):
+        self.write("examples/removed.rs", "fn main() {}\n")
+        self.commit("add source before deletion")
+        self.track_head()
+        (self.repo / "examples/removed.rs").unlink()
+        self.commit("delete unowned source")
+        self.assert_workspace()
+
     def test_lockfile_only_change_runs_workspace(self):
         self.write("Cargo.lock", "version = 4\n# dependency update\n")
         self.commit("change lockfile")

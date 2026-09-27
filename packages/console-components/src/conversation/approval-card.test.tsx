@@ -52,13 +52,14 @@ describe("ApprovalCard", () => {
     expect(view.getByText("Expired")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Approve" })).toBeNull();
   });
-  it("attention has unavailable states instead of a false zero count and navigates to central request", () => {
+  it("attention has unavailable states instead of a false zero count and opens the request in the inbox", () => {
     const onOpen = vi.fn();
     const view = render(<ApprovalAttention snapshot={{ ...snapshot("unavailable"), requests: [] }} onOpen={onOpen} />);
     expect(view.getByText("Approvals unavailable")).toBeTruthy();
     expect(view.queryByText("0 pending")).toBeNull();
     view.rerender(<ApprovalAttention snapshot={snapshot()} onOpen={onOpen} />);
-    fireEvent.click(view.getByText("Publish release artifacts"));
+    expect(view.queryByText("Publish release artifacts")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Needs you, 1 pending approval" }));
     expect(onOpen).toHaveBeenCalledWith("request:1");
   });
   it.each(["forbidden", "unsupported"] as const)("omits global attention when approval access is %s", (status) => {
@@ -69,6 +70,21 @@ describe("ApprovalCard", () => {
     const view = render(<ApprovalAttention snapshot={{ ...snapshot("stale"), decisions: { "request:1": { phase: "failed", action: "approve", error: "Network response lost" } } }} onOpen={vi.fn()} />);
     expect(view.getByTestId("approval-attention")).toBeTruthy();
     expect(view.getByText("Approvals may be out of date")).toBeTruthy();
-    expect(view.getByText("Publish release artifacts")).toBeTruthy();
+    expect(view.queryByText("Publish release artifacts")).toBeNull();
+    expect(view.getAllByRole("button")).toHaveLength(1);
+  });
+  it("keeps a large inbox to one navigation row and opens all requests", () => {
+    const onOpen = vi.fn();
+    const requests = Array.from({ length: 25 }, (_, index) => ({ ...request, pendingId: `request:${index}` }));
+    const view = render(<ApprovalAttention snapshot={{ ...snapshot(), requests }} onOpen={onOpen} />);
+    expect(view.getAllByRole("button")).toHaveLength(1);
+    expect(view.queryByText("Publish release artifacts")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Needs you, 25 pending approvals" }));
+    expect(onOpen).toHaveBeenCalledWith(undefined);
+  });
+  it("counts only unresolved pending requests and announces an empty ready inbox", () => {
+    const view = render(<ApprovalAttention snapshot={{ ...snapshot(), decisions: { "request:1": { phase: "settled", action: "approve" } } }} onOpen={vi.fn()} />);
+    expect(view.getByRole("button", { name: "Needs you, 0 pending approvals" })).toBeTruthy();
+    expect(view.getByRole("status").textContent).toBe("0 pending approvals");
   });
 });

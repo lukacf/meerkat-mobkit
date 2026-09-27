@@ -3814,16 +3814,234 @@ async fn backfill_session_history_targets(
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RuntimeNoticeObservation {
     observed_through: u64,
     relevant_frontier: u64,
-    attempts: BTreeSet<(String, String)>,
+    attempts: BTreeSet<(uuid::Uuid, uuid::Uuid)>,
     previous_snapshot: Option<ConsoleFrame>,
     has_notice_history: bool,
-    canonical_frames: Vec<Arc<ConsoleFrame>>,
+    canonical_frames: Vec<CanonicalHistoryFrame>,
+    full_history_positions: bool,
+    history_index_complete: bool,
+    verified_history_digest: Option<String>,
+    verified_relevant_frontier: u64,
+    verified_settled_digest: Option<String>,
     retained_bytes: usize,
     frontier_anchor: Option<(String, String)>,
+}
+
+impl Default for RuntimeNoticeObservation {
+    fn default() -> Self {
+        Self {
+            observed_through: 0,
+            relevant_frontier: 0,
+            attempts: BTreeSet::new(),
+            previous_snapshot: None,
+            has_notice_history: false,
+            canonical_frames: Vec::new(),
+            full_history_positions: false,
+            history_index_complete: true,
+            verified_history_digest: None,
+            verified_relevant_frontier: 0,
+            verified_settled_digest: None,
+            retained_bytes: 0,
+            frontier_anchor: None,
+        }
+    }
+}
+
+impl RuntimeNoticeObservation {
+    fn attempt_strings(&self) -> BTreeSet<(String, String)> {
+        self.attempts
+            .iter()
+            .map(|(run, input)| (run.to_string(), input.to_string()))
+            .collect()
+    }
+}
+
+fn history_image_digest(messages: &[Message]) -> String {
+    to_hex(&Sha256::digest(
+        serde_json::to_vec(messages).unwrap_or_default(),
+    ))
+}
+
+fn observation_verifies_history(
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> bool {
+    observation.verified_relevant_frontier >= observation.relevant_frontier
+        && observation.verified_history_digest.as_deref()
+            == Some(history_image_digest(messages).as_str())
+}
+
+fn settled_attempts_digest(attempts: &BTreeSet<(String, String)>) -> String {
+    to_hex(&Sha256::digest(
+        serde_json::to_vec(attempts).unwrap_or_default(),
+    ))
+}
+
+fn reuse_verified_history_image(
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+    settled_attempts: &BTreeSet<(String, String)>,
+) -> bool {
+    !observation.history_index_complete
+        && observation_verifies_history(observation, messages)
+        && observation.verified_settled_digest.as_deref()
+            == Some(settled_attempts_digest(settled_attempts).as_str())
+}
+
+// Compact comparison records retain source identity and digests, never history
+// bodies. A host policy may redact payloads while preserving the existing
+// canonical dedupe key minted before that policy is applied.
+#[derive(Clone)]
+struct CanonicalHistoryFrame {
+    id: String,
+    dedupe_key: String,
+    source_cursor: Option<String>,
+    current_cursor: Option<String>,
+    sequence: u64,
+    payload_key: String,
+    source_key: Option<String>,
+}
+
+fn history_source_key(
+    runtime_key: &str,
+    session_id: &str,
+    dedupe_key: &str,
+    kind: &str,
+    run: Option<&str>,
+    input: Option<&str>,
+) -> Option<String> {
+    let suffix =
+        dedupe_key.strip_prefix(&format!("session-history:{runtime_key}:{session_id}:"))?;
+    let (_, suffix) = suffix.split_once(':')?;
+    serde_json::to_string(&(kind, suffix, run, input)).ok()
+}
+
+fn history_payload_key(
+    kind: &str,
+    payload: &Value,
+    run: Option<&str>,
+    input: Option<&str>,
+) -> String {
+    let bytes = serde_json::to_vec(&(kind, payload, run, input)).unwrap_or_default();
+    to_hex(&Sha256::digest(bytes))
+}
+
+impl CanonicalHistoryFrame {
+    fn from_frame(frame: &ConsoleFrame) -> Self {
+        Self {
+            id: frame.id.clone(),
+            dedupe_key: frame.dedupe_key.clone(),
+            source_cursor: frame.source.source_cursor.clone(),
+            current_cursor: frame.source.source_cursor.clone(),
+            sequence: frame.cursor.seq().unwrap_or(u64::MAX),
+            payload_key: history_payload_key(
+                &frame.kind,
+                &frame.payload,
+                frame.run_id.as_deref(),
+                frame.interaction_id.as_deref(),
+            ),
+            source_key: history_source_key(
+                &frame.runtime_key,
+                frame.session_id.as_deref().unwrap_or_default(),
+                &frame.dedupe_key,
+                &frame.kind,
+                frame.run_id.as_deref(),
+                frame.interaction_id.as_deref(),
+            ),
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.id.len()
+            + self.dedupe_key.len()
+            + self.source_cursor.as_ref().map_or(0, String::len)
+            + self.current_cursor.as_ref().map_or(0, String::len)
+            + self.payload_key.len()
+            + self.source_key.as_ref().map_or(0, String::len)
+    }
+}
+
+fn apply_notice_snapshot(observation: &mut RuntimeNoticeObservation, frame: &ConsoleFrame) {
+    // Whole-payload redaction may remove the wire map. Its pre-policy witness
+    // still records that this session crossed a complete compaction boundary.
+    observation.full_history_positions |= frame
+        .dedupe_key
+        .strip_prefix(&format!(
+            "runtime-notice-snapshot-v2:{}:{}:",
+            frame.runtime_key,
+            frame.session_id.as_deref().unwrap_or_default()
+        ))
+        .and_then(|suffix| suffix.split(':').nth(2))
+        == Some("full");
+    let Some(boundary) = frame
+        .payload
+        .get("observed_through")
+        .and_then(Value::as_str)
+        .and_then(|cursor| ConsoleCursor::from(cursor).seq())
+    else {
+        return;
+    };
+    let Some(positions) = frame
+        .payload
+        .get("history_positions")
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    let positions: BTreeMap<_, _> = positions
+        .iter()
+        .filter_map(|position| {
+            Some((
+                position.get("frame_id")?.as_str()?,
+                position.get("source_cursor")?.as_str()?,
+            ))
+        })
+        .collect();
+    let sparse = frame
+        .payload
+        .get("history_positions_mode")
+        .and_then(Value::as_str)
+        == Some("sparse");
+    let removed: BTreeSet<_> = frame
+        .payload
+        .get("removed_history_frame_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    observation.full_history_positions |= !sparse || !removed.is_empty();
+    observation.canonical_frames.retain_mut(|row| {
+        if row.sequence > boundary {
+            return true;
+        }
+        if let Some(cursor) = positions.get(row.id.as_str()) {
+            row.current_cursor = Some((*cursor).to_string());
+            true
+        } else if sparse && !removed.contains(row.id.as_str()) {
+            row.current_cursor = row.source_cursor.clone();
+            true
+        } else {
+            false
+        }
+    });
+    if observation.canonical_frames.capacity()
+        > observation.canonical_frames.len().saturating_mul(2)
+    {
+        observation.canonical_frames.shrink_to_fit();
+    }
+    observation.retained_bytes = observation
+        .canonical_frames
+        .iter()
+        .map(CanonicalHistoryFrame::retained_bytes)
+        .sum::<usize>()
+        + (observation.canonical_frames.capacity() - observation.canonical_frames.len())
+            * std::mem::size_of::<CanonicalHistoryFrame>();
 }
 
 async fn observe_runtime_notice_attempts(
@@ -3831,6 +4049,16 @@ async fn observe_runtime_notice_attempts(
     runtime_key: &str,
     identity: &str,
     session_id: &str,
+) -> ConsoleLogResult<RuntimeNoticeObservation> {
+    observe_runtime_notice_attempts_with_cache(inner, runtime_key, identity, session_id, true).await
+}
+
+async fn observe_runtime_notice_attempts_with_cache(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    use_cache: bool,
 ) -> ConsoleLogResult<RuntimeNoticeObservation> {
     let key = (
         runtime_key.to_string(),
@@ -3843,14 +4071,18 @@ async fn observe_runtime_notice_attempts(
         .await?
         .and_then(|cursor| cursor.seq())
         .unwrap_or(0);
-    let mut observation = inner
-        .notice_observations
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entries
-        .get(&key)
-        .cloned()
-        .unwrap_or_default();
+    let mut observation = if use_cache {
+        inner
+            .notice_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        RuntimeNoticeObservation::default()
+    };
     let anchor_valid = if let Some((dedupe, id)) = &observation.frontier_anchor {
         inner
             .store
@@ -3913,7 +4145,15 @@ async fn observe_runtime_notice_attempts(
             if frame.kind == "runtime_notice_snapshot"
                 && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
             {
-                observation.previous_snapshot = Some(frame);
+                apply_notice_snapshot(&mut observation, &frame);
+                // New snapshot dedupe keys retain the pre-policy comparison
+                // witness. Notice bodies are unnecessary cache state.
+                let mut retained = frame;
+                retained.payload = json!({
+                    "observed_through": retained.payload.get("observed_through"),
+                });
+                retained.source.member_provenance = None;
+                observation.previous_snapshot = Some(retained);
                 continue;
             }
             if frame.kind == "system_notice"
@@ -3937,12 +4177,11 @@ async fn observe_runtime_notice_attempts(
                         .and_then(|message| message.get("runtime_origin"))
                         .is_some_and(Value::is_object))
             {
-                let mut retained = frame.clone();
-                retained.source.member_provenance = None;
+                let retained = CanonicalHistoryFrame::from_frame(&frame);
                 observation.retained_bytes = observation
                     .retained_bytes
-                    .saturating_add(serde_json::to_vec(&retained)?.len());
-                observation.canonical_frames.push(Arc::new(retained));
+                    .saturating_add(retained.retained_bytes());
+                observation.canonical_frames.push(retained);
             }
             if frame.kind != "boundary_append_applied"
                 || frame.source.kind != ConsoleFrameSourceKind::ConsoleEvent
@@ -3972,9 +4211,7 @@ async fn observe_runtime_notice_attempts(
             observation.relevant_frontier = observation
                 .relevant_frontier
                 .max(frame.cursor.seq().unwrap_or(0));
-            observation
-                .attempts
-                .insert((run_id.to_string(), input_id.to_string()));
+            observation.attempts.insert((run_id.0, input_id.0));
         }
         if last_cursor
             .seq()
@@ -3984,33 +4221,42 @@ async fn observe_runtime_notice_attempts(
         }
         after = Some(last_cursor);
     }
+    cache_notice_observation(inner, key, &observation);
+    Ok(observation)
+}
+
+fn cache_notice_observation(
+    inner: &AggregatorInner,
+    key: (String, String, String),
+    observation: &RuntimeNoticeObservation,
+) {
     let mut cache = inner
         .notice_observations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let retained_bytes = observation
-        .retained_bytes
-        .saturating_add(
-            observation
-                .attempts
-                .iter()
-                .map(|(run, input)| run.len() + input.len())
-                .sum::<usize>(),
-        )
-        .saturating_add(
-            observation
-                .previous_snapshot
-                .as_ref()
-                .map(serde_json::to_vec)
-                .transpose()?
-                .map_or(0, |bytes| bytes.len()),
-        );
+    // Attempt identities remain exact and independently retained: the owner
+    // can settle an attempt without a corresponding console event. Only the
+    // expensive history index is eligible for bounded frontier-only caching.
+    let retained_bytes =
+        observation
+            .retained_bytes
+            .saturating_add(observation.previous_snapshot.as_ref().map_or(0, |frame| {
+                std::mem::size_of::<ConsoleFrame>()
+                    + frame.dedupe_key.len()
+                    + frame.id.len()
+                    + frame.runtime_key.len()
+                    + frame.identity.len()
+                    + frame.cursor.as_str().len()
+            }));
     if retained_bytes <= NOTICE_OBSERVATION_MAX_BYTES {
         cache.insert(key, observation.clone());
     } else {
-        cache.retain(|candidate, _| candidate != &key);
+        let mut frontier = observation.clone();
+        frontier.canonical_frames = Vec::new();
+        frontier.retained_bytes = 0;
+        frontier.history_index_complete = false;
+        cache.insert(key, frontier);
     }
-    Ok(observation)
 }
 
 fn complete_current_history_page(
@@ -4035,6 +4281,7 @@ fn current_history_positions(
     current_history_position_changes(runtime_key, identity, session_id, observation, messages).0
 }
 
+#[cfg(test)]
 fn current_history_position_changes(
     runtime_key: &str,
     identity: &str,
@@ -4042,107 +4289,390 @@ fn current_history_position_changes(
     observation: &RuntimeNoticeObservation,
     messages: &[Message],
 ) -> (Vec<Value>, Vec<String>) {
-    fn key(kind: &str, payload: &Value, run: Option<&str>, input: Option<&str>) -> String {
-        serde_json::to_string(&(kind, payload, run, input)).unwrap_or_default()
-    }
-    let mut current = BTreeMap::<String, std::collections::VecDeque<(String, String)>>::new();
-    for (offset, message) in messages.iter().enumerate() {
-        let Ok(message) = serde_json::to_value(message) else {
-            continue;
-        };
-        for frame in frames_from_session_history_message_with_namespace(
-            runtime_key,
-            identity,
-            "",
-            session_id,
-            offset,
-            message,
-        ) {
-            if frame.identity != identity
-                || (frame.kind == "system_notice"
+    let (positions, removed) =
+        current_history_mapping(runtime_key, identity, session_id, observation, messages);
+    let old: BTreeMap<_, _> = observation
+        .canonical_frames
+        .iter()
+        .map(|frame| (frame.id.as_str(), frame.current_cursor.as_deref()))
+        .collect();
+    (
+        positions
+            .into_iter()
+            .filter(|position| {
+                old.get(position["frame_id"].as_str().unwrap_or_default())
+                    .copied()
+                    .flatten()
+                    != position["source_cursor"].as_str()
+            })
+            .collect(),
+        removed,
+    )
+}
+
+fn current_history_projection(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    messages: &[Message],
+) -> Vec<NewConsoleFrame> {
+    messages
+        .iter()
+        .enumerate()
+        .flat_map(|(offset, message)| {
+            frames_from_session_history_message_with_namespace(
+                runtime_key,
+                identity,
+                "",
+                session_id,
+                offset,
+                serde_json::to_value(message).unwrap_or(Value::Null),
+            )
+        })
+        .filter(|frame| {
+            frame.identity == identity
+                && !(frame.kind == "system_notice"
                     && frame
                         .payload
                         .get("message")
                         .and_then(|message| message.get("runtime_origin"))
                         .is_some_and(Value::is_object))
-            {
-                continue;
-            }
-            if let Some(cursor) = frame.source.source_cursor {
-                current
-                    .entry(key(
-                        &frame.kind,
-                        &frame.payload,
-                        frame.run_id.as_deref(),
-                        frame.interaction_id.as_deref(),
-                    ))
-                    .or_default()
-                    .push_back((frame.dedupe_key, cursor));
-            }
-        }
-    }
-    let mut old: Vec<_> = observation.canonical_frames.iter().collect();
-    old.sort_by_key(|frame| {
-        let suffix = frame
-            .source
-            .source_cursor
-            .as_deref()
-            .and_then(|cursor| cursor.strip_prefix(&format!("{session_id}:")))
-            .unwrap_or("");
-        // Preserve complete numeric subindices, not lexical 10-before-2
-        // ordering, when one canonical message projects several equal rows.
-        let position: Vec<_> = suffix
+        })
+        .collect()
+}
+
+fn canonical_history_order(
+    session_id: &str,
+    row: &CanonicalHistoryFrame,
+) -> (Vec<(u8, u64, String)>, u64) {
+    let prefix = format!("{session_id}:");
+    let suffix = row
+        .current_cursor
+        .as_deref()
+        .and_then(|cursor| cursor.strip_prefix(&prefix))
+        .unwrap_or("");
+    (
+        suffix
             .split(':')
             .map(|part| match part.parse::<u64>() {
                 Ok(number) => (0, number, String::new()),
-                Err(_) => (1, 0, part.to_owned()),
+                Err(_) => (1, 0, part.to_string()),
             })
-            .collect();
-        (position, frame.cursor.seq().unwrap_or(u64::MAX))
-    });
-    // Dedupe keys are minted from the canonical source before host redaction.
-    // Reserve exact unchanged occurrences first, so an older repeated row
-    // cannot borrow the coordinate of a later exact survivor after compaction.
-    let mut exact = BTreeMap::<String, String>::new();
-    let by_dedupe: BTreeMap<_, _> = old
-        .iter()
-        .map(|frame| (frame.dedupe_key.as_str(), frame.id.as_str()))
-        .collect();
-    for candidates in current.values_mut() {
-        candidates.retain(|(dedupe, cursor)| {
-            if let Some(id) = by_dedupe.get(dedupe.as_str()) {
-                exact.insert((*id).to_string(), cursor.clone());
-                false
-            } else {
-                true
-            }
-        });
+            .collect(),
+        row.sequence,
+    )
+}
+
+async fn restore_current_history_frames(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &mut RuntimeNoticeObservation,
+    messages: &[Message],
+    appended_history_start: Option<usize>,
+) -> ConsoleLogResult<()> {
+    if !observation.full_history_positions {
+        return Ok(());
     }
-    let mut removed = Vec::new();
-    let positions = old
-        .into_iter()
-        .filter_map(|frame| {
-            let cursor = exact.remove(&frame.id).or_else(|| {
-                current
-                    .get_mut(&key(
-                        &frame.kind,
-                        &frame.payload,
-                        frame.run_id.as_deref(),
-                        frame.interaction_id.as_deref(),
-                    ))
-                    .and_then(std::collections::VecDeque::pop_front)
-                    .map(|(_, cursor)| cursor)
-            });
-            let Some(cursor) = cursor else {
-                removed.push(frame.id.clone());
-                return None;
-            };
-            if frame.source.source_cursor.as_deref() == Some(cursor.as_str()) {
-                return None;
+    let mut present: BTreeSet<_> = observation
+        .canonical_frames
+        .iter()
+        .map(|row| row.dedupe_key.clone())
+        .collect();
+    let (mapped, _) =
+        current_history_mapping(runtime_key, identity, session_id, observation, messages);
+    let mapped: BTreeSet<_> = mapped
+        .iter()
+        .filter_map(|row| row["source_cursor"].as_str())
+        .collect();
+    let mut unmatched = BTreeMap::<String, (Option<String>, String)>::new();
+    for candidate in current_history_projection(runtime_key, identity, session_id, messages) {
+        if candidate
+            .source
+            .source_cursor
+            .as_deref()
+            .is_some_and(|cursor| mapped.contains(cursor))
+            || !present.insert(candidate.dedupe_key.clone())
+        {
+            continue;
+        }
+        if let Some(frame) = inner
+            .store
+            .frame_by_dedupe_key(&candidate.dedupe_key)
+            .await?
+            && frame.runtime_key == runtime_key
+            && frame.identity == identity
+            && frame.session_id.as_deref() == Some(session_id)
+            && frame
+                .cursor
+                .seq()
+                .is_some_and(|seq| seq <= observation.observed_through)
+        {
+            let retained = CanonicalHistoryFrame::from_frame(&frame);
+            observation.retained_bytes = observation
+                .retained_bytes
+                .saturating_add(retained.retained_bytes());
+            observation.canonical_frames.push(retained);
+        } else if let Some(cursor) = candidate.source.source_cursor {
+            let offset = cursor
+                .strip_prefix(&format!("{session_id}:"))
+                .and_then(|suffix| suffix.split(':').next())
+                .and_then(|offset| offset.parse::<usize>().ok());
+            // New suffix rows are appended by the ordinary history backfill
+            // after this snapshot and need no old-coordinate restoration.
+            let always_appended =
+                history_counterpart_has_typed_owner(
+                    candidate.run_id.as_deref(),
+                    candidate.interaction_id.as_deref(),
+                ) && matches!(
+                    history_counterpart_category(&candidate.kind),
+                    Some("assistant" | "reasoning" | "user")
+                ) || history_counterpart_tool_id(&candidate.kind, &candidate.payload).is_some()
+                    || history_counterpart_category(&candidate.kind).is_none();
+            if always_appended
+                && appended_history_start
+                    .is_some_and(|start| offset.is_some_and(|offset| offset >= start))
+            {
+                continue;
             }
-            Some(json!({ "frame_id": frame.id, "source_cursor": cursor }))
+            unmatched.insert(
+                cursor,
+                (
+                    history_source_key(
+                        runtime_key,
+                        session_id,
+                        &candidate.dedupe_key,
+                        &candidate.kind,
+                        candidate.run_id.as_deref(),
+                        candidate.interaction_id.as_deref(),
+                    ),
+                    history_payload_key(
+                        &candidate.kind,
+                        &candidate.payload,
+                        candidate.run_id.as_deref(),
+                        candidate.interaction_id.as_deref(),
+                    ),
+                ),
+            );
+        }
+    }
+    if unmatched.is_empty() {
+        return Ok(());
+    }
+    // Only a restoration missing from the active index needs a historical
+    // lookup. Keep at most one old record per unmatched current occurrence;
+    // neither removed bodies nor an ever-growing tombstone cache are retained.
+    let mut recovered = BTreeMap::<String, Vec<CanonicalHistoryFrame>>::new();
+    let mut capacities = BTreeMap::<String, usize>::new();
+    for (source, payload) in unmatched.values() {
+        *capacities.entry(format!("payload:{payload}")).or_default() += 1;
+        if let Some(source) = source {
+            *capacities.entry(format!("source:{source}")).or_default() += 1;
+        }
+    }
+    let mut after: Option<ConsoleCursor> = None;
+    loop {
+        let page = inner
+            .store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some(identity.to_string()),
+                after: after.clone(),
+                limit: 1_000,
+                ..Default::default()
+            })
+            .await?;
+        let Some(last) = page.frames.last() else {
+            break;
+        };
+        let last_cursor = last.cursor.clone();
+        if last_cursor.seq().is_none_or(|seq| {
+            after
+                .as_ref()
+                .and_then(ConsoleCursor::seq)
+                .is_some_and(|old| seq <= old)
+        }) {
+            return Err(
+                std::io::Error::other("history restoration scan made no cursor progress").into(),
+            );
+        }
+        for frame in page.frames {
+            if frame.runtime_key != runtime_key
+                || frame.session_id.as_deref() != Some(session_id)
+                || frame.source.kind != ConsoleFrameSourceKind::SessionHistory
+                || frame
+                    .cursor
+                    .seq()
+                    .is_none_or(|seq| seq > observation.observed_through)
+                || present.contains(&frame.dedupe_key)
+            {
+                continue;
+            }
+            let row = CanonicalHistoryFrame::from_frame(&frame);
+            for key in std::iter::once(format!("payload:{}", row.payload_key))
+                .chain(row.source_key.as_ref().map(|key| format!("source:{key}")))
+            {
+                let Some(capacity) = capacities.get(&key) else {
+                    continue;
+                };
+                let candidates = recovered.entry(key).or_default();
+                candidates.push(row.clone());
+                candidates.sort_by_key(|row| canonical_history_order(session_id, row));
+                candidates.truncate(*capacity);
+            }
+        }
+        if last_cursor
+            .seq()
+            .is_none_or(|seq| seq >= observation.observed_through)
+        {
+            break;
+        }
+        after = Some(last_cursor);
+    }
+    let mut recovered_ids = BTreeSet::new();
+    for row in recovered.into_values().flatten() {
+        if !recovered_ids.insert(row.id.clone()) {
+            continue;
+        }
+        observation.retained_bytes = observation
+            .retained_bytes
+            .saturating_add(row.retained_bytes());
+        observation.canonical_frames.push(row);
+    }
+    Ok(())
+}
+
+fn cache_current_history_image(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &mut RuntimeNoticeObservation,
+    messages: &[Message],
+    settled_attempts: &BTreeSet<(String, String)>,
+) {
+    let (positions, removed) =
+        current_history_mapping(runtime_key, identity, session_id, observation, messages);
+    let positions: BTreeMap<_, _> = positions
+        .iter()
+        .filter_map(|position| {
+            Some((
+                position["frame_id"].as_str()?,
+                position["source_cursor"].as_str()?,
+            ))
         })
         .collect();
+    observation.full_history_positions |= !removed.is_empty()
+        || observation.canonical_frames.iter().any(|row| {
+            positions
+                .get(row.id.as_str())
+                .is_some_and(|cursor| row.current_cursor.as_deref() != Some(*cursor))
+        });
+    observation.canonical_frames.retain_mut(|row| {
+        let Some(cursor) = positions.get(row.id.as_str()) else {
+            return false;
+        };
+        row.current_cursor = Some((*cursor).to_string());
+        true
+    });
+    if observation.canonical_frames.capacity()
+        > observation.canonical_frames.len().saturating_mul(2)
+    {
+        observation.canonical_frames.shrink_to_fit();
+    }
+    observation.retained_bytes = observation
+        .canonical_frames
+        .iter()
+        .map(CanonicalHistoryFrame::retained_bytes)
+        .sum::<usize>()
+        + (observation.canonical_frames.capacity() - observation.canonical_frames.len())
+            * std::mem::size_of::<CanonicalHistoryFrame>();
+    observation.verified_history_digest = Some(history_image_digest(messages));
+    observation.verified_relevant_frontier = observation.relevant_frontier;
+    observation.verified_settled_digest = Some(settled_attempts_digest(settled_attempts));
+    cache_notice_observation(
+        inner,
+        (
+            runtime_key.to_string(),
+            identity.to_string(),
+            session_id.to_string(),
+        ),
+        observation,
+    );
+}
+
+fn current_history_mapping(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    observation: &RuntimeNoticeObservation,
+    messages: &[Message],
+) -> (Vec<Value>, Vec<String>) {
+    let current = current_history_projection(runtime_key, identity, session_id, messages);
+    let mut exact = BTreeMap::new();
+    let mut by_source: BTreeMap<String, VecDeque<usize>> = BTreeMap::new();
+    let mut by_payload: BTreeMap<String, VecDeque<usize>> = BTreeMap::new();
+    for (index, frame) in current.iter().enumerate() {
+        exact.insert(frame.dedupe_key.as_str(), index);
+        if let Some(key) = history_source_key(
+            runtime_key,
+            session_id,
+            &frame.dedupe_key,
+            &frame.kind,
+            frame.run_id.as_deref(),
+            frame.interaction_id.as_deref(),
+        ) {
+            by_source.entry(key).or_default().push_back(index);
+        }
+        by_payload
+            .entry(history_payload_key(
+                &frame.kind,
+                &frame.payload,
+                frame.run_id.as_deref(),
+                frame.interaction_id.as_deref(),
+            ))
+            .or_default()
+            .push_back(index);
+    }
+    let mut old: Vec<_> = observation.canonical_frames.iter().collect();
+    old.sort_by_key(|frame| canonical_history_order(session_id, frame));
+    // Reserve exact surviving occurrences before any relocation match.
+    let exact_matches: BTreeMap<_, _> = old
+        .iter()
+        .filter_map(|row| {
+            exact
+                .get(row.dedupe_key.as_str())
+                .map(|index| (row.id.as_str(), *index))
+        })
+        .collect();
+    let mut used: BTreeSet<_> = exact_matches.values().copied().collect();
+    fn available(queue: Option<&mut VecDeque<usize>>, used: &mut BTreeSet<usize>) -> Option<usize> {
+        let queue = queue?;
+        while let Some(index) = queue.pop_front() {
+            if used.insert(index) {
+                return Some(index);
+            }
+        }
+        None
+    }
+    let mut positions = Vec::new();
+    let mut removed = Vec::new();
+    for row in old {
+        let index = exact_matches.get(row.id.as_str()).copied().or_else(|| {
+            available(
+                row.source_key
+                    .as_ref()
+                    .and_then(|key| by_source.get_mut(key)),
+                &mut used,
+            )
+            .or_else(|| available(by_payload.get_mut(&row.payload_key), &mut used))
+        });
+        if let Some(cursor) = index.and_then(|index| current[index].source.source_cursor.as_ref()) {
+            positions.push(json!({ "frame_id": row.id, "source_cursor": cursor }));
+        } else {
+            removed.push(row.id.clone());
+        }
+    }
     (positions, removed)
 }
 
@@ -4162,6 +4692,11 @@ fn runtime_notice_snapshot_frame(
     settled_attempts: &BTreeSet<(String, String)>,
     messages: &[Message],
 ) -> Option<NewConsoleFrame> {
+    // A frontier-only cache is never an absence proof. The production path
+    // either reuses its exact verified image or rebuilds before calling here.
+    if !observation.history_index_complete {
+        return None;
+    }
     let notices: Vec<Value> = messages
         .iter()
         .enumerate()
@@ -4184,40 +4719,101 @@ fn runtime_notice_snapshot_frame(
         .iter()
         .map(|(run_id, input_id)| json!({ "run_id": run_id, "input_id": input_id }))
         .collect();
-    let (history_positions, removed_history_frame_ids) =
-        current_history_position_changes(runtime_key, identity, session_id, observation, messages);
+    let (all_positions, removed) =
+        current_history_mapping(runtime_key, identity, session_id, observation, messages);
+    let previous_positions: BTreeMap<_, _> = observation
+        .canonical_frames
+        .iter()
+        .map(|row| (row.id.as_str(), row.current_cursor.as_deref()))
+        .collect();
+    let changes: Vec<_> = all_positions
+        .iter()
+        .filter(|position| {
+            previous_positions
+                .get(position["frame_id"].as_str().unwrap_or_default())
+                .copied()
+                .flatten()
+                != position["source_cursor"].as_str()
+        })
+        .collect();
+    let full = observation.full_history_positions || !removed.is_empty() || !changes.is_empty();
     let previous = observation.previous_snapshot.as_ref();
-    // A repeated observation needs no new row. A later A -> B -> A image does:
-    // key it by the previous observation, not the content digest alone.
-    if previous.is_some_and(|frame| {
-        frame.payload.get("notices") == Some(&json!(notices))
-            && frame.payload.get("settled_attempts") == Some(&json!(settled))
-            && frame.payload.get("history_positions") == Some(&json!(history_positions))
-            && frame.payload.get("removed_history_frame_ids")
-                == Some(&json!(removed_history_frame_ids))
-            && frame
-                .payload
-                .get("observed_through")
-                .and_then(Value::as_str)
-                .and_then(|cursor| ConsoleCursor::from(cursor).seq())
-                .is_some_and(|seq| seq >= observation.relevant_frontier)
-    }) {
-        return None;
+    let state_digest = to_hex(&Sha256::digest(
+        serde_json::to_vec(&(notices.clone(), settled.clone())).ok()?,
+    ));
+    let positions_digest = |boundary: u64| {
+        let covered: BTreeSet<_> = observation
+            .canonical_frames
+            .iter()
+            .filter(|row| row.sequence <= boundary)
+            .map(|row| row.id.as_str())
+            .collect();
+        let mut positions: Vec<_> = all_positions
+            .iter()
+            .filter(|position| {
+                position["frame_id"]
+                    .as_str()
+                    .is_some_and(|id| covered.contains(id))
+            })
+            .cloned()
+            .collect();
+        positions.sort_by(|a, b| a["frame_id"].as_str().cmp(&b["frame_id"].as_str()));
+        to_hex(&Sha256::digest(
+            serde_json::to_vec(&positions).unwrap_or_default(),
+        ))
+    };
+    // The witness is minted before host redaction and contains hashes only.
+    // Its covered boundary keeps append-only rows from invalidating a prior
+    // compaction image, while changed/restored covered rows still refresh it.
+    if let Some(previous) = previous
+        && let Some(witness) = previous.dedupe_key.strip_prefix(&format!(
+            "runtime-notice-snapshot-v2:{runtime_key}:{session_id}:"
+        ))
+    {
+        let fields: Vec<_> = witness.split(':').collect();
+        if fields.len() == 5
+            && let Ok(boundary) = fields[1].parse::<u64>()
+            && boundary >= observation.relevant_frontier
+            && fields[3] == state_digest
+            && if fields[2] == "full" {
+                fields[4] == positions_digest(boundary)
+                    && !changes.iter().any(|position| {
+                        observation.canonical_frames.iter().any(|row| {
+                            row.sequence > boundary
+                                && Some(row.id.as_str()) == position["frame_id"].as_str()
+                        })
+                    })
+                    && !removed.iter().any(|id| {
+                        observation
+                            .canonical_frames
+                            .iter()
+                            .any(|row| row.sequence > boundary && row.id == *id)
+                    })
+            } else {
+                !full
+            }
+        {
+            return None;
+        }
     }
-    let payload = json!({
+    let mut payload = json!({
         "session_id": session_id, "complete": true,
         "observed_through": ConsoleCursor::from_seq(observation.observed_through),
-        "notices": notices, "settled_attempts": settled, "history_positions": history_positions,
-        "history_positions_mode": "sparse", "removed_history_frame_ids": removed_history_frame_ids,
+        "notices": notices, "settled_attempts": settled,
+        "history_positions": if full { all_positions.clone() } else { Vec::new() },
     });
-    let digest = hash_short(&serde_json::to_string(&payload).ok()?);
+    if !full {
+        payload["history_positions_mode"] = json!("sparse");
+        payload["removed_history_frame_ids"] = json!([]);
+    }
     Some(NewConsoleFrame {
         id: None,
         dedupe_key: format!(
-            "runtime-notice-snapshot:{runtime_key}:{session_id}:{}:{digest}",
-            previous
-                .map(|frame| frame.cursor.as_str())
-                .unwrap_or("initial")
+            "runtime-notice-snapshot-v2:{runtime_key}:{session_id}:{}:{}:{}:{state_digest}:{}",
+            previous.and_then(|frame| frame.cursor.seq()).unwrap_or(0),
+            observation.observed_through,
+            if full { "full" } else { "sparse" },
+            positions_digest(observation.observed_through),
         ),
         timestamp_ms: current_time_ms(),
         runtime_key: runtime_key.to_string(),
@@ -4331,15 +4927,15 @@ async fn backfill_one_session_history(
     // A bounded timeline window cannot establish absence. Scan existing exact
     // attempts before reading their runtime state and ONE complete current
     // history image. The cursor prevents this observation erasing later events.
-    let notice_observation =
+    let mut notice_observation =
         observe_runtime_notice_attempts(&inner, &entry.runtime_key, &record.identity, &session_id)
             .await?;
     if !runtime_entry_is_current(&inner, &entry) {
         return Ok(());
     }
-    let settled_attempts = entry
+    let mut settled_attempts = entry
         .runtime
-        .settled_notice_attempts(&session_id, &notice_observation.attempts)
+        .settled_notice_attempts(&session_id, &notice_observation.attempt_strings())
         .await;
     // Only a failure-free pass may admit the pre-read epoch: recording it on
     // a failure would suppress retries until the next durable write.
@@ -4386,16 +4982,58 @@ async fn backfill_one_session_history(
         if !runtime_entry_is_current(&inner, &entry) {
             return Ok(());
         }
-        if let Some(mut snapshot) = runtime_notice_snapshot_frame(
-            &entry.runtime_key,
-            &record.identity,
-            &session_id,
-            &notice_observation,
-            &settled_attempts,
-            &page.messages,
-        ) {
-            snapshot.source.member_provenance = provenance.clone();
-            append_and_emit_with_policy(&inner, snapshot, entry.visibility_policy.clone()).await?;
+        let reuse_verified_image =
+            reuse_verified_history_image(&notice_observation, &page.messages, &settled_attempts);
+        if !notice_observation.history_index_complete && !reuse_verified_image {
+            // A changed image cannot use a truncated index as absence proof.
+            // Rebuild once, then obtain settlement before a fresh history read
+            // so the original observation ordering remains intact.
+            notice_observation = observe_runtime_notice_attempts_with_cache(
+                &inner,
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                false,
+            )
+            .await?;
+            settled_attempts = entry
+                .runtime
+                .settled_notice_attempts(&session_id, &notice_observation.attempt_strings())
+                .await;
+            continue;
+        }
+        if !reuse_verified_image {
+            restore_current_history_frames(
+                &inner,
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                &mut notice_observation,
+                &page.messages,
+                Some(offset),
+            )
+            .await?;
+            if let Some(mut snapshot) = runtime_notice_snapshot_frame(
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                &notice_observation,
+                &settled_attempts,
+                &page.messages,
+            ) {
+                snapshot.source.member_provenance = provenance.clone();
+                append_and_emit_with_policy(&inner, snapshot, entry.visibility_policy.clone())
+                    .await?;
+            }
+            cache_current_history_image(
+                &inner,
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                &mut notice_observation,
+                &page.messages,
+                &settled_attempts,
+            );
         }
         // The snapshot observes the complete image, while ordinary append-only
         // backfill still skips the already-published prefix.
@@ -14532,7 +15170,10 @@ comms = true
         );
         let mut observation = RuntimeNoticeObservation {
             observed_through: 5,
-            attempts: BTreeSet::from([attempt.clone()]),
+            attempts: BTreeSet::from([(
+                uuid::Uuid::parse_str(&attempt.0).expect("run uuid"),
+                uuid::Uuid::parse_str(&attempt.1).expect("input uuid"),
+            )]),
             ..Default::default()
         };
         let settled = BTreeSet::from([attempt]);

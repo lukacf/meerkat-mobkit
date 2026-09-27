@@ -582,6 +582,45 @@ for (const [surface, map, merge, parse, query, subscribe] of [
     assert.equal(projected.find(frame => frame.id === moved.id)?.sourceCursor, `${SESSION_A}:10`);
   });
 
+  test(`${surface}: successive full compaction maps preserve removals with latest-only replay and explicit restoration`, () => {
+    const history = (id: string, offset: number, cursor: number) => wire(id, "user_input", cursor, { content: id }, {
+      source: { kind: "session_history", source_cursor: `${SESSION_A}:${offset}` },
+    });
+    const first = history("first", 1, 10);
+    const second = history("second", 2, 20);
+    const full = (id: string, cursor: number, positions: Array<[WireFrame, number]>) => {
+      const image = snapshot(id, [{ offset: 0, message: notice() }], [], { cursor: `console:${cursor}` });
+      image.payload.observed_through = "console:100";
+      image.payload.history_positions = positions.map(([row, offset]) => ({ frame_id: row.id, source_cursor: `${SESSION_A}:${offset}` }));
+      return image;
+    };
+    // These are the native successive_compactions producer's exact shapes.
+    const compactedOnce = full("compaction-1", 110, [[second, 1]]);
+    const compactedTwice = full("compaction-2", 120, []);
+    const unchanged = full("compaction-unchanged", 130, []);
+    const restored = full("compaction-restored", 140, [[first, 1], [second, 2]]);
+    const noticeId = rows([saved("n", notice())])[0].id;
+    const ids = (input: WireFrame[]) => reconcileRuntimeAppendFrames(parse(sse(input))).map(row => row.id);
+    assert.deepEqual(ids([second, first, compactedOnce]), [first.id, noticeId, second.id]);
+    for (const images of [[compactedTwice], [compactedOnce, compactedTwice], [compactedTwice, compactedOnce],
+      [compactedOnce, compactedTwice, unchanged], [unchanged]]) {
+      assert.deepEqual(ids([second, first, ...images]), [second.id, first.id, noticeId],
+        "the latest complete survivor map cannot resurrect coordinates removed by an earlier compaction");
+      assert.deepEqual(project([second, first, ...images], false).map(entry => entry.id), [second.id, first.id, noticeId]);
+    }
+    for (const images of [[restored], [compactedOnce, compactedTwice, restored], [restored, compactedTwice, compactedOnce]]) {
+      assert.deepEqual(ids([second, first, ...images]), [noticeId, first.id, second.id],
+        "only explicit full-map survivors restore the original source coordinates");
+    }
+    const newer = history("newer-than-boundary", 3, 150);
+    assert.deepEqual(ids([newer, second, first, restored]), [noticeId, first.id, second.id, newer.id],
+      "the snapshot cannot erase a newer unlisted canonical row");
+    for (const image of [compactedOnce, compactedTwice, unchanged, restored]) {
+      assert.equal(image.payload.history_positions_mode, undefined);
+      assert.equal(image.payload.removed_history_frame_ids, undefined);
+    }
+  });
+
   test(`${surface}: malformed sparse position metadata cannot invalidate current notice evidence`, () => {
     for (const fields of [
       { history_positions_mode: "future", removed_history_frame_ids: [] },

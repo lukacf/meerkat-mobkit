@@ -391,8 +391,8 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
 
   const nodes: ProjectedFrame[] = [];
   const candidates = new Map<string, ProjectedFrame[]>();
-  const append = (node: ProjectedFrame) => {
-    nodes.push(node);
+  const append = (node: ProjectedFrame, before = nodes.length) => {
+    nodes.splice(before, 0, node);
     if (!node.origin) return;
     const key = logicalKey(node.frame, node.origin);
     const twins = candidates.get(key) ?? [];
@@ -457,7 +457,15 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
         runId: origin.run_id, sourceCursor: `${snapshot.frame.sessionId}:${offset}`,
         timestampMs: Date.parse(String(message.created_at)), data: { message },
       };
-      append({ frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough });
+      // A snapshot projects an authored row, not a row born when the snapshot
+      // arrived. Keep its chronological fallback among the caller's rows before
+      // applying canonical/source-sequence edges. Appending it at the tail
+      // strands all later canonical history behind new live deltas, making an
+      // old notice split and finalize the current assistant document.
+      const before = nodes.findIndex(node => typeof node.frame.timestampMs === "number"
+        && node.frame.timestampMs > frame.timestampMs!);
+      append({ frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough },
+        before < 0 ? nodes.length : before);
     }
   }
 

@@ -175,7 +175,7 @@ async function composedApproval(host) {
       await page.getByRole("button", { name: /^Needs you/ }).click();
       assert.equal(await page.getByTestId(`gating-pending:${created.pending_id}`).count(), 3, "two panes and one inbox share the same request");
     } else {
-      await page.getByTestId(`approval-attention:${created.pending_id}`).click();
+      await page.getByTestId("approval-attention").getByRole("button", { name: /^Needs you/ }).click();
       await page.getByRole("heading", { name: /gating|approval/i }).first().waitFor();
     }
     await capture(page, `${host}-approval-review`);

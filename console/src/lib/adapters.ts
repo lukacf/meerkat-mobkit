@@ -645,6 +645,32 @@ function cursorSeq(cursor: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Runtime sequence is session-scoped; console cursor is a store observation.
+// Use either before event-kind fallback only when the two owners are comparable.
+function transcriptSourceOrder(left: ConsoleFrame, right: ConsoleFrame): number | null {
+  if (ownerContextsConflict(left, right)) return null;
+  const sameSession = Boolean(left.runtimeKey && left.runtimeKey === right.runtimeKey
+    && left.sessionId && left.sessionId === right.sessionId);
+  if (sameSession && left.sourceKind === "console_event" && right.sourceKind === "console_event") {
+    const sequence = (frame: ConsoleFrame): number | null => {
+      const value = frame.data && typeof frame.data === "object"
+        ? (frame.data as Record<string, unknown>).source_sequence : undefined;
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    };
+    const a = sequence(left), b = sequence(right);
+    if (a !== null && b !== null && a !== b) return a - b;
+  }
+  const sameInteraction = Boolean(left.interactionId?.trim()
+    && left.interactionId === right.interactionId);
+  const sameRun = Boolean(left.runId?.trim() && left.runId === right.runId);
+  if (!sameSession && !sameInteraction && !sameRun) return null;
+  // Backfilled history has a later observation cursor than its live twin.
+  // That cursor cannot supply assistant/tool order in the source transcript.
+  if (left.sourceKind === "session_history" || right.sourceKind === "session_history") return null;
+  const a = cursorSeq(left.cursor), b = cursorSeq(right.cursor);
+  return a !== null && b !== null && a !== b ? a - b : null;
+}
+
 function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
   const interactionStartMs = new Map<string, number>();
   for (const frame of frames) {
@@ -716,6 +742,8 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
       if (leftTs !== rightTs) {
         return leftTs - rightTs;
       }
+      const sourceOrder = transcriptSourceOrder(left.frame, right.frame);
+      if (sourceOrder !== null) return sourceOrder;
       if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
         const leftRank = eventSortRank(left.frame.event);
         const rightRank = eventSortRank(right.frame.event);
@@ -2487,7 +2515,21 @@ function assistantOwnerKey(frame: AssistantFrameOwner): string {
   return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
 }
 
+function canonicalHistoryAssistantText(frame: ConsoleFrame): string | undefined {
+  if (frame.sourceKind !== "session_history") return undefined;
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+  const message = record.message && typeof record.message === "object" ? record.message as Record<string, unknown> : {};
+  if (message.role !== "assistant" && message.role !== "block_assistant") return undefined;
+  // The backend owns text_blocks().join(""). Reconstructing it with paragraph
+  // separators or dropping whitespace-only blocks changes the source bytes.
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.result === "string") return record.result;
+  return undefined;
+}
+
 function historyAssistantSource(frame: ConsoleFrame): string {
+  const canonical = canonicalHistoryAssistantText(frame);
+  if (canonical !== undefined) return canonical;
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
   const parsed = historyMessageText(record.message);
   return parsed.role === "assistant" ? parsed.text : terminalFrameVisibleText(frame);
@@ -3446,7 +3488,13 @@ function blockAssistantRichBlocks(
         : typeof item.text === "string"
           ? item.text
           : "";
-      if (text.trim()) actionAndTextBlocks.push(...messageTextBlocks(text, textMode));
+      if (textMode === "markdown" && text) {
+        const previous = actionAndTextBlocks.at(-1);
+        if (previous?.type === "markdown") previous.source += text;
+        else actionAndTextBlocks.push(...messageTextBlocks(text, textMode));
+      } else if (textMode !== "markdown" && text.trim()) {
+        actionAndTextBlocks.push(...messageTextBlocks(text, textMode));
+      }
     }
   }
   return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
@@ -4448,7 +4496,9 @@ function renderSessionHistoryTextCompleteEntry(
     options.textMode,
   );
   const textMode = options.textMode ?? "markdown";
-  const text = textMode === "markdown" ? parsed.text : parsed.text.trim();
+  const canonicalText = textMode === "markdown" && !options.suppressAssistantText
+    ? canonicalHistoryAssistantText(frame) : undefined;
+  const text = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
     const filteredParsedBlocks = options.consumeDuplicateToolBlock
@@ -4488,6 +4538,7 @@ function renderSessionHistoryTextCompleteEntry(
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
+    ...(canonicalText !== undefined ? { copyText: canonicalText } : {}),
     variant: blocks.length > 0 ? "rich" : "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
     ...(blocks.length > 0 ? { blocks } : { text }),

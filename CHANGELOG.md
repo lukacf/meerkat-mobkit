@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Storage and wire compatibility
 
+- `runtime_notice_snapshot` carries complete `SystemNotice` bodies, including
+  notice text and structured blocks. `ConsoleVisibilityPolicy` implementations
+  that redact notices must cover this frame kind as well as `system_notice`;
+  the fixed host policy runs before snapshot storage and broadcast. Compaction
+  snapshots use the existing complete `history_positions` map over their
+  `observed_through` boundary, while older sparse snapshots remain readable.
 - The console SQLite store migrates to schema v3, including normalized member
   provenance. Migration accepts v1 and development v2 stores. This is a
   one-way upgrade: MobKit 0.8.42 cannot open the upgraded store. Keep a backup
