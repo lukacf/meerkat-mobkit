@@ -43,10 +43,13 @@ function frames(action = "interrupt") {
   let seq = 0;
   return [{ kind: "run_started", payload: {} }, ...stoppedTools(expected.scenarioId).flatMap(tool => [
     { kind: "tool_call_requested", payload: { tool_call_id: tool.id, name: tool.name, args: tool.args } },
-    ...(tool.step === "late" && action === "interrupt" ? [] : [{ kind: "tool_result_received",
-      payload: { tool_call_id: tool.id, content: [{ type: "text", text: tool.result }], is_error: tool.error } }]),
-  ]), ...(action === "cancel_after_boundary" ? [{ kind: "interaction_failed", payload: { source_event_type: "run_failed", error_report: { class: "cancelled", message: "Stopped" } } }] : []),
-  { kind: "interaction_failed", payload: { source_event_type: "interaction_failed", reason: { kind: "cancelled" } } }]
+    ...(tool.step === "late" && action === "interrupt" ? [] : ["tool_execution_completed", "tool_result_received"].map(kind => ({ kind,
+      payload: { tool_call_id: tool.id, name: tool.name, source_event_type: kind,
+        content: [{ type: "text", text: tool.result }], is_error: tool.error,
+        ...(kind === "tool_execution_completed" ? { result: tool.result } : {}) } }))),
+  ]), action === "cancel_after_boundary"
+    ? { kind: "interaction_failed", payload: { source_event_type: "run_failed", error_report: { class: "cancelled", message: "Stopped" } } }
+    : { kind: "interaction_failed", payload: { source_event_type: "interaction_failed", reason: { kind: "cancelled" } } }]
     .map(frame => { const id = `event-${++seq}`; return { ...frame, ...owner, id, source_event_id: id, source: { kind: "console_event" } }; });
 }
 
@@ -55,8 +58,10 @@ test("stopped-run oracle distinguishes real cooperative result from absent inter
     const spec = { ...expected, action };
     const proof = assertStoppedFrames(frames(action), spec);
     assert.equal(proof.tools.at(-1).outcome, action === "interrupt" ? "unknown" : "success");
-    const wrong = frames(action); wrong.at(-1).payload.reason = { kind: "abandoned", detail: "cancelled" };
-    assert.throws(() => assertStoppedFrames(wrong, spec), /typed directed cancellation/);
+    const wrong = frames(action);
+    if (action === "interrupt") wrong.at(-1).payload.reason = { kind: "abandoned", detail: "cancelled" };
+    else wrong.at(-1).payload.error_report.class = "internal";
+    assert.throws(() => assertStoppedFrames(wrong, spec), /typed .*cancellation/);
     const foreign = frames(action); foreign.at(-1).run_id = "other-run";
     assert.throws(() => assertStoppedFrames(foreign, spec), /canonical run/);
   }
@@ -98,27 +103,109 @@ test("committed boundary proof rejects lost prior runs, changed bytes or identit
 });
 
 test("unknown requires absence of authoritative completion, never a result containing unknown prose", () => {
-  const bad = frames();
-  const tool = stoppedTools(expected.scenarioId).at(-1);
-  bad.splice(-1, 0, { ...bad[1], id: "invented", source_event_id: "invented", kind: "tool_result_received",
-    payload: { tool_call_id: tool.id, is_error: false, content: [{ type: "text", text: "Cancelled, completion unknown" }] } });
-  assert.throws(() => assertStoppedFrames(bad, expected), /no authoritative result/);
+  assertStoppedFrames(frames(), expected);
+  for (const kind of ["tool_result_received", "tool_execution_completed"]) {
+    const bad = frames();
+    const tool = stoppedTools(expected.scenarioId).at(-1);
+    bad.splice(-1, 0, { ...bad[1], id: "invented", source_event_id: "invented", kind,
+      payload: { tool_call_id: tool.id, is_error: false, content: [{ type: "text", text: "Cancelled, completion unknown" }] } });
+    assert.throws(() => assertStoppedFrames(bad, expected), /no authoritative result/);
+  }
 });
 
-test("agent cancellation reports belong only to the cooperative path and never replace the directed terminal", () => {
+test("cooperative operator cancellation requires its typed agent report without a directed terminal", () => {
   const cooperative = frames("cancel_after_boundary"), spec = { ...expected, action: "cancel_after_boundary" };
-  assert.equal(assertStoppedFrames(cooperative, spec).terminalIds.length, 2);
-  const noDirected = cooperative.slice(0, -1);
-  assert.throws(() => assertStoppedFrames(noDirected, spec), /typed directed cancellation/);
+  assert.equal(assertStoppedFrames(cooperative, spec).terminalIds.length, 1);
   const noAgent = cooperative.filter(frame => frame.payload.source_event_type !== "run_failed");
   assert.throws(() => assertStoppedFrames(noAgent, spec), /cooperative.*agent cancellation/);
   const hardWithAgent = frames();
-  hardWithAgent.splice(-1, 0, { ...cooperative.at(-2), id: "invented-run-failed", source_event_id: "invented-run-failed" });
+  hardWithAgent.splice(-1, 0, { ...cooperative.at(-1), id: "invented-run-failed", source_event_id: "invented-run-failed" });
   assert.throws(() => assertStoppedFrames(hardWithAgent, expected), /hard interruption.*agent cancellation/);
-  const wrongAgent = structuredClone(cooperative); wrongAgent.at(-2).payload.error_report.class = "internal";
+  const wrongAgent = structuredClone(cooperative); wrongAgent.at(-1).payload.error_report.class = "internal";
   assert.throws(() => assertStoppedFrames(wrongAgent, spec), /typed agent cancellation/);
+  const untyped = structuredClone(cooperative); untyped.at(-1).payload = { source_event_type: "run_failed", error: "cancelled" };
+  assert.throws(() => assertStoppedFrames(untyped, spec), /typed agent cancellation/);
+  const duplicate = structuredClone(cooperative); duplicate.push({ ...duplicate.at(-1), id: "second-cancel", source_event_id: "second-cancel" });
+  assert.throws(() => assertStoppedFrames(duplicate, spec), /one.*agent cancellation/);
   const falseReason = frames(); falseReason.at(-1).payload = { source_event_type: "run_failed", reason: { kind: "cancelled" } };
   assert.throws(() => assertStoppedFrames(falseReason, expected), /typed directed cancellation/);
+});
+
+test("cooperative cancellation rejects a foreign owner or rewritten source identity", () => {
+  const spec = { ...expected, action: "cancel_after_boundary" };
+  assertStoppedFrames(frames(spec.action), spec);
+  for (const [field, value, error] of [
+    ["interaction_id", "other-interaction", /agent cancellation/],
+    ["run_id", "other-run", /canonical run/],
+    ["session_id", "other-session", /canonical session/],
+    ["identity", "domain:delivery", /canonical member/],
+    ["source_event_id", "rewritten", /original source event ID/],
+  ]) {
+    const bad = frames(spec.action); bad.at(-1)[field] = value;
+    assert.throws(() => assertStoppedFrames(bad, spec), error);
+  }
+});
+
+test("completed tools retain distinct execution and received result identities", () => {
+  for (const action of ["interrupt", "cancel_after_boundary"]) {
+    const evidence = frames(action), proof = assertStoppedFrames(evidence, { ...expected, action });
+    for (const tool of proof.tools) {
+      const completed = evidence.find(frame => frame.kind === "tool_execution_completed" && frame.payload.tool_call_id === tool.id);
+      const received = evidence.find(frame => frame.kind === "tool_result_received" && frame.payload.tool_call_id === tool.id);
+      assert.equal(tool.completionId, completed?.id ?? null);
+      assert.equal(tool.resultId, received?.id ?? null);
+      if (completed) assert.notEqual(tool.completionId, tool.resultId);
+    }
+  }
+});
+
+test("each completed tool channel is required exactly once and preserves its body and outcome", () => {
+  const spec = { ...expected, action: "cancel_after_boundary" };
+  assertStoppedFrames(frames(spec.action), spec);
+  for (const kind of ["tool_execution_completed", "tool_result_received"]) {
+    for (const tool of stoppedTools(expected.scenarioId)) {
+      const select = frame => frame.kind === kind && frame.payload.tool_call_id === tool.id;
+      const missing = frames(spec.action).filter(frame => !select(frame));
+      assert.throws(() => assertStoppedFrames(missing, spec), /one .*result/);
+      const duplicate = frames(spec.action), original = duplicate.find(select);
+      duplicate.splice(-1, 0, { ...original, id: "duplicate-result", source_event_id: "duplicate-result" });
+      assert.throws(() => assertStoppedFrames(duplicate, spec), /one .*result/);
+      for (const mutate of [
+        frame => { frame.payload.content[0].text += "changed"; },
+        frame => { frame.payload.is_error = !tool.error; },
+        frame => { frame.payload.name = "wrong_tool"; },
+        frame => { frame.payload.result = "conflicting raw result"; },
+      ]) {
+        const bad = frames(spec.action); mutate(bad.find(select));
+        assert.throws(() => assertStoppedFrames(bad, spec), /exact result|actual result outcome|exact tool name/);
+      }
+    }
+  }
+});
+
+test("each result channel retains source identity, owner and call-to-terminal ordering", () => {
+  const spec = { ...expected, action: "cancel_after_boundary" };
+  assertStoppedFrames(frames(spec.action), spec);
+  for (const kind of ["tool_execution_completed", "tool_result_received"]) {
+    const select = frame => frame.kind === kind;
+    for (const [field, value, error] of [
+      ["source_event_id", "rewritten", /original source event ID/],
+      ["interaction_id", "foreign", /canonical interaction/],
+      ["run_id", "foreign", /canonical run/],
+      ["session_id", "foreign", /canonical session/],
+      ["identity", "foreign", /canonical member/],
+    ]) {
+      const bad = frames(spec.action); bad.find(select)[field] = value;
+      assert.throws(() => assertStoppedFrames(bad, spec), error);
+    }
+    const before = frames(spec.action), [early] = before.splice(before.findIndex(select), 1); before.unshift(early);
+    assert.throws(() => assertStoppedFrames(before, spec), /result follows its call/);
+    const after = frames(spec.action), [late] = after.splice(after.findIndex(select), 1); after.push(late);
+    assert.throws(() => assertStoppedFrames(after, spec), /result precedes the owner terminal/);
+  }
+  const duplicateId = frames(spec.action), pair = duplicateId.filter(frame => ["tool_execution_completed", "tool_result_received"].includes(frame.kind));
+  pair[1].id = pair[0].id; pair[1].source_event_id = pair[0].source_event_id;
+  assert.throws(() => assertStoppedFrames(duplicateId, spec), /distinct original tool event IDs/);
 });
 
 test("later directed cancellation carrier extends proof without losing original terminal or tool identity", () => {
@@ -130,6 +217,10 @@ test("later directed cancellation carrier extends proof without losing original 
   assert.throws(() => assertProofRetained(original, { ...later, terminalIds: ["later-terminal"] }), /original typed terminal/);
   const rewired = structuredClone(later); rewired.tools[0].callId = "rewritten";
   assert.throws(() => assertProofRetained(original, rewired), /exact tool source identities/);
+  for (const field of ["completionId", "resultId"]) {
+    const changedResult = structuredClone(later); changedResult.tools[0][field] = "rewritten";
+    assert.throws(() => assertProofRetained(original, changedResult), /exact tool source identities/);
+  }
 });
 
 test("stop proof rejects missing or duplicate calls, mutated bytes, later work, and false ownership", () => {

@@ -20,11 +20,21 @@ function assertFrameOwner(frame, spec, requireSession = false) {
   assert.equal(frame.run_id, spec.runId, "canonical run");
   if (requireSession || frame.session_id != null) assert.equal(frame.session_id, spec.accepted.session_id, "canonical session");
 }
-function isCancelled(frame, spec) {
+function isDirectedCancelled(frame, spec) {
   return frame.source?.kind === "console_event" && frame.kind === "interaction_failed"
     && frame.interaction_id === spec.accepted.interaction_id
     && [undefined, "interaction_failed"].includes(frame.payload?.source_event_type)
     && frame.payload?.reason?.kind === "cancelled";
+}
+function isCancelled(frame, spec) {
+  if (spec.action === "interrupt") return isDirectedCancelled(frame, spec);
+  // Operator prompts retain transcript correlation but do not publish directed
+  // interaction terminals. Their cooperative cancellation is the agent report.
+  return frame.source?.kind === "console_event" && frame.kind === "interaction_failed"
+    && frame.identity === "router:main" && frame.session_id === spec.accepted.session_id
+    && frame.interaction_id === spec.accepted.interaction_id && frame.run_id === spec.runId
+    && frame.payload?.source_event_type === "run_failed"
+    && frame.payload?.error_report?.class === "cancelled";
 }
 function assertStoppedFrames(frames, spec) {
   assert(actions.includes(spec.action));
@@ -32,15 +42,18 @@ function assertStoppedFrames(frames, spec) {
   assert.equal(start.length, 1, "one canonical start"); assertFrameOwner(start[0], spec, true);
   const terminal = frames.filter(frame => frame.source?.kind === "console_event" && frame.kind === "interaction_failed"
     && frame.interaction_id === spec.accepted.interaction_id);
-  assert(terminal.some(frame => isCancelled(frame, spec)), "typed directed cancellation terminal, never cancelled prose");
   const agentFailures = terminal.filter(frame => frame.payload?.source_event_type === "run_failed");
-  if (spec.action === "interrupt") assert.equal(agentFailures.length, 0, "hard interruption has no agent cancellation report");
-  else assert(agentFailures.length >= 1, "cooperative stop has an actual agent cancellation report");
+  if (spec.action === "interrupt") {
+    assert(terminal.some(frame => isDirectedCancelled(frame, spec)), "typed directed cancellation terminal, never cancelled prose");
+    assert.equal(agentFailures.length, 0, "hard interruption has no agent cancellation report");
+  } else assert.equal(agentFailures.length, 1, "cooperative stop has one actual agent cancellation report");
   assert.equal(new Set(terminal.map(frame => frame.id)).size, terminal.length, "distinct original terminal event IDs");
   for (const frame of terminal) {
     assertFrameOwner(frame, spec);
-    if (agentFailures.includes(frame)) assert.equal(frame.payload?.error_report?.class, "cancelled", "typed agent cancellation report");
-    else assert(isCancelled(frame, spec), "typed directed cancellation terminal");
+    if (agentFailures.includes(frame)) {
+      assert.equal(frame.payload?.error_report?.class, "cancelled", "typed agent cancellation report");
+      assert(isCancelled(frame, spec), "typed agent cancellation report belongs to the exact owner");
+    } else assert(isDirectedCancelled(frame, spec), "typed directed cancellation terminal");
   }
   const expected = stoppedTools(spec.scenarioId), ids = new Set(expected.map(tool => tool.id));
   const owned = frames.filter(frame => frame.source?.kind === "console_event" && ids.has(frame.payload?.tool_call_id));
@@ -55,13 +68,22 @@ function assertStoppedFrames(frames, spec) {
     if (unknown(spec, tool)) {
       assert.equal(results.length, 0, "interrupted dispatch has no authoritative result");
     } else {
-      assert.equal(results.length, 1, `${tool.step}: one actual result`); assertFrameOwner(results[0], spec);
-      assert.equal(textContent(results[0].payload.content ?? results[0].payload.result), tool.result, "exact result bytes");
-      assert.equal(results[0].payload.is_error, tool.error, "actual result outcome");
-      assert(frames.indexOf(results[0]) > frames.indexOf(calls[0]), "result follows its call");
-      assert(frames.indexOf(results[0]) < frames.indexOf(terminal[0]), "result precedes the owner terminal");
+      for (const kind of ["tool_execution_completed", "tool_result_received"]) {
+        const channel = results.filter(frame => frame.kind === kind);
+        assert.equal(channel.length, 1, `${tool.step}: one ${kind} result`);
+        const result = channel[0]; assertFrameOwner(result, spec, true);
+        assert.equal(result.payload.name, tool.name, "exact tool name");
+        assert.equal(textContent(result.payload.content ?? result.payload.result), tool.result, "exact result bytes");
+        if (result.payload.result !== undefined) assert.equal(textContent(result.payload.result), tool.result, "exact result bytes in raw result");
+        assert.equal(result.payload.is_error, tool.error, "actual result outcome");
+        assert(frames.indexOf(result) > frames.indexOf(calls[0]), "result follows its call");
+        assert(frames.indexOf(result) < frames.indexOf(terminal[0]), "result precedes the owner terminal");
+      }
     }
-    return { id: tool.id, callId: calls[0].id, resultId: results[0]?.id ?? null, outcome: unknown(spec, tool) ? "unknown" : tool.error ? "error" : "success" };
+    return { id: tool.id, callId: calls[0].id,
+      completionId: results.find(frame => frame.kind === "tool_execution_completed")?.id ?? null,
+      resultId: results.find(frame => frame.kind === "tool_result_received")?.id ?? null,
+      outcome: unknown(spec, tool) ? "unknown" : tool.error ? "error" : "success" };
   });
   return { startId: start[0].id, terminalIds: terminal.map(frame => frame.id), tools };
 }
