@@ -1065,7 +1065,8 @@ ordinary lane, and the result carries `"turn": null` plus
 
 | `code` | Meaning |
 |--------|---------|
-| `autonomous_host` | The member runs in `autonomous_host` mode (the default); the runtime reports no per-turn completion for autonomous inbox delivery |
+| `autonomous_host` | The member runs in `autonomous_host` mode (the default); the runtime reports no per-turn completion for autonomous inbox delivery. Also reported when the member's profile says `turn_driven` but it still runs `autonomous_host` (its profile changed without a respawn): the runtime refuses the tracked admission before anything is delivered, and the delivery falls back to the ordinary lane |
+| `runtime_refused` | The runtime refused the tracked admission, before anything was delivered, for another reason tied to the member's actual mode; the delivery fell back to the ordinary lane |
 | `externally_bound` | The member is externally bound; its deliveries are not ticketed |
 | `host_human_input` | Host human input rides the console lane, which is not ticketed |
 | `bridge_cannot_report_output` | The gateway's session bridge cannot report a turn's own output |

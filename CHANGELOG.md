@@ -45,8 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   carries `"turn": null` plus `"turn_unavailable": {"code", "reason"}`; the
   stable codes are `autonomous_host` (meerkat reports no per-turn completion
   for autonomous inbox delivery, the default runtime mode),
-  `externally_bound`, `host_human_input`, `bridge_cannot_report_output` and
-  `not_delivered`. An idempotent re-dispatch of a key whose tracked
+  `externally_bound`, `host_human_input`, `bridge_cannot_report_output`,
+  `not_delivered` and `runtime_refused`. A member whose profile
+  `runtime_mode` changed without a respawn still runs in its spawn mode; when
+  meerkat refuses the tracked admission for that actual mode (typed
+  `MobError::UnsupportedForMode`, before anything is delivered, now carried as
+  `BridgeError::UnsupportedForMode` / `BridgeAdmissionError::UnsupportedForMode`
+  instead of a mob-error string), the delivery falls back to the ingress lane,
+  still exactly once, and reports `autonomous_host` (or `runtime_refused`) with
+  a reason that names the respawn. An idempotent re-dispatch of a key whose tracked
   admission is still pending or completed names the original's ticket. The
   new `mobkit/turn_result {identity, ticket}` reports that turn as
   `pending`, `completed`, `failed` (with `error`) or a typed `unknown`; a

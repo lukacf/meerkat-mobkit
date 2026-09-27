@@ -209,9 +209,10 @@ the call falls back to the identity-wide completion cursor, emitting
 `TurnTrackingUnavailableWarning` with the typed `turn_unavailable.code`:
 `autonomous_host` (members in `autonomous_host` mode, the default: the runtime
 reports no per-turn completion for autonomous inbox delivery, so on those
-members the wait stays identity-wide), `externally_bound`,
-`host_human_input`, `bridge_cannot_report_output`, or a gateway that predates
-turn tickets. Run a member with `runtime_mode = "turn_driven"` for
+members the wait stays identity-wide; also reported when a member still runs
+`autonomous_host` after its profile changed without a respawn),
+`externally_bound`, `host_human_input`, `bridge_cannot_report_output`,
+`runtime_refused`, or a gateway that predates turn tickets. Run a member with `runtime_mode = "turn_driven"` for
 per-admission results.
 
 `wait_for_completion(baseline)` and `wait_for_output(after=cursor)` remain

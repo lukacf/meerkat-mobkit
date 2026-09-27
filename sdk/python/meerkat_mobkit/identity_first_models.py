@@ -999,9 +999,10 @@ class TurnUnavailable:
 
     ``code`` is stable: ``autonomous_host`` (the member runs in
     ``autonomous_host`` mode, whose inbox delivery reports no per-turn
-    completion), ``externally_bound``, ``host_human_input``,
-    ``bridge_cannot_report_output`` or ``not_delivered``. ``reason`` is the
-    human-readable detail.
+    completion, including a member whose profile changed without a respawn),
+    ``externally_bound``, ``host_human_input``,
+    ``bridge_cannot_report_output``, ``not_delivered`` or ``runtime_refused``.
+    ``reason`` is the human-readable detail.
     """
 
     code: str

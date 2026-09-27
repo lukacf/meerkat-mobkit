@@ -472,6 +472,14 @@ pub enum TurnUntrackable {
     /// The member runs in `autonomous_host` mode: meerkat does not report
     /// per-turn completion for autonomous inbox delivery.
     AutonomousHost,
+    /// MobKit's resolved mode allowed tracking, but meerkat refused the
+    /// completion-bearing admission for the member's ACTUAL mode before
+    /// anything was delivered, so the delivery went to the ingress lane. The
+    /// usual cause is a profile whose `runtime_mode` changed without a
+    /// respawn: the member still runs in the mode it was spawned with. Wire
+    /// code `autonomous_host` when that mode is `autonomous_host`, else
+    /// `runtime_refused`.
+    RefusedByRuntime { mode: meerkat_mob::MobRuntimeMode },
     /// The member is externally bound; its deliveries keep the established
     /// external wire semantics and are not ticketed.
     ExternallyBound,
@@ -489,7 +497,11 @@ impl TurnUntrackable {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::AutonomousHost => "autonomous_host",
+            Self::AutonomousHost
+            | Self::RefusedByRuntime {
+                mode: meerkat_mob::MobRuntimeMode::AutonomousHost,
+            } => "autonomous_host",
+            Self::RefusedByRuntime { .. } => "runtime_refused",
             Self::ExternallyBound => "externally_bound",
             Self::HostHumanInput => "host_human_input",
             Self::BridgeCannotReportOutput => "bridge_cannot_report_output",
@@ -500,24 +512,29 @@ impl TurnUntrackable {
 
 impl fmt::Display for TurnUntrackable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::AutonomousHost => {
+        match self {
+            Self::AutonomousHost => f.write_str(
                 "the member runs in autonomous_host mode, and the runtime does not report \
-                 per-turn completion for autonomous inbox delivery"
-            }
+                 per-turn completion for autonomous inbox delivery",
+            ),
+            Self::RefusedByRuntime { mode } => write!(
+                f,
+                "the runtime refused per-turn completion for this member, which runs in {mode} \
+                 mode (if its profile's runtime_mode changed, respawn the member to apply it)"
+            ),
             Self::ExternallyBound => {
-                "the member is externally bound; its deliveries are not ticketed"
+                f.write_str("the member is externally bound; its deliveries are not ticketed")
             }
             Self::HostHumanInput => {
-                "host human input rides the console lane, which is not ticketed"
+                f.write_str("host human input rides the console lane, which is not ticketed")
             }
             Self::BridgeCannotReportOutput => {
-                "the session bridge cannot report a turn's own output"
+                f.write_str("the session bridge cannot report a turn's own output")
             }
-            Self::NotDelivered => {
-                "nothing was delivered to track (no session bridge or no bound agent runtime)"
-            }
-        })
+            Self::NotDelivered => f.write_str(
+                "nothing was delivered to track (no session bridge or no bound agent runtime)",
+            ),
+        }
     }
 }
 

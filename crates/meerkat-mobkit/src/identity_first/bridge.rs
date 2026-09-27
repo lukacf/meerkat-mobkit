@@ -104,6 +104,19 @@ fn classify_submit_mob_error(
     deadline: &ActorAdmissionDeadline,
 ) -> BridgeError {
     match error {
+        // meerkat's pre-admission carrier refusal for the member's actual
+        // runtime mode (for example a completion-bearing admission to an
+        // autonomous_host member). Typed, so a tracked delivery can fall back
+        // to the ingress lane on the variant, never on its text.
+        meerkat_mob::MobError::UnsupportedForMode { mode, reason } => {
+            BridgeError::UnsupportedForMode {
+                identity: member_id.clone(),
+                mode,
+                // meerkat's own rendering ("unsupported for runtime mode
+                // {mode}: {reason}"), so the message is unchanged.
+                detail: meerkat_mob::MobError::UnsupportedForMode { mode, reason }.to_string(),
+            }
+        }
         // meerkat 0.8.34: the durability-degraded refusal is typed at the mob
         // boundary. Matched BEFORE the text fallback so the reason text can
         // change without losing the class.
@@ -570,6 +583,18 @@ pub enum BridgeError {
     HostHumanInput(HostHumanInputError),
     /// The underlying mob operation failed.
     Mob(String),
+    /// meerkat refused the delivery's carriers for the member's ACTUAL runtime
+    /// mode, before admission, so nothing was delivered
+    /// (`MobError::UnsupportedForMode`, read typed). `mode` is meerkat's, from
+    /// the member's roster entry, and can differ from the mode MobKit resolves
+    /// from the current profile when that profile changed without a respawn.
+    /// `detail` is meerkat's rendering, shown exactly as the untyped mob error
+    /// was.
+    UnsupportedForMode {
+        identity: MobAgentIdentity,
+        mode: meerkat_mob::MobRuntimeMode,
+        detail: String,
+    },
     /// A required field was missing or invalid.
     InvalidInput(String),
     /// Resume was rejected while a durable session row exists. The identity →
@@ -757,7 +782,9 @@ impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HostHumanInput(error) => write!(f, "{error}"),
-            Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
+            Self::Mob(msg) | Self::UnsupportedForMode { detail: msg, .. } => {
+                write!(f, "session bridge mob error: {msg}")
+            }
             Self::CompletionFailed(msg) => write!(
                 f,
                 "session bridge turn was admitted and then failed: {msg}; the turn RAN - \
@@ -882,6 +909,18 @@ pub enum BridgeAdmissionError {
     CompletionUnsupported(String),
     /// The underlying mob operation failed before a receipt was observed.
     Mob(String),
+    /// meerkat refused the delivery's carriers for the member's ACTUAL runtime
+    /// mode, before admission, so nothing was delivered
+    /// (`MobError::UnsupportedForMode`, read typed). `mode` is meerkat's, from
+    /// the member's roster entry, and can differ from the mode MobKit resolves
+    /// from the current profile when that profile changed without a respawn.
+    /// `detail` is meerkat's rendering, shown exactly as the untyped mob error
+    /// was.
+    UnsupportedForMode {
+        identity: MobAgentIdentity,
+        mode: meerkat_mob::MobRuntimeMode,
+        detail: String,
+    },
     /// A required field was missing or invalid before admission.
     InvalidInput(String),
     /// Resume was rejected before the delivery could be admitted.
@@ -959,7 +998,9 @@ impl std::fmt::Display for BridgeAdmissionError {
                 "session bridge does not support completion-bearing delivery: {msg}; \
                  nothing was submitted"
             ),
-            Self::Mob(msg) => write!(f, "session bridge mob error before receipt: {msg}"),
+            Self::Mob(msg) | Self::UnsupportedForMode { detail: msg, .. } => {
+                write!(f, "session bridge mob error before receipt: {msg}")
+            }
             Self::InvalidInput(msg) => {
                 write!(f, "session bridge invalid input before admission: {msg}")
             }
@@ -1048,6 +1089,15 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::HostHumanInput(error) => Self::HostHumanInput(error),
             BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
             BridgeError::Mob(detail) => Self::Mob(detail),
+            BridgeError::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            } => Self::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            },
             BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
             // The registration reload surfaced the same typed fact the resume
@@ -1143,6 +1193,15 @@ impl From<BridgeAdmissionError> for BridgeError {
                 Self::CompletionUnsupported(detail)
             }
             BridgeAdmissionError::Mob(detail) => Self::Mob(detail),
+            BridgeAdmissionError::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            } => Self::UnsupportedForMode {
+                identity,
+                mode,
+                detail,
+            },
             BridgeAdmissionError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeAdmissionError::ResumeRejected { kind, detail } => {
                 Self::ResumeRejected { kind, detail }
@@ -6402,6 +6461,11 @@ impl MobSessionBridge {
             // Per-member backpressure: the member is healthy, its lane is full.
             // Retryable by the caller; never repair, never reload.
             Err(err @ BridgeError::AdmissionBacklogFull { .. }) => return Err(err.into()),
+            // meerkat refused the carriers for the member's actual runtime
+            // mode before admission. Nothing is stale and nothing was
+            // delivered: hand it up typed so a tracked delivery can fall back
+            // to the ingress lane; never repair, never `Mob(String)`.
+            Err(err @ BridgeError::UnsupportedForMode { .. }) => return Err(err.into()),
             Err(err)
                 if host_human_session.is_none()
                     && is_repairable_bridge_delivery_error(&err.to_string()) =>

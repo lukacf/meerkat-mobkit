@@ -115,10 +115,20 @@ enum SendCommitMode {
 }
 
 /// Which bridge verb a send's delivery step calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliveryLane {
     Ingress,
     AwaitCommit,
     Ticketed,
+}
+
+/// A send's delivery step once the tracked admission, if the lane called for
+/// one, has been attempted.
+enum DeliveryStep {
+    Ingress,
+    AwaitCommit,
+    /// Admitted on the tracked lane; the receipt carries the admitted turn.
+    Tracked(super::bridge::BridgeTurnReceipt),
 }
 
 /// Why a tracked delivery's turn cannot be tracked, or `None` to track it.
@@ -156,6 +166,24 @@ fn turn_untrackable(
 
 /// How often [`IdentityRuntime::wait_for_turn`] looks at a pending turn.
 const TURN_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// meerkat refused a tracked admission for the member's ACTUAL runtime mode,
+/// before admission, so nothing was delivered: the delivery falls back to the
+/// ingress lane, reported untracked with the typed reason.
+fn runtime_refused_tracking(
+    identity: &AgentIdentity,
+    mode: meerkat_mob::MobRuntimeMode,
+    detail: &str,
+) -> TurnTracking {
+    tracing::warn!(
+        identity = %identity,
+        runtime_mode = %mode,
+        detail,
+        "the runtime refused a tracked admission for the member's actual runtime mode; \
+         delivering untracked on the ingress lane"
+    );
+    TurnTracking::Unavailable(TurnUntrackable::RefusedByRuntime { mode })
+}
 
 /// Tracking reported for a ticketed delivery whose lane recorded none (the
 /// identity has no session bridge or no bound runtime, so nothing was
@@ -210,6 +238,7 @@ fn admission_phase_error(
             IdentityRuntimeError::CompletionUnavailable { identity, reason }
         }
         BridgeAdmissionError::Mob(detail)
+        | BridgeAdmissionError::UnsupportedForMode { detail, .. }
         | BridgeAdmissionError::InvalidInput(detail)
         | BridgeAdmissionError::InvariantViolation(detail) => {
             IdentityRuntimeError::AdmissionFailed { identity, detail }
@@ -8745,10 +8774,72 @@ impl IdentityRuntime {
             },
         };
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            let delivered_session_id = match lane {
+            // Validated -> Admitted(receipt). A tracked send is admitted
+            // before the lane dispatch below, under the lock like every lane,
+            // so meerkat's typed pre-admission refusal (the member's ACTUAL
+            // runtime mode refuses per-turn completion: a profile whose
+            // runtime_mode changed without a respawn) can still take the
+            // ingress lane. Nothing was delivered by the refused attempt, so
+            // the send is still delivered exactly once.
+            let step = match lane {
+                DeliveryLane::Ingress => DeliveryStep::Ingress,
+                DeliveryLane::AwaitCommit => DeliveryStep::AwaitCommit,
+                DeliveryLane::Ticketed => {
+                    let mut delivery = super::bridge::BridgeDelivery::new(
+                        content_to_deliver.clone(),
+                        handling_mode,
+                    );
+                    delivery.system_prompt = system_prompt.map(ToString::to_string);
+                    delivery.injected_context = injected_context.clone();
+                    delivery.interaction_id = bridge_interaction_id.map(ToString::to_string);
+                    // One automatic non-destructive reload on a typed
+                    // reload-required refusal, then the typed failure (same
+                    // rule as the other lanes).
+                    let mut reload_attempted = false;
+                    loop {
+                        let attempt = match bridge
+                            .begin_delivery_with_output(rid, delivery.clone())
+                            .await
+                        {
+                            Err(BridgeAdmissionError::UnsupportedForMode {
+                                mode, detail, ..
+                            }) => {
+                                turn_tracking =
+                                    Some(runtime_refused_tracking(identity, mode, &detail));
+                                break DeliveryStep::Ingress;
+                            }
+                            attempt => attempt.map_err(|err| admission_phase_error(identity, err)),
+                        };
+                        match attempt {
+                            Ok(receipt) => {
+                                self.record_delivery_success(identity).await;
+                                break DeliveryStep::Tracked(receipt);
+                            }
+                            Err(err) => {
+                                self.record_delivery_error(identity, &err).await;
+                                if !reload_attempted
+                                    && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
+                                {
+                                    reload_attempted = true;
+                                    if let Err(reload_error) =
+                                        self.reload_for_delivery_locked(identity, &err).await
+                                    {
+                                        self.record_delivery_error(identity, &reload_error).await;
+                                        return Err(reload_error);
+                                    }
+                                    token = self.ensure_active_lease(identity).await?;
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
+            };
+            let delivered_session_id = match step {
                 // Validated -> Delivered. One await, all of it bounded, all of
                 // it under the lock. Unchanged.
-                DeliveryLane::Ingress => {
+                DeliveryStep::Ingress => {
                     // One automatic non-destructive reload on a typed
                     // reload-required refusal, then the typed failure. Never a
                     // loop: a second refusal after a reload is an operator
@@ -8819,53 +8910,12 @@ impl IdentityRuntime {
                     }
                 }
 
-                // Validated -> Admitted(receipt) -> Tracked -> Delivered. The
-                // admission and its bounded session resolution run under the
-                // lock exactly like the ingress lane, and the send returns at
-                // the same point. The turn is NOT awaited here: its receipt
-                // moves to a waiter that records the turn's own output under
-                // the ticket.
-                DeliveryLane::Ticketed => {
-                    let mut delivery = super::bridge::BridgeDelivery::new(
-                        content_to_deliver.clone(),
-                        handling_mode,
-                    );
-                    delivery.system_prompt = system_prompt.map(ToString::to_string);
-                    delivery.injected_context = injected_context.clone();
-                    delivery.interaction_id = bridge_interaction_id.map(ToString::to_string);
-                    // One automatic non-destructive reload on a typed
-                    // reload-required refusal, then the typed failure (same
-                    // rule as the other lanes).
-                    let mut reload_attempted = false;
-                    let receipt = loop {
-                        let attempt = bridge
-                            .begin_delivery_with_output(rid, delivery.clone())
-                            .await
-                            .map_err(|err| admission_phase_error(identity, err));
-                        match attempt {
-                            Ok(receipt) => {
-                                self.record_delivery_success(identity).await;
-                                break receipt;
-                            }
-                            Err(err) => {
-                                self.record_delivery_error(identity, &err).await;
-                                if !reload_attempted
-                                    && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
-                                {
-                                    reload_attempted = true;
-                                    if let Err(reload_error) =
-                                        self.reload_for_delivery_locked(identity, &err).await
-                                    {
-                                        self.record_delivery_error(identity, &reload_error).await;
-                                        return Err(reload_error);
-                                    }
-                                    token = self.ensure_active_lease(identity).await?;
-                                    continue;
-                                }
-                                return Err(err);
-                            }
-                        }
-                    };
+                // Admitted(receipt) -> Tracked -> Delivered. The admission and
+                // its bounded session resolution ran under the lock exactly
+                // like the ingress lane, and the send returns at the same
+                // point. The turn is NOT awaited here: its receipt moves to a
+                // waiter that records the turn's own output under the ticket.
+                DeliveryStep::Tracked(receipt) => {
                     let resolved_session = receipt.resolved_session().cloned();
                     let resolution_error =
                         receipt.session_resolution_error().map(ToString::to_string);
@@ -8904,7 +8954,7 @@ impl IdentityRuntime {
                 // same-identity sends behind a model call and block every
                 // lifecycle operation - reset, retire, alias rebind - for the
                 // turn's whole duration.
-                DeliveryLane::AwaitCommit => {
+                DeliveryStep::AwaitCommit => {
                     // ADMITTED. Bounded; still under the lock. One automatic
                     // non-destructive reload on a typed reload-required
                     // refusal, then the typed failure (same rule as the
@@ -9476,13 +9526,27 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|carrier| carrier.correlation_id.clone());
             delivery.delivery_identity = delivery_identity.clone();
-            let delivered_session_id = if ticketed {
+            // meerkat's typed pre-admission refusal of the tracked admission
+            // (the member's ACTUAL runtime mode) sends the dispatch down the
+            // ingress lane below: nothing was delivered by the refused attempt.
+            let tracked_attempt = if ticketed {
+                match bridge
+                    .begin_delivery_with_output(rid, delivery.clone())
+                    .await
+                {
+                    Err(BridgeAdmissionError::UnsupportedForMode { mode, detail, .. }) => {
+                        turn = Some(runtime_refused_tracking(identity, mode, &detail));
+                        None
+                    }
+                    attempt => Some(attempt),
+                }
+            } else {
+                None
+            };
+            let delivered_session_id = if let Some(attempt) = tracked_attempt {
                 // Same admission and reconciliation as the ingress arm; the
                 // receipt moves to a waiter that records the turn's own output.
-                let attempt = bridge
-                    .begin_delivery_with_output(rid, delivery)
-                    .await
-                    .map_err(|error| admission_phase_error(identity, error));
+                let attempt = attempt.map_err(|error| admission_phase_error(identity, error));
                 let receipt = match attempt {
                     Ok(receipt) => {
                         self.record_delivery_success(identity).await;
