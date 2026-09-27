@@ -1130,8 +1130,8 @@ class IdentityAgentHandle:
         *,
         timeout: float = 90,
         poll_interval: float = 0.5,
-    ) -> str | None:
-        """Wait for the turn ``ticket`` names and return ITS output.
+    ) -> Any:
+        """Wait for the turn ``ticket`` names and return ITS typed result.
 
         ``ticket`` is the ``turn_ticket`` of a send/dispatch made with
         ``track_turn=True``. Unlike :meth:`wait_for_completion`, no other
@@ -1139,9 +1139,13 @@ class IdentityAgentHandle:
         completion wake) can satisfy this wait, and the output is the turn's
         own, from its committed run result.
 
-        Returns ``None`` when the turn committed no text (or, rarely, when the
-        gateway's session bridge cannot report per-turn output; see
-        :attr:`TurnResult.output_available`).
+        Returns the completed :class:`~meerkat_mobkit.TurnResult`. Read
+        :attr:`~meerkat_mobkit.TurnResult.output_status` before the text: only
+        ``TEXT`` carries ``output`` (``output_truncated`` says whether it was
+        cut); ``EMPTY`` means the turn committed no text; ``NO_OWN_RESULT``
+        means the runtime folded the input into a run already in progress or
+        deduplicated it onto an earlier admission; ``UNAVAILABLE`` means the
+        gateway cannot report per-turn output.
 
         Raises :class:`~meerkat_mobkit.errors.TurnFailedError` when the turn
         failed, :class:`~meerkat_mobkit.errors.TurnUnknownError` when the
@@ -1154,7 +1158,7 @@ class IdentityAgentHandle:
         while True:
             result = await self.turn_result(ticket)
             if result.state is TurnState.COMPLETED:
-                return result.output
+                return result
             if result.state is TurnState.FAILED:
                 raise TurnFailedError(self._identity, ticket, result.error or "")
             if result.state is TurnState.UNKNOWN:
@@ -1250,9 +1254,19 @@ class IdentityAgentHandle:
         The send is tracked by ticket (``track_turn=True``), so the wait is
         per-admission: another delivery to this identity cannot satisfy it,
         and the output comes from this turn's own committed run result.
-        When the gateway cannot track the turn (an older gateway, a remotely
-        hosted member), this falls back to the identity-wide cursor wait and
-        emits :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning`.
+        Returns the turn's text, or ``None`` when it committed none. Text cut
+        at the gateway's bound emits
+        :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`; a turn
+        that completed without output of its own returns ``None`` with
+        :class:`~meerkat_mobkit.errors.TurnOutputUnavailableWarning` (use
+        :meth:`wait_for_turn` for the typed result).
+
+        When the gateway cannot track the turn (an ``autonomous_host`` member,
+        an externally bound member, an older gateway), the send is still
+        delivered exactly once and this falls back to the identity-wide cursor
+        wait, emitting
+        :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning` with
+        the typed reason.
         """
         result = await self.send(content, track_turn=True)
         return await self._wait_for_ticket_or_admission(
@@ -1300,12 +1314,16 @@ class IdentityAgentHandle:
     ) -> str | None:
         ticket = getattr(result, "turn_ticket", None)
         if ticket is not None:
-            return await self.wait_for_turn(
+            turn = await self.wait_for_turn(
                 ticket, timeout=timeout, poll_interval=poll_interval,
             )
+            return self._text_of_turn(turn, operation)
         from .errors import TurnTrackingUnavailableWarning
-        reason = getattr(result, "turn_unavailable", None) or (
-            "the gateway returned no turn ticket (it predates turn tickets)"
+        unavailable = getattr(result, "turn_unavailable", None)
+        reason = (
+            f"{unavailable.code}: {unavailable.reason}"
+            if unavailable is not None
+            else "the gateway returned no turn ticket (it predates turn tickets)"
         )
         warnings.warn(
             f"{operation} for identity {self._identity!r} could not track its "
@@ -1318,6 +1336,33 @@ class IdentityAgentHandle:
         return await self._wait_for_admission(
             result, operation, timeout=timeout, poll_interval=poll_interval,
         )
+
+    def _text_of_turn(self, turn: Any, operation: str) -> str | None:
+        """The ``*_and_wait`` return value for a completed turn: its text, or
+        ``None`` when it committed none. Truncated text and "no output of its
+        own" are never returned silently: each emits a typed warning."""
+        from .errors import TurnOutputTruncatedWarning, TurnOutputUnavailableWarning
+        from .identity_first_models import TurnOutputStatus
+        if turn.output_status is TurnOutputStatus.TEXT:
+            if turn.output_truncated:
+                warnings.warn(
+                    f"{operation} for identity {self._identity!r}: turn "
+                    f"{turn.ticket} returned text cut at the gateway's bound",
+                    TurnOutputTruncatedWarning,
+                    stacklevel=4,
+                )
+            return turn.output
+        if turn.output_status is TurnOutputStatus.EMPTY:
+            return None
+        warnings.warn(
+            f"{operation} for identity {self._identity!r}: turn {turn.ticket} "
+            f"completed without output of its own "
+            f"({turn.output_status.value if turn.output_status else 'unknown'}); "
+            "returning None",
+            TurnOutputUnavailableWarning,
+            stacklevel=4,
+        )
+        return None
 
     async def _wait_for_admission(
         self,
@@ -1352,8 +1397,11 @@ class IdentityAgentHandle:
 
         Pass ``turn`` (the ``turn_ticket`` of a send/dispatch made with
         ``track_turn=True``) to wait for that exact turn and return ITS
-        output; this is the per-admission path. It raises ``RuntimeError`` if
-        that turn committed no text.
+        output; this is the per-admission path. It raises
+        :class:`~meerkat_mobkit.errors.TurnOutputUnavailableError` (with the
+        typed ``status``) when that turn completed without text of its own,
+        and warns :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`
+        when the text was cut.
 
         Pass ``after`` (a :class:`CompletionCursor` from a send/dispatch
         result) to wait past a baseline, equivalent to
@@ -1377,15 +1425,18 @@ class IdentityAgentHandle:
         if turn is not None:
             if after is not None or baseline is not None:
                 raise ValueError("pass 'turn' alone, not with 'after' or 'baseline'")
-            output = await self.wait_for_turn(
+            from .errors import TurnOutputUnavailableError
+            from .identity_first_models import TurnOutputStatus
+            result = await self.wait_for_turn(
                 turn, timeout=timeout, poll_interval=poll_interval,
             )
-            if not output:
-                raise RuntimeError(
-                    f"turn {turn} of identity {self._identity!r} completed "
-                    "without committing any text"
+            if result.output_status is not TurnOutputStatus.TEXT or not result.output:
+                raise TurnOutputUnavailableError(
+                    self._identity,
+                    turn,
+                    result.output_status.value if result.output_status else "unknown",
                 )
-            return output
+            return self._text_of_turn(result, "wait_for_output") or result.output
         if baseline is not None:
             if after is not None:
                 raise ValueError("pass either 'after' or the deprecated 'baseline', not both")

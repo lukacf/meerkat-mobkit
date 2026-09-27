@@ -365,23 +365,28 @@ pub struct SendAdmission {
 /// Names one admitted turn so a caller can wait for THAT turn and read ITS
 /// output, however much other traffic the identity receives.
 ///
-/// The ticket is the interaction id the delivery carries into meerkat's
-/// runtime admission (`WorkSpec::interaction_id`), so it is typed state the
-/// turn itself holds, never a correlation by output text or by completion
-/// count. The identity-wide [`CompletionCursor`] cannot name one turn: a peer
-/// message, a scheduled turn or a fork completion wake advances it too.
+/// Minted by the runtime once per admission and never taken from the caller:
+/// interaction ids and delivery correlation ids may legitimately repeat across
+/// admissions (a fan-out of one correlation to several identities, a reused
+/// interaction id), so a ticket derived from either could name two turns. The
+/// runtime holds the admitted turn's own completion handle under the ticket,
+/// so the outcome it reports is typed state of that one turn, never a
+/// correlation by output text or by completion count. The identity-wide
+/// [`CompletionCursor`] cannot name one turn: a peer message, a scheduled turn
+/// or a fork completion wake advances it too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TurnTicket(uuid::Uuid);
 
 impl TurnTicket {
-    /// A fresh ticket for a delivery that carries no interaction id yet.
+    /// A fresh ticket. Only the runtime's outcome registry mints tickets, and
+    /// it re-mints on the (astronomically unlikely) collision.
     #[must_use]
-    pub fn mint() -> Self {
+    pub(crate) fn mint() -> Self {
         Self(uuid::Uuid::new_v4())
     }
 
-    /// Parse a ticket, which is an interaction id in UUID form.
+    /// Parse a ticket from its wire form (a UUID).
     pub fn parse(raw: &str) -> Result<Self, uuid::Error> {
         raw.parse().map(Self)
     }
@@ -398,16 +403,48 @@ impl fmt::Display for TurnTicket {
     }
 }
 
-/// What one admitted turn produced, projected from that turn's own committed
-/// run result (meerkat's exact-turn completion, never the session's latest
-/// output).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TurnOutput {
-    /// The run's final assistant text, bounded to [`TURN_OUTPUT_MAX_BYTES`];
-    /// `None` when the run committed no text.
-    pub text: Option<String>,
-    /// Whether `text` was cut at [`TURN_OUTPUT_MAX_BYTES`].
-    pub truncated: bool,
+/// What a completed ticketed turn yielded, projected from that turn's own
+/// exact completion (never the session's latest output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutput {
+    /// The turn's own final assistant text, bounded to
+    /// [`TURN_OUTPUT_MAX_BYTES`]. When `truncated`, the text was cut at the
+    /// bound (meerkat also appends a truncation marker to it).
+    Text { text: String, truncated: bool },
+    /// The turn ran and committed a run result with no text.
+    Empty,
+    /// The admission reached a successful terminal without a run result of its
+    /// own: the runtime folded the input into a run already in progress, or
+    /// deduplicated it onto an earlier admission whose turn had already
+    /// ended. No output belongs to this admission; reporting "no text" here
+    /// would be a guess.
+    NoOwnResult,
+    /// The session bridge cannot report per-turn output (a bridge that built
+    /// its receipt with
+    /// [`BridgeTurnReceipt::new`](super::bridge::BridgeTurnReceipt::new)).
+    Unavailable,
+}
+
+impl TurnOutput {
+    /// The turn's own text, when it has one.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
+            Self::Empty | Self::NoOwnResult | Self::Unavailable => None,
+        }
+    }
+
+    /// Stable wire code (`output_status` on `mobkit/turn_result`).
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "text",
+            Self::Empty => "empty",
+            Self::NoOwnResult => "no_own_result",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 /// Byte bound on one tracked turn's output text.
@@ -418,10 +455,8 @@ pub const TURN_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 pub enum TurnOutcome {
     /// Admitted; the turn has not reached its terminal yet.
     Pending,
-    /// The turn committed. `output` is `None` only when the session bridge
-    /// cannot report per-turn output (a bridge built with
-    /// [`BridgeTurnReceipt::new`](super::bridge::BridgeTurnReceipt::new)).
-    Completed { output: Option<TurnOutput> },
+    /// The turn reached a successful terminal; `output` says what it yielded.
+    Completed { output: TurnOutput },
     /// The turn ran and failed, or its terminal could not be observed.
     Failed { reason: String },
     /// No turn with this ticket is known for this identity: it was never
@@ -430,16 +465,71 @@ pub enum TurnOutcome {
     Unknown,
 }
 
+/// Why a delivery's turn cannot be tracked by ticket. The delivery itself
+/// still happens, exactly once, on the ingress lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnUntrackable {
+    /// The member runs in `autonomous_host` mode: meerkat does not report
+    /// per-turn completion for autonomous inbox delivery.
+    AutonomousHost,
+    /// The member is externally bound; its deliveries keep the established
+    /// external wire semantics and are not ticketed.
+    ExternallyBound,
+    /// Host human input rides the console human lane, which is not ticketed.
+    HostHumanInput,
+    /// The session bridge cannot report a turn's own output.
+    BridgeCannotReportOutput,
+    /// Nothing was delivered to track: the runtime has no session bridge, or
+    /// the identity has no bound agent runtime.
+    NotDelivered,
+}
+
+impl TurnUntrackable {
+    /// Stable wire code (`turn_unavailable.code`).
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AutonomousHost => "autonomous_host",
+            Self::ExternallyBound => "externally_bound",
+            Self::HostHumanInput => "host_human_input",
+            Self::BridgeCannotReportOutput => "bridge_cannot_report_output",
+            Self::NotDelivered => "not_delivered",
+        }
+    }
+}
+
+impl fmt::Display for TurnUntrackable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::AutonomousHost => {
+                "the member runs in autonomous_host mode, and the runtime does not report \
+                 per-turn completion for autonomous inbox delivery"
+            }
+            Self::ExternallyBound => {
+                "the member is externally bound; its deliveries are not ticketed"
+            }
+            Self::HostHumanInput => {
+                "host human input rides the console lane, which is not ticketed"
+            }
+            Self::BridgeCannotReportOutput => {
+                "the session bridge cannot report a turn's own output"
+            }
+            Self::NotDelivered => {
+                "nothing was delivered to track (no session bridge or no bound agent runtime)"
+            }
+        })
+    }
+}
+
 /// Whether a delivery can be awaited by ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnTracking {
     /// The turn is tracked under this ticket.
     Tracked(TurnTicket),
-    /// The delivery was admitted but its turn cannot be tracked (for example
-    /// a remotely hosted member, whose turns carry no interaction id). A
-    /// caller that needs a completion falls back to the identity-wide
+    /// The delivery was admitted but its turn cannot be tracked. A caller that
+    /// needs a completion falls back to the identity-wide
     /// [`CompletionCursor`], knowing it is not request-correlated.
-    Unavailable { reason: String },
+    Unavailable(TurnUntrackable),
 }
 
 /// An admission receipt plus the ticket that names the admitted turn.

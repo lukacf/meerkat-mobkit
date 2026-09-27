@@ -3718,8 +3718,9 @@ async fn handle_unified_rpc_json_inner(
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
             let send_result = if rpc_track_turn_requested(&request.params) {
-                // The reserved interaction id is the ticket: it rides the
-                // admission as the turn's interaction id.
+                // The reserved interaction id rides the admission unchanged;
+                // the ticket is minted per admission, so a caller reusing an
+                // interaction id still gets a ticket of its own.
                 identity_rt
                     .send_with_turn_ticket(
                         &identity,
@@ -5726,9 +5727,11 @@ fn rpc_track_turn_requested(params: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Add a delivery's turn tracking to its result: `turn: {ticket}` when the
-/// turn is tracked, `turn: null` plus `turn_unavailable` (the reason) when it
-/// was admitted but cannot be. Nothing when tracking was not requested.
+/// A tracked delivery's `turn`: `{"ticket": ...}` when the admitted turn is
+/// tracked; `turn: null` plus `turn_unavailable: {"code", "reason"}` when it
+/// was admitted but cannot be tracked (`code` is the stable
+/// `TurnUntrackable` code, for example `autonomous_host`). Nothing when
+/// tracking was not requested.
 fn insert_turn_tracking(result: &mut Value, turn: Option<&crate::identity_first::TurnTracking>) {
     let (Some(turn), Value::Object(fields)) = (turn, result) else {
         return;
@@ -5740,33 +5743,29 @@ fn insert_turn_tracking(result: &mut Value, turn: Option<&crate::identity_first:
                 serde_json::json!({ "ticket": ticket.to_string() }),
             );
         }
-        crate::identity_first::TurnTracking::Unavailable { reason } => {
+        crate::identity_first::TurnTracking::Unavailable(reason) => {
             fields.insert("turn".to_string(), Value::Null);
-            fields.insert("turn_unavailable".to_string(), Value::from(reason.as_str()));
+            fields.insert(
+                "turn_unavailable".to_string(),
+                serde_json::json!({ "code": reason.code(), "reason": reason.to_string() }),
+            );
         }
     }
 }
 
 /// `mobkit/turn_result`'s typed outcome: `state` is `pending`, `completed`,
-/// `failed` or `unknown`. A completed turn carries its own `output`
-/// (`output_available: false` when the bridge cannot report per-turn output).
+/// `failed` or `unknown`. A completed turn carries `output_status` (`text`,
+/// `empty`, `no_own_result` or `unavailable`), its own `output` text (only for
+/// `text`) and `output_truncated`.
 fn turn_outcome_json(outcome: &crate::identity_first::TurnOutcome) -> Value {
-    use crate::identity_first::TurnOutcome;
+    use crate::identity_first::{TurnOutcome, TurnOutput};
     match outcome {
         TurnOutcome::Pending => serde_json::json!({ "state": "pending" }),
-        TurnOutcome::Completed {
-            output: Some(output),
-        } => serde_json::json!({
+        TurnOutcome::Completed { output } => serde_json::json!({
             "state": "completed",
-            "output_available": true,
-            "output": output.text,
-            "output_truncated": output.truncated,
-        }),
-        TurnOutcome::Completed { output: None } => serde_json::json!({
-            "state": "completed",
-            "output_available": false,
-            "output": Value::Null,
-            "output_truncated": false,
+            "output_status": output.code(),
+            "output": output.text(),
+            "output_truncated": matches!(output, TurnOutput::Text { truncated: true, .. }),
         }),
         TurnOutcome::Failed { reason } => serde_json::json!({
             "state": "failed",

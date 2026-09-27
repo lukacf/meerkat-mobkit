@@ -17,6 +17,9 @@ import pytest
 
 from meerkat_mobkit.errors import (
     TurnFailedError,
+    TurnOutputTruncatedWarning,
+    TurnOutputUnavailableError,
+    TurnOutputUnavailableWarning,
     TurnTrackingUnavailableWarning,
     TurnUnknownError,
 )
@@ -25,8 +28,10 @@ from meerkat_mobkit.identity_first_models import (
     DispatchInput,
     DispatchResult,
     SendResult,
+    TurnOutputStatus,
     TurnResult,
     TurnState,
+    TurnUnavailable,
 )
 from meerkat_mobkit.runtime import IdentityAgentHandle, MobKitRuntime
 
@@ -110,13 +115,17 @@ def _sent(ticket: str | None, *, turns: int = 0, unavailable: str | None = None)
         result["turn"] = {"ticket": ticket}
     elif unavailable is not None:
         result["turn"] = None
-        result["turn_unavailable"] = unavailable
+        result["turn_unavailable"] = {"code": unavailable, "reason": f"because {unavailable}"}
     return result
 
 
-def _completed(output: str | None) -> dict:
-    return {"state": "completed", "output": output, "output_available": True,
-            "output_truncated": False}
+def _completed(output: str | None, *, status: str | None = None, truncated: bool = False) -> dict:
+    return {
+        "state": "completed",
+        "output_status": status or ("text" if output is not None else "empty"),
+        "output": output,
+        "output_truncated": truncated,
+    }
 
 
 def _inspection(preview: str | None, turns: int) -> dict:
@@ -242,16 +251,58 @@ class TestWaitForTurn:
             await handle.wait_for_turn("ticket-a", timeout=0.02, poll_interval=0.001)
 
     @pytest.mark.asyncio
-    async def test_a_turn_without_text_returns_none(self):
-        transport = TicketTransport(turn_results={"ticket-a": [_completed(None)]})
+    async def test_the_result_is_typed(self):
+        transport = TicketTransport(turn_results={
+            "ticket-a": [_completed("A's reply")],
+            "ticket-e": [_completed(None)],
+            "ticket-n": [_completed(None, status="no_own_result")],
+            "ticket-t": [_completed("long[truncated]", truncated=True)],
+        })
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
-        assert await handle.wait_for_turn("ticket-a", timeout=5, poll_interval=0.001) is None
+        text = await handle.wait_for_turn("ticket-a", timeout=5, poll_interval=0.001)
+        assert (text.output_status, text.output) == (TurnOutputStatus.TEXT, "A's reply")
+        empty = await handle.wait_for_turn("ticket-e", timeout=5, poll_interval=0.001)
+        assert (empty.output_status, empty.output) == (TurnOutputStatus.EMPTY, None)
+        folded = await handle.wait_for_turn("ticket-n", timeout=5, poll_interval=0.001)
+        assert folded.output_status is TurnOutputStatus.NO_OWN_RESULT
+        cut = await handle.wait_for_turn("ticket-t", timeout=5, poll_interval=0.001)
+        assert cut.output_truncated is True
+
+    @pytest.mark.asyncio
+    async def test_send_and_wait_never_returns_partial_or_absent_output_silently(self):
+        transport = TicketTransport(
+            sends=[_sent("ticket-t"), _sent("ticket-n"), _sent("ticket-u"), _sent("ticket-e")],
+            turn_results={
+                "ticket-t": [_completed("long[truncated]", truncated=True)],
+                "ticket-n": [_completed(None, status="no_own_result")],
+                "ticket-u": [_completed(None, status="unavailable")],
+                "ticket-e": [_completed(None)],
+            },
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.warns(TurnOutputTruncatedWarning):
+            assert await handle.send_and_wait("t", timeout=5, poll_interval=0.001) == (
+                "long[truncated]"
+            )
+        with pytest.warns(TurnOutputUnavailableWarning, match="no_own_result"):
+            assert await handle.send_and_wait("n", timeout=5, poll_interval=0.001) is None
+        with pytest.warns(TurnOutputUnavailableWarning, match="unavailable"):
+            assert await handle.send_and_wait("u", timeout=5, poll_interval=0.001) is None
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            # The turn committed no text: None, and nothing to warn about.
+            assert await handle.send_and_wait("e", timeout=5, poll_interval=0.001) is None
 
     @pytest.mark.asyncio
     async def test_wait_for_output_by_turn_returns_that_turns_output(self):
         transport = TicketTransport(
-            turn_results={"ticket-a": [PENDING, _completed("A's reply")], "ticket-e": [_completed(None)]},
+            turn_results={
+                "ticket-a": [PENDING, _completed("A's reply")],
+                "ticket-e": [_completed(None)],
+                "ticket-n": [_completed(None, status="no_own_result")],
+            },
             inspections=[_inspection("foreign reply", turns=5)],
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
@@ -259,8 +310,12 @@ class TestWaitForTurn:
         assert await handle.wait_for_output(
             turn="ticket-a", timeout=5, poll_interval=0.001,
         ) == "A's reply"
-        with pytest.raises(RuntimeError, match="without committing any text"):
+        with pytest.raises(TurnOutputUnavailableError) as raised:
             await handle.wait_for_output(turn="ticket-e", timeout=5, poll_interval=0.001)
+        assert raised.value.status == "empty"
+        with pytest.raises(TurnOutputUnavailableError) as raised:
+            await handle.wait_for_output(turn="ticket-n", timeout=5, poll_interval=0.001)
+        assert raised.value.status == "no_own_result"
         with pytest.raises(ValueError, match="alone"):
             await handle.wait_for_output(
                 turn="ticket-a", after=CompletionCursor(epoch=3, turns=0),
@@ -287,13 +342,15 @@ class TestExplicitFallback:
     @pytest.mark.asyncio
     async def test_an_untrackable_turn_names_the_reason(self):
         transport = TicketTransport(
-            sends=[_sent(None, turns=0, unavailable="remotely hosted member")],
+            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
             inspections=[_inspection("latest reply", turns=1)],
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
-        with pytest.warns(TurnTrackingUnavailableWarning, match="remotely hosted member"):
-            await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        with pytest.warns(TurnTrackingUnavailableWarning, match="autonomous_host"):
+            output = await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        assert output == "latest reply"
+        assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
 
     @pytest.mark.asyncio
     async def test_plain_send_does_not_request_tracking(self):
@@ -315,7 +372,9 @@ class TestModels:
             {**_sent(None, unavailable="no bridge"), "durable": False}
         )
         assert unavailable.turn_ticket is None
-        assert unavailable.turn_unavailable == "no bridge"
+        assert unavailable.turn_unavailable == TurnUnavailable(
+            code="no bridge", reason="because no bridge"
+        )
         assert DispatchResult.from_dict(unavailable.to_dict()) == unavailable
 
     def test_turn_result_parses_every_state(self):
@@ -324,6 +383,7 @@ class TestModels:
              "completion_cursor": {"epoch": 3, "turns": 4}}
         )
         assert completed.state is TurnState.COMPLETED
+        assert completed.output_status is TurnOutputStatus.TEXT
         assert completed.output == "hi"
         assert completed.completion_cursor == CompletionCursor(epoch=3, turns=4)
         assert TurnResult.from_dict(completed.to_dict()) == completed
@@ -331,3 +391,6 @@ class TestModels:
                                        "state": "failed", "error": "boom"})
         assert (failed.state, failed.error) == (TurnState.FAILED, "boom")
         assert TurnResult.from_dict({"state": "surprise"}).state is TurnState.UNKNOWN
+        future = TurnResult.from_dict({"state": "completed", "output_status": "later", "output": "x"})
+        assert future.output_status is TurnOutputStatus.UNAVAILABLE
+        assert future.output is None, "text is only read for the text status"

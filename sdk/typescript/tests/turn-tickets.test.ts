@@ -28,12 +28,15 @@ type TurnScript = Record<string, Record<string, unknown>[]>;
 
 const PENDING = { state: "pending" };
 
-function completed(output: string | null): Record<string, unknown> {
+function completed(
+  output: string | null,
+  options: { status?: string; truncated?: boolean } = {},
+): Record<string, unknown> {
   return {
     state: "completed",
+    output_status: options.status ?? (output === null ? "empty" : "text"),
     output,
-    output_available: true,
-    output_truncated: false,
+    output_truncated: options.truncated ?? false,
   };
 }
 
@@ -136,18 +139,23 @@ async function makeRuntime(script: {
 
 const FAST = { timeoutMs: 5_000, pollIntervalMs: 1 };
 
+/** Capture the typed process warnings a call emits, as "Type: message". */
 async function withWarnings<T>(
   run: () => Promise<T>,
 ): Promise<{ value: T; warnings: string[] }> {
   const warnings: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map(String).join(" "));
-  };
+  const original = process.emitWarning;
+  process.emitWarning = ((message: string | Error, options?: unknown) => {
+    const type =
+      typeof options === "object" && options !== null
+        ? String((options as { type?: unknown }).type)
+        : String(options);
+    warnings.push(`${type}: ${String(message)}`);
+  }) as typeof process.emitWarning;
   try {
     return { value: await run(), warnings };
   } finally {
-    console.warn = original;
+    process.emitWarning = original;
   }
 }
 
@@ -160,9 +168,12 @@ describe("sendAndWait waits for its own turn", () => {
       inspections: [inspection("foreign reply", 1)],
     });
 
-    const output = await rt.sendAndWait("keeper", "alpha", FAST);
+    const { value: output, warnings } = await withWarnings(() =>
+      rt.sendAndWait("keeper", "alpha", FAST),
+    );
 
     assert.equal(output, "A's reply");
+    assert.deepEqual(warnings, []);
     assert.equal(paramsOf("mobkit/send")[0]?.track_turn, true);
     assert.deepEqual(
       paramsOf("mobkit/inspect_identity"),
@@ -253,10 +264,54 @@ describe("waitForTurn", () => {
     );
   });
 
-  it("resolves null for a turn that committed no text", async () => {
-    const { rt } = await makeRuntime({ turns: { "ticket-a": [completed(null)] } });
+  it("resolves the typed result", async () => {
+    const { rt } = await makeRuntime({
+      turns: {
+        "ticket-a": [completed("A's reply")],
+        "ticket-e": [completed(null)],
+        "ticket-n": [completed(null, { status: "no_own_result" })],
+        "ticket-t": [completed("long[truncated]", { truncated: true })],
+      },
+    });
 
-    assert.equal(await rt.waitForTurn("keeper", "ticket-a", FAST), null);
+    const text = await rt.waitForTurn("keeper", "ticket-a", FAST);
+    assert.equal(text.outputStatus, "text");
+    assert.equal(text.output, "A's reply");
+    const empty = await rt.waitForTurn("keeper", "ticket-e", FAST);
+    assert.equal(empty.outputStatus, "empty");
+    assert.equal(empty.output, null);
+    const folded = await rt.waitForTurn("keeper", "ticket-n", FAST);
+    assert.equal(folded.outputStatus, "no_own_result");
+    const cut = await rt.waitForTurn("keeper", "ticket-t", FAST);
+    assert.equal(cut.outputTruncated, true);
+  });
+
+  it("sendAndWait never returns partial or absent output silently", async () => {
+    const { rt } = await makeRuntime({
+      sends: [sent("ticket-t"), sent("ticket-n"), sent("ticket-u"), sent("ticket-e")],
+      turns: {
+        "ticket-t": [completed("long[truncated]", { truncated: true })],
+        "ticket-n": [completed(null, { status: "no_own_result" })],
+        "ticket-u": [completed(null, { status: "unavailable" })],
+        "ticket-e": [completed(null)],
+      },
+    });
+
+    const truncated = await withWarnings(() => rt.sendAndWait("keeper", "t", FAST));
+    assert.equal(truncated.value, "long[truncated]");
+    assert.match(truncated.warnings[0] ?? "", /^TurnOutputTruncatedWarning: /);
+    const folded = await withWarnings(() => rt.sendAndWait("keeper", "n", FAST));
+    assert.equal(folded.value, null);
+    assert.match(
+      folded.warnings[0] ?? "",
+      /^TurnOutputUnavailableWarning: .*no_own_result/,
+    );
+    const unavailable = await withWarnings(() => rt.sendAndWait("keeper", "u", FAST));
+    assert.equal(unavailable.value, null);
+    assert.match(unavailable.warnings[0] ?? "", /unavailable/);
+    const empty = await withWarnings(() => rt.sendAndWait("keeper", "e", FAST));
+    assert.equal(empty.value, null);
+    assert.deepEqual(empty.warnings, [], "no text committed: nothing to warn about");
   });
 });
 
@@ -273,21 +328,33 @@ describe("explicit fallback", () => {
 
     assert.equal(value, "latest reply");
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0] ?? "", /predates turn tickets/);
+    assert.match(
+      warnings[0] ?? "",
+      /^TurnTrackingUnavailableWarning: .*predates turn tickets/,
+    );
     assert.deepEqual(paramsOf("mobkit/turn_result"), []);
   });
 
   it("names why a turn could not be tracked", async () => {
     const { rt } = await makeRuntime({
-      sends: [sent(null, { turn: null, turn_unavailable: "remotely hosted member" })],
+      sends: [
+        sent(null, {
+          turn: null,
+          turn_unavailable: {
+            code: "autonomous_host",
+            reason: "the member runs in autonomous_host mode",
+          },
+        }),
+      ],
       inspections: [inspection("latest reply", 1)],
     });
 
-    const { warnings } = await withWarnings(() =>
+    const { value, warnings } = await withWarnings(() =>
       rt.sendAndWait("keeper", "alpha", FAST),
     );
 
-    assert.match(warnings[0] ?? "", /remotely hosted member/);
+    assert.equal(value, "latest reply");
+    assert.match(warnings[0] ?? "", /autonomous_host/);
   });
 
   it("a plain send does not request tracking", async () => {
@@ -306,10 +373,17 @@ describe("models", () => {
     assert.equal(send.turnTicket, "ticket-a");
     assert.deepEqual(parseSendResult(sendResultToDict(send)), send);
     const unavailable = parseDispatchResult(
-      sent(null, { durable: false, turn: null, turn_unavailable: "no bridge" }),
+      sent(null, {
+        durable: false,
+        turn: null,
+        turn_unavailable: { code: "not_delivered", reason: "no bridge" },
+      }),
     );
     assert.equal(unavailable.turnTicket, null);
-    assert.equal(unavailable.turnUnavailable, "no bridge");
+    assert.deepEqual(unavailable.turnUnavailable, {
+      code: "not_delivered",
+      reason: "no bridge",
+    });
     assert.deepEqual(
       parseDispatchResult(dispatchResultToDict(unavailable)),
       unavailable,
@@ -324,11 +398,19 @@ describe("models", () => {
       completion_cursor: { epoch: 3, turns: 4 },
     });
     assert.equal(done.state, "completed");
+    assert.equal(done.outputStatus, "text");
     assert.equal(done.output, "hi");
     assert.deepEqual(done.completionCursor, { epoch: 3, turns: 4 });
     const failed = parseTurnResult({ state: "failed", error: "boom" });
     assert.equal(failed.state, "failed");
     assert.equal(failed.error, "boom");
     assert.equal(parseTurnResult({ state: "surprise" }).state, "unknown");
+    const future = parseTurnResult({
+      state: "completed",
+      output_status: "later",
+      output: "x",
+    });
+    assert.equal(future.outputStatus, "unavailable");
+    assert.equal(future.output, null, "text is only read for the text status");
   });
 });

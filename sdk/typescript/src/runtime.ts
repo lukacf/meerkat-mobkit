@@ -562,6 +562,51 @@ export class MonitorsHandle {
   }
 }
 
+
+/** The typed process warnings the `*AndWait` helpers emit. */
+export type TurnWarningType =
+  | "TurnTrackingUnavailableWarning"
+  | "TurnOutputTruncatedWarning"
+  | "TurnOutputUnavailableWarning";
+
+/**
+ * Emit a typed Node process warning: observable with
+ * `process.on("warning", ...)`, where `warning.name` is `type`.
+ */
+function emitTurnWarning(type: TurnWarningType, message: string): void {
+  process.emitWarning(message, { type });
+}
+
+/**
+ * The `*AndWait` return value for a completed turn: its text, or `null` when
+ * it committed none. Truncated text and "no output of its own" are never
+ * returned silently: each emits a typed warning.
+ */
+function textOfTurn(
+  identity: string,
+  turn: TurnResult,
+  operation: string,
+): string | null {
+  if (turn.outputStatus === "text") {
+    if (turn.outputTruncated) {
+      emitTurnWarning(
+        "TurnOutputTruncatedWarning",
+        `${operation} for identity ${identity}: turn ${turn.ticket} returned ` +
+          `text cut at the gateway's bound`,
+      );
+    }
+    return turn.output;
+  }
+  if (turn.outputStatus === "empty") return null;
+  emitTurnWarning(
+    "TurnOutputUnavailableWarning",
+    `${operation} for identity ${identity}: turn ${turn.ticket} completed ` +
+      `without output of its own (${turn.outputStatus ?? "unknown"}); ` +
+      `resolving null`,
+  );
+  return null;
+}
+
 /**
  * Running MobKit runtime instance.
  *
@@ -1069,29 +1114,33 @@ export class MobKitRuntime {
   }
 
   /**
-   * Wait for the turn `ticket` names and return ITS output.
+   * Wait for the turn `ticket` names and resolve ITS typed result.
    *
    * `ticket` is the `turnTicket` of a send/dispatch made with
    * `{ trackTurn: true }`. Unlike {@link waitForCompletion}, no other delivery
    * to this identity (a peer message, a scheduled turn, a fork completion
    * wake) can satisfy this wait, and the output is the turn's own.
    *
-   * Resolves `null` when the turn committed no text. Throws
-   * {@link TurnFailedError} when the turn failed, {@link TurnUnknownError}
-   * when the gateway knows no such turn for this identity, and a timeout
-   * error.
+   * Resolves the completed {@link TurnResult}. Read `outputStatus` before
+   * the text: only `text` carries `output` (`outputTruncated` says whether it
+   * was cut); `empty` means the turn committed no text; `no_own_result` means
+   * the runtime folded the input into a run already in progress or
+   * deduplicated it onto an earlier admission; `unavailable` means the
+   * gateway cannot report per-turn output. Throws {@link TurnFailedError}
+   * when the turn failed, {@link TurnUnknownError} when the gateway knows no
+   * such turn for this identity, and a timeout error.
    */
   async waitForTurn(
     identity: string,
     ticket: string,
     options: { timeoutMs?: number; pollIntervalMs?: number } = {},
-  ): Promise<string | null> {
+  ): Promise<TurnResult> {
     const timeoutMs = options.timeoutMs ?? 90_000;
     const pollIntervalMs = options.pollIntervalMs ?? 500;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const result = await this.turnResult(identity, ticket);
-      if (result.state === "completed") return result.output;
+      if (result.state === "completed") return result;
       if (result.state === "failed") {
         throw new TurnFailedError(identity, ticket, result.error ?? "");
       }
@@ -1174,9 +1223,18 @@ export class MobKitRuntime {
    * Send, then wait for the turn that send started and return ITS output.
    *
    * The send is tracked by ticket, so the wait is per-admission: another
-   * delivery to this identity cannot satisfy it. When the gateway cannot
-   * track the turn (an older gateway, a remotely hosted member), this falls
-   * back to the identity-wide cursor wait and says so with `console.warn`.
+   * delivery to this identity cannot satisfy it. Resolves the turn's text,
+   * or `null` when it committed none. Text cut at the gateway's bound emits
+   * a `TurnOutputTruncatedWarning`; a turn that completed without output of
+   * its own resolves `null` with a `TurnOutputUnavailableWarning` (use
+   * {@link waitForTurn} for the typed result).
+   *
+   * When the gateway cannot track the turn (an `autonomous_host` member, an
+   * externally bound member, an older gateway), the send is still delivered
+   * exactly once and this falls back to the identity-wide cursor wait,
+   * emitting a `TurnTrackingUnavailableWarning` with the typed reason.
+   * Warnings are Node process warnings (`process.on("warning")`, whose
+   * `name` is the warning type).
    */
   async sendAndWait(
     identity: string,
@@ -1207,12 +1265,16 @@ export class MobKitRuntime {
     options: { timeoutMs?: number; pollIntervalMs?: number },
   ): Promise<string | null> {
     if (result.turnTicket != null) {
-      return this.waitForTurn(identity, result.turnTicket, options);
+      const turn = await this.waitForTurn(identity, result.turnTicket, options);
+      return textOfTurn(identity, turn, operation);
     }
+    const unavailable = result.turnUnavailable;
     const reason =
-      result.turnUnavailable ??
-      "the gateway returned no turn ticket (it predates turn tickets)";
-    console.warn(
+      unavailable != null
+        ? `${unavailable.code}: ${unavailable.reason}`
+        : "the gateway returned no turn ticket (it predates turn tickets)";
+    emitTurnWarning(
+      "TurnTrackingUnavailableWarning",
       `${operation} for identity ${identity} could not track its own turn ` +
         `(${reason}); waiting on the identity-wide completion cursor ` +
         `instead, which another delivery's completion can also satisfy`,

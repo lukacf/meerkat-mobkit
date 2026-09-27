@@ -306,6 +306,38 @@ class TurnUnknownError(MobKitError):
         self.ticket = ticket
 
 
+class TurnOutputUnavailableError(MobKitError):
+    """The turn a ticket names completed, but no text of its own can be
+    returned: ``status`` is ``empty`` (it committed no text),
+    ``no_own_result`` (the runtime folded it into a run already in progress
+    or deduplicated it onto an earlier admission) or ``unavailable`` (the
+    gateway cannot report per-turn output). Raised only where a call must
+    return text (``wait_for_output(turn=...)``); the turn is NOT failed, so do
+    not retry it as if it were."""
+
+    def __init__(self, identity: str, ticket: str, status: str):
+        super().__init__(
+            f"turn {ticket} of identity {identity!r} completed without output of "
+            f"its own ({status})"
+        )
+        self.identity = identity
+        self.ticket = ticket
+        self.status = status
+
+
+class TurnOutputTruncatedWarning(RuntimeWarning):
+    """A ``*_and_wait`` call returned its turn's text cut at the gateway's
+    bound (the text carries the runtime's truncation marker). Use
+    ``wait_for_turn`` for the typed ``output_truncated`` flag."""
+
+
+class TurnOutputUnavailableWarning(RuntimeWarning):
+    """A ``*_and_wait`` call's turn completed without text of its own to
+    return (``no_own_result`` or ``unavailable``), so it returned ``None``.
+    This is not "the turn committed no text"; ``wait_for_turn`` returns the
+    typed ``output_status``."""
+
+
 class TurnTrackingUnavailableWarning(RuntimeWarning):
     """A ``*_and_wait`` call could not track its own turn and fell back to the
     identity-wide completion cursor, which another delivery's completion can

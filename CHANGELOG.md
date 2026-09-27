@@ -36,28 +36,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Turn tickets: per-admission completion for identity deliveries.
   `mobkit/send`, `mobkit/interact` and `mobkit/dispatch` accept
-  `"track_turn": true` and then return `"turn": {"ticket": ...}`, the
-  interaction id the delivery carries into meerkat's runtime admission (or
-  `"turn": null` plus `"turn_unavailable"` with the reason when the turn
-  cannot be tracked, for example a remotely hosted member; it is still
-  delivered). The new `mobkit/turn_result {identity, ticket}` reports that
-  turn as `pending`, `completed` (with its own `output`, from the turn's
-  committed run result via meerkat's exact-turn `wait_bounded`, bounded to
-  256 KiB), `failed` (with `error`) or a typed `unknown`. Rust:
+  `"track_turn": true` and then return `"turn": {"ticket": ...}`, a ticket
+  the runtime mints for that one admission and keeps the admitted turn's own
+  completion handle under (the caller's interaction id and a dispatch's
+  correlation id still ride unchanged; neither names the ticket, since both
+  may repeat across admissions). When the turn cannot be tracked the
+  delivery still happens, exactly once on the ingress lane, and the result
+  carries `"turn": null` plus `"turn_unavailable": {"code", "reason"}`; the
+  stable codes are `autonomous_host` (meerkat reports no per-turn completion
+  for autonomous inbox delivery, the default runtime mode),
+  `externally_bound`, `host_human_input`, `bridge_cannot_report_output` and
+  `not_delivered`. An idempotent re-dispatch of a key whose tracked
+  admission is still pending or completed names the original's ticket. The
+  new `mobkit/turn_result {identity, ticket}` reports that turn as
+  `pending`, `completed`, `failed` (with `error`) or a typed `unknown`; a
+  completed turn carries `output_status`: `text` (its own `output`, from the
+  turn's committed run result via meerkat's exact-turn `wait_bounded`,
+  bounded to 256 KiB with `output_truncated`), `empty`, `no_own_result` (the
+  runtime folded the input into a run already in progress or deduplicated it
+  onto an earlier admission) or `unavailable`. Rust:
   `IdentityRuntime::send_with_turn_ticket`, `dispatch_with_turn_ticket`,
   `turn_outcome` and `wait_for_turn`, with `TurnTicket`, `TurnOutput`,
-  `TurnOutcome`, `TurnTracking` and `Ticketed`; `SessionBridge` gains
-  `tracks_turn_output` and `begin_delivery_with_output` (default: untracked)
-  and `BridgeTurnReceipt` gains `with_output` / `wait_with_output` (the
+  `TurnOutcome`, `TurnTracking`, `TurnUntrackable` and `Ticketed`;
+  `SessionBridge` gains `tracks_turn_output` and `begin_delivery_with_output`
+  (default: untracked) and `BridgeTurnReceipt` gains `with_output`,
+  `wait_with_output`, `wait_turn_output` and `session_resolution_error` (the
   existing `new` / `wait` are unchanged). Python: `send` / `dispatch` /
   `dispatch_text` take `track_turn=`, results carry `turn_ticket` and
-  `turn_unavailable`, and handles gain `turn_result`, `wait_for_turn` and
-  `wait_for_output(turn=...)`, with `TurnResult`, `TurnState`,
-  `TurnFailedError`, `TurnUnknownError` and
-  `TurnTrackingUnavailableWarning`. TypeScript: `send` / `dispatch` take
+  `turn_unavailable` (`TurnUnavailable`), and handles gain `turn_result`,
+  `wait_for_turn` (returns the typed `TurnResult`) and
+  `wait_for_output(turn=...)`, with `TurnOutputStatus`, `TurnState`,
+  `TurnFailedError`, `TurnUnknownError`, `TurnOutputUnavailableError`,
+  `TurnTrackingUnavailableWarning`, `TurnOutputTruncatedWarning` and
+  `TurnOutputUnavailableWarning`. TypeScript: `send` / `dispatch` take
   `{ trackTurn }`, results carry `turnTicket` and `turnUnavailable`, plus
-  `turnResult`, `waitForTurn`, `TurnResult`, `TurnFailedError` and
-  `TurnUnknownError`.
+  `turnResult`, `waitForTurn` (resolves the typed `TurnResult`),
+  `TurnOutputStatus`, `TurnUnavailable`, `TurnFailedError` and
+  `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
 
@@ -71,11 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `track_turn` and wait on the turn ticket through `mobkit/turn_result`;
   signatures and return types are unchanged. A failed turn raises
   `TurnFailedError`, and an unknown ticket (for example after a gateway
-  restart) raises `TurnUnknownError`. Only when a delivery returns no ticket
-  (a gateway that predates turn tickets, a remotely hosted member) do they
-  fall back to the cursor wait, with a `TurnTrackingUnavailableWarning` in
-  Python and a `console.warn` in TypeScript.
-  `wait_for_completion(baseline)` / `waitForCompletion` and
+  restart) raises `TurnUnknownError`. Text cut at the 256 KiB bound, and a
+  turn that completed without output of its own, are never returned
+  silently: each emits a typed warning (`TurnOutputTruncatedWarning`,
+  `TurnOutputUnavailableWarning`). When a delivery cannot be tracked (an
+  `autonomous_host` member, an externally bound member, a gateway that
+  predates turn tickets) it is still delivered exactly once, and the helpers
+  fall back to the cursor wait with a `TurnTrackingUnavailableWarning`
+  naming the typed reason (a Python warning; a Node process warning in
+  TypeScript). On an `autonomous_host` member that fallback wait is still
+  identity-wide. `wait_for_completion(baseline)` / `waitForCompletion` and
   `wait_for_output(after=cursor)` remain identity-wide primitives: any
   completion on the identity after the baseline satisfies them and the
   returned preview is the session's latest output, not necessarily a given

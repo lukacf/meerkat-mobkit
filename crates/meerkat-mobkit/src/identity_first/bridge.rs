@@ -1875,8 +1875,17 @@ enum ReceiptOutput {
 }
 
 /// The admitted turn's own output: meerkat's bounded projection of THIS work
-/// item's committed run result. A run that committed without a result
-/// completed with no text, as `WorkTurnHandle::wait` also counts it.
+/// item's committed run result.
+///
+/// A successful terminal WITHOUT a run result (`CompletedWithoutResult`) is
+/// NOT "no text". meerkat reports it when the input was consumed without a
+/// run of its own: folded into a run already in progress (a live-boundary
+/// join) or deduplicated onto an earlier admission whose turn had already
+/// ended (meerkat-runtime `CompletionOutcome::CompletedWithoutResult`: "the
+/// input was consumed but produced no RunResult"). It is reported as
+/// [`TurnOutput::NoOwnResult`](super::types::TurnOutput::NoOwnResult), so a
+/// deduplicated re-admission can never overwrite or impersonate the output of
+/// the turn that did run.
 async fn project_turn_output(
     turn: meerkat_mob::WorkTurnHandle,
     spec: meerkat_mob::BoundedResultSpec,
@@ -1885,20 +1894,21 @@ async fn project_turn_output(
         Ok(result) => {
             let bounded = result.result().result();
             let text = bounded.text();
-            Ok(super::types::TurnOutput {
-                text: (!text.is_empty()).then(|| text.to_string()),
-                truncated: matches!(
-                    bounded.status(),
-                    meerkat_mob::BoundedHelperResultStatus::CompletedTruncated
-                ),
+            Ok(if text.is_empty() {
+                super::types::TurnOutput::Empty
+            } else {
+                super::types::TurnOutput::Text {
+                    text: text.to_string(),
+                    truncated: matches!(
+                        bounded.status(),
+                        meerkat_mob::BoundedHelperResultStatus::CompletedTruncated
+                    ),
+                }
             })
         }
         Err(error) => match error.failure() {
             meerkat_mob::BoundedTurnFailure::CompletedWithoutResult { .. } => {
-                Ok(super::types::TurnOutput {
-                    text: None,
-                    truncated: false,
-                })
+                Ok(super::types::TurnOutput::NoOwnResult)
             }
             _ => Err(error.to_string()),
         },
@@ -2012,6 +2022,19 @@ async fn submit_internal_bridge_work(
         });
     }
     if matches!(mode, BridgeSubmitMode::CompletionBearing) {
+        // meerkat 0.8.43 has no deadline-taking `start_work*` variant, and it
+        // needs none here: the stale-queued-work protection the
+        // `submit_work*_bounded` verbs below give is reached the same way on
+        // this path. On timeout `deadline.bound` DROPS the admission future;
+        // `start_work*` sends its `SubmitWork` from a task spawned by
+        // `meerkat_runtime::stack_relief::relieve_caller_stack`, whose
+        // `AbortOnDrop` guard aborts that task and so drops the reply
+        // receiver; and the mob actor skips a `SubmitWork` whose reply channel
+        // is closed before dispatch, recording no ingress ("the caller left
+        // between dequeue and dispatch", meerkat-mob actor.rs). The bounded
+        // submit verbs reach the same skip by dropping their receiver on their
+        // own reply deadline. Neither can retract an admission the actor has
+        // already dispatched, so neither timeout proves nonexecution.
         let turn = match work.delivery_identity {
             Some(delivery_identity) => deadline
                 .bound(
@@ -2506,6 +2529,27 @@ impl BridgeTurnReceipt {
         self.session_result.as_ref().ok()
     }
 
+    /// Why post-admission session resolution failed, if it did. Read-only,
+    /// like [`Self::resolved_session`].
+    pub fn session_resolution_error(&self) -> Option<&str> {
+        self.session_result.as_ref().err().map(String::as_str)
+    }
+
+    /// Await this turn's terminal and return its own outcome and output,
+    /// INDEPENDENT of post-admission session resolution.
+    ///
+    /// The per-turn output comes from the turn's exact completion and never
+    /// needs the session id; resolution only feeds session reconciliation, and
+    /// a caller that reads it separately ([`Self::session_resolution_error`])
+    /// reports that failure on its own channel. So a turn that ran and
+    /// succeeded is reported as such even when its session could not be
+    /// projected, instead of as a failure a retrying caller would run twice.
+    pub async fn wait_turn_output(self) -> Result<super::types::TurnOutput, String> {
+        self.completion
+            .await
+            .map(|output| output.unwrap_or(super::types::TurnOutput::Unavailable))
+    }
+
     /// Await this turn's terminal, then map the (resolution, terminal) pair.
     ///
     /// | resolution | terminal | result                                        |
@@ -2523,21 +2567,19 @@ impl BridgeTurnReceipt {
             .map(|(session_id, _output)| session_id)
     }
 
-    /// [`Self::wait`], also returning the turn's own output: `Some` when the
-    /// receipt was built with [`Self::with_output`], `None` when the bridge
-    /// cannot report per-turn output. Same (resolution, terminal) mapping.
+    /// [`Self::wait`], also returning the turn's own output
+    /// ([`TurnOutput::Unavailable`](super::types::TurnOutput::Unavailable)
+    /// when the receipt was built with [`Self::new`], i.e. the bridge cannot
+    /// report per-turn output). Same (resolution, terminal) mapping.
     pub async fn wait_with_output(
         self,
-    ) -> Result<
-        (
-            meerkat_core::types::SessionId,
-            Option<super::types::TurnOutput>,
-        ),
-        BridgeTurnError,
-    > {
+    ) -> Result<(meerkat_core::types::SessionId, super::types::TurnOutput), BridgeTurnError> {
         let terminal_result = self.completion.await;
         match (self.session_result, terminal_result) {
-            (Ok(session_id), Ok(output)) => Ok((session_id, output)),
+            (Ok(session_id), Ok(output)) => Ok((
+                session_id,
+                output.unwrap_or(super::types::TurnOutput::Unavailable),
+            )),
             (Ok(_), Err(err)) => Err(BridgeTurnError::CompletionFailed(err)),
             (Err(resolve_err), Err(err)) => Err(BridgeTurnError::CompletionFailed(format!(
                 "{err}; post-admission session resolution also failed: {resolve_err}"
@@ -2834,11 +2876,15 @@ pub trait SessionBridge: Send + Sync {
     }
 
     /// Admit `delivery` and hand back a receipt whose completion carries the
-    /// admitted turn's own output ([`BridgeTurnReceipt::wait_with_output`]).
+    /// admitted turn's own output ([`BridgeTurnReceipt::wait_turn_output`]).
     ///
-    /// The delivery's `interaction_id` names the turn (the caller's ticket),
-    /// and the output comes from that turn's own committed run result, never
-    /// from the session's latest text. Same admission contract as
+    /// The receipt holds the admitted turn's own completion, so the output
+    /// comes from that turn's committed run result, never from the session's
+    /// latest text, and never needs the delivery's `interaction_id` to name
+    /// the turn (the caller's interaction id rides unchanged). A successful
+    /// terminal without a run result of its own is
+    /// [`TurnOutput::NoOwnResult`](super::types::TurnOutput::NoOwnResult),
+    /// never an empty output. Same admission contract as
     /// [`Self::begin_awaiting_commit`]; the receipt is awaited later, outside
     /// any lock.
     ///

@@ -101,6 +101,7 @@ export type {
   JobsListOptions,
   JobSubscriptionOptions,
   MonitorStartOptions,
+  TurnWarningType,
 } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------
@@ -439,8 +440,10 @@ export type {
   DispatchResult,
   CompletionCursor,
   CompletionProgress,
+  TurnOutputStatus,
   TurnResult,
   TurnState,
+  TurnUnavailable,
   LeaseInfo,
   DurabilityPolicy,
   ContinuityHealth,
