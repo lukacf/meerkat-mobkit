@@ -31,9 +31,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-// console/node_modules/inline-style-parser/cjs/index.js
+// node_modules/inline-style-parser/cjs/index.js
 var require_cjs = __commonJS({
-  "console/node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
+  "node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
     "use strict";
     var COMMENT_REGEX = /\/\*[^*]*\*+([^/*][^*]*\*+)*\//g;
     var NEWLINE_REGEX = /\n/g;
@@ -170,9 +170,9 @@ var require_cjs = __commonJS({
   }
 });
 
-// console/node_modules/style-to-object/cjs/index.js
+// node_modules/style-to-object/cjs/index.js
 var require_cjs2 = __commonJS({
-  "console/node_modules/style-to-object/cjs/index.js"(exports) {
+  "node_modules/style-to-object/cjs/index.js"(exports) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -204,9 +204,9 @@ var require_cjs2 = __commonJS({
   }
 });
 
-// console/node_modules/style-to-js/cjs/utilities.js
+// node_modules/style-to-js/cjs/utilities.js
 var require_utilities = __commonJS({
-  "console/node_modules/style-to-js/cjs/utilities.js"(exports) {
+  "node_modules/style-to-js/cjs/utilities.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.camelCase = void 0;
@@ -243,9 +243,9 @@ var require_utilities = __commonJS({
   }
 });
 
-// console/node_modules/style-to-js/cjs/index.js
+// node_modules/style-to-js/cjs/index.js
 var require_cjs3 = __commonJS({
-  "console/node_modules/style-to-js/cjs/index.js"(exports, module2) {
+  "node_modules/style-to-js/cjs/index.js"(exports, module2) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -269,9 +269,9 @@ var require_cjs3 = __commonJS({
   }
 });
 
-// console/node_modules/extend/index.js
+// node_modules/extend/index.js
 var require_extend = __commonJS({
-  "console/node_modules/extend/index.js"(exports, module2) {
+  "node_modules/extend/index.js"(exports, module2) {
     "use strict";
     var hasOwn = Object.prototype.hasOwnProperty;
     var toStr = Object.prototype.toString;
@@ -360,7 +360,7 @@ var require_extend = __commonJS({
   }
 });
 
-// console/src/index.tsx
+// src/index.tsx
 var index_exports = {};
 __export(index_exports, {
   ConsoleApp: () => ConsoleApp,
@@ -370,7 +370,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
-// console/src/lib/send-storage-lock.ts
+// src/lib/send-storage-lock.ts
 async function withConsoleSendStorageLock(key, update) {
   if (navigator.locks) return navigator.locks.request(key, update);
   if (!globalThis.indexedDB) throw new Error("This browser cannot coordinate saved queues. Your message remains in the composer.");
@@ -415,10 +415,10 @@ async function withConsoleSendStorageLock(key, update) {
   }
 }
 
-// console/src/ConsoleApp.tsx
+// src/ConsoleApp.tsx
 var import_react45 = __toESM(require("react"));
 
-// console/node_modules/clsx/dist/clsx.mjs
+// node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -434,7 +434,7 @@ function clsx() {
 }
 var clsx_default = clsx;
 
-// packages/console-components/src/shared.ts
+// ../packages/console-components/src/shared.ts
 function fallbackCopyTextToClipboard(text8) {
   if (typeof document === "undefined" || !document.body || typeof document.execCommand !== "function") {
     return false;
@@ -480,13 +480,13 @@ async function copyTextToClipboard(text8) {
   return fallbackCopyTextToClipboard(text8);
 }
 
-// packages/console-components/src/activity/console-activity-rail.tsx
+// ../packages/console-components/src/activity/console-activity-rail.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
 
-// packages/console-components/src/copy-button.tsx
+// ../packages/console-components/src/copy-button.tsx
 var import_react = require("react");
 
-// packages/console-components/src/copy-glyph.tsx
+// ../packages/console-components/src/copy-glyph.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
 function CopyGlyph({ state = "idle" }) {
   const icon = state === "copied" ? "check" : state === "failed" ? "cross" : "copy";
@@ -513,7 +513,7 @@ function CopyGlyph({ state = "idle" }) {
   );
 }
 
-// packages/console-components/src/copy-button.tsx
+// ../packages/console-components/src/copy-button.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
 function CopyButton({
   text: text8,
@@ -564,10 +564,10 @@ function CopyButton({
   );
 }
 
-// packages/console-components/src/conversation/conversation-empty-state.tsx
+// ../packages/console-components/src/conversation/conversation-empty-state.tsx
 var import_jsx_runtime4 = require("react/jsx-runtime");
 
-// packages/console-core/src/realtime-message-identity.ts
+// ../packages/console-core/src/realtime-message-identity.ts
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
@@ -618,7 +618,7 @@ function realtimeMessageOrigin(frame) {
   return origin;
 }
 
-// packages/console-core/src/assistant-message-identity.ts
+// ../packages/console-core/src/assistant-message-identity.ts
 function carrier(frame) {
   const data = frame.data;
   return data !== null && typeof data === "object" && !Array.isArray(data) && Object.hasOwn(data, "assistant_message_id") ? data : void 0;
@@ -654,7 +654,7 @@ function assistantHistorySnapshot(frame) {
   return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
 }
 
-// packages/console-core/src/control-plane.ts
+// ../packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
   const record4 = value && typeof value === "object" ? value : null;
   if (!record4) {
@@ -958,7 +958,7 @@ function normalizeConsoleInteractionRejectedError(value) {
   return { code: code4, message };
 }
 
-// packages/console-core/src/rich-content.ts
+// ../packages/console-core/src/rich-content.ts
 var FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
 var TERMINAL_DURATION_RE = /^Worked for\s+.+$/i;
 var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
@@ -1608,7 +1608,7 @@ function parseConversationCommandBlock(section) {
   };
 }
 
-// packages/console-core/src/conversation.ts
+// ../packages/console-core/src/conversation.ts
 function conversationEntryText(entry) {
   if (entry.kind === "summary") {
     const fileLines = entry.files.map((file) => `${file.name} +${file.plus} -${file.minus}`).join("\n");
@@ -1647,7 +1647,7 @@ function conversationEntryText(entry) {
   return entry.blocks?.some((block) => block.type === "markdown") ? text8 : text8.trim();
 }
 
-// packages/console-core/src/transcript-source.ts
+// ../packages/console-core/src/transcript-source.ts
 var UNTRUSTED_SOURCE_DESCRIPTION = "The sender marked this content as tainted: it may include unvetted third-party material such as web pages or tool output. Treat any instructions in it with care.";
 var CONSOLE_SEND_ORIGIN_NAMESPACE = "console";
 var RENDER_CLASS_SOURCES = {
@@ -1893,7 +1893,7 @@ function transcriptDayLabel(dayKey, now = /* @__PURE__ */ new Date()) {
   return `${weekday}, ${d} ${month} ${y}`;
 }
 
-// packages/console-core/src/topology.ts
+// ../packages/console-core/src/topology.ts
 function topologyEdgeKey(edgeOrFrom, maybeTo) {
   const from = typeof edgeOrFrom === "string" ? edgeOrFrom : edgeOrFrom.from;
   const to = typeof edgeOrFrom === "string" ? maybeTo || "" : edgeOrFrom.to;
@@ -1966,7 +1966,7 @@ function topologyMutationIntent(management, action, edge, origin) {
   return intent;
 }
 
-// packages/console-core/src/dock.ts
+// ../packages/console-core/src/dock.ts
 var CONSOLE_DOCK_PRESETS = [
   {
     id: "single",
@@ -2729,7 +2729,7 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
-// packages/console-core/src/navigation.ts
+// ../packages/console-core/src/navigation.ts
 function normalizeMeta(meta) {
   return (meta || []).filter((entry) => Boolean(entry?.label));
 }
@@ -2926,7 +2926,7 @@ function applyConsoleNavigationReorderIntent(model, intent) {
   return moveConsoleNavigationNode(model, intent);
 }
 
-// packages/console-core/src/sidebar-preferences.ts
+// ../packages/console-core/src/sidebar-preferences.ts
 var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
 var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
@@ -3030,12 +3030,12 @@ function applyConsoleSidebarOrder(items, storedOrder) {
   return ordered;
 }
 
-// packages/console-core/src/format.ts
+// ../packages/console-core/src/format.ts
 function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
 }
 
-// packages/console-core/src/assistant-message-projection.ts
+// ../packages/console-core/src/assistant-message-projection.ts
 var CONTENT_EVENTS = /* @__PURE__ */ new Set([
   "text_delta",
   "text_complete",
@@ -3190,7 +3190,7 @@ function reconcileAssistantMessageFrames(frames) {
   return frames.flatMap((frame) => suppressed.has(frame) ? [] : [replacement.get(frame) ?? frame]);
 }
 
-// packages/console-core/src/runtime-append-projection.ts
+// ../packages/console-core/src/runtime-append-projection.ts
 function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -3645,7 +3645,7 @@ function reconcileRuntimeAppendFrames(frames) {
   return orderBySource(reconciled);
 }
 
-// packages/console-core/src/tool-completion.ts
+// ../packages/console-core/src/tool-completion.ts
 function unknownToolCompletion(toolCallId) {
   return { outcome: "unknown", source: "unknown", toolCallId };
 }
@@ -3664,7 +3664,7 @@ function toolCompletionFromFrame(frame, toolCallId) {
   return { outcome: data.is_error ? "error" : "success", source, toolCallId };
 }
 
-// packages/console-core/src/context-record.ts
+// ../packages/console-core/src/context-record.ts
 var MAX_CONSOLE_CONTEXTS = 8;
 var MAX_CONSOLE_CONTEXT_BYTES = 64 * 1024;
 var byteLength = (text8) => new TextEncoder().encode(text8).length;
@@ -3731,7 +3731,7 @@ function parseConsoleContextMessage(content3) {
   }
 }
 
-// packages/console-core/src/adapters.ts
+// ../packages/console-core/src/adapters.ts
 var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "subscribed",
   "run_started",
@@ -3762,7 +3762,7 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed"
 ]);
 
-// packages/console-core/src/contract.ts
+// ../packages/console-core/src/contract.ts
 var CONSOLE_RPC_METHODS = {
   capabilities: "mobkit/capabilities",
   send: "mobkit/console/send",
@@ -3816,7 +3816,7 @@ var CONSOLE_RPC_METHODS = {
   topologyAuditQuery: "mobkit/topology/audit/query"
 };
 
-// packages/console-core/src/sse-reader.ts
+// ../packages/console-core/src/sse-reader.ts
 var ConsoleConsumerError = class extends Error {
   constructor(cause) {
     super(cause instanceof Error ? cause.message : String(cause));
@@ -3905,7 +3905,7 @@ async function consumeSseResponse(response, options) {
   return collected;
 }
 
-// packages/console-core/src/timeline-subscription.ts
+// ../packages/console-core/src/timeline-subscription.ts
 function timelineCursor(frame) {
   if (frame.cursor?.trim()) return frame.cursor.trim();
   if (frame.event === "snapshot_complete") {
@@ -4053,7 +4053,7 @@ function createTimelineSubscription(input) {
   return stop;
 }
 
-// packages/console-core/src/timeline-recovery.ts
+// ../packages/console-core/src/timeline-recovery.ts
 var MIN_TIMELINE_DEDUP_KEYS = 1e3;
 async function subscribeTimelineWithRecovery(transport, input, onFrame, onReplayGap) {
   const lifetime = new AbortController();
@@ -4290,7 +4290,7 @@ function stableDedupText(value) {
   }
 }
 
-// packages/console-core/src/headless.ts
+// ../packages/console-core/src/headless.ts
 var CONSOLE_COMMAND_NAMES = {
   inspectIdentity: "inspectIdentity",
   retireIdentity: "retireIdentity",
@@ -4539,7 +4539,7 @@ var identityCommandMethods = /* @__PURE__ */ new Set([
   CONSOLE_RPC_METHODS.resetIdentity
 ]);
 
-// packages/console-core/src/targets.ts
+// ../packages/console-core/src/targets.ts
 var LEGACY_CONTROL_TARGETS = {
   topology: "mobkit/topology",
   health: "mobkit/activity",
@@ -4644,7 +4644,7 @@ function isNamespacedKind(kind) {
   return Boolean(namespace && name2 && rest.length === 0);
 }
 
-// packages/console-core/src/pending-approvals.ts
+// ../packages/console-core/src/pending-approvals.ts
 var APPROVAL_ACTIONS = ["approve", "reject", "escalate"];
 var POLL_MS = 15e3;
 var STALE_MS = 2 * POLL_MS;
@@ -4882,7 +4882,7 @@ function createPendingApprovalResource(input) {
   return resource;
 }
 
-// packages/console-core/src/send-attempt.ts
+// ../packages/console-core/src/send-attempt.ts
 var nonemptyString = (value) => typeof value === "string" && value.trim().length > 0;
 function createConsoleSendAttempt(input) {
   if (!input.text.trim()) throw new Error("Write a message before sending.");
@@ -4991,7 +4991,7 @@ function reconcileConsoleSendReceipt(attempt, frame, resolution) {
   return finishConsoleSendAttempt(attempt, { state: "accepted", interactionId: frame.interactionId, inputFrameId: frame.id });
 }
 
-// packages/console-core/src/context-edit.ts
+// ../packages/console-core/src/context-edit.ts
 function editConsoleContextQuote(records, id, quote) {
   if (!records.some((record4) => record4.id === id)) throw new Error("This quote is no longer in the draft.");
   const next = records.map((record4) => {
@@ -5003,13 +5003,13 @@ function editConsoleContextQuote(records, id, quote) {
   return next;
 }
 
-// packages/console-components/src/composer/console-composer.tsx
+// ../packages/console-components/src/composer/console-composer.tsx
 var import_jsx_runtime5 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/quote-selection-action.tsx
+// ../packages/console-components/src/conversation/quote-selection-action.tsx
 var import_react2 = require("react");
 
-// packages/console-components/src/conversation/context-selection.ts
+// ../packages/console-components/src/conversation/context-selection.ts
 function readConsoleQuoteSelection(root4, selection) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return { kind: "empty" };
   const range = selection.getRangeAt(0);
@@ -5028,7 +5028,7 @@ function readConsoleQuoteSelection(root4, selection) {
   return { kind: "selected", quote: { text: text8, messageId, sourceText: start2.dataset.quoteSource } };
 }
 
-// packages/console-components/src/conversation/quote-selection-action.tsx
+// ../packages/console-components/src/conversation/quote-selection-action.tsx
 var import_jsx_runtime6 = require("react/jsx-runtime");
 function QuoteSelectionAction({ viewportRef, onQuote, onError, disabled = false }) {
   const anchorRef = (0, import_react2.useRef)(null);
@@ -5097,7 +5097,7 @@ function QuoteSelectionAction({ viewportRef, onQuote, onError, disabled = false 
   ) : null });
 }
 
-// packages/console-components/src/conversation/jump-to-latest.tsx
+// ../packages/console-components/src/conversation/jump-to-latest.tsx
 var import_jsx_runtime7 = require("react/jsx-runtime");
 function JumpToLatest({ onClick, working = false }) {
   return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "cc-conversation-jump-anchor", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
@@ -5117,7 +5117,7 @@ function JumpToLatest({ onClick, working = false }) {
   ) });
 }
 
-// packages/console-components/src/conversation/approval-card.tsx
+// ../packages/console-components/src/conversation/approval-card.tsx
 var import_jsx_runtime8 = require("react/jsx-runtime");
 var labels = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
 function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }) {
@@ -5196,7 +5196,7 @@ function ApprovalAttention({ snapshot, onOpen }) {
   ] });
 }
 
-// packages/console-components/src/conversation/conversation-approvals.tsx
+// ../packages/console-components/src/conversation/conversation-approvals.tsx
 var import_jsx_runtime9 = require("react/jsx-runtime");
 function approvalInteractionIdsByTurn(turns) {
   const latest = /* @__PURE__ */ new Map();
@@ -5210,7 +5210,7 @@ function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalD
   }) }, request.pendingId)) });
 }
 
-// packages/console-components/src/conversation/presentation-policy.tsx
+// ../packages/console-components/src/conversation/presentation-policy.tsx
 var import_react3 = require("react");
 var import_jsx_runtime10 = require("react/jsx-runtime");
 function explicitDisplayLabel(id, labels2) {
@@ -5295,13 +5295,13 @@ function CompletedToolDisclosure({ blocks, children }) {
   ] });
 }
 
-// packages/console-components/src/conversation/conversation-pane.tsx
+// ../packages/console-components/src/conversation/conversation-pane.tsx
 var import_react14 = require("react");
 
-// packages/console-components/src/conversation/scroll-controller.ts
+// ../packages/console-components/src/conversation/scroll-controller.ts
 var import_react4 = require("react");
 
-// packages/console-components/src/conversation/scroll-geometry.ts
+// ../packages/console-components/src/conversation/scroll-geometry.ts
 var CONVERSATION_LIVE_EDGE_PX = 32;
 var CONVERSATION_ANCHOR_OFFSET_PX = 24;
 var CONVERSATION_POSITION_LIMIT = 100;
@@ -5365,7 +5365,7 @@ var ConversationPositionCache = class {
   }
 };
 
-// packages/console-components/src/conversation/scroll-controller.ts
+// ../packages/console-components/src/conversation/scroll-controller.ts
 var sharedPositions = new ConversationPositionCache();
 var ROW_SELECTOR = "[data-conversation-row-id]";
 function cancelReveal(session) {
@@ -5651,28 +5651,28 @@ function useConversationScrollController(options) {
   return { ...state, jumpToLatest, jumpToRow, readHistory, captureBeforePrepend: readHistory, notifyLayoutChange };
 }
 
-// packages/console-components/src/conversation/conversation-transcript.tsx
+// ../packages/console-components/src/conversation/conversation-transcript.tsx
 var import_react13 = require("react");
 
-// packages/console-components/src/conversation/conversation-message-group.tsx
+// ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_react12 = require("react");
 
-// packages/console-components/src/conversation/conversation-message-view.tsx
+// ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react11 = require("react");
 
-// packages/console-components/src/conversation/conversation-rich-content.tsx
+// ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_react7 = require("react");
 
-// packages/console-components/src/conversation/conversation-markdown.tsx
+// ../packages/console-components/src/conversation/conversation-markdown.tsx
 var import_react6 = require("react");
 
-// console/node_modules/devlop/lib/default.js
+// node_modules/devlop/lib/default.js
 function ok() {
 }
 function unreachable() {
 }
 
-// console/node_modules/comma-separated-tokens/index.js
+// node_modules/comma-separated-tokens/index.js
 function stringify(values, options) {
   const settings = options || {};
   const input = values[values.length - 1] === "" ? [...values, ""] : values;
@@ -5681,7 +5681,7 @@ function stringify(values, options) {
   ).trim();
 }
 
-// console/node_modules/estree-util-is-identifier-name/lib/index.js
+// node_modules/estree-util-is-identifier-name/lib/index.js
 var nameRe = /^[$_\p{ID_Start}][$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var nameReJsx = /^[$_\p{ID_Start}][-$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var emptyOptions = {};
@@ -5691,7 +5691,7 @@ function name(name2, options) {
   return re2.test(name2);
 }
 
-// console/node_modules/hast-util-whitespace/lib/index.js
+// node_modules/hast-util-whitespace/lib/index.js
 var re = /[ \t\n\f\r]/g;
 function whitespace(thing) {
   return typeof thing === "object" ? thing.type === "text" ? empty(thing.value) : false : empty(thing);
@@ -5700,7 +5700,7 @@ function empty(value) {
   return value.replace(re, "") === "";
 }
 
-// console/node_modules/property-information/lib/util/schema.js
+// node_modules/property-information/lib/util/schema.js
 var Schema = class {
   /**
    * @param {SchemaType['property']} property
@@ -5724,7 +5724,7 @@ Schema.prototype.normal = {};
 Schema.prototype.property = {};
 Schema.prototype.space = void 0;
 
-// console/node_modules/property-information/lib/util/merge.js
+// node_modules/property-information/lib/util/merge.js
 function merge(definitions, space2) {
   const property = {};
   const normal = {};
@@ -5735,12 +5735,12 @@ function merge(definitions, space2) {
   return new Schema(property, normal, space2);
 }
 
-// console/node_modules/property-information/lib/normalize.js
+// node_modules/property-information/lib/normalize.js
 function normalize(value) {
   return value.toLowerCase();
 }
 
-// console/node_modules/property-information/lib/util/info.js
+// node_modules/property-information/lib/util/info.js
 var Info = class {
   /**
    * @param {string} property
@@ -5768,7 +5768,7 @@ Info.prototype.property = "";
 Info.prototype.spaceSeparated = false;
 Info.prototype.space = void 0;
 
-// console/node_modules/property-information/lib/util/types.js
+// node_modules/property-information/lib/util/types.js
 var types_exports = {};
 __export(types_exports, {
   boolean: () => boolean2,
@@ -5791,7 +5791,7 @@ function increment() {
   return 2 ** ++powers;
 }
 
-// console/node_modules/property-information/lib/util/defined-info.js
+// node_modules/property-information/lib/util/defined-info.js
 var checks = (
   /** @type {ReadonlyArray<keyof typeof types>} */
   Object.keys(types_exports)
@@ -5829,7 +5829,7 @@ function mark(values, key, value) {
   }
 }
 
-// console/node_modules/property-information/lib/util/create.js
+// node_modules/property-information/lib/util/create.js
 function create(definition3) {
   const properties = {};
   const normals = {};
@@ -5850,7 +5850,7 @@ function create(definition3) {
   return new Schema(properties, normals, definition3.space);
 }
 
-// console/node_modules/property-information/lib/aria.js
+// node_modules/property-information/lib/aria.js
 var aria = create({
   properties: {
     ariaActiveDescendant: null,
@@ -5908,17 +5908,17 @@ var aria = create({
   }
 });
 
-// console/node_modules/property-information/lib/util/case-sensitive-transform.js
+// node_modules/property-information/lib/util/case-sensitive-transform.js
 function caseSensitiveTransform(attributes, attribute) {
   return attribute in attributes ? attributes[attribute] : attribute;
 }
 
-// console/node_modules/property-information/lib/util/case-insensitive-transform.js
+// node_modules/property-information/lib/util/case-insensitive-transform.js
 function caseInsensitiveTransform(attributes, property) {
   return caseSensitiveTransform(attributes, property.toLowerCase());
 }
 
-// console/node_modules/property-information/lib/html.js
+// node_modules/property-information/lib/html.js
 var html = create({
   attributes: {
     acceptcharset: "accept-charset",
@@ -6292,7 +6292,7 @@ var html = create({
   transform: caseInsensitiveTransform
 });
 
-// console/node_modules/property-information/lib/svg.js
+// node_modules/property-information/lib/svg.js
 var svg = create({
   attributes: {
     accentHeight: "accent-height",
@@ -6856,7 +6856,7 @@ var svg = create({
   transform: caseSensitiveTransform
 });
 
-// console/node_modules/property-information/lib/xlink.js
+// node_modules/property-information/lib/xlink.js
 var xlink = create({
   properties: {
     xLinkActuate: null,
@@ -6873,7 +6873,7 @@ var xlink = create({
   }
 });
 
-// console/node_modules/property-information/lib/xmlns.js
+// node_modules/property-information/lib/xmlns.js
 var xmlns = create({
   attributes: { xmlnsxlink: "xmlns:xlink" },
   properties: { xmlnsXLink: null, xmlns: null },
@@ -6881,7 +6881,7 @@ var xmlns = create({
   transform: caseInsensitiveTransform
 });
 
-// console/node_modules/property-information/lib/xml.js
+// node_modules/property-information/lib/xml.js
 var xml = create({
   properties: { xmlBase: null, xmlLang: null, xmlSpace: null },
   space: "xml",
@@ -6890,7 +6890,7 @@ var xml = create({
   }
 });
 
-// console/node_modules/property-information/lib/hast-to-react.js
+// node_modules/property-information/lib/hast-to-react.js
 var hastToReact = {
   classId: "classID",
   dataType: "datatype",
@@ -6911,7 +6911,7 @@ var hastToReact = {
   xmlnsXLink: "xmlnsXlink"
 };
 
-// console/node_modules/property-information/lib/find.js
+// node_modules/property-information/lib/find.js
 var cap = /[A-Z]/g;
 var dash = /-[a-z]/g;
 var valid = /^data[-\w.:]+$/i;
@@ -6947,19 +6947,19 @@ function camelcase($0) {
   return $0.charAt(1).toUpperCase();
 }
 
-// console/node_modules/property-information/index.js
+// node_modules/property-information/index.js
 var html2 = merge([aria, html, xlink, xmlns, xml], "html");
 var svg2 = merge([aria, svg, xlink, xmlns, xml], "svg");
 
-// console/node_modules/space-separated-tokens/index.js
+// node_modules/space-separated-tokens/index.js
 function stringify2(values) {
   return values.join(" ").trim();
 }
 
-// console/node_modules/hast-util-to-jsx-runtime/lib/index.js
+// node_modules/hast-util-to-jsx-runtime/lib/index.js
 var import_style_to_js = __toESM(require_cjs3(), 1);
 
-// console/node_modules/unist-util-position/lib/index.js
+// node_modules/unist-util-position/lib/index.js
 var pointEnd = point("end");
 var pointStart = point("start");
 function point(type) {
@@ -6983,7 +6983,7 @@ function position(node2) {
   }
 }
 
-// console/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -7009,7 +7009,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// console/node_modules/vfile-message/lib/index.js
+// node_modules/vfile-message/lib/index.js
 var VFileMessage = class extends Error {
   /**
    * Create a message for `reason`.
@@ -7145,7 +7145,7 @@ VFileMessage.prototype.place = void 0;
 VFileMessage.prototype.ruleId = void 0;
 VFileMessage.prototype.source = void 0;
 
-// console/node_modules/hast-util-to-jsx-runtime/lib/index.js
+// node_modules/hast-util-to-jsx-runtime/lib/index.js
 var own = {}.hasOwnProperty;
 var emptyMap = /* @__PURE__ */ new Map();
 var cap2 = /[A-Z]/g;
@@ -7524,7 +7524,7 @@ function toDash($0) {
   return "-" + $0.toLowerCase();
 }
 
-// console/node_modules/html-url-attributes/lib/index.js
+// node_modules/html-url-attributes/lib/index.js
 var urlAttributes = {
   action: ["form"],
   cite: ["blockquote", "del", "ins", "q"],
@@ -7549,11 +7549,11 @@ var urlAttributes = {
   ]
 };
 
-// console/node_modules/react-markdown/lib/index.js
+// node_modules/react-markdown/lib/index.js
 var import_jsx_runtime11 = require("react/jsx-runtime");
 var import_react5 = require("react");
 
-// console/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions2 = {};
 function toString(value, options) {
   const settings = options || emptyOptions2;
@@ -7590,7 +7590,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// console/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -9719,13 +9719,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// console/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own2 = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own2.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// console/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list4, start2, remove, items) {
   const end = list4.length;
   let chunkStart = 0;
@@ -9759,7 +9759,7 @@ function push(list4, items) {
   return items;
 }
 
-// console/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -9799,7 +9799,7 @@ function constructs(existing, list4) {
   splice(existing, 0, 0, before);
 }
 
-// console/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code4 = Number.parseInt(value, base);
   if (
@@ -9817,12 +9817,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code4);
 }
 
-// console/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// console/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -9854,7 +9854,7 @@ function regexCheck(regex) {
   }
 }
 
-// console/node_modules/micromark-util-sanitize-uri/index.js
+// node_modules/micromark-util-sanitize-uri/index.js
 function normalizeUri(value) {
   const result = [];
   let index2 = -1;
@@ -9893,7 +9893,7 @@ function normalizeUri(value) {
   return result.join("") + value.slice(start2);
 }
 
-// console/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok3, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -9915,7 +9915,7 @@ function factorySpace(effects, ok3, type, max) {
   }
 }
 
-// console/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -9965,7 +9965,7 @@ function initializeContent(effects) {
   }
 }
 
-// console/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document2 = {
   tokenize: initializeDocument
 };
@@ -10147,7 +10147,7 @@ function tokenizeContainer(effects, ok3, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok3, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// console/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code4) {
   if (code4 === null || markdownLineEndingOrSpace(code4) || unicodeWhitespace(code4)) {
     return 1;
@@ -10157,7 +10157,7 @@ function classifyCharacter(code4) {
   }
 }
 
-// console/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -10171,7 +10171,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// console/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -10302,7 +10302,7 @@ function movePoint(point4, offset) {
   point4._bufferIndex += offset;
 }
 
-// console/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -10403,7 +10403,7 @@ function tokenizeAutolink(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -10418,7 +10418,7 @@ function tokenizeBlankLine(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -10476,7 +10476,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// console/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -10502,7 +10502,7 @@ function tokenizeCharacterEscape(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -10567,7 +10567,7 @@ function tokenizeCharacterReference(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -10750,7 +10750,7 @@ function tokenizeNonLazyContinuation(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -10814,7 +10814,7 @@ function tokenizeFurtherStart(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -10929,7 +10929,7 @@ function tokenizeCodeText(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -11122,7 +11122,7 @@ function chunkedPush(list4, right) {
   }
 }
 
-// console/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -11275,7 +11275,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// console/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -11346,7 +11346,7 @@ function tokenizeContinuation(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -11438,7 +11438,7 @@ function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerT
   }
 }
 
-// console/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   const self2 = this;
   let size = 0;
@@ -11499,7 +11499,7 @@ function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// console/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   let marker;
   return start2;
@@ -11561,7 +11561,7 @@ function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// console/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok3) {
   let seen;
   return start2;
@@ -11580,7 +11580,7 @@ function factoryWhitespace(effects, ok3) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -11666,7 +11666,7 @@ function tokenizeTitleBefore(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -11687,7 +11687,7 @@ function tokenizeHardBreakEscape(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -11778,7 +11778,7 @@ function tokenizeHeadingAtx(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -11845,7 +11845,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// console/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -12224,7 +12224,7 @@ function tokenizeBlankLineBefore(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -12530,7 +12530,7 @@ function tokenizeHtmlText(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -12756,7 +12756,7 @@ function tokenizeReferenceCollapsed(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -12787,7 +12787,7 @@ function tokenizeLabelStartImage(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -12809,7 +12809,7 @@ function tokenizeLabelStartLink(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -12824,7 +12824,7 @@ function tokenizeLineEnding(effects, ok3) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -12863,7 +12863,7 @@ function tokenizeThematicBreak(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -12993,7 +12993,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -13085,7 +13085,7 @@ function tokenizeSetextUnderline(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -13123,7 +13123,7 @@ function initializeFlow(effects) {
   }
 }
 
-// console/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -13262,7 +13262,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// console/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -13337,7 +13337,7 @@ var disable = {
   null: []
 };
 
-// console/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point4 = {
     _bufferIndex: -1,
@@ -13660,7 +13660,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// console/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse2(options) {
   const settings = options || {};
   const constructs2 = (
@@ -13686,14 +13686,14 @@ function parse2(options) {
   }
 }
 
-// console/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// console/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -13772,7 +13772,7 @@ function preprocess() {
   }
 }
 
-// console/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -13790,7 +13790,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// console/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own3 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -14499,7 +14499,7 @@ function defaultOnError(left, right) {
   }
 }
 
-// console/node_modules/remark-parse/lib/index.js
+// node_modules/remark-parse/lib/index.js
 function remarkParse(options) {
   const self2 = this;
   self2.parser = parser;
@@ -14516,7 +14516,7 @@ function remarkParse(options) {
   }
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
+// node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
 function blockquote(state, node2) {
   const result = {
     type: "element",
@@ -14528,14 +14528,14 @@ function blockquote(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/break.js
+// node_modules/mdast-util-to-hast/lib/handlers/break.js
 function hardBreak(state, node2) {
   const result = { type: "element", tagName: "br", properties: {}, children: [] };
   state.patch(node2, result);
   return [state.applyData(node2, result), { type: "text", value: "\n" }];
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/code.js
+// node_modules/mdast-util-to-hast/lib/handlers/code.js
 function code(state, node2) {
   const value = node2.value ? node2.value + "\n" : "";
   const properties = {};
@@ -14559,7 +14559,7 @@ function code(state, node2) {
   return result;
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/delete.js
+// node_modules/mdast-util-to-hast/lib/handlers/delete.js
 function strikethrough(state, node2) {
   const result = {
     type: "element",
@@ -14571,7 +14571,7 @@ function strikethrough(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
+// node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
 function emphasis(state, node2) {
   const result = {
     type: "element",
@@ -14583,7 +14583,7 @@ function emphasis(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
 function footnoteReference(state, node2) {
   const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
   const id = String(node2.identifier).toUpperCase();
@@ -14622,7 +14622,7 @@ function footnoteReference(state, node2) {
   return state.applyData(node2, sup);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/heading.js
+// node_modules/mdast-util-to-hast/lib/handlers/heading.js
 function heading(state, node2) {
   const result = {
     type: "element",
@@ -14634,7 +14634,7 @@ function heading(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/html.js
+// node_modules/mdast-util-to-hast/lib/handlers/html.js
 function html3(state, node2) {
   if (state.options.allowDangerousHtml) {
     const result = { type: "raw", value: node2.value };
@@ -14644,7 +14644,7 @@ function html3(state, node2) {
   return void 0;
 }
 
-// console/node_modules/mdast-util-to-hast/lib/revert.js
+// node_modules/mdast-util-to-hast/lib/revert.js
 function revert(state, node2) {
   const subtype = node2.referenceType;
   let suffix = "]";
@@ -14672,7 +14672,7 @@ function revert(state, node2) {
   return contents;
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
 function imageReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14688,7 +14688,7 @@ function imageReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/image.js
+// node_modules/mdast-util-to-hast/lib/handlers/image.js
 function image(state, node2) {
   const properties = { src: normalizeUri(node2.url) };
   if (node2.alt !== null && node2.alt !== void 0) {
@@ -14702,7 +14702,7 @@ function image(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
+// node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
 function inlineCode(state, node2) {
   const text8 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
   state.patch(node2, text8);
@@ -14716,7 +14716,7 @@ function inlineCode(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
 function linkReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14737,7 +14737,7 @@ function linkReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/link.js
+// node_modules/mdast-util-to-hast/lib/handlers/link.js
 function link(state, node2) {
   const properties = { href: normalizeUri(node2.url) };
   if (node2.title !== null && node2.title !== void 0) {
@@ -14753,7 +14753,7 @@ function link(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/list-item.js
+// node_modules/mdast-util-to-hast/lib/handlers/list-item.js
 function listItem(state, node2, parent) {
   const results = state.all(node2);
   const loose = parent ? listLoose(parent) : listItemLoose(node2);
@@ -14816,7 +14816,7 @@ function listItemLoose(node2) {
   return spread === null || spread === void 0 ? node2.children.length > 1 : spread;
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/list.js
+// node_modules/mdast-util-to-hast/lib/handlers/list.js
 function list2(state, node2) {
   const properties = {};
   const results = state.all(node2);
@@ -14841,7 +14841,7 @@ function list2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
+// node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
 function paragraph(state, node2) {
   const result = {
     type: "element",
@@ -14853,14 +14853,14 @@ function paragraph(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/root.js
+// node_modules/mdast-util-to-hast/lib/handlers/root.js
 function root2(state, node2) {
   const result = { type: "root", children: state.wrap(state.all(node2)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/strong.js
+// node_modules/mdast-util-to-hast/lib/handlers/strong.js
 function strong(state, node2) {
   const result = {
     type: "element",
@@ -14872,7 +14872,7 @@ function strong(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/table.js
+// node_modules/mdast-util-to-hast/lib/handlers/table.js
 function table(state, node2) {
   const rows = state.all(node2);
   const firstRow = rows.shift();
@@ -14909,7 +14909,7 @@ function table(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/table-row.js
+// node_modules/mdast-util-to-hast/lib/handlers/table-row.js
 function tableRow(state, node2, parent) {
   const siblings = parent ? parent.children : void 0;
   const rowIndex = siblings ? siblings.indexOf(node2) : 1;
@@ -14943,7 +14943,7 @@ function tableRow(state, node2, parent) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
+// node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
 function tableCell(state, node2) {
   const result = {
     type: "element",
@@ -14956,7 +14956,7 @@ function tableCell(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/trim-lines/index.js
+// node_modules/trim-lines/index.js
 var tab = 9;
 var space = 32;
 function trimLines(value) {
@@ -14996,14 +14996,14 @@ function trimLine(value, start2, end) {
   return endIndex > startIndex ? value.slice(startIndex, endIndex) : "";
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/text.js
+// node_modules/mdast-util-to-hast/lib/handlers/text.js
 function text5(state, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
+// node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
 function thematicBreak2(state, node2) {
   const result = {
     type: "element",
@@ -15015,7 +15015,7 @@ function thematicBreak2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/handlers/index.js
+// node_modules/mdast-util-to-hast/lib/handlers/index.js
 var handlers = {
   blockquote,
   break: hardBreak,
@@ -15050,7 +15050,7 @@ function ignore() {
   return void 0;
 }
 
-// console/node_modules/@ungap/structured-clone/esm/types.js
+// node_modules/@ungap/structured-clone/esm/types.js
 var VOID = -1;
 var PRIMITIVE = 0;
 var ARRAY = 1;
@@ -15062,7 +15062,7 @@ var SET = 6;
 var ERROR = 7;
 var BIGINT = 8;
 
-// console/node_modules/@ungap/structured-clone/esm/deserialize.js
+// node_modules/@ungap/structured-clone/esm/deserialize.js
 var { defineProperty } = Object;
 var env = typeof self === "object" ? self : globalThis;
 var guard = (name2, init) => {
@@ -15154,7 +15154,7 @@ var deserializer = ($, _) => {
 };
 var deserialize = (serialized) => deserializer(/* @__PURE__ */ new Map(), serialized)(0);
 
-// console/node_modules/@ungap/structured-clone/esm/serialize.js
+// node_modules/@ungap/structured-clone/esm/serialize.js
 var EMPTY = "";
 var { toString: toString2 } = {};
 var { keys, is } = Object;
@@ -15291,13 +15291,13 @@ var serialize = (value, { json, lossy } = {}) => {
   return serializer(!(json || lossy), !!json, /* @__PURE__ */ new Map(), _)(value), _;
 };
 
-// console/node_modules/@ungap/structured-clone/esm/index.js
+// node_modules/@ungap/structured-clone/esm/index.js
 var esm_default = typeof structuredClone === "function" ? (
   /* c8 ignore start */
   (any, options) => options && ("json" in options || "lossy" in options) ? deserialize(serialize(any, options)) : structuredClone(any)
 ) : (any, options) => deserialize(serialize(any, options));
 
-// console/node_modules/mdast-util-to-hast/lib/footer.js
+// node_modules/mdast-util-to-hast/lib/footer.js
 function defaultFootnoteBackContent(_, rereferenceIndex) {
   const result = [{ type: "text", value: "\u21A9" }];
   if (rereferenceIndex > 1) {
@@ -15407,7 +15407,7 @@ function footer(state) {
   };
 }
 
-// console/node_modules/unist-util-is/lib/index.js
+// node_modules/unist-util-is/lib/index.js
 var convert = (
   // Note: overloads in JSDoc can’t yet use different `@template`s.
   /**
@@ -15506,12 +15506,12 @@ function looksLikeANode(value) {
   return value !== null && typeof value === "object" && "type" in value;
 }
 
-// console/node_modules/unist-util-visit-parents/lib/color.js
+// node_modules/unist-util-visit-parents/lib/color.js
 function color(d) {
   return d;
 }
 
-// console/node_modules/unist-util-visit-parents/lib/index.js
+// node_modules/unist-util-visit-parents/lib/index.js
 var empty2 = [];
 var CONTINUE = true;
 var EXIT = false;
@@ -15588,7 +15588,7 @@ function toResult(value) {
   return value === null || value === void 0 ? empty2 : [value];
 }
 
-// console/node_modules/unist-util-visit/lib/index.js
+// node_modules/unist-util-visit/lib/index.js
 function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   let reverse;
   let test;
@@ -15610,7 +15610,7 @@ function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   }
 }
 
-// console/node_modules/mdast-util-to-hast/lib/state.js
+// node_modules/mdast-util-to-hast/lib/state.js
 var own4 = {}.hasOwnProperty;
 var emptyOptions3 = {};
 function createState(tree, options) {
@@ -15752,7 +15752,7 @@ function trimMarkdownSpaceStart(value) {
   return value.slice(index2);
 }
 
-// console/node_modules/mdast-util-to-hast/lib/index.js
+// node_modules/mdast-util-to-hast/lib/index.js
 function toHast(tree, options) {
   const state = createState(tree, options);
   const node2 = state.one(tree, void 0);
@@ -15765,7 +15765,7 @@ function toHast(tree, options) {
   return result;
 }
 
-// console/node_modules/remark-rehype/lib/index.js
+// node_modules/remark-rehype/lib/index.js
 function remarkRehype(destination, options) {
   if (destination && "run" in destination) {
     return async function(tree, file) {
@@ -15784,17 +15784,17 @@ function remarkRehype(destination, options) {
   };
 }
 
-// console/node_modules/bail/index.js
+// node_modules/bail/index.js
 function bail(error) {
   if (error) {
     throw error;
   }
 }
 
-// console/node_modules/unified/lib/index.js
+// node_modules/unified/lib/index.js
 var import_extend = __toESM(require_extend(), 1);
 
-// console/node_modules/is-plain-obj/index.js
+// node_modules/is-plain-obj/index.js
 function isPlainObject(value) {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -15803,7 +15803,7 @@ function isPlainObject(value) {
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
 
-// console/node_modules/trough/lib/index.js
+// node_modules/trough/lib/index.js
 function trough() {
   const fns = [];
   const pipeline = { run, use };
@@ -15887,7 +15887,7 @@ function wrap2(middleware, callback) {
   }
 }
 
-// console/node_modules/vfile/lib/minpath.browser.js
+// node_modules/vfile/lib/minpath.browser.js
 var minpath = { basename, dirname, extname, join, sep: "/" };
 function basename(path2, extname2) {
   if (extname2 !== void 0 && typeof extname2 !== "string") {
@@ -16100,13 +16100,13 @@ function assertPath(path2) {
   }
 }
 
-// console/node_modules/vfile/lib/minproc.browser.js
+// node_modules/vfile/lib/minproc.browser.js
 var minproc = { cwd };
 function cwd() {
   return "/";
 }
 
-// console/node_modules/vfile/lib/minurl.shared.js
+// node_modules/vfile/lib/minurl.shared.js
 function isUrl(fileUrlOrPath) {
   return Boolean(
     fileUrlOrPath !== null && typeof fileUrlOrPath === "object" && "href" in fileUrlOrPath && fileUrlOrPath.href && "protocol" in fileUrlOrPath && fileUrlOrPath.protocol && // @ts-expect-error: indexing is fine.
@@ -16114,7 +16114,7 @@ function isUrl(fileUrlOrPath) {
   );
 }
 
-// console/node_modules/vfile/lib/minurl.browser.js
+// node_modules/vfile/lib/minurl.browser.js
 function urlToPath(path2) {
   if (typeof path2 === "string") {
     path2 = new URL(path2);
@@ -16157,7 +16157,7 @@ function getPathFromURLPosix(url) {
   return decodeURIComponent(pathname);
 }
 
-// console/node_modules/vfile/lib/index.js
+// node_modules/vfile/lib/index.js
 var order = (
   /** @type {const} */
   [
@@ -16613,7 +16613,7 @@ function isUint8Array(value) {
   );
 }
 
-// console/node_modules/unified/lib/callable-instance.js
+// node_modules/unified/lib/callable-instance.js
 var CallableInstance = (
   /**
    * @type {new <Parameters extends Array<unknown>, Result>(property: string | symbol) => (...parameters: Parameters) => Result}
@@ -16642,7 +16642,7 @@ var CallableInstance = (
   })
 );
 
-// console/node_modules/unified/lib/index.js
+// node_modules/unified/lib/index.js
 var own5 = {}.hasOwnProperty;
 var Processor = class _Processor extends CallableInstance {
   /**
@@ -17278,7 +17278,7 @@ function isUint8Array2(value) {
   );
 }
 
-// console/node_modules/react-markdown/lib/index.js
+// node_modules/react-markdown/lib/index.js
 var changelog = "https://github.com/remarkjs/react-markdown/blob/main/changelog.md";
 var emptyPlugins = [];
 var emptyRemarkRehypeOptions = { allowDangerousHtml: true };
@@ -17424,7 +17424,7 @@ function defaultUrlTransform(value) {
   return "";
 }
 
-// console/node_modules/ccount/index.js
+// node_modules/ccount/index.js
 function ccount(value, character) {
   const source = String(value);
   if (typeof character !== "string") {
@@ -17439,7 +17439,7 @@ function ccount(value, character) {
   return count;
 }
 
-// console/node_modules/escape-string-regexp/index.js
+// node_modules/escape-string-regexp/index.js
 function escapeStringRegexp(string4) {
   if (typeof string4 !== "string") {
     throw new TypeError("Expected a string");
@@ -17447,7 +17447,7 @@ function escapeStringRegexp(string4) {
   return string4.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&").replace(/-/g, "\\x2d");
 }
 
-// console/node_modules/mdast-util-find-and-replace/lib/index.js
+// node_modules/mdast-util-find-and-replace/lib/index.js
 function findAndReplace(tree, list4, options) {
   const settings = options || {};
   const ignored = convert(settings.ignore || []);
@@ -17552,7 +17552,7 @@ function toFunction(replace2) {
   };
 }
 
-// console/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+// node_modules/mdast-util-gfm-autolink-literal/lib/index.js
 var inConstruct = "phrasing";
 var notInConstruct = ["autolink", "link", "image", "label"];
 function gfmAutolinkLiteralFromMarkdown() {
@@ -17702,7 +17702,7 @@ function previous2(match, email) {
   (!email || code4 !== 47);
 }
 
-// console/node_modules/mdast-util-gfm-footnote/lib/index.js
+// node_modules/mdast-util-gfm-footnote/lib/index.js
 footnoteReference2.peek = footnoteReferencePeek;
 function enterFootnoteCallString() {
   this.buffer();
@@ -17815,7 +17815,7 @@ function mapAll(line, index2, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// console/node_modules/mdast-util-gfm-strikethrough/lib/index.js
+// node_modules/mdast-util-gfm-strikethrough/lib/index.js
 var constructsWithoutStrikethrough = [
   "autolink",
   "destinationLiteral",
@@ -17867,7 +17867,7 @@ function peekDelete() {
   return "~";
 }
 
-// console/node_modules/markdown-table/index.js
+// node_modules/markdown-table/index.js
 function defaultStringLength(value) {
   return value.length;
 }
@@ -18008,7 +18008,7 @@ function toAlignment(value) {
   return code4 === 67 || code4 === 99 ? 99 : code4 === 76 || code4 === 108 ? 108 : code4 === 82 || code4 === 114 ? 114 : 0;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
+// node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
 function blockquote2(node2, _, state, info) {
   const exit3 = state.enter("blockquote");
   const tracker = state.createTracker(info);
@@ -18025,7 +18025,7 @@ function map(line, _, blank) {
   return ">" + (blank ? "" : " ") + line;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
+// node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
 function patternInScope(stack, pattern) {
   return listInScope(stack, pattern.inConstruct, true) && !listInScope(stack, pattern.notInConstruct, false);
 }
@@ -18045,7 +18045,7 @@ function listInScope(stack, list4, none) {
   return false;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/break.js
+// node_modules/mdast-util-to-markdown/lib/handle/break.js
 function hardBreak2(_, _1, state, info) {
   let index2 = -1;
   while (++index2 < state.unsafe.length) {
@@ -18056,7 +18056,7 @@ function hardBreak2(_, _1, state, info) {
   return "\\\n";
 }
 
-// console/node_modules/longest-streak/index.js
+// node_modules/longest-streak/index.js
 function longestStreak(value, substring) {
   const source = String(value);
   let index2 = source.indexOf(substring);
@@ -18080,7 +18080,7 @@ function longestStreak(value, substring) {
   return max;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
+// node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
 function formatCodeAsIndented(node2, state) {
   return Boolean(
     state.options.fences === false && node2.value && // If there’s no info…
@@ -18090,7 +18090,7 @@ function formatCodeAsIndented(node2, state) {
   );
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-fence.js
+// node_modules/mdast-util-to-markdown/lib/util/check-fence.js
 function checkFence(state) {
   const marker = state.options.fence || "`";
   if (marker !== "`" && marker !== "~") {
@@ -18101,7 +18101,7 @@ function checkFence(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/code.js
+// node_modules/mdast-util-to-markdown/lib/handle/code.js
 function code2(node2, _, state, info) {
   const marker = checkFence(state);
   const raw = node2.value || "";
@@ -18153,7 +18153,7 @@ function map2(line, _, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-quote.js
+// node_modules/mdast-util-to-markdown/lib/util/check-quote.js
 function checkQuote(state) {
   const marker = state.options.quote || '"';
   if (marker !== '"' && marker !== "'") {
@@ -18164,7 +18164,7 @@ function checkQuote(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/definition.js
+// node_modules/mdast-util-to-markdown/lib/handle/definition.js
 function definition2(node2, _, state, info) {
   const quote = checkQuote(state);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
@@ -18220,7 +18220,7 @@ function definition2(node2, _, state, info) {
   return value;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
+// node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
 function checkEmphasis(state) {
   const marker = state.options.emphasis || "*";
   if (marker !== "*" && marker !== "_") {
@@ -18231,12 +18231,12 @@ function checkEmphasis(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
+// node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
 function encodeCharacterReference(code4) {
   return "&#x" + code4.toString(16).toUpperCase() + ";";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/encode-info.js
+// node_modules/mdast-util-to-markdown/lib/util/encode-info.js
 function encodeInfo(outside, inside, marker) {
   const outsideKind = classifyCharacter(outside);
   const insideKind = classifyCharacter(inside);
@@ -18278,7 +18278,7 @@ function encodeInfo(outside, inside, marker) {
   );
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
+// node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
 emphasis2.peek = emphasisPeek;
 function emphasis2(node2, _, state, info) {
   const marker = checkEmphasis(state);
@@ -18318,7 +18318,7 @@ function emphasisPeek(_, _1, state) {
   return state.options.emphasis || "*";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
+// node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
 function formatHeadingAsSetext(node2, state) {
   let literalWithBreak = false;
   visit(node2, function(node3) {
@@ -18332,7 +18332,7 @@ function formatHeadingAsSetext(node2, state) {
   );
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/heading.js
+// node_modules/mdast-util-to-markdown/lib/handle/heading.js
 function heading2(node2, _, state, info) {
   const rank = Math.max(Math.min(6, node2.depth || 1), 1);
   const tracker = state.createTracker(info);
@@ -18374,7 +18374,7 @@ function heading2(node2, _, state, info) {
   return value;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/html.js
+// node_modules/mdast-util-to-markdown/lib/handle/html.js
 html4.peek = htmlPeek;
 function html4(node2) {
   return node2.value || "";
@@ -18383,7 +18383,7 @@ function htmlPeek() {
   return "<";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/image.js
+// node_modules/mdast-util-to-markdown/lib/handle/image.js
 image2.peek = imagePeek;
 function image2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18440,7 +18440,7 @@ function imagePeek() {
   return "!";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
+// node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
 imageReference2.peek = imageReferencePeek;
 function imageReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18479,7 +18479,7 @@ function imageReferencePeek() {
   return "!";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
+// node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
 inlineCode2.peek = inlineCodePeek;
 function inlineCode2(node2, _, state) {
   let value = node2.value || "";
@@ -18510,7 +18510,7 @@ function inlineCodePeek() {
   return "`";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
+// node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
 function formatLinkAsAutolink(node2, state) {
   const raw = toString(node2);
   return Boolean(
@@ -18525,7 +18525,7 @@ function formatLinkAsAutolink(node2, state) {
   );
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/link.js
+// node_modules/mdast-util-to-markdown/lib/handle/link.js
 link2.peek = linkPeek;
 function link2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18605,7 +18605,7 @@ function linkPeek(node2, _, state) {
   return formatLinkAsAutolink(node2, state) ? "<" : "[";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
+// node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
 linkReference2.peek = linkReferencePeek;
 function linkReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18644,7 +18644,7 @@ function linkReferencePeek() {
   return "[";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
 function checkBullet(state) {
   const marker = state.options.bullet || "*";
   if (marker !== "*" && marker !== "+" && marker !== "-") {
@@ -18655,7 +18655,7 @@ function checkBullet(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
 function checkBulletOther(state) {
   const bullet = checkBullet(state);
   const bulletOther = state.options.bulletOther;
@@ -18675,7 +18675,7 @@ function checkBulletOther(state) {
   return bulletOther;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
 function checkBulletOrdered(state) {
   const marker = state.options.bulletOrdered || ".";
   if (marker !== "." && marker !== ")") {
@@ -18686,7 +18686,7 @@ function checkBulletOrdered(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-rule.js
+// node_modules/mdast-util-to-markdown/lib/util/check-rule.js
 function checkRule(state) {
   const marker = state.options.rule || "*";
   if (marker !== "*" && marker !== "-" && marker !== "_") {
@@ -18697,7 +18697,7 @@ function checkRule(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/list.js
+// node_modules/mdast-util-to-markdown/lib/handle/list.js
 function list3(node2, parent, state, info) {
   const exit3 = state.enter("list");
   const bulletCurrent = state.bulletCurrent;
@@ -18737,7 +18737,7 @@ function list3(node2, parent, state, info) {
   return value;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
+// node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
 function checkListItemIndent(state) {
   const style = state.options.listItemIndent || "one";
   if (style !== "tab" && style !== "one" && style !== "mixed") {
@@ -18748,7 +18748,7 @@ function checkListItemIndent(state) {
   return style;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/list-item.js
+// node_modules/mdast-util-to-markdown/lib/handle/list-item.js
 function listItem2(node2, parent, state, info) {
   const listItemIndent = checkListItemIndent(state);
   let bullet = state.bulletCurrent || checkBullet(state);
@@ -18777,7 +18777,7 @@ function listItem2(node2, parent, state, info) {
   }
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
+// node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
 function paragraph2(node2, _, state, info) {
   const exit3 = state.enter("paragraph");
   const subexit = state.enter("phrasing");
@@ -18787,7 +18787,7 @@ function paragraph2(node2, _, state, info) {
   return value;
 }
 
-// console/node_modules/mdast-util-phrasing/lib/index.js
+// node_modules/mdast-util-phrasing/lib/index.js
 var phrasing = (
   /** @type {(node?: unknown) => node is Exclude<PhrasingContent, Html>} */
   convert([
@@ -18815,7 +18815,7 @@ var phrasing = (
   ])
 );
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/root.js
+// node_modules/mdast-util-to-markdown/lib/handle/root.js
 function root3(node2, _, state, info) {
   const hasPhrasing = node2.children.some(function(d) {
     return phrasing(d);
@@ -18824,7 +18824,7 @@ function root3(node2, _, state, info) {
   return container.call(state, node2, info);
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-strong.js
+// node_modules/mdast-util-to-markdown/lib/util/check-strong.js
 function checkStrong(state) {
   const marker = state.options.strong || "*";
   if (marker !== "*" && marker !== "_") {
@@ -18835,7 +18835,7 @@ function checkStrong(state) {
   return marker;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/strong.js
+// node_modules/mdast-util-to-markdown/lib/handle/strong.js
 strong2.peek = strongPeek;
 function strong2(node2, _, state, info) {
   const marker = checkStrong(state);
@@ -18875,12 +18875,12 @@ function strongPeek(_, _1, state) {
   return state.options.strong || "*";
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/text.js
+// node_modules/mdast-util-to-markdown/lib/handle/text.js
 function text6(node2, _, state, info) {
   return state.safe(node2.value, info);
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
+// node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
 function checkRuleRepetition(state) {
   const repetition = state.options.ruleRepetition || 3;
   if (repetition < 3) {
@@ -18891,13 +18891,13 @@ function checkRuleRepetition(state) {
   return repetition;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
+// node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
 function thematicBreak3(_, _1, state) {
   const value = (checkRule(state) + (state.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state));
   return state.options.ruleSpaces ? value.slice(0, -1) : value;
 }
 
-// console/node_modules/mdast-util-to-markdown/lib/handle/index.js
+// node_modules/mdast-util-to-markdown/lib/handle/index.js
 var handle = {
   blockquote: blockquote2,
   break: hardBreak2,
@@ -18921,7 +18921,7 @@ var handle = {
   thematicBreak: thematicBreak3
 };
 
-// console/node_modules/mdast-util-gfm-table/lib/index.js
+// node_modules/mdast-util-gfm-table/lib/index.js
 function gfmTableFromMarkdown() {
   return {
     enter: {
@@ -19074,7 +19074,7 @@ function gfmTableToMarkdown(options) {
   }
 }
 
-// console/node_modules/mdast-util-gfm-task-list-item/lib/index.js
+// node_modules/mdast-util-gfm-task-list-item/lib/index.js
 function gfmTaskListItemFromMarkdown() {
   return {
     exit: {
@@ -19147,7 +19147,7 @@ function listItemWithTaskListItem(node2, parent, state, info) {
   }
 }
 
-// console/node_modules/mdast-util-gfm/lib/index.js
+// node_modules/mdast-util-gfm/lib/index.js
 function gfmFromMarkdown() {
   return [
     gfmAutolinkLiteralFromMarkdown(),
@@ -19169,7 +19169,7 @@ function gfmToMarkdown(options) {
   };
 }
 
-// console/node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
+// node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
 var wwwPrefix = {
   tokenize: tokenizeWwwPrefix,
   partial: true
@@ -19511,7 +19511,7 @@ function previousUnbalanced(events) {
   return result;
 }
 
-// console/node_modules/micromark-extension-gfm-footnote/lib/syntax.js
+// node_modules/micromark-extension-gfm-footnote/lib/syntax.js
 var indent = {
   tokenize: tokenizeIndent2,
   partial: true
@@ -19786,7 +19786,7 @@ function tokenizeIndent2(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
+// node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
 function gfmStrikethrough(options) {
   const options_ = options || {};
   let single = options_.singleTilde;
@@ -19880,7 +19880,7 @@ function gfmStrikethrough(options) {
   }
 }
 
-// console/node_modules/micromark-extension-gfm-table/lib/edit-map.js
+// node_modules/micromark-extension-gfm-table/lib/edit-map.js
 var EditMap = class {
   /**
    * Create a new edit map.
@@ -19966,7 +19966,7 @@ function addImplementation(editMap, at, remove, add) {
   editMap.index.set(at, change);
 }
 
-// console/node_modules/micromark-extension-gfm-table/lib/infer.js
+// node_modules/micromark-extension-gfm-table/lib/infer.js
 function gfmTableAlign(events, index2) {
   let inDelimiterRow = false;
   const align = [];
@@ -19993,7 +19993,7 @@ function gfmTableAlign(events, index2) {
   return align;
 }
 
-// console/node_modules/micromark-extension-gfm-table/lib/syntax.js
+// node_modules/micromark-extension-gfm-table/lib/syntax.js
 function gfmTable() {
   return {
     flow: {
@@ -20384,7 +20384,7 @@ function getPoint(events, index2) {
   return event[1][side];
 }
 
-// console/node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
+// node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
 var tasklistCheck = {
   name: "tasklistCheck",
   tokenize: tokenizeTasklistCheck
@@ -20458,7 +20458,7 @@ function spaceThenNonSpace(effects, ok3, nok) {
   }
 }
 
-// console/node_modules/micromark-extension-gfm/index.js
+// node_modules/micromark-extension-gfm/index.js
 function gfm(options) {
   return combineExtensions([
     gfmAutolinkLiteral(),
@@ -20469,7 +20469,7 @@ function gfm(options) {
   ]);
 }
 
-// console/node_modules/remark-gfm/lib/index.js
+// node_modules/remark-gfm/lib/index.js
 var emptyOptions4 = {};
 function remarkGfm(options) {
   const self2 = (
@@ -20486,7 +20486,7 @@ function remarkGfm(options) {
   toMarkdownExtensions.push(gfmToMarkdown(settings));
 }
 
-// packages/console-components/src/conversation/conversation-markdown.tsx
+// ../packages/console-components/src/conversation/conversation-markdown.tsx
 var import_jsx_runtime12 = require("react/jsx-runtime");
 function cleanUrl(url) {
   const value = url.trim();
@@ -20577,7 +20577,7 @@ var ConversationMarkdown = (0, import_react6.memo)(function ConversationMarkdown
   );
 }, (previous3, next) => previous3.block.id === next.block.id && previous3.block.source === next.block.source && previous3.block.streaming === next.block.streaming && previous3.urlPolicy === next.urlPolicy && previous3.className === next.className);
 
-// packages/console-components/src/conversation/change-stat-pair.tsx
+// ../packages/console-components/src/conversation/change-stat-pair.tsx
 var import_jsx_runtime13 = require("react/jsx-runtime");
 function ChangeStatPair({
   plus,
@@ -20596,7 +20596,7 @@ function ChangeStatPair({
   ] });
 }
 
-// packages/console-components/src/conversation/conversation-rich-content.tsx
+// ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_jsx_runtime14 = require("react/jsx-runtime");
 function markdownHtml(text8, displayNormalization = true) {
   return { __html: renderConversationInlineMarkdown(text8, { displayNormalization }) };
@@ -21218,7 +21218,7 @@ function ConversationRichContent({
   return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(import_jsx_runtime14.Fragment, { children: renderedBody });
 }
 
-// packages/console-components/src/conversation/delivered-context-message.tsx
+// ../packages/console-components/src/conversation/delivered-context-message.tsx
 var import_jsx_runtime15 = require("react/jsx-runtime");
 function QuoteCopyIcon({ name: name2 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyGlyph, { state: name2 === "i-check" ? "copied" : "idle" });
@@ -21242,17 +21242,17 @@ function DeliveredContextMessage({ message }) {
   ] });
 }
 
-// packages/console-components/src/conversation/conversation-connection-event.tsx
+// ../packages/console-components/src/conversation/conversation-connection-event.tsx
 var import_jsx_runtime16 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/flow-run-card.tsx
+// ../packages/console-components/src/conversation/flow-run-card.tsx
 var import_react8 = require("react");
 var import_jsx_runtime17 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/summary-card.tsx
+// ../packages/console-components/src/conversation/summary-card.tsx
 var import_jsx_runtime18 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/council-card.tsx
+// ../packages/console-components/src/conversation/council-card.tsx
 var import_react9 = require("react");
 var import_jsx_runtime19 = require("react/jsx-runtime");
 var CARD_STATUS_LABEL = {
@@ -21465,7 +21465,7 @@ function CouncilCard({
   );
 }
 
-// packages/console-components/src/conversation/work-graph-card.tsx
+// ../packages/console-components/src/conversation/work-graph-card.tsx
 var import_react10 = require("react");
 var import_jsx_runtime20 = require("react/jsx-runtime");
 var CARD_STATUS_LABEL2 = {
@@ -21809,36 +21809,36 @@ function WorkGraphCard({
   );
 }
 
-// packages/console-components/src/conversation/conversation-message-view.tsx
+// ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_jsx_runtime21 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/conversation-message-group.tsx
+// ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime22 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/turn-diff-card.tsx
+// ../packages/console-components/src/conversation/turn-diff-card.tsx
 var import_jsx_runtime23 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/conversation-transcript.tsx
+// ../packages/console-components/src/conversation/conversation-transcript.tsx
 var import_jsx_runtime24 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/conversation-pane.tsx
+// ../packages/console-components/src/conversation/conversation-pane.tsx
 var import_jsx_runtime25 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/console-conversation-panel.tsx
+// ../packages/console-components/src/conversation/console-conversation-panel.tsx
 var import_jsx_runtime26 = require("react/jsx-runtime");
 
-// packages/console-components/src/dock/console-dock.tsx
+// ../packages/console-components/src/dock/console-dock.tsx
 var import_react15 = require("react");
 var import_jsx_runtime27 = require("react/jsx-runtime");
 
-// packages/console-components/src/dock/browser-dock-target-host.tsx
+// ../packages/console-components/src/dock/browser-dock-target-host.tsx
 var import_jsx_runtime28 = require("react/jsx-runtime");
 
-// packages/console-components/src/pending/console-pending-stack.tsx
+// ../packages/console-components/src/pending/console-pending-stack.tsx
 var import_react16 = __toESM(require("react"));
 var import_jsx_runtime29 = require("react/jsx-runtime");
 
-// packages/console-components/src/dock/use-console-dock-controller.ts
+// ../packages/console-components/src/dock/use-console-dock-controller.ts
 var import_react17 = require("react");
 function useConsoleDockController({
   initialTarget = null,
@@ -21919,11 +21919,11 @@ function useConsoleDockController({
   };
 }
 
-// packages/console-components/src/sidebar/console-sidebar.tsx
+// ../packages/console-components/src/sidebar/console-sidebar.tsx
 var import_react18 = require("react");
 var import_jsx_runtime30 = require("react/jsx-runtime");
 
-// packages/console-components/src/topology/connection-picker.tsx
+// ../packages/console-components/src/topology/connection-picker.tsx
 var import_react19 = __toESM(require("react"));
 var import_jsx_runtime31 = require("react/jsx-runtime");
 var DEFAULT_VISIBLE_LIMIT = 100;
@@ -22313,13 +22313,13 @@ function ConnectionPicker({
   ] }) });
 }
 
-// packages/console-components/src/topology/topology-panel.tsx
+// ../packages/console-components/src/topology/topology-panel.tsx
 var import_react23 = __toESM(require("react"));
 
-// packages/console-components/src/topology/role-tree.tsx
+// ../packages/console-components/src/topology/role-tree.tsx
 var import_react21 = __toESM(require("react"));
 
-// packages/console-components/src/topology/data.ts
+// ../packages/console-components/src/topology/data.ts
 var import_react20 = __toESM(require("react"));
 var PEER_TOOL_NAMES2 = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function frameData(frame) {
@@ -22691,7 +22691,7 @@ function edgeKey(a, b) {
   return topologyEdgeKey(a, b);
 }
 
-// packages/console-components/src/topology/role-tree.tsx
+// ../packages/console-components/src/topology/role-tree.tsx
 var import_jsx_runtime32 = require("react/jsx-runtime");
 var STATE_COLOUR = {
   active: "var(--ok)",
@@ -22819,7 +22819,7 @@ function RoleTree({
   ] });
 }
 
-// packages/console-components/src/topology/dense-graph-map.tsx
+// ../packages/console-components/src/topology/dense-graph-map.tsx
 var import_react22 = __toESM(require("react"));
 var import_jsx_runtime33 = require("react/jsx-runtime");
 var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -23970,7 +23970,7 @@ function DenseGraphMap({
   );
 }
 
-// packages/console-components/src/topology/topology-panel.tsx
+// ../packages/console-components/src/topology/topology-panel.tsx
 var import_jsx_runtime34 = require("react/jsx-runtime");
 var VIEW_STORAGE = "mobkit-console-topology-view";
 var EDGE_STORAGE = "mobkit-console-topology-edges";
@@ -24175,14 +24175,14 @@ function TopologyPanel({
   );
 }
 
-// packages/console-components/src/workbench/console-workbench.tsx
+// ../packages/console-components/src/workbench/console-workbench.tsx
 var import_jsx_runtime35 = require("react/jsx-runtime");
 
-// packages/console-components/src/composer/pending-stack.tsx
+// ../packages/console-components/src/composer/pending-stack.tsx
 var import_react24 = __toESM(require("react"));
 var import_jsx_runtime36 = require("react/jsx-runtime");
 
-// packages/console-components/src/conversation/transport-status.tsx
+// ../packages/console-components/src/conversation/transport-status.tsx
 var import_jsx_runtime37 = require("react/jsx-runtime");
 function consoleTransportLabel(state) {
   switch (state.phase) {
@@ -24215,7 +24215,7 @@ function ConsoleTransportStatus({ state, onRetry }) {
   ] });
 }
 
-// packages/console-components/src/conversation/context-chips.tsx
+// ../packages/console-components/src/conversation/context-chips.tsx
 var import_react25 = require("react");
 var import_jsx_runtime38 = require("react/jsx-runtime");
 function QuoteActionIcon({ action }) {
@@ -24331,7 +24331,7 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
   ] });
 }
 
-// console/src/lib/agents.ts
+// src/lib/agents.ts
 function buildConsoleIdentityAliasMap(agents) {
   const map3 = /* @__PURE__ */ new Map();
   for (const agent of agents) {
@@ -24468,7 +24468,7 @@ function normalizeAgents(experience, modules) {
   return [];
 }
 
-// console/src/lib/council-entries.ts
+// src/lib/council-entries.ts
 var COUNCIL_TOOL_NAME = "council";
 var COUNCIL_TOOL_EVENTS = /* @__PURE__ */ new Set([
   "tool_call_requested",
@@ -24662,7 +24662,7 @@ function councilArgsByCallId(frames) {
   return out;
 }
 
-// console/src/lib/failure-summary.ts
+// src/lib/failure-summary.ts
 function recordOf2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -24684,7 +24684,7 @@ function describeFailure(data, fallback = "error") {
   return message || reasonType || fallback;
 }
 
-// console/src/lib/id.ts
+// src/lib/id.ts
 function randomUuidFromValues(cryptoSource) {
   if (typeof cryptoSource.getRandomValues !== "function") {
     return null;
@@ -24719,7 +24719,7 @@ function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.cr
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-// console/src/lib/workgraph-time.ts
+// src/lib/workgraph-time.ts
 function formatWorkGraphTimestamp(value, options = {}) {
   if (!value) return "";
   const date = new Date(value);
@@ -24730,7 +24730,7 @@ function formatWorkGraphTimestamp(value, options = {}) {
   return `${day}${clock}${options.seconds ? `:${pad(date.getSeconds())}` : ""}`;
 }
 
-// console/src/lib/adapters.ts
+// src/lib/adapters.ts
 function messageTextBlocks(source, textMode = "markdown", streaming = false) {
   if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
   return streaming ? parseStreamingConversationRichBlocks(source, { displayNormalization: false }) : parseConversationRichBlocks(source, { displayNormalization: false });
@@ -28545,7 +28545,7 @@ function hasOpenLifecycleBefore(frames, beforeIndex) {
   return interactionOpen || runOpen;
 }
 
-// console/src/lib/errors.ts
+// src/lib/errors.ts
 function errorMessage(error) {
   if (error instanceof Error) {
     return error.message;
@@ -28561,7 +28561,7 @@ function httpStatusCode(error) {
   return typeof status === "number" ? status : null;
 }
 
-// console/src/lib/conversation-visibility.ts
+// src/lib/conversation-visibility.ts
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
   const record4 = block;
@@ -28606,7 +28606,7 @@ function sanitizeConversationEntries(entries) {
   return sanitized;
 }
 
-// console/src/lib/contract.ts
+// src/lib/contract.ts
 var CONSOLE_REST_PATHS2 = {
   experience: "/console/experience",
   modules: "/console/modules",
@@ -28675,7 +28675,7 @@ var CONSOLE_RPC_METHODS2 = {
 var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
 
-// console/src/lib/network.ts
+// src/lib/network.ts
 function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
     return { data };
@@ -29186,7 +29186,7 @@ function subscribeTimelineEvents2(baseUrl, target, onFrame, options = {}) {
   });
 }
 
-// console/src/lib/headless.ts
+// src/lib/headless.ts
 var CONSOLE_COMMAND_NAMES2 = {
   inspectIdentity: "inspectIdentity",
   retireIdentity: "retireIdentity",
@@ -29689,7 +29689,7 @@ function isMobKitTarget(target) {
   return target.kind.startsWith("mobkit/");
 }
 
-// console/src/lib/workgraph-actions.ts
+// src/lib/workgraph-actions.ts
 var WORKGRAPH_CONFLICT_CODE = -32042;
 function workGraphConflictRefreshRequest(params) {
   const itemId = typeof params.id === "string" && params.id.trim() ? params.id : null;
@@ -29739,7 +29739,7 @@ function workGraphClaimOwnerId(subject, fallback) {
   return trimmed || fallback;
 }
 
-// console/src/lib/topology.ts
+// src/lib/topology.ts
 var MUTATION_KINDS = [
   "connect",
   "disconnect",
@@ -30313,7 +30313,7 @@ async function resolveAmbiguousConsoleTopologyMutation(ambiguous, execute) {
   };
 }
 
-// console/src/lib/pane-resize.ts
+// src/lib/pane-resize.ts
 function findPaneResizeRoot(handle2) {
   const workbenchRoot = handle2.closest("[data-console-workbench]");
   if (workbenchRoot instanceof HTMLElement) return workbenchRoot;
@@ -30321,7 +30321,7 @@ function findPaneResizeRoot(handle2) {
   return shellRoot instanceof HTMLElement ? shellRoot : null;
 }
 
-// console/src/lib/read-only-override.ts
+// src/lib/read-only-override.ts
 var READ_ONLY_QUERY_KEYS = [
   "console_read_only",
   "mobkit_console_read_only",
@@ -30365,7 +30365,7 @@ function resolveConsoleReadOnlyOverride(input = {}) {
   return false;
 }
 
-// console/src/icon.tsx
+// src/icon.tsx
 var import_jsx_runtime39 = require("react/jsx-runtime");
 function SpriteSheet() {
   return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("svg", { className: "sprite-root", width: "0", height: "0", style: { position: "absolute" }, "aria-hidden": "true", children: [
@@ -30500,7 +30500,7 @@ function Icon({ name: name2, className }) {
   return /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("svg", { className, "aria-label": name2, children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("use", { href: `#${name2}` }) });
 }
 
-// console/src/lib/identity-log.ts
+// src/lib/identity-log.ts
 function cursorSeq2(cursor) {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
@@ -30584,7 +30584,7 @@ function resetIdentityLogCore(log) {
   log.version += 1;
 }
 
-// console/src/panels/TimelinePanel.tsx
+// src/panels/TimelinePanel.tsx
 var import_react26 = __toESM(require("react"));
 var import_jsx_runtime40 = require("react/jsx-runtime");
 var INTERNAL_TIMELINE_EVENTS = /* @__PURE__ */ new Set([
@@ -30694,7 +30694,7 @@ function TimelinePanel({ frames }) {
   ] });
 }
 
-// console/src/panels/GatingInboxPanel.tsx
+// src/panels/GatingInboxPanel.tsx
 var import_react27 = __toESM(require("react"));
 var import_jsx_runtime41 = require("react/jsx-runtime");
 function getRisk(entry) {
@@ -30906,7 +30906,7 @@ function GatingInboxPanel({
   ] });
 }
 
-// console/src/panels/AccessPanel.tsx
+// src/panels/AccessPanel.tsx
 var import_react28 = __toESM(require("react"));
 var import_jsx_runtime42 = require("react/jsx-runtime");
 var DEFAULT_ACTIONS = [
@@ -31479,7 +31479,7 @@ function AccessPanel({
   ] });
 }
 
-// console/src/panels/MemoryPanel.tsx
+// src/panels/MemoryPanel.tsx
 var import_react29 = __toESM(require("react"));
 var import_jsx_runtime43 = require("react/jsx-runtime");
 var MEMORY_TABS = [
@@ -33360,7 +33360,7 @@ function MemoryPanel({
   ] });
 }
 
-// console/src/panels/RosterPanel.tsx
+// src/panels/RosterPanel.tsx
 var import_react30 = __toESM(require("react"));
 var import_jsx_runtime44 = require("react/jsx-runtime");
 var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
@@ -33536,10 +33536,10 @@ function RosterPanel({
   ] });
 }
 
-// console/src/panels/WorkGraphPanel.tsx
+// src/panels/WorkGraphPanel.tsx
 var import_react33 = __toESM(require("react"));
 
-// console/src/lib/workgraph-layout.ts
+// src/lib/workgraph-layout.ts
 var WORKGRAPH_GRAPH_COL_WIDTH = 220;
 var WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
 var WORKGRAPH_GRAPH_NODE_WIDTH = 168;
@@ -33734,10 +33734,10 @@ function workGraphEdgeMidpoint(edge) {
   };
 }
 
-// console/src/panels/WorkGraphGraphView.tsx
+// src/panels/WorkGraphGraphView.tsx
 var import_react32 = __toESM(require("react"));
 
-// console/src/panels/topology/zoom-pan.ts
+// src/panels/topology/zoom-pan.ts
 var import_react31 = __toESM(require("react"));
 var MIN_SCALE = 0.4;
 var MAX_SCALE = 6;
@@ -33825,7 +33825,7 @@ function viewportTransform(v) {
   return `translate(${v.tx} ${v.ty}) scale(${v.scale})`;
 }
 
-// console/src/panels/WorkGraphGraphView.tsx
+// src/panels/WorkGraphGraphView.tsx
 var import_jsx_runtime45 = require("react/jsx-runtime");
 var TITLE_MAX_CHARS = 21;
 var META_MAX_CHARS = 24;
@@ -34187,7 +34187,7 @@ function WorkGraphGraphView({
   ] });
 }
 
-// console/src/panels/WorkGraphPanel.tsx
+// src/panels/WorkGraphPanel.tsx
 var import_jsx_runtime46 = require("react/jsx-runtime");
 var workGraphViewModeMemory = "tree";
 function buildWorkGraphPanelTree(items, edges) {
@@ -34537,7 +34537,7 @@ function WorkGraphPanel({
   ] });
 }
 
-// console/src/panels/RoutingPanel.tsx
+// src/panels/RoutingPanel.tsx
 var import_react34 = __toESM(require("react"));
 var import_jsx_runtime47 = require("react/jsx-runtime");
 function RoutingPanel({ data }) {
@@ -34664,7 +34664,7 @@ function RoutingPanel({ data }) {
   ] });
 }
 
-// console/src/panels/LogsPanel.tsx
+// src/panels/LogsPanel.tsx
 var import_react35 = __toESM(require("react"));
 var import_jsx_runtime48 = require("react/jsx-runtime");
 var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
@@ -34907,7 +34907,7 @@ function LogsPanel({ frames }) {
   ] });
 }
 
-// console/src/panels/Topbar.tsx
+// src/panels/Topbar.tsx
 var import_jsx_runtime49 = require("react/jsx-runtime");
 function PanelGlyph({ side, open }) {
   const dividerLeft = side === "left";
@@ -35003,7 +35003,7 @@ function Topbar({
   ] });
 }
 
-// console/src/panels/Tweaks.tsx
+// src/panels/Tweaks.tsx
 var import_react36 = __toESM(require("react"));
 var VARIANT_STORAGE = "mobkit-console-variant";
 function useConsoleVariant() {
@@ -35025,16 +35025,16 @@ function useConsoleVariant() {
   return [v, set];
 }
 
-// console/src/panels/Sidebar.tsx
+// src/panels/Sidebar.tsx
 var import_react37 = __toESM(require("react"));
 
-// console/src/lib/render-counts.ts
+// src/lib/render-counts.ts
 function countRender(name2) {
   const sink = globalThis.__consoleRenderCounts;
   if (sink) sink[name2] = (sink[name2] ?? 0) + 1;
 }
 
-// console/src/panels/Sidebar.tsx
+// src/panels/Sidebar.tsx
 var import_jsx_runtime50 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 var NAV_LABEL = {
@@ -36490,7 +36490,7 @@ var Sidebar = import_react37.default.memo(function Sidebar2({
   ] });
 });
 
-// console/src/panels/SignalsRail.tsx
+// src/panels/SignalsRail.tsx
 var import_react38 = __toESM(require("react"));
 var import_jsx_runtime51 = require("react/jsx-runtime");
 var DEFAULT_FILTER_PRESETS = [
@@ -36994,13 +36994,13 @@ var SignalsRail = import_react38.default.memo(function SignalsRail2({
   ] });
 });
 
-// console/src/panels/ChatPane.tsx
+// src/panels/ChatPane.tsx
 var import_react40 = __toESM(require("react"));
 
-// console/src/panels/VoiceBar.tsx
+// src/panels/VoiceBar.tsx
 var import_react39 = __toESM(require("react"));
 
-// console/src/lib/voice-context.ts
+// src/lib/voice-context.ts
 var failureMessages = {
   capture: "The agent's history could not be captured.",
   generation: "The context summary could not be generated.",
@@ -37058,7 +37058,7 @@ function voiceContextFailureMessage(reason) {
   return `${failureMessages[reason]} Voice remains connected. End voice and start again to retry.`;
 }
 
-// console/src/panels/VoiceBar.tsx
+// src/panels/VoiceBar.tsx
 var import_jsx_runtime52 = require("react/jsx-runtime");
 var TALK_READY_STATUS = "Listening, you can talk";
 var CONTEXT_STAGE_TITLES = {
@@ -37273,7 +37273,7 @@ var VoiceBar = import_react39.default.memo(function VoiceBar2({
   );
 });
 
-// console/src/lib/composer-attachment-text.ts
+// src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
   return [
     file.name || "",
@@ -37342,7 +37342,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
 }
 
-// console/src/panels/ChatPane.tsx
+// src/panels/ChatPane.tsx
 var import_jsx_runtime53 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
@@ -38894,7 +38894,7 @@ function ChatPane({
   ] }) });
 }
 
-// console/src/panels/MobKitDock.tsx
+// src/panels/MobKitDock.tsx
 var import_react41 = __toESM(require("react"));
 var import_jsx_runtime54 = require("react/jsx-runtime");
 function tabPanelCount(node2) {
@@ -39219,7 +39219,7 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
   ] });
 }
 
-// console/src/panels/PendingStack.tsx
+// src/panels/PendingStack.tsx
 var import_react42 = __toESM(require("react"));
 var import_jsx_runtime55 = require("react/jsx-runtime");
 function StackHead({
@@ -39619,7 +39619,7 @@ function PendingStack3({
   );
 }
 
-// console/src/lib/send-attempt-storage.ts
+// src/lib/send-attempt-storage.ts
 var consoleSendStorageKey = (namespace, destination) => `mobkit-send-attempts:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(destination)}`;
 function loadConsoleSendAttempts(storage, namespace, destination, now = Date.now()) {
   try {
@@ -39737,10 +39737,10 @@ function saveConsoleComposerDraft(storage, namespace, destination, draft, compos
   storage.setItem(consoleComposerDraftKey(namespace, destination, composerId), JSON.stringify({ version: composerId ? 2 : 1, namespace, destination, ...composerId ? { composerId } : {}, ...draft }));
 }
 
-// console/src/lib/use-voice-controller.ts
+// src/lib/use-voice-controller.ts
 var import_react43 = __toESM(require("react"));
 
-// sdk/typescript/src/live.ts
+// ../sdk/typescript/src/live.ts
 function asRecord3(value, context) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${context} must be an object`);
@@ -39921,7 +39921,7 @@ function parseContinuity(raw) {
   throw new TypeError(`unknown live continuity mode ${mode}`);
 }
 
-// console/src/lib/voice-session.ts
+// src/lib/voice-session.ts
 var VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var VOICE_CONNECT_TIMEOUT_MS = 3e4;
 var VOICE_RECOVERY_TIMEOUT_MS = 3e4;
@@ -41119,7 +41119,7 @@ function createVoiceSession(baseUrl, environment) {
   return controller;
 }
 
-// console/src/lib/use-voice-controller.ts
+// src/lib/use-voice-controller.ts
 var IDLE = {
   phase: "idle",
   target: null,
@@ -41146,7 +41146,7 @@ function useVoiceController(baseUrl) {
   return { voice, state };
 }
 
-// console/src/lib/use-voice-readiness.ts
+// src/lib/use-voice-readiness.ts
 var import_react44 = __toESM(require("react"));
 var NO_READINESS = {};
 var READINESS_REFRESH_INTERVAL_MS = 15e3;
@@ -41197,7 +41197,7 @@ function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
   return enabled && state.key === key ? state.values : NO_READINESS;
 }
 
-// console/src/ConsoleApp.tsx
+// src/ConsoleApp.tsx
 var import_jsx_runtime56 = require("react/jsx-runtime");
 var MAX_IDENTITY_LOG_EVENTS = 5e3;
 var IDENTITY_LOG_TRIM_SLACK = 500;
@@ -44857,7 +44857,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   );
 }
 
-// console/src/index.tsx
+// src/index.tsx
 var import_jsx_runtime57 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {

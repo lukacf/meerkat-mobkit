@@ -55,6 +55,7 @@ async function main() {
 
   // Library bundle (CJS) for JSDOM / smoke tests
   await build({
+    absWorkingDir: __dirname,
     entryPoints: [indexSourcePath],
     outfile: libraryBundlePath,
     bundle: true,
@@ -71,6 +72,7 @@ async function main() {
 
   // Browser app bundle (IIFE) served by the gateway
   await build({
+    absWorkingDir: __dirname,
     entryPoints: [browserSourcePath],
     outfile: appBundlePath,
     bundle: true,
