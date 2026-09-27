@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Hosts can initialize the shared console projection with a fixed ingestion
   redaction policy before creating request views. Later view policies cannot
   replace that host policy or change another view's authorized data.
+- `identity_first::bridge::MemberInspection` gains `preview_unavailable:
+  Option<meerkat_mob::MemberPreviewUnavailable>` (see Added). The struct is
+  public and not `#[non_exhaustive]`, so struct literals (custom
+  `SessionBridge` implementations and test doubles) must set it, usually to
+  `None`.
 
 ### Storage and wire compatibility
 
@@ -124,6 +129,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Fork lineage in `callback/build_agent` (meerkat 0.8.45). The build callback
+  options carry `fork_source`, meerkat's `SessionBuildOptions::fork_source`
+  forwarded as meerkat serializes it (`{"source_member": {"mob_id", "role",
+  "member"}, "source_session_id"}`), and `fork_source_identity`, the source's
+  durable identity (for example `domain:calendar`). meerkat sets the lineage
+  on the build that seats a durable fork (fork_off children, fork_member
+  children, local council participants) and on every later rebuild of that
+  member, so a host can build a fork child as its source. In a MobKit mob
+  `source_member.member` is MobKit's encoded roster id (`mk--...`), which is
+  why the identity rides beside it, resolved through MobKit's own roster
+  mapping (also public as `member_comms_id::durable_identity_for_roster_member`).
+  Both are null for every other build. The child's own labels and session
+  still name the child and never carry the source's `agent_identity`.
+  Lineage is not caller-mintable: a build response naming `fork_source` is
+  ignored. The Python `SessionBuildOptions` gains typed `fork_source`
+  (`ForkBuildSource`, `MobMemberBinding`) and `fork_source_identity`; the
+  TypeScript one gains `forkSource`, `forkSourceIdentity` and
+  `parseForkBuildSource`. Both are receive-only, never sent back, and ignore
+  fields a newer gateway adds.
+- `MobRuntime::session_commit_pending(session_id) -> Option<bool>` (meerkat
+  0.8.45): whether the session holds run input its runtime has taken up but
+  not yet committed at a run boundary, forwarding
+  `MeerkatMachine::session_has_uncommitted_run_input` within
+  `SESSION_COMMIT_PENDING_READ_BOUND` (2 s). `Some(false)` means durability
+  is ready and no input is staged, applied or pending consumption (queued
+  input that has not started does not count). `None` is inconclusive, never
+  a guessed `false`: no runtime machine, an unparsable session id, any
+  meerkat error (no runtime holds the session, a replaced driver, degraded
+  durability), or a read still waiting when the bound elapses (a boundary
+  commit holds the driver until it lands).
+- TypeScript `SessionBuildOptions.resumeSessionId`, matching Python's
+  `resume_session_id`: the build callback's resume session is decoded, and a
+  builder can set it to ask the gateway to resume a session (persistent mode).
+- `mobkit/inspect_identity` (and its raw-alias projection) and the console's
+  per-member progress (also when it falls back to the runtime machine's run
+  state, as for a retiring member) carry `preview_unavailable` when meerkat
+  could not observe the member's session for its status
+  (`observation_deadline`, `read_failed`, `session_absent`,
+  `not_observed_while_retiring`; meerkat 0.8.45 `MemberPreviewUnavailable`).
+  When it is set, a missing
+  `output_preview` does not mean an empty member. Python
+  `IdentityInspection.preview_unavailable` and TypeScript
+  `IdentityInspection.previewUnavailable` carry it; unknown future values
+  pass through.
 
 - Turn tickets: per-admission completion for identity deliveries.
   `mobkit/send`, `mobkit/interact` and `mobkit/dispatch` accept
@@ -247,6 +297,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   runtime-default opt-in exists to prevent (reported by HomeCore). Helpers
   sent through `delegate` with a null had the same problem. See the behavior
   change under Changed.
+
+- Concurrent `mobkit/inspect_identity` calls no longer each cost a
+  member-status read. Meerkat admits one member-status read per mob at a time
+  (refusing the rest as `observation_lane_saturated` before meerkat 0.8.45),
+  so a once-a-second `inspect_identity` poller made `mob_check_member` fail.
+  Concurrent inspections of one member incarnation (and `wait_for_output`,
+  which polls the same path) now join one bridge read in flight. A settled
+  read is never reused, and a caller never joins a read that started before a
+  completion it already counts, so the output next to a completion cursor is
+  never an older turn's.
+- The console's per-member progress reads member status with bounded
+  concurrency instead of one member at a time, and no non-final member is
+  silently left without progress any more: a member whose status read errors,
+  times out, or carries no progress shows its run state from the runtime
+  machine it runs on (`run_open`, `idle` or `unknown`) with the typed
+  `unknown` health class, instead of being dropped.
+- A busy member's status returns its last committed preview. MobKit's session
+  service wrappers forward meerkat 0.8.45's member-status observation exactly,
+  so a status read joins meerkat's one bounded observation for that member
+  instead of reading the whole session behind a running turn.
 
 - A detached job's completion entry that shares its notice with a refresh
   block (a persisted `BackgroundJob` block and a non-persisted one, in either

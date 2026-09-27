@@ -185,6 +185,20 @@ pub(crate) fn durable_identity_from_runtime_alias(alias: &str) -> Option<String>
     Some(identity.to_string())
 }
 
+/// The durable identity a mob roster member id names, for callers outside
+/// this crate that receive a roster id from meerkat and must speak identity.
+///
+/// meerkat reports a member by its roster id (`MobMemberBinding::member`,
+/// e.g. a fork child's `ForkBuildSource::source_member`). In a MobKit mob
+/// that is the comms-safe encoding of the member's durable identity
+/// (`mk--domain_ccalendar`), never the identity itself (`domain:calendar`).
+/// This inverts MobKit's own mapping exactly as every in-crate producer does
+/// (`logical_memory_identity`): decode the encoding, strip a generated
+/// runtime-alias shape, and leave plain names unchanged.
+pub fn durable_identity_for_roster_member(member_id: &str) -> String {
+    logical_memory_identity(member_id)
+}
+
 /// The LOGICAL identity for a mob-plane member id or public alias: decode
 /// the comms-safe roster encoding, then strip the generated runtime-alias
 /// shape to the durable identity. Identity on plain names.
@@ -1362,6 +1376,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// meerkat names a fork's source by its roster id (`ForkBuildSource`
+    /// `source_member.member`); hosts key grants by durable identity. The
+    /// public inverse must name exactly the identity MobKit encoded.
+    #[test]
+    fn a_roster_member_id_from_meerkat_names_its_durable_identity() {
+        let encoded = roster_member_id_for_identity("domain:calendar");
+        assert_eq!(encoded.as_str(), "mk--domain_ccalendar");
+        assert_eq!(
+            durable_identity_for_roster_member(encoded.as_str()),
+            "domain:calendar"
+        );
+        // A legacy generated-alias roster id names the same identity.
+        assert_eq!(
+            durable_identity_for_roster_member(&mob_member_id_str("rt:domain:calendar:3")),
+            "domain:calendar"
+        );
+        // A comms-safe identity is its own roster id.
+        assert_eq!(durable_identity_for_roster_member("luka"), "luka");
     }
 
     // The ONE memory-scope identity spelling (task #53): mob-plane member

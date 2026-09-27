@@ -336,6 +336,31 @@ class TestModelMirrors:
         assert parsed.to_dict()["completion_cursor"] == {"epoch": 7, "turns": 2}
         assert IdentityInspection.from_dict(parsed.to_dict()) == parsed
 
+    def test_identity_inspection_carries_preview_unavailable_both_ways(self):
+        payload = {
+            "identity": "triage:main",
+            "is_final": False,
+            "peer_reachable_count": 0,
+            "preview_unavailable": "observation_deadline",
+        }
+
+        parsed = IdentityInspection.from_dict(payload)
+        assert parsed.output_preview is None
+        assert parsed.preview_unavailable == "observation_deadline"
+        assert parsed.to_dict() == payload
+        # An observed preview carries no marker, and a gateway predating the
+        # field (or a null marker) reads as observed.
+        observed = IdentityInspection.from_dict(
+            {"identity": "triage:main", "output_preview": "ACK", "preview_unavailable": None}
+        )
+        assert observed.preview_unavailable is None
+        assert "preview_unavailable" not in observed.to_dict()
+        # Unknown future reasons pass through.
+        future = IdentityInspection.from_dict(
+            {"identity": "triage:main", "preview_unavailable": "some_future_reason"}
+        )
+        assert future.preview_unavailable == "some_future_reason"
+
     def test_dispatch_result_carries_baseline_both_ways(self):
         payload = {
             "fencing_token": 4,

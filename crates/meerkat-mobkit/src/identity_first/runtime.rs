@@ -1978,6 +1978,8 @@ pub struct IdentityRuntime {
     /// ([`Self::send_with_turn_ticket`], [`Self::dispatch_with_turn_ticket`]).
     /// Shared with the waiter tasks that settle them.
     turn_outcomes: Arc<StdMutex<TurnOutcomes>>,
+    /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
+    inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
 }
 
 /// How many ticketed turns are remembered at once.
@@ -2175,6 +2177,38 @@ impl TurnOutcomes {
     }
 }
 
+/// One bridge inspection of a member incarnation in flight, shared by the
+/// callers that join it (see [`IdentityRuntime::inspect`]). A settled read
+/// is never reused.
+#[derive(Clone)]
+struct SharedInspection {
+    /// The identity's completion cursor when this read started. The read
+    /// reflects at least every turn counted there.
+    started_at: CompletionCursor,
+    read: Arc<tokio::sync::OnceCell<Result<super::bridge::MemberInspection, String>>>,
+}
+
+impl SharedInspection {
+    fn start(started_at: CompletionCursor) -> Self {
+        Self {
+            started_at,
+            read: Arc::default(),
+        }
+    }
+
+    fn in_flight(&self) -> bool {
+        self.read.get().is_none()
+    }
+
+    /// A caller that has seen completion cursor `seen` may join only a read
+    /// still in flight that started at or after it. A read started before a
+    /// turn the caller already counts could report the previous turn's
+    /// output next to the new cursor.
+    fn joinable_at(&self, seen: CompletionCursor) -> bool {
+        self.in_flight() && self.started_at >= seen
+    }
+}
+
 /// One generated member alias plus the lifecycle lock owned by its durable
 /// identity runtime. Cross-runtime topology code resolves all endpoints first,
 /// then acquires these targets in one global order before inspecting or
@@ -2350,6 +2384,7 @@ impl IdentityRuntime {
             reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
             completion_cursors: StdMutex::new(BTreeMap::new()),
             turn_outcomes: Arc::default(),
+            inspections: StdMutex::new(BTreeMap::new()),
         }
     }
 
@@ -12652,6 +12687,17 @@ impl IdentityRuntime {
     }
 
     /// Inspect the current execution state of an identity via the bridge.
+    ///
+    /// The bridge's inspection is a full meerkat member-status read, which
+    /// the mob admits one at a time. So concurrent callers asking about the
+    /// same member incarnation join one read in flight instead of each
+    /// starting their own. A settled read is never reused: the next caller
+    /// reads afresh. A caller joins only a read that started at or after the
+    /// identity's completion cursor as the caller sees it, so an inspection
+    /// never reports an older turn's output than the cursor read before it
+    /// (`mobkit/inspect_identity` returns both, and SDK completion waits take
+    /// the output once the cursor moves). A new incarnation (respawn, reset)
+    /// has a new runtime id and is always read afresh.
     pub async fn inspect(
         &self,
         identity: &AgentIdentity,
@@ -12661,10 +12707,33 @@ impl IdentityRuntime {
             .bridge
             .as_ref()
             .ok_or_else(|| IdentityRuntimeError::Internal("no bridge configured".to_string()))?;
-        bridge
-            .inspect_member(&runtime_id)
+        let seen = self.completion_cursor(identity).await;
+        let shared = {
+            let mut inspections = self
+                .inspections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inspections.retain(|_, shared| shared.in_flight());
+            match inspections.get(&runtime_id) {
+                Some(shared) if shared.joinable_at(seen) => shared.clone(),
+                _ => {
+                    let shared = SharedInspection::start(seen);
+                    inspections.insert(runtime_id.clone(), shared.clone());
+                    shared
+                }
+            }
+        };
+        shared
+            .read
+            .get_or_init(|| async {
+                bridge
+                    .inspect_member(&runtime_id)
+                    .await
+                    .map_err(|e| format!("inspect: {e}"))
+            })
             .await
-            .map_err(|e| IdentityRuntimeError::Internal(format!("inspect: {e}")))
+            .clone()
+            .map_err(IdentityRuntimeError::Internal)
     }
 
     // -----------------------------------------------------------------------

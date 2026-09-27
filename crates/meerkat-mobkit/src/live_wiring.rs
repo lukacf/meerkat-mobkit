@@ -5556,6 +5556,18 @@ mod tests {
         > {
             Err(meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError::ActiveBindingUnavailable)
         }
+
+        async fn narrate_delegation(
+            &self,
+            _authority: meerkat_runtime::live_execution::LiveDelegationNarrationAuthority,
+            _delegation: meerkat_live::LiveSidebandDelegationRef,
+            _text: String,
+        ) -> Result<
+            meerkat::experimental_gpt_live::ExperimentalGptLiveNarrationDispatch,
+            meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError,
+        > {
+            Err(meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError::ActiveBindingUnavailable)
+        }
     }
 
     #[cfg(feature = "openai-live-test")]

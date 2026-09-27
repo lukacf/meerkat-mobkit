@@ -5,7 +5,11 @@
  * mutable SessionBuildOptions and modifies it in place.
  */
 
-import { SessionBuildOptions, type ToolHandler } from "./models.js";
+import {
+  parseForkBuildSource,
+  SessionBuildOptions,
+  type ToolHandler,
+} from "./models.js";
 import {
   parseLiveAssistantOutputAddress,
   type LiveAssistantOutputAddress,
@@ -269,7 +273,20 @@ export class CallbackDispatcher {
       }
       delete rawOptions.scope_id;
 
-      const opts = new SessionBuildOptions();
+      const forkSourceIdentity = rawOptions.fork_source_identity;
+      if (
+        forkSourceIdentity !== undefined &&
+        forkSourceIdentity !== null &&
+        typeof forkSourceIdentity !== "string"
+      ) {
+        throw new TypeError(
+          `fork_source_identity must be a string, got ${typeof forkSourceIdentity}`,
+        );
+      }
+      const opts = new SessionBuildOptions({
+        forkSource: parseForkBuildSource(rawOptions.fork_source),
+        forkSourceIdentity: forkSourceIdentity ?? null,
+      });
       if (rawOptions.app_context !== undefined) {
         opts.appContext = rawOptions.app_context;
       }
@@ -289,6 +306,9 @@ export class CallbackDispatcher {
       }
       if (typeof rawOptions.profile_name === "string") {
         opts.profileName = rawOptions.profile_name;
+      }
+      if (typeof rawOptions.resume_session_id === "string") {
+        opts.resumeSessionId = rawOptions.resume_session_id;
       }
 
       await this._builder.buildAgent(opts);

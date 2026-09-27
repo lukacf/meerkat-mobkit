@@ -85,6 +85,70 @@ export function sessionQueryToDict(
   return result;
 }
 
+// -- Fork lineage -----------------------------------------------------------
+
+/**
+ * A mob member as meerkat names it: its mob, role and roster member id.
+ *
+ * In a MobKit mob `member` is MobKit's comms-safe roster encoding of the
+ * member's durable identity (`mk--...`), not the identity itself.
+ */
+export interface MobMemberBinding {
+  readonly mobId: string;
+  readonly role: string;
+  readonly member: string;
+}
+
+/**
+ * The source a fork-derived member was forked from (meerkat 0.8.45+).
+ *
+ * Set by the mob runtime on the build that seats a durable fork (fork_off
+ * children, fork_member children, local council participants) and on every
+ * later rebuild of that member. Absent for every other build.
+ */
+export interface ForkBuildSource {
+  readonly sourceMember: MobMemberBinding;
+  readonly sourceSessionId: string;
+}
+
+function requiredString(
+  data: Record<string, unknown>,
+  key: string,
+  owner: string,
+): string {
+  const value = data[key];
+  if (typeof value !== "string") {
+    throw new TypeError(`${owner}.${key} must be a string, got ${typeof value}`);
+  }
+  return value;
+}
+
+function asObject(raw: unknown, owner: string): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError(`${owner} must be an object`);
+  }
+  return raw as Record<string, unknown>;
+}
+
+/**
+ * Decode the gateway's `fork_source` object. `null`/absent decodes to
+ * `null`; fields this SDK does not know are ignored, so a newer gateway can
+ * add fields without breaking older builders.
+ */
+export function parseForkBuildSource(raw: unknown): ForkBuildSource | null {
+  if (raw === undefined || raw === null) return null;
+  const data = asObject(raw, "ForkBuildSource");
+  const member = asObject(data.source_member, "ForkBuildSource.source_member");
+  return {
+    sourceMember: {
+      mobId: requiredString(member, "mob_id", "MobMemberBinding"),
+      role: requiredString(member, "role", "MobMemberBinding"),
+      member: requiredString(member, "member", "MobMemberBinding"),
+    },
+    sourceSessionId: requiredString(data, "source_session_id", "ForkBuildSource"),
+  };
+}
+
 // -- SessionBuildOptions --------------------------------------------------
 
 /** Callback tool handler: receives arguments dict, returns JSON-serializable result. */
@@ -114,6 +178,24 @@ export class SessionBuildOptions {
   sessionId: string | null = null;
   labels: Record<string, string> = {};
   profileName: string | null = null;
+  /**
+   * The session this build resumes, when the gateway resumes one; a builder
+   * may also set it to ask the gateway to resume that session (persistent
+   * mode only).
+   */
+  resumeSessionId: string | null = null;
+  /**
+   * Receive-only fork lineage: which member this member was forked from, so
+   * the builder can build the child as its source. Never sent back, and the
+   * gateway ignores it in a build response: fork lineage is set by the mob
+   * runtime alone. `forkSource.sourceMember.member` is MobKit's encoded
+   * roster id; {@link forkSourceIdentity} is the source's durable identity
+   * (for example `domain:calendar`), the key to resolve grants by. The
+   * child's own `labels` and `sessionId` still name the child.
+   */
+  readonly forkSource: ForkBuildSource | null;
+  /** The fork source's durable identity; see {@link forkSource}. */
+  readonly forkSourceIdentity: string | null;
 
   private _tools: string[] = [];
   private _toolHandlers: Map<string, ToolHandler> = new Map();
@@ -121,6 +203,14 @@ export class SessionBuildOptions {
   // Per-tool wire metadata from registerTool options; tools without an
   // entry cross the wire as bare name strings.
   private _toolDefs: Map<string, Record<string, unknown>> = new Map();
+
+  constructor(init?: {
+    forkSource?: ForkBuildSource | null;
+    forkSourceIdentity?: string | null;
+  }) {
+    this.forkSource = init?.forkSource ?? null;
+    this.forkSourceIdentity = init?.forkSourceIdentity ?? null;
+  }
 
   /** Declare tool names the agent can use. */
   addTools(tools: string[]): void {
@@ -206,6 +296,9 @@ export class SessionBuildOptions {
       result.labels = { ...this.labels };
     }
     if (this.profileName !== null) result.profile_name = this.profileName;
+    if (this.resumeSessionId !== null) {
+      result.resume_session_id = this.resumeSessionId;
+    }
     if (this._tools.length > 0) {
       // Names with registered metadata cross as {name, description?,
       // input_schema?} objects; everything else stays a bare string

@@ -244,12 +244,10 @@ class CallbackDispatcher:
             scope_id = raw_options.pop("scope_id", None)
             if not scope_id:
                 raise ValueError("callback/build_agent requires scope_id in options")
-            # Filter to only fields accepted by SessionBuildOptions — Rust
-            # sends extra context (model, prompt) that is informational only.
-            import dataclasses as _dc
-            _known = {f.name for f in _dc.fields(SessionBuildOptions)}
-            filtered = {k: v for k, v in raw_options.items() if k in _known}
-            opts = SessionBuildOptions(**filtered)
+            # Rust sends extra context (model, prompt) that is informational
+            # only; the decoder keeps SessionBuildOptions fields and types
+            # fork_source.
+            opts = SessionBuildOptions.from_callback_options(raw_options)
             await self._builder.build_agent(opts)
             for t in opts.tools:
                 if not isinstance(t, str):

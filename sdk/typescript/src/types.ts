@@ -3118,6 +3118,14 @@ export function parseTurnResult(raw: unknown): TurnResult {
 export interface IdentityInspection {
   readonly identity: string;
   readonly outputPreview: string | null;
+  /**
+   * Why `outputPreview` is not an observation of the member's session
+   * (`observation_deadline`, `read_failed`, `session_absent`,
+   * `not_observed_while_retiring`; unknown future values pass through). When
+   * set, a missing preview is not an empty member. `null` when the preview
+   * was observed, or the gateway predates the field.
+   */
+  readonly previewUnavailable: string | null;
   readonly isFinal: boolean;
   readonly peerReachableCount: number;
   /**
@@ -3134,6 +3142,8 @@ export function parseIdentityInspection(raw: unknown): IdentityInspection {
     identity: String(d.identity ?? ""),
     outputPreview:
       typeof d.output_preview === "string" ? d.output_preview : null,
+    previewUnavailable:
+      typeof d.preview_unavailable === "string" ? d.preview_unavailable : null,
     isFinal: Boolean(d.is_final ?? false),
     peerReachableCount: Number(d.peer_reachable_count ?? 0),
     completionCursor: parseOptionalCompletionCursor(d.completion_cursor),
@@ -3150,6 +3160,9 @@ export function identityInspectionToDict(
   };
   if (inspection.outputPreview !== null) {
     out.output_preview = inspection.outputPreview;
+  }
+  if (inspection.previewUnavailable != null) {
+    out.preview_unavailable = inspection.previewUnavailable;
   }
   if (inspection.completionCursor !== null) {
     out.completion_cursor = completionCursorToDict(inspection.completionCursor);

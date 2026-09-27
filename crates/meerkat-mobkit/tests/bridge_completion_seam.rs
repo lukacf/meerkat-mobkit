@@ -406,3 +406,234 @@ async fn a_turn_that_fails_after_admission_is_typed_and_not_retried() {
     );
     unified.shutdown().await;
 }
+
+/// `MobRuntime::session_commit_pending` forwards meerkat's
+/// `session_has_uncommitted_run_input` on the real runtime machine: `false`
+/// once the member's turn is committed, `true` while a turn holds its input
+/// in the model, and `false` again after that turn commits.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_commit_pending_reads_the_members_run_input_phase() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let client = ScriptedClient::immediate(true);
+    let (unified, bridge, runtime_id) = boot_one_member(
+        &temp.path().join("state"),
+        client.clone(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let deliver = |text: &'static str| {
+        let bridge = Arc::clone(&bridge);
+        let runtime_id = runtime_id.clone();
+        async move {
+            bridge
+                .deliver_awaiting_commit_with_mode_context_and_system_prompt(
+                    &runtime_id,
+                    &meerkat_core::ContentInput::Text(text.to_string()),
+                    None,
+                    &[],
+                    HandlingMode::Queue,
+                    None,
+                )
+                .await
+        }
+    };
+    deliver("first, committed").await.expect("first turn");
+    let member = unified
+        .mob_handle()
+        .list_all_members()
+        .await
+        .into_iter()
+        .next()
+        .expect("the booted member")
+        .agent_identity;
+    let session_id = unified
+        .mob_handle()
+        .get_member(&member)
+        .await
+        .expect("read the member")
+        .and_then(|entry| entry.bridge_session_id().cloned())
+        .expect("the member has a session")
+        .to_string();
+    let runtime = unified.mob_runtime();
+
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        Some(false),
+        "a committed turn leaves no uncommitted run input"
+    );
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *client.entered.lock().await = Some(entered_tx);
+    *client.release.lock().await = Some(release_rx);
+    let busy = tokio::spawn(deliver("second, held"));
+    entered_rx.await.expect("the second turn reaches the model");
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        Some(true),
+        "a turn in the model holds its input uncommitted"
+    );
+
+    release_tx.send(()).expect("release the held turn");
+    busy.await
+        .expect("delivery task")
+        .expect("the held turn completes");
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        Some(false),
+        "the held turn's commit leaves nothing pending"
+    );
+
+    unified.shutdown().await;
+}
+
+/// `session_commit_pending` fails closed (`None`, reconcile nothing) whenever
+/// no live runtime session answers: no runtime machine, a session id that
+/// does not parse, a session no runtime ever held, and a session that is
+/// gone because its member retired.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_commit_pending_fails_closed_without_a_live_runtime_session() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let client = ScriptedClient::immediate(true);
+    let (unified, bridge, runtime_id) = boot_one_member(
+        &temp.path().join("state"),
+        client.clone(),
+        Duration::from_secs(30),
+    )
+    .await;
+    bridge
+        .deliver_awaiting_commit_with_mode_context_and_system_prompt(
+            &runtime_id,
+            &meerkat_core::ContentInput::Text("committed".to_string()),
+            None,
+            &[],
+            HandlingMode::Queue,
+            None,
+        )
+        .await
+        .expect("a committed turn");
+    let member = unified
+        .mob_handle()
+        .list_all_members()
+        .await
+        .into_iter()
+        .next()
+        .expect("the booted member")
+        .agent_identity;
+    let session_id = unified
+        .mob_handle()
+        .get_member(&member)
+        .await
+        .expect("read the member")
+        .and_then(|entry| entry.bridge_session_id().cloned())
+        .expect("the member has a session")
+        .to_string();
+    let runtime = unified.mob_runtime();
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        Some(false),
+        "control: the live session answers"
+    );
+
+    // No runtime machine: a runtime adopted from a bare handle has none.
+    let bare = meerkat_mobkit::mob_handle_runtime::MobRuntime::from_handle(unified.mob_handle());
+    assert_eq!(bare.session_commit_pending(&session_id).await, None);
+    // A session id that does not parse.
+    assert_eq!(
+        runtime.session_commit_pending("not-a-session-id").await,
+        None
+    );
+    // A session no runtime ever held.
+    assert_eq!(
+        runtime
+            .session_commit_pending(&meerkat_core::SessionId::new().to_string())
+            .await,
+        None
+    );
+    // A session that is gone: its member retired.
+    unified
+        .mob_handle()
+        .retire(member)
+        .await
+        .expect("retire the member");
+    assert_eq!(
+        runtime.session_commit_pending(&session_id).await,
+        None,
+        "a retired member's session is gone, not quiet"
+    );
+    unified.shutdown().await;
+}
+
+/// meerkat 0.8.45 reads member status through `observe_member_status_view`,
+/// which MobKit's production session-service wrapper must forward to the
+/// persistent service (served from its live watch). A wrapper answering it
+/// with `read` would wait on the member's running turn, and every status read
+/// of a busy member would end at the observation deadline with
+/// `preview_unavailable = observation_deadline`. So: with a turn held in the
+/// model, a status read through the real mob returns the member's last
+/// COMMITTED preview, with no preview-unavailable marker.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_members_status_returns_its_committed_preview() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let client = ScriptedClient::immediate(true);
+    let (unified, bridge, runtime_id) = boot_one_member(
+        &temp.path().join("state"),
+        client.clone(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let deliver = |text: &'static str| {
+        let bridge = Arc::clone(&bridge);
+        let runtime_id = runtime_id.clone();
+        async move {
+            bridge
+                .deliver_awaiting_commit_with_mode_context_and_system_prompt(
+                    &runtime_id,
+                    &meerkat_core::ContentInput::Text(text.to_string()),
+                    None,
+                    &[],
+                    HandlingMode::Queue,
+                    None,
+                )
+                .await
+        }
+    };
+
+    // One committed turn: its reply ("ok") is the committed preview.
+    deliver("first, committed").await.expect("first turn");
+    let members = unified.mob_handle().list_all_members().await;
+    let member = members
+        .into_iter()
+        .next()
+        .expect("the booted member")
+        .agent_identity;
+
+    // A second turn, held in the model: the member is busy.
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *client.entered.lock().await = Some(entered_tx);
+    *client.release.lock().await = Some(release_rx);
+    let busy = tokio::spawn(deliver("second, held"));
+    entered_rx.await.expect("the second turn reaches the model");
+
+    let snapshot = unified
+        .mob_handle()
+        .member_status(&member)
+        .await
+        .expect("member status of a busy member");
+    assert_eq!(
+        snapshot.output_preview.as_deref(),
+        Some("ok"),
+        "the busy member's committed preview"
+    );
+    assert_eq!(
+        snapshot.preview_unavailable, None,
+        "the status read must not have waited on the running turn"
+    );
+
+    release_tx.send(()).expect("release the held turn");
+    busy.await
+        .expect("delivery task")
+        .expect("the held turn completes");
+    unified.shutdown().await;
+}

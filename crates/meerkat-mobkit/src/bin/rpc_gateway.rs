@@ -3327,6 +3327,446 @@ actions = ["agent.view"]
         assert_eq!(options["labels"]["agent_identity"], "domain:security");
     }
 
+    fn callback_test_request(
+        build: Option<meerkat_core::service::SessionBuildOptions>,
+    ) -> CreateSessionRequest {
+        CreateSessionRequest {
+            model: "m".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build,
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
+        }
+    }
+
+    const CALENDAR_SOURCE_SESSION: &str = "0192f5c4-7a3e-7d21-9b0e-4c1d2e3f4a5b";
+
+    /// The lineage meerkat stamps on a fork of MobKit's `domain:calendar`: the
+    /// source member is named by its ENCODED roster id, as in a MobKit mob.
+    fn calendar_fork_source() -> meerkat_core::service::ForkBuildSource {
+        meerkat_core::service::ForkBuildSource::new(
+            meerkat_core::MobMemberBinding {
+                mob_id: "home".to_string(),
+                role: "domain".to_string(),
+                member: meerkat_mobkit::member_comms_id::roster_member_id_for_identity(
+                    "domain:calendar",
+                )
+                .as_str()
+                .to_string(),
+            },
+            meerkat_core::SessionId::parse(CALENDAR_SOURCE_SESSION).expect("session id"),
+        )
+    }
+
+    /// meerkat 0.8.45 `SessionBuildOptions::fork_source` reaches the host
+    /// build callback as the same JSON value meerkat serializes (every field,
+    /// nothing added), with the source's durable identity beside it. The
+    /// child's own session and labels are what name the child.
+    #[test]
+    fn callback_build_agent_options_carry_fork_lineage_exactly() {
+        let source = calendar_fork_source();
+        let child_session = meerkat_core::Session::new();
+        let child_session_id = child_session.id().to_string();
+        let build = meerkat_core::service::SessionBuildOptions {
+            fork_source: Some(source.clone()),
+            resume_session: Some(child_session),
+            peer_meta: Some(
+                meerkat_core::PeerMeta::default()
+                    .with_label("role", "domain")
+                    .with_label("team", "home"),
+            ),
+            ..Default::default()
+        };
+
+        let options = callback_build_agent_options(&callback_test_request(Some(build)), "b");
+
+        assert_eq!(
+            options["fork_source"],
+            serde_json::to_value(&source).expect("serialize fork source"),
+            "fork_source is forwarded as meerkat serializes it"
+        );
+        assert_eq!(
+            options["fork_source"],
+            json!({
+                "source_member": {
+                    "mob_id": "home",
+                    "role": "domain",
+                    "member": "mk--domain_ccalendar"
+                },
+                "source_session_id": CALENDAR_SOURCE_SESSION
+            })
+        );
+        assert_eq!(options["fork_source_identity"], "domain:calendar");
+        assert_eq!(options["resume_session_id"], child_session_id.as_str());
+        assert_eq!(options["session_id"], child_session_id.as_str());
+        assert_ne!(child_session_id, CALENDAR_SOURCE_SESSION);
+        assert_eq!(options["labels"], json!({"role": "domain", "team": "home"}));
+
+        for build in [
+            None,
+            Some(meerkat_core::service::SessionBuildOptions::default()),
+        ] {
+            let options = callback_build_agent_options(&callback_test_request(build), "b");
+            assert!(
+                options["fork_source"].is_null() && options["fork_source_identity"].is_null(),
+                "an ordinary build carries no fork lineage: {options}"
+            );
+        }
+    }
+
+    /// Fork lineage is not caller-mintable: a `callback/build_agent` response
+    /// naming `fork_source` neither sets it on an ordinary build nor alters a
+    /// fork's, while the rest of the response still applies.
+    #[tokio::test]
+    async fn a_build_response_cannot_set_or_alter_fork_lineage() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (stdout_tx, _stdout_rx) = mpsc::channel(1);
+        let builder = StdioCallbackAgentBuilder {
+            inner: FactoryAgentBuilder::new(AgentFactory::new(tmp.path()), Config::default()),
+            bridge: StdioCallbackBridge::new(stdout_tx),
+            has_session_builder: true,
+            session_store: None,
+            detached_jobs: None,
+        };
+        let spoofing_response = json!({
+            "fork_source": {
+                "source_member": {"mob_id": "other", "role": "admin", "member": "mk--root"},
+                "source_session_id": "0192f5c4-0000-7000-8000-000000000000"
+            },
+            "fork_source_identity": "root",
+            "labels": {"note": "applied"}
+        });
+
+        let requests = [
+            (
+                callback_test_request(Some(meerkat_core::service::SessionBuildOptions {
+                    fork_source: Some(calendar_fork_source()),
+                    ..Default::default()
+                })),
+                Some(calendar_fork_source()),
+            ),
+            (
+                callback_test_request(Some(meerkat_core::service::SessionBuildOptions::default())),
+                None,
+            ),
+            (callback_test_request(None), None),
+        ];
+        for (req, expected) in requests {
+            let applied = builder
+                .apply_build_agent_response(&req, &spoofing_response, "b")
+                .await
+                .expect("response applies");
+            assert_eq!(
+                applied.build.as_ref().and_then(|b| b.fork_source.clone()),
+                expected,
+                "the response must not set or alter fork lineage"
+            );
+            assert_eq!(
+                applied
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("note"))
+                    .map(String::as_str),
+                Some("applied"),
+                "the rest of the response still applies"
+            );
+        }
+    }
+
+    const FORK_SCENARIO_MOB: &str = r#"
+[mob]
+id = "fork-lineage-scenario"
+
+[profiles.domain]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.domain.tools]
+comms = true
+"#;
+
+    /// A scripted SDK host: answers every `callback/build_agent` with
+    /// `response` and records the options it was sent, in order.
+    fn answer_build_callbacks(
+        mut stdout_rx: mpsc::Receiver<GatewayStdoutLine>,
+        bridge: StdioCallbackBridge,
+        response: Value,
+    ) -> (
+        Arc<std::sync::Mutex<Vec<Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let task = tokio::spawn(async move {
+            while let Some(mut line) = stdout_rx.recv().await {
+                let request: Value = serde_json::from_str(&line).expect("callback JSON");
+                line.settle_delivery(true).await;
+                if request["method"] == "callback/build_agent" {
+                    sink.lock()
+                        .expect("build log")
+                        .push(request["params"]["options"].clone());
+                    bridge
+                        .route_callback_response(json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": response,
+                        }))
+                        .await;
+                }
+            }
+        });
+        (seen, task)
+    }
+
+    struct ForkScenarioRuntime {
+        runtime: UnifiedRuntime,
+        builds: Arc<std::sync::Mutex<Vec<Value>>>,
+        responder: tokio::task::JoinHandle<()>,
+    }
+
+    impl ForkScenarioRuntime {
+        /// The gateway's persistent callback composition (a
+        /// `StdioCallbackAgentBuilder` inside a `PersistentSessionService`,
+        /// durable session projection, persistent mob storage) over `state`,
+        /// with a scripted model and host.
+        async fn boot(
+            state: &std::path::Path,
+            blob_store: Arc<dyn meerkat_core::BlobStore>,
+            response: Value,
+        ) -> Self {
+            let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+                meerkat_store::SqliteSessionStore::open(state.join("session-store.sqlite3"))
+                    .expect("session store"),
+            );
+            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+                meerkat_runtime::store::SqliteRuntimeStore::new(
+                    state.join("runtime-store.sqlite3"),
+                )
+                .expect("runtime store"),
+            );
+            let (runtime_store, epochs) =
+                meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
+                    runtime_store,
+                    session_store.clone(),
+                );
+            let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            ));
+            let factory = AgentFactory::new(state).builtins(false).comms(true);
+            let mut inner = FactoryAgentBuilder::new(factory, Config::default());
+            inner.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+                session_store.clone(),
+            )));
+            inner.default_blob_store = Some(Arc::clone(&blob_store));
+            let (stdout_tx, stdout_rx) = mpsc::channel(16);
+            let bridge = StdioCallbackBridge::new(stdout_tx);
+            let (builds, responder) = answer_build_callbacks(stdout_rx, bridge.clone(), response);
+            let service = Arc::new(meerkat_session::PersistentSessionService::new(
+                StdioCallbackAgentBuilder {
+                    inner,
+                    bridge,
+                    has_session_builder: true,
+                    session_store: Some(session_store.clone()),
+                    detached_jobs: None,
+                },
+                16,
+                session_store,
+                Arc::clone(&runtime_store),
+                blob_store,
+            ));
+            let (mob_storage, provenance) =
+                meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+                    state.join("mob.sqlite3"),
+                )
+                .expect("mob storage");
+            let mut spec = MobBootstrapSpec::new(
+                MobDefinition::from_toml(FORK_SCENARIO_MOB).expect("mob definition"),
+                mob_storage,
+                service,
+            )
+            .with_mob_storage_provenance(provenance)
+            .with_session_write_epochs(&epochs)
+            .with_runtime_authority_prewarm(&runtime_store)
+            .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
+            .with_session_runtime_adapter(adapter.clone())
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+            });
+            spec.runtime_adapter = Some(adapter);
+            let runtime = Box::pin(
+                UnifiedRuntime::builder()
+                    .mob_spec(spec)
+                    .module_config(MobKitConfig {
+                        modules: Vec::new(),
+                        discovery: DiscoverySpec {
+                            namespace: "fork-lineage-scenario".to_string(),
+                            modules: Vec::new(),
+                        },
+                        pre_spawn: Vec::new(),
+                    })
+                    .timeout(Duration::from_secs(10))
+                    .build(),
+            )
+            .await
+            .expect("boot runtime");
+            Self {
+                runtime,
+                builds,
+                responder,
+            }
+        }
+
+        fn builds(&self) -> Vec<Value> {
+            self.builds.lock().expect("build log").clone()
+        }
+
+        async fn stop(self) {
+            let _ = Box::pin(self.runtime.shutdown()).await;
+            self.responder.abort();
+        }
+    }
+
+    /// The real path: MobKit's durable `fork_member` seats a child whose
+    /// `callback/build_agent` carries its source's lineage, and a gateway
+    /// restart rebuilds the child with the same lineage. The host answers
+    /// every build with a response that tries to rewrite `fork_source`; the
+    /// rebuild proves meerkat's persisted lineage never took it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fork_and_its_rebuild_reach_the_build_callback_with_the_source_lineage() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
+        let spoofing_response = json!({
+            "fork_source": {
+                "source_member": {"mob_id": "other", "role": "admin", "member": "mk--root"},
+                "source_session_id": "0192f5c4-0000-7000-8000-000000000000"
+            },
+            "fork_source_identity": "root"
+        });
+
+        let first =
+            ForkScenarioRuntime::boot(&state, Arc::clone(&blob_store), spoofing_response.clone())
+                .await;
+        let source_id =
+            meerkat_mobkit::member_comms_id::roster_member_id_for_identity("domain:calendar");
+        let mut source_spec = meerkat_mob::SpawnMemberSpec::new("domain", source_id.clone());
+        source_spec.labels = Some(BTreeMap::from([
+            ("agent_identity".to_string(), "domain:calendar".to_string()),
+            ("team".to_string(), "home".to_string()),
+        ]));
+        Box::pin(first.runtime.mob_handle().spawn_spec(source_spec))
+            .await
+            .expect("spawn the source");
+        let source_session_id = first
+            .runtime
+            .mob_handle()
+            .get_member(&source_id)
+            .await
+            .expect("read the source")
+            .and_then(|entry| entry.bridge_session_id().cloned())
+            .expect("the source has a session")
+            .to_string();
+
+        let outcome = Box::pin(first.runtime.fork_member(
+            "domain:calendar",
+            meerkat_mob::SpawnMemberSpec::new("domain", "domain:calendar-fork"),
+            None,
+        ))
+        .await
+        .expect("durable fork");
+        let child_session_id = outcome.result.session_id.to_string();
+
+        let expected_lineage = json!({
+            "source_member": {
+                "mob_id": "fork-lineage-scenario",
+                "role": "domain",
+                "member": "mk--domain_ccalendar"
+            },
+            "source_session_id": source_session_id
+        });
+        let builds = first.builds();
+        let source_builds: Vec<&Value> = builds
+            .iter()
+            .filter(|options| options["fork_source"].is_null())
+            .collect();
+        assert!(
+            !source_builds.is_empty(),
+            "the source was built: {builds:?}"
+        );
+        assert!(
+            source_builds
+                .iter()
+                .all(|options| options["fork_source_identity"].is_null()),
+            "an ordinary build carries no lineage: {builds:?}"
+        );
+        // meerkat stamps `agent_identity` on every member build; compare the
+        // child with the value the SOURCE's build actually carried.
+        let source_agent_identity = source_builds[0]["labels"]["agent_identity"].clone();
+        assert!(
+            source_agent_identity.is_string(),
+            "the source build names its agent_identity: {builds:?}"
+        );
+        let assert_child_build = |options: &Value, when: &str| {
+            assert_eq!(
+                options["fork_source"], expected_lineage,
+                "{when}: {options}"
+            );
+            assert_eq!(options["fork_source_identity"], "domain:calendar", "{when}");
+            assert_eq!(
+                options["resume_session_id"],
+                child_session_id.as_str(),
+                "{when}: the child builds on its own session"
+            );
+            assert_ne!(child_session_id, source_session_id);
+            assert_ne!(
+                options["labels"]["agent_identity"], source_agent_identity,
+                "{when}: the child never carries the source's agent_identity: {options}"
+            );
+        };
+        let child_builds: Vec<&Value> = builds
+            .iter()
+            .filter(|options| !options["fork_source"].is_null())
+            .collect();
+        assert_eq!(
+            child_builds.len(),
+            1,
+            "one seating build for the child: {builds:?}"
+        );
+        assert_child_build(child_builds[0], "fork seating");
+        first.stop().await;
+
+        let second = ForkScenarioRuntime::boot(&state, blob_store, spoofing_response).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let rebuild = loop {
+            if let Some(options) = second
+                .builds()
+                .into_iter()
+                .find(|options| !options["fork_source"].is_null())
+            {
+                break options;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the restart never rebuilt the fork child: {:?}",
+                second.builds()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_child_build(&rebuild, "rebuild after restart");
+        second.stop().await;
+    }
+
     #[test]
     fn gateway_runtime_options_parse_agent_memory_defaults() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -4279,6 +4719,7 @@ actions = ["agent.view"]
                     session_id: session.clone(),
                 },
                 AgentEvent::RunCompleted {
+                    assistant_message_id: None,
                     identity: Default::default(),
                     session_id: session.clone(),
                     result: "done".to_string(),
@@ -10571,6 +11012,20 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
         .as_ref()
         .and_then(|b| b.resume_session.as_ref())
         .map(|s| s.id().to_string());
+    // Fork lineage (`SessionBuildOptions::fork_source`): set by the mob
+    // runtime alone, on the build that seats a durable fork with its source's
+    // build inheritance and on every later rebuild of that member; absent for
+    // every other build. Forwarded exactly as meerkat serializes it. Its
+    // `source_member.member` is MobKit's encoded roster id (`mk--...`), while
+    // hosts key grants by durable identity, so the source's identity rides
+    // beside it, resolved through MobKit's own roster mapping. The child's
+    // own labels and session identity above are untouched by either.
+    let fork_source = req.build.as_ref().and_then(|b| b.fork_source.as_ref());
+    let fork_source_identity = fork_source.map(|source| {
+        meerkat_mobkit::member_comms_id::durable_identity_for_roster_member(
+            &source.source_member.member,
+        )
+    });
     json!({
         "scope_id": scope_id,
         "session_id": labels
@@ -10584,7 +11039,217 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
         "app_context": req.build.as_ref()
             .and_then(|b| b.app_context.as_ref()),
         "resume_session_id": resume_session_id,
+        "fork_source": fork_source,
+        "fork_source_identity": fork_source_identity,
     })
+}
+
+impl StdioCallbackAgentBuilder {
+    /// Apply a `callback/build_agent` response to a copy of `req`.
+    ///
+    /// The response may add standing instructions (mint builds only), labels,
+    /// a resume and callback tools. It can never set or alter
+    /// `build.fork_source`: fork lineage is minted by the mob runtime alone
+    /// and the host only ever receives it, so a response naming
+    /// `fork_source` (or `fork_source_identity`) is ignored and the request's
+    /// own lineage, or its absence, is what the build sees.
+    async fn apply_build_agent_response(
+        &self,
+        req: &CreateSessionRequest,
+        result: &Value,
+        scope_id: &str,
+    ) -> Result<CreateSessionRequest, SessionError> {
+        if result.get("fork_source").is_some() || result.get("fork_source_identity").is_some() {
+            tracing::warn!(
+                "callback/build_agent: fork_source in a build response is ignored; fork \
+                 lineage is set only by the mob runtime"
+            );
+        }
+        // Apply Python-returned options to a cloned request
+        let mut modified_req = CreateSessionRequest {
+            model: req.model.clone(),
+            prompt: req.prompt.clone(),
+            system_prompt: req.system_prompt.clone(),
+            max_tokens: req.max_tokens,
+            event_tx: req.event_tx.clone(),
+            initial_turn: req.initial_turn.clone(),
+            build: req.build.clone(),
+            labels: req.labels.clone(),
+            deferred_prompt_policy: req.deferred_prompt_policy,
+            injected_context: req.injected_context.clone(),
+        };
+        // Resume-ness decides the instruction fold below, so resolve
+        // it FIRST: a resume can arrive spawn-level
+        // (build.resume_session already loaded) or be requested by
+        // the Python response (resume_session_id, applied further
+        // down) - both shapes must suppress the fold.
+        let resumed = modified_req
+            .build
+            .as_ref()
+            .and_then(|b| b.resume_session.as_ref())
+            .is_some()
+            || result
+                .get("resume_session_id")
+                .and_then(|v| v.as_str())
+                .is_some();
+        // Apply additional_instructions through meerkat's NATIVE
+        // standing-instructions carrier
+        // (SessionBuildOptions.additional_instructions) - on MINT
+        // builds only. The old translation folded them into an
+        // explicit SystemPromptOverride::Set, a transcript-authoring
+        // ruling this layer does not own: an explicit Set at resume
+        // IS new transcript intent by contract, so the runtime
+        // recorded one assembled System row per boot (the HomeCore
+        // accretion: parent-1 reached 1,294,962 tokens against a
+        // 922,000 ceiling). Standing instructions are per-session
+        // build state baked at mint; a deliberate mid-life change
+        // must use the typed transcript admission.
+        if let Some(instructions) = result.get("additional_instructions") {
+            if let Some(arr) = instructions.as_array() {
+                let combined: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect();
+                if !combined.is_empty() {
+                    if resumed {
+                        tracing::warn!(
+                            "callback/build_agent: additional_instructions ignored on a \
+                             RESUMED build (resume inherits persisted prompt state; \
+                             append deliberate System content through the typed \
+                             admission instead)"
+                        );
+                    } else {
+                        let build = modified_req.build.get_or_insert_with(|| {
+                            meerkat_core::service::SessionBuildOptions::default()
+                        });
+                        // Merge, preserving instructions another
+                        // customizer already installed.
+                        build
+                            .additional_instructions
+                            .get_or_insert_with(Vec::new)
+                            .extend(combined);
+                    }
+                }
+            }
+        }
+        // Apply labels
+        if let Some(labels) = result.get("labels").and_then(|v| v.as_object()) {
+            let label_map = modified_req.labels.get_or_insert_with(Default::default);
+            for (k, v) in labels {
+                if let Some(s) = v.as_str() {
+                    label_map.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        // Apply resume_session_id: Python builder can request resuming
+        // an existing session. The gateway loads the session from the
+        // store and sets it on build.resume_session.
+        if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
+            if let Some(ref store) = self.session_store {
+                let sid = meerkat_core::types::SessionId::parse(resume_id).map_err(|_| {
+                    SessionError::Agent(agent_tool_error(format!(
+                        "callback/build_agent: invalid resume_session_id: {resume_id}"
+                    )))
+                })?;
+                // Validate against any spawn-level resume already set.
+                if let Some(existing) = modified_req
+                    .build
+                    .as_ref()
+                    .and_then(|b| b.resume_session.as_ref())
+                {
+                    if existing.id() != &sid {
+                        return Err(SessionError::Agent(agent_tool_error(format!(
+                            "callback/build_agent: resume_session_id conflict: \
+                             spawn set {} but hook set {resume_id}",
+                            existing.id()
+                        ))));
+                    }
+                    // Same ID — already loaded, skip.
+                } else {
+                    let session = store.load(&sid).await.map_err(|e| {
+                        SessionError::Agent(agent_tool_error(format!(
+                            "callback/build_agent: failed to load resume session {resume_id}: {e}"
+                        )))
+                    })?;
+                    let session = session.ok_or_else(|| {
+                        SessionError::Agent(agent_tool_error(format!(
+                            "callback/build_agent: resume session not found: {resume_id}"
+                        )))
+                    })?;
+                    let build = modified_req.build.get_or_insert_with(|| {
+                        meerkat_core::service::SessionBuildOptions::default()
+                    });
+                    build.resume_session = Some(session);
+                }
+            } else {
+                return Err(SessionError::Agent(agent_tool_error(
+                    "callback/build_agent: resume_session_id requires persistent mode \
+                     (no session store available in ephemeral mode)"
+                        .to_string(),
+                )));
+            }
+        }
+        // Callback tools: Python SDK provides tool names via add_tools()
+        // or register_tool(). Create a CallbackToolDispatcher that routes
+        // tool calls back to Python via callback/call_tool.
+        if let Some(tools) = result.get("tools") {
+            match tools.as_array() {
+                Some(arr) => {
+                    let mut tool_specs = Vec::with_capacity(arr.len());
+                    for v in arr {
+                        let spec = CallbackToolSpec::parse(v).map_err(|reason| {
+                            SessionError::Agent(agent_tool_error(format!(
+                                "callback/build_agent: {reason}"
+                            )))
+                        })?;
+                        tool_specs.push(spec);
+                    }
+                    if !tool_specs.is_empty() {
+                        let dispatcher = CallbackToolDispatcher::new(
+                            self.bridge.clone(),
+                            scope_id.to_string(),
+                            tool_specs,
+                            self.detached_jobs.clone(),
+                        );
+                        if dispatcher.reconcile_registered_catalog {
+                            let reconciliation = dispatcher.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = reconciliation.reconcile_detached_jobs().await {
+                                    tracing::warn!(
+                                        %error,
+                                        "detached callback reconciliation failed"
+                                    );
+                                }
+                            });
+                        }
+                        let build = modified_req.build.get_or_insert_with(|| {
+                            meerkat_core::service::SessionBuildOptions::default()
+                        });
+                        // COMPOSE over whatever an earlier installer
+                        // put in the slot (HomeCore Bug D: assigning
+                        // wholesale silently discarded the agent-memory
+                        // recorder's `memory` tool for every
+                        // callback-built agent). Python-registered
+                        // tools win name collisions; everything else
+                        // falls through to the pre-installed
+                        // dispatcher.
+                        let pre_installed = build.external_tools.take();
+                        build.external_tools =
+                            Some(meerkat_mobkit::tool_compose::ComposedExternalTools::over(
+                                Arc::new(dispatcher),
+                                pre_installed,
+                            ));
+                    }
+                }
+                None => {
+                    return Err(SessionError::Agent(agent_tool_error(format!(
+                        "callback/build_agent: tools must be a JSON array, got: {tools}"
+                    ))));
+                }
+            }
+        }
+        Ok(modified_req)
+    }
 }
 
 #[async_trait]
@@ -10643,193 +11308,9 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 
         match callback_result {
             Ok(result) => {
-                // Apply Python-returned options to a cloned request
-                let mut modified_req = CreateSessionRequest {
-                    model: req.model.clone(),
-                    prompt: req.prompt.clone(),
-                    system_prompt: req.system_prompt.clone(),
-                    max_tokens: req.max_tokens,
-                    event_tx: req.event_tx.clone(),
-                    initial_turn: req.initial_turn.clone(),
-                    build: req.build.clone(),
-                    labels: req.labels.clone(),
-                    deferred_prompt_policy: req.deferred_prompt_policy,
-                    injected_context: req.injected_context.clone(),
-                };
-                // Resume-ness decides the instruction fold below, so resolve
-                // it FIRST: a resume can arrive spawn-level
-                // (build.resume_session already loaded) or be requested by
-                // the Python response (resume_session_id, applied further
-                // down) - both shapes must suppress the fold.
-                let resumed = modified_req
-                    .build
-                    .as_ref()
-                    .and_then(|b| b.resume_session.as_ref())
-                    .is_some()
-                    || result
-                        .get("resume_session_id")
-                        .and_then(|v| v.as_str())
-                        .is_some();
-                // Apply additional_instructions through meerkat's NATIVE
-                // standing-instructions carrier
-                // (SessionBuildOptions.additional_instructions) - on MINT
-                // builds only. The old translation folded them into an
-                // explicit SystemPromptOverride::Set, a transcript-authoring
-                // ruling this layer does not own: an explicit Set at resume
-                // IS new transcript intent by contract, so the runtime
-                // recorded one assembled System row per boot (the HomeCore
-                // accretion: parent-1 reached 1,294,962 tokens against a
-                // 922,000 ceiling). Standing instructions are per-session
-                // build state baked at mint; a deliberate mid-life change
-                // must use the typed transcript admission.
-                if let Some(instructions) = result.get("additional_instructions") {
-                    if let Some(arr) = instructions.as_array() {
-                        let combined: Vec<String> = arr
-                            .iter()
-                            .filter_map(|v| v.as_str().map(ToString::to_string))
-                            .collect();
-                        if !combined.is_empty() {
-                            if resumed {
-                                tracing::warn!(
-                                    "callback/build_agent: additional_instructions ignored on a \
-                                     RESUMED build (resume inherits persisted prompt state; \
-                                     append deliberate System content through the typed \
-                                     admission instead)"
-                                );
-                            } else {
-                                let build = modified_req.build.get_or_insert_with(|| {
-                                    meerkat_core::service::SessionBuildOptions::default()
-                                });
-                                // Merge, preserving instructions another
-                                // customizer already installed.
-                                build
-                                    .additional_instructions
-                                    .get_or_insert_with(Vec::new)
-                                    .extend(combined);
-                            }
-                        }
-                    }
-                }
-                // Apply labels
-                if let Some(labels) = result.get("labels").and_then(|v| v.as_object()) {
-                    let label_map = modified_req.labels.get_or_insert_with(Default::default);
-                    for (k, v) in labels {
-                        if let Some(s) = v.as_str() {
-                            label_map.insert(k.clone(), s.to_string());
-                        }
-                    }
-                }
-                // Apply resume_session_id: Python builder can request resuming
-                // an existing session. The gateway loads the session from the
-                // store and sets it on build.resume_session.
-                if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
-                    if let Some(ref store) = self.session_store {
-                        let sid =
-                            meerkat_core::types::SessionId::parse(resume_id).map_err(|_| {
-                                SessionError::Agent(agent_tool_error(format!(
-                                    "callback/build_agent: invalid resume_session_id: {resume_id}"
-                                )))
-                            })?;
-                        // Validate against any spawn-level resume already set.
-                        if let Some(existing) = modified_req
-                            .build
-                            .as_ref()
-                            .and_then(|b| b.resume_session.as_ref())
-                        {
-                            if existing.id() != &sid {
-                                return Err(SessionError::Agent(agent_tool_error(format!(
-                                    "callback/build_agent: resume_session_id conflict: \
-                                     spawn set {} but hook set {resume_id}",
-                                    existing.id()
-                                ))));
-                            }
-                            // Same ID — already loaded, skip.
-                        } else {
-                            let session = store.load(&sid).await.map_err(|e| {
-                                SessionError::Agent(agent_tool_error(format!(
-                                    "callback/build_agent: failed to load resume session {resume_id}: {e}"
-                                )))
-                            })?;
-                            let session = session.ok_or_else(|| {
-                                SessionError::Agent(agent_tool_error(format!(
-                                    "callback/build_agent: resume session not found: {resume_id}"
-                                )))
-                            })?;
-                            let build = modified_req.build.get_or_insert_with(|| {
-                                meerkat_core::service::SessionBuildOptions::default()
-                            });
-                            build.resume_session = Some(session);
-                        }
-                    } else {
-                        return Err(SessionError::Agent(agent_tool_error(
-                            "callback/build_agent: resume_session_id requires persistent mode \
-                             (no session store available in ephemeral mode)"
-                                .to_string(),
-                        )));
-                    }
-                }
-                // Callback tools: Python SDK provides tool names via add_tools()
-                // or register_tool(). Create a CallbackToolDispatcher that routes
-                // tool calls back to Python via callback/call_tool.
-                if let Some(tools) = result.get("tools") {
-                    match tools.as_array() {
-                        Some(arr) => {
-                            let mut tool_specs = Vec::with_capacity(arr.len());
-                            for v in arr {
-                                let spec = CallbackToolSpec::parse(v).map_err(|reason| {
-                                    SessionError::Agent(agent_tool_error(format!(
-                                        "callback/build_agent: {reason}"
-                                    )))
-                                })?;
-                                tool_specs.push(spec);
-                            }
-                            if !tool_specs.is_empty() {
-                                let dispatcher = CallbackToolDispatcher::new(
-                                    self.bridge.clone(),
-                                    scope_id.clone(),
-                                    tool_specs,
-                                    self.detached_jobs.clone(),
-                                );
-                                if dispatcher.reconcile_registered_catalog {
-                                    let reconciliation = dispatcher.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(error) =
-                                            reconciliation.reconcile_detached_jobs().await
-                                        {
-                                            tracing::warn!(
-                                                %error,
-                                                "detached callback reconciliation failed"
-                                            );
-                                        }
-                                    });
-                                }
-                                let build = modified_req.build.get_or_insert_with(|| {
-                                    meerkat_core::service::SessionBuildOptions::default()
-                                });
-                                // COMPOSE over whatever an earlier installer
-                                // put in the slot (HomeCore Bug D: assigning
-                                // wholesale silently discarded the agent-memory
-                                // recorder's `memory` tool for every
-                                // callback-built agent). Python-registered
-                                // tools win name collisions; everything else
-                                // falls through to the pre-installed
-                                // dispatcher.
-                                let pre_installed = build.external_tools.take();
-                                build.external_tools = Some(
-                                    meerkat_mobkit::tool_compose::ComposedExternalTools::over(
-                                        Arc::new(dispatcher),
-                                        pre_installed,
-                                    ),
-                                );
-                            }
-                        }
-                        None => {
-                            return Err(SessionError::Agent(agent_tool_error(format!(
-                                "callback/build_agent: tools must be a JSON array, got: {tools}"
-                            ))));
-                        }
-                    }
-                }
+                let modified_req = self
+                    .apply_build_agent_response(req, &result, &scope_id)
+                    .await?;
                 self.inner.build_agent(&modified_req, event_tx).await
             }
             Err(err) => {

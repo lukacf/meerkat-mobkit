@@ -1385,6 +1385,7 @@ mod tests {
         tracker.observe_agent_event(
             "identity:a",
             &AgentEvent::ServerToolContent {
+                assistant_message_id: None,
                 id: None,
                 kind: ServerToolKind::WebSearch,
                 content: json!({"results": []}),

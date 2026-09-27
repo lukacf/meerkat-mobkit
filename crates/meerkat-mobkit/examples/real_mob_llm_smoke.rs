@@ -124,10 +124,10 @@ comms = true
         };
 
         match evt {
-            AgentEvent::TextDelta { delta } => {
+            AgentEvent::TextDelta { delta, .. } => {
                 print!("{delta}");
             }
-            AgentEvent::TextComplete { content } => {
+            AgentEvent::TextComplete { content, .. } => {
                 println!("\nREAL_SMOKE: text_complete={content}");
             }
             AgentEvent::ToolCallRequested { name, .. } => {

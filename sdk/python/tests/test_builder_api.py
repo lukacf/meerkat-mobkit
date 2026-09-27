@@ -187,3 +187,134 @@ class TestResumeSessionId:
             {"options": {"scope_id": "s1"}},
         )
         assert result["resume_session_id"] == "sid-owner-789"
+
+
+class TestForkSource:
+    """fork_source on callback/build_agent (meerkat 0.8.45+): typed on receipt,
+    tolerant to fields a newer gateway adds, and never sent back."""
+
+    SOURCE_SESSION_ID = "0192f5c4-7a3e-7d21-9b0e-4c1d2e3f4a5b"
+
+    def _fork_source_wire(self) -> dict:
+        return {
+            "source_member": {
+                "mob_id": "home",
+                "role": "domain",
+                "member": "mk--domain_ccalendar",
+                "future_member_field": True,
+            },
+            "source_session_id": self.SOURCE_SESSION_ID,
+            "future_source_field": {"nested": [1, 2]},
+        }
+
+    @pytest.mark.asyncio
+    async def test_fork_build_receives_typed_source_and_identity(self):
+        from meerkat_mobkit import ForkBuildSource, MobMemberBinding
+
+        seen: dict = {}
+
+        class ForkAwareBuilder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                seen["opts"] = opts
+
+        d = CallbackDispatcher()
+        d.register_builder(ForkAwareBuilder())
+        await d.handle_callback(
+            "callback/build_agent",
+            {
+                "options": {
+                    "scope_id": "s1",
+                    "session_id": "child-session",
+                    "resume_session_id": "child-session",
+                    "profile_name": "domain",
+                    "labels": {"session_id": "child-session"},
+                    "fork_source": self._fork_source_wire(),
+                    "fork_source_identity": "domain:calendar",
+                    "future_top_level_field": 1,
+                }
+            },
+        )
+        opts = seen["opts"]
+        assert opts.fork_source == ForkBuildSource(
+            source_member=MobMemberBinding(
+                mob_id="home", role="domain", member="mk--domain_ccalendar"
+            ),
+            source_session_id=self.SOURCE_SESSION_ID,
+        )
+        assert opts.fork_source_identity == "domain:calendar"
+        # The child keeps its own identity and session.
+        assert opts.session_id == "child-session"
+        assert opts.labels == {"session_id": "child-session"}
+
+    @pytest.mark.asyncio
+    async def test_fork_source_is_never_sent_back(self):
+        from meerkat_mobkit import ForkBuildSource, MobMemberBinding
+
+        class MintingBuilder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                opts.fork_source = ForkBuildSource(
+                    source_member=MobMemberBinding(mob_id="x", role="y", member="z"),
+                    source_session_id="spoofed",
+                )
+                opts.fork_source_identity = "spoofed"
+
+        d = CallbackDispatcher()
+        d.register_builder(MintingBuilder())
+        for options in (
+            {"scope_id": "s1"},
+            {
+                "scope_id": "s2",
+                "fork_source": self._fork_source_wire(),
+                "fork_source_identity": "domain:calendar",
+            },
+        ):
+            result = await d.handle_callback("callback/build_agent", {"options": options})
+            assert "fork_source" not in result
+            assert "fork_source_identity" not in result
+
+    @pytest.mark.asyncio
+    async def test_ordinary_build_has_no_fork_source(self):
+        seen: list = []
+
+        class Builder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                seen.append(opts)
+
+        d = CallbackDispatcher()
+        d.register_builder(Builder())
+        await d.handle_callback("callback/build_agent", {"options": {"scope_id": "s1"}})
+        await d.handle_callback(
+            "callback/build_agent",
+            {
+                "options": {
+                    "scope_id": "s2",
+                    "fork_source": None,
+                    "fork_source_identity": None,
+                }
+            },
+        )
+        assert [(o.fork_source, o.fork_source_identity) for o in seen] == [
+            (None, None),
+            (None, None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_malformed_fork_source_fails_the_build(self):
+        class Builder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                raise AssertionError("must not be called")
+
+        d = CallbackDispatcher()
+        d.register_builder(Builder())
+        with pytest.raises(TypeError, match="source_session_id"):
+            await d.handle_callback(
+                "callback/build_agent",
+                {
+                    "options": {
+                        "scope_id": "s1",
+                        "fork_source": {
+                            "source_member": {"mob_id": "home", "role": "domain", "member": "m"}
+                        },
+                    }
+                },
+            )
