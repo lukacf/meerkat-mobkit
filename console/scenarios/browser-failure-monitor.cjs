@@ -44,6 +44,12 @@ function browserFailureMonitor(context, { origin, initializationPrefixes = [""] 
     if (page) attachPage(page);
     active.set(request, page);
     const action = actions.get(page);
+    const document = action?.document;
+    if (document && request.frame() === document.frame) {
+      if (request.isNavigationRequest()) {
+        document.request ||= request;
+      } else if (!document.fenced) document.candidates.add(request);
+    }
     if (!action?.prefixes.length) return;
     const kind = initializationKind(request, action.prefixes);
     if (!kind || action.initial.has(kind)) return;
@@ -52,15 +58,21 @@ function browserFailureMonitor(context, { origin, initializationPrefixes = [""] 
   }
   function observeFinished(request) {
     active.delete(request);
+    for (const action of actions.values()) action.document?.candidates.delete(request);
     if (!allowances.get(request)?.required) allowances.delete(request);
   }
+  const errorText = failure => `${failure.method} ${failure.url}: ${failure.error} ${failure.postData || ""}`;
   function observeFailure(request) {
     const allowance = allowances.get(request);
     const failure = { method: request.method(), url: request.url(), postData: request.postData(), error: request.failure()?.errorText };
     const accepted = Boolean(allowance && failure.error === allowance.error);
-    failures.push({ ...failure, expected: accepted, ...(accepted ? { reason: allowance.reason } : {}) });
+    const record = { ...failure, expected: accepted, ...(accepted ? { reason: allowance.reason } : {}) };
+    failures.push(record);
+    const document = actions.get(active.get(request))?.document;
     if (accepted) expected.push({ ...failure, reason: allowance.reason });
-    else errors.push(`${failure.method} ${failure.url}: ${failure.error} ${failure.postData || ""}`);
+    else if (!allowance && failure.error === aborted && document?.request && document.candidates.has(request)) document.failures.push(record);
+    else errors.push(errorText(failure));
+    document?.candidates.delete(request);
     active.delete(request); allowances.delete(request);
   }
   function attachPage(page) {
@@ -73,7 +85,34 @@ function browserFailureMonitor(context, { origin, initializationPrefixes = [""] 
   // Context errors include exceptions before a popup page event. Listening to
   // this one owner event also avoids counting the mirrored pageerror twice.
   const observeWebError = webError => errors.push(webError.error().message);
-  function finishAction(action) {
+  function replacedDocument(document, response) {
+    try {
+      if (!response?.ok?.() || document.boundaries.length !== 1 || response.frame() !== document.frame
+        || response.url() !== document.boundaries[0]) return false;
+      const request = response.request();
+      if (!request.isNavigationRequest() || request.frame() !== document.frame) return false;
+      const seen = new Set();
+      for (let current = request; current && !seen.has(current); current = current.redirectedFrom?.()) {
+        if (current === document.request) return true;
+        seen.add(current);
+      }
+    } catch { /* Unavailable frame ownership cannot prove replacement. */ }
+    return false;
+  }
+  function finishAction(action, response) {
+    if (action.document) {
+      const document = action.document;
+      document.page.off("framenavigated", document.onNavigation);
+      const replaced = replacedDocument(document, response);
+      for (const failure of document.failures) {
+        if (replaced) {
+          failure.expected = true;
+          failure.reason = `${action.reason}: replaced document request`;
+          const { expected: ignored, ...evidence } = failure;
+          expected.push(evidence);
+        } else errors.push(errorText(failure));
+      }
+    }
     for (const [request, allowance] of allowances) if (allowance.action === action) allowances.delete(request);
     for (const [page, value] of actions) if (value === action) actions.delete(page);
   }
@@ -84,19 +123,34 @@ function browserFailureMonitor(context, { origin, initializationPrefixes = [""] 
       assert(active.has(request), "deliberate failure must identify an observed in-flight request");
       bind(request, reason, error, null, true);
     },
-    async during(page, reason, action, { priorRequests = () => true, initialize = false } = {}) {
+    async during(page, reason, action, { priorRequests = () => true, initialize = false, documentNavigation = false } = {}) {
       assert(!actions.has(page), "failure action scopes must not overlap on a page");
       const scope = { reason, prefixes: actionPrefixes(initialize), initial: new Set() };
+      if (documentNavigation) {
+        // Requests can begin after the action snapshot while the old document
+        // is still running, even after navigation begins. Stop collecting at
+        // the frame event, and require the actual committed Response as proof.
+        const document = { page, frame: page.mainFrame(), candidates: new Set(), failures: [], boundaries: [], fenced: false, request: null };
+        document.onNavigation = frame => {
+          if (frame !== document.frame) return;
+          document.fenced = true;
+          document.boundaries.push(frame.url());
+        };
+        scope.document = document;
+        page.on("framenavigated", document.onNavigation);
+      }
       actions.set(page, scope);
+      let response;
       try {
         for (const [request, owner] of active) if (owner === page && priorRequests(request)) {
           bind(request, `${reason}: prior document request`, aborted, scope);
         }
-        return await action();
-      } finally { finishAction(scope); }
+        response = await action();
+        return response;
+      } finally { finishAction(scope, response); }
     },
     navigation(page, reason, action) {
-      return monitor.during(page, reason, action, { initialize: true });
+      return monitor.during(page, reason, action, { initialize: true, documentNavigation: true });
     },
     async popup(reason, action) {
       assert.equal(popupAction, null, "popup action scopes must not overlap");
@@ -105,6 +159,7 @@ function browserFailureMonitor(context, { origin, initializationPrefixes = [""] 
       try { return await action(); } finally { popupAction = null; finishAction(scope); }
     },
     assertClean() {
+      assert([...actions.values()].every(action => !action.document?.failures.length), "navigation cancellation evidence is still pending");
       assert.deepEqual(errors, [], "no unexpected browser exceptions or failed requests");
       const missing = [...allowances].filter(([, allowance]) => allowance.required).map(([request, allowance]) => ({
         method: request.method(), url: request.url(), reason: allowance.reason,

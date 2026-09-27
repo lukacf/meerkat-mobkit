@@ -25,8 +25,9 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
   const { errors, expected: expectedFailures, failures: requestFailures } = monitor;
   const live = () => page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
   const reload = () => navigation(page, "explicit legacy-import reload", async () => {
-    await page.reload();
+    const response = await page.reload();
     await live();
+    return response;
   });
   const sends = () => fixture.observations.filter(item => item.method === "POST" &&
     (item.path.endsWith("/send") || item.request.includes('"method":"mobkit/console/send"')));
@@ -42,8 +43,9 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
     }
     queueKey = `mobkit-send-attempts:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(identity)}`;
     await navigation(page, "open legacy-import host", async () => {
-      await page.goto(origin + (embeddedHttp ? "/console" : "/scoped"));
+      const response = await page.goto(origin + (embeddedHttp ? "/console" : "/scoped"));
       await live();
+      return response;
     });
     if (embeddedHttp) {
       assert.deepEqual(await page.evaluate(() => ({ secure: isSecureContext, locks: Boolean(navigator.locks), indexedDB: Boolean(indexedDB) })),
@@ -51,9 +53,10 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
     }
     await page.evaluate(([key, bytes]) => localStorage.setItem(key, bytes), [legacyKey, legacyBytes]);
     await navigation(page, "reload seeded legacy queue and select target", async () => {
-      await page.reload();
+      const response = await page.reload();
       await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
       await live();
+      return response;
     });
     const importButton = page.getByRole("button", { name: "Import and send older queued messages", exact: true });
     await importButton.waitFor();

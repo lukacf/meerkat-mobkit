@@ -158,9 +158,10 @@ async function stoppedScenario(host, action) {
   const shot = async label => { await fs.mkdir(evidence, { recursive: true }); await page.screenshot({ path: path.join(evidence, `${host}-real-routine-${action}-${label}.png`), fullPage: true }); };
   async function open(reload = false) {
     await navigation(page, `${reload ? "reload" : "open"} ${host} routine ${action} host`, async () => {
-      if (reload) await page.reload(); else await page.goto(fixture.baseUrl + (host === "stock" ? "/console" : "/shared"));
+      const response = reload ? await page.reload() : await page.goto(fixture.baseUrl + (host === "stock" ? "/console" : "/shared"));
       if (host === "stock" && !await page.locator(".conv__body").count()) await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor(); await viewport().waitFor();
+      return response;
     });
   }
   async function inspectTool(label, state, options) {

@@ -7,6 +7,8 @@ const { browserFailureMonitor } = require("./browser-failure-monitor.cjs");
 const origin = "http://fixture.test:8080";
 function setup(options = {}) {
   const page = new EventEmitter();
+  const frame = { page: () => page, url: () => `${origin}/scoped` };
+  page.mainFrame = () => frame;
   const context = new EventEmitter();
   context.pages = () => [page];
   const monitor = browserFailureMonitor(context, { origin, ...options });
@@ -15,11 +17,18 @@ function setup(options = {}) {
     url: () => options.url || `${origin}/console/experience`,
     postData: () => options.body === undefined ? null : JSON.stringify(options.body),
     failure: () => ({ errorText: options.error || "net::ERR_ABORTED" }),
-    frame: () => ({ page: () => options.page || page }),
+    frame: () => options.frame || (options.page ? { page: () => options.page } : frame),
+    isNavigationRequest: () => Boolean(options.navigation),
+    redirectedFrom: () => options.redirectedFrom || null,
   });
   const start = item => { context.emit("request", item); return item; };
   const fail = item => context.emit("requestfailed", item);
-  return { context, page, monitor, request, start, fail };
+  const beginNavigation = () => {
+    const document = start(request({ navigation: true, url: frame.url() }));
+    return { request: () => document, frame: () => frame, url: () => frame.url(), ok: () => true };
+  };
+  const commit = (response = beginNavigation()) => { page.emit("framenavigated", frame); return response; };
+  return { context, page, frame, monitor, request, start, fail, beginNavigation, commit };
 }
 const seed = { method: "mobkit/console/query_timeline", params: { mode: "recent", limit: 200 } };
 
@@ -54,6 +63,186 @@ test("navigation does not allow failures in another tab or a different failure c
   await s.monitor.navigation(s.page, "reload one tab", async () => { s.fail(other); s.fail(reset); });
   assert.equal(s.monitor.expected.length, 0);
   assert.equal(s.monitor.errors.length, 2);
+});
+
+test("a committed reload accepts an old-document request started after the action snapshot", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const font = s.start(s.request({ url: "https://fonts.test/font.woff2" }));
+    const response = s.beginNavigation();
+    s.fail(font);
+    return s.commit(response);
+  });
+  s.monitor.assertClean();
+  assert.equal(s.monitor.expected.length, 1);
+  assert.equal(s.monitor.failures[0].expected, true);
+  assert.equal(s.monitor.expected[0].reason, "explicit reload: replaced document request");
+});
+
+test("replacement cannot forgive a new-document request with the same URL", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    const response = s.commit();
+    s.fail(old);
+    s.fail(s.start(s.request()));
+    return response;
+  });
+  assert.equal(s.monitor.expected.length, 1);
+  assert.equal(s.monitor.errors.length, 1);
+});
+
+test("replacement covers a resource started after navigation begins but before the frame commits", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const document = s.start(s.request({ navigation: true, url: s.frame.url() }));
+    s.fail(s.start(s.request()));
+    s.page.emit("framenavigated", s.frame);
+    return { request: () => document, frame: () => s.frame, url: () => s.frame.url(), ok: () => true };
+  });
+  s.monitor.assertClean();
+  assert.equal(s.monitor.expected.length, 1);
+});
+
+test("a committed redirect chain proves replacement through the exact first navigation request", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    const first = s.start(s.request({ navigation: true, url: `${origin}/redirect` }));
+    s.fail(old);
+    const last = s.start(s.request({ navigation: true, url: s.frame.url(), redirectedFrom: first }));
+    s.page.emit("framenavigated", s.frame);
+    return { request: () => last, frame: () => s.frame, url: () => s.frame.url(), ok: () => true };
+  });
+  s.monitor.assertClean();
+  assert.equal(s.monitor.expected.length, 1);
+});
+
+for (const witness of ["none", "hash", "unobserved", "wrong-frame", "http-error", "multiple"]) {
+  test(`late cancellation stays unexpected with ${witness} replacement evidence`, async () => {
+    const s = setup();
+    await s.monitor.navigation(s.page, "explicit reload", async () => {
+      const old = s.start(s.request());
+      const response = s.beginNavigation();
+      s.fail(old);
+      if (witness === "none") return;
+      if (witness === "hash") { s.page.emit("framenavigated", s.frame); return null; }
+      s.commit(response);
+      if (witness === "unobserved") response.request = () => s.request({ navigation: true, url: s.frame.url() });
+      if (witness === "wrong-frame") response.frame = () => ({});
+      if (witness === "http-error") response.ok = () => false;
+      if (witness === "multiple") s.page.emit("framenavigated", s.frame);
+      return response;
+    });
+    assert.equal(s.monitor.expected.length, 0);
+    assert.equal(s.monitor.errors.length, 1);
+  });
+}
+
+test("replacement retains wrong-error, other-tab, completed-request and navigation-request failures", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    s.fail(s.start(s.request({ error: "net::ERR_CONNECTION_RESET" })));
+    s.fail(s.start(s.request({ page: new EventEmitter() })));
+    const completed = s.start(s.request());
+    s.context.emit("requestfinished", completed);
+    s.fail(completed);
+    s.fail(s.start(s.request({ navigation: true })));
+    return s.commit();
+  });
+  assert.equal(s.monitor.expected.length, 0);
+  assert.equal(s.monitor.errors.length, 4);
+});
+
+test("a failed navigation cannot validate a buffered old-document cancellation", async () => {
+  const s = setup();
+  await assert.rejects(s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    const response = s.beginNavigation();
+    s.fail(old);
+    s.commit(response);
+    throw new Error("readiness failed");
+  }), /readiness failed/);
+  assert.equal(s.monitor.errors.length, 1);
+  assert.equal(s.page.listenerCount("framenavigated"), 0);
+});
+
+test("an abort before navigation starts cannot be forgiven by a later successful reload", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    s.fail(s.start(s.request()));
+    return s.commit();
+  });
+  assert.equal(s.monitor.expected.length, 0);
+  assert.equal(s.monitor.errors.length, 1);
+});
+
+test("assertClean rejects deferred failures until document replacement is proven", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    const response = s.beginNavigation();
+    s.fail(old);
+    assert.throws(() => s.monitor.assertClean(), /still pending/);
+    return s.commit(response);
+  });
+  s.monitor.assertClean();
+});
+
+test("replacement cannot override an explicit expected-error mismatch", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    s.monitor.expectFailure(old, "drop response", "net::ERR_FAILED");
+    const response = s.beginNavigation();
+    s.fail(old);
+    return s.commit(response);
+  });
+  assert.equal(s.monitor.expected.length, 0);
+  assert.equal(s.monitor.errors.length, 1);
+});
+
+test("an exact explicit failure during replacement is counted once", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    s.monitor.expectFailure(old, "deliberate abort", "net::ERR_ABORTED");
+    const response = s.beginNavigation();
+    s.fail(old);
+    return s.commit(response);
+  });
+  s.monitor.assertClean();
+  assert.equal(s.monitor.expected.length, 1);
+  assert.equal(s.monitor.expected[0].reason, "deliberate abort");
+});
+
+test("unavailable response ownership fails closed and releases the action scope", async () => {
+  const s = setup();
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    const old = s.start(s.request());
+    const response = s.beginNavigation();
+    s.fail(old);
+    s.commit(response);
+    response.frame = () => { throw new Error("Frame is not available"); };
+    return response;
+  });
+  assert.equal(s.monitor.errors.length, 1);
+  assert.equal(s.page.listenerCount("framenavigated"), 0);
+  const prior = s.start(s.request());
+  await s.monitor.navigation(s.page, "next action", async () => s.fail(prior));
+  assert.equal(s.monitor.expected.length, 1);
+  assert.equal(s.monitor.errors.length, 1);
+});
+
+test("replacement proof and candidates end with the action", async () => {
+  const s = setup(); let pending;
+  await s.monitor.navigation(s.page, "explicit reload", async () => {
+    pending = s.start(s.request());
+    return s.commit();
+  });
+  s.fail(pending);
+  assert.equal(s.monitor.errors.length, 1);
+  assert.equal(s.page.listenerCount("framenavigated"), 0);
 });
 
 test("finished requests and allowances from completed actions cannot hide later failures", async () => {

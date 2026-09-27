@@ -22,9 +22,10 @@ async function clonedTabDrafts() {
   }
   try {
     await navigation(first, "open original draft tab", async () => {
-      await first.goto(fixture.baseUrl + "/scoped");
+      const response = await first.goto(fixture.baseUrl + "/scoped");
       await first.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
       await first.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
     });
     await editor(first).fill("Original tab draft");
     await waitSaved(first, "Original tab draft");
@@ -47,15 +48,17 @@ async function clonedTabDrafts() {
     await eventually(async () => (await (await fetch(fixture.backendUrl + "/__fixture/requests")).json())
       .some(request => JSON.stringify(request.messages).includes("Original tab draft")), "original tab real model ingress");
     await navigation(clone, "explicit clone draft tab reload", async () => {
-      await clone.reload();
+      const response = await clone.reload();
       await editor(clone).waitFor();
       await clone.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
     });
     assert.equal(await editor(clone).inputValue(), "Independent copied tab draft", "sending in the original cannot erase a copied tab draft");
     await navigation(first, "explicit first draft tab reload", async () => {
-      await first.reload();
+      const response = await first.reload();
       await editor(first).waitFor();
       await first.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
     });
     assert.equal(await editor(first).inputValue(), "");
     const requests = await (await fetch(fixture.backendUrl + "/__fixture/requests")).json();

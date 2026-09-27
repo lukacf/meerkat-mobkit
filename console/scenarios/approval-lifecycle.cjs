@@ -196,8 +196,9 @@ async function composedApproval(host) {
     await eventually(async () => (await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length === 0, "owner approval resolution");
     await eventually(async () => await page.getByTestId(`gating-action:${created.pending_id}:approve`).count() === 0, "all approval copies settle");
     await navigation(page, "explicit approval host reload", async () => {
-      await page.reload();
+      const response = await page.reload();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
     });
     assert.equal((await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length, 0);
     assert.equal(decisions(fixture, created.pending_id).length, before + 1, "one UI decision dispatch settles all copies");
@@ -213,11 +214,12 @@ async function openConversation(page, fixture, host) {
   })).body.result;
   assert(accepted?.interaction_id, JSON.stringify(accepted));
   await navigation(page, `open ${host} approval host`, async () => {
-    await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
+    const response = await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
     if (host === "stock" && !await page.getByTestId("chat-composer:router:main").count()) {
       await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
     }
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    return response;
   });
   // Real operator ingress and its correlated transcript must exist. A receipt
   // alone cannot substitute for this prerequisite when bootstrap is broken.
@@ -337,8 +339,9 @@ async function accessRevocation(host) {
     await fixture.control("access", { mode: "open" });
     assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
     await navigation(page, "explicit approval host reload", async () => {
-      await page.reload();
+      const response = await page.reload();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+      return response;
     });
     if (host === "stock") await refreshApprovals(page, host);
     else await page.getByRole("button", { name: /^Needs you/ }).click();

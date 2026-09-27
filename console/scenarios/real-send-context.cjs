@@ -73,18 +73,20 @@ async function inBrowser(name, run) {
 }
 async function open(page, fixture, host = "stock") {
   await navigation(page, `open ${host} send-context host`, async () => {
-    await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
+    const response = await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
     if (host !== "shared" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
       await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
     }
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     if (host !== "shared") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+    return response;
   });
 }
 async function reload(page) {
   await navigation(page, "explicit send-context reload", async () => {
-    await page.reload();
+    const response = await page.reload();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    return response;
   });
 }
 const pane = (page, host) => host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(`chat-pane:${identity}`).first();
