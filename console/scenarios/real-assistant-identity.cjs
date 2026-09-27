@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc, snapshot } = require("../acceptance-runtime.cjs");
 
@@ -50,6 +50,22 @@ function assertProvisionalPresentation(observation) {
   assert(observation.documentId && observation.quoteId, "live Markdown has document and quote targets");
 }
 
+function assertProductionAssets(pageUrl, baseUrl, assets, expected) {
+  assert.equal(new URL(pageUrl).origin, baseUrl, "production scenario stays on the fixture origin");
+  assert.equal(new URL(pageUrl).pathname, "/console", "production scenario opens the shipping browser entry");
+  for (const file of ["console-app.js", "console-app.css"]) {
+    const actual = assets.filter(asset => new URL(asset.url).origin === baseUrl
+      && new URL(asset.url).pathname === `/console/assets/${file}`);
+    assert.equal(actual.length, 1, `browser loaded one production ${file}`);
+    assert(!actual[0].error, JSON.stringify(actual[0]));
+    assert.equal(actual[0].status, 200);
+    assert.equal(actual[0].bytes, expected[file].bytes, `browser received the full production ${file}`);
+    assert.equal(actual[0].sha256, expected[file].sha256, `browser received exact production ${file} bytes`);
+    assert.equal(new URL(actual[0].url).searchParams.get("v"), expected[file].sha256.slice(0, 12),
+      "production URL has the matching content version");
+  }
+}
+
 async function captureLive(url) {
   const abort = new AbortController();
   const response = await fetch(url, { signal: abort.signal });
@@ -83,12 +99,15 @@ function allowedNavigationAbort(request) {
 }
 
 async function assistantIdentity(host) {
+  const hostRoute = { stock: "/scoped", shared: "/shared", embedded: "/console" }[host];
+  assert(hostRoute, `Unknown assistant identity host: ${host}`);
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "The identity scenario requires the coordinator's matching prebuilt fixture.");
   const fixture = await startFixture();
   const browser = await chromium.launch({ headless: process.env.MOBKIT_HEADED !== "1" });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const folder = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
-  const result = { host, source, errors: [], expectedCancellations: [], rendered: {} };
+  const result = { host, hostRoute, source, errors: [], expectedCancellations: [], navigations: [], rendered: {} };
+  const assetResponses = [];
   const draft = "Next, compare these three observations. Preserve A\u030a and 🚀.";
   const marker = `identity-${randomUUID().slice(0, 8)}`;
   let allowance = "navigation", live;
@@ -103,14 +122,39 @@ async function assistantIdentity(host) {
     else result.errors.push(detail);
   });
   page.on("response", response => { if (response.status() >= 400) result.errors.push({ url: response.url(), status: response.status() }); });
+  if (host === "embedded") {
+    // Observe the actual browser responses from the production route. A second
+    // fetch would not establish which asset bytes rendered these occurrences.
+    page.on("response", response => {
+      const url = new URL(response.url());
+      if (url.origin !== fixture.baseUrl || !["/console/assets/console-app.js", "/console/assets/console-app.css"].includes(url.pathname)) return;
+      assetResponses.push(response.body().then(bytes => ({
+        url: response.url(), status: response.status(), bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      })).catch(error => ({ url: response.url(), error: String(error) })));
+    });
+  }
   async function read(url) { const response = await fetch(url); assert.equal(response.status, 200); return response.json(); }
   const timeline = () => read(`${fixture.baseUrl}/console/timeline?identity=router%3Amain&mode=recent&limit=1000`);
   async function open(reload = false) {
     allowance = "navigation";
-    if (reload) await page.reload(); else await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
-    if (host === "stock" && !await pane().count()) await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router:main/ }).first().click();
+    const firstAsset = assetResponses.length;
+    if (reload) await page.reload(); else await page.goto(fixture.baseUrl + hostRoute);
+    result.navigations.push({ reload, requestedUrl: fixture.baseUrl + hostRoute, actualUrl: page.url() });
+    assert.equal(new URL(page.url()).origin, fixture.baseUrl, "identity scenario stays on the fixture origin");
+    assert.equal(new URL(page.url()).pathname, hostRoute, "identity scenario opens the selected host route");
+    if (host !== "shared" && !await pane().count()) await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router:main/ }).first().click();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await composer().waitFor(); allowance = null;
+    if (host === "embedded") {
+      const loadedAssets = await Promise.all(assetResponses.slice(firstAsset));
+      const expected = Object.fromEntries(await Promise.all(["console-app.js", "console-app.css"].map(async file => {
+        const bytes = await fs.readFile(path.join(__dirname, "../dist", file));
+        return [file, { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length }];
+      })));
+      (result.productionAssetChecks ||= []).push({ reload, pageUrl: page.url(), loadedAssets, expected });
+      assertProductionAssets(page.url(), fixture.baseUrl, loadedAssets, expected);
+    }
   }
   async function inspect(label) {
     const rows = await eventually(async () => {
@@ -218,12 +262,13 @@ async function assistantIdentity(host) {
   } finally {
     result.observations = fixture.observations; result.logs = fixture.logs();
     result.liveEvents = live?.events;
+    if (host === "embedded") result.loadedAssets = await Promise.all(assetResponses);
     await fs.mkdir(folder, { recursive: true });
     await fs.writeFile(path.join(folder, `${host}-assistant-identity.json`), JSON.stringify(result, null, 2));
     await live?.close(); await browser.close(); await fixture.close();
   }
 }
 
-const scenarios = ["stock", "shared"].map(host => ({ id: `real-${host}-assistant-identity`, family: "real-presentation", backend: "real", run: () => assistantIdentity(host) }));
-module.exports = { scenarios, assertAssistantIdentity, assertProvisionalPresentation, source };
+const scenarios = ["stock", "shared", "embedded"].map(host => ({ id: `real-${host}-assistant-identity`, family: "real-presentation", backend: "real", run: () => assistantIdentity(host) }));
+module.exports = { scenarios, assertAssistantIdentity, assertProvisionalPresentation, assertProductionAssets, source };
 if (require.main === module) require("../scenario-registry.cjs").runScenarios(scenarios).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

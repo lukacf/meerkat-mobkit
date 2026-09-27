@@ -80,3 +80,15 @@ test("production and scoped lost-ack checks remain independently selectable", ()
     assert.equal(typeof selected[0].run, "function");
   }
 });
+
+test("production, scoped and shared assistant identity checks remain independently selectable", () => {
+  const runner = require("./browser-e2e.cjs").scenarios;
+  for (const id of ["real-embedded-assistant-identity", "real-stock-assistant-identity", "real-shared-assistant-identity"]) {
+    const selected = selectScenarios(runner, [`--scenario=${id}`]).selected;
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].id, id);
+    assert.equal(selected[0].family, "real-presentation");
+    assert.equal(selected[0].backend, "real");
+    assert.equal(typeof selected[0].run, "function");
+  }
+});

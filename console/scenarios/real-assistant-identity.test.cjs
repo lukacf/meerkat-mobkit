@@ -1,7 +1,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { assertAssistantIdentity, assertProvisionalPresentation, source } = require("./real-assistant-identity.cjs");
+const { createHash } = require("node:crypto");
+const { assertAssistantIdentity, assertProvisionalPresentation, assertProductionAssets, source } = require("./real-assistant-identity.cjs");
 
 function fixture() {
   const rows = ["a", "b", "c"].map(assistant_message_id => ({
@@ -53,4 +54,31 @@ test("streaming acceptance cannot pass on completed history or a later identical
     { ...good, firstTextComplete: true },
     { ...good, assistantMessageId: undefined },
   ]) assert.throws(() => assertProvisionalPresentation(invalid));
+});
+
+test("production identity evidence rejects a fixture host or missing, stale and failed browser assets", () => {
+  const baseUrl = "http://127.0.0.1:12345";
+  const expected = Object.fromEntries(["console-app.js", "console-app.css"].map(file => {
+    const bytes = Buffer.from(`current production ${file}`);
+    return [file, { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length }];
+  }));
+  const assets = Object.entries(expected).map(([file, value]) => ({
+    url: `${baseUrl}/console/assets/${file}?v=${value.sha256.slice(0, 12)}`,
+    status: 200, ...value,
+  }));
+  assert.doesNotThrow(() => assertProductionAssets(`${baseUrl}/console`, baseUrl, assets, expected));
+  for (const route of ["/scoped", "/shared"]) {
+    assert.throws(() => assertProductionAssets(baseUrl + route, baseUrl, assets, expected), /shipping browser entry/);
+  }
+  assert.throws(() => assertProductionAssets("http://127.0.0.1:54321/console", baseUrl, assets, expected), /fixture origin/);
+  for (const invalid of [
+    assets.slice(1),
+    [...assets, assets[0]],
+    [{ ...assets[0], sha256: "outdated build" }, assets[1]],
+    [{ ...assets[0], bytes: 0 }, assets[1]],
+    [{ ...assets[0], status: 404 }, assets[1]],
+    [{ ...assets[0], error: "response body unavailable" }, assets[1]],
+    [{ ...assets[0], url: `${baseUrl}/console/assets/console-app.js?v=outdated` }, assets[1]],
+    [{ ...assets[0], url: assets[0].url.replace("12345", "54321") }, assets[1]],
+  ]) assert.throws(() => assertProductionAssets(`${baseUrl}/console`, baseUrl, invalid, expected));
 });
