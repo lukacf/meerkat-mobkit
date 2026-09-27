@@ -41,6 +41,7 @@ import {
   StorageResolutionError,
   TransportError,
   TurnFailedError,
+  TurnNotDeliveredError,
   TurnUnknownError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
@@ -1174,6 +1175,10 @@ export class MobKitRuntime {
    * necessarily your turn's. To wait for one specific turn, use
    * {@link waitForTurn} with a ticket, as {@link sendAndWait} does.
    *
+   * Do not mix ticket waits and cursor waits on one identity: a ticket can
+   * settle before the identity health monitor counts the same turn on the
+   * cursor, so a later cursor wait can be satisfied by that earlier turn.
+   *
    * Throws if the wait times out, if the identity exposes no cursor, or if the
    * runtime incarnation changed — turn counts do not carry across
    * incarnations, so that is reported rather than guessed at either way.
@@ -1270,9 +1275,11 @@ export class MobKitRuntime {
     }
     const unavailable = result.turnUnavailable;
     if (unavailable != null && !unavailable.delivered) {
-      throw new Error(
-        `${operation} for identity ${identity} was not delivered ` +
-          `(${unavailable.code}: ${unavailable.reason}); there is no turn to wait for`,
+      throw new TurnNotDeliveredError(
+        identity,
+        operation,
+        unavailable.code,
+        unavailable.reason,
       );
     }
     const reason =

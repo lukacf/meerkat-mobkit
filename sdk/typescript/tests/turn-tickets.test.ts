@@ -15,7 +15,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { TurnFailedError, TurnUnknownError } from "../src/errors.js";
+import {
+  MobKitError,
+  TurnFailedError,
+  TurnNotDeliveredError,
+  TurnUnknownError,
+} from "../src/errors.js";
 import {
   dispatchResultToDict,
   parseDispatchResult,
@@ -371,7 +376,13 @@ describe("explicit fallback", () => {
       ],
     });
 
-    await assert.rejects(rt.sendAndWait("keeper", "alpha", FAST), /was not delivered/);
+    await assert.rejects(rt.sendAndWait("keeper", "alpha", FAST), (error) => {
+      assert.ok(error instanceof TurnNotDeliveredError);
+      assert.ok(error instanceof MobKitError);
+      assert.equal(error.code, "not_delivered");
+      assert.equal(error.reason, "no session bridge");
+      return true;
+    });
     assert.deepEqual(paramsOf("mobkit/inspect_identity"), []);
   });
 

@@ -1075,6 +1075,7 @@ means the delivery happened, exactly once, on the ordinary lane:
 | `externally_bound` | once | The member is externally bound; its deliveries are not ticketed |
 | `host_human_input` | once | Host human input rides the console lane, which is not ticketed |
 | `bridge_cannot_report_output` | once | The gateway's session bridge cannot report a turn's own output |
+| `session_rotated` | once | A re-dispatch meant to be deduplicated onto a tracked admission landed on a different session (a delivery repair or respawn moved the member), whose runtime had never seen the idempotency key, so it ran as a turn of its own |
 | `not_delivered` | no | Nothing was delivered (no session bridge or no bound runtime); there is no turn to wait for |
 
 ### `mobkit/turn_result`
@@ -1112,7 +1113,10 @@ truncated text or a turn completed without output of its own. When a delivery
 returns no ticket they fall back to the identity-wide cursor with a typed
 warning naming the `turn_unavailable` code (so on `autonomous_host` members,
 the default mode, the wait is identity-wide), and raise instead when nothing
-was delivered.
+was delivered. Do not mix ticket waits and cursor waits on one identity: a
+ticket can settle before the identity health monitor counts the same turn on
+`completion_cursor`, so a later cursor wait can be satisfied by that earlier
+turn.
 
 ---
 

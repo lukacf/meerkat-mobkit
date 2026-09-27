@@ -99,6 +99,9 @@ struct TicketBridge {
     /// as meerkat refuses one for a member that actually runs in this mode.
     refuses_tracked_in: std::sync::Mutex<Option<meerkat_mob::MobRuntimeMode>>,
     refused: AtomicUsize,
+    /// When set, the next ingress delivery first moves the member onto a
+    /// fresh session (a delivery repair or respawn that rotates it).
+    rotate_on_next_ingress: std::sync::atomic::AtomicBool,
     session: std::sync::Mutex<meerkat_core::types::SessionId>,
     ingress: std::sync::Mutex<Vec<Admission>>,
     tracked: std::sync::Mutex<Vec<Admission>>,
@@ -123,6 +126,7 @@ impl TicketBridge {
             resolution_fails,
             refuses_tracked_in: std::sync::Mutex::new(None),
             refused: AtomicUsize::new(0),
+            rotate_on_next_ingress: std::sync::atomic::AtomicBool::new(false),
             session: std::sync::Mutex::new(session),
             ingress: std::sync::Mutex::new(Vec::new()),
             tracked: std::sync::Mutex::new(Vec::new()),
@@ -238,6 +242,9 @@ impl SessionBridge for TicketBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        if self.rotate_on_next_ingress.swap(false, Ordering::SeqCst) {
+            self.rotate_session();
+        }
         self.record(runtime_id, &delivery, &self.ingress);
         Ok(self.current_session())
     }
@@ -900,6 +907,54 @@ async fn a_redispatch_after_a_session_rotation_runs_and_reports_its_own_turn() {
     );
 }
 
+/// A re-dispatch that the registry would name by the original's ticket, but
+/// whose delivery lands on a different session (delivery repair rotates the
+/// member onto a fresh session while keeping its runtime id), is NOT given
+/// the original's ticket: the new session's ledger never saw the key, so the
+/// delivery ran as its own turn, and it is reported untracked with the typed
+/// reason. The original's ticket keeps the original's output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redispatch_rotated_onto_a_new_session_is_not_given_the_original_ticket() {
+    let session = meerkat_core::types::SessionId::new();
+    let bridge = TicketBridge::new(true, session.clone());
+    let runtime = make_runtime(Some(bridge.clone()));
+    let keeper = register_bound(&runtime, "keeper", &session).await;
+
+    let original = runtime
+        .dispatch_with_turn_ticket(&keeper, None, &correlated("work", "evt-8", "evt-8"))
+        .await
+        .expect("original dispatch");
+    let original = tracked(&original.turn);
+    bridge.finish(0, Ok("answer"));
+    assert_eq!(
+        runtime
+            .wait_for_turn(&keeper, original, Duration::from_secs(5))
+            .await,
+        completed("answer")
+    );
+
+    bridge.rotate_on_next_ingress.store(true, Ordering::SeqCst);
+    let retry = runtime
+        .dispatch_with_turn_ticket(&keeper, None, &correlated("work", "evt-8", "evt-8"))
+        .await
+        .expect("re-dispatch");
+    assert_eq!(
+        retry.turn,
+        TurnTracking::Unavailable(TurnUntrackable::SessionRotated)
+    );
+    assert!(TurnUntrackable::SessionRotated.delivered());
+    assert_eq!(
+        bridge.ingress_admissions().len(),
+        1,
+        "delivered exactly once, on the rotated session"
+    );
+    assert_eq!(
+        runtime.turn_outcome(&keeper, original),
+        completed("answer"),
+        "the original's ticket still names the original turn"
+    );
+}
+
 /// Post-admission session resolution failing does not turn a successful turn
 /// into a failure: the ticket reports the turn's own output, and the
 /// resolution failure is recorded, typed, on the delivery-error channel.
@@ -1292,12 +1347,13 @@ async fn wait_for_preview(
 /// End to end on a real runtime: a foreign dispatch to `keeper` is admitted
 /// first and held in the model; two tracked sends queue behind it (the member
 /// is turn_driven, so turns run one at a time). When the foreign turn
-/// finishes, the session's latest output, which is what the old identity-wide
-/// wait (the SDKs' previous `send_and_wait`) returns once the cursor passes
-/// the first send's baseline, is the FOREIGN reply while that send's own turn
-/// is still pending. Every sync point is typed (tickets, the model holding a
-/// turn), never the identity-wide cursor's timing. Each ticket reports its
-/// own turn's reply.
+/// finishes, the session's latest output is the FOREIGN reply while the first
+/// send's own turn is still pending. The test does not run the old
+/// identity-wide cursor wait (the SDKs' previous `send_and_wait`), whose
+/// timing depends on the identity health monitor's subscription; it shows the
+/// state that wait reads once satisfied, which could only hand back a foreign
+/// output. Every sync point is typed (tickets, the model holding a turn).
+/// Each ticket reports its own turn's reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_gateway_sends_each_get_their_own_reply() {
     let client = NamedReplyClient::default();
@@ -1360,14 +1416,12 @@ async fn concurrent_gateway_sends_each_get_their_own_reply() {
         await_turn(&runtime, &ctx, &foreign_ticket).await["output"],
         "reply to: foreign"
     );
-    // Control: what the old identity-wide wait returns once satisfied is the
-    // session's latest output, and that is the foreign reply, not alpha's.
-    let old_wait_output =
-        wait_for_preview(&runtime, &ctx, |preview| preview == "reply to: foreign").await;
-    assert_ne!(
-        old_wait_output, "reply to: alpha",
-        "control: the old wait could only have returned a foreign output"
-    );
+    // Control: the state the old identity-wide wait reads once satisfied. The
+    // session's latest output becomes the FOREIGN reply (this wait fails by
+    // timing out if it never does) while alpha's own turn is still pending,
+    // so a cursor-satisfied wait at this point can only hand back a foreign
+    // output.
+    wait_for_preview(&runtime, &ctx, |preview| preview == "reply to: foreign").await;
     assert_eq!(
         turn_result(&runtime, &ctx, &alpha_ticket).await["state"],
         "pending",
@@ -1427,10 +1481,13 @@ async fn an_autonomous_member_through_the_gateway_is_delivered_once_untracked() 
     assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
     assert_delivered_once_untracked(&client, &dispatched, "beta", "autonomous_host").await;
     // What a satisfied fallback wait returns is the session's latest output:
-    // one of this identity's replies, never a promise about which.
-    let fallback =
-        wait_for_preview(&runtime, &ctx, |preview| preview.starts_with("reply to: ")).await;
-    assert!(fallback.starts_with("reply to: "), "{fallback}");
+    // one of THIS identity's replies (to alpha, to beta, or to its own
+    // kickoff turn), never a promise about which.
+    let fallback = wait_for_preview(&runtime, &ctx, |preview| !preview.is_empty()).await;
+    assert!(
+        ["reply to: alpha", "reply to: beta", "reply to: other"].contains(&fallback.as_str()),
+        "the fallback returned something this identity never said: {fallback}"
+    );
     runtime.shutdown().await;
 }
 
@@ -1707,16 +1764,67 @@ async fn trackability_follows_the_live_runtime_mode() {
     live.runtime.shutdown().await;
 }
 
+async fn identity_cursor(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+) -> meerkat_mobkit::identity_first::CompletionCursor {
+    let inspection = rpc(
+        runtime,
+        ctx,
+        "mobkit/inspect_identity",
+        json!({"identity": "keeper"}),
+    )
+    .await;
+    serde_json::from_value(inspection["completion_cursor"].clone()).expect("completion cursor")
+}
+
+/// Establish, from typed state, that the identity health monitor is
+/// subscribed to the member's event stream: send warm-up turns until the
+/// cursor moves for one. The monitor exposes no typed subscription signal,
+/// and a run that completes before it subscribes is never counted (the
+/// cursor has no catch-up path; both are MobKit issue #455), so the
+/// cursor moving IS the proof of subscription. Each warm-up send is a machine
+/// change that makes the monitor attempt to subscribe, so this converges.
+async fn establish_cursor_subscription(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+) {
+    for _ in 0..20 {
+        let before = identity_cursor(runtime, ctx).await;
+        rpc(
+            runtime,
+            ctx,
+            "mobkit/send",
+            json!({"identity": "keeper", "content": "warm-up"}),
+        )
+        .await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if identity_cursor(runtime, ctx).await.progress_since(before)
+                == CompletionProgress::Completed
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    panic!("the identity health monitor never counted a warm-up turn on the cursor");
+}
+
 /// The identity-wide completion cursor (what `mobkit/inspect_identity`
 /// reports and `wait_for_completion` / `wait_for_output(after=cursor)` poll)
 /// advances for a TRACKED turn exactly as for an untracked one: the ticket
 /// registry is additive and never replaces the cursor. No foreign delivery is
-/// involved; each send is the identity's only traffic.
+/// involved; each send is the identity's only traffic. The monitor's
+/// subscription is established first from typed state (see
+/// [`establish_cursor_subscription`]), so the assertion is about which turns
+/// the cursor counts, not about when the monitor subscribes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tracked_turn_advances_the_identity_wide_cursor() {
     let client = NamedReplyClient::default();
     let (runtime, ctx, _scratch) =
         live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
+    establish_cursor_subscription(&runtime, &ctx).await;
 
     for (content, track) in [("alpha", true), ("beta", false), ("foreign", true)] {
         let sent = rpc(

@@ -164,9 +164,12 @@ luka = rt.agent("identity:luka")
 await luka.send("Hello")                                          # Addressable only
 await triage.dispatch_text("School closed", origin="connector")   # Any identity
 
-# Send, then wait for THAT turn and return its own output. The send carries a
-# turn ticket, so another delivery to the identity (a peer message, a
-# scheduled turn, a fork completion wake) cannot satisfy the wait.
+# On a turn_driven member (runtime_mode = "turn_driven"): send, then wait for
+# THAT turn and return its own output. The send carries a turn ticket, so
+# another delivery to the identity (a peer message, a scheduled turn, a fork
+# completion wake) cannot satisfy the wait. On an autonomous_host member (the
+# default mode) the send is still delivered once, but the call falls back to
+# the identity-wide wait with a TurnTrackingUnavailableWarning.
 answer = await luka.send_and_wait("Hello", timeout=90)
 
 # The same, in two steps: track the turn, then wait on its ticket.
@@ -223,8 +226,16 @@ still happened, exactly once:
 - A gateway that predates turn tickets returns no `turn_unavailable` at all.
 
 `not_delivered` means nothing was delivered (no session bridge or no bound
-runtime), so the call raises instead of waiting. Run a member with
+runtime), so the call raises `TurnNotDeliveredError` instead of waiting
+(nothing ran, so a retry is safe). `session_rotated` means a re-dispatch
+landed on a different session after a repair or respawn and ran as its own
+turn. Run a member with
 `runtime_mode = "turn_driven"` for per-admission results.
+
+Do not mix ticket waits and cursor waits on one identity: a ticket can settle
+before the identity health monitor counts the same turn on the cursor, so a
+later `wait_for_output(after=baseline)` can be satisfied by an earlier
+`send_and_wait` turn.
 
 `wait_for_completion(baseline)` and `wait_for_output(after=cursor)` remain
 identity-wide primitives: any completion on the identity after the baseline

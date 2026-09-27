@@ -492,6 +492,12 @@ pub enum TurnUntrackable {
     /// The session bridge cannot report a turn's own output. Delivered once
     /// on the ingress lane.
     BridgeCannotReportOutput,
+    /// A re-dispatch meant to be deduplicated onto an earlier tracked
+    /// admission landed on a different session (delivery repair or a respawn
+    /// moved the member), whose runtime ledger had never seen the idempotency
+    /// key, so it ran as a turn of its own that this delivery did not track.
+    /// Delivered once on the ingress lane.
+    SessionRotated,
     /// NOTHING was delivered: the runtime has no session bridge, or the
     /// identity has no bound agent runtime. There is no turn to wait for.
     NotDelivered,
@@ -507,6 +513,7 @@ impl TurnUntrackable {
             Self::ExternallyBound => "externally_bound",
             Self::HostHumanInput => "host_human_input",
             Self::BridgeCannotReportOutput => "bridge_cannot_report_output",
+            Self::SessionRotated => "session_rotated",
             Self::NotDelivered => "not_delivered",
         }
     }
@@ -543,6 +550,11 @@ impl fmt::Display for TurnUntrackable {
             Self::BridgeCannotReportOutput => f.write_str(
                 "the session bridge cannot report a turn's own output; delivered once, \
                  untracked",
+            ),
+            Self::SessionRotated => f.write_str(
+                "the re-dispatch landed on a different session than the admission it was to be \
+                 deduplicated onto, whose runtime had not seen its idempotency key, so it ran as \
+                 a turn of its own; delivered once, untracked",
             ),
             Self::NotDelivered => {
                 f.write_str("nothing was delivered (no session bridge or no bound agent runtime)")

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `BridgeError` and `BridgeAdmissionError` gain an `UnsupportedForMode {
+  identity, mode, detail }` variant: meerkat's typed pre-admission refusal
+  (`MobError::UnsupportedForMode`) for the member's live runtime mode, which
+  was flattened into `Mob(String)` before. Both enums are public and not
+  `#[non_exhaustive]`, so exhaustive matches (custom `SessionBridge`
+  implementations, callers mapping bridge errors) must add the arm, as with
+  `ProviderAuthRejected`. The `Display` text is unchanged from the former
+  `Mob` rendering.
+
 - `ConsoleAgentLiveSnapshot.response_phase` is now `Option<Option<String>>`:
   `None` means no activity observation, `Some(None)` means known quiet, and
   `Some(Some(phase))` carries the recorded activity phase. JSON keeps the
@@ -130,8 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   meerkat reports no per-turn completion for autonomous inbox delivery, the
   default runtime mode), `runtime_refused` (meerkat refused per-turn
   completion for the member's live mode for another reason),
-  `externally_bound`, `host_human_input` and `bridge_cannot_report_output`.
-  `not_delivered` (`delivered: false`) means nothing was delivered.
+  `externally_bound`, `host_human_input`, `bridge_cannot_report_output` and
+  `session_rotated` (a re-dispatch meant to be deduplicated onto a tracked
+  admission landed on a different session after a repair or respawn, so it
+  ran as its own turn). `not_delivered` (`delivered: false`) means nothing
+  was delivered.
   Trackability is decided from the live roster entry right before admission,
   never from MobKit's desired spec, so a same-profile `runtime_mode_override`
   hot reload, a repair respawn that drops the override, or a profile MobKit
@@ -190,14 +202,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   predates turn tickets) it is still delivered exactly once, and the helpers
   fall back to the cursor wait with a `TurnTrackingUnavailableWarning`
   naming the typed reason (a Python warning; a Node process warning in
-  TypeScript); when nothing was delivered (`not_delivered`) they raise
-  instead. On an `autonomous_host` member (meerkat's default mode) that
+  TypeScript); when nothing was delivered (`not_delivered`) they raise the
+  typed `TurnNotDeliveredError` instead (nothing ran, so a retry is safe). On an `autonomous_host` member (meerkat's default mode) that
   fallback wait is still identity-wide, so the per-turn guarantee holds for
   `turn_driven` members. `wait_for_completion(baseline)` / `waitForCompletion` and
   `wait_for_output(after=cursor)` remain identity-wide primitives: any
   completion on the identity after the baseline satisfies them and the
   returned preview is the session's latest output, not necessarily a given
   send's answer; use `wait_for_turn` / `waitForTurn` for one specific turn.
+  Do not mix ticket waits and cursor waits on one identity: a ticket can
+  settle before the identity health monitor counts the same turn on the
+  cursor, so a later `send` followed by `wait_for_output(after=baseline)` can
+  be satisfied by the earlier `send_and_wait` turn.
 
 - Show canonical peer display names while preserving exact peer identities in
   details. Keep empty WorkGraph query results inspectable, and avoid duplicate

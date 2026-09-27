@@ -16,7 +16,9 @@ import warnings
 import pytest
 
 from meerkat_mobkit.errors import (
+    MobKitError,
     TurnFailedError,
+    TurnNotDeliveredError,
     TurnOutputTruncatedWarning,
     TurnOutputUnavailableError,
     TurnOutputUnavailableWarning,
@@ -367,8 +369,10 @@ class TestExplicitFallback:
         transport = TicketTransport(sends=[sent])
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
-        with pytest.raises(RuntimeError, match="was not delivered"):
+        with pytest.raises(TurnNotDeliveredError) as raised:
             await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        assert isinstance(raised.value, MobKitError)
+        assert (raised.value.code, raised.value.reason) == ("not_delivered", "no session bridge")
         assert transport.params_of("mobkit/inspect_identity") == []
 
     @pytest.mark.asyncio

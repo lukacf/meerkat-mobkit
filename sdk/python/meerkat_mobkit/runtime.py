@@ -1215,6 +1215,11 @@ class IdentityAgentHandle:
         use :meth:`wait_for_turn` with a ticket (``track_turn=True``), as
         :meth:`send_and_wait` does.
 
+        Do not mix ticket waits and cursor waits on one identity: a ticket can
+        settle before the identity health monitor counts the same turn on the cursor,
+        so a later ``wait_for_output(after=baseline)`` or ``wait_for_completion``
+        can be satisfied by that earlier turn. Cursor waits stay identity-wide.
+
         Returns the ``output_preview`` observed at completion (``None`` if the
         turn committed no assistant text).
 
@@ -1329,12 +1334,11 @@ class IdentityAgentHandle:
                 ticket, timeout=timeout, poll_interval=poll_interval,
             )
             return self._text_of_turn(turn, operation)
-        from .errors import TurnTrackingUnavailableWarning
+        from .errors import TurnNotDeliveredError, TurnTrackingUnavailableWarning
         unavailable = getattr(result, "turn_unavailable", None)
         if unavailable is not None and not unavailable.delivered:
-            raise RuntimeError(
-                f"{operation} for identity {self._identity!r} was not delivered "
-                f"({unavailable.code}: {unavailable.reason}); there is no turn to wait for"
+            raise TurnNotDeliveredError(
+                self._identity, operation, unavailable.code, unavailable.reason,
             )
         reason = (
             f"{unavailable.code}: {unavailable.reason}"
@@ -1424,6 +1428,10 @@ class IdentityAgentHandle:
         :meth:`wait_for_completion` except that it also requires non-empty
         output. That is IDENTITY-WIDE: another delivery's completion also
         satisfies it, and the output is the session's latest.
+        Do not mix ticket waits and cursor waits on one identity: a ticket can
+        settle before the identity health monitor counts the same turn on the cursor,
+        so a later ``wait_for_output(after=baseline)`` or ``wait_for_completion``
+        can be satisfied by that earlier turn. Cursor waits stay identity-wide.
 
         ``baseline`` (a str) is DEPRECATED and UNSOUND: it waits until
         ``output_preview`` differs from the text you passed, so two

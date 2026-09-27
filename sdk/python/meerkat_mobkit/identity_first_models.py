@@ -1002,8 +1002,9 @@ class TurnUnavailable:
     in ``autonomous_host`` mode, read from the runtime's live roster entry;
     its inbox delivery reports no per-turn completion), ``runtime_refused``
     (the runtime refused per-turn completion for the member's live mode for
-    another reason), ``externally_bound``, ``host_human_input`` or
-    ``bridge_cannot_report_output``. ``not_delivered`` means NOTHING was
+    another reason), ``externally_bound``, ``host_human_input``,
+    ``bridge_cannot_report_output`` or ``session_rotated`` (a re-dispatch that
+    landed on a new session after a repair and ran as its own turn). ``not_delivered`` means NOTHING was
     delivered (no session bridge or no bound runtime), so there is no turn to
     wait for. ``delivered`` says which; ``reason`` is the human-readable
     detail.

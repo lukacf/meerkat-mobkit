@@ -170,6 +170,7 @@ export {
   ContractMismatchError,
   NotConnectedError,
   TurnFailedError,
+  TurnNotDeliveredError,
   TurnUnknownError,
   MobkitRpcError,
   isRpcError,

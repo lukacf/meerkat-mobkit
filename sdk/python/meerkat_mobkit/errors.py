@@ -306,6 +306,23 @@ class TurnUnknownError(MobKitError):
         self.ticket = ticket
 
 
+class TurnNotDeliveredError(MobKitError):
+    """A ``track_turn`` delivery was NOT delivered at all
+    (``turn_unavailable.code == "not_delivered"``: the gateway has no session
+    bridge, or the identity has no bound runtime). Nothing ran and there is no
+    turn to wait for, so retrying is safe, unlike a failed or unknown turn."""
+
+    def __init__(self, identity: str, operation: str, code: str, reason: str):
+        super().__init__(
+            f"{operation} for identity {identity!r} was not delivered ({code}: {reason}); "
+            "there is no turn to wait for"
+        )
+        self.identity = identity
+        self.operation = operation
+        self.code = code
+        self.reason = reason
+
+
 class TurnOutputUnavailableError(MobKitError):
     """The turn a ticket names completed, but no text of its own can be
     returned: ``status`` is ``empty`` (it committed no text),
