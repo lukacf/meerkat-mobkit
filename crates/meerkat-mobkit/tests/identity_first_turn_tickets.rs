@@ -1778,47 +1778,99 @@ async fn identity_cursor(
     serde_json::from_value(inspection["completion_cursor"].clone()).expect("completion cursor")
 }
 
-/// Establish, from typed state, that the identity health monitor is
-/// subscribed to the member's event stream: send warm-up turns until the
-/// cursor moves for one. The monitor exposes no typed subscription signal,
-/// and a run that completes before it subscribes is never counted (the
-/// cursor has no catch-up path; both are MobKit issue #455), so the
-/// cursor moving IS the proof of subscription. Each warm-up send is a machine
-/// change that makes the monitor attempt to subscribe, so this converges.
+/// Poll the identity-wide cursor until it has moved past `baseline`.
+/// The deadline bounds the reads as well as polling. On timeout, return the
+/// latest completed observation, or `baseline` if no read completed.
+/// An incarnation change is a failure, never progress.
+async fn cursor_after(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+    baseline: meerkat_mobkit::identity_first::CompletionCursor,
+    within: Duration,
+) -> meerkat_mobkit::identity_first::CompletionCursor {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut latest = baseline;
+    match tokio::time::timeout_at(deadline, async {
+        loop {
+            let cursor = identity_cursor(runtime, ctx).await;
+            latest = cursor;
+            match cursor.progress_since(baseline) {
+                CompletionProgress::Completed => return cursor,
+                CompletionProgress::IncarnationChanged => {
+                    panic!("incarnation changed: baseline {baseline:?}, now {cursor:?}")
+                }
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    {
+        Ok(cursor) => cursor,
+        Err(_) => latest,
+    }
+}
+
+/// Send one TRACKED warm-up turn and wait for its own completion by ticket.
+async fn tracked_warm_up(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+) {
+    let sent = rpc(
+        runtime,
+        ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "warm-up", "track_turn": true}),
+    )
+    .await;
+    let ticket = sent["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the warm-up is tracked: {sent}"))
+        .to_string();
+    assert_eq!(
+        await_turn(runtime, ctx, &ticket).await["state"],
+        "completed"
+    );
+}
+
+/// Corroborate that the identity health monitor is observing completions.
+/// Warm-ups run one at a time and finish by their own tickets. Each send
+/// triggers a machine change that lets the monitor attempt to subscribe.
+///
+/// Two consecutive single-increment windows show cursor activity, not that
+/// the monitor has consumed every completed warm-up. Delayed observations can
+/// still supply a later increment. Exact per-turn attribution requires the
+/// typed subscription/drain barrier tracked in MobKit issue #455; this helper
+/// neither supplies that barrier nor repairs missed pre-subscription events.
 async fn establish_cursor_subscription(
     runtime: &meerkat_mobkit::UnifiedRuntime,
     ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
 ) {
-    for _ in 0..20 {
+    let mut exact_in_a_row = 0;
+    for _ in 0..30 {
         let before = identity_cursor(runtime, ctx).await;
-        rpc(
-            runtime,
-            ctx,
-            "mobkit/send",
-            json!({"identity": "keeper", "content": "warm-up"}),
-        )
-        .await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            if identity_cursor(runtime, ctx).await.progress_since(before)
-                == CompletionProgress::Completed
-            {
+        tracked_warm_up(runtime, ctx).await;
+        let after = cursor_after(runtime, ctx, before, Duration::from_secs(3)).await;
+        if after == before.advanced() {
+            exact_in_a_row += 1;
+            if exact_in_a_row == 2 {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        } else {
+            exact_in_a_row = 0;
         }
     }
-    panic!("the identity health monitor never counted a warm-up turn on the cursor");
+    panic!(
+        "the identity health monitor never observed two consecutive single-increment warm-up windows"
+    );
 }
 
-/// The identity-wide completion cursor (what `mobkit/inspect_identity`
-/// reports and `wait_for_completion` / `wait_for_output(after=cursor)` poll)
-/// advances for a TRACKED turn exactly as for an untracked one: the ticket
-/// registry is additive and never replaces the cursor. No foreign delivery is
-/// involved; each send is the identity's only traffic. The monitor's
-/// subscription is established first from typed state (see
-/// [`establish_cursor_subscription`]), so the assertion is about which turns
-/// the cursor counts, not about when the monitor subscribes.
+/// Corroborate identity-wide cursor activity across tracked and untracked
+/// sends: ticket tracking is additive and must not replace cursor updates.
+/// After tracked warm-ups finish, each selected send observes exactly one
+/// increment and a baseline equal to the previous observed cursor.
+/// Delayed warm-up observations can still satisfy those checks, so this is
+/// not exact per-turn attribution until MobKit issue #455 supplies the typed
+/// subscription/drain barrier (see [`establish_cursor_subscription`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tracked_turn_advances_the_identity_wide_cursor() {
     let client = NamedReplyClient::default();
@@ -1826,6 +1878,7 @@ async fn a_tracked_turn_advances_the_identity_wide_cursor() {
         live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
     establish_cursor_subscription(&runtime, &ctx).await;
 
+    let mut expected = identity_cursor(&runtime, &ctx).await;
     for (content, track) in [("alpha", true), ("beta", false), ("foreign", true)] {
         let sent = rpc(
             &runtime,
@@ -1836,6 +1889,10 @@ async fn a_tracked_turn_advances_the_identity_wide_cursor() {
         .await;
         let baseline: meerkat_mobkit::identity_first::CompletionCursor =
             serde_json::from_value(sent["completion_baseline"].clone()).expect("baseline");
+        assert_eq!(
+            baseline, expected,
+            "{content}: nothing else moved the cursor before this send"
+        );
         if track {
             let ticket = sent["turn"]["ticket"]
                 .as_str()
@@ -1846,52 +1903,26 @@ async fn a_tracked_turn_advances_the_identity_wide_cursor() {
                 "completed"
             );
         }
-        // The cursor is fed by the identity health monitor's live
-        // subscription to the member's event stream; a failure here says
-        // which way it failed (never advanced, or its epoch moved).
-        let started = std::time::Instant::now();
-        let last = std::sync::Mutex::new(None);
-        let advanced = tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                let inspection = rpc(
-                    &runtime,
-                    &ctx,
-                    "mobkit/inspect_identity",
-                    json!({"identity": "keeper"}),
-                )
-                .await;
-                let cursor: meerkat_mobkit::identity_first::CompletionCursor =
-                    serde_json::from_value(inspection["completion_cursor"].clone())
-                        .expect("completion cursor");
-                *last.lock().unwrap() = Some(cursor);
-                match cursor.progress_since(baseline) {
-                    CompletionProgress::Completed => return cursor,
-                    CompletionProgress::IncarnationChanged => {
-                        panic!(
-                            "{content}: incarnation changed: baseline {baseline:?}, now {cursor:?}"
-                        )
-                    }
-                    _ => tokio::time::sleep(Duration::from_millis(10)).await,
-                }
-            }
-        })
-        .await;
-        let advanced = match advanced {
-            Ok(cursor) => cursor,
-            Err(_) => {
-                let status = ctx.runtime.status(&make_identity("keeper")).await;
-                panic!(
-                    "{content} (tracked={track}): the cursor never passed {baseline:?}; \
-                     last {:?}; lease {:?}",
-                    last.lock().unwrap(),
-                    status.map(|status| status.lease.map(|lease| lease.fencing_token)),
-                )
-            }
-        };
-        eprintln!(
-            "{content} tracked={track}: cursor {baseline:?} -> {advanced:?} in {:?}",
-            started.elapsed()
+        let after = cursor_after(&runtime, &ctx, baseline, Duration::from_secs(30)).await;
+        if after == baseline {
+            let status = tokio::time::timeout(
+                Duration::from_secs(3),
+                ctx.runtime.status(&make_identity("keeper")),
+            )
+            .await;
+            panic!(
+                "{content} (tracked={track}): the cursor never passed {baseline:?}; lease {:?}",
+                status.map(
+                    |status| status.map(|status| status.lease.map(|lease| lease.fencing_token))
+                ),
+            );
+        }
+        assert_eq!(
+            after,
+            baseline.advanced(),
+            "{content} (tracked={track}): exactly one completion counted"
         );
+        expected = after;
     }
     runtime.shutdown().await;
 }
