@@ -149,6 +149,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   TypeScript one gains `forkSource`, `forkSourceIdentity` and
   `parseForkBuildSource`. Both are receive-only, never sent back, and ignore
   fields a newer gateway adds.
+- `MobRuntime::session_commit_pending(session_id) -> Option<bool>` (meerkat
+  0.8.45): whether the session holds run input its runtime has taken up but
+  not yet committed at a run boundary, forwarding
+  `MeerkatMachine::session_has_uncommitted_run_input` within
+  `SESSION_COMMIT_PENDING_READ_BOUND` (2 s). `Some(false)` means durability
+  is ready and no input is staged, applied or pending consumption (queued
+  input that has not started does not count). `None` is inconclusive, never
+  a guessed `false`: no runtime machine, an unparsable session id, any
+  meerkat error (no runtime holds the session, a replaced driver, degraded
+  durability), or a read still waiting when the bound elapses (a boundary
+  commit holds the driver until it lands).
 - TypeScript `SessionBuildOptions.resumeSessionId`, matching Python's
   `resume_session_id`: the build callback's resume session is decoded, and a
   builder can set it to ask the gateway to resume a session (persistent mode).

@@ -9186,6 +9186,24 @@ fn legacy_auto_mark_declared_resume_overrides(definition: &mut MobDefinition) {
     }
 }
 
+/// Bound on [`MobRuntime::session_commit_pending`]'s runtime read. A read
+/// still waiting for the session's runtime driver (held by a boundary commit
+/// until it lands) when this elapses answers `None`.
+pub const SESSION_COMMIT_PENDING_READ_BOUND: std::time::Duration =
+    std::time::Duration::from_secs(2);
+
+/// [`MobRuntime::session_commit_pending`]'s mapping: only a conclusive answer
+/// within `bound` is `Some`; an error or a timeout is `None`.
+async fn bounded_commit_pending<E>(
+    read: impl std::future::Future<Output = Result<bool, E>>,
+    bound: std::time::Duration,
+) -> Option<bool> {
+    match tokio::time::timeout(bound, read).await {
+        Ok(Ok(pending)) => Some(pending),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
+
 /// Live mob runtime backed by a `MobHandle`.
 #[derive(Clone)]
 pub struct MobRuntime {
@@ -9973,6 +9991,33 @@ impl MobRuntime {
         settled
     }
 
+    /// Whether a session holds run input its runtime has taken up but not yet
+    /// committed at a run boundary: meerkat's
+    /// `MeerkatMachine::session_has_uncommitted_run_input`, read within
+    /// [`SESSION_COMMIT_PENDING_READ_BOUND`].
+    ///
+    /// - `Some(true)`: run input is staged, applied or pending consumption.
+    /// - `Some(false)`: durability is ready, every input of the session's
+    ///   current runtime driver was read, and none is. Queued input that has
+    ///   not started does not count. It is not a promise that no later run
+    ///   starts.
+    /// - `None`: inconclusive, never a guessed `false`. No runtime machine, a
+    ///   session id that does not parse, every meerkat error (no runtime holds
+    ///   the session, its driver was replaced during the read, degraded
+    ///   durability, an input without its phase), and a read that did not
+    ///   answer within the bound. The read waits for the session driver, which
+    ///   a boundary commit holds until it lands, so a timeout usually means a
+    ///   commit is in flight.
+    pub async fn session_commit_pending(&self, session_id: &str) -> Option<bool> {
+        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
+        bounded_commit_pending(
+            runtime_adapter.session_has_uncommitted_run_input(&session_id),
+            SESSION_COMMIT_PENDING_READ_BOUND,
+        )
+        .await
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn runtime_state_for_session(
         &self,
@@ -10738,6 +10783,33 @@ pub(crate) async fn send_console_human_on_mob(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// `session_commit_pending` answers only what the runtime read concluded
+    /// within the bound: an error and a read still waiting (a boundary commit
+    /// holding the driver) are `None`, never a guessed `false`.
+    #[tokio::test(start_paused = true)]
+    async fn session_commit_pending_is_some_only_for_a_conclusive_read() {
+        let bound = SESSION_COMMIT_PENDING_READ_BOUND;
+        assert_eq!(
+            bounded_commit_pending(async { Ok::<_, ()>(true) }, bound).await,
+            Some(true)
+        );
+        assert_eq!(
+            bounded_commit_pending(async { Ok::<_, ()>(false) }, bound).await,
+            Some(false)
+        );
+        assert_eq!(
+            bounded_commit_pending(async { Err::<bool, _>("not ready") }, bound).await,
+            None
+        );
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            bounded_commit_pending(std::future::pending::<Result<bool, ()>>(), bound).await,
+            None,
+            "a read that never answers is inconclusive"
+        );
+        assert_eq!(started.elapsed(), bound, "and ends exactly at the bound");
+    }
 
     /// meerkat >= 0.7 `RunFailed` carries only the typed `error_report`; the
     /// projection derives the flat `error` and `reason` every MobKit consumer
