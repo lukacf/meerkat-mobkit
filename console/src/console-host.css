@@ -4213,4 +4213,24 @@ svg[data-svg="fit"],
 
 .conv > .queue-storage-note { font-size: 12px; color: var(--ink-muted); padding: 6px 16px; }
 
+.queue-import {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  margin: 4px 16px 6px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg-sunken); color: var(--ink-muted);
+  font-family: var(--sans); font-size: 12px; line-height: 1.4;
+}
+.queue-import__icon { display: inline-flex; flex: none; }
+.queue-import__icon svg { width: 16px; height: 16px; }
+.queue-import__text { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.queue-import__title { color: var(--ink); font-weight: 500; }
+.queue-import__action {
+  flex: none; min-height: 28px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg-elev-1); color: var(--ink);
+  font: inherit; font-weight: 500; cursor: pointer;
+}
+.queue-import__action:hover { background: var(--bg-elev-2); border-color: var(--line-strong); }
+.queue-import__action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 .gating__list > div > p { margin: 14px 18px; color: var(--ink-muted); }

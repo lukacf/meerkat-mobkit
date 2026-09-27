@@ -1044,11 +1044,6 @@ const MessageRow = React.memo(function MessageRow({
         {m.workedFor && !suppressWorked && (
           <div className="msg__worked">
             <span>Worked for {m.workedFor}</span>
-            <CopyInlineButton
-              className="msg__copy--inline"
-              label="Copy work time"
-              text={m.workedForCopyText || `Worked for ${m.workedFor}`}
-            />
           </div>
         )}
       </div>

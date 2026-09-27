@@ -28,6 +28,24 @@ describe("ApprovalCard", () => {
     expect((view.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
     expect(decide).not.toHaveBeenCalled();
   });
+  it("labels a known pre-dispatch refusal as unavailable with neutral state", () => {
+    const decide = vi.fn();
+    const view = render(<ApprovalCard request={request} resourceStatus="ready" onDecide={decide} readOnly
+      decision={{ phase: "unavailable", action: "approve", error: "Approval decisions are unavailable with current access" }} />);
+    expect(view.getByRole("status").textContent).toBe("Decision unavailable");
+    expect(view.getByTestId("gating-pending:request:1").dataset.state).toBe("unavailable");
+    expect(view.getByText("Read-only access")).toBeTruthy();
+    expect(view.queryByText("Decision unconfirmed")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Approve" }));
+    expect(decide).not.toHaveBeenCalled();
+  });
+  it("keeps a lost decision acknowledgement unconfirmed even after access becomes read-only", () => {
+    const view = render(<ApprovalCard request={request} resourceStatus="ready" onDecide={() => {}} readOnly
+      decision={{ phase: "failed", action: "approve", error: "Approval decisions are unavailable with current access" }} />);
+    expect(view.getByRole("status").textContent).toBe("Decision unconfirmed");
+    expect(view.getByTestId("gating-pending:request:1").dataset.state).toBe("failed");
+    expect(view.queryByText("Decision unavailable")).toBeNull();
+  });
   it("keeps decision context visible and exact opaque scope available in the disclosure", () => {
     const scopedRequest = { ...request, origin: { identity: "router:main" }, riskTier: "r3" };
     const view = render(<ApprovalCard request={scopedRequest} resourceStatus="ready" onDecide={() => {}} />);

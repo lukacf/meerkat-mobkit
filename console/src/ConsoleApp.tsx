@@ -4348,7 +4348,21 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const stackSlot = <>
       {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload"}</small> : null}
       {pendingStorageErrorRef.current[identity] && <p role="alert">{pendingStorageErrorRef.current[identity]}</p>}
-      {hasLegacyQueue && <button type="button" onClick={() => importLegacyPending(identity)}>Import legacy queue into this account</button>}
+      {hasLegacyQueue && (
+        <div className="queue-import" role="group" aria-label="Older queued messages" data-testid="legacy-queue-import">
+          <span className="queue-import__icon" aria-hidden="true"><Icon name="i-clock" /></span>
+          <span className="queue-import__text">
+            <span className="queue-import__title">Older queued messages</span>
+            <span>Resume them with this agent in this account.</span>
+          </span>
+          <button
+            type="button"
+            className="queue-import__action"
+            aria-label="Import and send older queued messages"
+            onClick={() => importLegacyPending(identity)}
+          >Import and send</button>
+        </div>
+      )}
       {stackItems.length > 0 ? (
         <PendingStack
           items={stackItems}

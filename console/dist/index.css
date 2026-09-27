@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
 
-/* packages/console-components/src/styles/tokens.css */
+/* ../packages/console-components/src/styles/tokens.css */
 .cc-theme-scope {
   --_cc-font-display-default:
     "Inter Tight",
@@ -99,7 +99,7 @@
   --_cc-sidebar-pad-left: var(--cc-sidebar-pad-left, 12px);
 }
 
-/* packages/console-components/src/styles/themes.css */
+/* ../packages/console-components/src/styles/themes.css */
 .cc-theme-scope {
   color-scheme: dark;
 }
@@ -294,7 +294,7 @@
   --_cc-member-surface-default: oklch(0.96 0.02 250);
 }
 
-/* packages/console-components/src/styles/conversation.css */
+/* ../packages/console-components/src/styles/conversation.css */
 .cc-conversation-transcript {
   display: grid;
   align-content: start;
@@ -3132,7 +3132,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   line-height: 1.6;
 }
 
-/* packages/console-components/src/styles/conversation-panel.css */
+/* ../packages/console-components/src/styles/conversation-panel.css */
 .cc-conversation-panel {
   min-width: 0;
   min-height: 0;
@@ -3161,7 +3161,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   box-shadow: 0 0 12px color-mix(in srgb, var(--_cc-member-accent) 60%, transparent);
 }
 
-/* packages/console-components/src/styles/workbench.css */
+/* ../packages/console-components/src/styles/workbench.css */
 .cc-workbench {
   position: relative;
   z-index: 1;
@@ -3249,7 +3249,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   height: 0;
 }
 
-/* packages/console-components/src/styles/dock.css */
+/* ../packages/console-components/src/styles/dock.css */
 .cc-dock {
   --_cc-content-width-default: 100%;
   --_cc-composer-width-default: 100%;
@@ -3660,7 +3660,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   background: var(--_cc-border-soft);
 }
 
-/* packages/console-components/src/styles/sidebar.css */
+/* ../packages/console-components/src/styles/sidebar.css */
 .cc-console-sidebar {
   display: grid;
   align-content: start;
@@ -4064,7 +4064,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   color: var(--_cc-foreground-strong);
 }
 
-/* packages/console-components/src/styles/activity.css */
+/* ../packages/console-components/src/styles/activity.css */
 .cc-activity-rail {
   height: 100%;
   min-width: 0;
@@ -4597,7 +4597,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   }
 }
 
-/* packages/console-components/src/styles/composer.css */
+/* ../packages/console-components/src/styles/composer.css */
 .cc-composer {
   width: 100%;
   min-width: 0;
@@ -4818,7 +4818,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   opacity: 0.8;
 }
 
-/* packages/console-components/src/styles/pending-stack.css */
+/* ../packages/console-components/src/styles/pending-stack.css */
 .cc-pending-stack {
   --bg: var(--_cc-surface-canvas);
   --bg-elev-1: var(--_cc-surface-card);
@@ -5730,7 +5730,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   }
 }
 
-/* packages/console-components/src/styles/topology.css */
+/* ../packages/console-components/src/styles/topology.css */
 .topo {
   --bg: var(--_cc-surface-canvas);
   --bg-elev-1: var(--_cc-surface-raised);
@@ -6562,7 +6562,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   font-size: 10px;
 }
 
-/* packages/console-components/src/conversation/approvals.css */
+/* ../packages/console-components/src/conversation/approvals.css */
 .cc-approval {
   --_approval-ink: var(--ink, var(--_cc-foreground, #e7e5e4));
   --_approval-muted: var(--ink-muted, var(--_cc-foreground-muted, #b0adaa));
@@ -6789,7 +6789,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   border: 0;
 }
 
-/* packages/console-components/src/styles/transport.css */
+/* ../packages/console-components/src/styles/transport.css */
 .cc-transport-status {
   display: flex;
   align-items: center;
@@ -6857,9 +6857,9 @@ span.cc-conversation-turn-preview__file-icon::after {
   }
 }
 
-/* packages/console-components/src/styles/index.css */
+/* ../packages/console-components/src/styles/index.css */
 
-/* console/src/pending-stack.css */
+/* src/pending-stack.css */
 .stack.stack--console {
   flex: none;
   background: var(--bg-elev-1);
@@ -7385,7 +7385,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   }
 }
 
-/* console/src/console-host.css */
+/* src/console-host.css */
 *,
 *::before,
 *::after {
@@ -12607,12 +12607,66 @@ svg[data-svg=fit],
   color: var(--ink-muted);
   padding: 6px 16px;
 }
+.queue-import {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin: 4px 16px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  color: var(--ink-muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.queue-import__icon {
+  display: inline-flex;
+  flex: none;
+}
+.queue-import__icon svg {
+  width: 16px;
+  height: 16px;
+}
+.queue-import__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.queue-import__title {
+  color: var(--ink);
+  font-weight: 500;
+}
+.queue-import__action {
+  flex: none;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev-1);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.queue-import__action:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--line-strong);
+}
+.queue-import__action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .gating__list > div > p {
   margin: 14px 18px;
   color: var(--ink-muted);
 }
 
-/* console/src/panels/voice-bar.css */
+/* src/panels/voice-bar.css */
 .composer__voice {
   --voice-blue: #2868c9;
   display: inline-flex;

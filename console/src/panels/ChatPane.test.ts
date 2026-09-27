@@ -109,6 +109,7 @@ test("completed stream duration includes the time after its first text delta", (
   assert.equal(messages.find((entry) => entry.sourceEntryId === "timed-answer")?.workedFor, "6s");
   assert.match(renderChat({ entries, phase: null }), /Worked for 6s/);
   assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for under 1s/);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /aria-label="Copy work time"/);
 });
 
 for (const duration of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {

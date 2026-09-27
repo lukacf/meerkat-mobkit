@@ -364,9 +364,18 @@ async function readOnlyApproval() {
     }, "read-only approval controls");
     assert.equal(decisions(fixture, created.pending_id).length, 0, "unsupported decision capability stops before dispatch");
     assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
+    await card.getByRole("status").filter({ hasText: /^Decision unavailable$/ }).waitFor();
+    assert.equal(await card.getAttribute("data-state"), "unavailable");
+    assert.equal(await page.getByText("Decision unconfirmed", { exact: true }).count(), 0,
+      "a known refusal before dispatch cannot claim an uncertain decision");
     await card.getByText("Complete request details", { exact: true }).click();
     await card.getByText("Read-only access", { exact: true }).waitFor();
     await capture(page, "stock-approval-read-only");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
+    await capture(page, "stock-approval-read-only-dark-1440");
+    assert.equal(decisions(fixture, created.pending_id).length, 0, "inspecting the refused request never sends a decision");
   });
 }
 

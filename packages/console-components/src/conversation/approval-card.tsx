@@ -15,12 +15,12 @@ export function ApprovalCard({ request, resourceStatus, decision, readOnly = fal
   const pending = request.status === "pending" && decision?.phase !== "settled";
   const submitting = decision?.phase === "submitting";
   const stale = resourceStatus !== "ready";
-  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : "pending";
+  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
   return (
     <article className="cc-approval" data-state={state} data-testid={`gating-pending:${request.pendingId}`}>
       <header className="cc-approval__header">
         <strong>{request.action}</strong>
-        <span className="cc-approval__status" role="status">{state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "expired" ? "Expired" : "Resolved"}</span>
+        <span className="cc-approval__status" role="status">{state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved"}</span>
       </header>
       {request.rationale ? <p>{request.rationale}</p> : null}
       <dl className="cc-approval__scope">

@@ -55,7 +55,7 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
       await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
       await live();
     });
-    const importButton = page.getByRole("button", { name: "Import legacy queue into this account", exact: true });
+    const importButton = page.getByRole("button", { name: "Import and send older queued messages", exact: true });
     await importButton.waitFor();
     assert.equal(sends().length, 0, "opening the console cannot submit a legacy queue");
     if (embeddedHttp) {
@@ -72,6 +72,30 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
       await fs.mkdir(dir, { recursive: true });
       await page.screenshot({ path: path.join(dir, "embedded-http-draft-reload.png"), fullPage: true });
     }
+    const migration = page.getByTestId("legacy-queue-import");
+    await migration.waitFor();
+    const geometry = [];
+    for (const width of [1600, 1024]) {
+      await page.setViewportSize({ width, height: width === 1600 ? 1000 : 900 });
+      const bounds = await migration.evaluate(node => {
+        const rect = node.getBoundingClientRect();
+        const button = node.querySelector("button").getBoundingClientRect();
+        return { width: innerWidth, overflow: node.scrollWidth - node.clientWidth, left: rect.left, right: rect.right,
+          button: { left: button.left, right: button.right, height: button.height } };
+      });
+      assert(bounds.overflow <= 1 && bounds.left >= 0 && bounds.right <= width, "migration row fits the viewport");
+      assert(bounds.button.left >= bounds.left && bounds.button.right <= bounds.right && bounds.button.height >= 28,
+        "explicit import and send action stays inside its row");
+      geometry.push(bounds);
+      await fs.mkdir(dir, { recursive: true });
+      await page.screenshot({ path: path.join(dir, `${screenshotPrefix}-offer-${width}.png`), fullPage: true });
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
+    await page.screenshot({ path: path.join(dir, `${screenshotPrefix}-offer-dark-1600.png`), fullPage: true });
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(sends().length, 0, "inspecting migration options never imports or submits old messages");
     assert.equal(await page.evaluate(key => localStorage.getItem(key), queueKey), null);
     assert(!(await requests()).some(request => JSON.stringify(request.messages).includes(text)));
     await fixture.control("model", { source: "Legacy import completed exactly once.", delay_ms: 0, chunk_chars: 32 });
@@ -93,6 +117,8 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
     assert.equal(saved.legacyImported, true);
     await reload();
     await page.getByTestId(`chat-composer:${identity}`).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Copy work time", exact: true }).count(), 0,
+      "work duration remains quiet metadata without a redundant copy action");
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     assert.equal(await importButton.count(), 0);
     assert.equal(sends().length, 1, "reload cannot resubmit the imported intent");
@@ -105,7 +131,7 @@ async function explicitLegacyImport({ embeddedHttp = false } = {}) {
     monitor.assertClean();
     await fs.mkdir(dir, { recursive: true });
     await page.screenshot({ path: path.join(dir, `${screenshotPrefix}-after-reload.png`), fullPage: true });
-    await fs.writeFile(path.join(dir, `${screenshotPrefix}.json`), JSON.stringify({ embeddedHttp, namespace, saved, envelope, originalBytesPreserved: true, sends: sends(), errors, expectedFailures, requestFailures }, null, 2));
+    await fs.writeFile(path.join(dir, `${screenshotPrefix}.json`), JSON.stringify({ embeddedHttp, namespace, saved, envelope, geometry, originalBytesPreserved: true, sends: sends(), errors, expectedFailures, requestFailures }, null, 2));
     monitor.assertClean();
   } catch (error) {
     await fs.mkdir(dir, { recursive: true });
