@@ -1358,7 +1358,7 @@ mod tests {
         let mut failed = start(&scenario);
         failed.push(Message::tool_results(vec![ToolResult::new(
             scenario.call_id("identity-first"),
-            "runtime query refused",
+            "runtime query refused".to_string(),
             true,
         )]));
         assert!(
