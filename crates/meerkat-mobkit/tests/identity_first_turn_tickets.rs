@@ -1706,3 +1706,84 @@ async fn trackability_follows_the_live_runtime_mode() {
     assert_delivered_once_untracked(&client, &sent, "alpha", "autonomous_host").await;
     live.runtime.shutdown().await;
 }
+
+/// The identity-wide completion cursor (what `mobkit/inspect_identity`
+/// reports and `wait_for_completion` / `wait_for_output(after=cursor)` poll)
+/// advances for a TRACKED turn exactly as for an untracked one: the ticket
+/// registry is additive and never replaces the cursor. No foreign delivery is
+/// involved; each send is the identity's only traffic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tracked_turn_advances_the_identity_wide_cursor() {
+    let client = NamedReplyClient::default();
+    let (runtime, ctx, _scratch) =
+        live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
+
+    for (content, track) in [("alpha", true), ("beta", false), ("foreign", true)] {
+        let sent = rpc(
+            &runtime,
+            &ctx,
+            "mobkit/send",
+            json!({"identity": "keeper", "content": content, "track_turn": track}),
+        )
+        .await;
+        let baseline: meerkat_mobkit::identity_first::CompletionCursor =
+            serde_json::from_value(sent["completion_baseline"].clone()).expect("baseline");
+        if track {
+            let ticket = sent["turn"]["ticket"]
+                .as_str()
+                .unwrap_or_else(|| panic!("tracked: {sent}"))
+                .to_string();
+            assert_eq!(
+                await_turn(&runtime, &ctx, &ticket).await["state"],
+                "completed"
+            );
+        }
+        // The cursor is fed by the identity health monitor's live
+        // subscription to the member's event stream; a failure here says
+        // which way it failed (never advanced, or its epoch moved).
+        let started = std::time::Instant::now();
+        let last = std::sync::Mutex::new(None);
+        let advanced = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let inspection = rpc(
+                    &runtime,
+                    &ctx,
+                    "mobkit/inspect_identity",
+                    json!({"identity": "keeper"}),
+                )
+                .await;
+                let cursor: meerkat_mobkit::identity_first::CompletionCursor =
+                    serde_json::from_value(inspection["completion_cursor"].clone())
+                        .expect("completion cursor");
+                *last.lock().unwrap() = Some(cursor);
+                match cursor.progress_since(baseline) {
+                    CompletionProgress::Completed => return cursor,
+                    CompletionProgress::IncarnationChanged => {
+                        panic!(
+                            "{content}: incarnation changed: baseline {baseline:?}, now {cursor:?}"
+                        )
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await;
+        let advanced = match advanced {
+            Ok(cursor) => cursor,
+            Err(_) => {
+                let status = ctx.runtime.status(&make_identity("keeper")).await;
+                panic!(
+                    "{content} (tracked={track}): the cursor never passed {baseline:?}; \
+                     last {:?}; lease {:?}",
+                    last.lock().unwrap(),
+                    status.map(|status| status.lease.map(|lease| lease.fencing_token)),
+                )
+            }
+        };
+        eprintln!(
+            "{content} tracked={track}: cursor {baseline:?} -> {advanced:?} in {:?}",
+            started.elapsed()
+        );
+    }
+    runtime.shutdown().await;
+}
