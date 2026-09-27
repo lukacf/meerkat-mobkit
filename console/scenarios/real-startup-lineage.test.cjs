@@ -1,7 +1,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { assertStartupLineage, assertStartupRendering, source } = require("./real-startup-lineage.cjs");
+const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, source } = require("./real-startup-lineage.cjs");
 
 function runFrames(runId, interactionId) {
   const identity = { run_id: runId, ...(interactionId ? { interaction_id: interactionId } : {}) };
@@ -61,4 +61,62 @@ test("startup rendering oracle rejects partial duplicates, missing equal-run rep
   assert.throws(() => assertStartupRendering({ ...rendered, quotes: [...rendered.quotes, { id: "tail", source: " |\n" }] }, owners), /partial/);
   assert.throws(() => assertStartupRendering({ ...rendered, quotes: [rendered.quotes[0], { ...rendered.quotes[0], id: "run-a:history" }] }, owners), /one rendered owner/);
   assert.throws(() => assertStartupRendering({ ...rendered, tables: 1 }, owners), /complete Markdown table/);
+});
+
+function historyPage(runId = "run-a") {
+  return { session_id: "session", offset: 0, has_more: false, message_count: 1, messages: [
+    { role: "block_assistant", identity: { run_id: runId }, blocks: [{ block_type: "text", data: { text: source } }] },
+  ] };
+}
+function boundedPoll(attempts, beforeProbe = () => {}) {
+  return async (probe, label, timeout) => {
+    assert.equal(timeout, 20_000, "production readiness retains a bounded deadline");
+    let last;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      beforeProbe(attempt);
+      try { const value = await probe(); if (value) return value; } catch (error) { last = error; }
+    }
+    throw new Error(`Timed out: ${label}: ${last?.message ?? "no completed observation"}`);
+  };
+}
+
+test("startup readiness waits past initial Ready and incomplete durable history", async () => {
+  const full = runFrames("run-a");
+  const ready = full.map(frame => ({ ...frame, payload: { ...frame.payload, result: "Ready.", delta: "Ready." } }));
+  let attempt = 0;
+  const observations = [];
+  const result = await waitForStartupLineage({
+    timeline: async () => ({ frames: attempt === 0 ? ready : full }),
+    durableHistory: async () => [attempt < 2 ? { ...historyPage(), message_count: 0, messages: [] } : historyPage()],
+    onObservation: value => observations.push(value),
+  }, boundedPoll(3, value => { attempt = value; }));
+  assert.equal(attempt, 2, "neither member readiness nor a live terminal alone proves durable lineage");
+  assert.deepEqual(result.frames, full);
+  assert.deepEqual(result.history, [historyPage()]);
+  assert.deepEqual(result.owners.map(owner => owner.runId), ["run-a"]);
+  assert(observations.some(value => value.frames === ready), "unsatisfied observation is retained for failure evidence");
+});
+
+test("startup readiness keeps deadline failure when no expected terminal ever arrives", async () => {
+  let reads = 0;
+  const ready = runFrames("ready").map(frame => ({ ...frame, payload: { ...frame.payload, result: "Ready." } }));
+  const observations = [];
+  await assert.rejects(waitForStartupLineage({
+    timeline: async () => { reads++; return { frames: ready }; },
+    durableHistory: async () => [{ ...historyPage(), message_count: 0, messages: [] }],
+    onObservation: value => observations.push(value),
+  }, boundedPoll(3)), /Timed out: .*actual completed Acceptance reply/);
+  assert.equal(reads, 3);
+  assert.deepEqual(observations.at(-1).frames, ready);
+});
+
+test("startup readiness never accepts a durable owner mismatch or incomplete source deltas", async () => {
+  for (const corrupt of ["owner", "delta"]) {
+    const frames = runFrames("run-a");
+    if (corrupt === "delta") frames.find(frame => frame.kind === "text_delta").payload.delta = "partial";
+    await assert.rejects(waitForStartupLineage({
+      timeline: async () => ({ frames }),
+      durableHistory: async () => [historyPage(corrupt === "owner" ? "other-run" : "run-a")],
+    }, boundedPoll(2)), corrupt === "owner" ? /exactly one actual committed reply/ : /exact source deltas/);
+  }
 });
