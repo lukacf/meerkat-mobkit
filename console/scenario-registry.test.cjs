@@ -69,3 +69,14 @@ test("default browser coverage includes activity filters against real runtime ph
   assert.equal(matches[0].backend, "real");
   assert.equal(typeof matches[0].run, "function");
 });
+
+test("production and scoped lost-ack checks remain independently selectable", () => {
+  const runner = require("./browser-e2e.cjs").scenarios;
+  for (const id of ["real-embedded-quoted-lost-ack", "real-scoped-quoted-lost-ack", "real-scoped-lost-ack"]) {
+    const selected = selectScenarios(runner, [`--scenario=${id}`]).selected;
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].id, id);
+    assert.equal(selected[0].backend, "real");
+    assert.equal(typeof selected[0].run, "function");
+  }
+});

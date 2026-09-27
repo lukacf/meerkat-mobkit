@@ -2,6 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { isDeepStrictEqual } = require("node:util");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc } = require("../acceptance-runtime.cjs");
@@ -20,9 +21,9 @@ function wireEnvelope(observation) {
   return body.method === "mobkit/console/send" ? body.params : body;
 }
 const namespace = fixture => `${fixture.baseUrl}/acceptance-realm/operator-a`;
-const queueKey = fixture => `mobkit-send-attempts:v1:${encodeURIComponent(namespace(fixture))}:${encodeURIComponent(identity)}`;
-async function savedAttempts(page, fixture) {
-  return page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{"attempts":[]}').attempts, queueKey(fixture));
+const queueKey = (fixture, storageNamespace = namespace(fixture)) => `mobkit-send-attempts:v1:${encodeURIComponent(storageNamespace)}:${encodeURIComponent(identity)}`;
+async function savedAttempts(page, fixture, storageNamespace = namespace(fixture)) {
+  return page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{"attempts":[]}').attempts, queueKey(fixture, storageNamespace));
 }
 async function draftDocuments(page) {
   return page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("mobkit-composer-draft:v2:"))
@@ -68,12 +69,12 @@ async function inBrowser(name, run) {
   } finally { await browser.close(); await fixture.close(); }
 }
 async function open(page, fixture, host = "stock") {
-  await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
-  if (host === "stock" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
+  await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
+  if (host !== "shared" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
     await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
   }
   await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
-  if (host === "stock") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+  if (host !== "shared") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
 }
 const pane = (page, host) => host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(`chat-pane:${identity}`).first();
 const viewport = (page, host) => pane(page, host).locator(host === "shared" ? ".cc-conversation-pane__scroll" : ".conv__body");
@@ -301,12 +302,47 @@ async function editedQuotedContext(host) {
   });
 }
 
-async function lostAcknowledgement(withQuote = false) {
-  const name = withQuote ? "scoped-quoted-lost-ack" : "scoped-lost-ack";
+async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
+  const name = `${host === "embedded" ? "embedded" : "scoped"}-${withQuote ? "quoted-" : ""}lost-ack`;
   return inBrowser(`real-${name}`, async ({ fixture, page }) => {
+    let storageNamespace = namespace(fixture);
+    const assetResponses = [];
+    if (host === "embedded") {
+      const response = await fetch(`${fixture.baseUrl}/console/experience`);
+      assert.equal(response.status, 200);
+      const experience = await response.json();
+      assert.equal(typeof experience.storage_scope, "string", "production persistence uses the owner storage scope");
+      assert(experience.storage_scope.trim(), "owner storage scope is nonempty");
+      storageNamespace = JSON.stringify([fixture.baseUrl, experience.storage_scope]);
+      // Record the browser's actual production responses, not another fetch or
+      // an acceptance source build. The proxy freezes these dist bytes at boot.
+      page.on("response", response => {
+        const url = new URL(response.url());
+        if (url.origin !== fixture.baseUrl || !["/console/assets/console-app.js", "/console/assets/console-app.css"].includes(url.pathname)) return;
+        assetResponses.push(response.body().then(bytes => ({
+          url: response.url(), status: response.status(), bytes: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        })).catch(error => ({ url: response.url(), error: String(error) })));
+      });
+    }
     if (withQuote) await seedQuote(fixture);
     await fixture.control("model", { source: "Canonical acceptance survives loss of the browser response.", delay_ms: 0, chunk_chars: 4096 });
-    await open(page, fixture);
+    await open(page, fixture, host);
+    const loadedAssets = await Promise.all(assetResponses);
+    if (host === "embedded") {
+      assert.equal(new URL(page.url()).pathname, "/console", "production scenario opens the shipping browser entry");
+      for (const file of ["console-app.js", "console-app.css"]) {
+        const actual = loadedAssets.filter(asset => new URL(asset.url).pathname === `/console/assets/${file}`);
+        assert.equal(actual.length, 1, `browser loaded one production ${file}`);
+        assert.equal(actual[0].status, 200);
+        assert(!actual[0].error, JSON.stringify(actual[0]));
+        const bytes = await fs.readFile(path.join(__dirname, "../dist", file));
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        assert.equal(actual[0].sha256, hash, `browser received exact production ${file} bytes`);
+        assert.equal(new URL(actual[0].url).searchParams.get("v"), hash.slice(0, 12), "production URL has the matching content version");
+      }
+      await saveEvidence(fixture, `${name}-production-assets`, { host, storageNamespace, loadedAssets });
+    }
     if (withQuote) await addQuote(pane(page, "stock"));
     const text = "  Lost acknowledgement: A\u030A, \ud83d\ude80\nKeep these exact bytes.  ";
     const before = sendObservations(fixture).length;
@@ -332,7 +368,7 @@ async function lostAcknowledgement(withQuote = false) {
     assert(acceptance?.interaction_id && acceptance.input_frame_id, dropped.response);
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.unroute("**/console/rpc");
-    const saved = await eventually(async () => (await savedAttempts(page, fixture)).find(item => item.state === "outcome-unknown"), "unknown outcome saved");
+    const saved = await eventually(async () => (await savedAttempts(page, fixture, storageNamespace)).find(item => item.state === "outcome-unknown"), "unknown outcome saved");
     assert.equal(saved.text, text);
     const envelope = JSON.parse(saved.envelopeJson);
     assert.deepEqual(wireEnvelope(dropped), envelope, "persisted frozen envelope equals actual outgoing request");
@@ -367,7 +403,7 @@ async function lostAcknowledgement(withQuote = false) {
     await page.reload();
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
-    const reloaded = (await savedAttempts(page, fixture)).find(item => item.id === saved.id);
+    const reloaded = (await savedAttempts(page, fixture, storageNamespace)).find(item => item.id === saved.id);
     assert.equal(reloaded.envelopeJson, saved.envelopeJson, "reload does not refreeze or normalize bytes");
     assert.equal(reloaded.idempotencyKey, saved.idempotencyKey);
     assert.equal(sendObservations(fixture).length, before + 1, "reload and history recovery never retry an unknown outcome");
@@ -375,14 +411,14 @@ async function lostAcknowledgement(withQuote = false) {
     assert.equal(canonical.kind, "user_input");
     for (const field of ["content", "origin", "origin_kind", "idempotency_key", "handling_mode"]) assert.deepEqual(canonical.payload[field], envelope[field], `canonical receipt ${field}`);
     await page.getByRole("button", { name: "Check acceptance", exact: true }).click();
-    await eventually(async () => !(await savedAttempts(page, fixture)).some(item => item.id === saved.id), "exact receipt removes unknown attempt");
+    await eventually(async () => !(await savedAttempts(page, fixture, storageNamespace)).some(item => item.id === saved.id), "exact receipt removes unknown attempt");
     assert.equal(await page.getByTestId(`pending-item:${saved.id}`).count(), 0);
     assert.equal(sendObservations(fixture).length, before + 1, "Check acceptance only queries, never dispatches");
     assert.equal((await timeline(fixture)).frames.filter(frame => frame.id === acceptance.input_frame_id).length, 1);
     await exactModelContent(fixture, content, "lost acknowledgement");
     if (withQuote) await assertDeliveredContext(page, "stock", content, saved.contexts);
     await capture(page, `${name}-reconciled`);
-    await saveEvidence(fixture, `${name}-reconciled`, { saved, reloaded, acceptance, canonical });
+    await saveEvidence(fixture, `${name}-reconciled`, { host, storageNamespace, loadedAssets, saved, reloaded, acceptance, canonical });
   });
 }
 
@@ -623,6 +659,7 @@ const scenarios = [
   ...["stock", "shared"].map(host => ({ id: `real-${host}-edited-quoted-context`, family: "real-send", backend: "real", run: () => editedQuotedContext(host) })),
   { id: "real-scoped-lost-ack", family: "real-send", backend: "real", run: lostAcknowledgement },
   { id: "real-scoped-quoted-lost-ack", family: "real-send", backend: "real", run: () => lostAcknowledgement(true) },
+  { id: "real-embedded-quoted-lost-ack", family: "real-send", backend: "real", run: () => lostAcknowledgement(true, { host: "embedded" }) },
   { id: "real-scoped-queued-steer", family: "real-send", backend: "real", run: queuedSteer },
   { id: "real-shared-queued-steer", family: "real-send", backend: "real", run: sharedQueuedSteer },
   { id: "real-scoped-two-pane-drafts", family: "real-send", backend: "real", run: twoPaneDrafts },

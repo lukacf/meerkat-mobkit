@@ -31,9 +31,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-// node_modules/inline-style-parser/cjs/index.js
+// console/node_modules/inline-style-parser/cjs/index.js
 var require_cjs = __commonJS({
-  "node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
+  "console/node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
     "use strict";
     var COMMENT_REGEX = /\/\*[^*]*\*+([^/*][^*]*\*+)*\//g;
     var NEWLINE_REGEX = /\n/g;
@@ -170,9 +170,9 @@ var require_cjs = __commonJS({
   }
 });
 
-// node_modules/style-to-object/cjs/index.js
+// console/node_modules/style-to-object/cjs/index.js
 var require_cjs2 = __commonJS({
-  "node_modules/style-to-object/cjs/index.js"(exports) {
+  "console/node_modules/style-to-object/cjs/index.js"(exports) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -204,9 +204,9 @@ var require_cjs2 = __commonJS({
   }
 });
 
-// node_modules/style-to-js/cjs/utilities.js
+// console/node_modules/style-to-js/cjs/utilities.js
 var require_utilities = __commonJS({
-  "node_modules/style-to-js/cjs/utilities.js"(exports) {
+  "console/node_modules/style-to-js/cjs/utilities.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.camelCase = void 0;
@@ -243,9 +243,9 @@ var require_utilities = __commonJS({
   }
 });
 
-// node_modules/style-to-js/cjs/index.js
+// console/node_modules/style-to-js/cjs/index.js
 var require_cjs3 = __commonJS({
-  "node_modules/style-to-js/cjs/index.js"(exports, module2) {
+  "console/node_modules/style-to-js/cjs/index.js"(exports, module2) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -269,9 +269,9 @@ var require_cjs3 = __commonJS({
   }
 });
 
-// node_modules/extend/index.js
+// console/node_modules/extend/index.js
 var require_extend = __commonJS({
-  "node_modules/extend/index.js"(exports, module2) {
+  "console/node_modules/extend/index.js"(exports, module2) {
     "use strict";
     var hasOwn = Object.prototype.hasOwnProperty;
     var toStr = Object.prototype.toString;
@@ -360,7 +360,7 @@ var require_extend = __commonJS({
   }
 });
 
-// src/index.tsx
+// console/src/index.tsx
 var index_exports = {};
 __export(index_exports, {
   ConsoleApp: () => ConsoleApp,
@@ -370,7 +370,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
-// src/lib/send-storage-lock.ts
+// console/src/lib/send-storage-lock.ts
 async function withConsoleSendStorageLock(key, update) {
   if (navigator.locks) return navigator.locks.request(key, update);
   if (!globalThis.indexedDB) throw new Error("This browser cannot coordinate saved queues. Your message remains in the composer.");
@@ -415,10 +415,10 @@ async function withConsoleSendStorageLock(key, update) {
   }
 }
 
-// src/ConsoleApp.tsx
+// console/src/ConsoleApp.tsx
 var import_react45 = __toESM(require("react"));
 
-// node_modules/clsx/dist/clsx.mjs
+// console/node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -434,7 +434,7 @@ function clsx() {
 }
 var clsx_default = clsx;
 
-// ../packages/console-components/src/shared.ts
+// packages/console-components/src/shared.ts
 function fallbackCopyTextToClipboard(text8) {
   if (typeof document === "undefined" || !document.body || typeof document.execCommand !== "function") {
     return false;
@@ -480,13 +480,13 @@ async function copyTextToClipboard(text8) {
   return fallbackCopyTextToClipboard(text8);
 }
 
-// ../packages/console-components/src/activity/console-activity-rail.tsx
+// packages/console-components/src/activity/console-activity-rail.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
 
-// ../packages/console-components/src/copy-button.tsx
+// packages/console-components/src/copy-button.tsx
 var import_react = require("react");
 
-// ../packages/console-components/src/copy-glyph.tsx
+// packages/console-components/src/copy-glyph.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
 function CopyGlyph({ state = "idle" }) {
   const icon = state === "copied" ? "check" : state === "failed" ? "cross" : "copy";
@@ -513,7 +513,7 @@ function CopyGlyph({ state = "idle" }) {
   );
 }
 
-// ../packages/console-components/src/copy-button.tsx
+// packages/console-components/src/copy-button.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
 function CopyButton({
   text: text8,
@@ -564,10 +564,46 @@ function CopyButton({
   );
 }
 
-// ../packages/console-components/src/conversation/conversation-empty-state.tsx
+// packages/console-components/src/conversation/conversation-empty-state.tsx
 var import_jsx_runtime4 = require("react/jsx-runtime");
 
-// ../packages/console-core/src/control-plane.ts
+// packages/console-core/src/assistant-message-identity.ts
+function carrier(frame) {
+  const data = frame.data;
+  return data !== null && typeof data === "object" && !Array.isArray(data) && Object.hasOwn(data, "assistant_message_id") ? data : void 0;
+}
+function hasAssistantMessageIdCarrier(frame) {
+  const data = carrier(frame);
+  return data !== void 0 && data.assistant_message_id !== null;
+}
+function assistantMessageId(frame) {
+  const value = carrier(frame)?.assistant_message_id;
+  return typeof value === "string" && value.trim().length > 0 ? value : void 0;
+}
+function assistantMessageKey(frame) {
+  const id = assistantMessageId(frame);
+  return id !== void 0 && typeof frame.sessionId === "string" && frame.sessionId.trim().length > 0 ? JSON.stringify([frame.sessionId, id]) : void 0;
+}
+function assistantMessageCursorSequence(value) {
+  if (typeof value !== "string" || /^console:[0-9]+$/.exec(value)?.[0] !== value) return void 0;
+  const sequence = BigInt(value.slice(8));
+  return sequence <= 18446744073709551615n ? sequence : void 0;
+}
+function assistantHistorySnapshot(frame) {
+  if (frame.event !== "assistant_history_snapshot" || frame.sourceKind !== "session_history" || typeof frame.sessionId !== "string" || !frame.sessionId.trim() || !frame.data || typeof frame.data !== "object" || Array.isArray(frame.data)) return void 0;
+  const data = frame.data;
+  const cursor = assistantMessageCursorSequence(frame.cursor);
+  const observedThrough = assistantMessageCursorSequence(data.observed_through);
+  if (data.session_id !== frame.sessionId || data.complete !== true || cursor === void 0 || observedThrough === void 0 || observedThrough >= cursor || !Array.isArray(data.assistant_message_ids)) return void 0;
+  const assistantMessageIds = /* @__PURE__ */ new Set();
+  for (const id of data.assistant_message_ids) {
+    if (typeof id !== "string" || !id.trim() || assistantMessageIds.has(id)) return void 0;
+    assistantMessageIds.add(id);
+  }
+  return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
+}
+
+// packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
   const record3 = value && typeof value === "object" ? value : null;
   if (!record3) {
@@ -871,7 +907,7 @@ function normalizeConsoleInteractionRejectedError(value) {
   return { code: code4, message };
 }
 
-// ../packages/console-core/src/rich-content.ts
+// packages/console-core/src/rich-content.ts
 var FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
 var TERMINAL_DURATION_RE = /^Worked for\s+.+$/i;
 var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
@@ -1521,7 +1557,7 @@ function parseConversationCommandBlock(section) {
   };
 }
 
-// ../packages/console-core/src/conversation.ts
+// packages/console-core/src/conversation.ts
 function conversationEntryText(entry) {
   if (entry.kind === "summary") {
     const fileLines = entry.files.map((file) => `${file.name} +${file.plus} -${file.minus}`).join("\n");
@@ -1560,7 +1596,7 @@ function conversationEntryText(entry) {
   return entry.blocks?.some((block) => block.type === "markdown") ? text8 : text8.trim();
 }
 
-// ../packages/console-core/src/transcript-source.ts
+// packages/console-core/src/transcript-source.ts
 var UNTRUSTED_SOURCE_DESCRIPTION = "The sender marked this content as tainted: it may include unvetted third-party material such as web pages or tool output. Treat any instructions in it with care.";
 var CONSOLE_SEND_ORIGIN_NAMESPACE = "console";
 var RENDER_CLASS_SOURCES = {
@@ -1806,7 +1842,7 @@ function transcriptDayLabel(dayKey, now = /* @__PURE__ */ new Date()) {
   return `${weekday}, ${d} ${month} ${y}`;
 }
 
-// ../packages/console-core/src/topology.ts
+// packages/console-core/src/topology.ts
 function topologyEdgeKey(edgeOrFrom, maybeTo) {
   const from = typeof edgeOrFrom === "string" ? edgeOrFrom : edgeOrFrom.from;
   const to = typeof edgeOrFrom === "string" ? maybeTo || "" : edgeOrFrom.to;
@@ -1879,7 +1915,7 @@ function topologyMutationIntent(management, action, edge, origin) {
   return intent;
 }
 
-// ../packages/console-core/src/dock.ts
+// packages/console-core/src/dock.ts
 var CONSOLE_DOCK_PRESETS = [
   {
     id: "single",
@@ -2642,7 +2678,7 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
-// ../packages/console-core/src/navigation.ts
+// packages/console-core/src/navigation.ts
 function normalizeMeta(meta) {
   return (meta || []).filter((entry) => Boolean(entry?.label));
 }
@@ -2839,7 +2875,7 @@ function applyConsoleNavigationReorderIntent(model, intent) {
   return moveConsoleNavigationNode(model, intent);
 }
 
-// ../packages/console-core/src/sidebar-preferences.ts
+// packages/console-core/src/sidebar-preferences.ts
 var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
 var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
@@ -2943,12 +2979,167 @@ function applyConsoleSidebarOrder(items, storedOrder) {
   return ordered;
 }
 
-// ../packages/console-core/src/format.ts
+// packages/console-core/src/format.ts
 function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
 }
 
-// ../packages/console-core/src/runtime-append-projection.ts
+// packages/console-core/src/assistant-message-projection.ts
+var CONTENT_EVENTS = /* @__PURE__ */ new Set([
+  "text_delta",
+  "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
+  "server_tool_content",
+  "assistant_image",
+  "assistant_image_appended"
+]);
+function contextsConflict(left, right) {
+  return ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
+}
+function snapshotScope(frame) {
+  return JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, frame.sessionId]);
+}
+function isCanonicalAssistantMessage(frame) {
+  if (frame.sourceKind !== "session_history") return false;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = data.message && typeof data.message === "object" ? data.message : {};
+  return message.role === "block_assistant" || message.role === "assistant";
+}
+function canonicalAssistantToolCounterparts(frames) {
+  const owners = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (!assistantMessageKey(frame) || !isCanonicalAssistantMessage(frame)) continue;
+    const data = frame.data, message = data.message;
+    if (!Array.isArray(message.blocks)) continue;
+    for (const value of message.blocks) {
+      if (!value || typeof value !== "object") continue;
+      const block = value;
+      if ((block.block_type ?? block.type) !== "tool_use") continue;
+      const data2 = block.data && typeof block.data === "object" ? block.data : block;
+      const id = data2.id;
+      if (typeof id !== "string" || !id.trim()) continue;
+      const rows = owners.get(id) ?? [];
+      rows.push(frame);
+      owners.set(id, rows);
+    }
+  }
+  const counterparts = /* @__PURE__ */ new Set();
+  for (const frame of frames) {
+    if (!["tool_call_requested", "tool_call", "tool_execution_started"].includes(frame.event)) continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const id = data.tool_call_id ?? data.id;
+    if (typeof id !== "string") continue;
+    const rows = owners.get(id)?.filter((owner) => !contextsConflict(owner, frame)) ?? [];
+    if (rows.length === 1) counterparts.add(frame);
+  }
+  return counterparts;
+}
+function reconcileAssistantMessageFrames(frames) {
+  const snapshots = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const snapshot = assistantHistorySnapshot(frame);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (!snapshot || cursor === void 0) continue;
+    const scope = snapshotScope(frame), previous3 = snapshots.get(scope);
+    if (!previous3 || cursor > previous3.cursor) snapshots.set(scope, { cursor, snapshot, conflict: false });
+    else if (cursor === previous3.cursor && (snapshot.observedThrough !== previous3.snapshot.observedThrough || snapshot.assistantMessageIds.size !== previous3.snapshot.assistantMessageIds.size || [...snapshot.assistantMessageIds].some((id) => !previous3.snapshot.assistantMessageIds.has(id)))) previous3.conflict = true;
+  }
+  frames = frames.filter((frame) => {
+    if (frame.event === "assistant_history_snapshot") return false;
+    const id = assistantMessageId(frame), current = snapshots.get(snapshotScope(frame));
+    const snapshot = current && !current.conflict ? current.snapshot : void 0;
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    return !id || !snapshot || cursor === void 0 || cursor > snapshot.observedThrough || snapshot.assistantMessageIds.has(id);
+  });
+  const canonical = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const key = assistantMessageKey(frame);
+    if (!key || !isCanonicalAssistantMessage(frame)) continue;
+    const rows = canonical.get(key) ?? [];
+    if (!rows.some((row) => snapshotScope(row) === snapshotScope(frame))) rows.push(frame);
+    canonical.set(key, rows);
+  }
+  const canonicalFor = (frame) => {
+    const key = assistantMessageKey(frame);
+    if (!key) return void 0;
+    const candidates = canonical.get(key)?.filter((row) => !contextsConflict(row, frame)) ?? [];
+    const exact = candidates.filter((row) => snapshotScope(row) === snapshotScope(frame));
+    if (exact.length === 1) return exact[0];
+    return candidates.length === 1 ? candidates[0] : void 0;
+  };
+  const suppressed = /* @__PURE__ */ new Set();
+  const replacement = /* @__PURE__ */ new Map();
+  const placed = /* @__PURE__ */ new Set();
+  const attempts = /* @__PURE__ */ new Map();
+  const compactions = [];
+  for (const frame of frames) {
+    const key = assistantMessageKey(frame);
+    if (frame.sourceKind === "session_history") {
+      const row2 = canonicalFor(frame);
+      if (row2 && isCanonicalAssistantMessage(frame)) {
+        if (placed.has(row2)) suppressed.add(frame);
+        else {
+          replacement.set(frame, row2);
+          placed.add(row2);
+        }
+      }
+      continue;
+    }
+    if (frame.event === "compaction_started") compactions.push(frame);
+    if (frame.event === "compaction_completed" || frame.event === "compaction_failed") {
+      for (let i = compactions.length - 1; i >= 0; i--) {
+        if (!contextsConflict(compactions[i], frame)) compactions.splice(i, 1);
+      }
+    }
+    if (!hasAssistantMessageIdCarrier(frame) && CONTENT_EVENTS.has(frame.event) && compactions.some((owner) => !contextsConflict(owner, frame))) {
+      suppressed.add(frame);
+      continue;
+    }
+    const resultReference = frame.event === "run_completed" || frame.event === "interaction_complete";
+    if (resultReference && hasAssistantMessageIdCarrier(frame)) {
+      suppressed.add(frame);
+      continue;
+    }
+    if (!key) continue;
+    const row = canonicalFor(frame);
+    if (row && CONTENT_EVENTS.has(frame.event)) {
+      if (!placed.has(row)) {
+        replacement.set(frame, row);
+        placed.add(row);
+      } else suppressed.add(frame);
+      continue;
+    }
+    const bucket = attempts.get(key) ?? [];
+    let attempt = bucket.find((item) => snapshotScope(item.owner) === snapshotScope(frame));
+    if (!attempt) {
+      attempt = { owner: frame, open: true, frames: [] };
+      bucket.push(attempt);
+      attempts.set(key, bucket);
+    }
+    if (frame.event === "retrying" || frame.event === "turn_started" && attempt.open) {
+      for (const prior of attempt.frames) suppressed.add(prior);
+      attempt.frames = [];
+      attempt.open = true;
+    } else if (frame.event === "turn_started") {
+      attempt.open = true;
+    }
+    if (frame.event === "text_complete") {
+      const priorText = attempt.frames.filter((prior) => prior.event === "text_delta" || prior.event === "text_complete");
+      if (priorText.length) {
+        replacement.set(priorText[0], frame);
+        suppressed.delete(priorText[0]);
+        for (const prior of priorText.slice(1)) suppressed.add(prior);
+        suppressed.add(frame);
+      }
+    }
+    if (CONTENT_EVENTS.has(frame.event)) attempt.frames.push(frame);
+    if (frame.event === "turn_completed") attempt.open = false;
+  }
+  return frames.flatMap((frame) => suppressed.has(frame) ? [] : [replacement.get(frame) ?? frame]);
+}
+
+// packages/console-core/src/runtime-append-projection.ts
 function record(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -3133,6 +3324,33 @@ function noticeSnapshot(frame) {
     sparseHistoryPositions,
     removedHistoryFrameIds
   };
+}
+function reconcileAssistantHistoryPositions(frames) {
+  const scope = (frame) => JSON.stringify([frame.runtimeKey ?? null, frame.identity ?? null, frame.sessionId]);
+  const assistants = /* @__PURE__ */ new Map();
+  const positions = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const assistant = assistantHistorySnapshot(frame), cursor = assistantMessageCursorSequence(frame.cursor);
+    if (assistant && cursor !== void 0) {
+      const key = scope(frame), prior = assistants.get(key);
+      if (!prior || cursor > prior.cursor) assistants.set(key, { cursor, observedThrough: assistant.observedThrough, ids: assistant.assistantMessageIds, conflict: false });
+      else if (cursor === prior.cursor && (assistant.observedThrough !== prior.observedThrough || assistant.assistantMessageIds.size !== prior.ids.size || [...assistant.assistantMessageIds].some((id) => !prior.ids.has(id)))) prior.conflict = true;
+    }
+    const position3 = noticeSnapshot(frame);
+    if (position3?.historyPositions) {
+      const key = scope(frame), prior = positions.get(key);
+      if (!prior || position3.cursor > prior.cursor) positions.set(key, position3);
+    }
+  }
+  return frames.filter((frame) => {
+    if (frame.sourceKind !== "session_history") return true;
+    const message = record(record(frame.data)?.message);
+    if (message?.role !== "assistant" && message?.role !== "block_assistant") return true;
+    const key = scope(frame), assistant = assistants.get(key), position3 = positions.get(key);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (!assistant || assistant.conflict || !position3 || BigInt(position3.observedThrough) !== assistant.observedThrough || cursor === void 0 || cursor > assistant.observedThrough) return true;
+    return position3.sparseHistoryPositions ? !position3.removedHistoryFrameIds.has(frame.id) : position3.historyPositions.has(frame.id);
+  });
 }
 function positionFromCursor(sessionId, sourceCursor) {
   if (!string(sourceCursor) || !sourceCursor.startsWith(`${sessionId}:`)) return void 0;
@@ -3376,7 +3594,7 @@ function reconcileRuntimeAppendFrames(frames) {
   return orderBySource(reconciled);
 }
 
-// ../packages/console-core/src/tool-completion.ts
+// packages/console-core/src/tool-completion.ts
 function unknownToolCompletion(toolCallId) {
   return { outcome: "unknown", source: "unknown", toolCallId };
 }
@@ -3395,7 +3613,7 @@ function toolCompletionFromFrame(frame, toolCallId) {
   return { outcome: data.is_error ? "error" : "success", source, toolCallId };
 }
 
-// ../packages/console-core/src/context-record.ts
+// packages/console-core/src/context-record.ts
 var MAX_CONSOLE_CONTEXTS = 8;
 var MAX_CONSOLE_CONTEXT_BYTES = 64 * 1024;
 var byteLength = (text8) => new TextEncoder().encode(text8).length;
@@ -3462,7 +3680,7 @@ function parseConsoleContextMessage(content3) {
   }
 }
 
-// ../packages/console-core/src/adapters.ts
+// packages/console-core/src/adapters.ts
 var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "subscribed",
   "run_started",
@@ -3493,7 +3711,7 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed"
 ]);
 
-// ../packages/console-core/src/contract.ts
+// packages/console-core/src/contract.ts
 var CONSOLE_RPC_METHODS = {
   capabilities: "mobkit/capabilities",
   send: "mobkit/console/send",
@@ -3547,7 +3765,7 @@ var CONSOLE_RPC_METHODS = {
   topologyAuditQuery: "mobkit/topology/audit/query"
 };
 
-// ../packages/console-core/src/sse-reader.ts
+// packages/console-core/src/sse-reader.ts
 var ConsoleConsumerError = class extends Error {
   constructor(cause) {
     super(cause instanceof Error ? cause.message : String(cause));
@@ -3636,7 +3854,7 @@ async function consumeSseResponse(response, options) {
   return collected;
 }
 
-// ../packages/console-core/src/timeline-subscription.ts
+// packages/console-core/src/timeline-subscription.ts
 function timelineCursor(frame) {
   if (frame.cursor?.trim()) return frame.cursor.trim();
   if (frame.event === "snapshot_complete") {
@@ -3784,7 +4002,7 @@ function createTimelineSubscription(input) {
   return stop;
 }
 
-// ../packages/console-core/src/timeline-recovery.ts
+// packages/console-core/src/timeline-recovery.ts
 var MIN_TIMELINE_DEDUP_KEYS = 1e3;
 async function subscribeTimelineWithRecovery(transport, input, onFrame, onReplayGap) {
   const lifetime = new AbortController();
@@ -4021,7 +4239,7 @@ function stableDedupText(value) {
   }
 }
 
-// ../packages/console-core/src/headless.ts
+// packages/console-core/src/headless.ts
 var CONSOLE_COMMAND_NAMES = {
   inspectIdentity: "inspectIdentity",
   retireIdentity: "retireIdentity",
@@ -4270,7 +4488,7 @@ var identityCommandMethods = /* @__PURE__ */ new Set([
   CONSOLE_RPC_METHODS.resetIdentity
 ]);
 
-// ../packages/console-core/src/targets.ts
+// packages/console-core/src/targets.ts
 var LEGACY_CONTROL_TARGETS = {
   topology: "mobkit/topology",
   health: "mobkit/activity",
@@ -4375,7 +4593,7 @@ function isNamespacedKind(kind) {
   return Boolean(namespace && name2 && rest.length === 0);
 }
 
-// ../packages/console-core/src/pending-approvals.ts
+// packages/console-core/src/pending-approvals.ts
 var APPROVAL_ACTIONS = ["approve", "reject", "escalate"];
 var POLL_MS = 15e3;
 var STALE_MS = 2 * POLL_MS;
@@ -4608,7 +4826,7 @@ function createPendingApprovalResource(input) {
   return resource;
 }
 
-// ../packages/console-core/src/send-attempt.ts
+// packages/console-core/src/send-attempt.ts
 var nonemptyString = (value) => typeof value === "string" && value.trim().length > 0;
 function createConsoleSendAttempt(input) {
   if (!input.text.trim()) throw new Error("Write a message before sending.");
@@ -4717,7 +4935,7 @@ function reconcileConsoleSendReceipt(attempt, frame, resolution) {
   return finishConsoleSendAttempt(attempt, { state: "accepted", interactionId: frame.interactionId, inputFrameId: frame.id });
 }
 
-// ../packages/console-core/src/context-edit.ts
+// packages/console-core/src/context-edit.ts
 function editConsoleContextQuote(records, id, quote) {
   if (!records.some((record3) => record3.id === id)) throw new Error("This quote is no longer in the draft.");
   const next = records.map((record3) => {
@@ -4729,13 +4947,13 @@ function editConsoleContextQuote(records, id, quote) {
   return next;
 }
 
-// ../packages/console-components/src/composer/console-composer.tsx
+// packages/console-components/src/composer/console-composer.tsx
 var import_jsx_runtime5 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/quote-selection-action.tsx
+// packages/console-components/src/conversation/quote-selection-action.tsx
 var import_react2 = require("react");
 
-// ../packages/console-components/src/conversation/context-selection.ts
+// packages/console-components/src/conversation/context-selection.ts
 function readConsoleQuoteSelection(root4, selection) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return { kind: "empty" };
   const range = selection.getRangeAt(0);
@@ -4754,7 +4972,7 @@ function readConsoleQuoteSelection(root4, selection) {
   return { kind: "selected", quote: { text: text8, messageId, sourceText: start2.dataset.quoteSource } };
 }
 
-// ../packages/console-components/src/conversation/quote-selection-action.tsx
+// packages/console-components/src/conversation/quote-selection-action.tsx
 var import_jsx_runtime6 = require("react/jsx-runtime");
 function QuoteSelectionAction({ viewportRef, onQuote, onError, disabled = false }) {
   const anchorRef = (0, import_react2.useRef)(null);
@@ -4823,7 +5041,7 @@ function QuoteSelectionAction({ viewportRef, onQuote, onError, disabled = false 
   ) : null });
 }
 
-// ../packages/console-components/src/conversation/jump-to-latest.tsx
+// packages/console-components/src/conversation/jump-to-latest.tsx
 var import_jsx_runtime7 = require("react/jsx-runtime");
 function JumpToLatest({ onClick, working = false }) {
   return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "cc-conversation-jump-anchor", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
@@ -4843,7 +5061,7 @@ function JumpToLatest({ onClick, working = false }) {
   ) });
 }
 
-// ../packages/console-components/src/conversation/approval-card.tsx
+// packages/console-components/src/conversation/approval-card.tsx
 var import_jsx_runtime8 = require("react/jsx-runtime");
 var labels = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
 function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }) {
@@ -4922,7 +5140,7 @@ function ApprovalAttention({ snapshot, onOpen }) {
   ] });
 }
 
-// ../packages/console-components/src/conversation/conversation-approvals.tsx
+// packages/console-components/src/conversation/conversation-approvals.tsx
 var import_jsx_runtime9 = require("react/jsx-runtime");
 function approvalInteractionIdsByTurn(turns) {
   const latest = /* @__PURE__ */ new Map();
@@ -4936,7 +5154,7 @@ function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalD
   }) }, request.pendingId)) });
 }
 
-// ../packages/console-components/src/conversation/presentation-policy.tsx
+// packages/console-components/src/conversation/presentation-policy.tsx
 var import_react3 = require("react");
 var import_jsx_runtime10 = require("react/jsx-runtime");
 function explicitDisplayLabel(id, labels2) {
@@ -5021,13 +5239,13 @@ function CompletedToolDisclosure({ blocks, children }) {
   ] });
 }
 
-// ../packages/console-components/src/conversation/conversation-pane.tsx
+// packages/console-components/src/conversation/conversation-pane.tsx
 var import_react14 = require("react");
 
-// ../packages/console-components/src/conversation/scroll-controller.ts
+// packages/console-components/src/conversation/scroll-controller.ts
 var import_react4 = require("react");
 
-// ../packages/console-components/src/conversation/scroll-geometry.ts
+// packages/console-components/src/conversation/scroll-geometry.ts
 var CONVERSATION_LIVE_EDGE_PX = 32;
 var CONVERSATION_ANCHOR_OFFSET_PX = 24;
 var CONVERSATION_POSITION_LIMIT = 100;
@@ -5091,7 +5309,7 @@ var ConversationPositionCache = class {
   }
 };
 
-// ../packages/console-components/src/conversation/scroll-controller.ts
+// packages/console-components/src/conversation/scroll-controller.ts
 var sharedPositions = new ConversationPositionCache();
 var ROW_SELECTOR = "[data-conversation-row-id]";
 function cancelReveal(session) {
@@ -5377,28 +5595,28 @@ function useConversationScrollController(options) {
   return { ...state, jumpToLatest, jumpToRow, readHistory, captureBeforePrepend: readHistory, notifyLayoutChange };
 }
 
-// ../packages/console-components/src/conversation/conversation-transcript.tsx
+// packages/console-components/src/conversation/conversation-transcript.tsx
 var import_react13 = require("react");
 
-// ../packages/console-components/src/conversation/conversation-message-group.tsx
+// packages/console-components/src/conversation/conversation-message-group.tsx
 var import_react12 = require("react");
 
-// ../packages/console-components/src/conversation/conversation-message-view.tsx
+// packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react11 = require("react");
 
-// ../packages/console-components/src/conversation/conversation-rich-content.tsx
+// packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_react7 = require("react");
 
-// ../packages/console-components/src/conversation/conversation-markdown.tsx
+// packages/console-components/src/conversation/conversation-markdown.tsx
 var import_react6 = require("react");
 
-// node_modules/devlop/lib/default.js
+// console/node_modules/devlop/lib/default.js
 function ok() {
 }
 function unreachable() {
 }
 
-// node_modules/comma-separated-tokens/index.js
+// console/node_modules/comma-separated-tokens/index.js
 function stringify(values, options) {
   const settings = options || {};
   const input = values[values.length - 1] === "" ? [...values, ""] : values;
@@ -5407,7 +5625,7 @@ function stringify(values, options) {
   ).trim();
 }
 
-// node_modules/estree-util-is-identifier-name/lib/index.js
+// console/node_modules/estree-util-is-identifier-name/lib/index.js
 var nameRe = /^[$_\p{ID_Start}][$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var nameReJsx = /^[$_\p{ID_Start}][-$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var emptyOptions = {};
@@ -5417,7 +5635,7 @@ function name(name2, options) {
   return re2.test(name2);
 }
 
-// node_modules/hast-util-whitespace/lib/index.js
+// console/node_modules/hast-util-whitespace/lib/index.js
 var re = /[ \t\n\f\r]/g;
 function whitespace(thing) {
   return typeof thing === "object" ? thing.type === "text" ? empty(thing.value) : false : empty(thing);
@@ -5426,7 +5644,7 @@ function empty(value) {
   return value.replace(re, "") === "";
 }
 
-// node_modules/property-information/lib/util/schema.js
+// console/node_modules/property-information/lib/util/schema.js
 var Schema = class {
   /**
    * @param {SchemaType['property']} property
@@ -5450,7 +5668,7 @@ Schema.prototype.normal = {};
 Schema.prototype.property = {};
 Schema.prototype.space = void 0;
 
-// node_modules/property-information/lib/util/merge.js
+// console/node_modules/property-information/lib/util/merge.js
 function merge(definitions, space2) {
   const property = {};
   const normal = {};
@@ -5461,12 +5679,12 @@ function merge(definitions, space2) {
   return new Schema(property, normal, space2);
 }
 
-// node_modules/property-information/lib/normalize.js
+// console/node_modules/property-information/lib/normalize.js
 function normalize(value) {
   return value.toLowerCase();
 }
 
-// node_modules/property-information/lib/util/info.js
+// console/node_modules/property-information/lib/util/info.js
 var Info = class {
   /**
    * @param {string} property
@@ -5494,7 +5712,7 @@ Info.prototype.property = "";
 Info.prototype.spaceSeparated = false;
 Info.prototype.space = void 0;
 
-// node_modules/property-information/lib/util/types.js
+// console/node_modules/property-information/lib/util/types.js
 var types_exports = {};
 __export(types_exports, {
   boolean: () => boolean2,
@@ -5517,7 +5735,7 @@ function increment() {
   return 2 ** ++powers;
 }
 
-// node_modules/property-information/lib/util/defined-info.js
+// console/node_modules/property-information/lib/util/defined-info.js
 var checks = (
   /** @type {ReadonlyArray<keyof typeof types>} */
   Object.keys(types_exports)
@@ -5555,7 +5773,7 @@ function mark(values, key, value) {
   }
 }
 
-// node_modules/property-information/lib/util/create.js
+// console/node_modules/property-information/lib/util/create.js
 function create(definition3) {
   const properties = {};
   const normals = {};
@@ -5576,7 +5794,7 @@ function create(definition3) {
   return new Schema(properties, normals, definition3.space);
 }
 
-// node_modules/property-information/lib/aria.js
+// console/node_modules/property-information/lib/aria.js
 var aria = create({
   properties: {
     ariaActiveDescendant: null,
@@ -5634,17 +5852,17 @@ var aria = create({
   }
 });
 
-// node_modules/property-information/lib/util/case-sensitive-transform.js
+// console/node_modules/property-information/lib/util/case-sensitive-transform.js
 function caseSensitiveTransform(attributes, attribute) {
   return attribute in attributes ? attributes[attribute] : attribute;
 }
 
-// node_modules/property-information/lib/util/case-insensitive-transform.js
+// console/node_modules/property-information/lib/util/case-insensitive-transform.js
 function caseInsensitiveTransform(attributes, property) {
   return caseSensitiveTransform(attributes, property.toLowerCase());
 }
 
-// node_modules/property-information/lib/html.js
+// console/node_modules/property-information/lib/html.js
 var html = create({
   attributes: {
     acceptcharset: "accept-charset",
@@ -6018,7 +6236,7 @@ var html = create({
   transform: caseInsensitiveTransform
 });
 
-// node_modules/property-information/lib/svg.js
+// console/node_modules/property-information/lib/svg.js
 var svg = create({
   attributes: {
     accentHeight: "accent-height",
@@ -6582,7 +6800,7 @@ var svg = create({
   transform: caseSensitiveTransform
 });
 
-// node_modules/property-information/lib/xlink.js
+// console/node_modules/property-information/lib/xlink.js
 var xlink = create({
   properties: {
     xLinkActuate: null,
@@ -6599,7 +6817,7 @@ var xlink = create({
   }
 });
 
-// node_modules/property-information/lib/xmlns.js
+// console/node_modules/property-information/lib/xmlns.js
 var xmlns = create({
   attributes: { xmlnsxlink: "xmlns:xlink" },
   properties: { xmlnsXLink: null, xmlns: null },
@@ -6607,7 +6825,7 @@ var xmlns = create({
   transform: caseInsensitiveTransform
 });
 
-// node_modules/property-information/lib/xml.js
+// console/node_modules/property-information/lib/xml.js
 var xml = create({
   properties: { xmlBase: null, xmlLang: null, xmlSpace: null },
   space: "xml",
@@ -6616,7 +6834,7 @@ var xml = create({
   }
 });
 
-// node_modules/property-information/lib/hast-to-react.js
+// console/node_modules/property-information/lib/hast-to-react.js
 var hastToReact = {
   classId: "classID",
   dataType: "datatype",
@@ -6637,7 +6855,7 @@ var hastToReact = {
   xmlnsXLink: "xmlnsXlink"
 };
 
-// node_modules/property-information/lib/find.js
+// console/node_modules/property-information/lib/find.js
 var cap = /[A-Z]/g;
 var dash = /-[a-z]/g;
 var valid = /^data[-\w.:]+$/i;
@@ -6673,19 +6891,19 @@ function camelcase($0) {
   return $0.charAt(1).toUpperCase();
 }
 
-// node_modules/property-information/index.js
+// console/node_modules/property-information/index.js
 var html2 = merge([aria, html, xlink, xmlns, xml], "html");
 var svg2 = merge([aria, svg, xlink, xmlns, xml], "svg");
 
-// node_modules/space-separated-tokens/index.js
+// console/node_modules/space-separated-tokens/index.js
 function stringify2(values) {
   return values.join(" ").trim();
 }
 
-// node_modules/hast-util-to-jsx-runtime/lib/index.js
+// console/node_modules/hast-util-to-jsx-runtime/lib/index.js
 var import_style_to_js = __toESM(require_cjs3(), 1);
 
-// node_modules/unist-util-position/lib/index.js
+// console/node_modules/unist-util-position/lib/index.js
 var pointEnd = point("end");
 var pointStart = point("start");
 function point(type) {
@@ -6709,7 +6927,7 @@ function position(node2) {
   }
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// console/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -6735,7 +6953,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/vfile-message/lib/index.js
+// console/node_modules/vfile-message/lib/index.js
 var VFileMessage = class extends Error {
   /**
    * Create a message for `reason`.
@@ -6871,7 +7089,7 @@ VFileMessage.prototype.place = void 0;
 VFileMessage.prototype.ruleId = void 0;
 VFileMessage.prototype.source = void 0;
 
-// node_modules/hast-util-to-jsx-runtime/lib/index.js
+// console/node_modules/hast-util-to-jsx-runtime/lib/index.js
 var own = {}.hasOwnProperty;
 var emptyMap = /* @__PURE__ */ new Map();
 var cap2 = /[A-Z]/g;
@@ -7250,7 +7468,7 @@ function toDash($0) {
   return "-" + $0.toLowerCase();
 }
 
-// node_modules/html-url-attributes/lib/index.js
+// console/node_modules/html-url-attributes/lib/index.js
 var urlAttributes = {
   action: ["form"],
   cite: ["blockquote", "del", "ins", "q"],
@@ -7275,11 +7493,11 @@ var urlAttributes = {
   ]
 };
 
-// node_modules/react-markdown/lib/index.js
+// console/node_modules/react-markdown/lib/index.js
 var import_jsx_runtime11 = require("react/jsx-runtime");
 var import_react5 = require("react");
 
-// node_modules/mdast-util-to-string/lib/index.js
+// console/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions2 = {};
 function toString(value, options) {
   const settings = options || emptyOptions2;
@@ -7316,7 +7534,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// console/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -9445,13 +9663,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// console/node_modules/decode-named-character-reference/index.js
 var own2 = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own2.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// console/node_modules/micromark-util-chunked/index.js
 function splice(list4, start2, remove, items) {
   const end = list4.length;
   let chunkStart = 0;
@@ -9485,7 +9703,7 @@ function push(list4, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// console/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -9525,7 +9743,7 @@ function constructs(existing, list4) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// console/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code4 = Number.parseInt(value, base);
   if (
@@ -9543,12 +9761,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code4);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// console/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// console/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -9580,7 +9798,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-util-sanitize-uri/index.js
+// console/node_modules/micromark-util-sanitize-uri/index.js
 function normalizeUri(value) {
   const result = [];
   let index2 = -1;
@@ -9619,7 +9837,7 @@ function normalizeUri(value) {
   return result.join("") + value.slice(start2);
 }
 
-// node_modules/micromark-factory-space/index.js
+// console/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok3, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -9641,7 +9859,7 @@ function factorySpace(effects, ok3, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// console/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -9691,7 +9909,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// console/node_modules/micromark/lib/initialize/document.js
 var document2 = {
   tokenize: initializeDocument
 };
@@ -9873,7 +10091,7 @@ function tokenizeContainer(effects, ok3, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok3, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// console/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code4) {
   if (code4 === null || markdownLineEndingOrSpace(code4) || unicodeWhitespace(code4)) {
     return 1;
@@ -9883,7 +10101,7 @@ function classifyCharacter(code4) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// console/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -9897,7 +10115,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// console/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -10028,7 +10246,7 @@ function movePoint(point4, offset) {
   point4._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// console/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -10129,7 +10347,7 @@ function tokenizeAutolink(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// console/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -10144,7 +10362,7 @@ function tokenizeBlankLine(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// console/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -10202,7 +10420,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// console/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -10228,7 +10446,7 @@ function tokenizeCharacterEscape(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// console/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -10293,7 +10511,7 @@ function tokenizeCharacterReference(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// console/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -10476,7 +10694,7 @@ function tokenizeNonLazyContinuation(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// console/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -10540,7 +10758,7 @@ function tokenizeFurtherStart(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// console/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -10655,7 +10873,7 @@ function tokenizeCodeText(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// console/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -10848,7 +11066,7 @@ function chunkedPush(list4, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// console/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -11001,7 +11219,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// console/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -11072,7 +11290,7 @@ function tokenizeContinuation(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// console/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -11164,7 +11382,7 @@ function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerT
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// console/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   const self2 = this;
   let size = 0;
@@ -11225,7 +11443,7 @@ function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// console/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   let marker;
   return start2;
@@ -11287,7 +11505,7 @@ function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// console/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok3) {
   let seen;
   return start2;
@@ -11306,7 +11524,7 @@ function factoryWhitespace(effects, ok3) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// console/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -11392,7 +11610,7 @@ function tokenizeTitleBefore(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// console/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -11413,7 +11631,7 @@ function tokenizeHardBreakEscape(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// console/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -11504,7 +11722,7 @@ function tokenizeHeadingAtx(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// console/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -11571,7 +11789,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// console/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -11950,7 +12168,7 @@ function tokenizeBlankLineBefore(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// console/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -12256,7 +12474,7 @@ function tokenizeHtmlText(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// console/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -12482,7 +12700,7 @@ function tokenizeReferenceCollapsed(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// console/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -12513,7 +12731,7 @@ function tokenizeLabelStartImage(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// console/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -12535,7 +12753,7 @@ function tokenizeLabelStartLink(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// console/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -12550,7 +12768,7 @@ function tokenizeLineEnding(effects, ok3) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// console/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -12589,7 +12807,7 @@ function tokenizeThematicBreak(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// console/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -12719,7 +12937,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// console/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -12811,7 +13029,7 @@ function tokenizeSetextUnderline(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// console/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -12849,7 +13067,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// console/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -12988,7 +13206,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// console/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -13063,7 +13281,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// console/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point4 = {
     _bufferIndex: -1,
@@ -13386,7 +13604,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// console/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -13412,14 +13630,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// console/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// console/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -13498,7 +13716,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// console/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -13516,7 +13734,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// console/node_modules/mdast-util-from-markdown/lib/index.js
 var own3 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -14225,7 +14443,7 @@ function defaultOnError(left, right) {
   }
 }
 
-// node_modules/remark-parse/lib/index.js
+// console/node_modules/remark-parse/lib/index.js
 function remarkParse(options) {
   const self2 = this;
   self2.parser = parser;
@@ -14242,7 +14460,7 @@ function remarkParse(options) {
   }
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
 function blockquote(state, node2) {
   const result = {
     type: "element",
@@ -14254,14 +14472,14 @@ function blockquote(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/break.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/break.js
 function hardBreak(state, node2) {
   const result = { type: "element", tagName: "br", properties: {}, children: [] };
   state.patch(node2, result);
   return [state.applyData(node2, result), { type: "text", value: "\n" }];
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/code.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/code.js
 function code(state, node2) {
   const value = node2.value ? node2.value + "\n" : "";
   const properties = {};
@@ -14285,7 +14503,7 @@ function code(state, node2) {
   return result;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/delete.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/delete.js
 function strikethrough(state, node2) {
   const result = {
     type: "element",
@@ -14297,7 +14515,7 @@ function strikethrough(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
 function emphasis(state, node2) {
   const result = {
     type: "element",
@@ -14309,7 +14527,7 @@ function emphasis(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
 function footnoteReference(state, node2) {
   const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
   const id = String(node2.identifier).toUpperCase();
@@ -14348,7 +14566,7 @@ function footnoteReference(state, node2) {
   return state.applyData(node2, sup);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/heading.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/heading.js
 function heading(state, node2) {
   const result = {
     type: "element",
@@ -14360,7 +14578,7 @@ function heading(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/html.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/html.js
 function html3(state, node2) {
   if (state.options.allowDangerousHtml) {
     const result = { type: "raw", value: node2.value };
@@ -14370,7 +14588,7 @@ function html3(state, node2) {
   return void 0;
 }
 
-// node_modules/mdast-util-to-hast/lib/revert.js
+// console/node_modules/mdast-util-to-hast/lib/revert.js
 function revert(state, node2) {
   const subtype = node2.referenceType;
   let suffix = "]";
@@ -14398,7 +14616,7 @@ function revert(state, node2) {
   return contents;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
 function imageReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14414,7 +14632,7 @@ function imageReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/image.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/image.js
 function image(state, node2) {
   const properties = { src: normalizeUri(node2.url) };
   if (node2.alt !== null && node2.alt !== void 0) {
@@ -14428,7 +14646,7 @@ function image(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
 function inlineCode(state, node2) {
   const text8 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
   state.patch(node2, text8);
@@ -14442,7 +14660,7 @@ function inlineCode(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
 function linkReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14463,7 +14681,7 @@ function linkReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/link.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/link.js
 function link(state, node2) {
   const properties = { href: normalizeUri(node2.url) };
   if (node2.title !== null && node2.title !== void 0) {
@@ -14479,7 +14697,7 @@ function link(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/list-item.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/list-item.js
 function listItem(state, node2, parent) {
   const results = state.all(node2);
   const loose = parent ? listLoose(parent) : listItemLoose(node2);
@@ -14542,7 +14760,7 @@ function listItemLoose(node2) {
   return spread === null || spread === void 0 ? node2.children.length > 1 : spread;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/list.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/list.js
 function list2(state, node2) {
   const properties = {};
   const results = state.all(node2);
@@ -14567,7 +14785,7 @@ function list2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
 function paragraph(state, node2) {
   const result = {
     type: "element",
@@ -14579,14 +14797,14 @@ function paragraph(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/root.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/root.js
 function root2(state, node2) {
   const result = { type: "root", children: state.wrap(state.all(node2)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/strong.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/strong.js
 function strong(state, node2) {
   const result = {
     type: "element",
@@ -14598,7 +14816,7 @@ function strong(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/table.js
 function table(state, node2) {
   const rows = state.all(node2);
   const firstRow = rows.shift();
@@ -14635,7 +14853,7 @@ function table(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table-row.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/table-row.js
 function tableRow(state, node2, parent) {
   const siblings = parent ? parent.children : void 0;
   const rowIndex = siblings ? siblings.indexOf(node2) : 1;
@@ -14669,7 +14887,7 @@ function tableRow(state, node2, parent) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
 function tableCell(state, node2) {
   const result = {
     type: "element",
@@ -14682,7 +14900,7 @@ function tableCell(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/trim-lines/index.js
+// console/node_modules/trim-lines/index.js
 var tab = 9;
 var space = 32;
 function trimLines(value) {
@@ -14722,14 +14940,14 @@ function trimLine(value, start2, end) {
   return endIndex > startIndex ? value.slice(startIndex, endIndex) : "";
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/text.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/text.js
 function text5(state, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
 function thematicBreak2(state, node2) {
   const result = {
     type: "element",
@@ -14741,7 +14959,7 @@ function thematicBreak2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/index.js
+// console/node_modules/mdast-util-to-hast/lib/handlers/index.js
 var handlers = {
   blockquote,
   break: hardBreak,
@@ -14776,7 +14994,7 @@ function ignore() {
   return void 0;
 }
 
-// node_modules/@ungap/structured-clone/esm/types.js
+// console/node_modules/@ungap/structured-clone/esm/types.js
 var VOID = -1;
 var PRIMITIVE = 0;
 var ARRAY = 1;
@@ -14788,7 +15006,7 @@ var SET = 6;
 var ERROR = 7;
 var BIGINT = 8;
 
-// node_modules/@ungap/structured-clone/esm/deserialize.js
+// console/node_modules/@ungap/structured-clone/esm/deserialize.js
 var { defineProperty } = Object;
 var env = typeof self === "object" ? self : globalThis;
 var guard = (name2, init) => {
@@ -14880,7 +15098,7 @@ var deserializer = ($, _) => {
 };
 var deserialize = (serialized) => deserializer(/* @__PURE__ */ new Map(), serialized)(0);
 
-// node_modules/@ungap/structured-clone/esm/serialize.js
+// console/node_modules/@ungap/structured-clone/esm/serialize.js
 var EMPTY = "";
 var { toString: toString2 } = {};
 var { keys, is } = Object;
@@ -15017,13 +15235,13 @@ var serialize = (value, { json, lossy } = {}) => {
   return serializer(!(json || lossy), !!json, /* @__PURE__ */ new Map(), _)(value), _;
 };
 
-// node_modules/@ungap/structured-clone/esm/index.js
+// console/node_modules/@ungap/structured-clone/esm/index.js
 var esm_default = typeof structuredClone === "function" ? (
   /* c8 ignore start */
   (any, options) => options && ("json" in options || "lossy" in options) ? deserialize(serialize(any, options)) : structuredClone(any)
 ) : (any, options) => deserialize(serialize(any, options));
 
-// node_modules/mdast-util-to-hast/lib/footer.js
+// console/node_modules/mdast-util-to-hast/lib/footer.js
 function defaultFootnoteBackContent(_, rereferenceIndex) {
   const result = [{ type: "text", value: "\u21A9" }];
   if (rereferenceIndex > 1) {
@@ -15133,7 +15351,7 @@ function footer(state) {
   };
 }
 
-// node_modules/unist-util-is/lib/index.js
+// console/node_modules/unist-util-is/lib/index.js
 var convert = (
   // Note: overloads in JSDoc can’t yet use different `@template`s.
   /**
@@ -15232,12 +15450,12 @@ function looksLikeANode(value) {
   return value !== null && typeof value === "object" && "type" in value;
 }
 
-// node_modules/unist-util-visit-parents/lib/color.js
+// console/node_modules/unist-util-visit-parents/lib/color.js
 function color(d) {
   return d;
 }
 
-// node_modules/unist-util-visit-parents/lib/index.js
+// console/node_modules/unist-util-visit-parents/lib/index.js
 var empty2 = [];
 var CONTINUE = true;
 var EXIT = false;
@@ -15314,7 +15532,7 @@ function toResult(value) {
   return value === null || value === void 0 ? empty2 : [value];
 }
 
-// node_modules/unist-util-visit/lib/index.js
+// console/node_modules/unist-util-visit/lib/index.js
 function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   let reverse;
   let test;
@@ -15336,7 +15554,7 @@ function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   }
 }
 
-// node_modules/mdast-util-to-hast/lib/state.js
+// console/node_modules/mdast-util-to-hast/lib/state.js
 var own4 = {}.hasOwnProperty;
 var emptyOptions3 = {};
 function createState(tree, options) {
@@ -15478,7 +15696,7 @@ function trimMarkdownSpaceStart(value) {
   return value.slice(index2);
 }
 
-// node_modules/mdast-util-to-hast/lib/index.js
+// console/node_modules/mdast-util-to-hast/lib/index.js
 function toHast(tree, options) {
   const state = createState(tree, options);
   const node2 = state.one(tree, void 0);
@@ -15491,7 +15709,7 @@ function toHast(tree, options) {
   return result;
 }
 
-// node_modules/remark-rehype/lib/index.js
+// console/node_modules/remark-rehype/lib/index.js
 function remarkRehype(destination, options) {
   if (destination && "run" in destination) {
     return async function(tree, file) {
@@ -15510,17 +15728,17 @@ function remarkRehype(destination, options) {
   };
 }
 
-// node_modules/bail/index.js
+// console/node_modules/bail/index.js
 function bail(error) {
   if (error) {
     throw error;
   }
 }
 
-// node_modules/unified/lib/index.js
+// console/node_modules/unified/lib/index.js
 var import_extend = __toESM(require_extend(), 1);
 
-// node_modules/is-plain-obj/index.js
+// console/node_modules/is-plain-obj/index.js
 function isPlainObject(value) {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -15529,7 +15747,7 @@ function isPlainObject(value) {
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
 
-// node_modules/trough/lib/index.js
+// console/node_modules/trough/lib/index.js
 function trough() {
   const fns = [];
   const pipeline = { run, use };
@@ -15613,7 +15831,7 @@ function wrap2(middleware, callback) {
   }
 }
 
-// node_modules/vfile/lib/minpath.browser.js
+// console/node_modules/vfile/lib/minpath.browser.js
 var minpath = { basename, dirname, extname, join, sep: "/" };
 function basename(path2, extname2) {
   if (extname2 !== void 0 && typeof extname2 !== "string") {
@@ -15826,13 +16044,13 @@ function assertPath(path2) {
   }
 }
 
-// node_modules/vfile/lib/minproc.browser.js
+// console/node_modules/vfile/lib/minproc.browser.js
 var minproc = { cwd };
 function cwd() {
   return "/";
 }
 
-// node_modules/vfile/lib/minurl.shared.js
+// console/node_modules/vfile/lib/minurl.shared.js
 function isUrl(fileUrlOrPath) {
   return Boolean(
     fileUrlOrPath !== null && typeof fileUrlOrPath === "object" && "href" in fileUrlOrPath && fileUrlOrPath.href && "protocol" in fileUrlOrPath && fileUrlOrPath.protocol && // @ts-expect-error: indexing is fine.
@@ -15840,7 +16058,7 @@ function isUrl(fileUrlOrPath) {
   );
 }
 
-// node_modules/vfile/lib/minurl.browser.js
+// console/node_modules/vfile/lib/minurl.browser.js
 function urlToPath(path2) {
   if (typeof path2 === "string") {
     path2 = new URL(path2);
@@ -15883,7 +16101,7 @@ function getPathFromURLPosix(url) {
   return decodeURIComponent(pathname);
 }
 
-// node_modules/vfile/lib/index.js
+// console/node_modules/vfile/lib/index.js
 var order = (
   /** @type {const} */
   [
@@ -16339,7 +16557,7 @@ function isUint8Array(value) {
   );
 }
 
-// node_modules/unified/lib/callable-instance.js
+// console/node_modules/unified/lib/callable-instance.js
 var CallableInstance = (
   /**
    * @type {new <Parameters extends Array<unknown>, Result>(property: string | symbol) => (...parameters: Parameters) => Result}
@@ -16368,7 +16586,7 @@ var CallableInstance = (
   })
 );
 
-// node_modules/unified/lib/index.js
+// console/node_modules/unified/lib/index.js
 var own5 = {}.hasOwnProperty;
 var Processor = class _Processor extends CallableInstance {
   /**
@@ -17004,7 +17222,7 @@ function isUint8Array2(value) {
   );
 }
 
-// node_modules/react-markdown/lib/index.js
+// console/node_modules/react-markdown/lib/index.js
 var changelog = "https://github.com/remarkjs/react-markdown/blob/main/changelog.md";
 var emptyPlugins = [];
 var emptyRemarkRehypeOptions = { allowDangerousHtml: true };
@@ -17150,7 +17368,7 @@ function defaultUrlTransform(value) {
   return "";
 }
 
-// node_modules/ccount/index.js
+// console/node_modules/ccount/index.js
 function ccount(value, character) {
   const source = String(value);
   if (typeof character !== "string") {
@@ -17165,7 +17383,7 @@ function ccount(value, character) {
   return count;
 }
 
-// node_modules/escape-string-regexp/index.js
+// console/node_modules/escape-string-regexp/index.js
 function escapeStringRegexp(string4) {
   if (typeof string4 !== "string") {
     throw new TypeError("Expected a string");
@@ -17173,7 +17391,7 @@ function escapeStringRegexp(string4) {
   return string4.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&").replace(/-/g, "\\x2d");
 }
 
-// node_modules/mdast-util-find-and-replace/lib/index.js
+// console/node_modules/mdast-util-find-and-replace/lib/index.js
 function findAndReplace(tree, list4, options) {
   const settings = options || {};
   const ignored = convert(settings.ignore || []);
@@ -17278,7 +17496,7 @@ function toFunction(replace2) {
   };
 }
 
-// node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+// console/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
 var inConstruct = "phrasing";
 var notInConstruct = ["autolink", "link", "image", "label"];
 function gfmAutolinkLiteralFromMarkdown() {
@@ -17428,7 +17646,7 @@ function previous2(match, email) {
   (!email || code4 !== 47);
 }
 
-// node_modules/mdast-util-gfm-footnote/lib/index.js
+// console/node_modules/mdast-util-gfm-footnote/lib/index.js
 footnoteReference2.peek = footnoteReferencePeek;
 function enterFootnoteCallString() {
   this.buffer();
@@ -17541,7 +17759,7 @@ function mapAll(line, index2, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// node_modules/mdast-util-gfm-strikethrough/lib/index.js
+// console/node_modules/mdast-util-gfm-strikethrough/lib/index.js
 var constructsWithoutStrikethrough = [
   "autolink",
   "destinationLiteral",
@@ -17593,7 +17811,7 @@ function peekDelete() {
   return "~";
 }
 
-// node_modules/markdown-table/index.js
+// console/node_modules/markdown-table/index.js
 function defaultStringLength(value) {
   return value.length;
 }
@@ -17734,7 +17952,7 @@ function toAlignment(value) {
   return code4 === 67 || code4 === 99 ? 99 : code4 === 76 || code4 === 108 ? 108 : code4 === 82 || code4 === 114 ? 114 : 0;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
 function blockquote2(node2, _, state, info) {
   const exit3 = state.enter("blockquote");
   const tracker = state.createTracker(info);
@@ -17751,7 +17969,7 @@ function map(line, _, blank) {
   return ">" + (blank ? "" : " ") + line;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
+// console/node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
 function patternInScope(stack, pattern) {
   return listInScope(stack, pattern.inConstruct, true) && !listInScope(stack, pattern.notInConstruct, false);
 }
@@ -17771,7 +17989,7 @@ function listInScope(stack, list4, none) {
   return false;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/break.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/break.js
 function hardBreak2(_, _1, state, info) {
   let index2 = -1;
   while (++index2 < state.unsafe.length) {
@@ -17782,7 +18000,7 @@ function hardBreak2(_, _1, state, info) {
   return "\\\n";
 }
 
-// node_modules/longest-streak/index.js
+// console/node_modules/longest-streak/index.js
 function longestStreak(value, substring) {
   const source = String(value);
   let index2 = source.indexOf(substring);
@@ -17806,7 +18024,7 @@ function longestStreak(value, substring) {
   return max;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
+// console/node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
 function formatCodeAsIndented(node2, state) {
   return Boolean(
     state.options.fences === false && node2.value && // If there’s no info…
@@ -17816,7 +18034,7 @@ function formatCodeAsIndented(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-fence.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-fence.js
 function checkFence(state) {
   const marker = state.options.fence || "`";
   if (marker !== "`" && marker !== "~") {
@@ -17827,7 +18045,7 @@ function checkFence(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/code.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/code.js
 function code2(node2, _, state, info) {
   const marker = checkFence(state);
   const raw = node2.value || "";
@@ -17879,7 +18097,7 @@ function map2(line, _, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-quote.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-quote.js
 function checkQuote(state) {
   const marker = state.options.quote || '"';
   if (marker !== '"' && marker !== "'") {
@@ -17890,7 +18108,7 @@ function checkQuote(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/definition.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/definition.js
 function definition2(node2, _, state, info) {
   const quote = checkQuote(state);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
@@ -17946,7 +18164,7 @@ function definition2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
 function checkEmphasis(state) {
   const marker = state.options.emphasis || "*";
   if (marker !== "*" && marker !== "_") {
@@ -17957,12 +18175,12 @@ function checkEmphasis(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
+// console/node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
 function encodeCharacterReference(code4) {
   return "&#x" + code4.toString(16).toUpperCase() + ";";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/encode-info.js
+// console/node_modules/mdast-util-to-markdown/lib/util/encode-info.js
 function encodeInfo(outside, inside, marker) {
   const outsideKind = classifyCharacter(outside);
   const insideKind = classifyCharacter(inside);
@@ -18004,7 +18222,7 @@ function encodeInfo(outside, inside, marker) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
 emphasis2.peek = emphasisPeek;
 function emphasis2(node2, _, state, info) {
   const marker = checkEmphasis(state);
@@ -18044,7 +18262,7 @@ function emphasisPeek(_, _1, state) {
   return state.options.emphasis || "*";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
+// console/node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
 function formatHeadingAsSetext(node2, state) {
   let literalWithBreak = false;
   visit(node2, function(node3) {
@@ -18058,7 +18276,7 @@ function formatHeadingAsSetext(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/heading.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/heading.js
 function heading2(node2, _, state, info) {
   const rank = Math.max(Math.min(6, node2.depth || 1), 1);
   const tracker = state.createTracker(info);
@@ -18100,7 +18318,7 @@ function heading2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/html.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/html.js
 html4.peek = htmlPeek;
 function html4(node2) {
   return node2.value || "";
@@ -18109,7 +18327,7 @@ function htmlPeek() {
   return "<";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/image.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/image.js
 image2.peek = imagePeek;
 function image2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18166,7 +18384,7 @@ function imagePeek() {
   return "!";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
 imageReference2.peek = imageReferencePeek;
 function imageReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18205,7 +18423,7 @@ function imageReferencePeek() {
   return "!";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
 inlineCode2.peek = inlineCodePeek;
 function inlineCode2(node2, _, state) {
   let value = node2.value || "";
@@ -18236,7 +18454,7 @@ function inlineCodePeek() {
   return "`";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
+// console/node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
 function formatLinkAsAutolink(node2, state) {
   const raw = toString(node2);
   return Boolean(
@@ -18251,7 +18469,7 @@ function formatLinkAsAutolink(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/link.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/link.js
 link2.peek = linkPeek;
 function link2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18331,7 +18549,7 @@ function linkPeek(node2, _, state) {
   return formatLinkAsAutolink(node2, state) ? "<" : "[";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
 linkReference2.peek = linkReferencePeek;
 function linkReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18370,7 +18588,7 @@ function linkReferencePeek() {
   return "[";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
 function checkBullet(state) {
   const marker = state.options.bullet || "*";
   if (marker !== "*" && marker !== "+" && marker !== "-") {
@@ -18381,7 +18599,7 @@ function checkBullet(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
 function checkBulletOther(state) {
   const bullet = checkBullet(state);
   const bulletOther = state.options.bulletOther;
@@ -18401,7 +18619,7 @@ function checkBulletOther(state) {
   return bulletOther;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
 function checkBulletOrdered(state) {
   const marker = state.options.bulletOrdered || ".";
   if (marker !== "." && marker !== ")") {
@@ -18412,7 +18630,7 @@ function checkBulletOrdered(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-rule.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-rule.js
 function checkRule(state) {
   const marker = state.options.rule || "*";
   if (marker !== "*" && marker !== "-" && marker !== "_") {
@@ -18423,7 +18641,7 @@ function checkRule(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/list.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/list.js
 function list3(node2, parent, state, info) {
   const exit3 = state.enter("list");
   const bulletCurrent = state.bulletCurrent;
@@ -18463,7 +18681,7 @@ function list3(node2, parent, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
 function checkListItemIndent(state) {
   const style = state.options.listItemIndent || "one";
   if (style !== "tab" && style !== "one" && style !== "mixed") {
@@ -18474,7 +18692,7 @@ function checkListItemIndent(state) {
   return style;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/list-item.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/list-item.js
 function listItem2(node2, parent, state, info) {
   const listItemIndent = checkListItemIndent(state);
   let bullet = state.bulletCurrent || checkBullet(state);
@@ -18503,7 +18721,7 @@ function listItem2(node2, parent, state, info) {
   }
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
 function paragraph2(node2, _, state, info) {
   const exit3 = state.enter("paragraph");
   const subexit = state.enter("phrasing");
@@ -18513,7 +18731,7 @@ function paragraph2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-phrasing/lib/index.js
+// console/node_modules/mdast-util-phrasing/lib/index.js
 var phrasing = (
   /** @type {(node?: unknown) => node is Exclude<PhrasingContent, Html>} */
   convert([
@@ -18541,7 +18759,7 @@ var phrasing = (
   ])
 );
 
-// node_modules/mdast-util-to-markdown/lib/handle/root.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/root.js
 function root3(node2, _, state, info) {
   const hasPhrasing = node2.children.some(function(d) {
     return phrasing(d);
@@ -18550,7 +18768,7 @@ function root3(node2, _, state, info) {
   return container.call(state, node2, info);
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-strong.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-strong.js
 function checkStrong(state) {
   const marker = state.options.strong || "*";
   if (marker !== "*" && marker !== "_") {
@@ -18561,7 +18779,7 @@ function checkStrong(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/strong.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/strong.js
 strong2.peek = strongPeek;
 function strong2(node2, _, state, info) {
   const marker = checkStrong(state);
@@ -18601,12 +18819,12 @@ function strongPeek(_, _1, state) {
   return state.options.strong || "*";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/text.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/text.js
 function text6(node2, _, state, info) {
   return state.safe(node2.value, info);
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
+// console/node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
 function checkRuleRepetition(state) {
   const repetition = state.options.ruleRepetition || 3;
   if (repetition < 3) {
@@ -18617,13 +18835,13 @@ function checkRuleRepetition(state) {
   return repetition;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
 function thematicBreak3(_, _1, state) {
   const value = (checkRule(state) + (state.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state));
   return state.options.ruleSpaces ? value.slice(0, -1) : value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/index.js
+// console/node_modules/mdast-util-to-markdown/lib/handle/index.js
 var handle = {
   blockquote: blockquote2,
   break: hardBreak2,
@@ -18647,7 +18865,7 @@ var handle = {
   thematicBreak: thematicBreak3
 };
 
-// node_modules/mdast-util-gfm-table/lib/index.js
+// console/node_modules/mdast-util-gfm-table/lib/index.js
 function gfmTableFromMarkdown() {
   return {
     enter: {
@@ -18800,7 +19018,7 @@ function gfmTableToMarkdown(options) {
   }
 }
 
-// node_modules/mdast-util-gfm-task-list-item/lib/index.js
+// console/node_modules/mdast-util-gfm-task-list-item/lib/index.js
 function gfmTaskListItemFromMarkdown() {
   return {
     exit: {
@@ -18873,7 +19091,7 @@ function listItemWithTaskListItem(node2, parent, state, info) {
   }
 }
 
-// node_modules/mdast-util-gfm/lib/index.js
+// console/node_modules/mdast-util-gfm/lib/index.js
 function gfmFromMarkdown() {
   return [
     gfmAutolinkLiteralFromMarkdown(),
@@ -18895,7 +19113,7 @@ function gfmToMarkdown(options) {
   };
 }
 
-// node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
+// console/node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
 var wwwPrefix = {
   tokenize: tokenizeWwwPrefix,
   partial: true
@@ -19237,7 +19455,7 @@ function previousUnbalanced(events) {
   return result;
 }
 
-// node_modules/micromark-extension-gfm-footnote/lib/syntax.js
+// console/node_modules/micromark-extension-gfm-footnote/lib/syntax.js
 var indent = {
   tokenize: tokenizeIndent2,
   partial: true
@@ -19512,7 +19730,7 @@ function tokenizeIndent2(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
+// console/node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
 function gfmStrikethrough(options) {
   const options_ = options || {};
   let single = options_.singleTilde;
@@ -19606,7 +19824,7 @@ function gfmStrikethrough(options) {
   }
 }
 
-// node_modules/micromark-extension-gfm-table/lib/edit-map.js
+// console/node_modules/micromark-extension-gfm-table/lib/edit-map.js
 var EditMap = class {
   /**
    * Create a new edit map.
@@ -19692,7 +19910,7 @@ function addImplementation(editMap, at, remove, add) {
   editMap.index.set(at, change);
 }
 
-// node_modules/micromark-extension-gfm-table/lib/infer.js
+// console/node_modules/micromark-extension-gfm-table/lib/infer.js
 function gfmTableAlign(events, index2) {
   let inDelimiterRow = false;
   const align = [];
@@ -19719,7 +19937,7 @@ function gfmTableAlign(events, index2) {
   return align;
 }
 
-// node_modules/micromark-extension-gfm-table/lib/syntax.js
+// console/node_modules/micromark-extension-gfm-table/lib/syntax.js
 function gfmTable() {
   return {
     flow: {
@@ -20110,7 +20328,7 @@ function getPoint(events, index2) {
   return event[1][side];
 }
 
-// node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
+// console/node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
 var tasklistCheck = {
   name: "tasklistCheck",
   tokenize: tokenizeTasklistCheck
@@ -20184,7 +20402,7 @@ function spaceThenNonSpace(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-extension-gfm/index.js
+// console/node_modules/micromark-extension-gfm/index.js
 function gfm(options) {
   return combineExtensions([
     gfmAutolinkLiteral(),
@@ -20195,7 +20413,7 @@ function gfm(options) {
   ]);
 }
 
-// node_modules/remark-gfm/lib/index.js
+// console/node_modules/remark-gfm/lib/index.js
 var emptyOptions4 = {};
 function remarkGfm(options) {
   const self2 = (
@@ -20212,7 +20430,7 @@ function remarkGfm(options) {
   toMarkdownExtensions.push(gfmToMarkdown(settings));
 }
 
-// ../packages/console-components/src/conversation/conversation-markdown.tsx
+// packages/console-components/src/conversation/conversation-markdown.tsx
 var import_jsx_runtime12 = require("react/jsx-runtime");
 function cleanUrl(url) {
   const value = url.trim();
@@ -20303,7 +20521,7 @@ var ConversationMarkdown = (0, import_react6.memo)(function ConversationMarkdown
   );
 }, (previous3, next) => previous3.block.id === next.block.id && previous3.block.source === next.block.source && previous3.block.streaming === next.block.streaming && previous3.urlPolicy === next.urlPolicy && previous3.className === next.className);
 
-// ../packages/console-components/src/conversation/change-stat-pair.tsx
+// packages/console-components/src/conversation/change-stat-pair.tsx
 var import_jsx_runtime13 = require("react/jsx-runtime");
 function ChangeStatPair({
   plus,
@@ -20322,7 +20540,7 @@ function ChangeStatPair({
   ] });
 }
 
-// ../packages/console-components/src/conversation/conversation-rich-content.tsx
+// packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_jsx_runtime14 = require("react/jsx-runtime");
 function markdownHtml(text8, displayNormalization = true) {
   return { __html: renderConversationInlineMarkdown(text8, { displayNormalization }) };
@@ -20933,7 +21151,7 @@ function ConversationRichContent({
   return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(import_jsx_runtime14.Fragment, { children: renderedBody });
 }
 
-// ../packages/console-components/src/conversation/delivered-context-message.tsx
+// packages/console-components/src/conversation/delivered-context-message.tsx
 var import_jsx_runtime15 = require("react/jsx-runtime");
 function QuoteCopyIcon({ name: name2 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(CopyGlyph, { state: name2 === "i-check" ? "copied" : "idle" });
@@ -20957,17 +21175,17 @@ function DeliveredContextMessage({ message }) {
   ] });
 }
 
-// ../packages/console-components/src/conversation/conversation-connection-event.tsx
+// packages/console-components/src/conversation/conversation-connection-event.tsx
 var import_jsx_runtime16 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/flow-run-card.tsx
+// packages/console-components/src/conversation/flow-run-card.tsx
 var import_react8 = require("react");
 var import_jsx_runtime17 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/summary-card.tsx
+// packages/console-components/src/conversation/summary-card.tsx
 var import_jsx_runtime18 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/council-card.tsx
+// packages/console-components/src/conversation/council-card.tsx
 var import_react9 = require("react");
 var import_jsx_runtime19 = require("react/jsx-runtime");
 var CARD_STATUS_LABEL = {
@@ -21180,7 +21398,7 @@ function CouncilCard({
   );
 }
 
-// ../packages/console-components/src/conversation/work-graph-card.tsx
+// packages/console-components/src/conversation/work-graph-card.tsx
 var import_react10 = require("react");
 var import_jsx_runtime20 = require("react/jsx-runtime");
 var CARD_STATUS_LABEL2 = {
@@ -21524,36 +21742,36 @@ function WorkGraphCard({
   );
 }
 
-// ../packages/console-components/src/conversation/conversation-message-view.tsx
+// packages/console-components/src/conversation/conversation-message-view.tsx
 var import_jsx_runtime21 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-message-group.tsx
+// packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime22 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/turn-diff-card.tsx
+// packages/console-components/src/conversation/turn-diff-card.tsx
 var import_jsx_runtime23 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-transcript.tsx
+// packages/console-components/src/conversation/conversation-transcript.tsx
 var import_jsx_runtime24 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-pane.tsx
+// packages/console-components/src/conversation/conversation-pane.tsx
 var import_jsx_runtime25 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/console-conversation-panel.tsx
+// packages/console-components/src/conversation/console-conversation-panel.tsx
 var import_jsx_runtime26 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/dock/console-dock.tsx
+// packages/console-components/src/dock/console-dock.tsx
 var import_react15 = require("react");
 var import_jsx_runtime27 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/dock/browser-dock-target-host.tsx
+// packages/console-components/src/dock/browser-dock-target-host.tsx
 var import_jsx_runtime28 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/pending/console-pending-stack.tsx
+// packages/console-components/src/pending/console-pending-stack.tsx
 var import_react16 = __toESM(require("react"));
 var import_jsx_runtime29 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/dock/use-console-dock-controller.ts
+// packages/console-components/src/dock/use-console-dock-controller.ts
 var import_react17 = require("react");
 function useConsoleDockController({
   initialTarget = null,
@@ -21634,11 +21852,11 @@ function useConsoleDockController({
   };
 }
 
-// ../packages/console-components/src/sidebar/console-sidebar.tsx
+// packages/console-components/src/sidebar/console-sidebar.tsx
 var import_react18 = require("react");
 var import_jsx_runtime30 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/topology/connection-picker.tsx
+// packages/console-components/src/topology/connection-picker.tsx
 var import_react19 = __toESM(require("react"));
 var import_jsx_runtime31 = require("react/jsx-runtime");
 var DEFAULT_VISIBLE_LIMIT = 100;
@@ -22028,13 +22246,13 @@ function ConnectionPicker({
   ] }) });
 }
 
-// ../packages/console-components/src/topology/topology-panel.tsx
+// packages/console-components/src/topology/topology-panel.tsx
 var import_react23 = __toESM(require("react"));
 
-// ../packages/console-components/src/topology/role-tree.tsx
+// packages/console-components/src/topology/role-tree.tsx
 var import_react21 = __toESM(require("react"));
 
-// ../packages/console-components/src/topology/data.ts
+// packages/console-components/src/topology/data.ts
 var import_react20 = __toESM(require("react"));
 var PEER_TOOL_NAMES2 = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function frameData(frame) {
@@ -22406,7 +22624,7 @@ function edgeKey(a, b) {
   return topologyEdgeKey(a, b);
 }
 
-// ../packages/console-components/src/topology/role-tree.tsx
+// packages/console-components/src/topology/role-tree.tsx
 var import_jsx_runtime32 = require("react/jsx-runtime");
 var STATE_COLOUR = {
   active: "var(--ok)",
@@ -22534,7 +22752,7 @@ function RoleTree({
   ] });
 }
 
-// ../packages/console-components/src/topology/dense-graph-map.tsx
+// packages/console-components/src/topology/dense-graph-map.tsx
 var import_react22 = __toESM(require("react"));
 var import_jsx_runtime33 = require("react/jsx-runtime");
 var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -23685,7 +23903,7 @@ function DenseGraphMap({
   );
 }
 
-// ../packages/console-components/src/topology/topology-panel.tsx
+// packages/console-components/src/topology/topology-panel.tsx
 var import_jsx_runtime34 = require("react/jsx-runtime");
 var VIEW_STORAGE = "mobkit-console-topology-view";
 var EDGE_STORAGE = "mobkit-console-topology-edges";
@@ -23890,14 +24108,14 @@ function TopologyPanel({
   );
 }
 
-// ../packages/console-components/src/workbench/console-workbench.tsx
+// packages/console-components/src/workbench/console-workbench.tsx
 var import_jsx_runtime35 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/composer/pending-stack.tsx
+// packages/console-components/src/composer/pending-stack.tsx
 var import_react24 = __toESM(require("react"));
 var import_jsx_runtime36 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/transport-status.tsx
+// packages/console-components/src/conversation/transport-status.tsx
 var import_jsx_runtime37 = require("react/jsx-runtime");
 function consoleTransportLabel(state) {
   switch (state.phase) {
@@ -23930,7 +24148,7 @@ function ConsoleTransportStatus({ state, onRetry }) {
   ] });
 }
 
-// ../packages/console-components/src/conversation/context-chips.tsx
+// packages/console-components/src/conversation/context-chips.tsx
 var import_react25 = require("react");
 var import_jsx_runtime38 = require("react/jsx-runtime");
 function QuoteActionIcon({ action }) {
@@ -24046,7 +24264,7 @@ function QuoteContextChips({ records, destinationLabel, ...actions }) {
   ] });
 }
 
-// src/lib/agents.ts
+// console/src/lib/agents.ts
 function buildConsoleIdentityAliasMap(agents) {
   const map3 = /* @__PURE__ */ new Map();
   for (const agent of agents) {
@@ -24183,7 +24401,7 @@ function normalizeAgents(experience, modules) {
   return [];
 }
 
-// src/lib/council-entries.ts
+// console/src/lib/council-entries.ts
 var COUNCIL_TOOL_NAME = "council";
 var COUNCIL_TOOL_EVENTS = /* @__PURE__ */ new Set([
   "tool_call_requested",
@@ -24377,7 +24595,7 @@ function councilArgsByCallId(frames) {
   return out;
 }
 
-// src/lib/failure-summary.ts
+// console/src/lib/failure-summary.ts
 function recordOf2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -24399,7 +24617,7 @@ function describeFailure(data, fallback = "error") {
   return message || reasonType || fallback;
 }
 
-// src/lib/id.ts
+// console/src/lib/id.ts
 function randomUuidFromValues(cryptoSource) {
   if (typeof cryptoSource.getRandomValues !== "function") {
     return null;
@@ -24434,7 +24652,7 @@ function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.cr
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-// src/lib/workgraph-time.ts
+// console/src/lib/workgraph-time.ts
 function formatWorkGraphTimestamp(value, options = {}) {
   if (!value) return "";
   const date = new Date(value);
@@ -24445,7 +24663,7 @@ function formatWorkGraphTimestamp(value, options = {}) {
   return `${day}${clock}${options.seconds ? `:${pad(date.getSeconds())}` : ""}`;
 }
 
-// src/lib/adapters.ts
+// console/src/lib/adapters.ts
 function messageTextBlocks(source, textMode = "markdown", streaming = false) {
   if (textMode === "markdown") return buildConversationMarkdownBlocks(source, { streaming });
   return streaming ? parseStreamingConversationRichBlocks(source, { displayNormalization: false }) : parseConversationRichBlocks(source, { displayNormalization: false });
@@ -24917,7 +25135,7 @@ function parseToolName(frame) {
   const record3 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
     const content3 = record3?.content && typeof record3.content === "object" ? record3.content : null;
-    const name2 = content3?.name ?? record3?.tool_name ?? record3?.name;
+    const name2 = content3?.name ?? record3?.tool_name ?? record3?.name ?? record3?.kind;
     return typeof name2 === "string" && name2.trim() ? name2.trim() : "tool";
   }
   return typeof record3?.name === "string" && record3.name.trim() ? record3.name : "tool";
@@ -26004,9 +26222,16 @@ function sameAssistantRunOwner(left, right) {
   return UUID_FORM.test(leftInteraction) && UUID_FORM.test(rightInteraction) && leftInteraction.toLowerCase() === rightInteraction.toLowerCase();
 }
 function sameTextStreamOwner(left, right) {
+  if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
+    const key = assistantMessageKey(left);
+    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
+  }
   return Boolean(left && !ownerContextsConflict(left, right) && (left.runId?.trim() || "") === (right.runId?.trim() || "") && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
 }
 function assistantOwnerKey(frame) {
+  const messageKey = assistantMessageKey(frame);
+  if (messageKey) return `assistant:${messageKey}`;
+  if (hasAssistantMessageIdCarrier(frame)) return `unbound:${frame.id}`;
   if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
   const interaction = frame.interactionId?.trim() || "";
   return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
@@ -26042,7 +26267,7 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
     return occurrence;
   };
   for (const frame of frames) {
-    if (frame.sourceKind === "session_history") continue;
+    if (frame.sourceKind === "session_history" || hasAssistantMessageIdCarrier(frame)) continue;
     const key = assistantOwnerKey(frame);
     if (frame.event === "reasoning_complete" && frame.runId?.trim()) {
       const byText = reasoningByOwner.get(key) || /* @__PURE__ */ new Map();
@@ -26085,7 +26310,7 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
   const consumedHistory = /* @__PURE__ */ new Set();
   const deltaOverrides = /* @__PURE__ */ new Map();
   for (const history of frames) {
-    if (history.sourceKind !== "session_history") continue;
+    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)) continue;
     const text8 = historyAssistantSource(history);
     if (!text8) continue;
     const key = assistantOwnerKey(history);
@@ -26109,6 +26334,7 @@ function buildAssistantHistoryReconciliation(frames, renderTextDeltas) {
     consumedHistory,
     deltaOverrides,
     consumeReasoning: (history, text8) => {
+      if (hasAssistantMessageIdCarrier(history)) return false;
       const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text8) || [];
       const completion = candidates.find((live) => !consumedReasoning.has(live.id) && sameAssistantRunOwner(history, live));
       if (!completion) return false;
@@ -26190,12 +26416,15 @@ function renderGeneratedImageToolResultEntries(agent, frame, entryId, blobBaseUr
     return imageEntry ? [imageEntry] : [];
   });
 }
-function imageEntryKey(entry) {
+function imageEntryKey(entry, preferIdentity = false) {
   if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
     return null;
   }
   const block = entry.blocks?.[0];
   if (!block || block.type !== "image") return null;
+  if (preferIdentity && typeof block.imageId === "string" && block.imageId.trim()) {
+    return `image:${block.imageId}`;
+  }
   if (typeof block.blobId === "string" && block.blobId.trim()) {
     return `blob:${block.blobId.trim()}`;
   }
@@ -26573,10 +26802,10 @@ function toolResultTextFromContent(content3) {
   }
   return JSON.stringify(content3, null, 2);
 }
-function historyToolResults(frames, cardToolCallIds) {
+function historyToolResults(frames, cardToolCallIds, includeLive = false) {
   const results = /* @__PURE__ */ new Map();
   for (const frame of frames) {
-    if (frame.sourceKind !== "session_history" || frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out") {
+    if (!includeLive && frame.sourceKind !== "session_history" || frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out") {
       continue;
     }
     const data = frame.data && typeof frame.data === "object" ? frame.data : null;
@@ -26626,8 +26855,16 @@ function blockAssistantToolBlock(item, index2, peerRegistry, toolResults) {
     ...peerBody ? { peerBody, peerBodyFormat: "verbatim" } : {}
   };
 }
-function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = "markdown") {
-  const reasoningBlocks = [];
+function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = "markdown", blobBaseUrl) {
+  const serverFrames = /* @__PURE__ */ new Map();
+  for (const value of blocks) {
+    if (!value || typeof value !== "object") continue;
+    const block = value;
+    if ((block.block_type ?? block.type) !== "server_tool_content") continue;
+    serverFrames.set(value, { id: "", event: "server_tool_content", data: block.data });
+  }
+  const serverBlocks = buildToolBlocks([...serverFrames.values()], /* @__PURE__ */ new Set());
+  const emittedServerTools = /* @__PURE__ */ new Set();
   const actionAndTextBlocks = [];
   let hasNonTextBlock = false;
   let toolIndex = 0;
@@ -26640,7 +26877,7 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
       const text8 = reasoningBlockText(item);
       if (text8) {
         hasNonTextBlock = true;
-        reasoningBlocks.push({
+        actionAndTextBlocks.push({
           type: "thinking",
           label: "",
           text: text8,
@@ -26659,7 +26896,32 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
       }
       continue;
     }
-    if (blockType === "text") {
+    if (blockType === "image") {
+      const imageFrame = { id: "", event: "assistant_image", data: { image: data } };
+      const imageEntry = renderAssistantImageEntry(null, imageFrame, "", blobBaseUrl);
+      if (imageEntry?.kind === "message" && imageEntry.blocks) {
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(...imageEntry.blocks);
+      }
+      continue;
+    }
+    if (blockType === "server_tool_content") {
+      const serverFrame = serverFrames.get(block);
+      const id = parseToolCallId(serverFrame), tool = id ? serverBlocks.get(id) : void 0;
+      if (tool && !emittedServerTools.has(tool.toolCallId)) {
+        emittedServerTools.add(tool.toolCallId);
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(tool);
+      } else if (!id) {
+        const result = serverToolContentSummary(serverFrame)?.result;
+        if (result && ![...serverBlocks.values()].some((tool2) => tool2.result === result)) {
+          hasNonTextBlock = true;
+          actionAndTextBlocks.push({ type: "paragraph", text: result });
+        }
+      }
+      continue;
+    }
+    if (blockType === "text" || blockType === "transcript") {
       const text8 = typeof data.text === "string" ? data.text : typeof item.text === "string" ? item.text : "";
       if (textMode === "markdown" && text8) {
         const previous3 = actionAndTextBlocks.at(-1);
@@ -26670,7 +26932,7 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
       }
     }
   }
-  return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
+  return hasNonTextBlock || textMode === "markdown" ? actionAndTextBlocks : [];
 }
 function textFromUnknown3(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -27337,7 +27599,7 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
       return { role: "assistant", text: typeof record3.content === "string" ? record3.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record3.blocks) ? record3.blocks : [];
-      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode, blobBaseUrl);
       const text8 = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
         const item = block;
@@ -27382,6 +27644,9 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
   const canonicalText = textMode === "markdown" && !options.suppressAssistantText ? canonicalHistoryAssistantText(frame) : void 0;
   const text8 = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (!assistantMessageKey(frame)) {
+    parsedBlocks.sort((left, right) => Number(right.type === "thinking") - Number(left.type === "thinking"));
+  }
   if (parsed.role === "meta") {
     const filteredParsedBlocks2 = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
       if (block.type !== "tool-call") return true;
@@ -27503,7 +27768,8 @@ function attachCompletedRunDurations(entries, frames) {
 }
 function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const textMode = options.textMode ?? "markdown";
-  const orderedFrames = reconcileRuntimeAppendFrames(options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames);
+  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames)));
+  const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const entries = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
@@ -27512,6 +27778,19 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames, cardToolCallIds);
+  const occurrenceToolResults = /* @__PURE__ */ new Map();
+  function toolResultsForHistory(frame) {
+    if (!assistantMessageKey(frame)) return sessionToolResults;
+    const scope = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId]);
+    let result = occurrenceToolResults.get(scope);
+    if (!result) {
+      const matching = orderedFrames.filter((other) => !ownerContextsConflict(frame, other));
+      matching.sort((left, right) => Number(left.sourceKind === "session_history") - Number(right.sourceKind === "session_history"));
+      result = historyToolResults(matching, cardToolCallIds, true);
+      occurrenceToolResults.set(scope, result);
+    }
+    return result;
+  }
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -27586,6 +27865,9 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     }
   }
   function reasoningScope(frame) {
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey) return { scoped: true, scope: JSON.stringify([frame.runtimeKey || "", frame.identity || "", messageKey]) };
+    if (hasAssistantMessageIdCarrier(frame)) return { scoped: false, scope: `unbound:${frame.id}` };
     const interactionId = frame.interactionId?.trim() || "";
     const runId = frame.runId?.trim() || "";
     const turnId = frame.turnId?.trim() || "";
@@ -27707,7 +27989,9 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) {
           continue;
         }
@@ -27741,6 +28025,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     }
     const toolCallId = parseToolCallId(frame);
+    if (canonicalToolCounterparts.has(frame)) continue;
     if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content") && !emittedToolCalls.has(toolCallId)) {
       flushPendingReasoning(true);
       flushPendingText();
@@ -27777,7 +28062,9 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         options.blobBaseUrl
       );
       for (const imageEntry of imageEntries) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) continue;
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
@@ -27858,7 +28145,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       }
       continue;
     }
-    if (frame.sourceKind === "session_history" && (frame.event === "text_complete" || frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed")) {
+    if (frame.sourceKind === "session_history" && (frame.event === "assistant_message" || frame.event === "text_complete" || frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed")) {
       const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
       if (suppressAssistantText && !historyHasAssistantSiblings(frame)) continue;
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
@@ -27867,7 +28154,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         textMode,
         peerRegistry,
         blobBaseUrl: options.blobBaseUrl,
-        toolResults: sessionToolResults,
+        toolResults: toolResultsForHistory(frame),
         consumeDuplicateCommsBlock: (key) => {
           const runtimeKey = runtimeAppendNoticeKey(frame);
           if (runtimeKey) key = `${runtimeKey}:${key}`;
@@ -27877,12 +28164,12 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
           return false;
         },
-        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        consumeDuplicateToolBlock: (block) => cardToolCallIds.has(block.toolCallId) || assistantMessageKey(frame) ? cardToolCallIds.has(block.toolCallId) : liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || void 0;
-        if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
           continue;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
@@ -27923,7 +28210,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || void 0;
-        if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
         }
         entries.push(terminalEntry);
@@ -27970,7 +28257,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   }
   flushPendingReasoning(false);
   flushPendingText(false);
-  attachCompletedRunDurations(entries, orderedFrames);
+  attachCompletedRunDurations(entries, frames);
   return entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
     if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
@@ -28178,7 +28465,7 @@ function hasOpenLifecycleBefore(frames, beforeIndex) {
   return interactionOpen || runOpen;
 }
 
-// src/lib/errors.ts
+// console/src/lib/errors.ts
 function errorMessage(error) {
   if (error instanceof Error) {
     return error.message;
@@ -28194,7 +28481,7 @@ function httpStatusCode(error) {
   return typeof status === "number" ? status : null;
 }
 
-// src/lib/conversation-visibility.ts
+// console/src/lib/conversation-visibility.ts
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
   const record3 = block;
@@ -28239,7 +28526,7 @@ function sanitizeConversationEntries(entries) {
   return sanitized;
 }
 
-// src/lib/contract.ts
+// console/src/lib/contract.ts
 var CONSOLE_REST_PATHS2 = {
   experience: "/console/experience",
   modules: "/console/modules",
@@ -28308,7 +28595,7 @@ var CONSOLE_RPC_METHODS2 = {
 var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
 
-// src/lib/network.ts
+// console/src/lib/network.ts
 function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
     return { data };
@@ -28819,7 +29106,7 @@ function subscribeTimelineEvents2(baseUrl, target, onFrame, options = {}) {
   });
 }
 
-// src/lib/headless.ts
+// console/src/lib/headless.ts
 var CONSOLE_COMMAND_NAMES2 = {
   inspectIdentity: "inspectIdentity",
   retireIdentity: "retireIdentity",
@@ -29322,7 +29609,7 @@ function isMobKitTarget(target) {
   return target.kind.startsWith("mobkit/");
 }
 
-// src/lib/workgraph-actions.ts
+// console/src/lib/workgraph-actions.ts
 var WORKGRAPH_CONFLICT_CODE = -32042;
 function workGraphConflictRefreshRequest(params) {
   const itemId = typeof params.id === "string" && params.id.trim() ? params.id : null;
@@ -29372,7 +29659,7 @@ function workGraphClaimOwnerId(subject, fallback) {
   return trimmed || fallback;
 }
 
-// src/lib/topology.ts
+// console/src/lib/topology.ts
 var MUTATION_KINDS = [
   "connect",
   "disconnect",
@@ -29946,7 +30233,7 @@ async function resolveAmbiguousConsoleTopologyMutation(ambiguous, execute) {
   };
 }
 
-// src/lib/pane-resize.ts
+// console/src/lib/pane-resize.ts
 function findPaneResizeRoot(handle2) {
   const workbenchRoot = handle2.closest("[data-console-workbench]");
   if (workbenchRoot instanceof HTMLElement) return workbenchRoot;
@@ -29954,7 +30241,7 @@ function findPaneResizeRoot(handle2) {
   return shellRoot instanceof HTMLElement ? shellRoot : null;
 }
 
-// src/lib/read-only-override.ts
+// console/src/lib/read-only-override.ts
 var READ_ONLY_QUERY_KEYS = [
   "console_read_only",
   "mobkit_console_read_only",
@@ -29998,7 +30285,7 @@ function resolveConsoleReadOnlyOverride(input = {}) {
   return false;
 }
 
-// src/icon.tsx
+// console/src/icon.tsx
 var import_jsx_runtime39 = require("react/jsx-runtime");
 function SpriteSheet() {
   return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("svg", { className: "sprite-root", width: "0", height: "0", style: { position: "absolute" }, "aria-hidden": "true", children: [
@@ -30133,7 +30420,7 @@ function Icon({ name: name2, className }) {
   return /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("svg", { className, "aria-label": name2, children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("use", { href: `#${name2}` }) });
 }
 
-// src/lib/identity-log.ts
+// console/src/lib/identity-log.ts
 function cursorSeq2(cursor) {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
@@ -30217,7 +30504,7 @@ function resetIdentityLogCore(log) {
   log.version += 1;
 }
 
-// src/panels/TimelinePanel.tsx
+// console/src/panels/TimelinePanel.tsx
 var import_react26 = __toESM(require("react"));
 var import_jsx_runtime40 = require("react/jsx-runtime");
 var INTERNAL_TIMELINE_EVENTS = /* @__PURE__ */ new Set([
@@ -30327,7 +30614,7 @@ function TimelinePanel({ frames }) {
   ] });
 }
 
-// src/panels/GatingInboxPanel.tsx
+// console/src/panels/GatingInboxPanel.tsx
 var import_react27 = __toESM(require("react"));
 var import_jsx_runtime41 = require("react/jsx-runtime");
 function getRisk(entry) {
@@ -30599,7 +30886,7 @@ function GatingInboxPanel({
   ] });
 }
 
-// src/panels/AccessPanel.tsx
+// console/src/panels/AccessPanel.tsx
 var import_react28 = __toESM(require("react"));
 var import_jsx_runtime42 = require("react/jsx-runtime");
 var DEFAULT_ACTIONS = [
@@ -31172,7 +31459,7 @@ function AccessPanel({
   ] });
 }
 
-// src/panels/MemoryPanel.tsx
+// console/src/panels/MemoryPanel.tsx
 var import_react29 = __toESM(require("react"));
 var import_jsx_runtime43 = require("react/jsx-runtime");
 var MEMORY_TABS = [
@@ -33053,7 +33340,7 @@ function MemoryPanel({
   ] });
 }
 
-// src/panels/RosterPanel.tsx
+// console/src/panels/RosterPanel.tsx
 var import_react30 = __toESM(require("react"));
 var import_jsx_runtime44 = require("react/jsx-runtime");
 var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
@@ -33229,10 +33516,10 @@ function RosterPanel({
   ] });
 }
 
-// src/panels/WorkGraphPanel.tsx
+// console/src/panels/WorkGraphPanel.tsx
 var import_react33 = __toESM(require("react"));
 
-// src/lib/workgraph-layout.ts
+// console/src/lib/workgraph-layout.ts
 var WORKGRAPH_GRAPH_COL_WIDTH = 220;
 var WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
 var WORKGRAPH_GRAPH_NODE_WIDTH = 168;
@@ -33427,10 +33714,10 @@ function workGraphEdgeMidpoint(edge) {
   };
 }
 
-// src/panels/WorkGraphGraphView.tsx
+// console/src/panels/WorkGraphGraphView.tsx
 var import_react32 = __toESM(require("react"));
 
-// src/panels/topology/zoom-pan.ts
+// console/src/panels/topology/zoom-pan.ts
 var import_react31 = __toESM(require("react"));
 var MIN_SCALE = 0.4;
 var MAX_SCALE = 6;
@@ -33518,7 +33805,7 @@ function viewportTransform(v) {
   return `translate(${v.tx} ${v.ty}) scale(${v.scale})`;
 }
 
-// src/panels/WorkGraphGraphView.tsx
+// console/src/panels/WorkGraphGraphView.tsx
 var import_jsx_runtime45 = require("react/jsx-runtime");
 var TITLE_MAX_CHARS = 21;
 var META_MAX_CHARS = 24;
@@ -33880,7 +34167,7 @@ function WorkGraphGraphView({
   ] });
 }
 
-// src/panels/WorkGraphPanel.tsx
+// console/src/panels/WorkGraphPanel.tsx
 var import_jsx_runtime46 = require("react/jsx-runtime");
 var workGraphViewModeMemory = "tree";
 function buildWorkGraphPanelTree(items, edges) {
@@ -34230,7 +34517,7 @@ function WorkGraphPanel({
   ] });
 }
 
-// src/panels/RoutingPanel.tsx
+// console/src/panels/RoutingPanel.tsx
 var import_react34 = __toESM(require("react"));
 var import_jsx_runtime47 = require("react/jsx-runtime");
 function RoutingPanel({ data }) {
@@ -34357,7 +34644,7 @@ function RoutingPanel({ data }) {
   ] });
 }
 
-// src/panels/LogsPanel.tsx
+// console/src/panels/LogsPanel.tsx
 var import_react35 = __toESM(require("react"));
 var import_jsx_runtime48 = require("react/jsx-runtime");
 var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
@@ -34600,7 +34887,7 @@ function LogsPanel({ frames }) {
   ] });
 }
 
-// src/panels/Topbar.tsx
+// console/src/panels/Topbar.tsx
 var import_jsx_runtime49 = require("react/jsx-runtime");
 function PanelGlyph({ side, open }) {
   const dividerLeft = side === "left";
@@ -34696,7 +34983,7 @@ function Topbar({
   ] });
 }
 
-// src/panels/Tweaks.tsx
+// console/src/panels/Tweaks.tsx
 var import_react36 = __toESM(require("react"));
 var VARIANT_STORAGE = "mobkit-console-variant";
 function useConsoleVariant() {
@@ -34718,16 +35005,16 @@ function useConsoleVariant() {
   return [v, set];
 }
 
-// src/panels/Sidebar.tsx
+// console/src/panels/Sidebar.tsx
 var import_react37 = __toESM(require("react"));
 
-// src/lib/render-counts.ts
+// console/src/lib/render-counts.ts
 function countRender(name2) {
   const sink = globalThis.__consoleRenderCounts;
   if (sink) sink[name2] = (sink[name2] ?? 0) + 1;
 }
 
-// src/panels/Sidebar.tsx
+// console/src/panels/Sidebar.tsx
 var import_jsx_runtime50 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 var NAV_LABEL = {
@@ -36183,7 +36470,7 @@ var Sidebar = import_react37.default.memo(function Sidebar2({
   ] });
 });
 
-// src/panels/SignalsRail.tsx
+// console/src/panels/SignalsRail.tsx
 var import_react38 = __toESM(require("react"));
 var import_jsx_runtime51 = require("react/jsx-runtime");
 var DEFAULT_FILTER_PRESETS = [
@@ -36687,13 +36974,13 @@ var SignalsRail = import_react38.default.memo(function SignalsRail2({
   ] });
 });
 
-// src/panels/ChatPane.tsx
+// console/src/panels/ChatPane.tsx
 var import_react40 = __toESM(require("react"));
 
-// src/panels/VoiceBar.tsx
+// console/src/panels/VoiceBar.tsx
 var import_react39 = __toESM(require("react"));
 
-// src/lib/voice-context.ts
+// console/src/lib/voice-context.ts
 var failureMessages = {
   capture: "The agent's history could not be captured.",
   generation: "The context summary could not be generated.",
@@ -36751,7 +37038,7 @@ function voiceContextFailureMessage(reason) {
   return `${failureMessages[reason]} Voice remains connected. End voice and start again to retry.`;
 }
 
-// src/panels/VoiceBar.tsx
+// console/src/panels/VoiceBar.tsx
 var import_jsx_runtime52 = require("react/jsx-runtime");
 var TALK_READY_STATUS = "Listening, you can talk";
 var CONTEXT_STAGE_TITLES = {
@@ -36966,7 +37253,7 @@ var VoiceBar = import_react39.default.memo(function VoiceBar2({
   );
 });
 
-// src/lib/composer-attachment-text.ts
+// console/src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
   return [
     file.name || "",
@@ -37035,7 +37322,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
 }
 
-// src/panels/ChatPane.tsx
+// console/src/panels/ChatPane.tsx
 var import_jsx_runtime53 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
@@ -38590,7 +38877,7 @@ function ChatPane({
   ] }) });
 }
 
-// src/panels/MobKitDock.tsx
+// console/src/panels/MobKitDock.tsx
 var import_react41 = __toESM(require("react"));
 var import_jsx_runtime54 = require("react/jsx-runtime");
 function tabPanelCount(node2) {
@@ -38915,7 +39202,7 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
   ] });
 }
 
-// src/panels/PendingStack.tsx
+// console/src/panels/PendingStack.tsx
 var import_react42 = __toESM(require("react"));
 var import_jsx_runtime55 = require("react/jsx-runtime");
 function StackHead({
@@ -38939,7 +39226,7 @@ function StackHead({
       }
     ),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { children: "Queue" }),
-    /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
+    /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stack__head-count", children: count }),
     !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stack__head-spacer" }),
     /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
@@ -39012,8 +39299,15 @@ function StackItem({
       onCommitEdit(item.id, draft);
     }
   };
+  const isDraft = item.state === "draft";
+  const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
+  const statusLabel2 = item.state === "outcome-unknown" ? "Acceptance unknown" : item.state === "definitely-rejected" ? "Not accepted" : item.state === "attempting" ? "Awaiting acceptance" : item.state === "accepted" ? "Accepted" : "Queued";
+  const explanation = item.state === "outcome-unknown" ? "Your message may already have been accepted. Check its status before discarding it." : item.state === "attempting" ? "Waiting for confirmation. Checking acceptance will not send the message again." : item.state === "definitely-rejected" ? "This attempt was rejected. Retry sends the same saved message." : void 0;
+  const previewId = import_react42.default.useId();
   const cls = [
     "stk-item",
+    !isDraft ? "is-frozen" : "",
+    needsAcceptance ? "needs-acceptance" : "",
     isHead ? "is-head" : "",
     item.editing ? "is-editing" : "",
     item.status === "promoting" ? "is-promoting" : "",
@@ -39048,7 +39342,7 @@ function StackItem({
       },
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__lead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
+          isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
@@ -39056,7 +39350,7 @@ function StackItem({
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
+          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: item.state === "outcome-unknown" ? "i-info" : "i-clock" }) })
         ] }),
         item.editing ? /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__edit", children: [
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
@@ -39107,10 +39401,22 @@ function StackItem({
             )
           ] })
         ] }) : /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__meta", children: [
+            isHead && isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
+            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__state", role: needsAcceptance ? "status" : void 0, children: statusLabel2 }),
+            item.contexts.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { children: [
+              item.contexts.length,
+              " ",
+              item.contexts.length === 1 ? "quote" : "quotes"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__age", children: timeAgo(item.addedAt) }),
+            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__sending", children: "Sending..." })
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
             "div",
             {
-              className: `stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`,
+              id: previewId,
+              className: `stk-item__text ${longText && !item.expanded ? "stk-item__text--preview" : "stk-item__text--expanded"}`,
               onClick: longText ? () => onToggleExpand(item.id) : void 0,
               style: longText ? { cursor: "pointer" } : void 0,
               title: longText && !item.expanded ? item.text : void 0,
@@ -39127,48 +39433,41 @@ function StackItem({
               onReorder: item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : void 0
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__meta", children: [
-            isHead && item.state === "draft" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { children: item.state === "outcome-unknown" ? "Acceptance unknown - inspect conversation before discarding" : item.state === "definitely-rejected" ? "Rejected - retained for review" : item.state === "attempting" ? "Sending" : item.state === "accepted" ? "Accepted" : "Queued" }),
-            item.contexts.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { children: [
-              item.contexts.length,
-              " quote(s)"
-            ] }),
-            item.error && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { role: "status", children: item.error }),
-            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { children: timeAgo(item.addedAt) }),
-            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
+          explanation && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", children: explanation }),
+          item.error && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("details", { className: "stk-item__error", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("summary", { children: "Details" }),
+            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { children: item.error })
           ] })
         ] }),
         !item.editing && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__actions", children: [
-          item.state === "definitely-rejected" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn", onClick: () => onRetry(item.id), children: "Retry same attempt" }),
-          (item.state === "outcome-unknown" || item.state === "attempting") && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn", onClick: () => onReconcile(item.id), children: "Check acceptance" }),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
+          item.state === "definitely-rejected" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", onClick: () => onRetry(item.id), children: "Retry same attempt" }),
+          needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", onClick: () => onReconcile(item.id), children: "Check acceptance" }),
+          longText && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--expand", "aria-expanded": Boolean(item.expanded), "aria-controls": previewId, onClick: () => onToggleExpand(item.id), children: item.expanded ? "Hide saved message" : "Show saved message" }),
+          isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
             "button",
             {
               type: "button",
               className: "stk-btn stk-btn--steer",
               onClick: () => onSteer(item.id),
-              disabled: item.state !== "draft",
               "aria-label": "Steer - send now and interrupt at next cooperative pause",
               title: "Send now and interrupt at the next cooperative pause",
               "data-testid": `pending-steer:${item.id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-bolt" }) }),
                 " Steer"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
+          isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
             "button",
             {
               type: "button",
               className: "stk-btn stk-btn--icon",
               onClick: () => onEdit(item.id),
-              disabled: item.state !== "draft",
               "aria-label": "Edit message",
               title: "Edit message",
               "data-testid": `pending-edit:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-compose" }) })
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
@@ -39178,9 +39477,9 @@ function StackItem({
               className: "stk-btn stk-btn--icon stk-btn--trash",
               onClick: () => onTrash(item.id),
               "aria-label": item.state === "draft" ? "Remove from queue" : "Discard saved attempt",
-              title: "Remove from queue",
+              title: isDraft ? "Remove from queue" : "Discard saved attempt",
               "data-testid": `pending-trash:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-close" }) })
             }
           )
         ] })
@@ -39258,7 +39557,7 @@ function PendingStack3({
   return /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
     "section",
     {
-      className: `stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
+      className: `stack stack--console ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
@@ -39303,7 +39602,7 @@ function PendingStack3({
   );
 }
 
-// src/lib/send-attempt-storage.ts
+// console/src/lib/send-attempt-storage.ts
 var consoleSendStorageKey = (namespace, destination) => `mobkit-send-attempts:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(destination)}`;
 function loadConsoleSendAttempts(storage, namespace, destination, now = Date.now()) {
   try {
@@ -39421,10 +39720,10 @@ function saveConsoleComposerDraft(storage, namespace, destination, draft, compos
   storage.setItem(consoleComposerDraftKey(namespace, destination, composerId), JSON.stringify({ version: composerId ? 2 : 1, namespace, destination, ...composerId ? { composerId } : {}, ...draft }));
 }
 
-// src/lib/use-voice-controller.ts
+// console/src/lib/use-voice-controller.ts
 var import_react43 = __toESM(require("react"));
 
-// ../sdk/typescript/src/live.ts
+// sdk/typescript/src/live.ts
 function asRecord3(value, context) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${context} must be an object`);
@@ -39605,7 +39904,7 @@ function parseContinuity(raw) {
   throw new TypeError(`unknown live continuity mode ${mode}`);
 }
 
-// src/lib/voice-session.ts
+// console/src/lib/voice-session.ts
 var VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var VOICE_CONNECT_TIMEOUT_MS = 3e4;
 var VOICE_RECOVERY_TIMEOUT_MS = 3e4;
@@ -40799,7 +41098,7 @@ function createVoiceSession(baseUrl, environment) {
   return controller;
 }
 
-// src/lib/use-voice-controller.ts
+// console/src/lib/use-voice-controller.ts
 var IDLE = {
   phase: "idle",
   target: null,
@@ -40826,7 +41125,7 @@ function useVoiceController(baseUrl) {
   return { voice, state };
 }
 
-// src/lib/use-voice-readiness.ts
+// console/src/lib/use-voice-readiness.ts
 var import_react44 = __toESM(require("react"));
 var NO_READINESS = {};
 var READINESS_REFRESH_INTERVAL_MS = 15e3;
@@ -40877,7 +41176,7 @@ function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
   return enabled && state.key === key ? state.values : NO_READINESS;
 }
 
-// src/ConsoleApp.tsx
+// console/src/ConsoleApp.tsx
 var import_jsx_runtime56 = require("react/jsx-runtime");
 var MAX_IDENTITY_LOG_EVENTS = 5e3;
 var IDENTITY_LOG_TRIM_SLACK = 500;
@@ -41905,6 +42204,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const autoDrainRequestedRef = import_react45.default.useRef(/* @__PURE__ */ new Map());
   const sendRetryEpochRef = import_react45.default.useRef(0);
   const pendingStorageErrorRef = import_react45.default.useRef({});
+  const queueStorageBannerRef = import_react45.default.useRef(null);
   const [contextDrafts, setContextDrafts] = import_react45.default.useState({});
   const [submittedFrames, setSubmittedFrames] = import_react45.default.useState({});
   const loadedComposerDraftsRef = import_react45.default.useRef({});
@@ -41943,6 +42243,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     pendingStackRef.current = {};
     autoDrainRequestedRef.current.clear();
     pendingStorageErrorRef.current = {};
+    queueStorageBannerRef.current = null;
     loadedComposerDraftsRef.current = {};
     for (const optimistic of Object.values(optimisticUserByPanelKeyRef.current)) {
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -41990,9 +42291,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         const saved = saveConsoleSendAttempts(storage, namespace, identity, clean(next), clean(previous3), legacyImported);
         next = saved.map((attempt) => ({ ...next.find((item) => item.id === attempt.id), ...attempt }));
         delete pendingStorageErrorRef.current[identity];
+        const banner = queueStorageBannerRef.current;
+        if (banner?.scope === sendScopeRef.current && banner.identity === identity) {
+          setActionError((current) => current === banner.message ? "" : current);
+          queueStorageBannerRef.current = null;
+        }
       } catch (error2) {
         pendingStorageErrorRef.current[identity] = errorMessage(error2);
-        setActionError(`Message was not queued or dispatched: ${errorMessage(error2)}`);
+        const message = `Queue could not be saved: ${errorMessage(error2)}`;
+        queueStorageBannerRef.current = { scope: sendScopeRef.current, identity, message };
+        setActionError(message);
         forceRender();
         return false;
       }
@@ -43247,6 +43555,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (pendingAttempt) {
         const state = submitError instanceof ConsoleCapabilityUnavailableError2 ? "definitely-rejected" : consoleSendFailureState(submitError);
         await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
+      } else {
+        setActionError(errorMessage(submitError));
       }
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url)
@@ -43254,7 +43564,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -44519,7 +44828,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   );
 }
 
-// src/index.tsx
+// console/src/index.tsx
 var import_jsx_runtime57 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
