@@ -64,10 +64,11 @@ export interface VoiceSessionSnapshot {
   readonly contextStatusError?: string | null;
   /**
    * Provisional speech for the active call, straight from the provider's
-   * transcript deltas on the WebRTC data channel. Keyed by provider item id,
+   * transcript deltas on the WebRTC data channel. Keyed by speaker and provider item id,
    * never persisted or sent anywhere, and dropped on every call end. The
-   * console renders these as distinct "live" rows and replaces them with the
-   * consolidated canonical transcript once the call is over.
+   * console renders unmatched items as distinct "live" rows. Canonical
+   * history replaces items only through matching session, channel and
+   * provider item identities; call end clears any remaining provisional rows.
    */
   readonly liveSpeech: readonly LiveSpeechItem[];
   /** Channel id of the active call, when one is active. */
@@ -912,22 +913,26 @@ export function createVoiceSession(
     }
     if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
-      if (itemId) finalizeLiveSpeech(itemId, typeof event.text === "string" ? event.text : null);
+      if (itemId) finalizeLiveSpeech(
+        itemId,
+        type === "session.input_transcript.done" ? "user" : "assistant",
+        typeof event.text === "string" ? event.text : null,
+      );
     }
   }
 
   /**
    * Fold one transcript delta into the provisional live-speech list. Items
-   * are keyed by provider item id so an interrupted or resumed item never
+   * are keyed by speaker and provider item id so an interrupted or resumed item never
    * duplicates; the list is bounded so a long call cannot grow it without end
-   * (canonical rows carry the history once the call is over).
+   * (canonical rows carry the committed history during and after the call).
    */
   function accumulateLiveSpeech(itemId: string, speaker: "user" | "assistant", delta: string) {
-    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId);
+    const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId && item.speaker === speaker);
     let next: LiveSpeechItem[];
     if (existing) {
       next = snapshot.liveSpeech.map((item) =>
-        item.itemId === itemId ? { ...item, text: item.text + delta } : item,
+        item.itemId === itemId && item.speaker === speaker ? { ...item, text: item.text + delta } : item,
       );
     } else {
       next = [
@@ -939,11 +944,11 @@ export function createVoiceSession(
     publish({ liveSpeech: next });
   }
 
-  function finalizeLiveSpeech(itemId: string, text: string | null) {
-    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId)) return;
+  function finalizeLiveSpeech(itemId: string, speaker: "user" | "assistant", text: string | null) {
+    if (!snapshot.liveSpeech.some((item) => item.itemId === itemId && item.speaker === speaker)) return;
     publish({
       liveSpeech: snapshot.liveSpeech.map((item) =>
-        item.itemId === itemId
+        item.itemId === itemId && item.speaker === speaker
           ? { ...item, final: true, text: text !== null && text.length >= item.text.length ? text : item.text }
           : item,
       ),

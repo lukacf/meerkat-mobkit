@@ -23,7 +23,8 @@ export interface PendingApproval {
   raw: Readonly<Record<string, unknown>>;
 }
 export interface ApprovalDecisionState {
-  phase: "submitting" | "settled" | "failed";
+  /** Unavailable means a typed capability refusal before dispatch; failed retains outcome uncertainty. */
+  phase: "submitting" | "settled" | "failed" | "unavailable";
   action: ApprovalAction;
   result?: GatingActionResult;
   error?: string;
@@ -226,6 +227,7 @@ export function createPendingApprovalResource(input: {
       if (snapshot.readOnly || denied || snapshot.status !== "ready" || !request || request.status !== "pending" || !request.actions.includes(action)) {
         return Promise.resolve();
       }
+      const previousDecision = snapshot.decisions[pendingId];
       ++decisionGeneration;
       setDecision(pendingId, { phase: "submitting", action });
       const job = (async () => {
@@ -249,7 +251,10 @@ export function createPendingApprovalResource(input: {
           if (capability?.method === CONSOLE_RPC_METHODS.gatingDecide
             && capability.availableMethods.includes(CONSOLE_RPC_METHODS.gatingPending)) {
             publish({ readOnly: true });
-            setDecision(pendingId, { phase: "failed", action, error: "Approval decisions are unavailable with current access" });
+            // A refused retry says nothing about an earlier dispatched attempt.
+            setDecision(pendingId, previousDecision?.phase === "failed" ? previousDecision : {
+              phase: "unavailable", action, error: "Approval decisions are unavailable with current access",
+            });
           } else if (isDenied(error) || capability?.method === CONSOLE_RPC_METHODS.gatingDecide) {
             denied = true;
             publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });

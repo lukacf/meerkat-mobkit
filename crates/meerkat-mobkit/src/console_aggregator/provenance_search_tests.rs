@@ -452,6 +452,9 @@ async fn provenance_backfill_reuses_negative_prefix_and_recovers_a_later_witness
     record.runtime_key = RUNTIME.into();
     record.session_id = Some(session.clone());
     let target = SessionBackfillTarget {
+        // Ordinary polling still resolves provenance before the fresh-watermark
+        // gate. Recovery intentionally bypasses that gate to reconcile history.
+        assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
         provenance: None,
         entry: entry.clone(),
         record,

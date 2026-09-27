@@ -2935,16 +2935,15 @@ svg[data-svg="fit"],
   0%, 60%, 100% { transform: translateY(0);   opacity: 0.45; }
   30%           { transform: translateY(-3px); opacity: 1; }
 }
-/* Provisional live speech during a voice call: visibly not a transcript row. */
+/* Keep provisional speech readable with a quiet rail and explicit live label. */
 .conv-turn--live {
-  border-left: 2px dashed var(--border, rgba(127, 127, 127, 0.5));
+  border-left: 1px solid var(--border, rgba(127, 127, 127, 0.5));
   padding-left: 8px;
-  opacity: 0.8;
 }
 .msg--live .msg__bubble {
-  font-style: italic;
+  font-style: normal;
   background: transparent;
-  border: 1px dashed var(--border, rgba(127, 127, 127, 0.5));
+  border: none;
 }
 .msg--live-user .msg__bubble {
   align-self: flex-end;
@@ -4213,5 +4212,25 @@ svg[data-svg="fit"],
 }
 
 .conv > .queue-storage-note { font-size: 12px; color: var(--ink-muted); padding: 6px 16px; }
+
+.queue-import {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  margin: 4px 16px 6px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg-sunken); color: var(--ink-muted);
+  font-family: var(--sans); font-size: 12px; line-height: 1.4;
+}
+.queue-import__icon { display: inline-flex; flex: none; }
+.queue-import__icon svg { width: 16px; height: 16px; }
+.queue-import__text { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.queue-import__title { color: var(--ink); font-weight: 500; }
+.queue-import__action {
+  flex: none; min-height: 28px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg-elev-1); color: var(--ink);
+  font: inherit; font-weight: 500; cursor: pointer;
+}
+.queue-import__action:hover { background: var(--bg-elev-2); border-color: var(--line-strong); }
+.queue-import__action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .gating__list > div > p { margin: 14px 18px; color: var(--ink-muted); }

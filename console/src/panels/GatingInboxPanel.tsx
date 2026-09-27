@@ -14,18 +14,6 @@ interface GatingInboxPanelProps {
 
 type Tab = "pending" | "auto" | "audit" | "policies";
 
-interface GatePolicy {
-  id: string;
-  action: string;
-  scope: string;
-  state: "active" | "paused";
-  thresh: string;
-  approvers: string[];
-  approved: number;
-  rejected: number;
-  escalated: number;
-}
-
 function getRisk(entry: Record<string, unknown>): "low" | "medium" | "high" {
   const tier = String(entry.risk_tier || entry.risk || "").toLowerCase();
   if (tier === "high" || tier === "crit" || tier === "critical") return "high";
@@ -59,33 +47,6 @@ function payloadSummary(entry: Record<string, unknown>): string {
   return String(entry.summary || entry.reason || "");
 }
 
-function derivePolicies(audit: unknown[]): GatePolicy[] {
-  const byAction = new Map<string, { approved: number; rejected: number; escalated: number; approvers: Set<string> }>();
-  for (const entry of audit) {
-    const r = entry as Record<string, unknown>;
-    const action = String(r.action_id || r.event_type || "unknown");
-    const decision = String(r.decision || "").toLowerCase();
-    const approver = String(r.approver_id || r.actor || "");
-    const cur = byAction.get(action) || { approved: 0, rejected: 0, escalated: 0, approvers: new Set<string>() };
-    if (decision === "approve" || decision === "auto_approve") cur.approved++;
-    else if (decision === "reject") cur.rejected++;
-    else if (decision === "escalate") cur.escalated++;
-    if (approver) cur.approvers.add(approver);
-    byAction.set(action, cur);
-  }
-  return Array.from(byAction.entries()).map(([action, s], i) => ({
-    id: `pol-${i + 1}`,
-    action,
-    scope: "*",
-    state: s.approved + s.rejected > 0 ? "active" : "paused",
-    thresh: s.rejected > s.approved ? "High rejection rate" : "Auto on low risk",
-    approvers: Array.from(s.approvers),
-    approved: s.approved,
-    rejected: s.rejected,
-    escalated: s.escalated,
-  }));
-}
-
 export function GatingInboxPanel({
   pending,
   audit,
@@ -109,7 +70,6 @@ export function GatingInboxPanel({
     selected?.scrollIntoView?.({ block: "nearest" });
     selected?.focus({ preventScroll: true });
   }, [selectedPendingId, selectedRequestAvailable, tab]);
-  const policies = React.useMemo(() => derivePolicies(audit), [audit]);
 
   const autoApproved = audit.filter((e) => {
     const r = e as Record<string, unknown>;
@@ -126,7 +86,7 @@ export function GatingInboxPanel({
     <div className="gating" data-testid="gating-panel">
       <div className="gating__head">
         <h2>Approvals</h2>
-        <p>· {pendingLabel} pending · {autoApproved.length} auto-approved · {policies.length} policies</p>
+        <p>· {pendingLabel} pending · {autoApproved.length} auto-approved</p>
       </div>
       <div className="gating__tabs">
         <button
@@ -155,7 +115,7 @@ export function GatingInboxPanel({
           onClick={() => setTab("policies")}
           data-testid="gating-tab:policies"
         >
-          Policies <span className="n">{policies.length}</span>
+          Policies
         </button>
       </div>
       <div className="gating__list" ref={listRef}>
@@ -169,33 +129,7 @@ export function GatingInboxPanel({
             </div>)}
           </div>
         ) : tab === "policies" ? (
-          <div className="gating__policies">
-            {policies.length === 0 && (
-              <div className="gating__empty">No gate policies inferred from recent audit.</div>
-            )}
-            {policies.map((policy) => (
-              <div className="gpolicy" data-state={policy.state} key={policy.id} data-testid={`gating-policy:${policy.id}`}>
-                <div className="gpolicy__head">
-                  <span className="gpolicy__action">{policy.action}</span>
-                  <span className={`gpolicy__state gpolicy__state--${policy.state}`}>{policy.state}</span>
-                </div>
-                <div className="gpolicy__meta">scope: {policy.scope}</div>
-                <div className="gpolicy__rule">{policy.thresh}</div>
-                <div className="gpolicy__stats">
-                  <span><b>{policy.approved}</b> approved</span>
-                  <span><b>{policy.rejected}</b> rejected</span>
-                  <span><b>{policy.escalated}</b> escalated</span>
-                </div>
-                <div className="gpolicy__approvers">
-                  {policy.approvers.length === 0 ? (
-                    <span className="chip">no approvers recorded</span>
-                  ) : policy.approvers.map((approver) => (
-                    <span className="chip" key={approver}>{approver}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <div className="gating__empty" role="status">Policy details are not available in this console.</div>
         ) : (
           <>
           {currentList.length === 0 && (

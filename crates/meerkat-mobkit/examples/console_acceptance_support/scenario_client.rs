@@ -234,6 +234,7 @@ pub enum ScenarioKind {
     Peer,
     Image,
     Routine,
+    AssistantIdentity,
 }
 
 /// A unique run id also supplies the explicit trigger in the user message:
@@ -349,36 +350,36 @@ impl LlmClient for RecordingClient {
             if let Some((barrier, _)) = barrier {
                 barrier.wait_for_release().await;
             }
-            let stop_reason = match turn {
-                Turn::Text(text) => {
-                    for reasoning in &plan.reasoning_blocks {
-                        let chars: Vec<char> = reasoning.chars().collect();
-                        for chunk in chars.chunks(plan.chunk_chars.clamp(1, 4096)) {
-                            if plan.delay_ms > 0 {
-                                tokio::time::sleep(Duration::from_millis(plan.delay_ms.min(1000))).await;
-                            }
-                            yield Ok(LlmEvent::ReasoningDelta { delta: chunk.iter().collect() });
-                        }
-                        yield Ok(LlmEvent::ReasoningComplete { text: reasoning.clone(), meta: None });
-                    }
-                    let chars: Vec<char> = text.chars().collect();
+            let (text, calls) = match turn {
+                Turn::Text(text) => (Some(text), Vec::new()),
+                Turn::Tools(calls) => (None, calls),
+                Turn::TextAndTools { text, calls } => (Some(text), calls),
+            };
+            if let Some(text) = text {
+                for reasoning in &plan.reasoning_blocks {
+                    let chars: Vec<char> = reasoning.chars().collect();
                     for chunk in chars.chunks(plan.chunk_chars.clamp(1, 4096)) {
                         if plan.delay_ms > 0 {
                             tokio::time::sleep(Duration::from_millis(plan.delay_ms.min(1000))).await;
                         }
-                        yield Ok(LlmEvent::TextDelta { delta: chunk.iter().collect(), meta: None });
+                        yield Ok(LlmEvent::ReasoningDelta { delta: chunk.iter().collect() });
                     }
-                    StopReason::EndTurn
+                    yield Ok(LlmEvent::ReasoningComplete { text: reasoning.clone(), meta: None });
                 }
-                Turn::Tools(calls) => {
-                    for call in calls {
-                        yield Ok(LlmEvent::ToolCallComplete {
-                            id: call.id, name: call.name.into(), args: call.args, meta: None,
-                        });
+                let chars: Vec<char> = text.chars().collect();
+                for chunk in chars.chunks(plan.chunk_chars.clamp(1, 4096)) {
+                    if plan.delay_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(plan.delay_ms.min(1000))).await;
                     }
-                    StopReason::ToolUse
+                    yield Ok(LlmEvent::TextDelta { delta: chunk.iter().collect(), meta: None });
                 }
-            };
+            }
+            let stop_reason = if calls.is_empty() { StopReason::EndTurn } else { StopReason::ToolUse };
+            for call in calls {
+                yield Ok(LlmEvent::ToolCallComplete {
+                    id: call.id, name: call.name.into(), args: call.args, meta: None,
+                });
+            }
             yield Ok(LlmEvent::UsageUpdate { usage });
             yield Ok(LlmEvent::Done { outcome: LlmDoneOutcome::Success { stop_reason }});
         })
@@ -393,6 +394,10 @@ impl LlmClient for RecordingClient {
 enum Turn {
     Text(String),
     Tools(Vec<PlannedCall>),
+    TextAndTools {
+        text: String,
+        calls: Vec<PlannedCall>,
+    },
 }
 
 #[derive(Debug)]
@@ -522,7 +527,30 @@ fn scenario_turn(scenario: &ScenarioPlan, messages: &[Message]) -> Result<Turn, 
         ScenarioKind::Peer => peer_turn(&recorded),
         ScenarioKind::Image => image_turn(&recorded),
         ScenarioKind::Routine => routine_turn(&recorded),
+        ScenarioKind::AssistantIdentity => assistant_identity_turn(&recorded),
     }
+}
+
+const ASSISTANT_IDENTITY_SOURCE: &str = "## Release evidence\n\nKeep A\u{030a}, å and 🚀 exactly.\n\n| Check | Result |\n| --- | --- |\n| WorkGraph | Reviewed through the runtime |";
+
+fn assistant_identity_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
+    for step in ["identity-first", "identity-second"] {
+        match recorded.result(step)? {
+            Some(value) if value.get("items").is_some_and(Value::is_array) => {}
+            Some(_) => return Err(format!("{step}: runtime ready result has no items array")),
+            None => {
+                return Ok(Turn::TextAndTools {
+                    text: ASSISTANT_IDENTITY_SOURCE.into(),
+                    calls: vec![recorded.call(
+                        step,
+                        "workgraph_ready",
+                        json!({"labels": [recorded.scenario.label()]}),
+                    )],
+                });
+            }
+        }
+    }
+    Ok(Turn::Text(ASSISTANT_IDENTITY_SOURCE.into()))
 }
 
 fn routine_turn(recorded: &RecordedTurn<'_>) -> Result<Turn, String> {
@@ -1295,6 +1323,49 @@ mod tests {
             value.to_string(),
             false,
         )])
+    }
+
+    #[test]
+    fn assistant_identity_script_requires_two_real_results_before_its_identical_final() {
+        let scenario = scenario(ScenarioKind::AssistantIdentity);
+        let mut messages = start(&scenario);
+        for step in ["identity-first", "identity-second"] {
+            let Turn::TextAndTools { text, calls } = scenario_turn(&scenario, &messages).unwrap()
+            else {
+                panic!("an unfinished identity check must request its actual runtime tool");
+            };
+            assert_eq!(text, ASSISTANT_IDENTITY_SOURCE);
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].id, scenario.call_id(step));
+            assert_eq!(calls[0].name, "workgraph_ready");
+            assert_eq!(calls[0].args, json!({"labels": [scenario.label()]}));
+            messages.push(result(&scenario, step, json!({"items": []})));
+        }
+        assert!(matches!(scenario_turn(&scenario, &messages).unwrap(),
+            Turn::Text(text) if text == ASSISTANT_IDENTITY_SOURCE));
+
+        let mut malformed = start(&scenario);
+        malformed.push(result(
+            &scenario,
+            "identity-first",
+            json!({"unexpected": true}),
+        ));
+        assert!(
+            scenario_turn(&scenario, &malformed)
+                .unwrap_err()
+                .contains("items")
+        );
+        let mut failed = start(&scenario);
+        failed.push(Message::tool_results(vec![ToolResult::new(
+            scenario.call_id("identity-first"),
+            "runtime query refused".to_string(),
+            true,
+        )]));
+        assert!(
+            scenario_turn(&scenario, &failed)
+                .unwrap_err()
+                .contains("runtime query refused")
+        );
     }
 
     fn calls(turn: Turn) -> Vec<PlannedCall> {

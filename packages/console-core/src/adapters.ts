@@ -1,4 +1,9 @@
-import { reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
+import { assistantPresentationEntries, conversationPresentationRows } from "./assistant-presentation";
+import { userMessageRenderKey } from "./user-message-identity";
+import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
+import { assistantMessageKey, assistantMessageRenderKey, hasAssistantMessageIdCarrier } from "./assistant-message-identity";
+import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "./assistant-message-projection";
+import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import { parseConsoleContextMessage } from "./context-record";
 import {
@@ -865,7 +870,7 @@ function parseToolName(frame: ConsoleFrame): string {
     const content = record?.content && typeof record.content === "object"
       ? record.content as Record<string, unknown>
       : null;
-    const name = content?.name ?? record?.tool_name ?? record?.name;
+    const name = content?.name ?? record?.tool_name ?? record?.name ?? record?.kind;
     return typeof name === "string" && name.trim() ? name.trim() : "tool";
   }
   return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
@@ -1369,7 +1374,7 @@ function terminalFrameVisibleText(frame: ConsoleFrame): string {
   return "";
 }
 
-type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId">;
+type AssistantFrameOwner = Pick<ConsoleFrame, "runId" | "interactionId" | "runtimeKey" | "identity" | "sessionId" | "data" | "id" | "event">;
 
 function ownerContextsConflict(left: AssistantFrameOwner, right: AssistantFrameOwner): boolean {
   return (["runtimeKey", "identity", "sessionId"] as const).some((key) => (
@@ -1392,6 +1397,13 @@ function sameAssistantRunOwner(left: AssistantFrameOwner, right: AssistantFrameO
 }
 
 function sameTextStreamOwner(left: AssistantFrameOwner | undefined, right: AssistantFrameOwner): boolean {
+  if (left && (isRealtimeHistoryMessage(left) || isRealtimeHistoryMessage(right))) {
+    return left === right;
+  }
+  if (left && (hasAssistantMessageIdCarrier(left) || hasAssistantMessageIdCarrier(right))) {
+    const key = assistantMessageKey(left);
+    return Boolean(key && key === assistantMessageKey(right) && !ownerContextsConflict(left, right));
+  }
   return Boolean(left && !ownerContextsConflict(left, right)
     && (left.runId?.trim() || "") === (right.runId?.trim() || "")
     && (left.interactionId?.trim() || "") === (right.interactionId?.trim() || ""));
@@ -1406,6 +1418,9 @@ type LiveAssistantTextOccurrence = {
 };
 
 function assistantOwnerKey(frame: AssistantFrameOwner): string {
+  const messageKey = assistantMessageKey(frame);
+  if (messageKey) return `assistant:${messageKey}`;
+  if (hasAssistantMessageIdCarrier(frame)) return `unbound:${frame.id}`;
   if (frame.runId?.trim()) return `run:${frame.runId.trim()}`;
   const interaction = frame.interactionId?.trim() || "";
   return UUID_FORM.test(interaction) ? `interaction:${interaction.toLowerCase()}` : "legacy";
@@ -1450,7 +1465,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     return occurrence;
   };
   for (const frame of frames) {
-    if (frame.sourceKind === "session_history") continue;
+    if (frame.sourceKind === "session_history" || hasAssistantMessageIdCarrier(frame)) continue;
     const key = assistantOwnerKey(frame);
     if (frame.event === "reasoning_complete" && frame.runId?.trim()) {
       const byText = reasoningByOwner.get(key) || new Map<string, ConsoleFrame[]>();
@@ -1497,7 +1512,8 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
   const consumedHistory = new Set<string>();
   const deltaOverrides = new Map<string, string>();
   for (const history of frames) {
-    if (history.sourceKind !== "session_history") continue;
+    if (history.sourceKind !== "session_history" || hasAssistantMessageIdCarrier(history)
+      || isRealtimeHistoryMessage(history)) continue;
     const text = historyAssistantSource(history);
     if (!text) continue;
     const key = assistantOwnerKey(history);
@@ -1527,6 +1543,7 @@ function buildAssistantHistoryReconciliation(frames: ConsoleFrame[], renderTextD
     consumedHistory,
     deltaOverrides,
     consumeReasoning: (history, text) => {
+      if (hasAssistantMessageIdCarrier(history) || isRealtimeHistoryMessage(history)) return false;
       const candidates = reasoningByOwner.get(assistantOwnerKey(history))?.get(text) || [];
       const completion = candidates.find((live) => !consumedReasoning.has(live.id)
         && sameAssistantRunOwner(history, live));
@@ -1647,12 +1664,15 @@ function renderGeneratedImageToolResultEntries(
   });
 }
 
-function imageEntryKey(entry: ConversationTimelineEntry): string | null {
+function imageEntryKey(entry: ConversationTimelineEntry, preferIdentity = false): string | null {
   if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
     return null;
   }
   const block = entry.blocks?.[0];
   if (!block || block.type !== "image") return null;
+  if (preferIdentity && typeof block.imageId === "string" && block.imageId.trim()) {
+    return `image:${block.imageId}`;
+  }
   if (typeof block.blobId === "string" && block.blobId.trim()) {
     return `blob:${block.blobId.trim()}`;
   }
@@ -1704,8 +1724,9 @@ const UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 function shouldSuppressRepeatedAssistantEntry(
   entry: ConversationTimelineEntry,
   priorEntries: ConversationTimelineEntry[],
+  protectedEntryIds: ReadonlySet<string>,
 ): boolean {
-  if (entry.kind !== "message") return false;
+  if (entry.kind !== "message" || protectedEntryIds.has(entry.id)) return false;
   if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
     return false;
   }
@@ -1716,7 +1737,7 @@ function shouldSuppressRepeatedAssistantEntry(
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index = priorEntries.length - 1; index >= 0; index--) {
     const prior = priorEntries[index];
-    if (prior.kind !== "message") continue;
+    if (prior.kind !== "message" || protectedEntryIds.has(prior.id)) continue;
     if (prior.identity.id === USER_IDENTITY.id) {
       const userText = normalizeComparableText(conversationEntryVisibleText(prior));
       if (userText) return false;
@@ -1783,6 +1804,7 @@ function renderHistoryUserEntry(
   // Typed provenance only (send origin, persisted render class); the text
   // itself never decides what kind of message this is.
   const origin = entryOriginFromFrameData(record);
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   if (Array.isArray(content)) {
     const contextMessage = parseConsoleContextMessage(content);
     const blocks = contentToUserBlocks(content, blobBaseUrl, textMode);
@@ -1791,6 +1813,7 @@ function renderHistoryUserEntry(
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
+      ...(realtimeOrigin ? { realtimeOrigin } : {}),
       ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
       variant: "rich",
       createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -1806,6 +1829,7 @@ function renderHistoryUserEntry(
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
+    ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(frame.interactionId ? { interactionId: frame.interactionId } : {}),
     variant: textMode === "markdown" ? "rich" : "plain",
     ...(textMode === "markdown" ? { blocks: messageTextBlocks(text, textMode) } : {}),
@@ -1845,6 +1869,14 @@ function userEntryTextSignature(entry: ConversationTimelineEntry): string {
 }
 
 function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
+  if (isRealtimeHistoryMessage(frame)) {
+    const origin = realtimeMessageOrigin(frame);
+    return origin
+      ? `realtime-user:${JSON.stringify([frame.runtimeKey, frame.identity, origin.sessionId, origin.channelId, origin.canonicalRowSequence])}`
+      : `unbound-realtime-user:${frame.id}`;
+  }
+  const renderKey = userMessageRenderKey(frame);
+  if (renderKey) return renderKey;
   const interactionId = frame.interactionId?.trim();
   if (interactionId) return `interaction:${interactionId}`;
   const signature = userEntryTextSignature(entry);
@@ -2218,11 +2250,11 @@ function toolResultTextFromContent(content: unknown): string | undefined {
   return JSON.stringify(content, null, 2);
 }
 
-function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResult> {
+function historyToolResults(frames: ConsoleFrame[], includeLive = false): Map<string, HistoryToolResult> {
   const results = new Map<string, HistoryToolResult>();
   for (const frame of frames) {
     if (
-      frame.sourceKind !== "session_history"
+      (!includeLive && frame.sourceKind !== "session_history")
       || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received" && frame.event !== "tool_execution_timed_out")
     ) {
       continue;
@@ -2327,8 +2359,17 @@ function blockAssistantRichBlocks(
   peerRegistry?: Map<string, string>,
   toolResults?: Map<string, HistoryToolResult>,
   textMode: ConversationTextMode = "legacy",
+  blobBaseUrl?: string,
 ): ConversationRichBlock[] {
-  const reasoningBlocks: ConversationRichBlock[] = [];
+  const serverFrames = new Map<unknown, ConsoleFrame>();
+  for (const value of blocks) {
+    if (!value || typeof value !== "object") continue;
+    const block = value as Record<string, unknown>;
+    if ((block.block_type ?? block.type) !== "server_tool_content") continue;
+    serverFrames.set(value, { id: "", event: "server_tool_content", data: block.data } as ConsoleFrame);
+  }
+  const serverBlocks = buildToolBlocks([...serverFrames.values()]);
+  const emittedServerTools = new Set<string>();
   const actionAndTextBlocks: ConversationRichBlock[] = [];
   let hasNonTextBlock = false;
   let toolIndex = 0;
@@ -2347,7 +2388,7 @@ function blockAssistantRichBlocks(
       const text = reasoningBlockText(item);
       if (text) {
         hasNonTextBlock = true;
-        reasoningBlocks.push({
+        actionAndTextBlocks.push({
           type: "thinking",
           label: "",
           text,
@@ -2366,7 +2407,32 @@ function blockAssistantRichBlocks(
       }
       continue;
     }
-    if (blockType === "text") {
+    if (blockType === "image") {
+      const imageFrame = { id: "", event: "assistant_image", data: { image: data } } as ConsoleFrame;
+      const imageEntry = renderAssistantImageEntry(null, imageFrame, "", blobBaseUrl);
+      if (imageEntry?.kind === "message" && imageEntry.blocks) {
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(...imageEntry.blocks);
+      }
+      continue;
+    }
+    if (blockType === "server_tool_content") {
+      const serverFrame = serverFrames.get(block)!;
+      const id = parseToolCallId(serverFrame), tool = id ? serverBlocks.get(id) : undefined;
+      if (tool && !emittedServerTools.has(tool.toolCallId)) {
+        emittedServerTools.add(tool.toolCallId);
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(tool);
+      } else if (!id) {
+        const result = serverToolContentSummary(serverFrame)?.result;
+        if (result && ![...serverBlocks.values()].some(tool => tool.result === result)) {
+          hasNonTextBlock = true;
+          actionAndTextBlocks.push({ type: "paragraph", text: result });
+        }
+      }
+      continue;
+    }
+    if (blockType === "text" || blockType === "transcript") {
       const text = typeof data.text === "string"
         ? data.text
         : typeof item.text === "string"
@@ -2381,7 +2447,7 @@ function blockAssistantRichBlocks(
       }
     }
   }
-  return hasNonTextBlock || textMode === "markdown" ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
+  return hasNonTextBlock || textMode === "markdown" ? actionAndTextBlocks : [];
 }
 
 function textFromUnknown(value: unknown): string {
@@ -3278,7 +3344,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode, blobBaseUrl);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -3349,10 +3415,15 @@ function renderSessionHistoryTextCompleteEntry(
     options.textMode,
   );
   const textMode = options.textMode ?? "legacy";
+  const realtimeOrigin = realtimeMessageOrigin(frame);
   const canonicalText = textMode === "markdown" && !options.suppressAssistantText
     ? canonicalHistoryAssistantText(frame) : undefined;
   const text = canonicalText ?? (textMode === "markdown" ? parsed.text : parsed.text.trim());
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (!assistantMessageKey(frame) && !isRealtimeHistoryMessage(frame)) {
+    // Legacy rows retain their established reasoning-first presentation.
+    parsedBlocks.sort((left, right) => Number(right.type === "thinking") - Number(left.type === "thinking"));
+  }
   if (parsed.role === "meta") {
     const filteredParsedBlocks = options.consumeDuplicateToolBlock
       ? parsedBlocks.filter((block) => {
@@ -3391,6 +3462,7 @@ function renderSessionHistoryTextCompleteEntry(
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
+    ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(canonicalText !== undefined ? { copyText: canonicalText } : {}),
     variant: blocks.length > 0 ? "rich" : "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
@@ -3472,13 +3544,30 @@ export function mapFramesToTimelineEntries(
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
   const textMode = options.textMode ?? "legacy";
-  const orderedFrames = reconcileRuntimeAppendFrames(options.renderInteractionStartsAsUser
+  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
-    : frames);
+    : frames)));
+  const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
+  const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map(frame => frame.id));
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames);
+  const occurrenceToolResults = new Map<string, Map<string, HistoryToolResult>>();
+  function toolResultsForHistory(frame: ConsoleFrame): Map<string, HistoryToolResult> {
+    if (!assistantMessageKey(frame)) return sessionToolResults;
+    const scope = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId]);
+    let result = occurrenceToolResults.get(scope);
+    if (!result) {
+      const matching = orderedFrames.filter(other => !ownerContextsConflict(frame, other));
+      // Current history is authoritative when both views carry a result.
+      matching.sort((left, right) => Number(left.sourceKind === "session_history") - Number(right.sourceKind === "session_history"));
+      result = historyToolResults(matching, true);
+      occurrenceToolResults.set(scope, result);
+    }
+    return result;
+  }
+
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -3569,6 +3658,9 @@ export function mapFramesToTimelineEntries(
   }
 
   function reasoningScope(frame: ConsoleFrame): { scope: string; scoped: boolean } {
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey) return { scoped: true, scope: JSON.stringify([frame.runtimeKey || "", frame.identity || "", messageKey]) };
+    if (hasAssistantMessageIdCarrier(frame)) return { scoped: false, scope: `unbound:${frame.id}` };
     const interactionId = frame.interactionId?.trim() || "";
     const runId = frame.runId?.trim() || "";
     const turnId = frame.turnId?.trim() || "";
@@ -3705,7 +3797,9 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) {
           continue;
         }
@@ -3716,6 +3810,7 @@ export function mapFramesToTimelineEntries(
     }
 
     const toolCallId = parseToolCallId(frame);
+    if (canonicalToolCounterparts.has(frame)) continue;
     if (
       toolCallId
       && (
@@ -3782,7 +3877,9 @@ export function mapFramesToTimelineEntries(
         options.blobBaseUrl,
       );
       for (const imageEntry of imageEntries) {
-        const key = imageEntryKey(imageEntry);
+        const messageKey = assistantMessageKey(frame);
+        const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
+        const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) continue;
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
@@ -3871,7 +3968,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.sourceKind === "session_history" && (
-      frame.event === "text_complete" || frame.event === "interaction_complete"
+      frame.event === "assistant_message" || frame.event === "text_complete" || frame.event === "interaction_complete"
       || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed"
     )) {
       const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
@@ -3882,7 +3979,7 @@ export function mapFramesToTimelineEntries(
         textMode,
         peerRegistry,
         blobBaseUrl: options.blobBaseUrl,
-        toolResults: sessionToolResults,
+        toolResults: toolResultsForHistory(frame),
         consumeDuplicateCommsBlock: (key) => {
           const runtimeKey = runtimeAppendNoticeKey(frame);
           if (runtimeKey) key = `${runtimeKey}:${key}`;
@@ -3893,14 +3990,16 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          liveToolCallIds.has(block.toolCallId)
-          || consumeToolSignatureCount(liveToolSignatureCounts, block)
+          assistantMessageKey(frame) || isRealtimeHistoryMessage(frame)
+            ? false
+            : liveToolCallIds.has(block.toolCallId)
+              || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
       });
       if (historyEntry) {
         historyEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || undefined;
-        if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
@@ -3964,7 +4063,7 @@ export function mapFramesToTimelineEntries(
       if (terminalEntry) {
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || undefined;
-        if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+        if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries, realtimeHistoryIds)) {
           continue;
         }
         entries.push(terminalEntry);
@@ -4027,16 +4126,26 @@ export function mapFramesToTimelineEntries(
 
   flushPendingReasoning(false);
   flushPendingText(false);
-  return entries.filter((entry) => entry.kind !== "message"
+  const renderKeys = new Map(orderedFrames.filter(frame => frame.event === "text_delta"
+    || frame.event === "text_complete" || frame.event === "assistant_message"
+    || frame.event === "reasoning_delta" || frame.event === "reasoning_complete")
+    .map(frame => [frame.id, assistantMessageRenderKey(frame)]));
+  const userRenderKeys = new Map(orderedFrames.map(frame => [frame.id, userMessageRenderKey(frame)]));
+  return assistantPresentationEntries(entries.filter((entry) => entry.kind !== "message"
     || entry.blocks?.length !== 1
     || entry.blocks[0].type !== "thinking"
     || entry.blocks[0].text.trim()).map((entry) => {
-    if (entry.kind !== "message" || !entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    if (entry.kind !== "message") return entry;
+    if (entry.identity.role === "user") {
+      const userKey = userRenderKeys.get(entry.id);
+      if (userKey) entry = { ...entry, renderKey: userKey };
+    }
+    if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
     let textIndex = 0;
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
-      ? { ...block, id: `${entry.id}:text:${textIndex++}` }
+      ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` }
       : block) };
-  });
+  }), renderKeys, new Map(orderedFrames.map(frame => [frame.id, frame])));
 }
 
 export function createUserEntry(
@@ -4300,7 +4409,7 @@ export function buildConversationViewState(args: {
   return {
     conversationId: args.memberId || "console",
     title: args.agentLabel,
-    entries: args.entries,
+    entries: conversationPresentationRows(args.entries),
     groups,
     turnDiff: null,
     emptyState: args.entries.length === 0 ? {

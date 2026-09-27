@@ -9,12 +9,49 @@ import { editConsoleContextQuote } from "../../../console-core/src/context-edit"
 import { createConsoleContextRecord } from "../../../console-core/src/context-record";
 import { ConversationPane } from "./conversation-pane";
 import { ChatPane } from "../../../../console/src/panels/ChatPane";
+import { ConversationMessageView } from "./conversation-message-view";
+import { mapFramesToTimelineEntries as sharedMapper } from "../../../console-core/src/adapters";
+import { mapFramesToTimelineEntries as stockMapper } from "../../../../console/src/lib/adapters";
 afterEach(() => { cleanup(); window.getSelection()?.removeAllRanges(); });
 const select = (start: Node, end = start) => {
   const range = document.createRange(); range.setStart(start, 0); range.setEnd(end, end.textContent!.length);
   const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); return selection;
 };
 describe("transcript quote selection", () => {
+  it("keeps canonical assistant source IDs through both quote selection surfaces", () => {
+    const source = "  A\u030A and 🚀\n";
+    const common = { sessionId: "source-session", runtimeKey: "source-runtime", identity: "router:main", interactionId: "one-interaction", runId: "one-run" };
+    for (const mapper of [sharedMapper, stockMapper]) {
+      const entries = mapper(null, [
+        { ...common, id: "provisional-frame", event: "text_delta", data: { assistant_message_id: "assistant-occurrence", delta: "provisional source" } },
+        { ...common, id: "canonical-frame", event: "text_complete", sourceKind: "session_history", data: {
+          assistant_message_id: "assistant-occurrence", text: source,
+          message: { role: "block_assistant", assistant_message_id: "assistant-occurrence", blocks: [{ block_type: "text", data: { text: source } }] },
+        } },
+      ], { renderTextDeltas: true, textMode: "markdown" });
+      expect(entries).toHaveLength(1);
+      for (const component of [
+        <ChatPane identity="router:main" agentLabel="Router" agent={null} entries={entries} phase={null} draft="" sending={false} staged={[]} onDraftChange={vi.fn()} onStagedChange={vi.fn()} onSend={vi.fn()} />,
+        <ConversationMessageView entry={entries[0]} Icon={() => null} />,
+      ]) {
+        const view = render(component);
+        const quoteWrappers = view.container.querySelectorAll<HTMLElement>("[data-quote-message-id]");
+        expect(quoteWrappers).toHaveLength(1);
+        const wrapper = quoteWrappers[0];
+        expect(wrapper.dataset.quoteMessageId).toBe("canonical-frame");
+        expect(wrapper.dataset.quoteSource).toBe(source);
+        const paragraph = wrapper.querySelector("p")!;
+        const result = readConsoleQuoteSelection(view.container, select(paragraph.firstChild!));
+        expect(result).toEqual({ kind: "selected", quote: { messageId: "canonical-frame", sourceText: source, text: "A\u030A and 🚀" } });
+        if (result.kind !== "selected") throw new Error("expected canonical quote selection");
+        const record = createConsoleContextRecord({ id: "selected", sourceScope: "source-runtime", sourceIdentity: "router:main", label: "Router", quote: result.quote.text, messageId: result.quote.messageId, sourceText: result.quote.sourceText });
+        expect(record.messageId).not.toBe("assistant-occurrence");
+        expect(record.sourceRange).toEqual({ start: 2, end: 2 + result.quote.text.length, unit: "utf16" });
+        window.getSelection()?.removeAllRanges();
+        view.unmount();
+      }
+    }
+  });
   it("captures a single opted-in message and exact rendered unicode text", () => {
     const { container } = render(<div data-quote-message-id="msg" data-quote-source="🌳 café">🌳 café</div>);
     const result = readConsoleQuoteSelection(container, select(container.firstChild!.firstChild!));

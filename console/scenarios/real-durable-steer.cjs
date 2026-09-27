@@ -240,7 +240,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
         assert.equal(rows.length, 1, "one final assistant row owns the completed review");
         assert.equal(rows[0].sourceKind, "assistant");
         assert.deepEqual(rows[0].footers, [result.workDuration.text], "the assistant footer matches the exact run's actual start-to-completion duration");
-        assert.equal(rows[0].copyButtons, 1, "the proven duration has one copy action");
+        assert.equal(rows[0].copyButtons, 0, "the proven duration is a plain footer without a separate copy action");
       } catch (error) {
         result.lastAssistantDurationProbe.assertion = error.message;
         throw error;

@@ -237,6 +237,7 @@ image_generation = {live_images}
     let history_runtime = runtime.clone();
     let controls = Router::new()
         .merge(durable_steer::router(runtime.clone()))
+        .merge(routine_tools::router(runtime.clone()))
         .route("/access", post(move |Json(value): Json<Value>| {
             let access = access.clone();
             async move {

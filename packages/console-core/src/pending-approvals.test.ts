@@ -185,12 +185,47 @@ for (const [name, create] of [["shared", sharedController], ["stock", stockContr
     methods = [CONSOLE_RPC_METHODS.gatingPending];
     await resource.decide("p1", "approve");
     assert.equal(writes, 0); assert.equal(resource.getSnapshot().readOnly, true);
+    assert.equal(resource.getSnapshot().decisions.p1.phase, "unavailable", "a known pre-dispatch capability refusal is not an uncertain decision");
     assert.equal(resource.getSnapshot().status, "ready"); assert.equal(resource.getSnapshot().requests.length, 1);
     await resource.decide("p1", "approve"); assert.equal(writes, 0);
     methods = [];
     await resource.refresh(); assert.equal(resource.getSnapshot().status, "unsupported");
     assert.equal(resource.getSnapshot().requests.length, 0); assert.deepEqual(resource.getSnapshot().decisions, {});
     resource.dispose();
+  });
+
+  test(`${name}: lost acknowledgement remains uncertain when a retry is refused before dispatch`, async () => {
+    const c = clock(); let methods = [CONSOLE_RPC_METHODS.gatingPending, CONSOLE_RPC_METHODS.gatingDecide] as string[];
+    let writes = 0;
+    const target = migrateConsoleWorkbenchTarget({ id: "gating", kind: "gating", title: "Approvals" })!;
+    const message = "Approval decisions are unavailable with current access";
+    const controller = create({ transport: {
+      loadExperience: async () => ({}), capabilities: async () => ({ methods }),
+      executeCommand: async (input: { command: string }) => {
+        if (input.command === CONSOLE_COMMAND_NAMES.listGatingPending) {
+          return { command: input.command, accepted: true, result: { pending: [row()] } };
+        }
+        writes++;
+        // Error prose cannot establish whether this dispatched command was accepted.
+        throw new Error(message);
+      },
+    } as unknown as MobKitConsoleTransport });
+    const resource = createPendingApprovalResource({ scopeKey: "a", environment: c.environment,
+      load: async signal => (await controller.commands.execute({ command: CONSOLE_COMMAND_NAMES.listGatingPending, target, signal })).result,
+      decide: async (_id, _action, signal) => (await controller.commands.execute({ command: CONSOLE_COMMAND_NAMES.decideGating, target, signal })).result,
+    });
+    try {
+      await tick(); await resource.decide("p1", "approve");
+      assert.equal(writes, 1);
+      assert.equal(resource.getSnapshot().readOnly, false);
+      assert.deepEqual(resource.getSnapshot().decisions.p1, { phase: "failed", action: "approve", error: message });
+      methods = [CONSOLE_RPC_METHODS.gatingPending];
+      await resource.decide("p1", "reject");
+      assert.equal(writes, 1, "the retry is refused before transport dispatch");
+      assert.equal(resource.getSnapshot().readOnly, true);
+      assert.deepEqual(resource.getSnapshot().decisions.p1, { phase: "failed", action: "approve", error: message }, "a later local refusal cannot settle the earlier unknown outcome");
+      assert.equal(resource.getSnapshot().requests.length, 1);
+    } finally { resource.dispose(); }
   });
 
   test(`${name}: failed capability fetch remains transient instead of inventing permission denial`, async () => {

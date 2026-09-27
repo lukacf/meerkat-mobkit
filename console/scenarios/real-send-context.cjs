@@ -2,9 +2,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { isDeepStrictEqual } = require("node:util");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc } = require("../acceptance-runtime.cjs");
+const { browserFailureMonitor, navigation } = require("./browser-failure-monitor.cjs");
 
 const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
 const identity = "router:main";
@@ -20,9 +22,9 @@ function wireEnvelope(observation) {
   return body.method === "mobkit/console/send" ? body.params : body;
 }
 const namespace = fixture => `${fixture.baseUrl}/acceptance-realm/operator-a`;
-const queueKey = fixture => `mobkit-send-attempts:v1:${encodeURIComponent(namespace(fixture))}:${encodeURIComponent(identity)}`;
-async function savedAttempts(page, fixture) {
-  return page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{"attempts":[]}').attempts, queueKey(fixture));
+const queueKey = (fixture, storageNamespace = namespace(fixture)) => `mobkit-send-attempts:v1:${encodeURIComponent(storageNamespace)}:${encodeURIComponent(identity)}`;
+async function savedAttempts(page, fixture, storageNamespace = namespace(fixture)) {
+  return page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{"attempts":[]}').attempts, queueKey(fixture, storageNamespace));
 }
 async function draftDocuments(page) {
   return page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("mobkit-composer-draft:v2:"))
@@ -38,9 +40,9 @@ async function recordedRequests(fixture) {
   assert.equal(response.status, 200);
   return response.json();
 }
-async function capture(page, name) {
+async function capture(page, name, options = {}) {
   await fs.mkdir(evidence, { recursive: true });
-  await page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true });
+  await page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true, ...options });
 }
 async function saveEvidence(fixture, name, extra) {
   await fs.mkdir(evidence, { recursive: true });
@@ -56,24 +58,36 @@ async function inBrowser(name, run) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   page.setDefaultTimeout(20_000);
-  const errors = [];
-  page.on("pageerror", error => errors.push(error.message));
+  const monitor = browserFailureMonitor(page.context(), { origin: fixture.baseUrl });
+  const { errors, expected: expectedFailures, failures: requestFailures } = monitor;
   try {
-    await run({ fixture, browser, page, errors });
-    assert.deepEqual(errors, [], "no uncaught browser exceptions");
+    await run({ fixture, browser, page, errors, monitor });
+    monitor.assertClean();
+    await saveEvidence(fixture, `${name}-browser`, { errors, expectedFailures, requestFailures });
+    monitor.assertClean();
   } catch (error) {
     await capture(page, `${name}-failure`).catch(() => {});
-    await saveEvidence(fixture, `${name}-failure`, { error: String(error), errors, logs: fixture.logs() }).catch(() => {});
+    await saveEvidence(fixture, `${name}-failure`, { error: String(error), errors, expectedFailures, requestFailures, logs: fixture.logs() }).catch(() => {});
     throw error;
-  } finally { await browser.close(); await fixture.close(); }
+  } finally { monitor.stop(); await browser.close(); await fixture.close(); }
 }
 async function open(page, fixture, host = "stock") {
-  await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : "/scoped"));
-  if (host === "stock" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
-    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
-  }
-  await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
-  if (host === "stock") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+  await navigation(page, `open ${host} send-context host`, async () => {
+    const response = await page.goto(fixture.baseUrl + (host === "shared" ? "/shared" : host === "embedded" ? "/console" : "/scoped"));
+    if (host !== "shared" && !await page.getByTestId(`chat-composer:${identity}`).count()) {
+      await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: /router/i }).first().click();
+    }
+    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    if (host !== "shared") await page.getByTestId(`chat-composer:${identity}`).first().waitFor();
+    return response;
+  });
+}
+async function reload(page) {
+  await navigation(page, "explicit send-context reload", async () => {
+    const response = await page.reload();
+    await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    return response;
+  });
 }
 const pane = (page, host) => host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(`chat-pane:${identity}`).first();
 const viewport = (page, host) => pane(page, host).locator(host === "shared" ? ".cc-conversation-pane__scroll" : ".conv__body");
@@ -237,7 +251,7 @@ async function quotedContext(host) {
     assert.equal(await scope.getByRole("alert").filter({ hasText: "Select text from one message at a time." }).count(), 0, "selection feedback clears after composing and sending");
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-quote-delivered`);
-    await page.reload(); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    await reload(page); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-quote-delivered-reloaded`);
     await saveEvidence(fixture, `${host}-quote-delivered`, { selected, envelope, record });
@@ -287,7 +301,7 @@ async function editedQuotedContext(host) {
     assert.deepEqual(envelope.content, expected); await exactModelContent(fixture, expected, `${host} edited quote`);
     await assertDeliveredContext(page, host, expected, [record]);
     await capture(page, `${host}-edited-quote-delivered-1600`);
-    await page.reload(); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
+    await reload(page); await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     await assertDeliveredContext(page, host, expected, [record]);
     for (const width of [1440, 1024]) {
       await page.setViewportSize({ width, height: 900 });
@@ -301,12 +315,47 @@ async function editedQuotedContext(host) {
   });
 }
 
-async function lostAcknowledgement(withQuote = false) {
-  const name = withQuote ? "scoped-quoted-lost-ack" : "scoped-lost-ack";
-  return inBrowser(`real-${name}`, async ({ fixture, page }) => {
+async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
+  const name = `${host === "embedded" ? "embedded" : "scoped"}-${withQuote ? "quoted-" : ""}lost-ack`;
+  return inBrowser(`real-${name}`, async ({ fixture, page, monitor }) => {
+    let storageNamespace = namespace(fixture);
+    const assetResponses = [];
+    if (host === "embedded") {
+      const response = await fetch(`${fixture.baseUrl}/console/experience`);
+      assert.equal(response.status, 200);
+      const experience = await response.json();
+      assert.equal(typeof experience.storage_scope, "string", "production persistence uses the owner storage scope");
+      assert(experience.storage_scope.trim(), "owner storage scope is nonempty");
+      storageNamespace = JSON.stringify([fixture.baseUrl, experience.storage_scope]);
+      // Record the browser's actual production responses, not another fetch or
+      // an acceptance source build. The proxy freezes these dist bytes at boot.
+      page.on("response", response => {
+        const url = new URL(response.url());
+        if (url.origin !== fixture.baseUrl || !["/console/assets/console-app.js", "/console/assets/console-app.css"].includes(url.pathname)) return;
+        assetResponses.push(response.body().then(bytes => ({
+          url: response.url(), status: response.status(), bytes: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        })).catch(error => ({ url: response.url(), error: String(error) })));
+      });
+    }
     if (withQuote) await seedQuote(fixture);
     await fixture.control("model", { source: "Canonical acceptance survives loss of the browser response.", delay_ms: 0, chunk_chars: 4096 });
-    await open(page, fixture);
+    await open(page, fixture, host);
+    const loadedAssets = await Promise.all(assetResponses);
+    if (host === "embedded") {
+      assert.equal(new URL(page.url()).pathname, "/console", "production scenario opens the shipping browser entry");
+      for (const file of ["console-app.js", "console-app.css"]) {
+        const actual = loadedAssets.filter(asset => new URL(asset.url).pathname === `/console/assets/${file}`);
+        assert.equal(actual.length, 1, `browser loaded one production ${file}`);
+        assert.equal(actual[0].status, 200);
+        assert(!actual[0].error, JSON.stringify(actual[0]));
+        const bytes = await fs.readFile(path.join(__dirname, "../dist", file));
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        assert.equal(actual[0].sha256, hash, `browser received exact production ${file} bytes`);
+        assert.equal(new URL(actual[0].url).searchParams.get("v"), hash.slice(0, 12), "production URL has the matching content version");
+      }
+      await saveEvidence(fixture, `${name}-production-assets`, { host, storageNamespace, loadedAssets });
+    }
     if (withQuote) await addQuote(pane(page, "stock"));
     const text = "  Lost acknowledgement: A\u030A, \ud83d\ude80\nKeep these exact bytes.  ";
     const before = sendObservations(fixture).length;
@@ -324,6 +373,7 @@ async function lostAcknowledgement(withQuote = false) {
       assert(observation && observation.response === responseText, "fault drops a completed real owner response");
       observation.browserResponseDropped = true;
       dropped = observation;
+      monitor.expectFailure(route.request(), "deliberately drop completed owner send response", "net::ERR_FAILED");
       await route.abort("failed");
     });
     await compose(page, text);
@@ -332,20 +382,42 @@ async function lostAcknowledgement(withQuote = false) {
     assert(acceptance?.interaction_id && acceptance.input_frame_id, dropped.response);
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.unroute("**/console/rpc");
-    const saved = await eventually(async () => (await savedAttempts(page, fixture)).find(item => item.state === "outcome-unknown"), "unknown outcome saved");
+    const saved = await eventually(async () => (await savedAttempts(page, fixture, storageNamespace)).find(item => item.state === "outcome-unknown"), "unknown outcome saved");
     assert.equal(saved.text, text);
     const envelope = JSON.parse(saved.envelopeJson);
     assert.deepEqual(wireEnvelope(dropped), envelope, "persisted frozen envelope equals actual outgoing request");
     assert.equal(envelope.idempotency_key, saved.idempotencyKey);
     const content = withQuote ? [{ type: "text", text }, expectedContextBlock(saved.contexts[0])] : text;
     assert.deepEqual(envelope.content, content);
-    assert.equal(await page.getByTestId(`pending-steer:${saved.id}`).isEnabled(), false);
-    assert.equal(await page.getByTestId(`pending-edit:${saved.id}`).isEnabled(), false);
+    assert.equal(await page.getByTestId(`pending-steer:${saved.id}`).count(), 0, "frozen attempts do not offer steering");
+    assert.equal(await page.getByTestId(`pending-edit:${saved.id}`).count(), 0, "frozen attempts do not offer editing");
+    assert.equal(await page.getByTestId("console-action-error").count(), 0, "saved recovery owns the failure message");
+    for (const width of [1600, 1024]) {
+      await page.setViewportSize({ width, height: width === 1600 ? 1000 : 900 });
+      const row = page.getByTestId(`pending-item:${saved.id}`);
+      const bounds = await row.evaluate(node => {
+        const button = Array.from(node.querySelectorAll("button")).find(button => button.textContent.includes("Check acceptance"));
+        const rect = node.getBoundingClientRect();
+        const action = button?.getBoundingClientRect();
+        return { overflow: node.scrollWidth - node.clientWidth, left: rect.left, right: rect.right,
+          action: action && { left: action.left, right: action.right, width: action.width, height: action.height } };
+      });
+      assert(bounds.overflow <= 1 && bounds.action, `recovery fits at ${width}px`);
+      assert(bounds.action.left >= bounds.left && bounds.action.right <= bounds.right,
+        `Check acceptance stays within its row at ${width}px`);
+      assert(bounds.action.height >= 30, "recovery action has a usable target");
+      if (width === 1024) await capture(page, `${name}-saved-1024`);
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
     await capture(page, `${name}-saved`);
-    await page.reload();
+    await page.getByTestId("theme-toggle").click();
+    assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
+    await capture(page, `${name}-saved-dark`, { animations: "disabled" });
+    await page.getByTestId("theme-toggle").click();
+    await reload(page);
     await page.getByText(/Acceptance unknown/).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
-    const reloaded = (await savedAttempts(page, fixture)).find(item => item.id === saved.id);
+    const reloaded = (await savedAttempts(page, fixture, storageNamespace)).find(item => item.id === saved.id);
     assert.equal(reloaded.envelopeJson, saved.envelopeJson, "reload does not refreeze or normalize bytes");
     assert.equal(reloaded.idempotencyKey, saved.idempotencyKey);
     assert.equal(sendObservations(fixture).length, before + 1, "reload and history recovery never retry an unknown outcome");
@@ -353,14 +425,15 @@ async function lostAcknowledgement(withQuote = false) {
     assert.equal(canonical.kind, "user_input");
     for (const field of ["content", "origin", "origin_kind", "idempotency_key", "handling_mode"]) assert.deepEqual(canonical.payload[field], envelope[field], `canonical receipt ${field}`);
     await page.getByRole("button", { name: "Check acceptance", exact: true }).click();
-    await eventually(async () => !(await savedAttempts(page, fixture)).some(item => item.id === saved.id), "exact receipt removes unknown attempt");
-    assert.equal(await page.getByTestId(`pending-item:${saved.id}`).count(), 0);
+    // Durable removal precedes the scheduled render that removes its queue row.
+    await eventually(async () => !(await savedAttempts(page, fixture, storageNamespace)).some(item => item.id === saved.id)
+      && await page.getByTestId(`pending-item:${saved.id}`).count() === 0, "exact receipt removes unknown attempt from storage and queue");
     assert.equal(sendObservations(fixture).length, before + 1, "Check acceptance only queries, never dispatches");
     assert.equal((await timeline(fixture)).frames.filter(frame => frame.id === acceptance.input_frame_id).length, 1);
     await exactModelContent(fixture, content, "lost acknowledgement");
     if (withQuote) await assertDeliveredContext(page, "stock", content, saved.contexts);
     await capture(page, `${name}-reconciled`);
-    await saveEvidence(fixture, `${name}-reconciled`, { saved, reloaded, acceptance, canonical });
+    await saveEvidence(fixture, `${name}-reconciled`, { host, storageNamespace, loadedAssets, saved, reloaded, acceptance, canonical });
   });
 }
 
@@ -538,7 +611,7 @@ async function twoPaneDrafts() {
     assert.deepEqual(wireEnvelope(sent).content, expected);
     await exactModelContent(fixture, expected, "first pane");
     assert.equal(await other.getByTestId(`chat-composer:${identity}`).inputValue(), textB);
-    await page.reload();
+    await reload(page);
     await page.getByTestId(secondId).getByTestId(`chat-composer:${identity}`).waitFor();
     assert.equal(await page.getByTestId(firstId).getByTestId(`chat-composer:${identity}`).inputValue(), "");
     assert.equal(await page.getByTestId(secondId).getByTestId(`chat-composer:${identity}`).inputValue(), textB);
@@ -587,7 +660,7 @@ async function newerDraftDuringEnqueue() {
     assert.deepEqual(await scope.locator(".cc-context-chip blockquote").allTextContents(), [newQuote], "only the submitted quote is removed");
     const drafts = await draftDocuments(page);
     assert(drafts.some(item => item.text === newInstruction && item.contexts.length === 1 && item.contexts[0].quote === newQuote), "sessionStorage retains the newer complete draft");
-    await page.reload(); await scope.getByTestId(`chat-composer:${identity}`).waitFor();
+    await reload(page); await scope.getByTestId(`chat-composer:${identity}`).waitFor();
     assert.equal(await scope.getByTestId(`chat-composer:${identity}`).inputValue(), newInstruction);
     assert.deepEqual(await scope.locator(".cc-context-chip blockquote").allTextContents(), [newQuote]);
     assert.equal(sendObservations(fixture).length, before + 1, "newer draft remains unsent through reload");
@@ -601,6 +674,7 @@ const scenarios = [
   ...["stock", "shared"].map(host => ({ id: `real-${host}-edited-quoted-context`, family: "real-send", backend: "real", run: () => editedQuotedContext(host) })),
   { id: "real-scoped-lost-ack", family: "real-send", backend: "real", run: lostAcknowledgement },
   { id: "real-scoped-quoted-lost-ack", family: "real-send", backend: "real", run: () => lostAcknowledgement(true) },
+  { id: "real-embedded-quoted-lost-ack", family: "real-send", backend: "real", run: () => lostAcknowledgement(true, { host: "embedded" }) },
   { id: "real-scoped-queued-steer", family: "real-send", backend: "real", run: queuedSteer },
   { id: "real-shared-queued-steer", family: "real-send", backend: "real", run: sharedQueuedSteer },
   { id: "real-scoped-two-pane-drafts", family: "real-send", backend: "real", run: twoPaneDrafts },

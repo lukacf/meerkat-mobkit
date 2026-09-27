@@ -227,6 +227,63 @@ class TestSendAndWaitWaitsForItsOwnTurn:
         assert params[1]["dispatch_input"]["idempotency_key"] == "evt-1"
         assert params[1]["dispatch_input"]["correlation_id"] == "chat-1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("through_handle", [False, True])
+    @pytest.mark.parametrize("with_pair", [False, True])
+    @pytest.mark.parametrize("tracked", [False, True])
+    async def test_dispatch_text_preserves_idempotency_and_tracking(
+        self, through_handle, with_pair, tracked,
+    ):
+        ticket = "06d4f5fc-43b4-430c-9a2c-1c08e1f1be34"
+        transport = TicketTransport(sends=[{**_sent(ticket if tracked else None), "durable": True}])
+        runtime = _make_runtime(transport)
+        pair = (
+            {"correlation_id": "school-event-1", "idempotency_key": "school:event-1"}
+            if with_pair else {}
+        )
+        tracking = {"track_turn": True} if tracked else {}
+        content = "School closed.\nKeep both paragraphs."
+
+        if through_handle:
+            result = await runtime.agent("keeper").dispatch_text(content, **pair, **tracking)
+        else:
+            result = await runtime.dispatch_text("keeper", content, **pair, **tracking)
+
+        assert len(transport.calls) == 1
+        assert transport.params_of("mobkit/dispatch") == [{
+            "identity": "keeper",
+            "dispatch_input": {"content": content, "origin": "system", **pair},
+            **tracking,
+        }]
+        assert result.turn_ticket == (ticket if tracked else None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_pair", [False, True])
+    async def test_dispatch_text_and_wait_preserves_idempotency_and_own_ticket(self, with_pair):
+        ticket = "4a9bc1cc-0b66-4af6-bce4-926359b1dd8f"
+        pair = (
+            {"correlation_id": "school-event-2", "idempotency_key": "school:event-2"}
+            if with_pair else {}
+        )
+        transport = TicketTransport(
+            sends=[{**_sent(ticket), "durable": True}],
+            turn_results={ticket: [_completed("School notice accepted")]},
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        output = await handle.dispatch_text_and_wait(
+            "School notice", origin="connector", timeout=5, poll_interval=0.001, **pair,
+        )
+
+        assert output == "School notice accepted"
+        assert transport.params_of("mobkit/dispatch") == [{
+            "identity": "keeper",
+            "dispatch_input": {"content": "School notice", "origin": "connector", **pair},
+            "track_turn": True,
+        }]
+        assert transport.params_of("mobkit/turn_result") == [{"identity": "keeper", "ticket": ticket}]
+        assert transport.params_of("mobkit/inspect_identity") == []
+
 
 class TestWaitForTurn:
     @pytest.mark.asyncio

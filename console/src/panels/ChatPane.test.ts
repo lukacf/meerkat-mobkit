@@ -9,7 +9,6 @@ import {
   TURN_RAIL_MAX_TICKS,
   TURN_RAIL_TICK_PX,
   __chatPaneTest,
-  isCanonicalVoiceRowDuringCall,
   windowTurnRail,
 } from "./ChatPane";
 import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
@@ -110,6 +109,7 @@ test("completed stream duration includes the time after its first text delta", (
   assert.equal(messages.find((entry) => entry.sourceEntryId === "timed-answer")?.workedFor, "6s");
   assert.match(renderChat({ entries, phase: null }), /Worked for 6s/);
   assert.doesNotMatch(renderChat({ entries, phase: null }), /Worked for under 1s/);
+  assert.doesNotMatch(renderChat({ entries, phase: null }), /aria-label="Copy work time"/);
 });
 
 for (const duration of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
@@ -296,7 +296,7 @@ function renderChat(args: {
   phase: "waiting" | "tool-executing" | "generating" | null;
   isLoadingHistory?: boolean;
   liveSpeech?: readonly LiveSpeechItem[];
-  voiceCallStartedAt?: number | null;
+  activeVoiceScope?: { sessionId: string; channelId: string } | null;
   approvalSnapshot?: PendingApprovalSnapshot;
 }): string {
   return renderToStaticMarkup(
@@ -325,7 +325,7 @@ function renderChat(args: {
       onStagedChange: () => undefined,
       onSend: () => true,
       liveSpeech: args.liveSpeech,
-      voiceCallStartedAt: args.voiceCallStartedAt ?? null,
+      activeVoiceScope: args.activeVoiceScope ?? null,
     }),
   );
 }
@@ -334,7 +334,7 @@ test("live speech renders as distinct provisional rows, never as transcript mess
   const html = renderChat({
     entries: WORK_ENTRIES,
     phase: null,
-    voiceCallStartedAt: Date.parse("2026-05-20T07:00:00.000Z"),
+    activeVoiceScope: { sessionId: "voice-session", channelId: "voice-channel" },
     liveSpeech: [
       { itemId: "item-1", speaker: "user", text: "What is the vault phrase", startedAt: 1, final: true },
       { itemId: "item-2", speaker: "assistant", text: "The vault phrase is", startedAt: 2, final: false },
@@ -354,26 +354,61 @@ test("live speech renders as distinct provisional rows, never as transcript mess
   assert.equal((html.match(/class="msg msg--(user|agent)"/g) || []).length, 2);
 });
 
-test("canonical rows created during the active call stay hidden until the call ends", () => {
-  const callStart = Date.parse("2026-05-20T07:00:00.000Z");
+test("canonical voice rows replace only their exact provisional items during a call", () => {
+  const origin = { sessionId: "voice-session", channelId: "voice-channel", canonicalRowSequence: 1, providerItemIds: ["spoken-a", "spoken-b"] };
+  const canonical = { ...message({ id: "spoken-row", role: "assistant", createdAt: "2026-05-20T07:00:09.000Z", text: "The canonical spoken answer." }), realtimeOrigin: origin };
   const entries = [
     ...WORK_ENTRIES,
-    message({ id: "spoken-q", role: "user", createdAt: "2026-05-20T07:00:05.000Z", text: "Spoken question" }),
-    message({ id: "spoken-a", role: "assistant", createdAt: "2026-05-20T07:00:09.000Z", text: "Spoken answer" }),
+    message({ id: "typed-q", role: "user", createdAt: "2026-05-20T07:00:05.000Z", text: "Check the graph while we talk." }),
+    message({ id: "typed-a", role: "assistant", createdAt: "2026-05-20T07:00:08.000Z", text: "The graph is ready." }),
+    canonical,
   ];
-  const during = renderChat({ entries, phase: null, voiceCallStartedAt: callStart });
-  assert.match(during, /Review complete\./);
-  assert.doesNotMatch(during, /Spoken question/);
-  assert.doesNotMatch(during, /Spoken answer/);
-  const after = renderChat({ entries, phase: null, voiceCallStartedAt: null });
-  assert.match(after, /Spoken question/);
-  assert.match(after, /Spoken answer/);
+  const liveSpeech: LiveSpeechItem[] = [
+    { itemId: "spoken-a", speaker: "assistant", text: "Discarded first partial", startedAt: 1, final: false },
+    { itemId: "spoken-b", speaker: "assistant", text: "Discarded late delta", startedAt: 2, final: true },
+    { itemId: "spoken-next", speaker: "assistant", text: "An unfinished next answer", startedAt: 3, final: false },
+    { itemId: "spoken-a", speaker: "user", text: "Unpaired user speech", startedAt: 4, final: true },
+  ];
+  const activeVoiceScope = { sessionId: origin.sessionId, channelId: origin.channelId };
+  const during = renderChat({ entries, phase: null, activeVoiceScope, liveSpeech });
+  assert.match(during, /Check the graph while we talk/);
+  assert.match(during, /The graph is ready/);
+  assert.match(during, /The canonical spoken answer/);
+  assert.doesNotMatch(during, /Discarded (first partial|late delta)/);
+  assert.match(during, /An unfinished next answer/);
+  assert.match(during, /Unpaired user speech/);
+  assert.match(during, /chat-live-row:agent:spoken-next/);
+  const after = renderChat({ entries, phase: null });
+  assert.match(after, /The canonical spoken answer/);
   assert.doesNotMatch(after, /chat-live-speech:agent/);
-  // Rows without a timestamp are never hidden.
-  const undated = { ...message({ id: "u", role: "user", createdAt: "x", text: "Undated" }), createdAt: undefined };
-  assert.equal(isCanonicalVoiceRowDuringCall(undated, callStart), false);
-  assert.equal(isCanonicalVoiceRowDuringCall(entries[2], callStart), true);
-  assert.equal(isCanonicalVoiceRowDuringCall(entries[0], callStart), false);
+});
+
+test("voice pairing never uses timestamps, text, another scope or a missing provider key", () => {
+  const speech: LiveSpeechItem = { itemId: "same-item", speaker: "assistant", text: "Same words", startedAt: 10, final: true };
+  const origin = { sessionId: "voice-session", channelId: "voice-channel", canonicalRowSequence: 1, providerItemIds: [speech.itemId] };
+  for (const realtimeOrigin of [undefined, { ...origin, providerItemIds: [] }, { ...origin, sessionId: "other-session" }, { ...origin, channelId: "old-channel" }]) {
+    const entries = [{ ...message({ id: "canonical", role: "assistant", createdAt: "2026-05-20T07:00:09.000Z", text: speech.text }), realtimeOrigin }];
+    const html = renderChat({ entries, phase: null, activeVoiceScope: { sessionId: "voice-session", channelId: "voice-channel" }, liveSpeech: [speech] });
+    assert.match(html, /chat-live-row:agent:same-item/);
+    assert.equal((html.match(/Same words/g) || []).length >= 2, true, "uncorrelated text is not an identity witness");
+  }
+  for (const activeVoiceScope of [undefined, { sessionId: "", channelId: origin.channelId }]) {
+    const entries = [{ ...message({ id: "canonical", role: "assistant", createdAt: "invalid", text: "Canonical without a timestamp" }), realtimeOrigin: origin }];
+    const html = renderChat({ entries, phase: null, activeVoiceScope, liveSpeech: [speech] });
+    assert.match(html, /chat-live-row:agent:same-item/);
+    assert.match(html, /Canonical without a timestamp/);
+  }
+});
+
+test("typed realtime provenance also pairs a canonical user row when the host supplies it", () => {
+  const entries = [{
+    ...message({ id: "user-row", role: "user", createdAt: "invalid", text: "Canonical spoken question" }),
+    realtimeOrigin: { sessionId: "voice-session", channelId: "voice-channel", canonicalRowSequence: 2, providerItemIds: ["user-item"] },
+  }];
+  const html = renderChat({ entries, phase: null, activeVoiceScope: { sessionId: "voice-session", channelId: "voice-channel" },
+    liveSpeech: [{ itemId: "user-item", speaker: "user", text: "Provisional question", startedAt: 1, final: true }] });
+  assert.match(html, /Canonical spoken question/);
+  assert.doesNotMatch(html, /Provisional question|chat-live-speech:agent/);
 });
 
 const WORK_ENTRIES: ConversationTimelineEntry[] = [
