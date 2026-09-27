@@ -172,30 +172,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Show canonical peer display names while preserving exact peer identities in
-  details. Keep empty WorkGraph query results inspectable, and avoid duplicate
-  tool rows when event polls are already represented by a work card. WorkGraph
-  event and deadline displays use the same local clock as the conversation.
-- Calculate assistant work duration only from matching run-start and successful
-  completion evidence. System notices never inherit assistant timing, and
-  messages with unknown run timing omit the duration.
-- Observe restored identity edges after eager continuity attachment so the
-  bootstrap report reflects the wired sessions. Lazy restore remains deferred.
-- Project durable runtime notices during their original active run and reconcile
-  them against saved history without duplicating or reordering the instruction.
-
-- Complete deferred activation before persistent gateway and builder startup
-  returns. Classic compositions explicitly resume; identity compositions
-  register continuity owners before resuming preserved sessions.
-- Keep queued console sends, identity inspection and startup readiness within
-  their existing deadlines when the owner's member-observation lane is busy.
-  Only refused reads retry; message admission and delivery are not repeated.
-- Keep persistent gateway identity stable when a storage directory beneath a
-  symlink is created between launches by resolving its existing parent first.
-- Preserve a streamed response across an overlapping queued steer, including
-  its exact source and the subsequent reply's assistant header.
-- Let Python text-dispatch helpers carry caller-supplied idempotency keys with
-  correlation IDs, including the completion-waiting helper.
 - `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
   and `sendAndWait` / `dispatchAndWait` (TypeScript) return the output of the
   turn they started. They waited until the identity-wide completion cursor
@@ -222,6 +198,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   completion on the identity after the baseline satisfies them and the
   returned preview is the session's latest output, not necessarily a given
   send's answer; use `wait_for_turn` / `waitForTurn` for one specific turn.
+
+- Show canonical peer display names while preserving exact peer identities in
+  details. Keep empty WorkGraph query results inspectable, and avoid duplicate
+  tool rows when event polls are already represented by a work card. WorkGraph
+  event and deadline displays use the same local clock as the conversation.
+- Calculate assistant work duration only from matching run-start and successful
+  completion evidence. System notices never inherit assistant timing, and
+  messages with unknown run timing omit the duration.
+- Observe restored identity edges after eager continuity attachment so the
+  bootstrap report reflects the wired sessions. Lazy restore remains deferred.
+- Project durable runtime notices during their original active run and reconcile
+  them against saved history without duplicating or reordering the instruction.
+
+- Complete deferred activation before persistent gateway and builder startup
+  returns. Classic compositions explicitly resume; identity compositions
+  register continuity owners before resuming preserved sessions.
+- Keep queued console sends, identity inspection and startup readiness within
+  their existing deadlines when the owner's member-observation lane is busy.
+  Only refused reads retry; message admission and delivery are not repeated.
+- Keep persistent gateway identity stable when a storage directory beneath a
+  symlink is created between launches by resolving its existing parent first.
+- Preserve a streamed response across an overlapping queued steer, including
+  its exact source and the subsequent reply's assistant header.
+- Let Python text-dispatch helpers carry caller-supplied idempotency keys with
+  correlation IDs, including the completion-waiting helper.
 
 - `fork_off` children sent with `idle_retire_secs: null` are idle-retired on
   the runtime default. The null disabled retirement for the child, so a model

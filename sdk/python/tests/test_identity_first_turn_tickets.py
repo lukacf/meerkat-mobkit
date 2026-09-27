@@ -214,11 +214,16 @@ class TestSendAndWaitWaitsForItsOwnTurn:
             DispatchInput(content="work", origin="system"), timeout=5, poll_interval=0.001,
         )
         texted = await handle.dispatch_text_and_wait(
-            "more work", timeout=5, poll_interval=0.001,
+            "more work", correlation_id="chat-1", idempotency_key="evt-1",
+            timeout=5, poll_interval=0.001,
         )
 
         assert (dispatched, texted) == ("dispatched reply", "text reply")
-        assert all(p["track_turn"] is True for p in transport.params_of("mobkit/dispatch"))
+        params = transport.params_of("mobkit/dispatch")
+        assert all(p["track_turn"] is True for p in params)
+        # The text helper carries the caller's dedup pair AND tracks the turn.
+        assert params[1]["dispatch_input"]["idempotency_key"] == "evt-1"
+        assert params[1]["dispatch_input"]["correlation_id"] == "chat-1"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("through_handle", [False, True])

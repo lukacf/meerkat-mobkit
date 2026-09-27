@@ -854,7 +854,10 @@ class MobKitRuntime:
         idempotency_key: str | None = None,
         track_turn: bool = False,
     ) -> Any:
-        """Dispatch plain text; supply correlation and idempotency keys together."""
+        """Dispatch plain text; supply correlation and idempotency keys together.
+
+        ``track_turn`` as for :meth:`send`.
+        """
         from .identity_first_models import DispatchInput
         di = DispatchInput(
             content=text, origin=origin, correlation_id=correlation_id,
