@@ -334,6 +334,42 @@ playback. Dialogue continuity is retained by the upstream feature/document
 owner, not replayed from a browser buffer. No provider event or analyser signal
 is promoted to a heard/completed utterance.
 
+### Provisional assistant captions
+
+Under `ProviderManagedUnmeasured`, Meerkat commits one canonical assistant row
+per provider turn segment. The row lands when the segment seals: at the turn
+end (gpt-live-1 has no assistant completion event, so a speaker change or
+close ends the turn), at a typed between-speech boundary, or at channel close.
+The console covers that gap with provisional captions.
+
+The live host installs a `PublicGptLiveProvisionalCaptionSink` on its public
+authority. Meerkat calls it synchronously, in delta order, outside its locks.
+Each caption names the session, the channel, the segment item id, and the
+segment's whole text so far. A retraction names a segment that no committed
+row will replace. The sink never waits on the browser. It replaces the item's
+entry in a bounded per-channel buffer (coalesced per item, oldest evicted
+first) and wakes readers. Captions for sessions without a console call are
+dropped.
+
+`mobkit/console/voice/captions {identity, request_id, channel_id, after,
+wait_ms}` reads that buffer with the same exact `{identity, request_id,
+channel_id}` scope as `context_status`. It answers `{identity, request_id,
+channel_id, cursor, captions}` with entries newer than `after`, waiting up to
+`wait_ms` (at most 15 s) for one. Each entry is `{kind: "caption", item_id,
+text}` or `{kind: "retracted", item_id}`. A closed call answers
+`voice_closed`, and a stale or replaced channel answers
+`voice_request_conflict`.
+
+The browser upserts `liveSpeech` keyed by `("assistant", item_id)` with the
+caption's text and drops the item on a retraction. The chat pane hides a
+caption once a committed row in the same session and channel lists its item
+id in `realtime_origin.provider_item_ids`. Pairing never uses text or time.
+Data-channel `session.output_transcript.*` events name no committed item, so
+they never create assistant live rows. User live rows still come from
+item-keyed input transcript deltas. Captions are display state only: a failed
+read is retried and never affects the call, and close or a replacement channel
+clears them.
+
 ### Replacement discovery must survive closure of the old channel
 
 Canonical context updates and normal delegation results are mirrored in place

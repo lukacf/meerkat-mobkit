@@ -673,6 +673,7 @@ pub async fn console_rpc_handler(
             | crate::console_voice::VOICE_REPLACEMENT_METHOD
             | crate::console_voice::VOICE_ACTIVITY_METHOD
             | crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+            | crate::console_voice::VOICE_CAPTIONS_METHOD
     ) || crate::console_voice::is_channel_method(&request_method)
     {
         let response = handle_console_voice_rpc(
@@ -757,7 +758,9 @@ async fn handle_console_voice_rpc(
         .pointer("/result/phase")
         .and_then(Value::as_str)
         .map(str::to_string);
-    if method == "mobkit/live/status" || method == crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+    if method == "mobkit/live/status"
+        || method == crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+        || method == crate::console_voice::VOICE_CAPTIONS_METHOD
     {
         tracing::debug!(
             target: "meerkat_mobkit::console_voice::timing",
@@ -781,10 +784,10 @@ async fn handle_console_voice_rpc_inner(
     request: JsonRpcRequest,
 ) -> Value {
     use crate::console_voice::{
-        VOICE_ACTIVITY_METHOD, VOICE_ANSWER_RECEIVED_METHOD, VOICE_CLOSE_METHOD,
-        VOICE_CONTEXT_STATUS_METHOD, VOICE_OPEN_METHOD, VOICE_READINESS_METHOD,
-        VOICE_REPLACEMENT_METHOD, VoiceActivity, VoiceAnswerReceived, VoiceContextStatusRequest,
-        VoiceError, VoiceReadiness, VoiceRequest,
+        VOICE_ACTIVITY_METHOD, VOICE_ANSWER_RECEIVED_METHOD, VOICE_CAPTIONS_METHOD,
+        VOICE_CLOSE_METHOD, VOICE_CONTEXT_STATUS_METHOD, VOICE_OPEN_METHOD, VOICE_READINESS_METHOD,
+        VOICE_REPLACEMENT_METHOD, VoiceActivity, VoiceAnswerReceived, VoiceCaptionsRequest,
+        VoiceContextStatusRequest, VoiceError, VoiceReadiness, VoiceRequest,
     };
 
     if request.jsonrpc != JSONRPC_VERSION || request.id.is_none() {
@@ -810,7 +813,11 @@ async fn handle_console_voice_rpc_inner(
             | "mobkit/live/playback_owner/revoke"
     );
     if !retains_teardown_access {
-        if state.decisions.console.read_only && request.method != VOICE_CONTEXT_STATUS_METHOD {
+        // Owned status and caption reads mutate nothing.
+        if state.decisions.console.read_only
+            && request.method != VOICE_CONTEXT_STATUS_METHOD
+            && request.method != VOICE_CAPTIONS_METHOD
+        {
             return console_read_only_rpc_error(id);
         }
         if let (Some(runtime), Some(access)) = (
@@ -908,6 +915,22 @@ async fn handle_console_voice_rpc_inner(
             Ok(status) => match serde_json::to_value(status) {
                 Ok(value) => response_value(id, Some(value), None),
                 Err(_) => error(VoiceError::ContextReadFailed),
+            },
+            Err(failure) => error(failure),
+        };
+    }
+    if request.method == VOICE_CAPTIONS_METHOD {
+        let parsed: VoiceCaptionsRequest = match serde_json::from_value(request.params) {
+            Ok(parsed) => parsed,
+            Err(_) => return error(VoiceError::InvalidRequest),
+        };
+        let Some(controller) = controller else {
+            return error(VoiceError::Unavailable);
+        };
+        return match controller.captions(principal, parsed).await {
+            Ok(captions) => match serde_json::to_value(captions) {
+                Ok(value) => response_value(id, Some(value), None),
+                Err(_) => error(VoiceError::HostFailed),
             },
             Err(failure) => error(failure),
         };
@@ -2128,7 +2151,8 @@ fn console_rpc_access_requirements(
             one(ACTION_RUNTIME_ADMIN, None)
         }
         "mobkit/console/send" => one(ACTION_AGENT_SEND, identity),
-        crate::console_voice::VOICE_CONTEXT_STATUS_METHOD => one(ACTION_AGENT_VIEW, identity),
+        crate::console_voice::VOICE_CONTEXT_STATUS_METHOD
+        | crate::console_voice::VOICE_CAPTIONS_METHOD => one(ACTION_AGENT_VIEW, identity),
         crate::console_voice::VOICE_OPEN_METHOD
         | crate::console_voice::VOICE_READINESS_METHOD
         | crate::console_voice::VOICE_ANSWER_RECEIVED_METHOD

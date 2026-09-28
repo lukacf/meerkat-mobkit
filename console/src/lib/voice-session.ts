@@ -10,6 +10,7 @@ import { callConsoleRpc } from "./network";
 import { errorMessage, httpStatusCode, jsonRpcErrorCode } from "./errors";
 import { CONSOLE_RPC_PATHS } from "./contract";
 import { parseVoiceContextStatus, type VoiceContextPreparation } from "./voice-context";
+import { parseVoiceCaptions, VOICE_CAPTIONS_METHOD, type VoiceCaption } from "./voice-captions";
 
 export const VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1000;
 export const VOICE_CONNECT_TIMEOUT_MS = 30_000;
@@ -32,6 +33,11 @@ export const VOICE_RPC_FAILURE_TOLERANCE_MS = 30_000;
 export const VOICE_RPC_RETRY_BACKOFF_MAX_MS = 8_000;
 /** A suspended or interrupted AudioContext gets this long to return to `running`. */
 export const VOICE_AUDIO_RESUME_TIMEOUT_MS = 15_000;
+/** How long one caption read asks the gateway to wait for a newer caption. */
+export const VOICE_CAPTION_WAIT_MS = 10_000;
+/** Pause before the next caption read after an empty batch or a failed read. */
+export const VOICE_CAPTION_IDLE_DELAY_MS = 250;
+export const VOICE_CAPTION_RETRY_DELAY_MS = 1_000;
 const CONTEXT_POLL_INTERVAL_MS = 1_000;
 const CONTEXT_RETRY_INTERVAL_MS = 5_000;
 const SAMPLE_INTERVAL_MS = 100;
@@ -63,12 +69,16 @@ export interface VoiceSessionSnapshot {
   readonly contextPreparation?: VoiceContextPreparation | null;
   readonly contextStatusError?: string | null;
   /**
-   * Provisional speech for the active call, straight from the provider's
-   * transcript deltas on the WebRTC data channel. Keyed by speaker and provider item id,
-   * never persisted or sent anywhere, and dropped on every call end. The
-   * console renders unmatched items as distinct "live" rows. Canonical
-   * history replaces items only through matching session, channel and
-   * provider item identities; call end clears any remaining provisional rows.
+   * Provisional speech for the active call, keyed by speaker and provider item id,
+   * never persisted or sent anywhere, and dropped on every call end. User items come
+   * from item-keyed input transcript deltas on the WebRTC data channel. Assistant
+   * items come only from the gateway's provisional captions
+   * (`mobkit/console/voice/captions`), keyed by the segment item id the committed
+   * row later lists in `realtime_origin.provider_item_ids`; data-channel output
+   * transcript deltas carry no such id and are not used. The console renders
+   * unmatched items as distinct "live" rows. Canonical history replaces items only
+   * through matching session, channel and provider item identities; call end
+   * clears any remaining provisional rows.
    */
   readonly liveSpeech: readonly LiveSpeechItem[];
   /** Channel id of the active call, when one is active. */
@@ -350,6 +360,7 @@ interface Attempt {
   activityRetryAt?: number;
   activityFailure?: FailureWindow;
   contextObservation?: { abort: AbortController; timer?: ReturnType<typeof setTimeout> };
+  captionObservation?: { abort: AbortController; timer?: ReturnType<typeof setTimeout> };
   /** Wakes the activation transport wait on peer or data channel state changes. */
   onTransportChange?: () => void;
   lastActivity: number;
@@ -476,6 +487,7 @@ export function createVoiceSession(
 
   function cleanupPeer(attempt: Attempt) {
     stopContextObservation(attempt);
+    stopCaptionObservation(attempt);
     clearReconnectGrace(attempt);
     const peer = attempt.peer;
     const channel = attempt.channel;
@@ -517,6 +529,7 @@ export function createVoiceSession(
   function quiesceLocal(attempt: Attempt) {
     attempt.abort.abort();
     stopContextObservation(attempt);
+    stopCaptionObservation(attempt);
     if (attempt.sampleTimer !== undefined) env.clearTimeout(attempt.sampleTimer);
     if (attempt.silenceTimer !== undefined) env.clearTimeout(attempt.silenceTimer);
     if (attempt.replacementTimer !== undefined) env.clearTimeout(attempt.replacementTimer);
@@ -894,30 +907,19 @@ export function createVoiceSession(
     ) activity(attempt);
     // Text and transcript deltas are not evidence of current audio activity.
     // Provider-managed/unmeasured playback is settled by the shared owner, never by
-    // inferred browser completions or fabricated output IDs.
-    if (
-      type === "session.input_transcript.delta" ||
-      type === "session.output_transcript.delta"
-    ) {
+    // inferred browser completions or fabricated output IDs. Assistant speech is
+    // shown from the gateway's item-keyed captions (`observeCaptions`), never from
+    // `session.output_transcript.*`, whose events name no committed item.
+    if (type === "session.input_transcript.delta") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
       const delta = typeof event.delta === "string" ? event.delta
         : typeof event.text === "string" ? event.text : null;
-      if (itemId && delta !== null) {
-        accumulateLiveSpeech(
-          itemId,
-          type === "session.input_transcript.delta" ? "user" : "assistant",
-          delta,
-        );
-      }
+      if (itemId && delta !== null) accumulateLiveSpeech(itemId, "user", delta);
       return;
     }
-    if (type === "session.input_transcript.done" || type === "session.output_transcript.done") {
+    if (type === "session.input_transcript.done") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
-      if (itemId) finalizeLiveSpeech(
-        itemId,
-        type === "session.input_transcript.done" ? "user" : "assistant",
-        typeof event.text === "string" ? event.text : null,
-      );
+      if (itemId) finalizeLiveSpeech(itemId, "user", typeof event.text === "string" ? event.text : null);
     }
   }
 
@@ -927,7 +929,7 @@ export function createVoiceSession(
    * duplicates; the list is bounded so a long call cannot grow it without end
    * (canonical rows carry the committed history during and after the call).
    */
-  function accumulateLiveSpeech(itemId: string, speaker: "user" | "assistant", delta: string) {
+  function accumulateLiveSpeech(itemId: string, speaker: "user", delta: string) {
     const existing = snapshot.liveSpeech.find((item) => item.itemId === itemId && item.speaker === speaker);
     let next: LiveSpeechItem[];
     if (existing) {
@@ -944,7 +946,7 @@ export function createVoiceSession(
     publish({ liveSpeech: next });
   }
 
-  function finalizeLiveSpeech(itemId: string, speaker: "user" | "assistant", text: string | null) {
+  function finalizeLiveSpeech(itemId: string, speaker: "user", text: string | null) {
     if (!snapshot.liveSpeech.some((item) => item.itemId === itemId && item.speaker === speaker)) return;
     publish({
       liveSpeech: snapshot.liveSpeech.map((item) =>
@@ -953,6 +955,97 @@ export function createVoiceSession(
           : item,
       ),
     });
+  }
+
+  /**
+   * Apply one caption batch: a caption replaces its assistant item's text with the
+   * segment's whole text so far (so repeats and reordering are harmless), and a
+   * retraction drops the item. The committed row retires a caption in the chat pane
+   * by its `realtime_origin.provider_item_ids`, never by text.
+   */
+  function applyCaptions(captions: readonly VoiceCaption[]) {
+    let next: LiveSpeechItem[] = [...snapshot.liveSpeech];
+    let changed = false;
+    for (const caption of captions) {
+      const index = next.findIndex((item) => item.speaker === "assistant" && item.itemId === caption.itemId);
+      if (caption.kind === "retracted") {
+        if (index >= 0) {
+          next.splice(index, 1);
+          changed = true;
+        }
+        continue;
+      }
+      if (index >= 0) {
+        if (next[index].text !== caption.text) {
+          next[index] = { ...next[index], text: caption.text };
+          changed = true;
+        }
+        continue;
+      }
+      next.push({ itemId: caption.itemId, speaker: "assistant", text: caption.text, startedAt: env.now(), final: false });
+      if (next.length > LIVE_SPEECH_MAX_ITEMS) next = next.slice(next.length - LIVE_SPEECH_MAX_ITEMS);
+      changed = true;
+    }
+    if (changed) publish({ liveSpeech: next });
+  }
+
+  function stopCaptionObservation(attempt: Attempt) {
+    const observation = attempt.captionObservation;
+    attempt.captionObservation = undefined;
+    observation?.abort.abort();
+    if (observation?.timer !== undefined) env.clearTimeout(observation.timer);
+  }
+
+  /**
+   * Long-poll the active channel's provisional assistant captions. Captions are display
+   * state only: a failed read never affects the call, it is retried after a pause, and a
+   * closed or replaced channel ends this observer (replacement starts a new one).
+   */
+  function observeCaptions(attempt: Attempt) {
+    stopCaptionObservation(attempt);
+    if (!owns(attempt) || !attempt.active || snapshot.phase !== "active") return;
+    const channelId = attempt.active.channelId;
+    const observation: NonNullable<Attempt["captionObservation"]> = { abort: new AbortController() };
+    attempt.captionObservation = observation;
+    const isCurrent = () => owns(attempt) && snapshot.phase === "active" &&
+      attempt.captionObservation === observation && attempt.active?.channelId === channelId;
+    let after = 0;
+    const schedule = (delay: number) => {
+      if (!isCurrent()) return;
+      observation.timer = env.setTimeout(() => {
+        observation.timer = undefined;
+        void read();
+      }, delay);
+    };
+    async function read() {
+      if (!isCurrent()) return;
+      const timeout = VOICE_CAPTION_WAIT_MS + VOICE_TEARDOWN_TIMEOUT_MS;
+      let delay: number;
+      try {
+        const raw = await bounded(
+          env.rpc(VOICE_CAPTIONS_METHOD, {
+            ...closeParams(attempt), channel_id: channelId, after, wait_ms: VOICE_CAPTION_WAIT_MS,
+          }, timeout),
+          timeout,
+          observation.abort.signal,
+        );
+        if (!isCurrent()) return;
+        const batch = parseVoiceCaptions(raw, {
+          identity: attempt.target.identity, requestId: attempt.requestId, channelId,
+        }, after);
+        after = batch.cursor;
+        applyCaptions(batch.captions);
+        delay = batch.captions.length > 0 ? 0 : VOICE_CAPTION_IDLE_DELAY_MS;
+      } catch (error) {
+        if (error instanceof Cancelled || !isCurrent()) return;
+        const kind = (error as { rpcError?: { data?: { kind?: string } } } | null)?.rpcError?.data?.kind;
+        // The call's own control plane reports closure; captions just stop.
+        if (kind === "voice_closed" || kind === "voice_superseded" || kind === "voice_unavailable") return;
+        delay = VOICE_CAPTION_RETRY_DELAY_MS;
+      }
+      schedule(delay);
+    }
+    void read();
   }
 
   function preparePeer(attempt: Attempt) {
@@ -1244,6 +1337,7 @@ export function createVoiceSession(
             scheduleSilence(attempt);
             sampleActivity(attempt);
             observeContext(attempt);
+            observeCaptions(attempt);
           } catch (error) {
             if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error, attempt.connectionStage));
           }
@@ -1331,6 +1425,7 @@ export function createVoiceSession(
       sampleActivity(attempt);
       scheduleReplacement(attempt);
       observeContext(attempt);
+      observeCaptions(attempt);
     } catch (error) {
       if (error instanceof Cancelled) {
         await teardown(attempt).catch(() => {});

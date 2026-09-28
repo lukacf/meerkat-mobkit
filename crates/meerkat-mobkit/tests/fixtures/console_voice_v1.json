@@ -57,6 +57,24 @@
       "context_preparation": { "phase": "failed", "reason": "generation" }
     }
   },
+  "captions_method": "mobkit/console/voice/captions",
+  "captions_request": {
+    "identity": "agent-a",
+    "request_id": "voice-request",
+    "channel_id": "voice-channel-a",
+    "after": 3,
+    "wait_ms": 10000
+  },
+  "captions_response": {
+    "identity": "agent-a",
+    "request_id": "voice-request",
+    "channel_id": "voice-channel-a",
+    "cursor": 7,
+    "captions": [
+      { "kind": "caption", "item_id": "segment-a", "text": "The vault phrase is amber." },
+      { "kind": "retracted", "item_id": "segment-b" }
+    ]
+  },
   "context_status_failure_reasons": [
     "capture",
     "generation",

@@ -13,6 +13,8 @@ import {
 } from "./ChatPane";
 import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 import type { LiveSpeechItem } from "../lib/voice-session";
+import { mapFramesToTimelineEntries } from "../lib/adapters";
+import type { ConsoleFrame } from "../../../packages/console-core/src/runtime-types";
 
 const USER = { id: "user", label: "You", role: "user" as const };
 const AGENT = { id: "agent", label: "Agent", role: "assistant" as const };
@@ -381,6 +383,41 @@ test("canonical voice rows replace only their exact provisional items during a c
   const after = renderChat({ entries, phase: null });
   assert.match(after, /The canonical spoken answer/);
   assert.doesNotMatch(after, /chat-live-speech:agent/);
+});
+
+test("a committed row's realtime_origin.provider_item_ids retires the assistant caption of that segment", () => {
+  // One provider turn segment is one committed row; its caption was keyed by the
+  // segment item id Meerkat also records on the row. The frame goes through the
+  // console's own history adapter, exactly as the timeline stream delivers it.
+  const frame: ConsoleFrame = {
+    id: "spoken-row", event: "text_complete", identity: "agent", runtimeKey: "runtime", sessionId: "voice-session",
+    sourceKind: "session_history", timestampMs: 10,
+    data: { text: "The vault phrase is amber.", result: "The vault phrase is amber.", message: {
+      role: "block_assistant", blocks: [{ block_type: "transcript", data: { text: "The vault phrase is amber." } }],
+      identity: { realtime_origin: {
+        session_id: "voice-session", channel_id: "voice-channel", canonical_row_sequence: 4,
+        provider_item_ids: ["segment-1"],
+      } },
+    } },
+  };
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "agent", member_id: "agent", identity: "agent", label: "Agent", kind: "mob_agent" },
+    [frame],
+    { textMode: "markdown", renderInteractionStartsAsUser: true },
+  );
+  const liveSpeech: LiveSpeechItem[] = [
+    { itemId: "segment-1", speaker: "assistant", text: "The vault phrase is", startedAt: 1, final: false },
+    { itemId: "segment-2", speaker: "assistant", text: "Still speaking the next turn", startedAt: 2, final: false },
+  ];
+  const activeVoiceScope = { sessionId: "voice-session", channelId: "voice-channel" };
+  const html = renderChat({ entries, phase: null, activeVoiceScope, liveSpeech });
+  assert.match(html, /The vault phrase is amber\./);
+  assert.doesNotMatch(html, /chat-live-row:agent:segment-1/);
+  assert.match(html, /chat-live-row:agent:segment-2/);
+  const before = renderChat({ entries: [], phase: null, activeVoiceScope, liveSpeech });
+  assert.match(before, /chat-live-row:agent:segment-1/, "the caption shows until its row commits");
+  const otherChannel = renderChat({ entries, phase: null, activeVoiceScope: { ...activeVoiceScope, channelId: "old-channel" }, liveSpeech });
+  assert.match(otherChannel, /chat-live-row:agent:segment-1/, "a row from another channel never retires the caption");
 });
 
 test("voice pairing never uses timestamps, text, another scope or a missing provider key", () => {
