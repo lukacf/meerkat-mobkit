@@ -122,6 +122,7 @@ from .errors import (
     TurnOutputUnavailableWarning,
     TurnTrackingUnavailableWarning,
     TurnUnknownError,
+    WaitEndedError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
 )
@@ -333,6 +334,7 @@ __all__ = [
     "TurnFailedError",
     "TurnNotDeliveredError",
     "TurnUnknownError",
+    "WaitEndedError",
     "TurnOutputUnavailableError",
     "TurnOutputTruncatedWarning",
     "TurnOutputUnavailableWarning",

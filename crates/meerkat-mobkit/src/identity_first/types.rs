@@ -337,6 +337,7 @@ pub enum CompletionProgress {
 ///
 /// [`await_completion`]: super::runtime::IdentityRuntime::await_completion
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompletionWait {
     /// The cursor moved past the baseline (or, with no baseline, counts at
     /// least one completed turn).
@@ -344,8 +345,65 @@ pub enum CompletionWait {
     /// The identity's runtime incarnation changed; see
     /// [`CompletionProgress::IncarnationChanged`].
     IncarnationChanged(CompletionCursor),
+    /// A run on the identity failed (or was cancelled) during the wait. Only
+    /// failures observed while the wait runs count: one that ended before the
+    /// wait started is not visible to it.
+    RunFailed(CompletionCursor),
+    /// The identity was registered when the wait started and no longer is
+    /// (deleted, or removed from the roster).
+    IdentityGone(CompletionCursor),
+    /// The identity is parked Broken.
+    Broken(CompletionCursor),
+    /// The identity is retiring or retired.
+    Retiring(CompletionCursor),
+    /// The runtime is shutting down.
+    ShuttingDown(CompletionCursor),
     /// The caller's deadline passed first.
     TimedOut(CompletionCursor),
+}
+
+impl CompletionWait {
+    /// Wire token of the outcome.
+    pub fn wire_str(&self) -> &'static str {
+        match self {
+            Self::Completed(_) => "completed",
+            Self::IncarnationChanged(_) => "incarnation_changed",
+            Self::RunFailed(_) => "run_failed",
+            Self::IdentityGone(_) => "identity_gone",
+            Self::Broken(_) => "broken",
+            Self::Retiring(_) => "retiring",
+            Self::ShuttingDown(_) => "shutting_down",
+            Self::TimedOut(_) => "timed_out",
+        }
+    }
+
+    /// The cursor the wait observed last.
+    pub fn cursor(&self) -> CompletionCursor {
+        match self {
+            Self::Completed(cursor)
+            | Self::IncarnationChanged(cursor)
+            | Self::RunFailed(cursor)
+            | Self::IdentityGone(cursor)
+            | Self::Broken(cursor)
+            | Self::Retiring(cursor)
+            | Self::ShuttingDown(cursor)
+            | Self::TimedOut(cursor) => *cursor,
+        }
+    }
+}
+
+/// How a ticketed turn wait ([`wait_for_turn_outcome`]) ended.
+///
+/// [`wait_for_turn_outcome`]: super::runtime::IdentityRuntime::wait_for_turn_outcome
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TurnWait {
+    /// The turn left pending (or the ticket is unknown).
+    Settled(TurnOutcome),
+    /// The caller's deadline passed with the turn still pending.
+    TimedOut(TurnOutcome),
+    /// The runtime is shutting down; the turn's state at that moment.
+    ShuttingDown(TurnOutcome),
 }
 
 /// Delivery receipt for [`dispatch_admission_tracked`], carrying what a caller

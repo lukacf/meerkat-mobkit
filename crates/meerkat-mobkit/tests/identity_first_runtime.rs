@@ -1472,6 +1472,8 @@ struct CountingBridge {
     recover_calls: AtomicUsize,
     recover_unprovable_reason: tokio::sync::Mutex<Option<String>>,
     recover_heals: AtomicBool,
+    /// Heal-authority calls that fail transiently (a RetryLater verdict).
+    recover_fails_times: AtomicUsize,
     resume_delay: tokio::sync::Mutex<Option<Duration>>,
     resume_barrier: tokio::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
@@ -1612,6 +1614,17 @@ impl SessionBridge for CountingBridge {
         _session_id: &meerkat_core::types::SessionId,
     ) -> Result<CommittedBoundaryRepair, BridgeError> {
         self.recover_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .recover_fails_times
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(BridgeError::Mob(
+                "scripted: heal authority temporarily unreachable".to_string(),
+            ));
+        }
         if let Some(reason) = self.recover_unprovable_reason.lock().await.clone() {
             return Ok(CommittedBoundaryRepair::Unprovable { reason });
         }
@@ -7702,17 +7715,23 @@ async fn identity_first_runtime_broken_identity_repair_task_heals_without_restar
         meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
     );
 
-    // The task retries on its own: first retry still rejected, second heals.
+    // The supervisor's start pass is rejected too; the identity stays parked
+    // with no timer. A caller's demand (a refused materialization) is the
+    // typed trigger for the retry that heals it.
+    wait_for_resume_calls(&bridge, 2).await;
+    wait_for_state(&runtime, &id, IdentityLifecycleState::Broken).await;
+    let refused = runtime.materialize(&id).await;
+    assert!(
+        refused.is_err(),
+        "a Broken identity refuses materialization"
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if runtime.status(&id).await.unwrap().state == IdentityLifecycleState::Active {
-            break;
-        }
+    while runtime.status(&id).await.unwrap().state != IdentityLifecycleState::Active {
         assert!(
             std::time::Instant::now() < deadline,
-            "repair task did not heal the Broken identity in time"
+            "the demand trigger did not heal the Broken identity"
         );
-        request_repairs_during(&context, Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     repair.abort();
 
@@ -7765,7 +7784,7 @@ async fn identity_first_runtime_broken_identity_repair_task_is_quiet_when_health
     let repair = context.clone().spawn_broken_identity_repair_task(
         meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
     );
-    request_repairs_during(&context, Duration::from_millis(120)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
     repair.abort();
 
     assert_eq!(
@@ -7839,13 +7858,13 @@ async fn identity_first_runtime_repair_task_parks_unprovable_head_terminally() {
             std::time::Instant::now() < deadline,
             "repair task did not record the terminal heal verdict in time"
         );
-        request_repairs_during(&context, Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     // Bounded: many further cycles must not re-attempt recovery, must not
     // reconcile (no cosmetic reset to Dormant), and must not retry the
     // resume. This is exactly what looped in production.
-    request_repairs_during(&context, Duration::from_millis(250)).await;
+    trigger_repairs_repeatedly(&context, Duration::from_millis(250)).await;
     repair.abort();
     assert_eq!(
         bridge.recover_calls.load(Ordering::SeqCst),
@@ -7944,7 +7963,7 @@ async fn identity_first_runtime_parks_archived_not_revivable_on_first_materializ
     let repair = context.clone().spawn_broken_identity_repair_task(
         meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
     );
-    request_repairs_during(&context, Duration::from_millis(250)).await;
+    trigger_repairs_repeatedly(&context, Duration::from_millis(250)).await;
     repair.abort();
     assert_eq!(
         bridge.recover_calls.load(Ordering::SeqCst),
@@ -8046,7 +8065,7 @@ async fn identity_first_runtime_parks_archived_not_revivable_on_first_restore_pa
     let repair = context.clone().spawn_broken_identity_repair_task(
         meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
     );
-    request_repairs_during(&context, Duration::from_millis(250)).await;
+    trigger_repairs_repeatedly(&context, Duration::from_millis(250)).await;
     repair.abort();
     assert_eq!(
         bridge.recover_calls.load(Ordering::SeqCst),
@@ -8301,7 +8320,7 @@ async fn identity_first_runtime_repair_task_recovers_committed_head_then_stays_h
             std::time::Instant::now() < deadline,
             "repair task did not heal the identity after recovery in time"
         );
-        request_repairs_during(&context, Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     repair.abort();
 
@@ -12128,20 +12147,18 @@ async fn identity_first_runtime_owned_identity_for_member_alias_discriminates_pl
     );
 }
 
-/// Ask the continuity repair supervisor for passes across `window`, the
-/// explicit trigger a host uses (`mobkit/reconcile_identity`), now that the
-/// supervisor retries only on typed triggers and has no timer.
-async fn request_repairs_during(
+/// Keep triggering the continuity repair supervisor explicitly across
+/// `window` (the `mobkit/request_continuity_repair` trigger). Used only by
+/// NEGATIVE assertions: a parked identity must not be retried however often
+/// the supervisor is triggered. Positive heals rely on typed triggers alone.
+async fn trigger_repairs_repeatedly(
     context: &meerkat_mobkit::identity_first::IdentityFirstRuntimeContext,
     window: Duration,
 ) {
     let deadline = tokio::time::Instant::now() + window;
-    loop {
-        context.request_continuity_repair();
-        if tokio::time::Instant::now() >= deadline {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5).min(window)).await;
+    while tokio::time::Instant::now() < deadline {
+        context.request_continuity_repair().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -12362,4 +12379,226 @@ async fn restore_pass_publishes_typed_per_member_progress() {
         })
     );
     assert!(entry.error.is_some());
+}
+
+/// Wait until the bridge has seen `n` resume attempts.
+async fn wait_for_resume_calls(bridge: &CountingBridge, n: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while bridge.resume_calls.load(Ordering::SeqCst) < n {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the bridge never saw {n} resume attempts"));
+}
+
+fn repair_context(
+    runtime: &Arc<IdentityRuntime>,
+    roster: &[DurableAgentSpec],
+) -> Arc<meerkat_mobkit::identity_first::IdentityFirstRuntimeContext> {
+    Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(roster.to_vec())),
+            None,
+            None,
+            None,
+        ),
+    )
+}
+
+/// #468 review (item 1b/1d): a heal authority that is transiently
+/// unreachable (RetryLater) has no typed "reachable again" signal, so the
+/// supervisor arms its fallback wake, and the identity heals on it with no
+/// trigger at all instead of being stranded in a steady deployment.
+#[tokio::test(start_paused = true)]
+async fn repair_supervisor_heals_a_retry_later_on_its_fallback_wake() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.reject_resume_times(1);
+    bridge.recover_fails_times.store(1, Ordering::SeqCst);
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+    let id = make_identity("triage:main");
+    seed_ready_identity(&store, "triage:main").await;
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
+    let repair = repair_context(&runtime, &roster).spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
+    );
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_mins(1), async {
+        while runtime.status(&id).await.unwrap().state != IdentityLifecycleState::Active {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the fallback wake retries the transient heal failure");
+    assert_eq!(bridge.recover_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        started.elapsed() >= Duration::from_secs(1) && started.elapsed() < Duration::from_secs(3),
+        "healed on the first fallback wake (1 s), not a long timer: {:?}",
+        started.elapsed()
+    );
+    repair.abort();
+}
+
+/// #468 review: `mobkit/reconcile_identity`'s pass triggers the supervisor
+/// end to end. The reconcile pass itself is rejected; the settled pass is
+/// the typed trigger for the supervisor pass that heals the identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconcile_pass_triggers_the_repair_supervisor() {
+    use meerkat_mobkit::identity_first::ContinuityRepairRequestOutcome;
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let bridge = Arc::new(CountingBridge::default());
+    // Boot, the supervisor's start pass, and the reconcile pass are rejected.
+    bridge.reject_resume_times(3);
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+    let id = make_identity("triage:main");
+    seed_ready_identity(&store, "triage:main").await;
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    let context = repair_context(&runtime, &roster);
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
+    );
+    wait_for_resume_calls(&bridge, 2).await;
+    wait_for_state(&runtime, &id, IdentityLifecycleState::Broken).await;
+
+    // What `mobkit/reconcile_identity` runs.
+    let pass = context.refresh_desired_topology().await.unwrap();
+    assert!(matches!(
+        pass.outcomes.get(&id),
+        Some(RestoreOutcome::Broken(_))
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while runtime.status(&id).await.unwrap().state != IdentityLifecycleState::Active {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the settled reconcile pass triggers the healing supervisor pass");
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        context.request_continuity_repair().await,
+        ContinuityRepairRequestOutcome::NothingToRepair
+    );
+    repair.abort();
+}
+
+/// #468 review (item 4): a burst of other members' embodiments settling (a
+/// warm-up) must not run one repair pass per settle and trip the
+/// identical-failure park within seconds. The supervisor defers while
+/// embodiments are in flight and runs one pass once they settle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_warm_up_burst_does_not_trip_the_identical_failure_park() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let bridge = Arc::new(CountingBridge::default());
+    // The stuck identity's resume is rejected every time, identically.
+    bridge.reject_resume_times(usize::MAX);
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+    let stuck = make_identity("triage:stuck");
+    seed_ready_identity(&store, "triage:stuck").await;
+    let roster = vec![make_spec("triage:stuck")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    let repair = repair_context(&runtime, &roster).spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
+    );
+    wait_for_resume_calls(&bridge, 2).await;
+    wait_for_state(&runtime, &stuck, IdentityLifecycleState::Broken).await;
+
+    // Eight other members embody (fresh mints), four at a time.
+    let fresh: Vec<DurableAgentSpec> = (0..8)
+        .map(|index| make_spec(&format!("worker:fresh{index}")))
+        .collect();
+    let burst = restore_flow(&runtime, &fresh, None, None).await.unwrap();
+    assert!(
+        burst
+            .outcomes
+            .values()
+            .all(|outcome| matches!(outcome, RestoreOutcome::Created { .. }))
+    );
+    // Let the deferred pass (if any) run.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        runtime
+            .status(&stuck)
+            .await
+            .unwrap()
+            .continuity_unrecoverable
+            .is_none(),
+        "a warm-up burst must not park the stuck identity"
+    );
+    assert!(
+        bridge.resume_calls.load(Ordering::SeqCst) <= 4,
+        "the burst runs a bounded number of passes, not one per settle: {}",
+        bridge.resume_calls.load(Ordering::SeqCst)
+    );
+    repair.abort();
+}
+
+/// Wait until `id` reaches `state` (the end of an in-flight pass).
+async fn wait_for_state(
+    runtime: &IdentityRuntime,
+    id: &AgentIdentity,
+    state: IdentityLifecycleState,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime.status(id).await.unwrap().state != state {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{id} never reached {state:?}"));
+}
+
+/// #468 review (item 1a): a delivery refused because the identity is Broken
+/// is a caller's demand, and fires the typed repair trigger that heals it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_send_refused_on_a_broken_identity_triggers_its_repair() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let bridge = Arc::new(CountingBridge::default());
+    // Boot and the supervisor's start pass are rejected.
+    bridge.reject_resume_times(2);
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+    let id = make_identity("triage:main");
+    seed_ready_identity(&store, "triage:main").await;
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    let repair = repair_context(&runtime, &roster).spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
+    );
+    wait_for_resume_calls(&bridge, 2).await;
+    wait_for_state(&runtime, &id, IdentityLifecycleState::Broken).await;
+
+    let refused = runtime
+        .send(&id, &meerkat_core::ContentInput::Text("hello".to_string()))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a Broken identity refuses delivery: {refused:?}"
+    );
+    wait_for_state(&runtime, &id, IdentityLifecycleState::Active).await;
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 3);
+    repair.abort();
 }

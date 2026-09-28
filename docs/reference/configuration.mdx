@@ -685,14 +685,22 @@ the stdio gateway `mobkit/init` still returns after the eager pass; a host
 that must not wait on the whole fleet uses `lazy_with_background_warm` and
 follows the same typed progress with `mobkit/wait_identity_bootstrap`.
 
-Broken identities are retried by the continuity repair supervisor, which has
-no timer. It runs one pass when it starts and then waits for a typed trigger:
-another identity's embodiment settled (a resume or a fresh durable mint
-committed, releasing the store writer it held), a host restore or reconcile
-pass settled (boot, a roster refresh, `mobkit/reconcile_identity`), or an
-explicit request (`IdentityFirstRuntimeContext::request_continuity_repair`).
-Its own passes never re-trigger it. `mobkit/reconcile_identity` remains the
-operator's explicit trigger.
+Broken identities are retried by the continuity repair supervisor, which is
+event-driven. It runs one pass when it starts and then waits for a typed
+trigger: another identity's embodiment settled (a resume or a fresh durable
+mint committed, releasing the store writer it held), a host restore or
+reconcile pass settled (boot, a roster refresh, `mobkit/reconcile_identity`),
+a delivery or materialization was refused because the identity is Broken (a
+caller's demand), or an explicit request (`mobkit/request_continuity_repair`,
+`request_continuity_repair()` / `requestContinuityRepair()` in the SDKs). It
+defers a pass while other embodiments are in flight, so a warm-up burst runs
+one pass rather than one per member. Its own passes never re-trigger it.
+Only a transient cause with no typed signal (a heal authority that could not
+be reached, a pass that failed on a roster provider or store error, a member
+still Broken on an unavailable store) arms a last-resort fallback wake: 1 s,
+doubling to 30 s, reset by the first pass without such a cause. The
+agent-memory member-event observer uses the same fallback stance for a
+subscribe that fails or a stream that closes as soon as it opens.
 
 The stock persistent gateway also advertises a private shutdown handshake and
 its bounded `stdio_shutdown_horizon_ms` in the `mobkit/init` result. SDK hosts

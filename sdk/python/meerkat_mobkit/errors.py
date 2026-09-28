@@ -281,6 +281,23 @@ class NotConnectedError(MobKitError):
     """Raised when an operation requires a connected runtime but none is available."""
 
 
+class WaitEndedError(MobKitError):
+    """A server-side wait ended, typed, before what it waited for happened.
+
+    ``outcome`` is the gateway's token: ``run_failed`` (a run on the identity
+    failed or was cancelled during the wait), ``broken`` (the identity is
+    parked Broken), ``retiring`` (retiring, retired or being deleted),
+    ``identity_gone`` (no longer registered) or ``shutting_down`` (the
+    gateway is shutting down). Tolerate future values.
+    """
+
+    def __init__(self, identity: str, outcome: str, detail: str = ""):
+        message = f"wait on identity {identity!r} ended: {outcome}"
+        super().__init__(f"{message} ({detail})" if detail else message)
+        self.identity = identity
+        self.outcome = outcome
+
+
 class TurnFailedError(MobKitError):
     """The turn a ticket names ran and failed (``mobkit/turn_result`` state
     ``failed``). ``reason`` carries the runtime's typed detail."""

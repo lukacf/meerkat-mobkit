@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -40,7 +42,7 @@ use super::types::{
     MemberHealthReport, MemberReloadDisposition, MemberReloadOutcome, NotAddressable,
     ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext, SendAdmission, SessionRepairRequired,
     SessionRepairScope, SessionSnapshot, Ticketed, TopologyContext, TurnOutcome, TurnOutput,
-    TurnTicket, TurnTracking, TurnUntrackable,
+    TurnTicket, TurnTracking, TurnUntrackable, TurnWait,
 };
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
@@ -1412,9 +1414,10 @@ impl IdentityFirstRuntimeContext {
     /// Ask the continuity repair supervisor for a pass now. The supervisor
     /// retries Broken identities only on typed triggers; this is the host's
     /// explicit one.
-    pub fn request_continuity_repair(&self) {
+    pub async fn request_continuity_repair(&self) -> ContinuityRepairRequestOutcome {
         self.runtime
             .trigger_continuity_repair(ContinuityRepairTrigger::Requested);
+        self.runtime.continuity_repair_request_outcome().await
     }
 
     async fn refresh_desired_topology_from(
@@ -1512,6 +1515,7 @@ impl IdentityFirstRuntimeContext {
         _policy: ContinuityRepairPolicy,
         mut cancellation: Option<watch::Receiver<bool>>,
     ) {
+        let _supervising = ContinuityRepairSupervising::enter(&self.runtime);
         // Subscribe before the first pass so a trigger landing during it
         // still wakes the next wait.
         let mut triggers = self.runtime.subscribe_continuity_repair_triggers();
@@ -1522,210 +1526,52 @@ impl IdentityFirstRuntimeContext {
         // Track consecutive per-identity failure signatures and park typed
         // after [`REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS`].
         let mut identical_failure_streaks: HashMap<AgentIdentity, (String, u32)> = HashMap::new();
+        // The last-resort wake for transient causes with no typed signal
+        // ([`crate::fallback_wake`]); disarmed while nothing transient stands.
+        let mut fallback = crate::fallback_wake::FallbackWake::default();
         // The supervisor starts once the boot pass settled, which is itself a
         // trigger: one pass up front, then only on typed triggers.
-        let mut trigger = Some(ContinuityRepairTrigger::RestorePassSettled);
+        let mut wake = Some(RepairWake::Trigger(
+            ContinuityRepairTrigger::RestorePassSettled,
+        ));
         loop {
-            if trigger.is_none() {
-                trigger = match cancellation.as_mut() {
-                    Some(cancellation) => {
-                        if *cancellation.borrow() {
-                            return;
-                        }
-                        tokio::select! {
-                            changed = triggers.changed() => match changed {
-                                Ok(()) => triggers.borrow_and_update().last,
-                                Err(_) => return,
-                            },
-                            changed = cancellation.changed() => match changed {
-                                Ok(()) if *cancellation.borrow() => return,
-                                Ok(()) => continue,
-                                // Dropping the runtime-owned supervisor drops
-                                // the only sender. Treat that as cancellation;
-                                // looping on the permanently closed receiver
-                                // would spin a detached task at 100% CPU.
-                                Err(_) => return,
-                            },
-                        }
-                    }
-                    None => match triggers.changed().await {
-                        Ok(()) => triggers.borrow_and_update().last,
+            let current = match wake.take() {
+                Some(current) => current,
+                None => tokio::select! {
+                    changed = triggers.changed() => match changed {
+                        Ok(()) => match triggers.borrow_and_update().last {
+                            Some(trigger) => RepairWake::Trigger(trigger),
+                            None => continue,
+                        },
                         Err(_) => return,
                     },
-                };
-            }
-            let Some(cause) = trigger.take() else {
-                continue;
+                    () = crate::fallback_wake::sleep_until(fallback.next_wake()),
+                        if fallback.next_wake().is_some() => RepairWake::Fallback,
+                    () = repair_cancelled(&mut cancellation) => return,
+                },
             };
+            // Another embodiment in flight contends for the same store
+            // writers, and its settling is itself a trigger: defer the pass
+            // until none is in flight (the typed in-flight count reaching
+            // zero), so a warm-up burst of settles runs one pass, not one per
+            // member, and cannot trip the identical-failure park in seconds.
+            if !self.runtime.broken_identities().await.is_empty()
+                && !self
+                    .runtime
+                    .embodiments_settled_or_cancelled(&mut cancellation)
+                    .await
+            {
+                return;
+            }
             // Triggers that landed before this pass are covered by it.
             triggers.borrow_and_update();
-            let broken = self.runtime.broken_identities().await;
-            if broken.is_empty() {
-                continue;
-            }
-            // Heal must be REAL before reconcile runs: reconcile alone only
-            // resets the runtime entry (lazy mode re-registers Dormant) while
-            // the durable head can stay an intra-turn projection that the
-            // next materialization re-Breaks — the measured 2026-07-29
-            // production heal/re-Break loop. Drive the bridge's heal
-            // authority FIRST; only identities whose durable head is (now)
-            // committed — or whose bridge has no heal seam — proceed.
-            let mut repairable = Vec::new();
-            let mut recovery_failures = 0usize;
-            for identity in &broken {
-                if self
-                    .runtime
-                    .continuity_unrecoverable(identity)
-                    .await
-                    .is_some()
-                {
-                    // Terminal typed verdict already recorded: stable across
-                    // calls, so re-healing every cycle is exactly the loop
-                    // this replaces. Operators act on the surfaced reason.
-                    continue;
-                }
-                if self
-                    .runtime
-                    .session_repair_required(identity)
-                    .await
-                    .is_some()
-                {
-                    // The durable document needs the operator's sanctioned
-                    // repair; the heal authority cannot even read it. Only
-                    // `reload_member` after the repair re-attempts the resume.
-                    continue;
-                }
-                if self
-                    .runtime
-                    .host_rejected_build_park(identity)
-                    .await
-                    .is_some()
-                {
-                    // The host's gate rejects this exact spec
-                    // deterministically: reattempting re-asks the same
-                    // question and burns a build + callback round trip per
-                    // cycle. A spec change clears the park (checked inside
-                    // the accessor); until then this identity is parked, not
-                    // repaired.
-                    continue;
-                }
-                match self.attempt_committed_boundary_recovery(identity).await {
-                    BrokenRepairDisposition::Repairable => repairable.push(identity.clone()),
-                    BrokenRepairDisposition::Unprovable
-                    | BrokenRepairDisposition::RepairRequired => {}
-                    BrokenRepairDisposition::RetryLater => recovery_failures += 1,
-                }
-            }
-            if repairable.is_empty() {
-                // Nothing eligible this pass: either every Broken identity
-                // carries a terminal verdict (no reconcile churn) or recovery
-                // itself failed transiently; the next trigger retries it.
-                if recovery_failures > 0 {
-                    tracing::debug!(
-                        recovery_failures,
-                        "continuity repair: heal authority unavailable; waiting for the next trigger"
-                    );
-                }
-                if cancellation
-                    .as_ref()
-                    .is_some_and(|cancellation| *cancellation.borrow())
-                {
-                    return;
-                }
-                continue;
-            }
-            tracing::info!(
-                broken = repairable.len(),
-                trigger = ?cause,
-                "continuity repair: retrying restore for Broken identities"
-            );
-            let pass = match self
-                .refresh_desired_topology_from(RestorePassOrigin::ContinuityRepair)
+            match self
+                .continuity_repair_pass(&mut identical_failure_streaks, current)
                 .await
             {
-                Ok(pass) => pass,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "continuity repair reconcile failed; waiting for the next trigger"
-                    );
-                    if cancellation
-                        .as_ref()
-                        .is_some_and(|cancellation| *cancellation.borrow())
-                    {
-                        return;
-                    }
-                    continue;
-                }
-            };
-            let still_broken = self.runtime.repairable_broken_identities().await;
-            let healed = repairable
-                .iter()
-                .filter(|id| !still_broken.contains(id))
-                .count();
-            if healed > 0 {
-                tracing::info!(
-                    healed,
-                    still_broken = still_broken.len(),
-                    "continuity repair healed identities"
-                );
-            }
-            for identity in &repairable {
-                if !still_broken.contains(identity) {
-                    identical_failure_streaks.remove(identity);
-                    continue;
-                }
-                let Some(super::orchestrator::RestoreOutcome::Broken(failure)) =
-                    pass.outcomes.get(identity)
-                else {
-                    // No comparable typed failure for this pass (the identity
-                    // broke through a different door); a streak cannot be
-                    // byte-compared across shapes.
-                    identical_failure_streaks.remove(identity);
-                    continue;
-                };
-                let signature = format!("{:?}: {}", failure.kind, failure.detail);
-                let streak = identical_failure_streaks
-                    .entry(identity.clone())
-                    .or_insert_with(|| (signature.clone(), 0));
-                if streak.0 == signature {
-                    streak.1 += 1;
-                } else {
-                    *streak = (signature.clone(), 1);
-                }
-                if streak.1 >= REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS {
-                    identical_failure_streaks.remove(identity);
-                    tracing::error!(
-                        %identity,
-                        attempts = REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS,
-                        blocking_failure = %signature,
-                        "continuity repair failed byte-identically on every attempt; \
-                         parking the identity typed instead of re-executing destructive \
-                         repair steps on a timer. Operator path back after fixing the \
-                         blocking failure: restart the gateway (the park is \
-                         process-local; boot re-attempts repair once) or reset the \
-                         identity via `mobkit/reset` (deliberate fresh start)"
-                    );
-                    if !self
-                        .runtime
-                        .mark_continuity_unrecoverable(
-                            identity,
-                            format!(
-                                "continuity repair parked after \
-                                 {REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS} consecutive \
-                                 byte-identical repair failures; blocking failure: \
-                                 {signature}. After fixing it, restart the gateway \
-                                 (process-local park; boot re-attempts repair) or reset \
-                                 the identity via `mobkit/reset`"
-                            ),
-                        )
-                        .await
-                    {
-                        tracing::debug!(
-                            %identity,
-                            "identity left Broken before the repair park could be recorded"
-                        );
-                    }
+                RepairPassVerdict::Settled => fallback.reset(),
+                RepairPassVerdict::Transient => {
+                    fallback.record_failure(tokio::time::Instant::now());
                 }
             }
             if cancellation
@@ -1734,6 +1580,190 @@ impl IdentityFirstRuntimeContext {
             {
                 return;
             }
+        }
+    }
+
+    /// One repair pass over the Broken identities; reports whether a
+    /// transient cause with no typed signal still stands.
+    async fn continuity_repair_pass(
+        &self,
+        identical_failure_streaks: &mut HashMap<AgentIdentity, (String, u32)>,
+        wake: RepairWake,
+    ) -> RepairPassVerdict {
+        let broken = self.runtime.broken_identities().await;
+        if broken.is_empty() {
+            return RepairPassVerdict::Settled;
+        }
+        // Heal must be REAL before reconcile runs: reconcile alone only
+        // resets the runtime entry (lazy mode re-registers Dormant) while
+        // the durable head can stay an intra-turn projection that the
+        // next materialization re-Breaks — the measured 2026-07-29
+        // production heal/re-Break loop. Drive the bridge's heal
+        // authority FIRST; only identities whose durable head is (now)
+        // committed — or whose bridge has no heal seam — proceed.
+        let mut repairable = Vec::new();
+        let mut recovery_failures = 0usize;
+        for identity in &broken {
+            if self
+                .runtime
+                .continuity_unrecoverable(identity)
+                .await
+                .is_some()
+            {
+                // Terminal typed verdict already recorded: stable across
+                // calls, so re-healing every cycle is exactly the loop
+                // this replaces. Operators act on the surfaced reason.
+                continue;
+            }
+            if self
+                .runtime
+                .session_repair_required(identity)
+                .await
+                .is_some()
+            {
+                // The durable document needs the operator's sanctioned
+                // repair; the heal authority cannot even read it. Only
+                // `reload_member` after the repair re-attempts the resume.
+                continue;
+            }
+            if self
+                .runtime
+                .host_rejected_build_park(identity)
+                .await
+                .is_some()
+            {
+                // The host's gate rejects this exact spec
+                // deterministically: reattempting re-asks the same
+                // question and burns a build + callback round trip per
+                // cycle. A spec change clears the park (checked inside
+                // the accessor); until then this identity is parked, not
+                // repaired.
+                continue;
+            }
+            match self.attempt_committed_boundary_recovery(identity).await {
+                BrokenRepairDisposition::Repairable => repairable.push(identity.clone()),
+                BrokenRepairDisposition::Unprovable | BrokenRepairDisposition::RepairRequired => {}
+                BrokenRepairDisposition::RetryLater => recovery_failures += 1,
+            }
+        }
+        if repairable.is_empty() {
+            // Nothing eligible this pass: every Broken identity carries a
+            // terminal verdict (no reconcile churn), or the heal authority
+            // itself failed transiently, which has no typed "reachable again"
+            // signal: arm the fallback wake.
+            if recovery_failures > 0 {
+                tracing::debug!(
+                    recovery_failures,
+                    "continuity repair: heal authority unavailable; arming the fallback wake"
+                );
+                return RepairPassVerdict::Transient;
+            }
+            return RepairPassVerdict::Settled;
+        }
+        tracing::info!(
+            broken = repairable.len(),
+            wake = wake.label(),
+            "continuity repair: retrying restore for Broken identities"
+        );
+        let pass = match self
+            .refresh_desired_topology_from(RestorePassOrigin::ContinuityRepair)
+            .await
+        {
+            Ok(pass) => pass,
+            Err(err) => {
+                // A roster provider or store blip: no typed signal says it
+                // cleared, so the fallback wake retries it.
+                tracing::warn!(
+                    error = %err,
+                    "continuity repair reconcile failed; arming the fallback wake"
+                );
+                return RepairPassVerdict::Transient;
+            }
+        };
+        let still_broken = self.runtime.repairable_broken_identities().await;
+        // A member still Broken on an unreachable store has no typed "store
+        // healthy" signal either; every other cause is retried by a typed
+        // trigger (a settled embodiment, a settled pass, a caller's demand).
+        let store_unavailable = still_broken.iter().any(|identity| {
+            matches!(
+                pass.outcomes.get(identity),
+                Some(super::orchestrator::RestoreOutcome::Broken(failure))
+                    if failure.kind == ContinuityFailureKind::StoreUnavailable
+            )
+        });
+        let healed = repairable
+            .iter()
+            .filter(|id| !still_broken.contains(id))
+            .count();
+        if healed > 0 {
+            tracing::info!(
+                healed,
+                still_broken = still_broken.len(),
+                "continuity repair healed identities"
+            );
+        }
+        for identity in &repairable {
+            if !still_broken.contains(identity) {
+                identical_failure_streaks.remove(identity);
+                continue;
+            }
+            let Some(super::orchestrator::RestoreOutcome::Broken(failure)) =
+                pass.outcomes.get(identity)
+            else {
+                // No comparable typed failure for this pass (the identity
+                // broke through a different door); a streak cannot be
+                // byte-compared across shapes.
+                identical_failure_streaks.remove(identity);
+                continue;
+            };
+            let signature = format!("{:?}: {}", failure.kind, failure.detail);
+            let streak = identical_failure_streaks
+                .entry(identity.clone())
+                .or_insert_with(|| (signature.clone(), 0));
+            if streak.0 == signature {
+                streak.1 += 1;
+            } else {
+                *streak = (signature.clone(), 1);
+            }
+            if streak.1 >= REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS {
+                identical_failure_streaks.remove(identity);
+                tracing::error!(
+                    %identity,
+                    attempts = REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS,
+                    blocking_failure = %signature,
+                    "continuity repair failed byte-identically on every attempt; \
+                     parking the identity typed instead of re-executing destructive \
+                     repair steps on a timer. Operator path back after fixing the \
+                     blocking failure: restart the gateway (the park is \
+                     process-local; boot re-attempts repair once) or reset the \
+                     identity via `mobkit/reset` (deliberate fresh start)"
+                );
+                if !self
+                    .runtime
+                    .mark_continuity_unrecoverable(
+                        identity,
+                        format!(
+                            "continuity repair parked after \
+                             {REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS} consecutive \
+                             byte-identical repair failures; blocking failure: \
+                             {signature}. After fixing it, restart the gateway \
+                             (process-local park; boot re-attempts repair) or reset \
+                             the identity via `mobkit/reset`"
+                        ),
+                    )
+                    .await
+                {
+                    tracing::debug!(
+                        %identity,
+                        "identity left Broken before the repair park could be recorded"
+                    );
+                }
+            }
+        }
+        if store_unavailable || recovery_failures > 0 {
+            RepairPassVerdict::Transient
+        } else {
+            RepairPassVerdict::Settled
         }
     }
 
@@ -1908,8 +1938,12 @@ pub enum ContinuityRepairTrigger {
     /// writer it held.
     RestorePassSettled,
     /// A host asked for a repair pass
-    /// ([`IdentityFirstRuntimeContext::request_continuity_repair`]).
+    /// ([`IdentityFirstRuntimeContext::request_continuity_repair`],
+    /// `mobkit/request_continuity_repair`).
     Requested,
+    /// A caller's delivery or materialization was refused because the
+    /// identity is Broken: real demand for the identity.
+    DemandOnBroken,
 }
 
 /// Who ran a restore pass, so the repair supervisor's own passes do not
@@ -1920,6 +1954,102 @@ enum RestorePassOrigin {
     Host,
     /// The continuity repair supervisor.
     ContinuityRepair,
+}
+
+/// What woke one continuity repair pass (for the operator log).
+#[derive(Debug, Clone, Copy)]
+enum RepairWake {
+    Trigger(ContinuityRepairTrigger),
+    /// The last-resort wake armed by a transient cause with no typed signal.
+    Fallback,
+}
+
+impl RepairWake {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Trigger(ContinuityRepairTrigger::EmbodimentSettled) => "embodiment_settled",
+            Self::Trigger(ContinuityRepairTrigger::RestorePassSettled) => "restore_pass_settled",
+            Self::Trigger(ContinuityRepairTrigger::Requested) => "requested",
+            Self::Trigger(ContinuityRepairTrigger::DemandOnBroken) => "demand_on_broken",
+            Self::Fallback => "fallback_wake",
+        }
+    }
+}
+
+/// Whether a repair pass left a transient cause that has no typed signal
+/// (an unreachable heal authority, a failed pass, an unavailable store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairPassVerdict {
+    Settled,
+    Transient,
+}
+
+/// Resolves when the supervisor is cancelled or its owner dropped the
+/// cancellation sender; never for an uncancellable supervisor.
+async fn repair_cancelled(cancellation: &mut Option<watch::Receiver<bool>>) {
+    let Some(cancellation) = cancellation.as_mut() else {
+        return std::future::pending().await;
+    };
+    loop {
+        if *cancellation.borrow_and_update() {
+            return;
+        }
+        if cancellation.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Marks a continuity repair supervisor as running for its lifetime, so a
+/// repair request can report whether anything will act on it.
+struct ContinuityRepairSupervising(Arc<IdentityRuntime>);
+
+impl ContinuityRepairSupervising {
+    fn enter(runtime: &Arc<IdentityRuntime>) -> Self {
+        runtime
+            .continuity_repair_supervisors
+            .fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(runtime))
+    }
+}
+
+impl Drop for ContinuityRepairSupervising {
+    fn drop(&mut self) {
+        self.0
+            .continuity_repair_supervisors
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Counts one embodiment in flight for its lifetime (including a cancelled
+/// one), publishing the count so the repair supervisor can wait for zero.
+struct EmbodimentInFlight<'a>(&'a watch::Sender<usize>);
+
+impl<'a> EmbodimentInFlight<'a> {
+    fn enter(count: &'a watch::Sender<usize>) -> Self {
+        count.send_modify(|count| *count += 1);
+        Self(count)
+    }
+}
+
+impl Drop for EmbodimentInFlight<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
+/// What a continuity repair request reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuityRepairRequestOutcome {
+    /// A running supervisor will run a pass for the repairable Broken
+    /// identities.
+    Scheduled,
+    /// No identity is Broken in a repairable way; there is nothing to repair.
+    NothingToRepair,
+    /// Repairable identities are Broken but no repair supervisor runs in this
+    /// runtime (an embedding that never started one).
+    NoSupervisor,
 }
 
 /// The supervisor's wake signal: a monotonic epoch and the latest cause.
@@ -2119,6 +2249,10 @@ pub struct IdentityRuntime {
     /// ([`Self::send_with_turn_ticket`], [`Self::dispatch_with_turn_ticket`]).
     /// Shared with the waiter tasks that settle them.
     turn_outcomes: Arc<StdMutex<TurnOutcomes>>,
+    /// Failed (or cancelled) runs observed per identity, so a completion
+    /// wait can end typed instead of running to its deadline. Retained for
+    /// the process lifetime, like the completion cursors.
+    run_failures: StdMutex<BTreeMap<AgentIdentity, u64>>,
     /// Fired whenever a ticketed turn is admitted (which may evict another)
     /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
     /// polling the registry. Carries no state.
@@ -2127,6 +2261,11 @@ pub struct IdentityRuntime {
     /// something happened that can let a Broken identity's retry succeed
     /// ([`ContinuityRepairTrigger`]). The supervisor has no timer.
     continuity_repair_triggers: watch::Sender<ContinuityRepairWake>,
+    /// Running continuity repair supervisors ([`ContinuityRepairSupervising`]).
+    continuity_repair_supervisors: AtomicUsize,
+    /// Embodiments (resumes and fresh mints) in flight, published so the
+    /// repair supervisor waits for zero instead of contending with them.
+    embodiments_in_flight: watch::Sender<usize>,
     /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
     inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
 }
@@ -2534,7 +2673,10 @@ impl IdentityRuntime {
             completion_cursors: StdMutex::new(BTreeMap::new()),
             turn_outcomes: Arc::default(),
             turn_outcome_changes: Arc::new(watch::channel(()).0),
+            run_failures: StdMutex::new(BTreeMap::new()),
             continuity_repair_triggers: watch::channel(ContinuityRepairWake::default()).0,
+            continuity_repair_supervisors: AtomicUsize::new(0),
+            embodiments_in_flight: watch::channel(0).0,
             inspections: StdMutex::new(BTreeMap::new()),
         }
     }
@@ -4935,6 +5077,18 @@ impl IdentityRuntime {
             .await
             .map(|outcome| outcome.record);
         after_inner.await;
+        // A caller wanted this identity and it is parked Broken: that demand
+        // is a typed repair trigger (it would otherwise wait for an unrelated
+        // event in a steady deployment).
+        if matches!(
+            &result,
+            Err(IdentityRuntimeError::InvalidState {
+                state: IdentityLifecycleState::Broken,
+                ..
+            })
+        ) {
+            self.trigger_continuity_repair(ContinuityRepairTrigger::DemandOnBroken);
+        }
         if matches!(
             &result,
             Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
@@ -5879,6 +6033,7 @@ impl IdentityRuntime {
             .await
             .get(identity)
             .is_some_and(|entry| entry.state == IdentityLifecycleState::Active);
+        let _in_flight = EmbodimentInFlight::enter(&self.embodiments_in_flight);
         let result = self
             .embody_identity_transaction(
                 identity,
@@ -8618,30 +8773,59 @@ impl IdentityRuntime {
     /// Wait until the turn admitted under `ticket` settles, then return its
     /// outcome ([`TurnOutcome::Completed`] carries the turn's own output).
     /// Returns [`TurnOutcome::Unknown`] at once for an unknown ticket, and
-    /// [`TurnOutcome::Pending`] if `timeout` elapses first.
-    ///
-    /// Event-driven: the wait sleeps until the ticket registry changes (an
-    /// admission or a settlement) and re-reads it then. `timeout` is only the
-    /// caller's overall deadline.
+    /// [`TurnOutcome::Pending`] if `timeout` elapses first or the runtime
+    /// shuts down. See [`Self::wait_for_turn_outcome`] for why it ended.
     pub async fn wait_for_turn(
         &self,
         identity: &AgentIdentity,
         ticket: TurnTicket,
         timeout: Duration,
     ) -> TurnOutcome {
+        match self.wait_for_turn_outcome(identity, ticket, timeout).await {
+            TurnWait::Settled(outcome)
+            | TurnWait::TimedOut(outcome)
+            | TurnWait::ShuttingDown(outcome) => outcome,
+        }
+    }
+
+    /// [`Self::wait_for_turn`], saying how the wait ended.
+    ///
+    /// Event-driven: the wait sleeps until the ticket registry changes (an
+    /// admission or a settlement), or the runtime starts shutting down, and
+    /// re-reads it then. `timeout` is only the caller's overall deadline.
+    pub async fn wait_for_turn_outcome(
+        &self,
+        identity: &AgentIdentity,
+        ticket: TurnTicket,
+        timeout: Duration,
+    ) -> TurnWait {
         let deadline = tokio::time::Instant::now() + timeout;
         // Subscribe before the first read so a settlement landing between the
         // read and the wait still wakes it.
         let mut changes = self.turn_outcome_changes.subscribe();
+        let mut shutdown = self.foreground_cancel.subscribe();
         loop {
             let outcome = self.turn_outcome(identity, ticket);
             if outcome != TurnOutcome::Pending {
-                return outcome;
+                return TurnWait::Settled(outcome);
             }
-            match tokio::time::timeout_at(deadline, changes.changed()).await {
-                Ok(Ok(())) => {}
-                // Deadline, or the runtime is gone: report where it stands.
-                Ok(Err(_)) | Err(_) => return self.turn_outcome(identity, ticket),
+            if *shutdown.borrow_and_update() {
+                return TurnWait::ShuttingDown(outcome);
+            }
+            tokio::select! {
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return TurnWait::ShuttingDown(self.turn_outcome(identity, ticket));
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return TurnWait::ShuttingDown(self.turn_outcome(identity, ticket));
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return TurnWait::TimedOut(self.turn_outcome(identity, ticket));
+                }
             }
         }
     }
@@ -8947,11 +9131,7 @@ impl IdentityRuntime {
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             if entry.state != IdentityLifecycleState::Active {
-                return Err(IdentityRuntimeError::InvalidState {
-                    identity: identity.clone(),
-                    state: entry.state,
-                    operation: "send",
-                });
+                return Err(self.refuse_inactive_delivery(identity, entry.state, "send"));
             }
         }
 
@@ -9650,11 +9830,7 @@ impl IdentityRuntime {
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             if entry.state != IdentityLifecycleState::Active {
-                return Err(IdentityRuntimeError::InvalidState {
-                    identity: identity.clone(),
-                    state: entry.state,
-                    operation: "dispatch",
-                });
+                return Err(self.refuse_inactive_delivery(identity, entry.state, "dispatch"));
             }
         }
 
@@ -13001,8 +13177,61 @@ impl IdentityRuntime {
         });
     }
 
+    /// The refusal of a delivery to an identity that is not Active. A Broken
+    /// identity's refused delivery is a caller's demand for it, and fires the
+    /// typed repair trigger.
+    fn refuse_inactive_delivery(
+        &self,
+        identity: &AgentIdentity,
+        state: IdentityLifecycleState,
+        operation: &'static str,
+    ) -> IdentityRuntimeError {
+        if state == IdentityLifecycleState::Broken {
+            self.trigger_continuity_repair(ContinuityRepairTrigger::DemandOnBroken);
+        }
+        IdentityRuntimeError::InvalidState {
+            identity: identity.clone(),
+            state,
+            operation,
+        }
+    }
+
     fn subscribe_continuity_repair_triggers(&self) -> watch::Receiver<ContinuityRepairWake> {
         self.continuity_repair_triggers.subscribe()
+    }
+
+    /// Wait until no embodiment is in flight; `false` when the supervisor
+    /// was cancelled first.
+    async fn embodiments_settled_or_cancelled(
+        &self,
+        cancellation: &mut Option<watch::Receiver<bool>>,
+    ) -> bool {
+        let mut in_flight = self.embodiments_in_flight.subscribe();
+        loop {
+            if *in_flight.borrow_and_update() == 0 {
+                return true;
+            }
+            tokio::select! {
+                changed = in_flight.changed() => {
+                    if changed.is_err() {
+                        return true;
+                    }
+                }
+                () = repair_cancelled(cancellation) => return false,
+            }
+        }
+    }
+
+    /// What a repair request reaches right now: the repairable Broken
+    /// identities, and whether a supervisor runs to act on them.
+    pub(crate) async fn continuity_repair_request_outcome(&self) -> ContinuityRepairRequestOutcome {
+        if self.repairable_broken_identities().await.is_empty() {
+            ContinuityRepairRequestOutcome::NothingToRepair
+        } else if self.continuity_repair_supervisors.load(Ordering::Acquire) == 0 {
+            ContinuityRepairRequestOutcome::NoSupervisor
+        } else {
+            ContinuityRepairRequestOutcome::Scheduled
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -13134,6 +13363,10 @@ impl IdentityRuntime {
                 "timed out after {}s waiting for a turn past {baseline} on {identity}",
                 timeout.as_secs_f64()
             ))),
+            other => Err(IdentityRuntimeError::Internal(format!(
+                "waiting for a turn past {baseline} on {identity} ended: {}",
+                other.wire_str()
+            ))),
         }
     }
 
@@ -13141,15 +13374,24 @@ impl IdentityRuntime {
     /// with no `after`, until it counts at least one completed turn (a
     /// startup readiness barrier).
     ///
-    /// Event-driven: the wait sleeps until a completion is recorded or the
-    /// identity table changes (a lease incarnation change is a table write),
-    /// and re-derives the cursor then. `timeout` is only the caller's overall
-    /// deadline; reaching it is [`CompletionWait::TimedOut`], a typed
-    /// outcome rather than an error.
+    /// Event-driven: the wait sleeps until a completion or a failed run is
+    /// recorded, the identity table changes (a lease incarnation change,
+    /// Broken, retire and delete are table writes), or the runtime starts
+    /// shutting down, and re-derives the outcome then. Every wake re-reads
+    /// the identity's entry, so a wait never runs to its deadline on an
+    /// identity that went Broken, retired or was deleted. `timeout` is only
+    /// the caller's overall deadline; reaching it is
+    /// [`CompletionWait::TimedOut`], a typed outcome rather than an error.
     ///
     /// An identity that is not registered yet reads its retained cursor, so a
     /// readiness wait started before the identity materializes simply waits
     /// for its first completion.
+    ///
+    /// The wake signal is shared by every identity (one watch over the
+    /// identity table), so a write to one identity wakes every waiter, which
+    /// re-reads its own entry and cursor and sleeps again. That costs one
+    /// cheap in-memory read per waiter per write; waiters are few (one per
+    /// parked SDK wait), so a per-identity signal is not worth the bookkeeping.
     pub async fn await_completion(
         &self,
         identity: &AgentIdentity,
@@ -13160,6 +13402,9 @@ impl IdentityRuntime {
         // Subscribe before the first read so a completion landing between the
         // read and the wait still wakes it.
         let mut changes = self.entries.subscribe();
+        let mut shutdown = self.foreground_cancel.subscribe();
+        let failures_at_start = self.run_failure_count(identity);
+        let registered_at_start = self.entries.read().await.contains_key(identity);
         loop {
             let cursor = self.completion_cursor(identity).await;
             match after {
@@ -13173,11 +13418,64 @@ impl IdentityRuntime {
                 None if cursor.turns > 0 => return CompletionWait::Completed(cursor),
                 None => {}
             }
-            match tokio::time::timeout_at(deadline, changes.changed()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => return CompletionWait::TimedOut(cursor),
+            if self.run_failure_count(identity) > failures_at_start {
+                return CompletionWait::RunFailed(cursor);
+            }
+            let state = self
+                .entries
+                .read()
+                .await
+                .get(identity)
+                .map(|entry| entry.state);
+            match state {
+                None if registered_at_start => return CompletionWait::IdentityGone(cursor),
+                Some(IdentityLifecycleState::Broken) => return CompletionWait::Broken(cursor),
+                Some(IdentityLifecycleState::Retiring) => {
+                    return CompletionWait::Retiring(cursor);
+                }
+                _ => {}
+            }
+            if *shutdown.borrow_and_update() {
+                return CompletionWait::ShuttingDown(cursor);
+            }
+            tokio::select! {
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return CompletionWait::ShuttingDown(cursor);
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return CompletionWait::ShuttingDown(cursor);
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return CompletionWait::TimedOut(cursor);
+                }
             }
         }
+    }
+
+    /// Record that a run on `identity` failed (or was cancelled), waking the
+    /// completion waiters. Driven from `AgentEvent::RunFailed` on the
+    /// identity agent-event monitor, beside [`Self::record_turn_completed`].
+    pub async fn record_turn_failed(&self, identity: &AgentIdentity) {
+        *self
+            .run_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(identity.clone())
+            .or_default() += 1;
+        self.entries.notify();
+    }
+
+    fn run_failure_count(&self, identity: &AgentIdentity) -> u64 {
+        self.run_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The configured default timeout for wait operations.
@@ -17665,8 +17963,9 @@ mod continuity_repair_supervisor_tests {
 
         // The park must arrive after EXACTLY the bounded attempt count. The
         // supervisor has no timer: its first pass runs at start, and each
-        // later pass follows an explicit trigger (as `mobkit/reconcile_identity`
-        // gives it).
+        // later pass follows a typed trigger. Here each is a caller's demand
+        // (a materialization refused because the identity is Broken), issued
+        // once the previous attempt was observed.
         let deadline = Instant::now() + Duration::from_secs(30);
         let park = loop {
             if let Some(park) = runtime.continuity_unrecoverable(&identity).await {
@@ -17676,8 +17975,20 @@ mod continuity_repair_supervisor_tests {
                 task.cancel_and_join().await;
                 return Err("repair loop never parked the identically-failing identity".into());
             }
-            context.request_continuity_repair();
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let seen = bridge.attempts();
+            if seen > 0 && runtime.continuity_unrecoverable(&identity).await.is_none() {
+                assert!(runtime.materialize(&identity).await.is_err());
+                while bridge.attempts() == seen
+                    && runtime.continuity_unrecoverable(&identity).await.is_none()
+                {
+                    if Instant::now() > deadline {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            } else {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
         };
         assert!(
             park.reason.contains("byte-identical"),
@@ -17697,8 +18008,9 @@ mod continuity_repair_supervisor_tests {
         );
 
         // Parked = no further destructive re-execution, whatever triggers it.
-        for _ in 0..10 {
-            context.request_continuity_repair();
+        for _ in 0..5 {
+            let _ = runtime.materialize(&identity).await;
+            context.request_continuity_repair().await;
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(
@@ -17746,6 +18058,104 @@ mod continuity_repair_supervisor_tests {
         tokio::time::timeout(Duration::from_millis(100), join)
             .await
             .map_err(|_| "repair loop spun after its cancellation channel closed")??;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod completion_wait_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+
+    fn runtime() -> Result<Arc<IdentityRuntime>, ContinuityStoreError> {
+        Ok(Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "completion-wait-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        })))
+    }
+
+    fn spec(identity: &AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: identity.clone(),
+            profile: meerkat_mob::ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+            placement: None,
+        }
+    }
+
+    /// A registered identity whose entry leaves the table (without passing
+    /// through Retiring) ends a baseline wait as `IdentityGone`.
+    #[tokio::test]
+    async fn a_wait_ends_identity_gone_when_the_entry_leaves_the_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = runtime()?;
+        let identity = AgentIdentity::parse("agent:gone")?;
+        runtime
+            .register(spec(&identity), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        let baseline = runtime.completion_cursor(&identity).await;
+        let wait = runtime.await_completion(&identity, Some(baseline), Duration::from_mins(10));
+        let remove = async {
+            tokio::task::yield_now().await;
+            runtime.entries.write().await.remove(&identity);
+        };
+        let (outcome, ()) = tokio::join!(wait, remove);
+        assert_eq!(outcome, CompletionWait::IdentityGone(baseline));
+        Ok(())
+    }
+
+    /// A readiness wait (no baseline) on an identity that is not registered
+    /// yet keeps waiting; it is not "gone".
+    #[tokio::test(start_paused = true)]
+    async fn a_readiness_wait_on_an_unregistered_identity_keeps_waiting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = runtime()?;
+        let identity = AgentIdentity::parse("agent:later")?;
+        let outcome = runtime
+            .await_completion(&identity, None, Duration::from_secs(5))
+            .await;
+        assert!(
+            matches!(outcome, CompletionWait::TimedOut(_)),
+            "{outcome:?}"
+        );
+        Ok(())
+    }
+
+    /// Shutdown ends both waits, typed.
+    #[tokio::test]
+    async fn waits_end_shutting_down_when_the_runtime_closes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = runtime()?;
+        let identity = AgentIdentity::parse("agent:closing")?;
+        runtime
+            .register(spec(&identity), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        let baseline = runtime.completion_cursor(&identity).await;
+        let completion =
+            runtime.await_completion(&identity, Some(baseline), Duration::from_mins(10));
+        let ticket = TurnTicket::parse(&uuid::Uuid::new_v4().to_string())?;
+        let turn = runtime.wait_for_turn_outcome(&identity, ticket, Duration::from_mins(10));
+        let close = async {
+            tokio::task::yield_now().await;
+            runtime.close_foreground_operations();
+        };
+        let (completion, turn, ()) = tokio::join!(completion, turn, close);
+        assert!(matches!(completion, CompletionWait::ShuttingDown(_)));
+        // An unknown ticket settles as Unknown at once, shutdown or not.
+        assert!(matches!(turn, TurnWait::Settled(TurnOutcome::Unknown)));
         Ok(())
     }
 }

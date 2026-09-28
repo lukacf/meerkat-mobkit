@@ -87,6 +87,7 @@ class TicketTransport:
                 index += 1
             self._turn_polls[ticket] = index + 1
             result = {"identity": params["identity"], "ticket": ticket, **script[index]}
+            result["wait"] = "timed_out" if result.get("state") == "pending" else "settled"
         elif method == "mobkit/wait_for_completion":
             from .test_identity_first_completion_cursor import _serve_completion_wait
             result = _serve_completion_wait(
@@ -115,7 +116,14 @@ class TicketTransport:
 
     async def send_async(self, request, *, timeout=None):
         await asyncio.sleep(0)
-        return self.send_sync(request)
+        response = self.send_sync(request)
+        result = response.get("result") or {}
+        if isinstance(result, dict) and (
+            result.get("outcome") == "timed_out" or result.get("wait") == "timed_out"
+        ):
+            # The gateway holds a server-side wait until its deadline.
+            await asyncio.sleep((request.get("params") or {}).get("timeout_ms", 0) / 1000)
+        return response
 
     def is_running(self):
         return True

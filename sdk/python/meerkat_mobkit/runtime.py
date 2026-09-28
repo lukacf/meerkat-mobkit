@@ -988,6 +988,20 @@ class MobKitRuntime:
             return None
         return _completion_cursor_from(raw, "completion_cursor")
 
+    async def request_continuity_repair(self) -> str:
+        """Ask the continuity repair supervisor for a pass now
+        (``mobkit/request_continuity_repair``).
+
+        The supervisor retries Broken identities on typed triggers (another
+        member's embodiment settling, a settled restore or reconcile pass, a
+        refused delivery to the Broken identity); this is the explicit one.
+        Returns what the request reached: ``"scheduled"``,
+        ``"nothing_to_repair"`` or ``"no_supervisor"`` (tolerate future
+        values).
+        """
+        raw = await self._rpc("mobkit/request_continuity_repair", {})
+        return str((raw or {}).get("continuity_repair", ""))
+
     async def _server_wait(
         self, method: str, params: dict[str, Any], timeout: float
     ) -> dict[str, Any] | None:
@@ -1112,15 +1126,27 @@ class MobKitRuntime:
         import time
         deadline = time.monotonic() + timeout
 
-        async def ready(identity: str) -> bool:
-            raw = await self._server_wait(
-                "mobkit/wait_for_completion",
-                {"identity": identity},
-                deadline - time.monotonic(),
-            )
-            if raw is None or raw.get("outcome") == "untracked":
-                return await self._poll_ready_compat(identity, deadline, poll_interval)
-            return raw.get("outcome") == "completed"
+        async def ready(identity: str) -> str | None:
+            """``None`` once ready, else why not."""
+            while True:
+                remaining = deadline - time.monotonic()
+                raw = await self._server_wait(
+                    "mobkit/wait_for_completion", {"identity": identity}, remaining,
+                )
+                if raw is None or raw.get("outcome") == "untracked":
+                    ready_now = await self._poll_ready_compat(
+                        identity, deadline, poll_interval,
+                    )
+                    return None if ready_now else "timed_out"
+                outcome = raw.get("outcome")
+                if outcome == "completed":
+                    return None
+                # A failed kickoff run is not readiness; a server deadline
+                # shorter than ours (clamped) is re-issued. Both keep waiting
+                # while the caller's deadline allows.
+                if outcome in ("run_failed", "timed_out") and deadline - time.monotonic() > 0:
+                    continue
+                return str(outcome)
 
         results = await asyncio.gather(
             *(ready(identity) for identity in identities), return_exceptions=True
@@ -1129,7 +1155,9 @@ class MobKitRuntime:
             if isinstance(result, BaseException):
                 raise result
         remaining = sorted(
-            identity for identity, result in zip(identities, results) if result is not True
+            f"{identity} ({reason})" if reason != "timed_out" else identity
+            for identity, reason in zip(identities, results)
+            if reason is not None
         )
         if remaining:
             raise TimeoutError(
@@ -1257,17 +1285,31 @@ class IdentityAgentHandle:
         ``poll_interval`` applies only against a gateway predating that
         method, which is polled with ``mobkit/turn_result`` instead.
         """
+        import time
+        from .errors import WaitEndedError
         from .identity_first_models import TurnResult
-        raw = await self._runtime._server_wait(
-            "mobkit/wait_for_turn",
-            {"identity": self._identity, "ticket": ticket},
-            timeout,
-        )
-        if raw is None:
-            return await self._poll_turn_compat(
-                ticket, timeout=timeout, poll_interval=poll_interval
+        deadline = time.monotonic() + timeout
+        while True:
+            raw = await self._runtime._server_wait(
+                "mobkit/wait_for_turn",
+                {"identity": self._identity, "ticket": ticket},
+                deadline - time.monotonic(),
             )
-        return self._settled_turn(TurnResult.from_dict(raw), ticket, timeout)
+            if raw is None:
+                return await self._poll_turn_compat(
+                    ticket, timeout=timeout, poll_interval=poll_interval
+                )
+            wait = raw.get("wait")
+            if wait == "shutting_down" and raw.get("state") == "pending":
+                raise WaitEndedError(self._identity, "shutting_down", f"turn {ticket}")
+            # A server deadline shorter than ours (clamped) is re-issued.
+            if (
+                wait == "timed_out"
+                and raw.get("state") == "pending"
+                and deadline - time.monotonic() > 0
+            ):
+                continue
+            return self._settled_turn(TurnResult.from_dict(raw), ticket, timeout)
 
     def _settled_turn(self, result: Any, ticket: str, timeout: float) -> Any:
         from .errors import TurnFailedError, TurnUnknownError
@@ -1364,32 +1406,41 @@ class IdentityAgentHandle:
     ) -> CompletionCursor:
         """Wait server-side until this identity's cursor moves past
         ``baseline`` and return it; raise as :meth:`wait_for_completion`."""
-        raw = await self._runtime._server_wait(
-            "mobkit/wait_for_completion",
-            {"identity": self._identity, "after": baseline.to_dict()},
-            timeout,
-        )
-        if raw is None:
-            return await self._poll_cursor_past_compat(baseline, timeout, poll_interval)
-        cursor = _completion_cursor_from(raw, "completion_cursor")
-        outcome = raw.get("outcome")
-        if outcome == "completed" and cursor is not None:
-            return cursor
-        if cursor is None or outcome == "untracked":
-            raise RuntimeError(
-                f"identity {self._identity!r} reports no completion cursor; "
-                "this is a live alias with no identity authority"
+        import time
+        from .errors import WaitEndedError
+        deadline = time.monotonic() + timeout
+        while True:
+            raw = await self._runtime._server_wait(
+                "mobkit/wait_for_completion",
+                {"identity": self._identity, "after": baseline.to_dict()},
+                deadline - time.monotonic(),
             )
-        if outcome == "incarnation_changed":
-            raise RuntimeError(
-                f"completion baseline {baseline} for identity "
-                f"{self._identity!r} belongs to a superseded runtime "
-                f"incarnation (now {cursor}); capture a fresh baseline"
-            )
-        raise TimeoutError(
-            f"identity {self._identity!r} did not complete a turn past "
-            f"{baseline} within {timeout}s"
-        )
+            if raw is None:
+                return await self._poll_cursor_past_compat(baseline, timeout, poll_interval)
+            cursor = _completion_cursor_from(raw, "completion_cursor")
+            outcome = raw.get("outcome")
+            if outcome == "completed" and cursor is not None:
+                return cursor
+            if cursor is None or outcome == "untracked":
+                raise RuntimeError(
+                    f"identity {self._identity!r} reports no completion cursor; "
+                    "this is a live alias with no identity authority"
+                )
+            if outcome == "incarnation_changed":
+                raise RuntimeError(
+                    f"completion baseline {baseline} for identity "
+                    f"{self._identity!r} belongs to a superseded runtime "
+                    f"incarnation (now {cursor}); capture a fresh baseline"
+                )
+            if outcome == "timed_out":
+                # A server deadline shorter than ours (clamped) is re-issued.
+                if deadline - time.monotonic() > 0:
+                    continue
+                raise TimeoutError(
+                    f"identity {self._identity!r} did not complete a turn past "
+                    f"{baseline} within {timeout}s"
+                )
+            raise WaitEndedError(self._identity, str(outcome), f"baseline {baseline}")
 
     async def _poll_cursor_past_compat(
         self, baseline: CompletionCursor, timeout: float, poll_interval: float

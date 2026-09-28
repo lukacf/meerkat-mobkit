@@ -356,7 +356,7 @@ async fn first_divergent_resume_parks_typed_and_reload_member_resumes_after_repa
     let repair = context
         .clone()
         .spawn_broken_identity_repair_task(ContinuityRepairPolicy::default());
-    request_repairs_during(&context, Duration::from_millis(250)).await;
+    trigger_repairs_repeatedly(&context, Duration::from_millis(250)).await;
     repair.abort();
     assert_eq!(
         bridge.recover_calls.load(Ordering::SeqCst),
@@ -605,7 +605,7 @@ async fn heal_verdict_divergence_parks_the_identity_after_one_recovery_call() {
     let repair = context
         .clone()
         .spawn_broken_identity_repair_task(ContinuityRepairPolicy::default());
-    request_repairs_during(&context, Duration::from_millis(250)).await;
+    trigger_repairs_repeatedly(&context, Duration::from_millis(250)).await;
     repair.abort();
 
     assert_eq!(
@@ -623,19 +623,17 @@ async fn heal_verdict_divergence_parks_the_identity_after_one_recovery_call() {
     );
 }
 
-/// Ask the continuity repair supervisor for passes across `window`, the
-/// explicit trigger a host uses (`mobkit/reconcile_identity`), now that the
-/// supervisor retries only on typed triggers and has no timer.
-async fn request_repairs_during(
+/// Keep triggering the continuity repair supervisor explicitly across
+/// `window` (the `mobkit/request_continuity_repair` trigger). Used only by
+/// NEGATIVE assertions: a parked identity must not be retried however often
+/// the supervisor is triggered. Positive heals rely on typed triggers alone.
+async fn trigger_repairs_repeatedly(
     context: &meerkat_mobkit::identity_first::IdentityFirstRuntimeContext,
     window: Duration,
 ) {
     let deadline = tokio::time::Instant::now() + window;
-    loop {
-        context.request_continuity_repair();
-        if tokio::time::Instant::now() >= deadline {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5).min(window)).await;
+    while tokio::time::Instant::now() < deadline {
+        context.request_continuity_repair().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

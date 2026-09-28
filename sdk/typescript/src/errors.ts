@@ -277,6 +277,25 @@ export class TurnFailedError extends MobKitError {
  * admitted there, another identity's, aged out, or the gateway restarted
  * since. Never guessed in either direction.
  */
+/**
+ * A server-side wait ended, typed, before what it waited for happened.
+ * `outcome` is the gateway's token: `run_failed` (a run failed or was
+ * cancelled during the wait), `broken`, `retiring` (retiring, retired or
+ * being deleted), `identity_gone` or `shutting_down`. Tolerate future values.
+ */
+export class WaitEndedError extends MobKitError {
+  readonly identity: string;
+  readonly outcome: string;
+
+  constructor(identity: string, outcome: string, detail = "") {
+    const message = `wait on identity ${identity} ended: ${outcome}`;
+    super(detail ? `${message} (${detail})` : message);
+    this.name = "WaitEndedError";
+    this.identity = identity;
+    this.outcome = outcome;
+  }
+}
+
 export class TurnUnknownError extends MobKitError {
   readonly identity: string;
   readonly ticket: string;

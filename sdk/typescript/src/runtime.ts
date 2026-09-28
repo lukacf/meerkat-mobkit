@@ -43,6 +43,7 @@ import {
   TurnFailedError,
   TurnNotDeliveredError,
   TurnUnknownError,
+  WaitEndedError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
   isRpcError,
@@ -144,6 +145,8 @@ import {
   parseIdentityStatus,
   parseIdentityInspection,
   parseOptionalCompletionCursor,
+  parseIdentityBootstrapStatus,
+  type IdentityBootstrapStatus,
   completionCursorToDict,
   parseSendResult,
   parseDispatchResult,
@@ -1157,15 +1160,29 @@ export class MobKitRuntime {
     options: { timeoutMs?: number; pollIntervalMs?: number } = {},
   ): Promise<TurnResult> {
     const timeoutMs = options.timeoutMs ?? 90_000;
-    const raw = await this._serverWait(
-      "mobkit/wait_for_turn",
-      { identity, ticket },
-      timeoutMs,
-    );
-    if (raw === null) {
-      return this._pollTurnCompat(identity, ticket, timeoutMs, options);
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const raw = await this._serverWait(
+        "mobkit/wait_for_turn",
+        { identity, ticket },
+        deadline - Date.now(),
+      );
+      if (raw === null) {
+        return this._pollTurnCompat(identity, ticket, timeoutMs, options);
+      }
+      if (raw.wait === "shutting_down" && raw.state === "pending") {
+        throw new WaitEndedError(identity, "shutting_down", `turn ${ticket}`);
+      }
+      // A server deadline shorter than ours (clamped) is re-issued.
+      if (
+        raw.wait === "timed_out" &&
+        raw.state === "pending" &&
+        deadline - Date.now() > 0
+      ) {
+        continue;
+      }
+      return settledTurn(identity, ticket, parseTurnResult(raw), timeoutMs);
     }
-    return settledTurn(identity, ticket, parseTurnResult(raw), timeoutMs);
   }
 
   /**
@@ -1268,20 +1285,39 @@ export class MobKitRuntime {
     const timeoutMs = options.timeoutMs ?? 60_000;
     const pollIntervalMs = options.pollIntervalMs ?? 1_500;
     const deadline = Date.now() + timeoutMs;
-    const ready = async (identity: string): Promise<boolean> => {
-      const raw = await this._serverWait(
-        "mobkit/wait_for_completion",
-        { identity },
-        deadline - Date.now(),
-      );
-      if (raw === null || raw.outcome === "untracked") {
-        return this._pollReadyCompat(identity, deadline, pollIntervalMs);
+    /** `null` once ready, else why not. */
+    const ready = async (identity: string): Promise<string | null> => {
+      for (;;) {
+        const raw = await this._serverWait(
+          "mobkit/wait_for_completion",
+          { identity },
+          deadline - Date.now(),
+        );
+        if (raw === null || raw.outcome === "untracked") {
+          return (await this._pollReadyCompat(identity, deadline, pollIntervalMs))
+            ? null
+            : "timed_out";
+        }
+        if (raw.outcome === "completed") return null;
+        // A failed kickoff run is not readiness; a server deadline shorter
+        // than ours (clamped) is re-issued. Both keep waiting while the
+        // caller's deadline allows.
+        if (
+          (raw.outcome === "run_failed" || raw.outcome === "timed_out") &&
+          deadline - Date.now() > 0
+        ) {
+          continue;
+        }
+        return String(raw.outcome);
       }
-      return raw.outcome === "completed";
     };
     const results = await Promise.all(identities.map(ready));
     const remaining = identities
-      .filter((_, index) => !results[index])
+      .map((identity, index) => ({ identity, reason: results[index] }))
+      .filter(({ reason }) => reason !== null)
+      .map(({ identity, reason }) =>
+        reason === "timed_out" ? identity : `${identity} (${reason})`,
+      )
       .sort();
     if (remaining.length > 0) {
       throw new Error(
@@ -1352,37 +1388,49 @@ export class MobKitRuntime {
     options: { timeoutMs?: number; pollIntervalMs?: number } = {},
   ): Promise<string | null> {
     const timeoutMs = options.timeoutMs ?? 90_000;
-    const raw = await this._serverWait(
-      "mobkit/wait_for_completion",
-      { identity, after: completionCursorToDict(baseline) },
-      timeoutMs,
-    );
-    if (raw === null) {
-      await this._pollCursorPastCompat(identity, baseline, timeoutMs, options);
-      return (await this.inspectIdentity(identity)).outputPreview;
-    }
-    const cursor = parseOptionalCompletionCursor(raw.completion_cursor);
-    if (raw.outcome === "completed" && cursor !== null) {
-      return (await this.inspectIdentity(identity)).outputPreview;
-    }
-    if (cursor === null || raw.outcome === "untracked") {
-      throw new Error(
-        `identity ${identity} reports no completion cursor; this is a live ` +
-          `alias with no identity authority`,
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const raw = await this._serverWait(
+        "mobkit/wait_for_completion",
+        { identity, after: completionCursorToDict(baseline) },
+        deadline - Date.now(),
+      );
+      if (raw === null) {
+        await this._pollCursorPastCompat(identity, baseline, timeoutMs, options);
+        return (await this.inspectIdentity(identity)).outputPreview;
+      }
+      const cursor = parseOptionalCompletionCursor(raw.completion_cursor);
+      if (raw.outcome === "completed" && cursor !== null) {
+        return (await this.inspectIdentity(identity)).outputPreview;
+      }
+      if (cursor === null || raw.outcome === "untracked") {
+        throw new Error(
+          `identity ${identity} reports no completion cursor; this is a live ` +
+            `alias with no identity authority`,
+        );
+      }
+      if (raw.outcome === "incarnation_changed") {
+        throw new Error(
+          `completion baseline ${baseline.epoch}:${baseline.turns} for ` +
+            `identity ${identity} belongs to a superseded runtime ` +
+            `incarnation (now ${cursor.epoch}:${cursor.turns}); capture a ` +
+            `fresh baseline`,
+        );
+      }
+      if (raw.outcome === "timed_out") {
+        // A server deadline shorter than ours (clamped) is re-issued.
+        if (deadline - Date.now() > 0) continue;
+        throw new Error(
+          `identity ${identity} did not complete a turn past ` +
+            `${baseline.epoch}:${baseline.turns} within ${timeoutMs}ms`,
+        );
+      }
+      throw new WaitEndedError(
+        identity,
+        String(raw.outcome),
+        `baseline ${baseline.epoch}:${baseline.turns}`,
       );
     }
-    if (raw.outcome === "incarnation_changed") {
-      throw new Error(
-        `completion baseline ${baseline.epoch}:${baseline.turns} for ` +
-          `identity ${identity} belongs to a superseded runtime ` +
-          `incarnation (now ${cursor.epoch}:${cursor.turns}); capture a ` +
-          `fresh baseline`,
-      );
-    }
-    throw new Error(
-      `identity ${identity} did not complete a turn past ` +
-        `${baseline.epoch}:${baseline.turns} within ${timeoutMs}ms`,
-    );
   }
 
   /**
@@ -1563,6 +1611,53 @@ export class MobKitRuntime {
   /** Re-run identity-first reconciliation. */
   async reconcileIdentity(): Promise<unknown> {
     return this._rpc("mobkit/reconcile_identity", {});
+  }
+
+  /**
+   * Ask the continuity repair supervisor for a pass now
+   * (`mobkit/request_continuity_repair`). The supervisor retries Broken
+   * identities on typed triggers (another member's embodiment settling, a
+   * settled restore or reconcile pass, a refused delivery to the Broken
+   * identity); this is the explicit one. Resolves what the request reached:
+   * `"scheduled"`, `"nothing_to_repair"` or `"no_supervisor"` (tolerate
+   * future values).
+   */
+  async requestContinuityRepair(): Promise<string> {
+    const raw = asWireRecord(
+      await this._rpc("mobkit/request_continuity_repair", {}),
+    );
+    return String(raw.continuity_repair ?? "");
+  }
+
+  /** Identity bootstrap snapshot (`mobkit/status_identity_bootstrap`). */
+  async identityBootstrapStatus(): Promise<IdentityBootstrapStatus> {
+    return parseIdentityBootstrapStatus(
+      await this._rpc("mobkit/status_identity_bootstrap", {}),
+    );
+  }
+
+  /**
+   * Wait for the identity bootstrap (`mobkit/wait_identity_bootstrap`):
+   * `target` is `"materialized"` (default) or `"startup_ready"`. The gateway
+   * answers when the barrier is terminal or at `timeoutMs`; each identity's
+   * entry carries its typed `restore` progress during an eager pass.
+   */
+  async waitIdentityBootstrap(
+    options: { target?: string; timeoutMs?: number } = {},
+  ): Promise<IdentityBootstrapStatus> {
+    const params: Record<string, unknown> = {};
+    if (options.target !== undefined) params.target = options.target;
+    let transportTimeoutMs: number | undefined;
+    if (options.timeoutMs !== undefined) {
+      params.timeout_ms = Math.max(0, Math.floor(options.timeoutMs));
+      transportTimeoutMs =
+        (params.timeout_ms as number) + SERVER_WAIT_TRANSPORT_HEADROOM_MS;
+    }
+    return parseIdentityBootstrapStatus(
+      await this._rpc("mobkit/wait_identity_bootstrap", params, {
+        transportTimeoutMs,
+      }),
+    );
   }
 }
 

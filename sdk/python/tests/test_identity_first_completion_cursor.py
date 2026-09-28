@@ -106,7 +106,12 @@ class ScriptedTransport:
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
     async def send_async(self, request, *, timeout=None):
-        return self.send_sync(request)
+        response = self.send_sync(request)
+        result = response.get("result") or {}
+        if isinstance(result, dict) and result.get("outcome") == "timed_out":
+            # The gateway holds a server-side wait until its deadline.
+            await asyncio.sleep((request.get("params") or {}).get("timeout_ms", 0) / 1000)
+        return response
 
     def is_running(self):
         return True
@@ -419,7 +424,9 @@ class TestServerSideWaits:
         handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
 
         with pytest.raises(TimeoutError, match="did not complete a turn"):
-            await handle.wait_for_completion(CompletionCursor(epoch=3, turns=1), timeout=5)
+            await handle.wait_for_completion(
+                CompletionCursor(epoch=3, turns=1), timeout=0.05
+            )
         assert transport.inspect_calls == 0
 
     @pytest.mark.asyncio
@@ -449,7 +456,7 @@ class TestServerSideWaits:
         rt = _make_runtime(transport)
 
         with pytest.raises(TimeoutError, match=r"\['a:1', 'b:1'\]"):
-            await rt.wait_until_ready(["b:1", "a:1"], timeout=5)
+            await rt.wait_until_ready(["b:1", "a:1"], timeout=0.05)
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_falls_back_to_the_preview_for_a_live_alias(self):
@@ -526,6 +533,99 @@ class TestServerSideWaits:
         with pytest.raises(RpcError):
             await handle._runtime.wait_until_ready(["nobody"], timeout=5)
         assert transport.inspect_calls == 0
+
+
+class TestTypedWaitOutcomes:
+    """The server ends a wait typed instead of running it to the deadline."""
+
+    def _transport(self, outcome: str, identity: str = "triage:main"):
+        transport = ScriptedTransport(inspections=[_inspection(identity, None, 3, 1)])
+        original = transport.send_sync
+
+        def send_sync(request):
+            if request.get("method") == "mobkit/wait_for_completion":
+                transport.calls.append(request)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "identity": identity,
+                        "outcome": outcome,
+                        "completion_cursor": {"epoch": 3, "turns": 1},
+                    },
+                }
+            return original(request)
+
+        transport.send_sync = send_sync
+        return transport
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome", ["run_failed", "broken", "retiring", "identity_gone", "shutting_down"]
+    )
+    async def test_wait_for_completion_raises_the_typed_outcome(self, outcome):
+        from meerkat_mobkit.errors import WaitEndedError
+
+        transport = self._transport(outcome)
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+        with pytest.raises(WaitEndedError) as raised:
+            await handle.wait_for_completion(CompletionCursor(epoch=3, turns=1), timeout=5)
+        assert raised.value.outcome == outcome
+        assert raised.value.identity == "triage:main"
+        assert transport.inspect_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_names_why_an_identity_is_not_ready(self):
+        transport = self._transport("broken", identity="a:1")
+        rt = _make_runtime(transport)
+        with pytest.raises(TimeoutError, match=r"a:1 \(broken\)"):
+            await rt.wait_until_ready(["a:1"], timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_wait_for_turn_raises_on_shutdown(self):
+        from meerkat_mobkit.errors import WaitEndedError
+
+        transport = ScriptedTransport()
+        original = transport.send_sync
+
+        def send_sync(request):
+            if request.get("method") == "mobkit/wait_for_turn":
+                transport.calls.append(request)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "identity": "keeper",
+                        "ticket": "t-1",
+                        "state": "pending",
+                        "wait": "shutting_down",
+                    },
+                }
+            return original(request)
+
+        transport.send_sync = send_sync
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+        with pytest.raises(WaitEndedError) as raised:
+            await handle.wait_for_turn("t-1", timeout=5)
+        assert raised.value.outcome == "shutting_down"
+
+    @pytest.mark.asyncio
+    async def test_request_continuity_repair_reports_what_it_reached(self):
+        transport = ScriptedTransport()
+        original = transport.send_sync
+
+        def send_sync(request):
+            if request.get("method") == "mobkit/request_continuity_repair":
+                transport.calls.append(request)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {"continuity_repair": "scheduled"},
+                }
+            return original(request)
+
+        transport.send_sync = send_sync
+        assert await _make_runtime(transport).request_continuity_repair() == "scheduled"
 
 
 # ---------------------------------------------------------------------------

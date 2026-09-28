@@ -2098,6 +2098,7 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/compact_member",
                     "mobkit/bound_member_transcript",
                     "mobkit/reconcile_identity",
+                    "mobkit/request_continuity_repair",
                     "mobkit/status_identity_bootstrap",
                     "mobkit/wait_identity_bootstrap",
                 ]);
@@ -3990,7 +3991,7 @@ async fn handle_unified_rpc_json_inner(
             // (#468), so a caller never polls turn_result. `timeout_ms` is the
             // caller's deadline; reaching it returns the ticket still pending.
             let wait_timeout = if request.method == "mobkit/wait_for_turn" {
-                match rpc_wait_timeout(&request.params, timeout) {
+                match rpc_wait_timeout(&request.params) {
                     Ok(wait_timeout) => Some(wait_timeout),
                     Err(message) => {
                         return maybe_error_response(is_notification, response_id, -32602, message);
@@ -4046,16 +4047,28 @@ async fn handle_unified_rpc_json_inner(
                     );
                 }
             };
-            let outcome = match wait_timeout {
-                Some(wait_timeout) => {
-                    identity_rt
-                        .wait_for_turn(&identity, ticket, wait_timeout)
-                        .await
-                }
-                None => identity_rt.turn_outcome(&identity, ticket),
+            let (outcome, wait) = match wait_timeout {
+                Some(wait_timeout) => match identity_rt
+                    .wait_for_turn_outcome(&identity, ticket, wait_timeout)
+                    .await
+                {
+                    crate::identity_first::TurnWait::Settled(outcome) => (outcome, Some("settled")),
+                    crate::identity_first::TurnWait::TimedOut(outcome) => {
+                        (outcome, Some("timed_out"))
+                    }
+                    crate::identity_first::TurnWait::ShuttingDown(outcome) => {
+                        (outcome, Some("shutting_down"))
+                    }
+                },
+                None => (identity_rt.turn_outcome(&identity, ticket), None),
             };
             let completion_cursor = identity_rt.completion_cursor(&identity).await;
             let mut result = turn_outcome_json(&outcome);
+            if let (Value::Object(fields), Some(wait)) = (&mut result, wait) {
+                // How the server-side wait ended: `settled`, `timed_out` (the
+                // turn is still pending) or `shutting_down`.
+                fields.insert("wait".to_string(), Value::from(wait));
+            }
             if let Value::Object(fields) = &mut result {
                 fields.insert("identity".to_string(), Value::from(identity.as_str()));
                 fields.insert("ticket".to_string(), Value::from(ticket.to_string()));
@@ -4884,7 +4897,7 @@ async fn handle_unified_rpc_json_inner(
                 Some(ctx) => &ctx.runtime,
                 None => return maybe_identity_not_configured(is_notification, response_id),
             };
-            let wait_timeout = match rpc_wait_timeout(&request.params, timeout) {
+            let wait_timeout = match rpc_wait_timeout(&request.params) {
                 Ok(wait_timeout) => wait_timeout,
                 Err(message) => {
                     return maybe_error_response(is_notification, response_id, -32602, message);
@@ -4939,7 +4952,13 @@ async fn handle_unified_rpc_json_inner(
             let registered = match identity_rt.status(&identity).await {
                 Ok(_) => true,
                 Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => false,
-                Err(e) => return serialize_response(&identity_error_response(response_id, &e)),
+                Err(e) => {
+                    return if is_notification {
+                        String::new()
+                    } else {
+                        serialize_response(&identity_error_response(response_id, &e))
+                    };
+                }
             };
             if !registered && target.live.is_some() {
                 // A raw live alias: no identity authority tracks its turns,
@@ -4964,20 +4983,10 @@ async fn handle_unified_rpc_json_inner(
                     &crate::identity_first::IdentityRuntimeError::UnknownIdentity(identity),
                 )
             } else {
-                let (outcome, cursor) = match identity_rt
+                let wait = identity_rt
                     .await_completion(&identity, after, wait_timeout)
-                    .await
-                {
-                    crate::identity_first::CompletionWait::Completed(cursor) => {
-                        ("completed", cursor)
-                    }
-                    crate::identity_first::CompletionWait::IncarnationChanged(cursor) => {
-                        ("incarnation_changed", cursor)
-                    }
-                    crate::identity_first::CompletionWait::TimedOut(cursor) => {
-                        ("timed_out", cursor)
-                    }
-                };
+                    .await;
+                let (outcome, cursor) = (wait.wire_str(), wait.cursor());
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -5181,6 +5190,25 @@ async fn handle_unified_rpc_json_inner(
             ))
             .await
         }
+        "mobkit/request_continuity_repair" => {
+            // Explicit continuity repair trigger: the supervisor retries its
+            // repairable Broken identities. The answer says, typed, whether a
+            // running supervisor will act on it.
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            ctx.runtime.trigger_continuity_repair(
+                crate::identity_first::ContinuityRepairTrigger::Requested,
+            );
+            let outcome = ctx.runtime.continuity_repair_request_outcome().await;
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({ "continuity_repair": outcome })),
+                error: None,
+            }
+        }
         "mobkit/reconcile_identity" => {
             let ctx = match identity_ctx {
                 Some(ctx) => ctx,
@@ -5211,13 +5239,20 @@ async fn handle_unified_rpc_json_inner(
                             );
                         }
                     };
-                    ctx.runtime
+                    let result = ctx
+                        .runtime
                         .restore_flow_tracked(
                             roster_specs,
                             ctx.topology_provider.clone(),
                             ctx.customizer.clone(),
                         )
-                        .await
+                        .await;
+                    // The attached context fires this itself when its pass
+                    // settles; the unattached pass reports it here.
+                    ctx.runtime.trigger_continuity_repair(
+                        crate::identity_first::ContinuityRepairTrigger::RestorePassSettled,
+                    );
+                    result
                 }
                 Err(error) => Err(error),
             };
@@ -5265,6 +5300,7 @@ async fn handle_unified_rpc_json_inner(
                                     serde_json::json!({
                                         "outcome": "broken",
                                         "identity": failure.identity.as_str(),
+                                        "kind": failure.kind,
                                         "detail": failure.detail,
                                     })
                                 }
@@ -5272,12 +5308,16 @@ async fn handle_unified_rpc_json_inner(
                             (id.to_string(), val)
                         })
                         .collect();
+                    // The settled pass triggered the continuity repair
+                    // supervisor; report what that trigger reached, typed.
+                    let continuity_repair = ctx.runtime.continuity_repair_request_outcome().await;
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
                             "outcomes": outcomes,
                             "managed_edges": result.managed_edges.len(),
+                            "continuity_repair": continuity_repair,
                         })),
                         error: None,
                     }
@@ -5995,12 +6035,22 @@ fn maybe_identity_not_configured(is_notification: bool, response_id: Value) -> S
 
 /// The caller's deadline for a server-side wait: `timeout_ms` when given,
 /// else the dispatcher's RPC timeout.
-fn rpc_wait_timeout(params: &Value, default: Duration) -> Result<Duration, String> {
+/// Default deadline of a server-side wait (`mobkit/wait_for_completion`,
+/// `mobkit/wait_for_turn`) when the caller gives no `timeout_ms`.
+pub const RPC_WAIT_DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
+/// Longest deadline one server-side wait accepts; a longer `timeout_ms` is
+/// clamped to it (the SDKs re-issue the wait until their own deadline).
+pub const RPC_WAIT_MAX_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// The caller's deadline for a server-side wait: `timeout_ms` when given
+/// (clamped to [`RPC_WAIT_MAX_TIMEOUT`]), else [`RPC_WAIT_DEFAULT_TIMEOUT`].
+/// Deliberately independent of the dispatcher's generic RPC timeout.
+fn rpc_wait_timeout(params: &Value) -> Result<Duration, String> {
     match params.get("timeout_ms") {
-        None | Some(Value::Null) => Ok(default),
+        None | Some(Value::Null) => Ok(RPC_WAIT_DEFAULT_TIMEOUT),
         Some(value) => value
             .as_u64()
-            .map(Duration::from_millis)
+            .map(|ms| Duration::from_millis(ms).min(RPC_WAIT_MAX_TIMEOUT))
             .ok_or_else(|| "timeout_ms must be a non-negative integer".to_string()),
     }
 }

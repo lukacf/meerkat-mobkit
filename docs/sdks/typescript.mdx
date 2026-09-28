@@ -66,6 +66,10 @@ waits. `completionCursor(identity)` is a one-shot cursor read that never
 touches the member session. `inspectIdentity` does read the member session, so
 do not poll it.
 
+A wait that ends before a completion (a failed or cancelled run, a Broken,
+retiring or deleted identity, or gateway shutdown) rejects with the typed
+`WaitEndedError`, whose `outcome` names why.
+
 ## Durable detached tools
 
 Long-running host work must declare detached execution rather than keeping a

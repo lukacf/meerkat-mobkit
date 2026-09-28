@@ -4183,3 +4183,78 @@ export function workGraphAttentionPauseOptionsToDict(
   if (options.namespace !== undefined) result.namespace = options.namespace;
   return result;
 }
+
+// -- Identity bootstrap status -----------------------------------------------
+
+/**
+ * Typed eager-restore progress for one identity, published on the bootstrap
+ * status while the restore pass runs. `stage` is `registered`, `resuming`,
+ * `minted`, `resumed` or `broken` (tolerate future values); `kind` is the
+ * typed continuity failure kind when `stage` is `broken`.
+ */
+export interface IdentityRestoreProgress {
+  readonly stage: string;
+  readonly kind: string | null;
+}
+
+/** Bootstrap progress for one durable identity. */
+export interface IdentityBootstrapEntry {
+  readonly identity: string;
+  /** `dormant`, `warming`, `active` or `broken` (tolerate future values). */
+  readonly state: string;
+  readonly error: string | null;
+  /** Typed eager-restore progress; `null` outside an eager restore pass. */
+  readonly restore: IdentityRestoreProgress | null;
+}
+
+/** Identity bootstrap snapshot (`mobkit/status_identity_bootstrap`). */
+export interface IdentityBootstrapStatus {
+  readonly mode: Readonly<Record<string, unknown>>;
+  readonly complete: boolean;
+  readonly ready: boolean;
+  readonly error: string | null;
+  readonly counts: Readonly<Record<string, number>>;
+  readonly identities: Readonly<Record<string, IdentityBootstrapEntry>>;
+  /** Set by `mobkit/wait_identity_bootstrap` only. */
+  readonly timedOut: boolean | null;
+  readonly target: string | null;
+  readonly startupReady: boolean | null;
+}
+
+export function parseIdentityRestoreProgress(
+  raw: unknown,
+): IdentityRestoreProgress | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const d = raw as Record<string, unknown>;
+  if (typeof d.stage !== "string") return null;
+  return { stage: d.stage, kind: typeof d.kind === "string" ? d.kind : null };
+}
+
+export function parseIdentityBootstrapStatus(raw: unknown): IdentityBootstrapStatus {
+  const d = asRecord(raw);
+  const identities: Record<string, IdentityBootstrapEntry> = {};
+  for (const [identity, value] of Object.entries(asRecord(d.identities))) {
+    const entry = asRecord(value);
+    identities[identity] = {
+      identity,
+      state: typeof entry.state === "string" ? entry.state : "unknown",
+      error: typeof entry.error === "string" ? entry.error : null,
+      restore: parseIdentityRestoreProgress(entry.restore),
+    };
+  }
+  const counts: Record<string, number> = {};
+  for (const [key, value] of Object.entries(asRecord(d.counts))) {
+    counts[key] = Number(value ?? 0);
+  }
+  return {
+    mode: asRecord(d.mode),
+    complete: d.complete === true,
+    ready: d.ready === true,
+    error: typeof d.error === "string" ? d.error : null,
+    counts,
+    identities,
+    timedOut: typeof d.timed_out === "boolean" ? d.timed_out : null,
+    target: typeof d.target === "string" ? d.target : null,
+    startupReady: typeof d.startup_ready === "boolean" ? d.startup_ready : null,
+  };
+}

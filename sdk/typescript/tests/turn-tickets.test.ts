@@ -100,6 +100,8 @@ async function makeRuntime(script: {
   sends?: Record<string, unknown>[];
   turns?: TurnScript;
   inspections?: ReturnType<typeof inspection>[];
+  /** Answer a pending `wait_for_turn` as ended by shutdown. */
+  shuttingDown?: boolean;
 }) {
   const { MobKitRuntime } = await import("../src/runtime.js");
   const calls: { method: string; params: Record<string, unknown> }[] = [];
@@ -164,7 +166,15 @@ async function makeRuntime(script: {
       let n = Math.min(polls.get(ticket) ?? 0, states.length - 1);
       while (n < states.length - 1 && states[n]?.state === "pending") n += 1;
       polls.set(ticket, n + 1);
-      return { identity: p.identity, ticket, ...states[n] };
+      const settled = { identity: p.identity, ticket, ...states[n] };
+      if (settled.state === "pending") {
+        // The gateway holds a server-side wait until its deadline.
+        await new Promise((resolve) =>
+          setTimeout(resolve, Number(p.timeout_ms ?? 0)),
+        );
+        return { ...settled, wait: script.shuttingDown ? "shutting_down" : "timed_out" };
+      }
+      return { ...settled, wait: "settled" };
     }
     if (method === "mobkit/wait_for_completion") {
       cursorReads += 1;
@@ -382,6 +392,21 @@ describe("waitForTurn", () => {
     const empty = await withWarnings(() => rt.sendAndWait("keeper", "e", FAST));
     assert.equal(empty.value, null);
     assert.deepEqual(empty.warnings, [], "no text committed: nothing to warn about");
+  });
+});
+
+describe("server-side turn waits", () => {
+  it("a shutdown ends a pending turn wait with WaitEndedError", async () => {
+    const { WaitEndedError } = await import("../src/errors.js");
+    const { rt } = await makeRuntime({
+      turns: { "ticket-a": [PENDING] },
+      shuttingDown: true,
+    });
+    await assert.rejects(rt.waitForTurn("keeper", "ticket-a", FAST), (error) => {
+      assert.ok(error instanceof WaitEndedError);
+      assert.equal(error.outcome, "shutting_down");
+      return true;
+    });
   });
 });
 

@@ -2349,6 +2349,7 @@ async fn wait_for_turn_rpc_resolves_when_the_ticket_settles() {
         pending["state"], "pending",
         "the deadline returns it pending"
     );
+    assert_eq!(pending["wait"], "timed_out", "{pending}");
 
     let wait = rpc(
         &live.runtime,
@@ -2368,6 +2369,7 @@ async fn wait_for_turn_rpc_resolves_when_the_ticket_settles() {
     assert_eq!(result["state"], "completed", "{result}");
     assert_eq!(result["output"], "alpha reply", "{result}");
     assert_eq!(result["ticket"], json!(ticket));
+    assert_eq!(result["wait"], "settled", "{result}");
 
     let unknown = rpc(
         &live.runtime,
@@ -2384,5 +2386,215 @@ async fn wait_for_turn_rpc_resolves_when_the_ticket_settles() {
         unknown["state"], "unknown",
         "an unknown ticket answers at once"
     );
+    live.runtime.shutdown().await;
+}
+
+/// Race one `mobkit/wait_for_completion` against `event`, returning the
+/// wait's result; the long deadline proves the event, not the clock, ended it.
+async fn wait_racing<F: std::future::Future<Output = ()>>(
+    live: &LiveMob,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+    params: Value,
+    event: F,
+) -> Value {
+    let wait = rpc(&live.runtime, ctx, "mobkit/wait_for_completion", params);
+    let event = async {
+        tokio::task::yield_now().await;
+        event.await;
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(wait, event) })
+            .await
+            .expect("the event ends the wait, far inside its deadline");
+    result
+}
+
+/// #468 review: a completion wait never runs to its deadline on an identity
+/// whose run failed, that went Broken, retired, or was deleted. Each ends the
+/// wait with its typed outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_for_completion_ends_typed_on_failure_broken_retire_and_delete() {
+    let (live, _bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let params = |name: &str, baseline: meerkat_mobkit::identity_first::CompletionCursor| {
+        json!({
+            "identity": name,
+            "after": {"epoch": baseline.epoch.get(), "turns": baseline.turns},
+            "timeout_ms": 600_000,
+        })
+    };
+
+    // A failed (or cancelled) run.
+    let failing = register_bound(&identity_runtime, "failing", &session).await;
+    let baseline = identity_runtime.completion_cursor(&failing).await;
+    let result = wait_racing(&live, &ctx, params("failing", baseline), async {
+        identity_runtime.record_turn_failed(&failing).await;
+    })
+    .await;
+    assert_eq!(result["outcome"], "run_failed", "{result}");
+
+    // Parked Broken.
+    let breaking = register_bound(&identity_runtime, "breaking", &session).await;
+    let baseline = identity_runtime.completion_cursor(&breaking).await;
+    let result = wait_racing(&live, &ctx, params("breaking", baseline), async {
+        identity_runtime
+            .register(
+                make_spec("breaking"),
+                IdentityLifecycleState::Broken,
+                None,
+                None,
+            )
+            .await;
+    })
+    .await;
+    assert_eq!(result["outcome"], "broken", "{result}");
+
+    // Retired.
+    let retiree = register_bound(&identity_runtime, "retiree", &session).await;
+    let baseline = identity_runtime.completion_cursor(&retiree).await;
+    let result = wait_racing(&live, &ctx, params("retiree", baseline), async {
+        identity_runtime.retire(&retiree).await.expect("retire");
+    })
+    .await;
+    assert_eq!(result["outcome"], "retiring", "{result}");
+
+    // Deleted. Deletion marks the identity Retiring before it leaves the
+    // table, so the wait ends at that first step, typed. (`identity_gone`
+    // covers an entry removed without one; see the runtime unit test.)
+    let doomed = register_bound(&identity_runtime, "doomed", &session).await;
+    let baseline = identity_runtime.completion_cursor(&doomed).await;
+    let result = wait_racing(&live, &ctx, params("doomed", baseline), async {
+        identity_runtime
+            .delete_identity(&doomed)
+            .await
+            .expect("delete identity");
+    })
+    .await;
+    assert_eq!(result["outcome"], "retiring", "{result}");
+    live.runtime.shutdown().await;
+}
+
+/// #468 review: the waits observe runtime shutdown and end typed
+/// (`shutting_down`) instead of holding the request to its deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn server_side_waits_end_typed_on_shutdown() {
+    let client = NamedReplyClient::default();
+    let release = client.hold("alpha");
+    let live = live_runtime_with(
+        meerkat_mob::MobRuntimeMode::TurnDriven,
+        Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+        &client,
+    )
+    .await;
+    let baseline = identity_cursor(&live.runtime, &live.ctx).await;
+    let sent = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/send",
+        json!({"identity": "keeper", "content": "alpha", "track_turn": true}),
+    )
+    .await;
+    let ticket = sent["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tracked: {sent}"))
+        .to_string();
+    wait_for_model_call(&client, "alpha").await;
+
+    let completion = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/wait_for_completion",
+        json!({
+            "identity": "keeper",
+            "after": {"epoch": baseline.epoch.get(), "turns": baseline.turns},
+            "timeout_ms": 600_000,
+        }),
+    );
+    let turn = rpc(
+        &live.runtime,
+        &live.ctx,
+        "mobkit/wait_for_turn",
+        json!({"identity": "keeper", "ticket": ticket, "timeout_ms": 600_000}),
+    );
+    let shutdown = async {
+        tokio::task::yield_now().await;
+        live.runtime.shutdown().await;
+    };
+    let (completion, turn, ()) = tokio::time::timeout(Duration::from_mins(1), async {
+        tokio::join!(completion, turn, shutdown)
+    })
+    .await
+    .expect("shutdown ends both waits");
+    assert_eq!(completion["outcome"], "shutting_down", "{completion}");
+    assert_eq!(turn["wait"], "shutting_down", "{turn}");
+    drop(release);
+}
+
+/// #468 review (item 1c): `mobkit/request_continuity_repair` reports,
+/// typed, what the trigger reached, and `mobkit/reconcile_identity` reports
+/// the supervisor pass its settled pass triggered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuity_repair_request_reports_what_it_reached() {
+    let (live, _bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let request = || {
+        rpc(
+            &live.runtime,
+            &ctx,
+            "mobkit/request_continuity_repair",
+            json!({}),
+        )
+    };
+    assert_eq!(request().await["continuity_repair"], "nothing_to_repair");
+
+    let broken = register_bound(&identity_runtime, "broken", &session).await;
+    identity_runtime
+        .register(
+            make_spec("broken"),
+            IdentityLifecycleState::Broken,
+            Some(ContinuityRecord {
+                identity: broken.clone(),
+                agent_runtime_id: AgentRuntimeId::parse("rt:broken").unwrap(),
+                session_id: session.clone(),
+                generation: ContinuityGeneration::new(0),
+                checkpoint_version: CheckpointVersion::new(0),
+            }),
+            None,
+        )
+        .await;
+    assert_eq!(
+        request().await["continuity_repair"],
+        "no_supervisor",
+        "nothing in this embedding would act on the trigger"
+    );
+
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            identity_runtime.clone(),
+            Arc::new(MutableRosterProvider::new(vec![make_spec("broken")])),
+            None,
+            None,
+            None,
+        ),
+    );
+    let supervisor = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy::default(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let outcome = request().await;
+            if outcome["continuity_repair"] != "no_supervisor" {
+                return outcome;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the supervisor starts");
+
+    let reconciled = rpc(&live.runtime, &ctx, "mobkit/reconcile_identity", json!({})).await;
+    assert!(
+        reconciled["continuity_repair"].is_string(),
+        "reconcile reports the repair trigger it fired: {reconciled}"
+    );
+    supervisor.abort();
     live.runtime.shutdown().await;
 }

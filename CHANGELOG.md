@@ -80,12 +80,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The continuity repair supervisor is event-driven. It used to retry Broken
   identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
   left members parked for 1 to 15 minutes while the process sat idle. It now
-  runs one pass when it starts and then retries only on a typed trigger:
-  another identity's embodiment settled (a resume or a fresh durable mint
-  committed, releasing the store writer it held), a host restore or reconcile
-  pass settled (boot, a roster refresh, `mobkit/reconcile_identity`), or an
-  explicit request. Its own passes never re-trigger it, and the
-  byte-identical-failure park and the typed terminal parks are unchanged.
+  runs one pass when it starts and then retries on a typed trigger: another
+  identity's embodiment settled (a resume or a fresh durable mint committed,
+  releasing the store writer it held), a host restore or reconcile pass
+  settled (boot, a roster refresh, `mobkit/reconcile_identity`), a delivery or
+  materialization refused because the identity is Broken (a caller's
+  demand), or an explicit request. It defers a pass while other embodiments
+  are in flight, so a warm-up burst runs one pass and cannot trip the
+  identical-failure park in seconds. Its own passes never re-trigger it. Only
+  a transient cause with no typed signal (an unreachable heal authority, a
+  pass failing on a roster provider or store error, a member Broken on an
+  unavailable store) arms a last-resort fallback wake (1 s doubling to 30 s,
+  shared with the agent-memory observer), so no Broken identity is stranded
+  in a steady deployment. The byte-identical-failure park and the typed
+  terminal parks are unchanged.
 
 - Improve console reading and composition in the stock and reusable hosts:
   preserve the reading position while output streams, render complete Markdown
@@ -179,8 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   as soon as its own restore does, before the whole pass ends.
   `IdentityRuntime::watch_identity_bootstrap_status` streams the snapshot in
   process; the Python SDK parses it as `IdentityRestoreProgress`.
-- `IdentityFirstRuntimeContext::request_continuity_repair` asks the
-  continuity repair supervisor for a pass (typed `ContinuityRepairTrigger`).
+- `mobkit/request_continuity_repair` (and `request_continuity_repair()` /
+  `requestContinuityRepair()` in the SDKs,
+  `IdentityFirstRuntimeContext::request_continuity_repair` in Rust) asks the
+  continuity repair supervisor for a pass and answers, typed, what it reached:
+  `scheduled`, `nothing_to_repair` or `no_supervisor`. `mobkit/reconcile_identity`
+  reports the same for the supervisor pass its settled pass triggered
+  (`continuity_repair`), and a `broken` outcome now carries its typed `kind`.
+- The TypeScript SDK gains `identityBootstrapStatus()` and
+  `waitIdentityBootstrap()`, parsing each identity's typed `restore` progress.
 
 - Server-side, event-driven completion waits (#468). `mobkit/wait_for_completion`
   resolves when an identity's completion cursor moves past `after` (or, with no
@@ -191,9 +206,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (the identity table and completion cursor, and the ticket registry), so
   neither side polls; `timeout_ms` is only the caller's deadline.
   `mobkit/completion_cursor` is a one-shot cursor read. None of them touch the
-  member session. `IdentityRuntime::await_completion` returns the typed
-  `CompletionWait`, and `IdentityRuntime::wait_for_completion` /
+  member session. A completion wait also ends typed on `run_failed`,
+  `broken`, `retiring`, `identity_gone` and `shutting_down` instead of running
+  to its deadline, and a turn wait reports `wait: shutting_down`. Waits default
+  to a 60 s deadline and clamp `timeout_ms` to 10 min (the SDKs re-issue up to
+  their own deadline). `IdentityRuntime::await_completion` returns the typed,
+  non-exhaustive `CompletionWait`, `IdentityRuntime::wait_for_turn_outcome`
+  returns `TurnWait`, and `IdentityRuntime::wait_for_completion` /
   `wait_for_turn` wait on those signals instead of sleeping between reads.
+  The identity health monitor records failed runs
+  (`IdentityRuntime::record_turn_failed`). The SDKs raise the typed
+  `WaitEndedError` (with `outcome`) for the non-completion outcomes.
 - The SDKs' `wait_for_completion` / `waitForCompletion`, `wait_for_turn` /
   `waitForTurn` (and so `send_and_wait` / `sendAndWait`), `wait_for_output(after=...)`
   and `wait_until_ready` / `waitUntilReady` are now one server-side wait each
@@ -363,8 +386,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `subscribe_agent_events` once a second per member. It subscribes on the mob's
   machine-state change that makes a member live, skips passes while the mob is
   not Running, and backs a failing member off exponentially per identity (1 s
-  doubling to 30 s), the backoff deadline being only the fallback wake. During
-  a cold boot this was a flood of actor commands (meerkat #1250).
+  doubling to 30 s), the backoff deadline being only the fallback wake. A
+  stream that closes within a second of its subscribe counts as a failure, so
+  it cannot spin. During a cold boot this was a flood of actor commands
+  (meerkat #1250).
 - `mobkit/send_message` to a raw roster member with an interaction id retries
   once on `StaleFenceToken` against the re-read binding (a respawn between the
   binding read and the submit no longer fails the send), and no longer makes a

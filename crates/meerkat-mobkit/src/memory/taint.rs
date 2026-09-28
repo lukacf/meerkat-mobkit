@@ -1006,47 +1006,39 @@ impl MemberEventSource for meerkat_mob::MobHandle {
     }
 }
 
-/// First retry after a failed subscribe waits one quantum; later retries
-/// double up to the cap.
-const OBSERVER_SUBSCRIBE_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(1);
-const OBSERVER_SUBSCRIBE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+/// A member stream that closes sooner than this after its subscribe counts
+/// as a failed subscribe: a stream that ends as soon as it opens would
+/// otherwise be re-subscribed on every close, a spin with no typed signal.
+const OBSERVER_MIN_HEALTHY_STREAM: std::time::Duration = crate::fallback_wake::FALLBACK_WAKE_BASE;
 
-/// Per-identity subscribe-failure backoff for the member-event observer,
+/// Per-identity subscribe-failure guard for the member-event observer,
 /// keyed by roster id (the handle's namespace).
 ///
-/// Subscriptions are driven by machine-state changes, not a timer. The
-/// backoff is only the guard around that: every subscribe attempt is an actor
-/// command, and during a cold boot the machine state changes many times per
-/// second, so a member that cannot be subscribed yet must not be retried on
-/// every change. Its deadline is also the fallback wake for a member that
-/// failed and whose state then stops changing.
+/// Subscriptions are driven by machine-state changes, not a timer. This is
+/// the shared last-resort guard ([`crate::fallback_wake`]) around that:
+/// every subscribe attempt is an actor command, and during a cold boot the
+/// machine state changes many times per second, so a member that cannot be
+/// subscribed yet must not be retried on every change. Its deadline is also
+/// the fallback wake for a member that failed and whose state then stops
+/// changing (a subscribe failure has no typed "now subscribable" signal).
 #[derive(Default)]
 struct ObserverSubscribeBackoff {
-    failures: std::collections::HashMap<String, (tokio::time::Instant, u32)>,
+    failures: std::collections::HashMap<String, crate::fallback_wake::FallbackWake>,
 }
 
 impl ObserverSubscribeBackoff {
-    fn delay(consecutive_failures: u32) -> std::time::Duration {
-        OBSERVER_SUBSCRIBE_BACKOFF_BASE
-            .saturating_mul(1u32 << consecutive_failures.min(5))
-            .min(OBSERVER_SUBSCRIBE_BACKOFF_MAX)
-    }
-
     fn may_attempt(&self, identity: &str, now: tokio::time::Instant) -> bool {
         self.failures
             .get(identity)
-            .is_none_or(|(next_attempt, _)| now >= *next_attempt)
+            .is_none_or(|wake| wake.is_due(now))
     }
 
     /// Record a failure; returns whether it is the first in a row.
     fn record_failure(&mut self, identity: &str, now: tokio::time::Instant) -> bool {
-        let entry = self
-            .failures
+        self.failures
             .entry(identity.to_string())
-            .or_insert((now, 0));
-        entry.0 = now + Self::delay(entry.1);
-        entry.1 = entry.1.saturating_add(1);
-        entry.1 == 1
+            .or_default()
+            .record_failure(now)
     }
 
     fn record_success(&mut self, identity: &str) {
@@ -1063,7 +1055,7 @@ impl ObserverSubscribeBackoff {
     fn next_attempt(&self) -> Option<tokio::time::Instant> {
         self.failures
             .values()
-            .map(|(next_attempt, _)| *next_attempt)
+            .filter_map(crate::fallback_wake::FallbackWake::next_wake)
             .min()
     }
 }
@@ -1077,10 +1069,39 @@ enum ObservedMemberEvent {
 struct MemberEventSubscriptions {
     streams: futures::stream::SelectAll<futures::stream::BoxStream<'static, ObservedMemberEvent>>,
     subscribed: std::collections::HashSet<String>,
+    /// When each open stream was subscribed, to recognise one that closes
+    /// as soon as it opens, with the member's failure history set aside
+    /// while the stream is open (an open stream arms no wake).
+    subscribed_at: std::collections::HashMap<
+        String,
+        (tokio::time::Instant, crate::fallback_wake::FallbackWake),
+    >,
     backoff: ObserverSubscribeBackoff,
 }
 
 impl MemberEventSubscriptions {
+    /// A member's stream ended. One that lived at least
+    /// [`OBSERVER_MIN_HEALTHY_STREAM`] proved the subscription healthy and
+    /// clears the member's failures; one that closed sooner counts as a
+    /// failed subscribe, so the member is not re-subscribed on every close.
+    fn stream_closed(&mut self, identity: &str) {
+        self.subscribed.remove(identity);
+        let now = tokio::time::Instant::now();
+        match self.subscribed_at.remove(identity) {
+            Some((at, history)) if now.duration_since(at) < OBSERVER_MIN_HEALTHY_STREAM => {
+                self.backoff.failures.insert(identity.to_string(), history);
+                if self.backoff.record_failure(identity, now) {
+                    tracing::warn!(
+                        identity = %identity,
+                        "agent memory taint observer: member stream closed right after subscribe; \
+                         backing off"
+                    );
+                }
+            }
+            _ => self.backoff.record_success(identity),
+        }
+    }
+
     /// Subscribe every Active member that has no stream and is not backing
     /// off. A no-op while the mob is not Running: subscribing goes through
     /// the mob actor, and while the mob is still Creating (cold boot,
@@ -1114,8 +1135,9 @@ impl MemberEventSubscriptions {
             let sink_identity = crate::member_comms_id::logical_memory_identity(&identity);
             match source.subscribe(&member).await {
                 Ok(stream) => {
-                    self.backoff.record_success(&identity);
                     self.subscribed.insert(identity.clone());
+                    let history = self.backoff.failures.remove(&identity).unwrap_or_default();
+                    self.subscribed_at.insert(identity.clone(), (now, history));
                     let close_key = identity.clone();
                     self.streams.push(
                         stream
@@ -1167,6 +1189,7 @@ async fn run_member_event_observer<S: MemberEventSource>(
     let mut subscriptions = MemberEventSubscriptions {
         streams: futures::stream::SelectAll::new(),
         subscribed: std::collections::HashSet::new(),
+        subscribed_at: std::collections::HashMap::new(),
         backoff: ObserverSubscribeBackoff::default(),
     };
     subscriptions.reconcile(&source).await;
@@ -1181,7 +1204,7 @@ async fn run_member_event_observer<S: MemberEventSource>(
                     }
                 }
                 ObservedMemberEvent::Closed(identity) => {
-                    subscriptions.subscribed.remove(&identity);
+                    subscriptions.stream_closed(&identity);
                     // A closure is itself a re-subscribe trigger: the member
                     // may still be live (stream lag or teardown race), and no
                     // machine transition is guaranteed to follow.
@@ -1194,18 +1217,11 @@ async fn run_member_event_observer<S: MemberEventSource>(
                 // what is still open, then end.
                 Err(()) => changes_open = false,
             },
-            () = sleep_until_retry(next_retry), if next_retry.is_some() => {
+            () = crate::fallback_wake::sleep_until(next_retry), if next_retry.is_some() => {
                 subscriptions.reconcile(&source).await;
             }
             else => break,
         }
-    }
-}
-
-async fn sleep_until_retry(next_retry: Option<tokio::time::Instant>) {
-    match next_retry {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
     }
 }
 
@@ -1919,6 +1935,8 @@ mod tests {
         phase: Mutex<meerkat_mob::MobState>,
         members: Mutex<Vec<meerkat_mob::AgentIdentity>>,
         subscribable: Mutex<std::collections::HashSet<String>>,
+        /// Subscribable members whose stream ends as soon as it opens.
+        closes_at_once: Mutex<std::collections::HashSet<String>>,
         attempts: Mutex<HashMap<String, Vec<tokio::time::Instant>>>,
         changes: tokio::sync::watch::Sender<()>,
     }
@@ -1942,6 +1960,7 @@ mod tests {
                         .collect(),
                 ),
                 subscribable: Mutex::new(subscribable.iter().map(ToString::to_string).collect()),
+                closes_at_once: Mutex::new(std::collections::HashSet::new()),
                 attempts: Mutex::new(HashMap::new()),
                 changes: tokio::sync::watch::channel(()).0,
             })
@@ -1989,7 +2008,9 @@ mod tests {
                 .entry(identity.clone())
                 .or_default()
                 .push(tokio::time::Instant::now());
-            if self.subscribable.lock().unwrap().contains(&identity) {
+            if self.closes_at_once.lock().unwrap().contains(&identity) {
+                Ok(Box::pin(futures::stream::empty()))
+            } else if self.subscribable.lock().unwrap().contains(&identity) {
                 Ok(Box::pin(futures::stream::pending()))
             } else {
                 Err(meerkat_mob::MobError::Internal(format!(
@@ -2124,6 +2145,30 @@ mod tests {
             .insert("stuck".to_string());
         tokio::time::sleep(std::time::Duration::from_mins(2)).await;
         assert_eq!(source.attempts("stuck").len(), stuck.len() + 1);
+        task.abort();
+    }
+
+    /// A member whose stream closes as soon as it opens is not re-subscribed
+    /// on every close (a spin with no typed signal): each instant close
+    /// counts as a failed subscribe and backs the member off.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_backs_off_a_stream_that_closes_at_once() {
+        let source =
+            ScriptedMemberSource::new(meerkat_mob::MobState::Running, &["flaky"], &["flaky"]);
+        source
+            .closes_at_once
+            .lock()
+            .unwrap()
+            .insert("flaky".to_string());
+        let started = tokio::time::Instant::now();
+        let task = tokio::spawn(run_member_event_observer(source.clone(), Vec::new()));
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let offsets: Vec<u64> = source
+            .attempts("flaky")
+            .iter()
+            .map(|at| at.duration_since(started).as_secs())
+            .collect();
+        assert_eq!(offsets, [0, 1, 3, 7], "one attempt per backoff window");
         task.abort();
     }
 

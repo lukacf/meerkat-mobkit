@@ -61,6 +61,8 @@ async function makeRuntime(script: {
   dispatch?: Record<string, unknown>;
   inspections?: ScriptedInspection[];
   legacyGateway?: boolean;
+  /** Answer every `wait_for_completion` with this typed outcome. */
+  waitOutcome?: string;
 }) {
   const { MobKitRuntime } = await import("../src/runtime.js");
   const { RpcError } = await import("../src/errors.js");
@@ -114,6 +116,13 @@ async function makeRuntime(script: {
       throw new RpcError(-32601, "method not found", "1", method);
     }
     if (method === "mobkit/wait_for_completion") {
+      if (script.waitOutcome !== undefined) {
+        return {
+          identity: params?.identity ?? "x:1",
+          outcome: script.waitOutcome,
+          completion_cursor: { epoch: 3, turns: 1 },
+        };
+      }
       const result = serveCompletionWait(
         walk,
         () => index >= inspections.length,
@@ -123,7 +132,16 @@ async function makeRuntime(script: {
       pinned =
         result.outcome === "completed" ||
         result.outcome === "incarnation_changed";
+      if (result.outcome === "timed_out") {
+        // The gateway holds a server-side wait until its deadline.
+        await new Promise((resolve) =>
+          setTimeout(resolve, Number(params?.timeout_ms ?? 0)),
+        );
+      }
       return result;
+    }
+    if (method === "mobkit/request_continuity_repair") {
+      return { continuity_repair: "scheduled" };
     }
     if (method === "mobkit/completion_cursor") {
       const entry = walk();
@@ -320,7 +338,11 @@ describe("server-side completion waits", () => {
     });
 
     await assert.rejects(
-      rt.waitForCompletion("triage:main", { epoch: 3, turns: 1 }),
+      rt.waitForCompletion(
+        "triage:main",
+        { epoch: 3, turns: 1 },
+        { timeoutMs: 50 },
+      ),
       /did not complete a turn/,
     );
     assert.equal(inspectCalls(), 0);
@@ -400,6 +422,74 @@ describe("server-side completion waits", () => {
       epoch: 7,
       turns: 2,
     });
+  });
+});
+
+describe("typed wait outcomes", () => {
+  for (const outcome of [
+    "run_failed",
+    "broken",
+    "retiring",
+    "identity_gone",
+    "shutting_down",
+  ]) {
+    it(`waitForCompletion rejects with WaitEndedError on ${outcome}`, async () => {
+      const { WaitEndedError } = await import("../src/errors.js");
+      const { rt, inspectCalls } = await makeRuntime({ waitOutcome: outcome });
+      await assert.rejects(
+        rt.waitForCompletion("triage:main", { epoch: 3, turns: 1 }),
+        (error) => {
+          assert.ok(error instanceof WaitEndedError);
+          assert.equal(error.outcome, outcome);
+          assert.equal(error.identity, "triage:main");
+          return true;
+        },
+      );
+      assert.equal(inspectCalls(), 0);
+    });
+  }
+
+  it("waitUntilReady names why an identity is not ready", async () => {
+    const { rt } = await makeRuntime({ waitOutcome: "broken" });
+    await assert.rejects(
+      rt.waitUntilReady(["a:1"], { timeoutMs: 5000 }),
+      /a:1 \(broken\)/,
+    );
+  });
+
+  it("requestContinuityRepair reports what the request reached", async () => {
+    const { rt } = await makeRuntime({});
+    assert.equal(await rt.requestContinuityRepair(), "scheduled");
+  });
+
+  it("parses typed restore progress on the bootstrap status", async () => {
+    const { parseIdentityBootstrapStatus } = await import("../src/types.js");
+    const status = parseIdentityBootstrapStatus({
+      mode: { mode: "eager_materialize" },
+      complete: false,
+      ready: false,
+      counts: { active: 1, broken: 1 },
+      identities: {
+        "agent:resuming": { state: "warming", restore: { stage: "resuming" } },
+        "agent:broken": {
+          state: "broken",
+          error: "resume rejected",
+          restore: { stage: "broken", kind: "resume_rejected" },
+        },
+        "agent:older": { state: "active" },
+      },
+    });
+    assert.deepEqual(status.identities["agent:resuming"]?.restore, {
+      stage: "resuming",
+      kind: null,
+    });
+    assert.deepEqual(status.identities["agent:broken"]?.restore, {
+      stage: "broken",
+      kind: "resume_rejected",
+    });
+    assert.equal(status.identities["agent:older"]?.restore, null);
+    assert.equal(status.complete, false);
+    assert.equal(status.counts.broken, 1);
   });
 });
 

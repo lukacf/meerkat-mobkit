@@ -28,6 +28,7 @@ pub mod decisions;
 pub mod detached_completion;
 #[cfg(test)]
 mod detached_delivery_route_tests;
+pub(crate) mod fallback_wake;
 pub mod fork;
 pub mod gateway_composition;
 pub mod gateway_wiring;

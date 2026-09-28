@@ -2354,9 +2354,11 @@ async fn record_identity_turn_completion(
     durable_identity: Option<&str>,
     envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
 ) {
-    if !matches!(envelope.payload, AgentEvent::RunCompleted { .. }) {
-        return;
-    }
+    let failed = match envelope.payload {
+        AgentEvent::RunCompleted { .. } => false,
+        AgentEvent::RunFailed { .. } => true,
+        _ => return,
+    };
     let Some(durable_identity) = durable_identity else {
         return;
     };
@@ -2378,7 +2380,11 @@ async fn record_identity_turn_completion(
             return;
         }
     };
-    authority.record_turn_completed(&identity).await;
+    if failed {
+        authority.record_turn_failed(&identity).await;
+    } else {
+        authority.record_turn_completed(&identity).await;
+    }
 }
 
 async fn trigger_identity_stream_repair(
