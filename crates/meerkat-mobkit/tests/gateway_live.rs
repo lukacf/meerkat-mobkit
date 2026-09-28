@@ -476,7 +476,6 @@ fn init_accepts_host_runnables_and_rejects_duplicates() {
 mod cross_provider_open {
     use std::sync::Arc;
 
-    use meerkat::SessionServiceHistoryExt as _;
     use meerkat::test_fixtures::realtime::ScriptedRealtimeSessionFactory;
     use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
     use meerkat_client::TestClient;
@@ -740,17 +739,18 @@ mod cross_provider_open {
             json!("close-projection-test"),
         )
         .await;
-        let history = stack
-            .service
-            .read_history(
-                &stack.session_id,
-                meerkat_core::service::SessionHistoryQuery {
-                    offset: 0,
-                    limit: None,
-                },
-            )
-            .await
-            .expect("canonical history after live close");
+        // Fully qualified: the only use is feature-gated, so a trait import
+        // would be unused under other feature sets.
+        let history = meerkat::SessionServiceHistoryExt::read_history(
+            &*stack.service,
+            &stack.session_id,
+            meerkat_core::service::SessionHistoryQuery {
+                offset: 0,
+                limit: None,
+            },
+        )
+        .await
+        .expect("canonical history after live close");
         stack.service.shutdown().await;
 
         assert!(
