@@ -102,6 +102,8 @@ interface ChatPaneProps extends ConversationApprovalProps {
   activeVoiceScope?: { sessionId: string; channelId: string } | null;
   voiceActive?: boolean;
   voiceDisabled?: boolean;
+  /** Voice readiness has no definite answer yet; the button shows a checking state. */
+  voiceChecking?: boolean;
   /// Operator actions for inline WorkGraph cards. ConsoleApp gates these on
   /// `experience.workgraph.can_manage` and read-only state; omitted callbacks
   /// render no buttons.
@@ -1275,6 +1277,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
   sendWithheld,
   voiceActive,
   voiceDisabled,
+  voiceChecking,
   onVoiceToggle,
   stagedCount,
   canAttachImages,
@@ -1293,6 +1296,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
   sendWithheld: boolean;
   voiceActive: boolean;
   voiceDisabled: boolean;
+  voiceChecking: boolean;
   onVoiceToggle?: () => void;
   stagedCount: number;
   canAttachImages: boolean;
@@ -1342,6 +1346,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
             agentLabel={agentLabel}
             active={voiceActive}
             disabled={voiceDisabled}
+            checking={voiceChecking && !voiceActive}
             onClick={onVoiceToggle}
           />
         )}
@@ -1406,6 +1411,7 @@ export function ChatPane({
   onVoiceToggle,
   voiceActive = false,
   voiceDisabled = false,
+  voiceChecking = false,
   workGraphActions = null,
   peerLabels = null,
 }: ChatPaneProps): React.JSX.Element {
@@ -2062,6 +2068,7 @@ export function ChatPane({
             sendWithheld={sendWithheld}
             voiceActive={voiceActive}
             voiceDisabled={voiceDisabled}
+            voiceChecking={voiceChecking}
             onVoiceToggle={onVoiceToggle}
             stagedCount={staged.length}
             canAttachImages={canAttachImages}

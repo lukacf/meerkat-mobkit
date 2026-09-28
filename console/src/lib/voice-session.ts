@@ -135,8 +135,23 @@ export interface VoiceSessionEnvironment {
  * A gateway answer (positive, negative, or a typed rejection) is definite; a transport
  * failure (network, timeout, 5xx, 429) is `unknown` so callers can keep the last known state.
  */
-export async function queryVoiceAvailability(baseUrl: string, identity: string): Promise<VoiceAvailability> {
-  return (await queryVoiceReadiness(baseUrl, identity)).availability;
+export async function queryVoiceAvailability(
+  baseUrl: string,
+  identity: string,
+  signal?: AbortSignal,
+): Promise<VoiceAvailability> {
+  return (await queryVoiceReadiness(baseUrl, identity, signal)).availability;
+}
+
+/**
+ * The gateway's typed "the check did not finish within its budget" answer. It is not a
+ * readiness answer: callers keep what they knew and retry.
+ */
+export const VOICE_READINESS_TIMED_OUT_KIND = "voice_readiness_timed_out";
+
+function isReadinessTimedOut(error: unknown): boolean {
+  const rpcError = (error as { rpcError?: { data?: { kind?: unknown } } } | null)?.rpcError;
+  return rpcError?.data?.kind === VOICE_READINESS_TIMED_OUT_KIND;
 }
 
 type ReadinessWire = {
@@ -147,15 +162,21 @@ type ReadinessWire = {
 } | null;
 
 /** Like {@link queryVoiceAvailability}, keeping the typed reason and holder when the gateway sends them. */
-export async function queryVoiceReadiness(baseUrl: string, identity: string): Promise<VoiceReadinessDetail> {
+export async function queryVoiceReadiness(
+  baseUrl: string,
+  identity: string,
+  signal?: AbortSignal,
+): Promise<VoiceReadinessDetail> {
   if (!identity?.trim()) return { availability: "unavailable" };
   let readiness: ReadinessWire;
   try {
     readiness = await callConsoleRpc<ReadinessWire>(
-      baseUrl, "mobkit/console/voice/readiness", { identity }, VOICE_TEARDOWN_TIMEOUT_MS,
+      baseUrl, "mobkit/console/voice/readiness", { identity }, VOICE_TEARDOWN_TIMEOUT_MS, signal,
     );
   } catch (error) {
-    return { availability: isTransientRpcFailure(error) ? "unknown" : "unavailable" };
+    return {
+      availability: isReadinessTimedOut(error) || isTransientRpcFailure(error) ? "unknown" : "unavailable",
+    };
   }
   if (readiness?.identity !== identity) return { availability: "unavailable" };
   if (readiness.available === true) return { availability: "available" };

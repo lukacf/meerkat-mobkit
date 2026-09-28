@@ -186,7 +186,12 @@ import { consoleSendStorageKey, loadConsoleSendAttempts, saveConsoleSendAttempts
 
 import { VoiceBar } from "./panels/VoiceBar";
 import { useVoiceController } from "./lib/use-voice-controller";
-import { useVoiceReadiness, voiceReadinessDenied } from "./lib/use-voice-readiness";
+import {
+  useVoiceReadiness,
+  voiceReadinessDenied,
+  voiceReadinessOffersVoice,
+  voiceReadinessPending,
+} from "./lib/use-voice-readiness";
 import { countRender } from "./lib/render-counts";
 
 interface ConsoleAppProps {
@@ -4511,7 +4516,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         stackSlot={stackSlot}
         voiceSlot={dock.viewState.focusedPanelId === panel.id ? voiceBar : null}
         onVoiceToggle={
-          voice && voiceReadiness[identity] === true && agent?.affordances?.can_send_message === true
+          voice && voiceReadinessOffersVoice(voiceReadiness[identity]) && agent?.affordances?.can_send_message === true
             ? () => {
                 if (voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error") {
                   void voice.close();
@@ -4523,6 +4528,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         }
         voiceActive={voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error"}
         voiceDisabled={voiceState.phase === "closing"}
+        voiceChecking={voiceReadinessPending(voiceReadiness[identity])}
         liveSpeech={
           voiceState.target?.identity === identity && voiceState.phase === "active"
             ? voiceState.liveSpeech

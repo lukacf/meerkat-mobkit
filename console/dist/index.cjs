@@ -37424,20 +37424,23 @@ function VoiceButton({
   agentLabel,
   active = false,
   disabled = false,
+  checking = false,
   onClick
 }) {
-  const label = active ? `End voice with ${agentLabel}` : `Start voice with ${agentLabel}`;
+  const label = active ? `End voice with ${agentLabel}` : checking ? `Start voice with ${agentLabel} (checking availability)` : `Start voice with ${agentLabel}`;
   return /* @__PURE__ */ (0, import_jsx_runtime52.jsx)(
     "button",
     {
       type: "button",
-      className: "composer__voice",
+      className: checking ? "composer__voice composer__voice--checking" : "composer__voice",
       "aria-label": label,
       "aria-pressed": active,
+      "aria-busy": checking || void 0,
       title: label,
       disabled,
       onClick,
       "data-testid": "voice-start",
+      "data-readiness": checking ? "checking" : "confirmed",
       children: /* @__PURE__ */ (0, import_jsx_runtime52.jsx)(Glyph, { name: "i-voice" })
     }
   );
@@ -38491,6 +38494,7 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
   sendWithheld,
   voiceActive,
   voiceDisabled,
+  voiceChecking,
   onVoiceToggle,
   stagedCount,
   canAttachImages,
@@ -38540,6 +38544,7 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
           agentLabel,
           active: voiceActive,
           disabled: voiceDisabled,
+          checking: voiceChecking && !voiceActive,
           onClick: onVoiceToggle
         }
       ),
@@ -38601,6 +38606,7 @@ function ChatPane({
   onVoiceToggle,
   voiceActive = false,
   voiceDisabled = false,
+  voiceChecking = false,
   workGraphActions = null,
   peerLabels = null
 }) {
@@ -39203,6 +39209,7 @@ function ChatPane({
                 sendWithheld,
                 voiceActive,
                 voiceDisabled,
+                voiceChecking,
                 onVoiceToggle,
                 stagedCount: staged.length,
                 canAttachImages,
@@ -40350,10 +40357,15 @@ var REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Ch
 var TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
 var AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
 var LIVE_SPEECH_MAX_ITEMS = 400;
-async function queryVoiceAvailability(baseUrl, identity) {
-  return (await queryVoiceReadiness(baseUrl, identity)).availability;
+async function queryVoiceAvailability(baseUrl, identity, signal) {
+  return (await queryVoiceReadiness(baseUrl, identity, signal)).availability;
 }
-async function queryVoiceReadiness(baseUrl, identity) {
+var VOICE_READINESS_TIMED_OUT_KIND = "voice_readiness_timed_out";
+function isReadinessTimedOut(error) {
+  const rpcError = error?.rpcError;
+  return rpcError?.data?.kind === VOICE_READINESS_TIMED_OUT_KIND;
+}
+async function queryVoiceReadiness(baseUrl, identity, signal) {
   if (!identity?.trim()) return { availability: "unavailable" };
   let readiness;
   try {
@@ -40361,10 +40373,13 @@ async function queryVoiceReadiness(baseUrl, identity) {
       baseUrl,
       "mobkit/console/voice/readiness",
       { identity },
-      VOICE_TEARDOWN_TIMEOUT_MS
+      VOICE_TEARDOWN_TIMEOUT_MS,
+      signal
     );
   } catch (error) {
-    return { availability: isTransientRpcFailure(error) ? "unknown" : "unavailable" };
+    return {
+      availability: isReadinessTimedOut(error) || isTransientRpcFailure(error) ? "unknown" : "unavailable"
+    };
   }
   if (readiness?.identity !== identity) return { availability: "unavailable" };
   if (readiness.available === true) return { availability: "available" };
@@ -41630,51 +41645,74 @@ function useVoiceController(baseUrl) {
 var import_react44 = __toESM(require("react"));
 var NO_READINESS = {};
 var READINESS_REFRESH_INTERVAL_MS = 15e3;
-function mergeVoiceReadiness(previous3, results) {
-  const values = {};
-  for (const [identity, availability] of results) {
-    if (availability === "unknown") {
-      if (identity in previous3) values[identity] = previous3[identity];
-    } else {
-      values[identity] = availability === "available";
-    }
-  }
-  return values;
+var READINESS_RETRY_BASE_MS = 1e3;
+function nextVoiceReadiness(previous3, availability) {
+  if (availability === "available") return "available";
+  if (availability === "unavailable") return "unavailable";
+  return previous3 === "available" || previous3 === "unavailable" ? previous3 : "retrying";
+}
+function voiceReadinessRetryDelayMs(consecutiveFailures) {
+  if (consecutiveFailures <= 0) return READINESS_REFRESH_INTERVAL_MS;
+  const exponent = Math.min(consecutiveFailures - 1, 16);
+  return Math.min(READINESS_RETRY_BASE_MS * 2 ** exponent, READINESS_REFRESH_INTERVAL_MS);
 }
 function voiceReadinessDenied(readiness, identity) {
-  return readiness[identity] === false;
+  return readiness[identity] === "unavailable";
+}
+function voiceReadinessOffersVoice(state) {
+  return state !== void 0 && state !== "unavailable";
+}
+function voiceReadinessPending(state) {
+  return state === "checking" || state === "retrying";
 }
 function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
-  const key = JSON.stringify([baseUrl, focusedIdentity, voiceIdentity, enabled]);
-  const [state, setState] = import_react44.default.useState({ key: "", baseUrl: "", values: NO_READINESS });
-  import_react44.default.useEffect(() => {
-    if (!enabled) return;
-    const identities = [...new Set([focusedIdentity, voiceIdentity].filter(
+  const identities = import_react44.default.useMemo(
+    () => enabled ? [...new Set([focusedIdentity, voiceIdentity].filter(
       (identity) => Boolean(identity)
-    ))];
+    ))] : [],
+    [enabled, focusedIdentity, voiceIdentity]
+  );
+  const [state, setState] = import_react44.default.useState({ baseUrl: "", values: NO_READINESS });
+  import_react44.default.useEffect(() => {
     if (!identities.length) return;
-    let stopped = false;
-    let timer;
-    const refresh = async () => {
-      const entries = await Promise.all(identities.map(
-        async (identity) => [identity, await queryVoiceAvailability(baseUrl, identity)]
-      ));
-      if (stopped) return;
-      setState((previous3) => ({
-        key,
-        baseUrl,
-        // Known values never transfer across gateways, even for the same identity.
-        values: mergeVoiceReadiness(previous3.baseUrl === baseUrl ? previous3.values : NO_READINESS, entries)
-      }));
-      timer = setTimeout(() => void refresh(), READINESS_REFRESH_INTERVAL_MS);
-    };
-    void refresh();
+    const abort = new AbortController();
+    const timers = /* @__PURE__ */ new Set();
+    for (const identity of identities) {
+      let failures = 0;
+      const check = async () => {
+        const availability = await queryVoiceAvailability(baseUrl, identity, abort.signal);
+        if (abort.signal.aborted) return;
+        failures = availability === "unknown" ? failures + 1 : 0;
+        setState((previous3) => {
+          const known = previous3.baseUrl === baseUrl ? previous3.values : NO_READINESS;
+          const values = {};
+          for (const kept of identities) {
+            if (kept in known) values[kept] = known[kept];
+          }
+          values[identity] = nextVoiceReadiness(known[identity], availability);
+          return { baseUrl, values };
+        });
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          void check();
+        }, voiceReadinessRetryDelayMs(failures));
+        timers.add(timer);
+      };
+      void check();
+    }
     return () => {
-      stopped = true;
-      clearTimeout(timer);
+      abort.abort();
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
     };
-  }, [baseUrl, enabled, focusedIdentity, key, voiceIdentity]);
-  return enabled && state.key === key ? state.values : NO_READINESS;
+  }, [baseUrl, identities]);
+  return import_react44.default.useMemo(() => {
+    if (!identities.length) return NO_READINESS;
+    const known = state.baseUrl === baseUrl ? state.values : NO_READINESS;
+    const values = {};
+    for (const identity of identities) values[identity] = known[identity] ?? "checking";
+    return values;
+  }, [baseUrl, identities, state]);
 }
 
 // src/ConsoleApp.tsx
@@ -44897,7 +44935,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot,
         voiceSlot: dock.viewState.focusedPanelId === panel.id ? voiceBar : null,
-        onVoiceToggle: voice && voiceReadiness[identity] === true && agent?.affordances?.can_send_message === true ? () => {
+        onVoiceToggle: voice && voiceReadinessOffersVoice(voiceReadiness[identity]) && agent?.affordances?.can_send_message === true ? () => {
           if (voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error") {
             void voice.close();
           } else {
@@ -44906,6 +44944,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         } : void 0,
         voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
         voiceDisabled: voiceState.phase === "closing",
+        voiceChecking: voiceReadinessPending(voiceReadiness[identity]),
         liveSpeech: voiceState.target?.identity === identity && voiceState.phase === "active" ? voiceState.liveSpeech : void 0,
         activeVoiceScope: voiceState.target?.identity === identity && voiceState.phase === "active" && agent?.session_id && voiceState.activeChannelId ? { sessionId: agent.session_id, channelId: voiceState.activeChannelId } : null,
         workGraphActions: workGraphCardActionsFor(identity)
