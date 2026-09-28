@@ -29,7 +29,6 @@ import type {
   ConversationWorkGraphAttentionRow,
   ConversationWorkGraphEntry,
   ConversationWorkGraphItemRow,
-  ResponsePhase,
   RoutingSectionView,
   WorkGraphCardStatus,
 } from "@console-core";
@@ -3324,21 +3323,6 @@ function serverToolContentSummary(frame: ConsoleFrame): { result?: string; statu
   return null;
 }
 
-function isActiveServerToolContentFrame(frame: ConsoleFrame): boolean {
-  return serverToolContentSummary(frame)?.status === "pending";
-}
-
-function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
-  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
-  const content = record?.content && typeof record.content === "object"
-    ? record.content as Record<string, unknown>
-    : null;
-  const type = typeof content?.type === "string" ? content.type : "";
-  if (type === "message_annotations" || Array.isArray(content?.annotations)) return false;
-  const status = serverToolContentSummary(frame)?.status;
-  return status === "success" || status === "error";
-}
-
 type HistoryToolResult = {
   result?: string;
   status: "pending" | "success" | "error";
@@ -5470,189 +5454,8 @@ export function appendOptimisticConversationEntry(
   return optimisticEntry ? [...entries, optimisticEntry] : entries;
 }
 
-function isIntermediateHistoryAssistantStep(frame: ConsoleFrame): boolean {
-  if (frame.sourceKind !== "session_history"
-    || (frame.event !== "text_complete" && frame.event !== "interaction_complete")) return false;
-  const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-  const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
-  return message.role === "block_assistant" && message.stop_reason === "tool_use";
-}
-
-export function inferResponsePhaseFromFrames(
-  frames: ConsoleFrame[],
-  fallback: ResponsePhase = null,
-): ResponsePhase {
-  let phase: ResponsePhase = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    // A saved intermediate message supplies content, not current lifecycle.
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase = null;
-        else phase = "waiting";
-        break;
-      case "interaction_started":
-        interactionOpen = true;
-        phase = "waiting";
-        break;
-      case "run_started":
-        runOpen = true;
-        phase = "waiting";
-        break;
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-        phase = "tool-executing";
-        break;
-      case "server_tool_content":
-        if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
-        else if (isTerminalServerToolContentFrame(frame)) phase = "waiting";
-        break;
-      case "tool_result_received":
-      case "tool_execution_completed":
-        // A completed tool is not the same as a completed turn. In spawned
-        // worker histories the runtime may not project run_started/
-        // interaction_started, so keep the pane busy until text/run terminal
-        // evidence arrives; otherwise operator sends bypass the local queue.
-        phase = "waiting";
-        break;
-      case "reasoning_delta":
-        phase = "generating";
-        break;
-      case "reasoning_complete":
-        phase = "waiting";
-        break;
-      case "text_delta":
-        phase = "generating";
-        break;
-      case "text_complete":
-        phase = interactionOpen || runOpen ? "waiting" : null;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase = null;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        phase = interactionOpen ? "waiting" : null;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState(frame)) phase = null;
-        break;
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase = interactionOpen || runOpen ? "waiting" : null;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  return phase;
-}
-
-function isTerminalUserInputStatus(status?: string): boolean {
-  return status === "completed" || status === "delivery_failed" || status === "failed";
-}
-
-export function resolvePanelResponsePhase(args: {
-  frames: ConsoleFrame[];
-  serverPhase?: ResponsePhase;
-  localPhase?: ResponsePhase;
-  hasLocalPhase?: boolean;
-}): ResponsePhase {
-  if (args.hasLocalPhase) {
-    return args.localPhase ?? null;
-  }
-  if (args.frames.length > 0) {
-    const localPhase = inferResponsePhaseFromFrames(args.frames, null);
-    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
-      return args.serverPhase;
-    }
-    return localPhase;
-  }
-  return args.serverPhase ?? null;
-}
-
-function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
-  for (let index = frames.length - 1; index >= 0; index -= 1) {
-    const frame = frames[index];
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-
-function hasOpenLifecycleBefore(frames: ConsoleFrame[], beforeIndex: number): boolean {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index = 0; index < beforeIndex; index += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index])) continue;
-    switch (frames[index].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
-}
+// Share lifecycle phase inference with reusable console hosts.
+export { inferResponsePhaseFromFrames, resolvePanelResponsePhase } from "@console-core";
 
 export function buildConversationViewState(args: {
   memberId: string;

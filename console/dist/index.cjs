@@ -752,6 +752,53 @@ function assistantHistorySnapshot(frame) {
   return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
 }
 
+// ../packages/console-core/src/settled-history-activity.ts
+var LEGACY_ACTIVITY = /* @__PURE__ */ new Set([
+  "reasoning_delta",
+  "reasoning_complete",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
+  "server_tool_content"
+]);
+function exactScope(frame) {
+  const fields = [frame.runtimeKey, frame.identity, frame.sessionId];
+  return fields.every((value) => typeof value === "string" && value.trim()) ? JSON.stringify(fields) : void 0;
+}
+function settledHistoryActivity(frames) {
+  const observations = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const snapshot = assistantHistorySnapshot(frame);
+    const scope = exactScope(frame);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (!snapshot || !scope || cursor === void 0) continue;
+    const previous3 = observations.get(scope);
+    if (!previous3 || cursor > previous3.cursor) {
+      observations.set(scope, {
+        cursor,
+        through: snapshot.observedThrough,
+        ids: snapshot.assistantMessageIds,
+        conflict: false
+      });
+    } else if (cursor === previous3.cursor && (snapshot.observedThrough !== previous3.through || snapshot.assistantMessageIds.size !== previous3.ids.size || [...snapshot.assistantMessageIds].some((id) => !previous3.ids.has(id)))) {
+      previous3.conflict = true;
+    }
+  }
+  const covered = /* @__PURE__ */ new Set();
+  for (const frame of frames) {
+    if (frame.sourceKind !== "session_history" || !LEGACY_ACTIVITY.has(frame.event)) continue;
+    const scope = exactScope(frame);
+    const observation = scope && observations.get(scope);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (observation && !observation.conflict && cursor !== void 0 && cursor <= observation.through) {
+      covered.add(frame);
+    }
+  }
+  return covered;
+}
+
 // ../packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
   const record4 = value && typeof value === "object" ? value : null;
@@ -3938,6 +3985,300 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+function formatServerToolAnnotations(annotations) {
+  return annotations.map((annotation, index2) => {
+    const record4 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record4?.title === "string" && record4.title.trim() ? record4.title.trim() : typeof record4?.text === "string" && record4.text.trim() ? record4.text.trim() : `Source ${index2 + 1}`;
+    const url = typeof record4?.url === "string" && record4.url.trim() ? record4.url.trim() : "";
+    return url ? `${index2 + 1}. ${title}
+${url}` : `${index2 + 1}. ${title}`;
+  }).join("\n\n").trim();
+}
+function serverToolContentSummary(frame) {
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record4?.status === "string" ? record4.status : "";
+  if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
+    return { status: "error" };
+  }
+  if (Array.isArray(content3?.annotations)) {
+    const result = formatServerToolAnnotations(content3.annotations);
+    return {
+      status: "success",
+      ...result ? { result } : {}
+    };
+  }
+  if (type.includes(".completed") || type.includes(".done") || status === "completed" || status === "done" || status === "succeeded") {
+    return { status: "success" };
+  }
+  if (type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || status === "in_progress" || status === "searching" || status === "queued" || type.includes("_call")) {
+    return { status: "pending" };
+  }
+  return null;
+}
+function isActiveServerToolContentFrame(frame) {
+  return serverToolContentSummary(frame)?.status === "pending";
+}
+function isTerminalServerToolContentFrame(frame) {
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : "";
+  if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
+  const status = serverToolContentSummary(frame)?.status;
+  return status === "success" || status === "error";
+}
+function textFromUnknown(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function typedNoticeBlockText(block) {
+  const parts = [
+    textFromUnknown(block.summary),
+    textFromUnknown(block.body),
+    textFromUnknown(block.detail),
+    textFromUnknown(block.state),
+    textFromUnknown(block.status)
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+function isExternalEventOnlySystemNotice(message) {
+  if (!message || typeof message !== "object") return false;
+  const record4 = message;
+  if (textFromUnknown(record4.kind) === "external_event") return true;
+  const blocks = record4.blocks;
+  if (!Array.isArray(blocks)) return false;
+  let sawExternalEventBlock = false;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const type = textFromUnknown(block.type);
+    if (!type) continue;
+    if (type !== "external_event") return false;
+    sawExternalEventBlock = true;
+  }
+  return sawExternalEventBlock;
+}
+function systemNoticeMessageRecord(frame) {
+  if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
+    return null;
+  }
+  const data = frame.data;
+  if (data.message && typeof data.message === "object") {
+    return data.message;
+  }
+  return data;
+}
+function systemNoticeBlockRecords(record4) {
+  const blocks = record4.blocks;
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter((block) => Boolean(block) && typeof block === "object");
+}
+function legacyPeerNoticeTextCandidates(record4) {
+  const candidates = [];
+  const body = textFromUnknown(record4.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record4)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content3 = block.content;
+    if (!Array.isArray(content3)) continue;
+    for (const item of content3) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown(data.text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
+  }
+  return candidates;
+}
+function isLegacyPeerNoticeText(text8) {
+  return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text8.trim());
+}
+function canUseLegacyPeerNoticeText(record4) {
+  const kind = textFromUnknown(record4.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record4).map((block) => textFromUnknown(block.type)).filter(Boolean);
+  return blockTypes.every((type) => type === "text");
+}
+function systemNoticeClearsBusyState(frame) {
+  const record4 = systemNoticeMessageRecord(frame);
+  if (!record4 || isExternalEventOnlySystemNotice(record4)) return false;
+  if (textFromUnknown(record4.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record4);
+  if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText(record4)) return false;
+  return legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+}
+function isIntermediateHistoryAssistantStep(frame) {
+  if (frame.sourceKind !== "session_history" || frame.event !== "text_complete" && frame.event !== "interaction_complete") return false;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = data.message && typeof data.message === "object" ? data.message : {};
+  return message.role === "block_assistant" && message.stop_reason === "tool_use";
+}
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  const coveredHistory = settledHistoryActivity(frames);
+  let phase2 = fallback;
+  let interactionOpen = false;
+  let runOpen = false;
+  for (const frame of frames) {
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+    switch (frame.event) {
+      case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
+        else phase2 = "waiting";
+        break;
+      case "interaction_started":
+        interactionOpen = true;
+        phase2 = "waiting";
+        break;
+      case "run_started":
+        runOpen = true;
+        phase2 = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+        phase2 = "tool-executing";
+        break;
+      case "server_tool_content":
+        if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
+        else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
+        break;
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase2 = "waiting";
+        break;
+      case "reasoning_delta":
+        phase2 = "generating";
+        break;
+      case "reasoning_complete":
+        phase2 = "waiting";
+        break;
+      case "text_delta":
+        phase2 = "generating";
+        break;
+      case "text_complete":
+        phase2 = interactionOpen || runOpen ? "waiting" : null;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        phase2 = null;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        phase2 = interactionOpen ? "waiting" : null;
+        break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) phase2 = null;
+        break;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
+          phase2 = interactionOpen || runOpen ? "waiting" : null;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return phase2;
+}
+function isTerminalUserInputStatus(status) {
+  return status === "completed" || status === "delivery_failed" || status === "failed";
+}
+function resolvePanelResponsePhase(args) {
+  if (args.hasLocalPhase) {
+    return args.localPhase ?? null;
+  }
+  if (args.frames.length > 0) {
+    const localPhase = inferResponsePhaseFromFrames(args.frames, null);
+    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
+      return args.serverPhase;
+    }
+    return localPhase;
+  }
+  return args.serverPhase ?? null;
+}
+function latestRoutableFrameIsTerminal(frames) {
+  const coveredHistory = settledHistoryActivity(frames);
+  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
+    const frame = frames[index2];
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+    switch (frame.event) {
+      case "user_input":
+        return isTerminalUserInputStatus(frame.status);
+      case "text_complete":
+      case "run_completed":
+      case "run_failed":
+        return !hasOpenLifecycleBefore(frames, index2);
+      case "interaction_complete":
+      case "interaction_failed":
+      case "message_delivery_failed":
+        return true;
+      case "system_notice":
+        return systemNoticeClearsBusyState(frame);
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+      }
+      case "interaction_started":
+      case "run_started":
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+      case "reasoning_delta":
+      case "reasoning_complete":
+      case "text_delta":
+        return false;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+function hasOpenLifecycleBefore(frames, beforeIndex) {
+  let interactionOpen = false;
+  let runOpen = false;
+  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
+    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
+    switch (frames[index2].event) {
+      case "interaction_started":
+        interactionOpen = true;
+        break;
+      case "run_started":
+        runOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        break;
+      case "message_delivery_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      default:
+        break;
+    }
+  }
+  return interactionOpen || runOpen;
+}
 
 // ../packages/console-core/src/contract.ts
 var CONSOLE_RPC_METHODS = {
@@ -21031,7 +21372,7 @@ function parseObjectJson(text8) {
     return null;
   }
 }
-function textFromUnknown(value) {
+function textFromUnknown2(value) {
   if (value == null) {
     return "";
   }
@@ -21051,9 +21392,9 @@ function peerDetailRows(block) {
   const args = parseObjectJson(block.arguments) || {};
   const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
   const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
-  const body = peerBody || textFromUnknown(args.body) || textFromUnknown(args.message) || textFromUnknown(args.content) || textFromUnknown(args.text);
-  const params = textFromUnknown(args.params);
-  const requestId = textFromUnknown(args.in_reply_to) || textFromUnknown(args.inReplyTo) || textFromUnknown(args.request_id) || textFromUnknown(args.requestId);
+  const body = peerBody || textFromUnknown2(args.body) || textFromUnknown2(args.message) || textFromUnknown2(args.content) || textFromUnknown2(args.text);
+  const params = textFromUnknown2(args.params);
+  const requestId = textFromUnknown2(args.in_reply_to) || textFromUnknown2(args.inReplyTo) || textFromUnknown2(args.request_id) || textFromUnknown2(args.requestId);
   const result = meaningfulPeerResult(block.result);
   const primaryLabel = block.name === "send_request" ? "Request" : block.name === "send_response" ? "Response" : "Message";
   return [
@@ -22513,7 +22854,7 @@ function toolCallsFromFrameData(data) {
   const directName = toolName(data);
   if (directName) {
     calls.push({
-      id: textFromUnknown2(data.id),
+      id: textFromUnknown3(data.id),
       name: directName,
       args: data.args && typeof data.args === "object" ? data.args : null
     });
@@ -22523,12 +22864,12 @@ function toolCallsFromFrameData(data) {
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const blockRecord = block;
-    if (textFromUnknown2(blockRecord.block_type) !== "tool_use") continue;
+    if (textFromUnknown3(blockRecord.block_type) !== "tool_use") continue;
     const toolData = blockRecord.data && typeof blockRecord.data === "object" ? blockRecord.data : null;
     const name2 = toolName(toolData);
     if (!name2) continue;
     calls.push({
-      id: textFromUnknown2(toolData?.id),
+      id: textFromUnknown3(toolData?.id),
       name: name2,
       args: toolData?.args && typeof toolData.args === "object" ? toolData.args : null
     });
@@ -22547,7 +22888,7 @@ function resultText(value) {
 function peerLastSegment(value) {
   return value.split("/").filter(Boolean).pop() || value;
 }
-function textFromUnknown2(value) {
+function textFromUnknown3(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 function capturePeerRegistry(peerRegistry, rawResult) {
@@ -22606,13 +22947,13 @@ function commsBlocksFromFrameData(data) {
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
     const record4 = candidate;
-    const recordKind = textFromUnknown2(record4.kind);
+    const recordKind = textFromUnknown3(record4.kind);
     if (recordKind === "comms") blocks.push(record4);
     if (!Array.isArray(record4.blocks)) continue;
     for (const block of record4.blocks) {
       if (!block || typeof block !== "object") continue;
       const blockRecord = block;
-      if (textFromUnknown2(blockRecord.type) === "comms") blocks.push(blockRecord);
+      if (textFromUnknown3(blockRecord.type) === "comms") blocks.push(blockRecord);
     }
   }
   return blocks;
@@ -22625,12 +22966,12 @@ function typedCommsPulseFromFrame(frame, data, graph) {
   for (const block of blocks) {
     const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
     const peerIdentity = resolveGraphIdentity(
-      textFromUnknown2(peer.display_name) || textFromUnknown2(peer.id),
+      textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id),
       graph
     );
     if (!peerIdentity || peerIdentity === receiver) continue;
-    const direction = textFromUnknown2(block.direction) || "incoming";
-    const requestId = textFromUnknown2(block.request_id);
+    const direction = textFromUnknown3(block.direction) || "incoming";
+    const requestId = textFromUnknown3(block.request_id);
     if (direction === "outgoing") {
       return {
         id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
@@ -25549,7 +25890,7 @@ function buildToolBlocks(frames, cardToolCallIds) {
     if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
-      const parsed = serverToolContentSummary(frame);
+      const parsed = serverToolContentSummary2(frame);
       if (!toolCallId) {
         if (parsed && parsed.status !== "pending") {
           const name2 = parseToolName(frame);
@@ -27002,7 +27343,7 @@ function summarizeToolResultForDisplay(toolName2, result) {
   }
   return null;
 }
-function formatServerToolAnnotations(annotations) {
+function formatServerToolAnnotations2(annotations) {
   return annotations.map((annotation, index2) => {
     const record4 = annotation && typeof annotation === "object" ? annotation : null;
     const title = typeof record4?.title === "string" && record4.title.trim() ? record4.title.trim() : typeof record4?.text === "string" && record4.text.trim() ? record4.text.trim() : `Source ${index2 + 1}`;
@@ -27011,7 +27352,7 @@ function formatServerToolAnnotations(annotations) {
 ${url}` : `${index2 + 1}. ${title}`;
   }).join("\n\n").trim();
 }
-function serverToolContentSummary(frame) {
+function serverToolContentSummary2(frame) {
   const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
   const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
@@ -27020,7 +27361,7 @@ function serverToolContentSummary(frame) {
     return { status: "error" };
   }
   if (Array.isArray(content3?.annotations)) {
-    const result = formatServerToolAnnotations(content3.annotations);
+    const result = formatServerToolAnnotations2(content3.annotations);
     return {
       status: "success",
       ...result ? { result } : {}
@@ -27033,17 +27374,6 @@ function serverToolContentSummary(frame) {
     return { status: "pending" };
   }
   return null;
-}
-function isActiveServerToolContentFrame(frame) {
-  return serverToolContentSummary(frame)?.status === "pending";
-}
-function isTerminalServerToolContentFrame(frame) {
-  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : "";
-  if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
-  const status = serverToolContentSummary(frame)?.status;
-  return status === "success" || status === "error";
 }
 function toolResultTextFromContent(content3) {
   if (typeof content3 === "string") return content3;
@@ -27168,7 +27498,7 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
         hasNonTextBlock = true;
         actionAndTextBlocks.push(tool);
       } else if (!id) {
-        const result = serverToolContentSummary(serverFrame)?.result;
+        const result = serverToolContentSummary2(serverFrame)?.result;
         if (result && ![...serverBlocks.values()].some((tool2) => tool2.result === result)) {
           hasNonTextBlock = true;
           actionAndTextBlocks.push({ type: "paragraph", text: result });
@@ -27189,27 +27519,27 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
   }
   return hasNonTextBlock || textMode === "markdown" ? actionAndTextBlocks : [];
 }
-function textFromUnknown3(value) {
+function textFromUnknown4(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 function typedNoticeContentBlocks(content3, blobBaseUrl) {
   return contentToUserBlocks(content3, blobBaseUrl, "legacy");
 }
-function typedNoticeBlockText(block) {
+function typedNoticeBlockText2(block) {
   const parts = [
-    textFromUnknown3(block.summary),
-    textFromUnknown3(block.body),
-    textFromUnknown3(block.detail),
-    textFromUnknown3(block.state),
-    textFromUnknown3(block.status)
+    textFromUnknown4(block.summary),
+    textFromUnknown4(block.body),
+    textFromUnknown4(block.detail),
+    textFromUnknown4(block.state),
+    textFromUnknown4(block.status)
   ].filter(Boolean);
   return parts.join("\n");
 }
 function typedCommsStableBodyText(block) {
   const parts = [
-    textFromUnknown3(block.summary),
-    textFromUnknown3(block.body),
-    textFromUnknown3(block.detail)
+    textFromUnknown4(block.summary),
+    textFromUnknown4(block.body),
+    textFromUnknown4(block.detail)
   ].filter(Boolean);
   return parts.join("\n");
 }
@@ -27225,23 +27555,23 @@ function stripBareCommsIntentBodyPrefix(text8) {
   const match = text8.match(/^\s*Intent:\s*[^\n]*\n\s*Body:\s*([\s\S]+)$/i);
   return (match?.[1] || text8).trim();
 }
-function isExternalEventOnlySystemNotice(message) {
+function isExternalEventOnlySystemNotice2(message) {
   if (!message || typeof message !== "object") return false;
   const record4 = message;
-  if (textFromUnknown3(record4.kind) === "external_event") return true;
+  if (textFromUnknown4(record4.kind) === "external_event") return true;
   const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
-    const type = textFromUnknown3(block.type);
+    const type = textFromUnknown4(block.type);
     if (!type) continue;
     if (type !== "external_event") return false;
     sawExternalEventBlock = true;
   }
   return sawExternalEventBlock;
 }
-function systemNoticeMessageRecord(frame) {
+function systemNoticeMessageRecord2(frame) {
   if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
     return null;
   }
@@ -27252,7 +27582,7 @@ function systemNoticeMessageRecord(frame) {
   return data;
 }
 function commsNoticeMessageRecord(frame) {
-  const systemNotice = systemNoticeMessageRecord(frame);
+  const systemNotice = systemNoticeMessageRecord2(frame);
   if (systemNotice) return systemNotice;
   if (frame.sourceKind !== "session_history" || !frame.data || typeof frame.data !== "object") {
     return null;
@@ -27263,37 +27593,37 @@ function commsNoticeMessageRecord(frame) {
   const message = frame.data.message;
   if (!message || typeof message !== "object") return null;
   const record4 = message;
-  return textFromUnknown3(record4.role) === "system_notice" ? record4 : null;
+  return textFromUnknown4(record4.role) === "system_notice" ? record4 : null;
 }
-function systemNoticeBlockRecords(record4) {
+function systemNoticeBlockRecords2(record4) {
   const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates(record4) {
+function legacyPeerNoticeTextCandidates2(record4) {
   const candidates = [];
-  const body = textFromUnknown3(record4.body).trim();
+  const body = textFromUnknown4(record4.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords(record4)) {
-    const blockText = typedNoticeBlockText(block).trim();
+  for (const block of systemNoticeBlockRecords2(record4)) {
+    const blockText = typedNoticeBlockText2(block).trim();
     if (blockText) candidates.push(blockText);
     const content3 = block.content;
     if (!Array.isArray(content3)) continue;
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
       const itemRecord = item;
-      const itemText = textFromUnknown3(itemRecord.text).trim();
+      const itemText = textFromUnknown4(itemRecord.text).trim();
       if (itemText) candidates.push(itemText);
       const data = itemRecord.data;
       if (data && typeof data === "object") {
-        const dataText = textFromUnknown3(data.text).trim();
+        const dataText = textFromUnknown4(data.text).trim();
         if (dataText) candidates.push(dataText);
       }
     }
   }
   return candidates;
 }
-function isLegacyPeerNoticeText(text8) {
+function isLegacyPeerNoticeText2(text8) {
   return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text8.trim());
 }
 function isCommsLikeRunStartedPrompt(text8) {
@@ -27416,8 +27746,8 @@ function commsKindFromText(text8) {
 }
 function systemNoticeCommsSignatures(frame) {
   const record4 = commsNoticeMessageRecord(frame);
-  if (!record4 || isExternalEventOnlySystemNotice(record4)) return [];
-  const isCommsNotice = textFromUnknown3(record4.kind) === "comms" || systemNoticeBlockRecords(record4).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record4) && legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+  if (!record4 || isExternalEventOnlySystemNotice2(record4)) return [];
+  const isCommsNotice = textFromUnknown4(record4.kind) === "comms" || systemNoticeBlockRecords2(record4).some((block) => textFromUnknown4(block.type) === "comms") || canUseLegacyPeerNoticeText2(record4) && legacyPeerNoticeTextCandidates2(record4).some(isLegacyPeerNoticeText2);
   if (!isCommsNotice) return [];
   const signatures = [];
   const seenSignatures = /* @__PURE__ */ new Set();
@@ -27447,26 +27777,26 @@ function systemNoticeCommsSignatures(frame) {
       sourceKind: frame.sourceKind
     });
   };
-  const noticeOccurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id);
-  const noticeBlocks = systemNoticeBlockRecords(record4);
-  const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown3(block.type) === "comms");
+  const noticeOccurrenceId = textFromUnknown4(record4.request_id) || textFromUnknown4(record4.correlation_id) || textFromUnknown4(record4.id);
+  const noticeBlocks = systemNoticeBlockRecords2(record4);
+  const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown4(block.type) === "comms");
   if (!typedCommsBlocks.length) {
-    for (const candidate of legacyPeerNoticeTextCandidates(record4)) {
+    for (const candidate of legacyPeerNoticeTextCandidates2(record4)) {
       pushCandidate(candidate, [], noticeOccurrenceId);
     }
   }
-  const body = textFromUnknown3(record4.body);
+  const body = textFromUnknown4(record4.body);
   if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
   for (let index2 = 0; index2 < typedCommsBlocks.length; index2++) {
     const block = typedCommsBlocks[index2];
     const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
     const peerAliases = normalizedPeerAliases(
-      textFromUnknown3(peer.display_name),
-      textFromUnknown3(peer.id)
+      textFromUnknown4(peer.display_name),
+      textFromUnknown4(peer.id)
     );
-    const blockOccurrenceId = textFromUnknown3(block.request_id) || textFromUnknown3(block.correlation_id) || textFromUnknown3(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index2}` : `${index2}`);
-    const blockKind = textFromUnknown3(block.kind);
-    const blockDirection = textFromUnknown3(block.direction);
+    const blockOccurrenceId = textFromUnknown4(block.request_id) || textFromUnknown4(block.correlation_id) || textFromUnknown4(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index2}` : `${index2}`);
+    const blockKind = textFromUnknown4(block.kind);
+    const blockDirection = textFromUnknown4(block.direction);
     const contentText = typedNoticeContentBlocks(block.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
     const stableBodyText = typedCommsStableBodyText(block);
     const candidateText = contentText || stableBodyText || body;
@@ -27602,7 +27932,7 @@ function markCommsNoticeDedupeKey(key, frame, emitted) {
   emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
 }
 function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
-  const type = textFromUnknown3(record4.type);
+  const type = textFromUnknown4(record4.type);
   const keys2 = [];
   const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
     const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
@@ -27622,24 +27952,24 @@ function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
   if (type === "comms") {
     const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
     const peerAliases = normalizedPeerAliases(
-      textFromUnknown3(peer.display_name),
-      textFromUnknown3(peer.id)
+      textFromUnknown4(peer.display_name),
+      textFromUnknown4(peer.id)
     );
     const contentText = typedNoticeContentBlocks(record4.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
     const stableBodyText = typedCommsStableBodyText(record4);
-    const occurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id) || `${index2}`;
+    const occurrenceId = textFromUnknown4(record4.request_id) || textFromUnknown4(record4.correlation_id) || textFromUnknown4(record4.id) || `${index2}`;
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
       occurrenceId,
-      textFromUnknown3(record4.kind) || "message",
-      textFromUnknown3(record4.direction) || "incoming"
+      textFromUnknown4(record4.kind) || "message",
+      textFromUnknown4(record4.direction) || "incoming"
     );
     return keys2;
   }
   if (type && type !== "text") return keys2;
-  const blockText = typedNoticeBlockText(record4).trim();
-  if (blockText && isLegacyPeerNoticeText(blockText)) {
+  const blockText = typedNoticeBlockText2(record4).trim();
+  if (blockText && isLegacyPeerNoticeText2(blockText)) {
     pushKey(blockText);
   }
   const content3 = record4.content;
@@ -27647,14 +27977,14 @@ function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
       const itemRecord = item;
-      const itemText = textFromUnknown3(itemRecord.text).trim();
-      if (itemText && isLegacyPeerNoticeText(itemText)) {
+      const itemText = textFromUnknown4(itemRecord.text).trim();
+      if (itemText && isLegacyPeerNoticeText2(itemText)) {
         pushKey(itemText);
       }
       const data = itemRecord.data;
       if (data && typeof data === "object") {
-        const dataText = textFromUnknown3(data.text).trim();
-        if (dataText && isLegacyPeerNoticeText(dataText)) {
+        const dataText = textFromUnknown4(data.text).trim();
+        if (dataText && isLegacyPeerNoticeText2(dataText)) {
           pushKey(dataText);
         }
       }
@@ -27680,8 +28010,8 @@ function shouldSuppressDuplicateCommsNotice(frame, emitted) {
   if (duplicateCount === keys2.length) {
     return true;
   }
-  const record4 = systemNoticeMessageRecord(frame);
-  const hasBlockLevelComms = record4 ? systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record4.body), index2).length > 0) : false;
+  const record4 = systemNoticeMessageRecord2(frame);
+  const hasBlockLevelComms = record4 ? systemNoticeBlockRecords2(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown4(record4.body), index2).length > 0) : false;
   if (!hasBlockLevelComms) {
     for (const key of keys2) {
       markCommsNoticeDedupeKey(key, frame, emitted);
@@ -27695,24 +28025,24 @@ function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
   }
   return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
-function canUseLegacyPeerNoticeText(record4) {
-  const kind = textFromUnknown3(record4.kind);
+function canUseLegacyPeerNoticeText2(record4) {
+  const kind = textFromUnknown4(record4.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords(record4).map((block) => textFromUnknown3(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords2(record4).map((block) => textFromUnknown4(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState2(frame) {
-  const record4 = systemNoticeMessageRecord(frame);
-  if (!record4 || isExternalEventOnlySystemNotice(record4)) return false;
-  if (textFromUnknown3(record4.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords(record4);
-  if (blocks.some((block) => textFromUnknown3(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText(record4)) return false;
-  return legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+  const record4 = systemNoticeMessageRecord2(frame);
+  if (!record4 || isExternalEventOnlySystemNotice2(record4)) return false;
+  if (textFromUnknown4(record4.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords2(record4);
+  if (blocks.some((block) => textFromUnknown4(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText2(record4)) return false;
+  return legacyPeerNoticeTextCandidates2(record4).some(isLegacyPeerNoticeText2);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock, textMode = "legacy") {
   const rich = [];
-  const bodyText = textFromUnknown3(body);
+  const bodyText = textFromUnknown4(body);
   if (!Array.isArray(blocks)) {
     if (bodyText) rich.push({ type: "paragraph", text: bodyText });
     return rich;
@@ -27722,7 +28052,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
     const block = blocks[index2];
     if (!block || typeof block !== "object") continue;
     const record4 = block;
-    const type = textFromUnknown3(record4.type);
+    const type = textFromUnknown4(record4.type);
     if (type === "comms") {
       const dedupeKeys = commsNoticeDedupeKeysFromBlock(record4, bodyText, index2);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
@@ -27730,15 +28060,15 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         continue;
       }
       const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
-      const peerLabel = peerLastSegment2(textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id) || "peer");
+      const peerLabel = peerLastSegment2(textFromUnknown4(peer.display_name) || textFromUnknown4(peer.id) || "peer");
       const peerAliases = normalizedPeerAliases(
-        textFromUnknown3(peer.display_name),
-        textFromUnknown3(peer.id)
+        textFromUnknown4(peer.display_name),
+        textFromUnknown4(peer.id)
       );
-      const kind = textFromUnknown3(record4.kind) || "message";
-      const direction = textFromUnknown3(record4.direction);
-      const intent = textFromUnknown3(record4.intent);
-      const requestId = textFromUnknown3(record4.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const kind = textFromUnknown4(record4.kind) || "message";
+      const direction = textFromUnknown4(record4.direction);
+      const intent = textFromUnknown4(record4.intent);
+      const requestId = textFromUnknown4(record4.request_id) || `typed-comms:${peerLabel}:${kind}`;
       const contentBlocks2 = typedNoticeContentBlocks(record4.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
@@ -27788,7 +28118,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
     if (type === "tool_config" || type === "mcp") {
       const payload = record4.payload && typeof record4.payload === "object" ? record4.payload : record4;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text8 = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record4) || label;
+      const text8 = bodyText || typedNoticeBlockText2(payload) || typedNoticeBlockText2(record4) || label;
       rich.push({ type: "divider", text: text8 });
       continue;
     }
@@ -27799,12 +28129,12 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         status: record4.status,
         ...typeof record4.display_name === "string" ? { displayName: record4.display_name } : {},
         detail: typeof record4.detail === "string" ? record4.detail : "",
-        copyText: typedNoticeBlockText(record4) || bodyText
+        copyText: typedNoticeBlockText2(record4) || bodyText
       });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
-      const text8 = typedNoticeBlockText(record4) || type.replace(/_/g, " ");
+      const text8 = typedNoticeBlockText2(record4) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text: text8 });
       continue;
     }
@@ -27813,7 +28143,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       rich.push(...contentBlocks);
       continue;
     }
-    rich.push({ type: "divider", text: typedNoticeBlockText(record4) || "Runtime metadata" });
+    rich.push({ type: "divider", text: typedNoticeBlockText2(record4) || "Runtime metadata" });
   }
   if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
     rich.push({ type: "paragraph", text: bodyText });
@@ -27841,9 +28171,9 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
         textMode
       );
       const duplicateCommsConsumed = Boolean(
-        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords2(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(
           block,
-          textFromUnknown3(record4.body),
+          textFromUnknown4(record4.body),
           index2
         ).length > 0)
       );
@@ -27944,14 +28274,14 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
   const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
   const rawMessage = record4.message && typeof record4.message === "object" ? record4.message : null;
-  const message = rawMessage ? textFromUnknown3(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
+  const message = rawMessage ? textFromUnknown4(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
     kind: record4.kind,
     render_class: record4.render_class,
     body: record4.body,
     blocks: record4.blocks
   };
-  if (isExternalEventOnlySystemNotice(message)) return null;
+  if (isExternalEventOnlySystemNotice2(message)) return null;
   const parsed = historyMessageText(
     message,
     void 0,
@@ -28564,170 +28894,6 @@ function createUserEntry2(message, images = [], options = {}) {
 }
 function appendOptimisticConversationEntry2(entries, optimisticEntry) {
   return optimisticEntry ? [...entries, optimisticEntry] : entries;
-}
-function isIntermediateHistoryAssistantStep(frame) {
-  if (frame.sourceKind !== "session_history" || frame.event !== "text_complete" && frame.event !== "interaction_complete") return false;
-  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = data.message && typeof data.message === "object" ? data.message : {};
-  return message.role === "block_assistant" && message.stop_reason === "tool_use";
-}
-function inferResponsePhaseFromFrames2(frames, fallback = null) {
-  let phase2 = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
-        else phase2 = "waiting";
-        break;
-      case "interaction_started":
-        interactionOpen = true;
-        phase2 = "waiting";
-        break;
-      case "run_started":
-        runOpen = true;
-        phase2 = "waiting";
-        break;
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-        phase2 = "tool-executing";
-        break;
-      case "server_tool_content":
-        if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
-        else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
-        break;
-      case "tool_result_received":
-      case "tool_execution_completed":
-        phase2 = "waiting";
-        break;
-      case "reasoning_delta":
-        phase2 = "generating";
-        break;
-      case "reasoning_complete":
-        phase2 = "waiting";
-        break;
-      case "text_delta":
-        phase2 = "generating";
-        break;
-      case "text_complete":
-        phase2 = interactionOpen || runOpen ? "waiting" : null;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase2 = null;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        phase2 = interactionOpen ? "waiting" : null;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) phase2 = null;
-        break;
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase2 = interactionOpen || runOpen ? "waiting" : null;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  return phase2;
-}
-function isTerminalUserInputStatus(status) {
-  return status === "completed" || status === "delivery_failed" || status === "failed";
-}
-function resolvePanelResponsePhase2(args) {
-  if (args.hasLocalPhase) {
-    return args.localPhase ?? null;
-  }
-  if (args.frames.length > 0) {
-    const localPhase = inferResponsePhaseFromFrames2(args.frames, null);
-    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
-      return args.serverPhase;
-    }
-    return localPhase;
-  }
-  return args.serverPhase ?? null;
-}
-function latestRoutableFrameIsTerminal(frames) {
-  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
-    const frame = frames[index2];
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index2);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState2(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-function hasOpenLifecycleBefore(frames, beforeIndex) {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
-    switch (frames[index2].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
 }
 
 // src/lib/errors.ts
@@ -41577,6 +41743,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "boundary_append_applied",
   "boundary_appends_discarded",
   "runtime_notice_snapshot",
+  "assistant_history_snapshot",
   "frame_updated"
 ]);
 var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
@@ -41597,6 +41764,7 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "reasoning_complete",
   "snapshot_complete",
   "snapshot_started",
+  "assistant_history_snapshot",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -42098,7 +42266,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!updated || !updated.id) return false;
       const merged = mergeFrameUpdate(log, updated);
       if (!merged) return false;
-      if (merged.moved || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
         log.busyFoldValid = false;
       }
       clearOptimisticUserForFrame(identity, updated);
@@ -42184,10 +42352,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
   }
   function updateBusyStateForFrame(identity, frame) {
-    if (busyTransitionForFrame(frame) === null) return;
     const log = getOrCreateLog(identity);
+    if (frame.event === "assistant_history_snapshot" || frame.event === "frame_updated" && !log.busyFoldValid) {
+      recomputeBusyStateFromLog(identity);
+      return;
+    }
+    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
-    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs) {
+    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
@@ -42203,7 +42375,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const log = getOrCreateLog(identity);
     const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const ordered = sortedEvents(log).filter((frame) => busyTransitionForFrame(frame) !== null).sort((a, b) => {
+    const frames = sortedEvents(log);
+    const coveredHistory = settledHistoryActivity(frames);
+    const ordered = frames.filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame)).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
@@ -42234,7 +42408,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!appendFrame(identity, frame)) continue;
       changed = true;
       appended = true;
-      if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
     if (appended || !log.busyFoldValid) {
       log.busyFoldValid = false;
@@ -42745,6 +42918,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const dockRef = import_react45.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
+    if (frame.sourceKind === "session_history" || frame.event === "assistant_history_snapshot" || frame.event === "frame_updated") {
+      return recomputePhaseForIdentity(identity);
+    }
     let changed = false;
     const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
@@ -42787,7 +42963,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const frames = getSortedFrames(identity).filter(
       (frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)
     );
-    const phase2 = inferResponsePhaseFromFrames2(frames, null);
+    const phase2 = inferResponsePhaseFromFrames(frames, null);
     let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
@@ -44460,7 +44636,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       panelKey
     );
     const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
-    const phase2 = resolvePanelResponsePhase2({
+    const phase2 = resolvePanelResponsePhase({
       frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
       localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
       hasLocalPhase: honorLocalPhase,

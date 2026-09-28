@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { performance } = require("node:perf_hooks");
 const http = require("node:http");
 const { once } = require("node:events");
 const { assertStartupLineage, assertStartupRendering, waitForStartupLineage, observeStartupPhase, startupLineageReaders, source } = require("./real-startup-lineage.cjs");
@@ -154,17 +155,30 @@ test("startup phase callers jointly refresh late canonical sources, history and 
 
 test("startup phase callers reject missing, foreign and reused rendered source IDs in every phase", async t => {
   for (const phase of ["initial", "repeated", "reconnected", "reloaded"]) {
-    await t.test(phase, async () => {
+    await t.test(phase, async t => {
+      const timeoutMs = 20_000;
+      let now = 0;
+      t.mock.method(performance, "now", () => now);
       for (const id of [undefined, "foreign-canonical-frame", "run-a:history"]) {
+        now = 0;
         const fixture = reconnectFixture();
         const rendered = structuredClone(fixture.rendered);
         rendered.quotes[1].id = id;
         const result = phaseResult(fixture);
+        let timelineReads = 0;
+        let renderedReads = 0;
         await assert.rejects(observeStartupPhase(phase, {
-          result, timeoutMs: 25, pollIntervalMs: 1,
-          timeline: async () => ({ frames: fixture.frames }), durableHistory: async () => fixture.history,
-          readRendered: async () => rendered,
+          result, timeoutMs, pollIntervalMs: 1,
+          timeline: async () => {
+            // Expire before a new observation can clear the rejected DOM evidence.
+            if (++timelineReads === 2) now = timeoutMs;
+            return { frames: fixture.frames };
+          },
+          durableHistory: async () => fixture.history,
+          readRendered: async () => { renderedReads++; return rendered; },
         }), /Timed out: .*exact canonical run|Timed out: .*one rendered owner/);
+        assert.equal(timelineReads, 2, "the deadline follows one complete rejected observation");
+        assert.equal(renderedReads, 1, "the invalid DOM reached the rendering assertion");
         assert.equal(result[`${phase}Rendered`], rendered, "rejected DOM stays available as failure evidence");
         assert.equal(result.rendered[phase], undefined, "rejected output cannot become a successful phase observation");
       }

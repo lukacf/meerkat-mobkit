@@ -603,35 +603,78 @@ async def _wait_for_school_sdk_and_verify(
     return result
 
 
-async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *, timeout):
-    """Exercise the public SDK waiter and verify its output against committed history.
+def _sdk_conversation_result(frames, identity, session_id, content):
+    inputs = [frame for frame in frames if (
+        frame.get("identity") == identity and frame.get("session_id") == session_id
+        and frame.get("kind") == "user_input"
+        and frame.get("source", {}).get("kind") == "session_history"
+        and _content_text(frame.get("payload", {}).get("content")) == content
+    )]
+    assert len(inputs) <= 1, "scenario input was admitted more than once"
+    if not inputs:
+        return None
+    sent = inputs[0]
+    interaction = sent.get("interaction_id")
+    if interaction:
+        return _conversation_result(frames, identity, session_id, interaction, content)
+    if interaction is not None:
+        return None
 
-    These scenario inputs are unique authored fixtures. Content locates the test
-    input only; typed interaction/run lineage selects its completion. A peer
-    reply returned by the SDK is an assertion failure, never a substitute result.
-    """
+    # Plain SDK sends carry a ticket but need not carry an interaction ID. The
+    # unique authored fixture locates a content run start; that nonempty run ID
+    # owns the terminal and committed assistant evidence. Text alone never does.
+    starts = [frame for frame in frames if (
+        frame.get("identity") == identity and frame.get("session_id") == session_id
+        and frame.get("kind") == "run_started"
+        and frame.get("source", {}).get("kind") == "console_event"
+        and isinstance(frame.get("run_id"), str) and frame["run_id"]
+        and frame.get("payload", {}).get("input", {}).get("kind") == "content"
+        and _content_text(frame["payload"]["input"].get("content")) == content
+    )]
+    assert len({frame["run_id"] for frame in starts}) <= 1, "scenario input was admitted more than once"
+    if (not starts or starts[0].get("interaction_id") is not None
+            or sent.get("run_id") not in (None, starts[0]["run_id"])
+            or sent.get("status") != "completed"):
+        return None
+    run_id = starts[0]["run_id"]
+    owned = [frame for frame in frames if (
+        frame.get("identity") == identity and frame.get("session_id") == session_id
+        and frame.get("run_id") == run_id and frame.get("interaction_id") is None
+    )]
+    for terminal in owned:
+        if (terminal.get("kind") != "interaction_complete" or terminal.get("status") != "completed"
+                or terminal.get("source", {}).get("kind") != "console_event"
+                or terminal.get("payload", {}).get("source_event_type") != "run_completed"):
+            continue
+        output = terminal.get("payload", {}).get("result")
+        assistant_id = terminal.get("payload", {}).get("assistant_message_id")
+        if (not isinstance(output, str) or not output.strip()
+                or not isinstance(assistant_id, str) or not assistant_id):
+            continue
+        history = next((frame for frame in owned if (
+            frame.get("kind") == "text_complete" and frame.get("status") == "completed"
+            and frame.get("source", {}).get("kind") == "session_history"
+            and frame.get("payload", {}).get("assistant_message_id") == assistant_id
+            and frame.get("payload", {}).get("text") == output
+        )), None)
+        if history:
+            return {"run_id": run_id, "output": output, "history": history, "input_history": sent}
+    return None
+
+
+async def _send_sdk_and_verify(runtime, agent, identity, session_id, content, *, timeout):
+    """Verify the ticketed SDK result against its terminal and committed history."""
     deadline = _timeline_time() + timeout
     with warnings.catch_warnings():
         warnings.simplefilter("error", TurnTrackingUnavailableWarning)
         sdk_output = await asyncio.wait_for(
             agent.send_and_wait(content, timeout=timeout), timeout=timeout,
         )
-
-    def committed(frames):
-        inputs = [frame for frame in frames if (
-            frame.get("identity") == identity and frame.get("session_id") == session_id
-            and frame.get("kind") == "user_input"
-            and frame.get("source", {}).get("kind") == "session_history"
-            and _content_text(frame.get("payload", {}).get("content")) == content
-            and frame.get("interaction_id")
-        )]
-        interactions = {frame["interaction_id"] for frame in inputs}
-        assert len(interactions) <= 1, "scenario input was admitted more than once"
-        if not interactions:
-            return None
-        return _conversation_result(frames, identity, session_id, next(iter(interactions)), content)
-
-    result = await _wait_for_timeline(runtime, identity, committed, deadline=deadline)
+    result = await _wait_for_timeline(
+        runtime, identity,
+        lambda frames: _sdk_conversation_result(frames, identity, session_id, content),
+        deadline=deadline,
+    )
     assert sdk_output == result["output"], (
         f"SDK send_and_wait returned another turn for {identity}: "
         f"{sdk_output!r}; committed requested run {result['run_id']}: {result['output']!r}"
@@ -1036,6 +1079,157 @@ async def test_kitchen_sdk_completion_must_match_the_requested_committed_run(mon
     else:
         assert (await operation)["run_id"] == "incident-run"
     assert calls == [("Unique SDK input", 60)]
+
+
+def _sdk_run_only_fixture():
+    """Match the retained candidate's plain SDK send without interaction IDs."""
+    frames = _interaction_fixture(
+        "identity:luka", "luka-session", interaction=None, run="requested-run",
+    )
+    frames[0]["payload"] = {
+        "input": {"kind": "content", "content": _LUKA_CLOSURE_NOTICE},
+    }
+    for frame in frames[1:]:
+        frame["status"] = "completed"
+        frame["payload"]["assistant_message_id"] = "requested-assistant"
+    frames[1]["payload"]["source_event_type"] = "run_completed"
+    frames.append({
+        "id": "sdk-user", "identity": "identity:luka", "session_id": "luka-session",
+        "interaction_id": None, "run_id": None, "kind": "user_input", "status": "completed",
+        "source": {"kind": "session_history"},
+        "payload": {"content": [{"type": "text", "text": _LUKA_CLOSURE_NOTICE}]},
+    })
+    return frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_output", ["incident processed", "unrelated peer reply"])
+@pytest.mark.parametrize("intermediate", [False, True])
+async def test_kitchen_sdk_run_only_lineage_requires_own_committed_output(monkeypatch, sdk_output, intermediate):
+    from functools import partial
+    from meerkat_mobkit.runtime import IdentityAgentHandle
+    from .test_identity_first_turn_tickets import TicketTransport, _completed, _make_runtime, _sent
+
+    ticket = "ac8832d0-ce0e-43cb-810a-fbd30f65be4f"
+    transport = TicketTransport(
+        sends=[_sent(ticket)], turn_results={ticket: [_completed(sdk_output)]},
+    )
+    handle = IdentityAgentHandle(_make_runtime(transport), "identity:luka")
+    monkeypatch.setattr(handle, "send_and_wait", partial(handle.send_and_wait, poll_interval=0.001))
+    clock = [0.0]
+
+    async def read_page(runtime, params, remaining):
+        assert transport.params_of("mobkit/turn_result") == [{"identity": "identity:luka", "ticket": ticket}]
+        foreign = _interaction_fixture("identity:luka", "luka-session", None, "peer-run")
+        foreign[0]["payload"] = {"input": {"kind": "peer_message", "content": _LUKA_CLOSURE_NOTICE}}
+        if intermediate:
+            earlier = copy.deepcopy(_sdk_run_only_fixture()[2])
+            earlier["id"] = "earlier-identical-text"
+            earlier["payload"]["assistant_message_id"] = "earlier-assistant"
+            foreign.append(earlier)
+        return {"frames": foreign + _sdk_run_only_fixture(), "exhausted": True}
+
+    async def pause(delay):
+        clock[0] = 60
+
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_timeline_pause", pause)
+    operation = _send_sdk_and_verify(
+        object(), handle, "identity:luka", "luka-session", _LUKA_CLOSURE_NOTICE, timeout=60,
+    )
+    if sdk_output == "unrelated peer reply":
+        with pytest.raises(AssertionError, match="returned another turn"):
+            await operation
+    else:
+        result = await operation
+        assert result["run_id"] == "requested-run"
+        assert result["input_history"]["id"] == "sdk-user"
+        assert result["history"]["payload"]["assistant_message_id"] == "requested-assistant"
+    assert transport.params_of("mobkit/send")[0]["track_turn"] is True
+    assert transport.params_of("mobkit/inspect_identity") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", [
+    "missing_input", "live_input", "changed_input", "other_input_session", "other_input_run",
+    "other_input_identity", "uncommitted_input", "input_interaction", "empty_input_interaction",
+    "missing_start", "missing_run", "other_start_session", "other_start_identity", "peer_start",
+    "changed_start_content", "start_interaction", "duplicate_input", "duplicate_start",
+    "missing_terminal", "failed_terminal", "empty_terminal", "other_terminal_run",
+    "other_terminal_session", "other_terminal_identity", "terminal_interaction", "terminal_assistant",
+    "mirrored_terminal", "history_terminal",
+    "missing_history", "live_history", "other_history_run", "other_history_session",
+    "other_history_identity", "history_interaction", "history_assistant",
+    "uncommitted_history", "intermediate_history",
+])
+async def test_kitchen_sdk_run_only_lineage_rejects_unowned_or_uncommitted_frames(monkeypatch, mismatch):
+    from types import SimpleNamespace
+
+    frames = _sdk_run_only_fixture()
+    start, terminal, history, user = frames
+    changes = {
+        "live_input": (user["source"], "kind", "send"),
+        "changed_input": (user["payload"], "content", "Earlier input"),
+        "other_input_session": (user, "session_id", "old-session"),
+        "other_input_run": (user, "run_id", "other-run"),
+        "other_input_identity": (user, "identity", "identity:louise"),
+        "uncommitted_input": (user, "status", "delivered"),
+        "input_interaction": (user, "interaction_id", "other-interaction"),
+        "empty_input_interaction": (user, "interaction_id", ""),
+        "missing_run": (start, "run_id", None),
+        "other_start_session": (start, "session_id", "old-session"),
+        "other_start_identity": (start, "identity", "identity:louise"),
+        "peer_start": (start["payload"]["input"], "kind", "peer_message"),
+        "changed_start_content": (start["payload"]["input"], "content", "Earlier input"),
+        "start_interaction": (start, "interaction_id", "other-interaction"),
+        "failed_terminal": (terminal, "status", "failed"),
+        "empty_terminal": (terminal["payload"], "result", ""),
+        "other_terminal_run": (terminal, "run_id", "other-run"),
+        "other_terminal_session": (terminal, "session_id", "old-session"),
+        "other_terminal_identity": (terminal, "identity", "identity:louise"),
+        "terminal_interaction": (terminal, "interaction_id", "other-interaction"),
+        "terminal_assistant": (terminal["payload"], "assistant_message_id", "other-assistant"),
+        "mirrored_terminal": (terminal["payload"], "source_event_type", "interaction_complete"),
+        "history_terminal": (terminal["source"], "kind", "session_history"),
+        "live_history": (history["source"], "kind", "console_event"),
+        "other_history_run": (history, "run_id", "other-run"),
+        "other_history_session": (history, "session_id", "old-session"),
+        "other_history_identity": (history, "identity", "identity:louise"),
+        "history_interaction": (history, "interaction_id", "other-interaction"),
+        "history_assistant": (history["payload"], "assistant_message_id", None),
+        "uncommitted_history": (history, "status", "delivered"),
+        "intermediate_history": (history["payload"], "text", "Working on the incident"),
+    }
+    if mismatch in changes:
+        target, key, value = changes[mismatch]
+        target[key] = value
+    elif mismatch.startswith("missing_"):
+        frames.remove({"missing_input": user, "missing_start": start,
+                       "missing_terminal": terminal, "missing_history": history}[mismatch])
+    elif mismatch == "duplicate_input":
+        frames.append({**copy.deepcopy(user), "id": "second-user"})
+    elif mismatch == "duplicate_start":
+        frames.append({**copy.deepcopy(start), "id": "second-start", "run_id": "second-run"})
+    clock = [0.0]
+
+    async def send_and_wait(content, timeout):
+        return "incident processed"
+
+    async def read_page(runtime, params, remaining):
+        return {"frames": frames, "exhausted": True}
+
+    async def pause(delay):
+        clock[0] = 60
+
+    monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
+    monkeypatch.setitem(globals(), "_timeline_time", lambda: clock[0])
+    monkeypatch.setitem(globals(), "_timeline_pause", pause)
+    with pytest.raises(AssertionError, match="deadline|admitted more than once"):
+        await _send_sdk_and_verify(
+            object(), SimpleNamespace(send_and_wait=send_and_wait),
+            "identity:luka", "luka-session", _LUKA_CLOSURE_NOTICE, timeout=60,
+        )
 
 
 @pytest.mark.asyncio
