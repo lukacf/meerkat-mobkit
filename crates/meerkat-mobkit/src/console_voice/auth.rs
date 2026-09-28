@@ -138,10 +138,32 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
         session: &SessionId,
     ) -> Result<(), ExperimentalLiveOpenAuthorityError> {
         let started = std::time::Instant::now();
-        enter_stage(VoiceReadinessStage::DurableSource);
         let result = self
             .for_session(session)?
             .validate_live_durable_source_availability(session)
+            .await;
+        tracing::debug!(
+            target: "meerkat_mobkit::console_voice::timing",
+            %session,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ok = result.is_ok(),
+            "console voice durable source validation"
+        );
+        result
+    }
+
+    /// The readiness probe's durable-source check: body-free and actor-free.
+    /// Without this override Meerkat's default falls back to the full
+    /// validation above, a whole-body load through the mob actor per poll.
+    async fn observe_live_durable_source_readiness(
+        &self,
+        session: &SessionId,
+    ) -> Result<(), ExperimentalLiveOpenAuthorityError> {
+        let started = std::time::Instant::now();
+        enter_stage(VoiceReadinessStage::DurableSource);
+        let result = self
+            .for_session(session)?
+            .observe_live_durable_source_readiness(session)
             .await;
         enter_stage(VoiceReadinessStage::BindingSelection);
         tracing::debug!(
@@ -149,7 +171,7 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
             %session,
             elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             ok = result.is_ok(),
-            "console voice durable source validation"
+            "console voice durable source readiness observation"
         );
         result
     }
@@ -166,7 +188,7 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
             .for_session(session)?
             .authorize_binding_use(session, binding)
             .await;
-        enter_stage(VoiceReadinessStage::CredentialAndPreface);
+        enter_stage(VoiceReadinessStage::Credential);
         tracing::debug!(
             target: "meerkat_mobkit::console_voice::timing",
             %session,

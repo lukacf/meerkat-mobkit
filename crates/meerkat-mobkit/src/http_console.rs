@@ -966,7 +966,7 @@ mod voice_readiness_budget_tests {
 
     #[tokio::test]
     async fn an_answer_within_budget_logs_every_stage_at_info() {
-        let host = ParkedReadyHost::new(VoiceReadinessStage::CredentialAndPreface);
+        let host = ParkedReadyHost::new(VoiceReadinessStage::Credential);
         host.release.add_permits(1);
         let controller = host.controller();
         let answer =
@@ -981,7 +981,7 @@ mod voice_readiness_budget_tests {
         assert!(log.contains(" INFO "), "{log}");
         assert!(log.contains("console voice readiness available"), "{log}");
         assert!(log.contains("target="), "{log}");
-        assert!(log.contains("credential_and_preface="), "{log}");
+        assert!(log.contains("credential="), "{log}");
         assert!(!log.contains("(active)"), "{log}");
         assert_eq!(host.cancelled.load(Ordering::SeqCst), 0);
     }

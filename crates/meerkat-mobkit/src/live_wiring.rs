@@ -233,6 +233,13 @@ trait ExactLiveSessionOwner: Send + Sync {
         &self,
         canonical_session_id: &SessionId,
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
+
+    /// Readiness-only durable-source observation: never enters the mob actor
+    /// queue and never loads the session body.
+    async fn observe_live_durable_source_readiness(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
 }
 
 #[cfg(feature = "openai-live")]
@@ -274,6 +281,35 @@ impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
             return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
         }
         Ok(())
+    }
+
+    async fn observe_live_durable_source_readiness(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+        use meerkat_mob::LiveDurableSourceReadinessError;
+
+        // The handle checks the member's live binding against the published
+        // machine snapshot and asks the session service for a body-free
+        // observation of the durable source. No actor command, no body load.
+        self.handle
+            .observe_live_durable_source_readiness(&self.member_identity, canonical_session_id)
+            .await
+            .map_err(|error| {
+                tracing::debug!(
+                    member = %self.member_identity,
+                    %canonical_session_id,
+                    ?error,
+                    "live durable source not ready"
+                );
+                match error {
+                    LiveDurableSourceReadinessError::AccessDenied => {
+                        ExperimentalLiveOpenAuthorityError::AccessDenied
+                    }
+                    _ => ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable,
+                }
+            })
     }
 }
 
@@ -349,6 +385,15 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
         self.owner
             .validate_live_durable_source_availability(canonical_session_id)
+            .await
+    }
+
+    async fn observe_live_durable_source_readiness(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        self.owner
+            .observe_live_durable_source_readiness(canonical_session_id)
             .await
     }
 
@@ -5835,6 +5880,15 @@ mod tests {
                 )
             }
         }
+
+        async fn observe_live_durable_source_readiness(
+            &self,
+            canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            self.validate_live_durable_source_availability(canonical_session_id)
+                .await
+        }
     }
 
     #[cfg(feature = "openai-live")]
@@ -5848,6 +5902,16 @@ mod tests {
         }
 
         async fn validate_live_durable_source_availability(
+            &self,
+            _canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            Err(
+                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable,
+            )
+        }
+
+        async fn observe_live_durable_source_readiness(
             &self,
             _canonical_session_id: &SessionId,
         ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>

@@ -19,6 +19,8 @@ use crate::live_wiring::{
 
 #[cfg(feature = "openai-live")]
 mod auth;
+#[cfg(all(test, feature = "openai-live"))]
+pub(crate) mod body_read_counting_store;
 #[cfg(feature = "openai-live")]
 pub(crate) mod capabilities;
 mod captions;

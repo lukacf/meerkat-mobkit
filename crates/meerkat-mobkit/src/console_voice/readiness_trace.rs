@@ -27,16 +27,17 @@ pub(crate) enum VoiceReadinessStage {
     Target,
     /// Meerkat's readiness probe before it reaches a MobKit callback.
     Probe,
-    /// MobKit's durable-source availability check, called by the probe.
+    /// MobKit's body-free, actor-free durable-source observation, called by
+    /// the probe.
     DurableSource,
     /// Probe work between the durable source and binding authorization:
     /// the current config and the host identity's binding selection.
     BindingSelection,
     /// MobKit's binding-use authorization, called by the probe.
     BindingAuthorization,
-    /// Probe work after binding authorization: credential resolution and
-    /// the member instructions preface.
-    CredentialAndPreface,
+    /// Probe work after binding authorization: the typed credential
+    /// readiness check (no refresh, no preface, no pending channel).
+    Credential,
 }
 
 impl VoiceReadinessStage {
@@ -48,7 +49,7 @@ impl VoiceReadinessStage {
             Self::DurableSource => "durable_source",
             Self::BindingSelection => "binding_selection",
             Self::BindingAuthorization => "binding_authorization",
-            Self::CredentialAndPreface => "credential_and_preface",
+            Self::Credential => "credential",
         }
     }
 }
