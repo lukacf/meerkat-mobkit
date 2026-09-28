@@ -396,6 +396,26 @@ struct ForwardedMemberEvent {
     alert: Option<ErrorEvent>,
 }
 
+/// Provider-free input to the real runtime drain for composition tests.
+#[cfg(test)]
+pub(crate) struct TestConsoleEventIngress(Sender<ForwardedMemberEvent>);
+
+#[cfg(test)]
+impl TestConsoleEventIngress {
+    pub(crate) async fn send(
+        &self,
+        envelope: EventEnvelope<UnifiedEvent>,
+    ) -> Result<(), &'static str> {
+        self.0
+            .send(ForwardedMemberEvent {
+                envelope,
+                alert: None,
+            })
+            .await
+            .map_err(|_| "test console ingress is closed")
+    }
+}
+
 struct WorkGraphFactTailTask(Option<JoinHandle<()>>);
 
 impl WorkGraphFactTailTask {
@@ -1657,6 +1677,11 @@ impl UnifiedRuntime {
             forwarder.identity_stream_health_task.abort();
         }
         event_tx
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn install_test_console_event_ingress(&self) -> TestConsoleEventIngress {
+        TestConsoleEventIngress(self.install_test_event_ingress().await)
     }
 
     async fn rollback_mob_runtime(

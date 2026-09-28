@@ -267,6 +267,27 @@ pub struct BootstrappedGateway {
 
 pub struct ActiveGateway {
     runtime: Arc<UnifiedRuntime>,
+    event_drain_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl ActiveGateway {
+    async fn stop_event_drain(&self) {
+        let task = self.event_drain_task.lock().await.take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for ActiveGateway {
+    fn drop(&mut self) {
+        // An error before ordered shutdown must not leave a detached task
+        // retaining the runtime and forwarding into abandoned surfaces.
+        if let Some(task) = self.event_drain_task.get_mut().take() {
+            task.abort();
+        }
+    }
 }
 
 /// Type-state composition root. Profile-specific config parsing and optional
@@ -318,10 +339,15 @@ impl GatewayComposition<BootstrappedGateway> {
     }
 
     pub fn activate(self) -> GatewayComposition<ActiveGateway> {
+        let runtime = Arc::new(self.state.runtime);
+        // Both gateways host their own HTTP server instead of calling
+        // UnifiedRuntime::serve, so the shared lifecycle owns event draining.
+        let event_drain_task = Arc::clone(&runtime).spawn_event_drain_task();
         GatewayComposition {
             profile: self.profile,
             state: ActiveGateway {
-                runtime: Arc::new(self.state.runtime),
+                runtime,
+                event_drain_task: tokio::sync::Mutex::new(Some(event_drain_task)),
             },
         }
     }
@@ -841,8 +867,8 @@ impl GatewayComposition<ActiveGateway> {
     /// One authoritative shutdown order for both gateway profiles:
     ///
     /// 1. stop HTTP admission and bound its outer-handler drain;
-    /// 2. run the profile's pre-runtime hook (for example event-drain task
-    ///    cancellation);
+    /// 2. run the profile's pre-runtime hook, then stop and join the shared
+    ///    event-drain task;
     /// 3. cooperatively await the runtime's authority cleanup within the
     ///    established SDK horizon;
     /// 4. only then run profile cleanup (for example registry removal).
@@ -901,8 +927,15 @@ impl GatewayComposition<ActiveGateway> {
                 }
             }
         };
-        let (runtime, cleanup) =
-            ordered_shutdown_tail(before_runtime, runtime_shutdown, cleanup).await;
+        let (runtime, cleanup) = ordered_shutdown_tail(
+            || async {
+                before_runtime().await;
+                self.state.stop_event_drain().await;
+            },
+            runtime_shutdown,
+            cleanup,
+        )
+        .await;
         GatewayShutdownOutcome {
             http,
             runtime,
@@ -1442,6 +1475,259 @@ pub async fn spawn_gateway_schedule_host<B: SessionAgentBuilder + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn console_drain_test_composition(
+        directory: &tempfile::TempDir,
+        profile: GatewayCompatibilityProfile,
+    ) -> Result<GatewayComposition<BootstrappedGateway>, Box<dyn std::error::Error>> {
+        let session_path = directory.path().join("sessions");
+        std::fs::create_dir_all(&session_path)?;
+        let service: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat::build_ephemeral_service(
+                meerkat::AgentFactory::new(&session_path),
+                meerkat::Config::default(),
+                1,
+            ));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"gateway-console-drain\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+        )?;
+        let spec = MobBootstrapSpec::new(definition, meerkat_mob::MobStorage::in_memory(), service)
+            .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(Arc::new(meerkat_client::TestClient::for_provider(
+                    meerkat_core::Provider::OpenAI,
+                ))),
+            });
+        let config = MobKitConfig {
+            modules: Vec::new(),
+            discovery: crate::types::DiscoverySpec {
+                namespace: "gateway-console-drain".to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        };
+        let plan = match profile {
+            GatewayCompatibilityProfile::ConsoleHttp => {
+                GatewayRuntimeBootstrapPlan::console_http(spec, config, Duration::from_secs(10))
+            }
+            GatewayCompatibilityProfile::StdioRpc => GatewayRuntimeBootstrapPlan::stdio_rpc(
+                spec,
+                config,
+                Vec::new(),
+                Duration::from_secs(10),
+                RuntimeOptions::default(),
+                Arc::new(InMemoryMetadataStore::new()),
+            ),
+        };
+        Ok(GatewayComposition::prepare(profile, plan)
+            .bootstrap()
+            .await?)
+    }
+
+    fn console_drain_event(
+        event_id: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> EventEnvelope<UnifiedEvent> {
+        EventEnvelope {
+            event_id: event_id.to_string(),
+            source: "gateway-console-drain".to_string(),
+            timestamp_ms: 1,
+            event: UnifiedEvent::Agent {
+                agent_id: "rt:worker:1".to_string(),
+                event_type: event_type.to_string(),
+                payload: Some(payload),
+            },
+        }
+    }
+
+    async fn wait_for_console_drain_event(
+        store: &crate::unified_runtime::ConsoleEventStore,
+        event_id: &str,
+        phase: Option<&str>,
+    ) -> Result<
+        Vec<crate::console_contracts::ConsoleIdentityEventEnvelope>,
+        Box<dyn std::error::Error>,
+    > {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let replay = store
+                    .replay_all(None)
+                    .await
+                    .map_err(|error| format!("console replay failed: {error:?}"))?;
+                if replay.iter().any(|event| event.event_id == event_id)
+                    && store.response_phase_for_identity("worker").await.as_deref() == phase
+                {
+                    return Ok(replay);
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await?
+    }
+
+    /// Both shipped hosts serve their own axum router. Activation must own
+    /// the runtime ingress drain or history can look complete while the
+    /// console reservation remains waiting and prevents the next send.
+    #[tokio::test]
+    async fn gateway_activation_drains_console_events_for_both_profiles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+
+        for profile in [
+            GatewayCompatibilityProfile::ConsoleHttp,
+            GatewayCompatibilityProfile::StdioRpc,
+        ] {
+            let directory = tempfile::tempdir()?;
+            let composition = console_drain_test_composition(&directory, profile).await?;
+            let ingress = composition
+                .runtime()
+                .install_test_console_event_ingress()
+                .await;
+            let store = composition.runtime().console_events();
+            let interaction = uuid::Uuid::from_u128(41).to_string();
+            let lineage = json!({
+                "interaction_id": interaction,
+                "run_id": uuid::Uuid::from_u128(42).to_string(),
+            });
+            composition
+                .runtime()
+                .reserve_identity_interaction(
+                    "worker",
+                    Some("rt:worker:1"),
+                    &interaction,
+                    "console",
+                    json!("hello"),
+                )
+                .await?;
+            assert_eq!(
+                store.response_phase_for_identity("worker").await.as_deref(),
+                Some("waiting"),
+                "{profile:?} must establish the pending reservation"
+            );
+
+            // Queue a real forwarded envelope before activation. No helper
+            // below calls drain_mob_agent_events or projects into the store.
+            ingress
+                .send(console_drain_event(
+                    "gateway-run-start",
+                    "run_started",
+                    json!({
+                        "identity": lineage,
+                        "session_id": uuid::Uuid::from_u128(43).to_string(),
+                        "input": { "kind": "content", "content": "hello" },
+                    }),
+                ))
+                .await?;
+            let composition = composition.activate();
+            wait_for_console_drain_event(&store, "gateway-run-start", Some("waiting")).await?;
+
+            ingress
+                .send(console_drain_event(
+                    "gateway-delta",
+                    "text_delta",
+                    json!({ "identity": lineage, "delta": "working" }),
+                ))
+                .await?;
+            wait_for_console_drain_event(&store, "gateway-delta", Some("generating")).await?;
+            ingress
+                .send(console_drain_event(
+                    "gateway-run-end",
+                    "run_completed",
+                    json!({ "identity": lineage, "result": "done" }),
+                ))
+                .await?;
+            let replay = wait_for_console_drain_event(&store, "gateway-run-end", None).await?;
+            let projected: Vec<_> = replay
+                .iter()
+                .filter(|event| event.identity == "worker")
+                .collect();
+            assert_eq!(
+                projected
+                    .iter()
+                    .map(|event| event.event_type.as_str())
+                    .collect::<Vec<_>>(),
+                ["run_started", "text_delta", "interaction_complete"],
+                "{profile:?} must retain ordered live replay"
+            );
+            assert!(
+                projected
+                    .iter()
+                    .all(|event| { event.interaction_id.as_deref() == Some(interaction.as_str()) })
+            );
+
+            let drain_abort = composition
+                .state
+                .event_drain_task
+                .lock()
+                .await
+                .as_ref()
+                .ok_or("activated gateway has no event drain")?
+                .abort_handle();
+            assert!(!drain_abort.is_finished());
+            let server = GatewayHttpBinding::bind_loopback()
+                .await?
+                .serve(Router::new());
+            let shutdown = composition
+                .shutdown(
+                    server,
+                    || async {
+                        assert!(composition.state.event_drain_task.lock().await.is_some());
+                        assert!(!drain_abort.is_finished());
+                    },
+                    || async {
+                        assert!(composition.state.event_drain_task.lock().await.is_none());
+                        assert!(drain_abort.is_finished());
+                    },
+                )
+                .await;
+            assert!(matches!(
+                shutdown.http,
+                GatewayHttpDrainOutcome::Completed(Ok(()))
+            ));
+            assert!(
+                shutdown
+                    .runtime
+                    .is_some_and(|report| report.cleanup_completed())
+            );
+            assert!(
+                drain_abort.is_finished(),
+                "{profile:?} must join the drain at shutdown"
+            );
+            assert!(composition.state.event_drain_task.lock().await.is_none());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_active_gateway_cancels_its_event_drain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let composition =
+            console_drain_test_composition(&directory, GatewayCompatibilityProfile::ConsoleHttp)
+                .await?
+                .activate();
+        let runtime = Arc::clone(composition.runtime());
+        let drain_abort = composition
+            .state
+            .event_drain_task
+            .lock()
+            .await
+            .as_ref()
+            .ok_or("activated gateway has no event drain")?
+            .abort_handle();
+        assert!(!drain_abort.is_finished());
+        drop(composition);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !drain_abort.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(runtime.shutdown().await.cleanup_completed());
+        Ok(())
+    }
 
     #[test]
     fn compatibility_profiles_pin_the_two_existing_command_surfaces() {
