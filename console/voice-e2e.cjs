@@ -90,6 +90,21 @@ async function installConsoleFixture(page, { available = true, publishTimeline =
   const replacements = new Map();
   const preparing = new Set();
   const cancelled = new Set();
+  // Provisional assistant captions per channel, coalesced per item exactly
+  // like the gateway: the newest caption or retraction of an item replaces
+  // its entry and moves it to the end of the cursor order.
+  let captionSequence = 0;
+  const captionFeeds = new Map();
+  const captionFeed = (channelId) => {
+    if (!captionFeeds.has(channelId)) captionFeeds.set(channelId, { items: new Map(), wake: new Set() });
+    return captionFeeds.get(channelId);
+  };
+  const captionBatch = (channelId, after) => {
+    const entries = [...captionFeed(channelId).items.values()].filter(entry => entry.sequence > after)
+      .sort((a, b) => a.sequence - b.sequence);
+    return { cursor: entries.reduce((cursor, entry) => Math.max(cursor, entry.sequence), after),
+      captions: entries.map(entry => entry.caption) };
+  };
   const timelinePage = (identity) => {
     const frames = identity ? timeline.filter(frame => frame.identity === identity) : timeline;
     return { frames, available: true, exhausted: true, next_cursor: frames.at(-1)?.cursor ?? null,
@@ -137,6 +152,27 @@ async function installConsoleFixture(page, { available = true, publishTimeline =
         channel.requestId === params.request_id && !cancelled.has(params.request_id),
       "context status must address the current owned channel");
       return respond({ ...params, context_preparation: channel.contextPreparation });
+    }
+    if (method === "mobkit/console/voice/captions") {
+      const channel = channels.get(params.channel_id);
+      assert.ok(channel && channel.identity === params.identity && channel.requestId === params.request_id,
+        "captions must address an owned channel");
+      assert.deepEqual(Object.keys(params).sort(), ["after", "channel_id", "identity", "request_id", "wait_ms"]);
+      if (channel.closed || cancelled.has(params.request_id)) {
+        return route.fulfill({ json: { jsonrpc: "2.0", id, error: { code: -32000, message: "Voice closed", data: { kind: "voice_closed" } } } });
+      }
+      let batch = captionBatch(params.channel_id, params.after);
+      if (batch.captions.length === 0) {
+        const feed = captionFeed(params.channel_id);
+        await new Promise(resolve => {
+          const timer = setTimeout(done, Math.min(params.wait_ms, 1000));
+          function done() { clearTimeout(timer); feed.wake.delete(done); resolve(); }
+          feed.wake.add(done);
+        });
+        batch = captionBatch(params.channel_id, params.after);
+      }
+      return respond({ identity: params.identity, request_id: params.request_id, channel_id: params.channel_id, ...batch })
+        .catch(() => {});
     }
     if (method === "mobkit/console/voice/answer_received" || method === "mobkit/console/voice/activity") {
       const channel = [...channels.entries()].find(([channelId, candidate]) =>
@@ -240,6 +276,13 @@ async function installConsoleFixture(page, { available = true, publishTimeline =
     requests,
     channels,
     async setTimeline(frames) { timeline = frames; await publishTimeline(frames); },
+    caption(channelId, captions) {
+      const feed = captionFeed(channelId);
+      for (const caption of captions) {
+        feed.items.set(caption.item_id, { sequence: ++captionSequence, caption });
+      }
+      for (const wake of [...feed.wake]) wake();
+    },
     setAvailable(value) { available = value; },
     setContext(identity, preparation) {
       const channel = [...channels.values()].find((candidate) => candidate.identity === identity && !candidate.closed);
@@ -349,16 +392,31 @@ async function verifyVoiceTranscriptHandoff(page, fixture) {
     const channel = window.voiceFixture.channels.at(-1);
     for (const event of events) channel.send(JSON.stringify(event));
   }, events);
+  // User speech comes from item-keyed input transcripts on the data channel;
+  // assistant speech only from the gateway's provisional captions, keyed by
+  // the segment item id the committed row later lists.
   await speak([
     { type: "session.input_transcript.delta", item_id: "spoken-first", delta: "Keep my spoken instruction separate." },
-    { type: "session.output_transcript.delta", item_id: "spoken-first", delta: "The first provisional fragment" },
-    { type: "session.output_transcript.delta", item_id: "spoken-second", delta: "The second provisional fragment" },
-    { type: "session.output_transcript.delta", item_id: "still-speaking", delta: "Checking one more prerequisite..." },
+  ]);
+  fixture.caption(channelId, [
+    { kind: "caption", item_id: "spoken-first", text: "The first" },
+    { kind: "caption", item_id: "spoken-first", text: "The first provisional fragment" },
+    { kind: "caption", item_id: "spoken-second", text: "The second provisional fragment" },
+    { kind: "caption", item_id: "still-speaking", text: "Checking one more prerequisite..." },
   ]);
   const live = (item, speaker = "assistant") => page.locator(`.msg--live-${speaker}[data-testid="chat-live-row:${identity}:${item}"]`);
   await live("spoken-first").waitFor();
   await live("spoken-first", "user").waitFor();
   await live("spoken-second").waitFor();
+  assert.equal(await live("spoken-first").locator(".msg__text").textContent(), "The first provisional fragment",
+    "a caption replaces its item's text with the segment's whole text");
+  // Data-channel output transcripts name no committed item and never render.
+  await speak([
+    { type: "session.output_transcript.delta", item_id: "data-channel-only", delta: "Unkeyed provider transcript" },
+    { type: "session.input_transcript.delta", item_id: "after-data-channel", delta: "Ordered after the output delta." },
+  ]);
+  await live("after-data-channel", "user").waitFor();
+  assert.equal(await live("data-channel-only").count(), 0, "output transcript deltas are not assistant captions");
   const composer = page.getByTestId(`chat-composer:${identity}`);
   const draft = { text: "Keep this draft while the voice result arrives.", start: 5, end: 15 };
   const assertDraft = async () => assert.deepEqual(
@@ -387,12 +445,16 @@ async function verifyVoiceTranscriptHandoff(page, fixture) {
   const canonical = pane.locator('[data-quote-source]').filter({ has: page.getByRole("heading", { name: "Spoken review", exact: true }) });
   assert.equal(await canonical.getAttribute("data-quote-source"), source);
   assert.equal(await canonical.locator("table").count(), 1);
-  await speak([
-    { type: "session.output_transcript.delta", item_id: "spoken-first", delta: " Late stale speech must stay hidden." },
-    { type: "session.output_transcript.delta", item_id: "after-late", delta: "The ordered channel delivered the late fragment." },
+  fixture.caption(channelId, [
+    { kind: "caption", item_id: "spoken-first", text: "The first provisional fragment Late stale speech must stay hidden." },
+    { kind: "caption", item_id: "after-late", text: "The caption feed delivered the late fragment." },
   ]);
   await live("after-late").waitFor();
-  assert.equal(await live("spoken-first").count(), 0, "late speech cannot replace its canonical row");
+  assert.equal(await live("spoken-first").count(), 0, "a late caption cannot replace its canonical row");
+  // A retracted segment will never commit; its caption disappears.
+  fixture.caption(channelId, [{ kind: "retracted", item_id: "still-speaking" }]);
+  await live("still-speaking").waitFor({ state: "detached" });
+  await live("after-late").waitFor();
   await assertDraft();
   assert.equal(await pane.getByRole("heading", { name: "Spoken review", exact: true }).count(), 1);
   if (process.env.VOICE_SCREENSHOT_DIR) {
@@ -580,7 +642,7 @@ async function main() {
       await fs.writeFile(path.join(process.env.VOICE_SCREENSHOT_DIR, "voice-assets.json"), JSON.stringify(assets, null, 2) + "\n");
     }
     await context.close();
-    console.log("Voice browser E2E passed: real WebRTC audio before context release, context acknowledgement/failure, mute, navigation, concurrent text, canonical transcript handoff, replacement, cleanup and auth gate.");
+    console.log("Voice browser E2E passed: real WebRTC audio before context release, context acknowledgement/failure, mute, navigation, concurrent text, provisional captions, canonical transcript handoff, replacement, cleanup and auth gate.");
   } finally {
     await browser?.close();
     server.closeAllConnections();

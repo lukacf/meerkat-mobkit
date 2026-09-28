@@ -274,6 +274,7 @@ async fn console_voice_channel_activation_rechecks_agent_permissions_before_disp
         "mobkit/console/voice/readiness",
         "mobkit/console/voice/replacement",
         "mobkit/console/voice/activity",
+        "mobkit/console/voice/captions",
         "mobkit/live/playback_owner/register",
         "live/webrtc/answer",
         "mobkit/console/voice/answer_received",
@@ -346,6 +347,20 @@ async fn console_voice_http_read_only_blocks_open_but_not_owned_cancel_fencing()
     state.console.read_only = true;
     let (_, open) = voice_rpc(state.clone(), "mobkit/console/voice/open", true).await;
     assert_eq!(open["error"]["data"]["kind"], "read_only");
+    // Owned caption reads mutate nothing, like context status: a read-only
+    // console reaches the request scope check instead of a read-only refusal.
+    let (_, captions) = voice_rpc_with_params(
+        state.clone(),
+        "mobkit/console/voice/captions",
+        true,
+        json!({"identity":"agent-a", "request_id":"request-a", "channel_id":"channel-a"}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        captions["error"]["data"]["kind"], "voice_request_conflict",
+        "{captions}"
+    );
     let (_, close) = voice_rpc(state, "mobkit/console/voice/close", true).await;
     assert_eq!(close["result"], json!({"phase":"closed"}));
 }

@@ -21,6 +21,7 @@ use crate::live_wiring::{
 mod auth;
 #[cfg(feature = "openai-live")]
 pub(crate) mod capabilities;
+mod captions;
 mod context_status;
 #[cfg(feature = "openai-live")]
 pub(crate) mod live_host;
@@ -28,6 +29,9 @@ mod summary;
 #[cfg(feature = "openai-live")]
 mod summary_window;
 
+pub(crate) use captions::{VoiceCaptionBatch, VoiceCaptions, VoiceCaptionsRequest};
+#[cfg(feature = "openai-live")]
+pub(crate) use captions::{VoiceCaptionHub, VoiceCaptionRegistration};
 pub(crate) use context_status::{
     VoiceContextPreparation, VoiceContextStatus, VoiceContextStatusRequest,
 };
@@ -39,6 +43,7 @@ pub(crate) const VOICE_ANSWER_RECEIVED_METHOD: &str = "mobkit/console/voice/answ
 pub(crate) const VOICE_REPLACEMENT_METHOD: &str = "mobkit/console/voice/replacement";
 pub(crate) const VOICE_ACTIVITY_METHOD: &str = "mobkit/console/voice/activity";
 pub(crate) const VOICE_CONTEXT_STATUS_METHOD: &str = "mobkit/console/voice/context_status";
+pub(crate) const VOICE_CAPTIONS_METHOD: &str = "mobkit/console/voice/captions";
 const SILENCE_LIMIT: Duration = Duration::from_mins(15);
 const PENDING_SETUP_LIMIT: Duration = Duration::from_mins(2);
 
@@ -210,6 +215,16 @@ pub(crate) trait ConsoleVoiceSession: Send + Sync {
         &self,
         _channel: &str,
     ) -> Result<VoiceContextPreparation, VoiceError> {
+        Err(VoiceError::Unavailable)
+    }
+    /// Provisional assistant captions of `channel` newer than `after`,
+    /// waiting up to `wait` for one to arrive.
+    async fn captions(
+        &self,
+        _channel: &str,
+        _after: u64,
+        _wait: Duration,
+    ) -> Result<VoiceCaptionBatch, VoiceError> {
         Err(VoiceError::Unavailable)
     }
 }
@@ -558,6 +573,41 @@ impl ConsoleVoiceController {
             request_id: request.request_id,
             channel_id: request.channel_id,
             context_preparation,
+        })
+    }
+
+    /// Read the owned call's provisional assistant captions. The scope is
+    /// the exact `{identity, request_id, channel_id}` of the current channel,
+    /// like `context_status`; the request lock is never held over the wait.
+    pub(crate) async fn captions(
+        &self,
+        principal: &str,
+        request: VoiceCaptionsRequest,
+    ) -> Result<VoiceCaptions, VoiceError> {
+        if !valid_request_atom(&request.channel_id) {
+            return Err(VoiceError::InvalidRequest);
+        }
+        let session = self
+            .owned_session(
+                principal,
+                &VoiceRequest {
+                    identity: request.identity.clone(),
+                    request_id: request.request_id.clone(),
+                },
+            )
+            .await?;
+        if session.pending().channel_id != request.channel_id {
+            return Err(VoiceError::RequestConflict);
+        }
+        let wait = Duration::from_millis(request.wait_ms.min(captions::MAX_CAPTION_WAIT_MS));
+        let batch = session
+            .captions(&request.channel_id, request.after, wait)
+            .await?;
+        Ok(VoiceCaptions {
+            identity: request.identity,
+            request_id: request.request_id,
+            channel_id: request.channel_id,
+            batch,
         })
     }
 

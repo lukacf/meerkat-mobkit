@@ -6221,6 +6221,12 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<bool, SessionError> {
                 self.inner.live_session_actor_registered(session_id).await
             }
+            async fn session_projection_visible(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<bool, SessionError> {
+                self.inner.session_projection_visible(session_id).await
+            }
             async fn session_belongs_to_mob(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -7253,6 +7259,12 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<bool, SessionError> {
         self.inner.live_session_actor_registered(session_id).await
+    }
+    async fn session_projection_visible(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, SessionError> {
+        self.inner.session_projection_visible(session_id).await
     }
     async fn session_belongs_to_mob(
         &self,

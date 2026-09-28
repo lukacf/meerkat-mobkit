@@ -2,6 +2,7 @@ import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import voiceContract from "../../../crates/meerkat-mobkit/tests/fixtures/console_voice_v1.json";
 import { parseVoiceContextStatus, voiceContextFailureMessage } from "./voice-context";
+import { parseVoiceCaptions, VOICE_CAPTIONS_METHOD } from "./voice-captions";
 import {
   createVoiceSession,
   queryVoiceAvailability,
@@ -16,6 +17,8 @@ import {
   VOICE_TRANSPORT_RECONNECT_GRACE_MS,
   VOICE_RPC_FAILURE_TOLERANCE_MS,
   VOICE_AUDIO_RESUME_TIMEOUT_MS,
+  VOICE_CAPTION_WAIT_MS,
+  VOICE_CAPTION_RETRY_DELAY_MS,
   isTransientRpcFailure,
   type VoiceAvailability,
   type VoiceSessionEnvironment,
@@ -261,6 +264,8 @@ function harness() {
       if (method === "mobkit/console/voice/answer_received") return { accepted: true };
       if (method === "mobkit/console/voice/activity") return { accepted: true };
       if (method === "mobkit/console/voice/context_status") return contextStatus(params);
+      // The caption long poll waits; tests that need captions script it.
+      if (method === "mobkit/console/voice/captions") return new Promise(() => {});
       if (method === "mobkit/console/voice/open") {
         return pending(params.identity as string, `channel-${params.identity}`);
       }
@@ -544,7 +549,7 @@ test("strict handshake installs output before offer, gates media until typed aut
   assert.deepEqual(h.calls.map((call) => call.method), [
     "mobkit/console/voice/open", "mobkit/live/playback_owner/register",
     "live/webrtc/answer", "mobkit/console/voice/answer_received", "mobkit/live/status",
-    "mobkit/console/voice/context_status",
+    "mobkit/console/voice/context_status", "mobkit/console/voice/captions",
   ]);
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /secret|receipt|opaque-bootstrap|sdp/);
   await h.controller.close();
@@ -594,79 +599,254 @@ test("stable snapshot and voice target survive independent background text", asy
   assert.equal(changes, before);
 });
 
-test("transcript deltas accumulate into provisional live speech keyed by provider item id", async () => {
+/**
+ * Script the gateway's caption long poll: each read waits until the test pushes a
+ * batch, and every read's params are kept so the cursor can be asserted.
+ */
+function captionFeed(h: ReturnType<typeof harness>) {
+  const reads: { params: Record<string, unknown>; answer: ReturnType<typeof deferred<unknown>> }[] = [];
+  let cursor = 0;
+  h.setRpc((method, params) => {
+    if (method !== VOICE_CAPTIONS_METHOD) return undefined;
+    const answer = deferred<unknown>();
+    reads.push({ params, answer });
+    return answer.promise;
+  });
+  return {
+    reads,
+    async push(captions: unknown[]) {
+      await flush();
+      const read = reads.at(-1);
+      assert.ok(read, "a caption read must be waiting");
+      cursor += captions.length;
+      read.answer.resolve({
+        identity: read.params.identity, request_id: read.params.request_id, channel_id: read.params.channel_id,
+        cursor, captions,
+      });
+      await h.clock.advance(0);
+    },
+  };
+}
+
+test("the caption observer reads the exact owned channel scope and advances its cursor", async () => {
   const h = harness();
+  const feed = captionFeed(h);
   await h.controller.start(target);
-  assert.equal(h.controller.getSnapshot().phase, "active");
+  await flush();
+  const channelId = h.controller.getSnapshot().activeChannelId;
+  assert.deepEqual(feed.reads[0]?.params, {
+    identity: target.identity, request_id: "request-1", channel_id: channelId, after: 0, wait_ms: VOICE_CAPTION_WAIT_MS,
+  });
+  await feed.push([{ kind: "caption", item_id: "segment-1", text: "The vault" }]);
+  assert.equal(feed.reads[1]?.params.after, 1, "the next read starts after the applied batch");
+  await h.controller.close();
+});
+
+test("assistant captions upsert live speech by item id with the segment's whole text", async () => {
+  const h = harness();
+  const feed = captionFeed(h);
+  await h.controller.start(target);
   assert.deepEqual(h.controller.getSnapshot().liveSpeech, []);
-  const channel = h.peers[0].channel;
-  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "What is " });
-  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "the vault phrase" });
-  channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "The vault " });
-  channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "phrase is amber" });
-  const live = h.controller.getSnapshot().liveSpeech;
-  assert.equal(live.length, 2);
-  assert.deepEqual(live.map((item) => [item.itemId, item.speaker, item.text, item.final]), [
-    ["u1", "user", "What is the vault phrase", false],
-    ["a1", "assistant", "The vault phrase is amber", false],
+  const items = () => h.controller.getSnapshot().liveSpeech.map((item) => [item.itemId, item.speaker, item.text, item.final]);
+  await feed.push([{ kind: "caption", item_id: "segment-1", text: "The vault" }]);
+  await feed.push([
+    { kind: "caption", item_id: "segment-1", text: "The vault phrase is" },
+    { kind: "caption", item_id: "segment-2", text: "Next" },
   ]);
-  channel.emit({ type: "session.output_transcript.done", item_id: "a1", text: "The vault phrase is amber." });
-  const finalized = h.controller.getSnapshot().liveSpeech.find((item) => item.itemId === "a1");
-  assert.equal(finalized?.final, true);
-  assert.equal(finalized?.text, "The vault phrase is amber.");
-  // Deltas without an item id or a string payload are ignored, never crash.
-  channel.emit({ type: "session.output_transcript.delta", delta: "orphan" });
-  channel.emit({ type: "session.output_transcript.delta", item_id: "a2", delta: 42 });
-  assert.equal(h.controller.getSnapshot().liveSpeech.length, 2);
-  assert.equal(h.controller.getSnapshot().activeChannelId, h.controller.getSnapshot().activeChannelId);
+  assert.deepEqual(items(), [
+    ["segment-1", "assistant", "The vault phrase is", false],
+    ["segment-2", "assistant", "Next", false],
+  ]);
+  // A repeated or older caption carries whole text; it replaces, never appends.
+  await feed.push([{ kind: "caption", item_id: "segment-1", text: "The vault phrase is amber." }]);
+  await feed.push([{ kind: "caption", item_id: "segment-1", text: "The vault phrase is amber." }]);
+  assert.deepEqual(items(), [
+    ["segment-1", "assistant", "The vault phrase is amber.", false],
+    ["segment-2", "assistant", "Next", false],
+  ]);
+  // A retraction drops exactly its item.
+  await feed.push([{ kind: "retracted", item_id: "segment-2" }]);
+  assert.deepEqual(items(), [["segment-1", "assistant", "The vault phrase is amber.", false]]);
   await h.controller.close();
   assert.equal(h.controller.getSnapshot().phase, "idle");
   assert.deepEqual(h.controller.getSnapshot().liveSpeech, [], "a normal close drops every provisional row");
   assert.equal(h.controller.getSnapshot().activeChannelId, null);
 });
 
-test("live speech keeps interleaved user and assistant deltas separate when item ids collide", async () => {
+test("data-channel output transcripts never create assistant captions; item-keyed user deltas still do", async () => {
   const h = harness();
+  await h.controller.start(target);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  const channel = h.peers[0].channel;
+  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "What is " });
+  channel.emit({ type: "session.input_transcript.delta", item_id: "u1", delta: "the vault phrase" });
+  channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "The vault " });
+  channel.emit({ type: "session.output_transcript.delta", delta: "phrase is amber" });
+  channel.emit({ type: "session.output_transcript.done", item_id: "a1", text: "The vault phrase is amber." });
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => [item.itemId, item.speaker, item.text, item.final]), [
+    ["u1", "user", "What is the vault phrase", false],
+  ]);
+  channel.emit({ type: "session.input_transcript.done", item_id: "u1", text: "What is the vault phrase?" });
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => [item.speaker, item.text, item.final]), [
+    ["user", "What is the vault phrase?", true],
+  ]);
+  // Deltas without an item id or a string payload are ignored, never crash.
+  channel.emit({ type: "session.input_transcript.delta", delta: "orphan" });
+  channel.emit({ type: "session.input_transcript.delta", item_id: "u2", delta: 42 });
+  assert.equal(h.controller.getSnapshot().liveSpeech.length, 1);
+  await h.controller.close();
+});
+
+test("a user item and an assistant caption with the same item id stay separate", async () => {
+  const h = harness();
+  const feed = captionFeed(h);
   await h.controller.start(target);
   try {
     const channel = h.peers[0].channel;
     channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "User " });
-    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "Assistant " });
+    await feed.push([{ kind: "caption", item_id: "shared-item", text: "Assistant answer" }]);
     channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "question" });
-    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "answer" });
     assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => [item.itemId, item.speaker, item.text, item.final]), [
       ["shared-item", "user", "User question", false],
       ["shared-item", "assistant", "Assistant answer", false],
     ]);
+    await feed.push([{ kind: "retracted", item_id: "shared-item" }]);
+    channel.emit({ type: "session.input_transcript.done", item_id: "shared-item", text: "User question?" });
+    assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => [item.speaker, item.text, item.final]), [
+      ["user", "User question?", true],
+    ], "a retraction and a user final each touch only their own speaker");
   } finally {
     await h.controller.close();
   }
 });
 
-test("live speech final events affect only their speaker when item ids collide", async () => {
+test("a replacement channel drops old captions and reads the new channel from the start", async () => {
   const h = harness();
+  const feed = captionFeed(h);
   await h.controller.start(target);
-  try {
-    const channel = h.peers[0].channel;
-    const items = () => h.controller.getSnapshot().liveSpeech.map((item) => [item.speaker, item.text, item.final]);
-    channel.emit({ type: "session.input_transcript.delta", item_id: "shared-item", delta: "User question" });
-    channel.emit({ type: "session.output_transcript.done", item_id: "shared-item", text: "Unrelated assistant final" });
-    assert.deepEqual(items(), [["user", "User question", false]], "an unknown speaker's final must not modify the other speaker");
+  await feed.push([{ kind: "caption", item_id: "old-segment", text: "Old channel speech" }]);
+  assert.equal(h.controller.getSnapshot().liveSpeech.length, 1);
+  let required = true;
+  h.setRpc((method, params) => {
+    if (method === VOICE_CAPTIONS_METHOD) {
+      const answer = deferred<unknown>();
+      feed.reads.push({ params, answer });
+      return answer.promise;
+    }
+    if (method !== "mobkit/console/voice/replacement") return undefined;
+    const result = required ? replacement() : { required: false };
+    required = false;
+    return Promise.resolve(result);
+  });
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().activeChannelId, "recovery-channel");
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, [], "a replacement channel's item ids start over");
+  const latest = feed.reads.at(-1)!;
+  assert.equal(latest.params.channel_id, "recovery-channel");
+  assert.equal(latest.params.after, 0);
+  // A late answer to the old channel's read is fenced.
+  const stale = feed.reads.find((read) => read.params.channel_id !== "recovery-channel" && read.params.after === 1)!;
+  stale.answer.resolve({ identity: stale.params.identity, request_id: stale.params.request_id,
+    channel_id: stale.params.channel_id, cursor: 9, captions: [{ kind: "caption", item_id: "late", text: "Late" }] });
+  await flush();
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, []);
+  await feed.push([{ kind: "caption", item_id: "new-segment", text: "New channel speech" }]);
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => item.itemId), ["new-segment"]);
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
 
-    channel.emit({ type: "session.output_transcript.delta", item_id: "shared-item", delta: "Assistant answer" });
-    channel.emit({ type: "session.input_transcript.done", item_id: "shared-item", text: "User question?" });
-    assert.deepEqual(items(), [
-      ["user", "User question?", true],
-      ["assistant", "Assistant answer", false],
-    ]);
-    channel.emit({ type: "session.output_transcript.done", item_id: "shared-item", text: "Assistant answer." });
-    assert.deepEqual(items(), [
-      ["user", "User question?", true],
-      ["assistant", "Assistant answer.", true],
-    ]);
-  } finally {
-    await h.controller.close();
-  }
+test("a failed caption read never affects the call and is retried; a closed call stops reading", async () => {
+  const h = harness();
+  let reads = 0;
+  h.setRpc((method, params) => {
+    if (method !== VOICE_CAPTIONS_METHOD) return undefined;
+    reads += 1;
+    if (reads === 1) return Promise.reject(new Error("network down"));
+    if (reads === 2) {
+      return Promise.resolve({ identity: params.identity, request_id: params.request_id, channel_id: params.channel_id,
+        cursor: 4, captions: [{ kind: "caption", item_id: "segment-1", text: "Recovered" }] });
+    }
+    if (reads === 3) return Promise.reject(Object.assign(new Error("closed"), { rpcError: { code: -32000, data: { kind: "voice_closed" } } }));
+    return new Promise(() => {});
+  });
+  await h.controller.start(target);
+  await flush();
+  assert.equal(reads, 1);
+  assert.equal(h.controller.getSnapshot().phase, "active", "a caption failure is display state only");
+  await h.clock.advance(VOICE_CAPTION_RETRY_DELAY_MS);
+  assert.equal(reads, 3);
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech.map((item) => item.text), ["Recovered"]);
+  await h.clock.advance(60_000);
+  assert.equal(reads, 3, "voice_closed ends the caption observer; the control plane reports closure");
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  await h.controller.close();
+});
+
+test("a caption batch for another call scope is rejected, never applied", async () => {
+  const h = harness();
+  h.setRpc((method, params) => method === VOICE_CAPTIONS_METHOD
+    ? Promise.resolve({ identity: params.identity, request_id: "other-request", channel_id: params.channel_id,
+      cursor: 1, captions: [{ kind: "caption", item_id: "segment-1", text: "Foreign" }] })
+    : undefined);
+  await h.controller.start(target);
+  await flush();
+  assert.deepEqual(h.controller.getSnapshot().liveSpeech, []);
+  await h.controller.close();
+});
+
+test("the caption observer and parser match the shared Rust captions contract", async () => {
+  assert.equal(VOICE_CAPTIONS_METHOD, voiceContract.captions_method);
+  const scope = { identity: voiceContract.captions_response.identity, requestId: voiceContract.captions_response.request_id,
+    channelId: voiceContract.captions_response.channel_id };
+  assert.deepEqual(parseVoiceCaptions(voiceContract.captions_response, scope, voiceContract.captions_request.after), {
+    cursor: 7,
+    captions: [
+      { kind: "caption", itemId: "segment-a", text: "The vault phrase is amber." },
+      { kind: "retracted", itemId: "segment-b" },
+    ],
+  });
+  const h = harness();
+  const request = voiceContract.captions_request;
+  h.env.randomId = () => request.request_id;
+  const reads: Record<string, unknown>[] = [];
+  let answered = false;
+  h.setRpc((method, params) => {
+    if (method === "mobkit/console/voice/open") return Promise.resolve(pending(request.identity, request.channel_id));
+    if (method !== VOICE_CAPTIONS_METHOD) return undefined;
+    reads.push(params);
+    if (answered) return new Promise(() => {});
+    answered = true;
+    return Promise.resolve({ ...voiceContract.captions_response, cursor: request.after });
+  });
+  await h.controller.start({ identity: request.identity, label: "Golden agent" });
+  await h.clock.advance(1_000);
+  assert.deepEqual(Object.keys(reads[0]).sort(), Object.keys(request).sort());
+  assert.deepEqual(reads[1], request, "the second read carries the cursor the first returned");
+  await h.controller.close();
+});
+
+test("caption parsing accepts only the exact typed shape", () => {
+  const scope = { identity: "agent", requestId: "request", channelId: "channel" };
+  const wire = (extra: Record<string, unknown> = {}) => ({
+    identity: "agent", request_id: "request", channel_id: "channel", cursor: 3,
+    captions: [{ kind: "caption", item_id: "a", text: "Hi" }, { kind: "retracted", item_id: "b" }], ...extra,
+  });
+  assert.deepEqual(parseVoiceCaptions(wire(), scope, 0), {
+    cursor: 3,
+    captions: [{ kind: "caption", itemId: "a", text: "Hi" }, { kind: "retracted", itemId: "b" }],
+  });
+  for (const bad of [
+    wire({ cursor: 2.5 }), wire({ cursor: -1 }), wire({ extra: true }), wire({ captions: {} }),
+    wire({ captions: [{ kind: "caption", item_id: "", text: "Hi" }] }),
+    wire({ captions: [{ kind: "caption", item_id: "a" }] }),
+    wire({ captions: [{ kind: "caption", item_id: "a", text: "Hi", delta: "Hi" }] }),
+    wire({ captions: [{ kind: "retracted", item_id: "b", text: "x" }] }),
+    wire({ captions: [{ kind: "final", item_id: "a" }] }),
+  ]) assert.throws(() => parseVoiceCaptions(bad, scope, 0), JSON.stringify(bad));
+  assert.throws(() => parseVoiceCaptions(wire(), scope, 4), "a cursor never moves backwards");
+  assert.throws(() => parseVoiceCaptions(wire({ channel_id: "old" }), scope, 0));
 });
 
 test("provisional live speech is dropped when the call is superseded or the provider is lost", async () => {
@@ -681,8 +861,9 @@ test("provisional live speech is dropped when the call is superseded or the prov
   assert.deepEqual(h.controller.getSnapshot().liveSpeech, [], "supersession drops every provisional row");
 
   const g = harness();
+  const feed = captionFeed(g);
   await g.controller.start(target);
-  g.peers[0].channel.emit({ type: "session.output_transcript.delta", item_id: "a1", delta: "partial" });
+  await feed.push([{ kind: "caption", item_id: "a1", text: "partial" }]);
   assert.equal(g.controller.getSnapshot().liveSpeech.length, 1);
   g.peers[0].channel.emit({ type: "error" });
   await g.clock.advance(1);

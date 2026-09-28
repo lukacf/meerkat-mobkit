@@ -11,11 +11,16 @@ test("voice handoff publishes the canonical nested TranscriptMessageIdentity car
   const page = {
     waitForFunction: async () => {},
     evaluate: async () => {},
-    locator: () => ({ waitFor: async () => {} }),
+    locator: () => ({
+      waitFor: async () => {},
+      count: async () => 0,
+      locator: () => ({ textContent: async () => "The first provisional fragment" }),
+    }),
     getByTestId: () => ({ fill: async () => {}, evaluate: async () => {} }),
   };
   await assert.rejects(verifyVoiceTranscriptHandoff(page, {
     channels: new Map([["active-channel", { identity: "identity:alpha", closed: false }]]),
+    caption: () => {},
     setTimeline: async frames => { rows = frames; throw captured; },
   }), error => error === captured);
   assert.equal(rows.length, 3);

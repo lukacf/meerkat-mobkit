@@ -103,6 +103,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still load and still keep their member, and host-side code may still set
   it.
 
+- Bind the Meerkat family to published 0.8.46. Public Live under
+  `ProviderManagedUnmeasured` (console voice on gpt-live-1) now commits one
+  canonical assistant row per provider turn segment instead of one row per
+  transcript delta (lukacf/meerkat#1237), so the spoken answer lands as one
+  message when its segment seals (turn end, a typed between-speech boundary,
+  or channel close). Also included: a reopen whose context summary missed the
+  pre-open bound is no longer silent when a typed turn is queued
+  (#474), and playback snapshot rows always name their channel. MobKit builds
+  against 0.8.46 without source changes. See Added for the console captions
+  that cover the time until the row lands.
 - Bind the Meerkat family to published 0.8.45: bounded per-member status
   observations with a typed `preview_unavailable` reason, fork lineage on the
   builds of fork-derived members (`SessionBuildOptions::fork_source`), the
@@ -135,6 +145,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Console voice shows the agent's speech while it is still speaking. The
+  console voice host installs a provisional caption sink on its public Live
+  authority (`with_public_provisional_caption_sink`, meerkat 0.8.46). Each
+  caption carries the open segment's whole text so far and its item id, the
+  id the committed assistant row later lists in
+  `realtime_origin.provider_item_ids`. The browser reads them through the new
+  `mobkit/console/voice/captions {identity, request_id, channel_id, after,
+  wait_ms}` long poll, scoped to the owned call exactly like
+  `context_status` (agent view access; permitted on a read-only console). It
+  answers `{identity, request_id, channel_id, cursor, captions}`, where each
+  caption is `{kind: "caption", item_id, text}` or `{kind: "retracted",
+  item_id}`. The gateway coalesces captions per item in a bounded buffer and
+  never makes the provider path wait on the browser. The console upserts the
+  live row by item id, drops it on a retraction, and retires it as soon as
+  the committed row names that item. Assistant live rows no longer come from
+  data-channel `session.output_transcript.*` events, which name no committed
+  item. Captions are display state only and are cleared on close and on a
+  replacement channel.
 - Fork lineage in `callback/build_agent` (meerkat 0.8.45). The build callback
   options carry `fork_source`, meerkat's `SessionBuildOptions::fork_source`
   forwarded as meerkat serializes it (`{"source_member": {"mob_id", "role",

@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use meerkat::experimental_gpt_live::{
     ExperimentalGptLiveOpenAuthority, ExperimentalLiveOpenAuthorityProvider as _,
-    PublicGptLiveOpenAuthorityConfig, PublicGptLivePlaybackPolicy,
+    PublicGptLiveOpenAuthorityConfig, PublicGptLivePlaybackPolicy, PublicGptLiveProvisionalCaption,
+    PublicGptLiveProvisionalCaptionRetraction, PublicGptLiveProvisionalCaptionSink,
 };
 use meerkat::session_runtime::live_summary::{
     LiveContextBootstrapMode, LiveContextSummarizer, LiveContextSummaryError,
@@ -22,8 +23,8 @@ use tokio::sync::Mutex;
 use super::auth::{ConsoleLiveBindingAuthority, ConsoleLiveGrant};
 use super::summary_window::{SummaryCache, SummaryKey, recent_window};
 use super::{
-    ConsoleVoiceController, ConsoleVoiceHost, ConsoleVoiceSession, VoiceContextPreparation,
-    VoiceError,
+    ConsoleVoiceController, ConsoleVoiceHost, ConsoleVoiceSession, VoiceCaptionBatch,
+    VoiceCaptionHub, VoiceCaptionRegistration, VoiceContextPreparation, VoiceError,
 };
 use crate::access::{ACTION_AGENT_SEND, ACTION_AGENT_VIEW, AccessController};
 use crate::live_contracts::{ExperimentalLiveChannelStatus, PendingLiveChannelHandle};
@@ -121,6 +122,30 @@ impl LiveContextSummarizer for FactorySummarizer {
     }
 }
 
+/// Meerkat calls this synchronously on the provider observation path, in
+/// delta order and outside its locks; the hub only replaces one bounded
+/// buffer entry and wakes readers, so it never waits on the browser.
+impl PublicGptLiveProvisionalCaptionSink for VoiceCaptionHub {
+    fn publish(&self, caption: PublicGptLiveProvisionalCaption) {
+        VoiceCaptionHub::publish_text(
+            self,
+            caption.session_id(),
+            caption.channel_id().as_str(),
+            caption.item_id(),
+            caption.text(),
+        );
+    }
+
+    fn retract(&self, retraction: PublicGptLiveProvisionalCaptionRetraction) {
+        VoiceCaptionHub::retract_item(
+            self,
+            retraction.session_id(),
+            retraction.channel_id().as_str(),
+            retraction.item_id(),
+        );
+    }
+}
+
 struct SharedHost {
     handle: meerkat_mob::MobHandle,
     identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
@@ -130,6 +155,7 @@ struct SharedHost {
     handler: LiveRpcHandler,
     principal: String,
     selection: meerkat_contracts::WireLiveExecutionIdentityOverrideV1,
+    captions: Arc<VoiceCaptionHub>,
 }
 
 struct Host(Arc<SharedHost>);
@@ -213,6 +239,7 @@ impl ConsoleVoiceController {
         let arbiter = Arc::clone(&ctx.arbiter);
         let transport =
             Arc::new(meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new());
+        let captions = Arc::new(VoiceCaptionHub::default());
         let authority =
             ExperimentalGptLiveOpenAuthority::new_public(PublicGptLiveOpenAuthorityConfig {
                 agent_factory: factory.clone(),
@@ -238,6 +265,13 @@ impl ConsoleVoiceController {
             .and_then(|authority| {
                 authority.with_public_playback_policy(
                     PublicGptLivePlaybackPolicy::ProviderManagedUnmeasured,
+                )
+            })
+            // The canonical assistant row lands when its segment seals; the
+            // console shows the in-progress text from these captions.
+            .and_then(|authority| {
+                authority.with_public_provisional_caption_sink(
+                    Arc::clone(&captions) as Arc<dyn PublicGptLiveProvisionalCaptionSink>
                 )
             })
             .map_err(|error| error.to_string())?;
@@ -292,6 +326,7 @@ impl ConsoleVoiceController {
                 handler,
                 principal: registration.principal,
                 selection,
+                captions,
             })))),
             ..Self::default()
         }
@@ -341,6 +376,11 @@ pub(crate) mod tests {
         /// `session.input_transcript.delta`, the provider event Meerkat
         /// treats as the user's first turn on the channel.
         speak: tokio::sync::Notify,
+        /// The test asks the fixture to make the assistant speak: one
+        /// `session.output_transcript.delta` per queued fragment, in order.
+        /// gpt-live-1 names no item on these events.
+        say: tokio::sync::Notify,
+        say_fragments: StdMutex<Vec<String>>,
     }
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
@@ -411,6 +451,17 @@ pub(crate) mod tests {
                                     "type":"session.input_transcript.delta","event_id":"first-user-delta",
                                     "delta":"hello","start_ms":0.0,"end_ms":600.0
                                 }).to_string().into())).await.expect("user transcript delta");
+                                continue;
+                            }
+                            () = capture.say.notified() => {
+                                let fragments = std::mem::take(&mut *capture.say_fragments.lock().expect("say fragments"));
+                                for (index, delta) in fragments.into_iter().enumerate() {
+                                    let start_ms = 1000.0 + 100.0 * index as f64;
+                                    socket.send(SocketMessage::Text(json!({
+                                        "type":"session.output_transcript.delta","event_id":format!("assistant-delta-{index}"),
+                                        "delta":delta,"start_ms":start_ms,"end_ms":start_ms + 100.0
+                                    }).to_string().into())).await.expect("assistant transcript delta");
+                                }
                                 continue;
                             }
                             message = socket.recv() => message,
@@ -1201,6 +1252,251 @@ pub(crate) mod tests {
         controller.shutdown().await.expect("voice shutdown");
         runtime.shutdown().await;
     }
+    /// Provider speech reaches the console as provisional captions through
+    /// the real sink Meerkat calls, keyed by the segment item id that the
+    /// committed assistant row later records in
+    /// `realtime_origin.provider_item_ids` on the same session and channel.
+    #[tokio::test]
+    async fn console_voice_captions_carry_provider_speech_until_the_committed_row() {
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let RealRuntime {
+            _directory,
+            provider,
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+        } = RealRuntime::start("captions").await;
+        let session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("agent-a"))
+            .await
+            .expect("source session");
+        // No summary is delivered, so no provider-acknowledged append forms
+        // a between-speech boundary inside the reply below.
+        let release_summary = Arc::new(tokio::sync::Notify::new());
+        release_summary.notify_one();
+        let policy = LiveContextSummaryPolicy::new(
+            Arc::new(Summary {
+                calls: Arc::new(AtomicUsize::new(0)),
+                release: release_summary,
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scenario: SummaryScenario::Failure,
+            }),
+            4 * 1024 * 1024,
+            4096,
+            Duration::from_secs(30),
+        )
+        .expect("summary policy");
+        let registration = PublicLiveRegistration::parse(&json!({
+            "principal":"voice@example.com","realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+        }))
+        .expect("registration");
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            config,
+            String::new(),
+            None,
+        ));
+        let controller = ConsoleVoiceController::compose_live_host(
+            &runtime,
+            ctx,
+            service.clone(),
+            machine,
+            factory,
+            registration,
+            Some((policy, provider.url.clone())),
+        )
+        .expect("console host");
+        let decisions = crate::console_auth_config::parse_console_auth_config(&json!({
+            "shared_secret":"console-test-signing", "email_allowlist":["voice@example.com"]
+        }))
+        .expect("auth");
+        let token = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &json!({
+                "iss":"http://127.0.0.1/mobkit-gateway","aud":"persistent-gateway",
+                "sub":"voice@example.com","email":"voice@example.com","exp":chrono::Utc::now().timestamp()+300
+            }), &jsonwebtoken::EncodingKey::from_secret(b"console-test-signing")).expect("token");
+        let app = runtime
+            .build_reference_app_router(decisions)
+            .layer(axum::Extension(controller.clone()));
+        let opened = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-request"}),
+        )
+        .await;
+        assert!(opened["error"].is_null(), "{opened}");
+        let pending = &opened["result"];
+        let channel = pending["channel_id"].as_str().expect("channel").to_string();
+        let captions = |after: u64, wait_ms: u64| {
+            rpc(
+                &app,
+                &token,
+                super::super::VOICE_CAPTIONS_METHOD,
+                json!({"identity":"agent-a","request_id":"voice-request","channel_id":channel,
+                    "after":after,"wait_ms":wait_ms}),
+            )
+        };
+        let nothing = captions(0, 0).await;
+        assert_eq!(
+            nothing["result"],
+            json!({"identity":"agent-a","request_id":"voice-request","channel_id":channel,
+                "cursor":0,"captions":[]}),
+            "{nothing}"
+        );
+        for mismatch in [
+            json!({"identity":"agent-a","request_id":"voice-request","channel_id":"other-channel"}),
+            json!({"identity":"agent-a","request_id":"other-request","channel_id":channel}),
+        ] {
+            let response = rpc(&app, &token, super::super::VOICE_CAPTIONS_METHOD, mismatch).await;
+            assert_eq!(
+                response["error"]["data"]["kind"], "voice_request_conflict",
+                "{response}"
+            );
+        }
+        let unknown_field = rpc(&app, &token, super::super::VOICE_CAPTIONS_METHOD, json!({
+            "identity":"agent-a","request_id":"voice-request","channel_id":channel,"item_id":"x",
+        }))
+        .await;
+        assert_eq!(unknown_field["error"]["code"], -32602, "{unknown_field}");
+
+        let registered = rpc(&app, &token, "mobkit/live/playback_owner/register", json!({
+            "identity":"agent-a","channel_id":channel,"pending_receipt":pending["pending_receipt"]
+        })).await;
+        let answer = rpc(
+            &app,
+            &token,
+            "live/webrtc/answer",
+            json!({
+                "identity":"agent-a","channel_id":channel,
+                "pending_receipt":pending["pending_receipt"],
+                "readiness_receipt":registered["result"]["readiness_receipt"],
+                "token":pending["transport"]["token"],"offer_sdp":"v=0\r\nCONSOLE_FIXTURE_OFFER"
+            }),
+        )
+        .await;
+        assert!(answer["error"].is_null(), "{answer}");
+        let delivered = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/answer_received",
+            json!({
+                "identity":"agent-a","request_id":"voice-request","channel_id":channel
+            }),
+        )
+        .await;
+        assert_eq!(delivered["result"], json!({"accepted":true}), "{delivered}");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = rpc(&app, &token, "mobkit/live/status", json!({
+                    "identity":"agent-a","channel_id":channel,"pending_receipt":pending["pending_receipt"]
+                })).await;
+                if status["result"]["phase"] == "active" { break; }
+                assert!(status["error"].is_null(), "{status}");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("generated activation");
+        wait_context(
+            &app,
+            &token,
+            pending,
+            json!({"phase":"failed","reason":"generation"}),
+        )
+        .await;
+        provider.capture.speak.notify_one();
+
+        let fragments = ["The vault ", "phrase is ", "amber."];
+        *provider
+            .capture
+            .say_fragments
+            .lock()
+            .expect("say fragments") = fragments.iter().map(ToString::to_string).collect();
+        provider.capture.say.notify_one();
+        let spoken = fragments.concat();
+        let (item_id, cursor) = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut after = 0;
+            loop {
+                let read = captions(after, 2_000).await;
+                assert!(read["error"].is_null(), "{read}");
+                after = read["result"]["cursor"].as_u64().expect("cursor");
+                let latest = read["result"]["captions"]
+                    .as_array()
+                    .expect("captions")
+                    .last()
+                    .cloned();
+                if let Some(caption) = latest {
+                    assert_eq!(caption["kind"], "caption", "{read}");
+                    if caption["text"] == spoken {
+                        break (
+                            caption["item_id"].as_str().expect("item id").to_string(),
+                            after,
+                        );
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the provider's speech reaches the console as one growing caption");
+        let settled = captions(cursor, 0).await;
+        assert_eq!(settled["result"]["captions"], json!([]), "{settled}");
+        assert_eq!(settled["result"]["cursor"], cursor);
+        let replay = captions(0, 0).await;
+        assert_eq!(
+            replay["result"]["captions"],
+            json!([{"kind":"caption","item_id":item_id,"text":spoken}]),
+            "one segment is one caption entry carrying the whole text: {replay}"
+        );
+
+        // Close seals the open segment into one canonical assistant row.
+        let closed = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/close",
+            json!({"identity":"agent-a","request_id":"voice-request"}),
+        )
+        .await;
+        assert_eq!(closed["result"], json!({"phase":"closed"}), "{closed}");
+        let after_close = captions(cursor, 0).await;
+        assert_eq!(
+            after_close["error"]["data"]["kind"], "voice_closed",
+            "{after_close}"
+        );
+        let snapshot = service
+            .export_realtime_refresh_session_snapshot(&session)
+            .await
+            .expect("history");
+        let rows: Vec<Value> = snapshot
+            .messages()
+            .iter()
+            .map(|message| serde_json::to_value(message).expect("message JSON"))
+            .filter(|message| message["role"] == "block_assistant")
+            .filter_map(|message| {
+                let origin = message
+                    .get("realtime_origin")
+                    .or_else(|| message.pointer("/identity/realtime_origin"))?
+                    .clone();
+                Some(origin)
+            })
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|origin| origin["provider_item_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == item_id.as_str())))
+                .map(|origin| (origin["session_id"].clone(), origin["channel_id"].clone()))
+                .collect::<Vec<_>>(),
+            vec![(json!(session.to_string()), json!(channel))],
+            "exactly one committed row names the caption's item on its session and channel: {rows:?}"
+        );
+        controller.shutdown().await.expect("voice shutdown");
+        runtime.shutdown().await;
+    }
+
     async fn exercise_shared_host(disconnect_provider: bool, scenario: SummaryScenario) {
         let _guard = SHARED_HOST_TEST_LOCK.lock().await;
         let contract: Value =
@@ -1956,8 +2252,10 @@ impl SharedHost {
                 });
             }
         };
+        let captions = self.captions.register(&grant.session);
         Ok(Arc::new(Session {
             shared: Arc::clone(self),
+            captions,
             grant,
             identity: identity.to_string(),
             current: StdMutex::new(pending.clone()),
@@ -2110,6 +2408,8 @@ struct PollTrace {
 
 struct Session {
     shared: Arc<SharedHost>,
+    /// Provisional assistant captions of this call's channels.
+    captions: VoiceCaptionRegistration,
     grant: Arc<ConsoleLiveGrant>,
     identity: String,
     current: StdMutex<PendingLiveChannelHandle>,
@@ -2317,6 +2617,28 @@ impl ConsoleVoiceSession for Session {
             .map_err(|_| VoiceError::ContextReadFailed)?
     }
 
+    async fn captions(
+        &self,
+        channel: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<VoiceCaptionBatch, VoiceError> {
+        if self.pending().channel_id != channel {
+            return Err(VoiceError::RequestConflict);
+        }
+        if self.grant.revoked.load(Ordering::SeqCst) {
+            return Err(VoiceError::Closed);
+        }
+        let access = self
+            .shared
+            .access
+            .view_for_subject(Some(&self.grant.principal));
+        if !access.allows_agent(ACTION_AGENT_VIEW, &self.identity) {
+            return Err(VoiceError::Unauthorized);
+        }
+        self.captions.wait_read(channel, after, wait).await
+    }
+
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value, VoiceError> {
         let channel = params
             .get("channel_id")
@@ -2385,6 +2707,8 @@ impl ConsoleVoiceSession for Session {
 
     async fn close(&self) -> Result<(), VoiceError> {
         self.grant.revoked.store(true, Ordering::SeqCst);
+        // A closing call shows no more captions; waiting reads answer now.
+        self.captions.close();
         let mut deliveries = self.deliveries.lock().await;
         if let Some(delivery) = deliveries.open.take() {
             delivery
