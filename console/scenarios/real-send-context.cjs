@@ -122,8 +122,18 @@ async function selectQuote(scope, text = quote) {
   const paragraph = scope.locator('[data-quote-message-id] p').filter({ hasText: text }).first();
   await paragraph.waitFor();
   // Composer and context-chip growth can move the next source paragraph
-  // below the transcript. A user must reveal it before selecting it.
-  await paragraph.scrollIntoViewIfNeeded();
+  // below the transcript, including after a first reveal (a chip added just
+  // before still settles its height). A user must reveal it before selecting
+  // it, so wait until it lies wholly inside the transcript's scroll viewport.
+  await eventually(() => paragraph.evaluate(node => {
+    let viewport = node.parentElement;
+    while (viewport && !/(auto|scroll)/.test(getComputedStyle(viewport).overflowY)) viewport = viewport.parentElement;
+    const bounds = viewport?.getBoundingClientRect() ?? { top: 0, bottom: innerHeight };
+    const rect = node.getBoundingClientRect();
+    if (rect.top >= bounds.top && rect.bottom <= bounds.bottom) return true;
+    node.scrollIntoView({ block: "center" });
+    return false;
+  }), "source paragraph is revealed inside the transcript");
   return paragraph.evaluate((node, selected) => {
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
     const nodes = []; let current;

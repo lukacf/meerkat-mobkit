@@ -963,7 +963,25 @@ async function olderHistory(host) {
       const item = ownerPages().filter(item => !item.request.params.before).at(-1);
       return item?.observation.status === 200 && item.response.result?.frames.length > 0 ? item : null;
     }, "host completes its actual authorized recent page after stream readiness");
+    const cursorSeq = cursor => Number(cursor.split(":").at(-1));
+    // The host may apply more than one recent page before its first older
+    // request (a second load can follow stream readiness), and the owner
+    // timeline can grow in between (committed-history backfill appends after
+    // the last run). The host pages from the oldest cursor of every recent
+    // page it applied, so the expected boundary is derived from those pages.
+    const recentPages = () => ownerPages().filter(item => !item.request.params.before
+      && item.observation.status === 200 && Array.isArray(item.response.result?.frames));
     const ownerFrames = new Map(seed.response.result.frames.map(frame => [frame.id, frame]));
+    const adoptRecentPages = current => {
+      let oldest = current;
+      for (const item of recentPages()) {
+        for (const frame of item.response.result.frames) {
+          ownerFrames.set(frame.id, frame);
+          if (cursorSeq(frame.cursor) < cursorSeq(oldest)) oldest = frame.cursor;
+        }
+      }
+      return oldest;
+    };
     const recordPage = (item, precedingBoundary) => {
       assert.equal(item.observation.status, 200);
       assert(Array.isArray(item.response.result?.frames), "older history request succeeds");
@@ -1003,6 +1021,7 @@ async function olderHistory(host) {
       }, `${host} actual history prepend ${index + 1}`));
       const newPages = ownerPages().filter(item => item.request.params.before).slice(beforePages);
       assert(newPages.length > 0);
+      if (!result.pages.length) boundary = adoptRecentPages(boundary);
       for (const item of newPages) {
         boundary = recordPage(item, boundary);
         exhausted = item.response.result.exhausted === true;
