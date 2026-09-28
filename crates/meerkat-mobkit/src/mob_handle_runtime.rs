@@ -9603,6 +9603,13 @@ pub struct MobRuntime {
 #[must_use = "a prepared mob stays Stopped until this activation is consumed, and a Stopped mob cannot spawn"]
 pub(crate) struct PendingMobActivation {
     handle: MobHandle,
+    /// How long a stalled explicit resume is re-joined before activation
+    /// fails. Read once, where the obligation is created.
+    stall_policy: crate::mob_activation_retry::ActivationStallPolicy,
+    /// Test-only resume outcomes returned, in order, instead of calling
+    /// Meerkat. Once drained, the real `MobHandle::resume` runs.
+    #[cfg(test)]
+    injected_resume_outcomes: std::collections::VecDeque<MobError>,
 }
 
 impl PendingMobActivation {
@@ -9615,7 +9622,30 @@ impl PendingMobActivation {
         match self.handle.status().await? {
             // The only transition MobHandle::resume performs.
             meerkat_mob::MobState::Stopped => {
-                self.handle.resume().await?;
+                // A stalled resume is not abandoned by Meerkat: the operation
+                // stays current for this handle's command authority and a
+                // later `resume` on the same handle joins it. So a stall is
+                // re-joined here, within the policy, rather than failing the
+                // boot and re-doing the slow work from scratch.
+                let Self {
+                    handle,
+                    stall_policy,
+                    #[cfg(test)]
+                    mut injected_resume_outcomes,
+                } = self;
+                crate::mob_activation_retry::resume_joining_stalled_operation(stall_policy, || {
+                    #[cfg(test)]
+                    let injected = injected_resume_outcomes.pop_front();
+                    let handle = handle.clone();
+                    async move {
+                        #[cfg(test)]
+                        if let Some(error) = injected {
+                            return Err(error);
+                        }
+                        handle.resume().await
+                    }
+                })
+                .await?;
                 Ok(())
             }
             // Something else already lifted it; the obligation is discharged.
@@ -9626,6 +9656,20 @@ impl PendingMobActivation {
                 state.as_str()
             ))),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_stall_policy_for_test(
+        &mut self,
+        policy: crate::mob_activation_retry::ActivationStallPolicy,
+    ) {
+        self.stall_policy = policy;
+    }
+
+    /// Queue resume outcomes returned before the real `MobHandle::resume`.
+    #[cfg(test)]
+    pub(crate) fn inject_resume_outcomes_for_test(&mut self, outcomes: Vec<MobError>) {
+        self.injected_resume_outcomes.extend(outcomes);
     }
 }
 
@@ -9934,6 +9978,10 @@ impl MobRuntime {
                 meerkat_mob::MobState::Stopped if identity_runtime_slot.is_some() => {
                     pending_activation = Some(PendingMobActivation {
                         handle: handle.clone(),
+                        stall_policy: crate::mob_activation_retry::ActivationStallPolicy::from_env(
+                        ),
+                        #[cfg(test)]
+                        injected_resume_outcomes: std::collections::VecDeque::new(),
                     });
                 }
                 // The only transition MobHandle::resume performs.
