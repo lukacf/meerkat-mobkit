@@ -13,6 +13,11 @@
     "message": "Voice conversation was superseded by another live owner",
     "data": { "kind": "voice_superseded", "reason": "superseded_by_external_live" }
   },
+  "readiness_timed_out_error": {
+    "code": -32000,
+    "message": "Voice readiness could not be checked in time; retry",
+    "data": { "kind": "voice_readiness_timed_out" }
+  },
   "context_status_method": "mobkit/console/voice/context_status",
   "context_status_request": {
     "identity": "agent-a",

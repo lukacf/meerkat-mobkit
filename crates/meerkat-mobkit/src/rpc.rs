@@ -6031,6 +6031,42 @@ pub(crate) async fn resolve_live_target(
     let Some(raw) = live_member_alias(params) else {
         return Ok(None);
     };
+    Ok(
+        resolve_live_member_alias(handle, identity_runtime, identity_authoritative, raw)
+            .await?
+            .session,
+    )
+}
+
+/// The roster member a live identity resolves to, and the bridge session
+/// its machine binding names (`None` for an unmaterialized bridge).
+#[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveMemberTarget {
+    pub member: meerkat_mob::AgentIdentity,
+    pub session: Option<meerkat_core::types::SessionId>,
+}
+
+/// [`resolve_live_target`] for a member identity, keeping the member it
+/// resolved. The session is read from that member's own machine binding,
+/// so the member is the session's owner without a roster scan.
+#[cfg(feature = "openai-live")]
+pub(crate) async fn resolve_live_member_target(
+    handle: &meerkat_mob::MobHandle,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authoritative: bool,
+    identity: &str,
+) -> Result<LiveMemberTarget, String> {
+    let raw = crate::member_comms_id::runtime_alias_str(identity).into_owned();
+    resolve_live_member_alias(handle, identity_runtime, identity_authoritative, raw).await
+}
+
+async fn resolve_live_member_alias(
+    handle: &meerkat_mob::MobHandle,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authoritative: bool,
+    raw: String,
+) -> Result<LiveMemberTarget, String> {
     let mut registered_session: Option<meerkat_core::types::SessionId> = None;
     let current_alias = if identity_authoritative {
         let identity_runtime = identity_runtime
@@ -6108,7 +6144,10 @@ pub(crate) async fn resolve_live_target(
              registered for {registered}"
         ));
     }
-    Ok(resolved)
+    Ok(LiveMemberTarget {
+        member: member_id,
+        session: resolved,
+    })
 }
 
 fn maybe_error_response(

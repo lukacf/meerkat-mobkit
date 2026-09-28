@@ -12,6 +12,7 @@ use meerkat::experimental_gpt_live::{
 use meerkat_core::{AuthBindingRef, SessionId};
 
 use super::VoiceError;
+use super::readiness_trace::{VoiceReadinessStage, enter as enter_stage};
 use crate::access::AccessController;
 use crate::live_wiring::{
     MobkitExperimentalLiveBindingUsePolicy, MobkitExperimentalLiveSessionBindingAuthority,
@@ -137,10 +138,12 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
         session: &SessionId,
     ) -> Result<(), ExperimentalLiveOpenAuthorityError> {
         let started = std::time::Instant::now();
+        enter_stage(VoiceReadinessStage::DurableSource);
         let result = self
             .for_session(session)?
             .validate_live_durable_source_availability(session)
             .await;
+        enter_stage(VoiceReadinessStage::BindingSelection);
         tracing::debug!(
             target: "meerkat_mobkit::console_voice::timing",
             %session,
@@ -158,10 +161,12 @@ impl ExperimentalLiveSessionBindingAuthority for ConsoleLiveBindingAuthority {
     ) -> Result<ExperimentalLiveSessionBindingAuthorization, ExperimentalLiveOpenAuthorityError>
     {
         let started = std::time::Instant::now();
+        enter_stage(VoiceReadinessStage::BindingAuthorization);
         let result = self
             .for_session(session)?
             .authorize_binding_use(session, binding)
             .await;
+        enter_stage(VoiceReadinessStage::CredentialAndPreface);
         tracing::debug!(
             target: "meerkat_mobkit::console_voice::timing",
             %session,

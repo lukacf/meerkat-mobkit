@@ -868,6 +868,138 @@ pub(crate) mod tests {
             }
         }
     }
+    /// Readiness resolves each member's own session with one typed lookup
+    /// (no roster scan), the preface finds a session's owner the same way,
+    /// and the stage trace follows the real probe through MobKit's
+    /// binding-authority callbacks in order.
+    #[tokio::test]
+    async fn readiness_target_is_one_typed_lookup_and_traces_every_probe_stage() {
+        use super::super::readiness_trace::VoiceReadinessStage;
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let RealRuntime {
+            _directory,
+            provider,
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+        } = RealRuntime::start("readiness-target").await;
+        for peer in ["agent-b", "agent-c"] {
+            runtime
+                .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                    "agent".to_string(),
+                    peer.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .expect("peer member");
+        }
+        let handle = runtime.mob_handle();
+        let members = handle.list_members().await;
+        assert_eq!(members.len(), 3);
+        for name in ["agent-a", "agent-b", "agent-c"] {
+            let member = meerkat_mob::AgentIdentity::from(name);
+            let session = handle
+                .resolve_bridge_session_id(&member)
+                .await
+                .expect("member session");
+            let target = crate::rpc::resolve_live_member_target(
+                &handle,
+                runtime.identity_runtime(),
+                false,
+                name,
+            )
+            .await
+            .expect("typed target");
+            assert_eq!(
+                target,
+                crate::rpc::LiveMemberTarget {
+                    member: member.clone(),
+                    session: Some(session.clone()),
+                },
+                "the resolver names the member whose binding it read"
+            );
+            assert_eq!(
+                super::super::capabilities::bridge_session_owner(&handle, &members, &session).await,
+                Some(member),
+                "the preface finds the owner without a clone per member"
+            );
+        }
+        assert_eq!(
+            super::super::capabilities::bridge_session_owner(
+                &handle,
+                &members,
+                &meerkat_core::SessionId::new()
+            )
+            .await,
+            None
+        );
+        let policy = LiveContextSummaryPolicy::new(
+            Arc::new(Summary {
+                calls: Arc::new(AtomicUsize::new(0)),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scenario: SummaryScenario::Success,
+            }),
+            4 * 1024 * 1024,
+            4096,
+            Duration::from_secs(30),
+        )
+        .expect("summary policy");
+        let registration = PublicLiveRegistration::parse(&json!({
+            "principal":"voice@example.com","realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+        }))
+        .expect("registration");
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            config,
+            String::new(),
+            None,
+        ));
+        let controller = ConsoleVoiceController::compose_live_host(
+            &runtime,
+            ctx,
+            service.clone(),
+            machine,
+            factory,
+            registration,
+            Some((policy, provider.url.clone())),
+        )
+        .expect("console host");
+        let flight = controller
+            .readiness_flight("voice@example.com", "agent-b")
+            .expect("flight");
+        let trace = Arc::clone(&flight.trace);
+        assert!(flight.result.await.expect("readiness").available);
+        let snapshot = trace.snapshot();
+        assert_eq!(snapshot.active, None, "{snapshot}");
+        assert_eq!(
+            snapshot
+                .stages
+                .iter()
+                .map(|entry| entry.stage)
+                .collect::<Vec<_>>(),
+            vec![
+                VoiceReadinessStage::Arbiter,
+                VoiceReadinessStage::Target,
+                VoiceReadinessStage::Probe,
+                VoiceReadinessStage::DurableSource,
+                VoiceReadinessStage::BindingSelection,
+                VoiceReadinessStage::BindingAuthorization,
+                VoiceReadinessStage::CredentialAndPreface,
+            ],
+            "{snapshot}"
+        );
+        controller.shutdown().await.expect("voice shutdown");
+        runtime.shutdown().await;
+    }
+
     /// Console voice and the external `mobkit/live/*` door share one live
     /// context and take turns on its voice-path arbiter, newest engagement
     /// first, each loser closed through its own sequence with a typed reason.
@@ -2136,31 +2268,21 @@ impl SharedHost {
         } else {
             false
         };
-        let session = crate::rpc::resolve_live_target(
+        // One typed lookup: the resolver names the member whose machine
+        // binding it read, so that member is the target session's owner.
+        // No roster scan and no per-member machine-state clone.
+        let target = crate::rpc::resolve_live_member_target(
             &self.handle,
             self.identity_runtime.as_ref(),
             authoritative,
-            &json!({"identity": identity}),
+            identity,
         )
         .await
-        .map_err(|error| unavailable(&format!("live target resolution: {error:?}")))?
-        .ok_or_else(|| unavailable("no live-capable session for identity"))?;
-        let mut owner = None;
-        for member in self.handle.list_members().await {
-            if self
-                .handle
-                .resolve_bridge_session_id(&member.agent_identity)
-                .await
-                .as_ref()
-                == Some(&session)
-            {
-                if owner.is_some() {
-                    return Err(unavailable("more than one member owns the target session"));
-                }
-                owner = Some(member.agent_identity);
-            }
-        }
-        let owner = owner.ok_or_else(|| unavailable("no mob member owns the target session"))?;
+        .map_err(|error| unavailable(&format!("live target resolution: {error:?}")))?;
+        let owner = target.member;
+        let session = target
+            .session
+            .ok_or_else(|| unavailable("no live-capable session for identity"))?;
         self.binding
             .register(principal, owner, session)
             .map_err(|error| match error {
@@ -2276,6 +2398,8 @@ fn elapsed_ms(started: std::time::Instant) -> u64 {
 #[async_trait]
 impl ConsoleVoiceHost for Host {
     async fn ready(&self, principal: &str, identity: &str) -> Result<bool, VoiceError> {
+        use super::readiness_trace::{VoiceReadinessStage, enter as enter_stage};
+        enter_stage(VoiceReadinessStage::Target);
         let target_started = std::time::Instant::now();
         let grant = match self.0.target(principal, identity).await {
             Ok(grant) => grant,
@@ -2293,6 +2417,7 @@ impl ConsoleVoiceHost for Host {
         // Shared admission resolves the actual selected configured credential,
         // but does not open/register a provider channel at this preparation seam.
         let probe_started = std::time::Instant::now();
+        enter_stage(VoiceReadinessStage::Probe);
         let probe = self
             .0
             .authority
