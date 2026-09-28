@@ -1689,6 +1689,10 @@ impl UnifiedRuntime {
         if let Some(MobEventIngress::Forwarder(forwarder)) = replaced {
             forwarder.task.abort();
             forwarder.identity_stream_health_task.abort();
+            // Settle the aborted tasks' drops (the console forwarder disarms
+            // the live event tap on exit) before the test takes over.
+            let _ = forwarder.task.await;
+            let _ = forwarder.identity_stream_health_task.await;
         }
         event_tx
     }
@@ -1730,6 +1734,67 @@ enum ForwardedAgentEvent {
     /// and its attachment generation, so a superseded stream ending cannot
     /// untrack the stream that replaced it under the same key.
     Closed(TrackedAgentEventStream, u64),
+    /// The reconciler stopped waiting for a revoked predecessor actor's
+    /// stream after [`PREDECESSOR_DRAIN_DEADLINE`] and cut it off. Yielded in
+    /// stream order, after the last event forwarded from it and before its
+    /// `Closed`, so the console learns of the gap before any successor event.
+    Abandoned {
+        key: TrackedAgentEventStream,
+        session_id: meerkat_core::types::SessionId,
+        generation: u64,
+    },
+}
+
+/// How long a revoked predecessor actor's still-open stream may hold back
+/// its member's next attachment. The stream normally closes right after the
+/// actor is removed, but only once the actor's task exits: a discard does not
+/// interrupt a turn stuck in a tool or provider call. Past the deadline the
+/// predecessor's stream is cut off with an explicit
+/// [`ForwarderStreamGap::PredecessorStreamAbandoned`] marker and the member's
+/// successor attaches.
+const PREDECESSOR_DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// A gap the console forwarder itself introduced into a member's timeline,
+/// surfaced as a `stream_truncated` frame (the console's typed gap: it ends
+/// inherited run lineage and triggers a committed-history refresh).
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ForwarderStreamGap {
+    /// A revoked predecessor actor's stream stayed open past
+    /// [`PREDECESSOR_DRAIN_DEADLINE`]; whatever it published afterwards is
+    /// not on the live timeline.
+    PredecessorStreamAbandoned { drain_deadline_ms: u64 },
+}
+
+fn predecessor_stream_gap_event(
+    key: &TrackedAgentEventStream,
+    session_id: &meerkat_core::types::SessionId,
+    generation: u64,
+) -> ForwardedMemberEvent {
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    let gap = ForwarderStreamGap::PredecessorStreamAbandoned {
+        drain_deadline_ms: u64::try_from(PREDECESSOR_DRAIN_DEADLINE.as_millis())
+            .unwrap_or(u64::MAX),
+    };
+    ForwardedMemberEvent {
+        envelope: EventEnvelope {
+            event_id: format!("evt-agent-gap-{session_id}-{timestamp_ms}-{generation}"),
+            source: "agent".to_string(),
+            timestamp_ms,
+            event: UnifiedEvent::Agent {
+                agent_id: crate::member_comms_id::runtime_event_alias(&key.runtime_id),
+                event_type: "stream_truncated".to_string(),
+                payload: Some(json!({
+                    "reason": gap,
+                    "session_id": session_id,
+                })),
+            },
+        },
+        alert: None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1822,13 +1887,36 @@ impl AttachedStreams {
         }
     }
 
-    /// Whether a revoked predecessor's stream for `owner` is still open. Its
-    /// remaining events must reach the console before any successor's, or a
+    /// Whether a predecessor stream still holds back `owner`'s next
+    /// attachment: a departed stream whose actor was revoked, or whose live
+    /// actor serves a different session than the member is bound to now (a
+    /// rebind that lands before the old actor's revocation). Its remaining
+    /// events must reach the console before any successor's, or a
     /// predecessor delta could inherit the successor run's lineage.
-    fn predecessor_draining(&self, owner: &MemberStreamOwner) -> bool {
-        self.departed
-            .values()
-            .any(|departed| departed.owner == *owner && !departed.actor.is_live())
+    ///
+    /// Bounded: a predecessor held for [`PREDECESSOR_DRAIN_DEADLINE`] is cut
+    /// off (see [`StreamAttachment::hold`]). Until its `Closed` arrives the
+    /// member stays held, so the gap marker still precedes the successor.
+    fn predecessor_draining(
+        &mut self,
+        owner: &MemberStreamOwner,
+        bound_session: Option<&meerkat_core::types::SessionId>,
+        now: tokio::time::Instant,
+    ) -> bool {
+        let mut draining = false;
+        for departed in self.departed.values_mut() {
+            if departed.owner != *owner {
+                continue;
+            }
+            let predecessor = !departed.actor.is_live()
+                || bound_session
+                    .is_some_and(|session_id| departed.actor.session_id() != session_id);
+            if predecessor {
+                departed.attachment.hold(now);
+                draining = true;
+            }
+        }
+        draining
     }
 
     /// The departed stream of `owner`'s live actor for `session_id`, if any.
@@ -1847,11 +1935,31 @@ impl AttachedStreams {
             .map(|(generation, _)| *generation)
     }
 
-    fn holds_live_departed(&self, owner: &MemberStreamOwner) -> bool {
+    fn holds_departed(&self, owner: &MemberStreamOwner) -> bool {
         self.departed
             .values()
-            .any(|departed| departed.owner == *owner && departed.actor.is_live())
+            .any(|departed| departed.owner == *owner)
     }
+
+    /// When the earliest held predecessor reaches its drain deadline.
+    fn earliest_drain_deadline(&self) -> Option<tokio::time::Instant> {
+        self.current
+            .values()
+            .chain(self.departed.values().map(|departed| &departed.attachment))
+            .filter_map(StreamAttachment::drain_deadline)
+            .min()
+    }
+}
+
+/// The earliest instant the reconciler must run again on its own.
+fn earliest_reconcile_deadline(
+    subscribe_failures: &HashMap<TrackedAgentEventStream, SubscribeBackoff>,
+    tracked: &AttachedStreams,
+) -> Option<tokio::time::Instant> {
+    earliest_backoff_attempt(subscribe_failures)
+        .into_iter()
+        .chain(tracked.earliest_drain_deadline())
+        .min()
 }
 
 /// One member event stream a reconciler has attached.
@@ -1865,6 +1973,36 @@ struct StreamAttachment {
     /// The exact actor incarnation the stream belongs to, when it was adopted
     /// from a create-time capture. Ordinary subscriptions do not learn it.
     actor: Option<meerkat_session::LiveSessionActorWitness>,
+    /// Cuts the stream off; it then yields [`ForwardedAgentEvent::Abandoned`]
+    /// and closes.
+    abort: futures::stream::AbortHandle,
+    /// Since when this stream, as a predecessor, holds back its member's
+    /// next attachment.
+    held_since: Option<tokio::time::Instant>,
+}
+
+impl StreamAttachment {
+    /// Record that this predecessor stream holds back its member's next
+    /// attachment at `now`, and cut it off once it has done so for
+    /// [`PREDECESSOR_DRAIN_DEADLINE`].
+    fn hold(&mut self, now: tokio::time::Instant) {
+        let since = *self.held_since.get_or_insert(now);
+        if now >= since + PREDECESSOR_DRAIN_DEADLINE && !self.abort.is_aborted() {
+            tracing::warn!(
+                identity = %lock_attribution(&self.attribution).key.member_identity,
+                deadline = ?PREDECESSOR_DRAIN_DEADLINE,
+                "mobkit agent event forwarder: a revoked predecessor's stream stayed open past \
+                 its drain deadline; cutting it off with an explicit gap so the successor attaches"
+            );
+            self.abort.abort();
+        }
+    }
+
+    fn drain_deadline(&self) -> Option<tokio::time::Instant> {
+        self.held_since
+            .filter(|_| !self.abort.is_aborted())
+            .map(|since| since + PREDECESSOR_DRAIN_DEADLINE)
+    }
 }
 
 struct StreamAttribution {
@@ -1906,6 +2044,9 @@ fn attach_member_event_stream(
     let attribution = Arc::new(std::sync::Mutex::new(StreamAttribution::new(key, role)));
     let events = Arc::clone(&attribution);
     let closing = Arc::clone(&attribution);
+    let (stream, abort) = futures::stream::abortable(stream);
+    let cut_off = abort.clone();
+    let session_id = actor.as_ref().map(|actor| actor.session_id().clone());
     let mapped = stream
         .map(move |envelope| {
             let attribution = lock_attribution(&events);
@@ -1917,16 +2058,35 @@ fn attach_member_event_stream(
                 attribution.durable_identity.clone(),
             )))
         })
-        .chain(futures::stream::once(async move {
-            let key = lock_attribution(&closing).key.clone();
-            ForwardedAgentEvent::Closed(key, generation)
-        }))
+        .chain(
+            futures::stream::once(async move {
+                let key = lock_attribution(&closing).key.clone();
+                let abandoned = match session_id {
+                    Some(session_id) if cut_off.is_aborted() => {
+                        Some(ForwardedAgentEvent::Abandoned {
+                            key: key.clone(),
+                            session_id,
+                            generation,
+                        })
+                    }
+                    _ => None,
+                };
+                futures::stream::iter(
+                    abandoned
+                        .into_iter()
+                        .chain([ForwardedAgentEvent::Closed(key, generation)]),
+                )
+            })
+            .flatten(),
+        )
         .boxed();
     streams.push(mapped);
     StreamAttachment {
         generation,
         attribution,
         actor,
+        abort,
+        held_since: None,
     }
 }
 
@@ -2305,6 +2465,9 @@ async fn run_resilient_mob_agent_event_forwarder(
     let mut tracked = AttachedStreams::default();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
     let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, Some(live_event_tap.changes()));
+    // Nothing adopts captures once this task ends (or is aborted), so stop
+    // capturing and release what is held.
+    let _disarm = crate::live_session_event_tap::DisarmOnDrop::new(live_event_tap.clone());
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2344,6 +2507,15 @@ async fn run_resilient_mob_agent_event_forwarder(
                             break;
                         }
                     }
+                    ForwardedAgentEvent::Abandoned { key, session_id, generation } => {
+                        if event_tx
+                            .send(predecessor_stream_gap_event(&key, &session_id, generation))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     ForwardedAgentEvent::Closed(tracked_key, generation) => {
                         if tracked.close(&tracked_key, generation) {
                             subscribe_failures.remove(&tracked_key);
@@ -2356,7 +2528,7 @@ async fn run_resilient_mob_agent_event_forwarder(
                     }
                 }
             }
-            () = cadence.wait(earliest_backoff_attempt(&subscribe_failures)) => {
+            () = cadence.wait(earliest_reconcile_deadline(&subscribe_failures, &tracked)) => {
                 let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None, Some(&live_event_tap))).await;
                 cadence.rebind(&handles);
             }
@@ -2401,6 +2573,9 @@ async fn run_identity_stream_health_monitor(
                             &envelope,
                         ).await;
                     }
+                    // The health monitor holds no captures, so it never
+                    // cuts a predecessor off.
+                    ForwardedAgentEvent::Abandoned { .. } => {}
                     ForwardedAgentEvent::Closed(tracked_key, generation) => {
                         if tracked.close(&tracked_key, generation) {
                             subscribe_failures.remove(&tracked_key);
@@ -2427,7 +2602,7 @@ async fn run_identity_stream_health_monitor(
                     }
                 }
             }
-            () = cadence.wait(earliest_backoff_attempt(&subscribe_failures)) => {
+            () = cadence.wait(earliest_reconcile_deadline(&subscribe_failures, &tracked)) => {
                 let handles = Box::pin(reconcile_agent_event_streams(
                     &handle,
                     &agent_mob_mcp_state,
@@ -2554,14 +2729,21 @@ async fn reconcile_agent_event_streams(
                 identity_fencing_token,
                 fence_token,
             };
-            if tracked.current.contains_key(&tracked_key) {
+            if let Some(attachment) = tracked.current.get_mut(&tracked_key) {
                 // Served. A served stream whose actor was revoked (a
                 // replacement kept the same binding atoms) keeps serving until
                 // its close re-runs this pass: the successor's capture is
                 // adopted only after the predecessor's last event, so no
                 // predecessor event can follow the successor's first on the
                 // console, which attributes lineage-less events to the
-                // identity's current run.
+                // identity's current run. Bounded by the drain deadline.
+                if attachment
+                    .actor
+                    .as_ref()
+                    .is_some_and(|actor| !actor.is_live())
+                {
+                    attachment.hold(tokio::time::Instant::now());
+                }
                 continue;
             }
 
@@ -2582,15 +2764,22 @@ async fn reconcile_agent_event_streams(
             // stream for this member drains first, and its close re-runs
             // this pass.
             let owner = MemberStreamOwner::of(&tracked_key);
-            if tracked.predecessor_draining(&owner) {
-                continue;
+            if tracked.holds_departed(&owner) {
+                let current_session = handle.resolve_bridge_session_id(&identity).await;
+                if tracked.predecessor_draining(
+                    &owner,
+                    current_session.as_ref(),
+                    tokio::time::Instant::now(),
+                ) {
+                    continue;
+                }
             }
 
             // The member's session, observed together with this exact
             // binding, only when the tap or a departed stream could answer
             // for it.
             let bound_session = match live_event_tap {
-                Some(tap) if tap.holds_captures() || tracked.holds_live_departed(&owner) => {
+                Some(tap) if tap.holds_captures() || tracked.holds_departed(&owner) => {
                     match handle.resolve_bridge_session_id(&identity).await {
                         Some(candidate)
                             if tap.holds_live(&candidate)
@@ -2598,11 +2787,11 @@ async fn reconcile_agent_event_streams(
                         {
                             match observe_bound_session(handle, &tracked_key).await {
                                 Some(session_id) => Some(session_id),
-                                // The binding moved while observing; the
-                                // machine change that moved it re-runs this
-                                // pass. Nothing is attached meanwhile, so a
-                                // successor's stream never lands under a
-                                // predecessor's binding.
+                                // This member's binding or session moved
+                                // while observing; the machine change that
+                                // moved it re-runs this pass. Nothing is
+                                // attached meanwhile, so a successor's stream
+                                // never lands under a predecessor's binding.
                                 None => continue,
                             }
                         }
@@ -2735,23 +2924,21 @@ async fn reconcile_agent_event_streams(
     handles
 }
 
-/// The session `key`'s member is bound to, observed in one machine state
-/// that still lists `key` as that member's Active binding. `None` when the
-/// binding changed, or the machine published a newer state while it was
-/// being observed: the reconciler runs again on that change. Adoption and
-/// re-keying go through this, so a stream is never attributed to a binding
-/// its session might not belong to.
+/// The session `key`'s member is bound to, observed while the member's
+/// Active binding is still `key`: the member's session is read before and
+/// after its binding, and must not have moved in between. `None` when the
+/// binding is no longer `key` or the member's session moved; the machine
+/// change that moved it re-runs the reconciler. Only this member's own
+/// state is compared, so unrelated machine traffic cannot void it.
+/// Adoption and re-keying go through this, so a stream is never attributed
+/// to a binding its session might not belong to.
 async fn observe_bound_session(
     handle: &MobHandle,
     key: &TrackedAgentEventStream,
 ) -> Option<meerkat_core::types::SessionId> {
-    use futures::FutureExt;
-
-    let mut changes = handle.machine_state_changes();
-    // Mark the state published by now as observed.
-    if let Some(Err(_)) = changes.changed().now_or_never() {
-        return None;
-    }
+    let before = handle
+        .resolve_bridge_session_id(&key.member_identity)
+        .await?;
     let bound = handle
         .list_members_including_retiring()
         .await
@@ -2765,9 +2952,8 @@ async fn observe_bound_session(
                         runtime_id == key.runtime_id && fence_token == key.fence_token
                     })
         });
-    let session_id = handle.resolve_bridge_session_id(&key.member_identity).await;
-    let moved = changes.changed().now_or_never().is_some();
-    if bound && !moved { session_id } else { None }
+    let after = handle.resolve_bridge_session_id(&key.member_identity).await;
+    (bound && after.as_ref() == Some(&before)).then_some(before)
 }
 
 /// Whether a capture landed for the member while its ordinary subscription
@@ -5204,19 +5390,35 @@ model = "gpt-5.5"
             tap: &crate::live_session_event_tap::LiveSessionEventTap,
             terminals: usize,
         ) -> Vec<ForwarderStep> {
+            let mut seen = 0;
+            self.forward_until(runtime, ingress, tap, |payload| {
+                if matches!(
+                    payload,
+                    AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
+                ) {
+                    seen += 1;
+                }
+                seen == terminals
+            })
+            .await
+        }
+
+        /// Forward until an event for which `done` holds went through.
+        async fn forward_until(
+            &mut self,
+            runtime: &UnifiedRuntime,
+            ingress: &Sender<ForwardedMemberEvent>,
+            tap: &crate::live_session_event_tap::LiveSessionEventTap,
+            mut done: impl FnMut(&AgentEvent) -> bool,
+        ) -> Vec<ForwarderStep> {
             let handle = runtime.mob_handle();
             let mut steps = Vec::new();
-            let mut seen = 0;
-            while seen < terminals {
+            let mut finished = false;
+            while !finished {
                 match self.next().await {
                     ForwardedAgentEvent::Event(event) => {
                         let (source, source_fence_token, role, envelope, _) = *event;
-                        if matches!(
-                            envelope.payload,
-                            AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
-                        ) {
-                            seen += 1;
-                        }
+                        finished = done(&envelope.payload);
                         steps.push(ForwarderStep::Event(Box::new(envelope.clone())));
                         ingress
                             .send(forwarded_member_event(AttributedEvent {
@@ -5225,6 +5427,21 @@ model = "gpt-5.5"
                                 role,
                                 envelope,
                             }))
+                            .await
+                            .expect("console ingress open");
+                        runtime
+                            .drain_mob_agent_events()
+                            .await
+                            .expect("drain member events");
+                    }
+                    ForwardedAgentEvent::Abandoned {
+                        key,
+                        session_id,
+                        generation,
+                    } => {
+                        steps.push(ForwarderStep::Abandoned { generation });
+                        ingress
+                            .send(predecessor_stream_gap_event(&key, &session_id, generation))
                             .await
                             .expect("console ingress open");
                         runtime
@@ -5250,6 +5467,7 @@ model = "gpt-5.5"
     enum ForwarderStep {
         Event(Box<meerkat_core::event::EventEnvelope<AgentEvent>>),
         Closed { generation: u64, served: bool },
+        Abandoned { generation: u64 },
     }
 
     fn restart_member_key(
@@ -5385,6 +5603,9 @@ model = "gpt-5.5"
         // The test takes over the forwarder's steps; the runtime's own
         // forwarder is stopped and the console drain is fed from here.
         let ingress = boot.runtime.install_test_event_ingress().await;
+        // The runtime's own forwarder exited and disarmed the tap; this
+        // test drives the forwarder's steps itself.
+        boot.tap.arm();
         let handle = boot.runtime.mob_handle();
         let tap = boot.tap.clone();
         let mut forwarder = DrivenForwarder::new();
@@ -5484,6 +5705,9 @@ model = "gpt-5.5"
 
         let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
         let ingress = boot.runtime.install_test_event_ingress().await;
+        // The runtime's own forwarder exited and disarmed the tap; this
+        // test drives the forwarder's steps itself.
+        boot.tap.arm();
         let identity_runtime = boot.identity_runtime.clone();
         let (runtime, tap) = boot.activate().await;
         let handle = runtime.mob_handle();
@@ -5542,7 +5766,7 @@ model = "gpt-5.5"
                         envelope.seq,
                         meerkat_core::event::agent_event_type(&envelope.payload),
                     )),
-                    ForwarderStep::Closed { .. } => None,
+                    ForwarderStep::Closed { .. } | ForwarderStep::Abandoned { .. } => None,
                 })
                 .collect()
         };
@@ -5602,6 +5826,9 @@ model = "gpt-5.5"
 
         let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
         let ingress = boot.runtime.install_test_event_ingress().await;
+        // The runtime's own forwarder exited and disarmed the tap; this
+        // test drives the forwarder's steps itself.
+        boot.tap.arm();
         let identity_runtime = boot.identity_runtime.clone();
         let (runtime, tap) = boot.activate().await;
         let handle = runtime.mob_handle();
@@ -5764,5 +5991,351 @@ model = "gpt-5.5"
 
         drop(forwarder);
         let _ = mob_runtime.handle().shutdown().await;
+    }
+
+    /// The drain deadline bounds how long a revoked predecessor holds back
+    /// its member. The predecessor actor's stream is adopted, then the member
+    /// is respawned (new binding, new session) and its successor runs to
+    /// completion and is captured. The predecessor's stream is kept open past
+    /// its actor's revocation, as it stays when the actor's task never exits
+    /// (a turn stuck in a tool or provider call that a discard does not
+    /// interrupt, or a teardown that parks); in-process, meerkat's retire
+    /// otherwise closes it at once. The successor is held while the
+    /// predecessor may still drain. Once the predecessor has held it for the
+    /// deadline (the test moves the hold's clock instead of waiting), the
+    /// predecessor's stream is cut off with an explicit `stream_truncated`
+    /// gap, and only then does the successor attach, from its own
+    /// `run_started` (seq 1) through its terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stuck_predecessor_is_cut_off_at_its_drain_deadline() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mob_runtime, tap, _) =
+            tapped_mob_with_idle_worker("console-tap-stuck-predecessor", &temp_dir).await;
+        let handle = mob_runtime.handle();
+        let module_runtime = std::thread::spawn(|| {
+            start_mobkit_runtime_with_options(
+                MobKitConfig {
+                    modules: vec![],
+                    discovery: crate::types::DiscoverySpec {
+                        namespace: "console-tap-stuck-predecessor".to_string(),
+                        modules: vec![],
+                    },
+                    pre_spawn: vec![],
+                },
+                Vec::new(),
+                Duration::from_secs(2),
+                RuntimeOptions::default(),
+            )
+        })
+        .join()
+        .expect("module runtime thread")
+        .expect("module runtime");
+        let runtime = UnifiedRuntime::from_parts(
+            mob_runtime,
+            module_runtime,
+            Arc::new(InMemoryMetadataStore::new()),
+            tap.clone(),
+        )
+        .await;
+        let ingress = runtime.install_test_event_ingress().await;
+        // The runtime's own forwarder exited and disarmed the tap; this
+        // test drives the forwarder's steps itself, from a fresh actor the
+        // exited forwarder never saw.
+        tap.arm();
+        handle
+            .respawn(AgentIdentity::from(TAPPED_WORKER), None)
+            .await
+            .expect("respawn onto a fresh actor");
+        let predecessor_session = handle
+            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .await
+            .expect("predecessor session");
+        let entry = handle
+            .list_members_including_retiring()
+            .await
+            .into_iter()
+            .find(|entry| entry.agent_identity == TAPPED_WORKER)
+            .expect("worker roster entry");
+        let predecessor_key = restart_member_key(&entry, handle.mob_id().as_str());
+        let capture = tap
+            .take_live(&predecessor_session)
+            .expect("the fresh actor was captured");
+        let mut forwarder = DrivenForwarder::new();
+        let attachment = attach_member_event_stream(
+            &mut forwarder.streams,
+            predecessor_key.clone(),
+            entry.role.clone(),
+            Box::pin(capture.stream.chain(futures::stream::pending())),
+            Some(capture.actor),
+        );
+        let predecessor = attachment.generation;
+        forwarder
+            .tracked
+            .current
+            .insert(predecessor_key.clone(), attachment);
+        run_worker_turn(&handle, "predecessor run").await;
+        forwarder
+            .forward_terminals(&runtime, &ingress, &tap, 1)
+            .await;
+
+        handle
+            .respawn(AgentIdentity::from(TAPPED_WORKER), None)
+            .await
+            .expect("respawn the member");
+        let successor_session = handle
+            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .await
+            .expect("successor session");
+        assert_ne!(successor_session, predecessor_session);
+        run_worker_turn(&handle, "successor run").await;
+        assert!(
+            tap.holds_live(&successor_session),
+            "the successor was captured"
+        );
+
+        forwarder.reconcile(&handle, &None, &tap).await;
+        assert!(
+            forwarder.tracked.current.is_empty(),
+            "the successor's new binding waits for the predecessor"
+        );
+        let held_since = forwarder
+            .tracked
+            .departed
+            .get(&predecessor)
+            .filter(|departed| !departed.actor.is_live())
+            .and_then(|departed| departed.attachment.held_since)
+            .expect("the revoked predecessor is draining, and its hold is recorded");
+        assert_eq!(
+            earliest_reconcile_deadline(&forwarder.subscribe_failures, &forwarder.tracked),
+            Some(held_since + PREDECESSOR_DRAIN_DEADLINE),
+            "the forwarder wakes itself at the drain deadline"
+        );
+        forwarder.reconcile(&handle, &None, &tap).await;
+        assert!(
+            tap.holds_live(&successor_session),
+            "the successor still waits before the deadline"
+        );
+        {
+            use futures::FutureExt;
+            assert!(
+                forwarder.streams.next().now_or_never().is_none(),
+                "the predecessor's stream is still open"
+            );
+        }
+
+        // The deadline passes.
+        forwarder
+            .tracked
+            .departed
+            .get_mut(&predecessor)
+            .expect("draining predecessor")
+            .attachment
+            .held_since = Some(held_since - PREDECESSOR_DRAIN_DEADLINE);
+        forwarder.reconcile(&handle, &None, &tap).await;
+        assert!(
+            tap.holds_live(&successor_session),
+            "the successor attaches only after the gap marker went out"
+        );
+
+        let steps = forwarder
+            .forward_terminals(&runtime, &ingress, &tap, 1)
+            .await;
+        assert!(
+            matches!(
+                steps.as_slice(),
+                [
+                    ForwarderStep::Abandoned { generation: abandoned },
+                    ForwarderStep::Closed { generation: closed, served: false },
+                    ..
+                ] if *abandoned == predecessor && *closed == predecessor
+            ),
+            "the predecessor is cut off first: {steps:?}"
+        );
+        let successor_events: Vec<(u64, &'static str)> = steps[2..]
+            .iter()
+            .filter_map(|step| match step {
+                ForwarderStep::Event(envelope) => Some((
+                    envelope.seq,
+                    meerkat_core::event::agent_event_type(&envelope.payload),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(successor_events.first(), Some(&(1, "run_started")));
+        assert_eq!(
+            successor_events.last().map(|event| event.1),
+            Some("run_completed")
+        );
+        let successor_key = forwarder
+            .tracked
+            .current
+            .keys()
+            .next()
+            .expect("the successor's capture serves its binding")
+            .clone();
+        assert_ne!(successor_key, predecessor_key);
+
+        let replay = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .expect("console replay");
+        let gap = replay
+            .iter()
+            .position(|frame| frame.event_type == "stream_truncated")
+            .expect("the gap is on the console timeline");
+        assert_eq!(
+            replay[gap].data["reason"]["kind"],
+            json!("predecessor_stream_abandoned")
+        );
+        assert_eq!(replay[gap].data["session_id"], json!(predecessor_session));
+        let session_frames = |session: &meerkat_core::types::SessionId| {
+            replay
+                .iter()
+                .enumerate()
+                .filter(|(_, frame)| frame.data.get("session_id") == Some(&json!(session)))
+                .filter(|(_, frame)| frame.event_type != "stream_truncated")
+                .map(|(index, frame)| (index, frame.clone()))
+                .collect::<Vec<_>>()
+        };
+        let predecessor_frames = session_frames(&predecessor_session);
+        let successor_frames = session_frames(&successor_session);
+        assert!(predecessor_frames.iter().all(|(index, _)| *index < gap));
+        assert!(
+            successor_frames.iter().all(|(index, _)| *index > gap),
+            "every successor frame follows the gap"
+        );
+        let frames = |indexed: Vec<(
+            usize,
+            crate::console_contracts::ConsoleIdentityEventEnvelope,
+        )>| {
+            indexed
+                .into_iter()
+                .map(|(_, frame)| frame)
+                .collect::<Vec<_>>()
+        };
+        assert_one_attributed_run(&frames(predecessor_frames), "predecessor run");
+        assert_one_attributed_run(&frames(successor_frames), "successor run");
+
+        runtime.shutdown().await;
+    }
+
+    /// A departed stream whose actor is still live but serves a different
+    /// session than the member is bound to now is a predecessor too (a
+    /// rebind that landed before the old actor's revocation): it holds the
+    /// member back, until its drain deadline cuts it off. On the member's
+    /// current session the same stream is a re-key candidate instead.
+    #[tokio::test]
+    async fn departed_live_actor_on_another_session_drains_until_its_deadline() {
+        let fixture = crate::live_session_event_tap::test_support::fixture();
+        let slot = meerkat_session::LiveSessionActorWitnessSlot::default();
+        let raw = fixture.raw.clone() as Arc<dyn meerkat_mob::MobSessionService>;
+        let old_session = raw
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                crate::live_session_event_tap::test_support::deferred_request(),
+                None,
+                &slot,
+            )
+            .await
+            .expect("witness-bearing create")
+            .session_id;
+        let actor = slot.witness().expect("published witness");
+        let new_session = meerkat_core::types::SessionId::new();
+        let key = TrackedAgentEventStream {
+            mob_id: "departed-other-session".to_string(),
+            durable_identity: None,
+            member_identity: AgentIdentity::from("worker"),
+            runtime_id: AgentRuntimeId::new(AgentIdentity::from("worker"), Generation::new(0)),
+            identity_fencing_token: None,
+            fence_token: FenceToken::new(1),
+        };
+        let owner = MemberStreamOwner::of(&key);
+        let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
+        let attachment = attach_member_event_stream(
+            &mut streams,
+            key.clone(),
+            ProfileName::from("worker"),
+            Box::pin(futures::stream::pending()),
+            Some(actor),
+        );
+        let generation = attachment.generation;
+        let mut tracked = AttachedStreams::default();
+        tracked.current.insert(key.clone(), attachment);
+        tracked.depart(&key);
+
+        let now = tokio::time::Instant::now();
+        assert!(!tracked.predecessor_draining(&owner, Some(&old_session), now));
+        assert_eq!(
+            tracked.live_departed_for(&owner, &old_session),
+            Some(generation)
+        );
+        assert!(tracked.predecessor_draining(&owner, Some(&new_session), now));
+        assert_eq!(
+            tracked.earliest_drain_deadline(),
+            Some(now + PREDECESSOR_DRAIN_DEADLINE)
+        );
+
+        assert!(tracked.predecessor_draining(
+            &owner,
+            Some(&new_session),
+            now + PREDECESSOR_DRAIN_DEADLINE
+        ));
+        assert_eq!(tracked.earliest_drain_deadline(), None, "cut off");
+        let Some(ForwardedAgentEvent::Abandoned {
+            session_id,
+            generation: abandoned,
+            ..
+        }) = streams.next().await
+        else {
+            panic!("the cut-off stream reports its gap first");
+        };
+        assert_eq!((session_id, abandoned), (old_session, generation));
+        let Some(ForwardedAgentEvent::Closed(closed_key, closed)) = streams.next().await else {
+            panic!("then closes");
+        };
+        assert!(!tracked.close(&closed_key, closed));
+        assert!(!tracked.predecessor_draining(&owner, Some(&new_session), now));
+    }
+
+    /// The console forwarder disarms the tap however it exits, so captures
+    /// are neither taken nor held once nothing would adopt them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn console_forwarder_exit_disarms_the_tap() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mob_runtime, tap, _) =
+            tapped_mob_with_idle_worker("console-tap-disarm", &temp_dir).await;
+        let module_runtime = std::thread::spawn(|| {
+            start_mobkit_runtime_with_options(
+                MobKitConfig {
+                    modules: vec![],
+                    discovery: crate::types::DiscoverySpec {
+                        namespace: "console-tap-disarm".to_string(),
+                        modules: vec![],
+                    },
+                    pre_spawn: vec![],
+                },
+                Vec::new(),
+                Duration::from_secs(2),
+                RuntimeOptions::default(),
+            )
+        })
+        .join()
+        .expect("module runtime thread")
+        .expect("module runtime");
+        let runtime = UnifiedRuntime::from_parts(
+            mob_runtime,
+            module_runtime,
+            Arc::new(InMemoryMetadataStore::new()),
+            tap.clone(),
+        )
+        .await;
+        assert!(tap.is_armed());
+
+        // Replacing the ingress aborts the forwarder task.
+        let _ingress = runtime.install_test_event_ingress().await;
+
+        assert!(!tap.is_armed(), "the exited forwarder disarmed the tap");
+        assert!(!tap.holds_captures(), "and released what it held");
+        runtime.shutdown().await;
     }
 }

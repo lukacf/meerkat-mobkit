@@ -131,6 +131,14 @@ impl LiveSessionEventTap {
         self.state.armed.store(true, Ordering::Release);
     }
 
+    /// Stop capturing and release every held capture, ending their pumps.
+    /// The console forwarder does this when it exits: nothing would adopt
+    /// captures any more.
+    pub(crate) fn disarm(&self) {
+        self.state.armed.store(false, Ordering::Release);
+        self.lock_captures().clear();
+    }
+
     /// Subscribe to the live event stream of the actor `slot` names and
     /// start pumping it into the capture's owned queue.
     ///
@@ -275,6 +283,11 @@ impl LiveSessionEventTap {
         self.state.changes.subscribe()
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_armed(&self) -> bool {
+        self.state.armed.load(Ordering::Acquire)
+    }
+
     /// The pump progress of the capture waiting for `id`.
     #[cfg(test)]
     pub(crate) fn progress(&self, id: &SessionId) -> Option<watch::Receiver<CaptureProgress>> {
@@ -288,6 +301,22 @@ impl LiveSessionEventTap {
             .captures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Disarms the tap when dropped: held by the console forwarder task, so the
+/// tap stops capturing however that task ends (including abort).
+pub(crate) struct DisarmOnDrop(LiveSessionEventTap);
+
+impl DisarmOnDrop {
+    pub(crate) fn new(tap: LiveSessionEventTap) -> Self {
+        Self(tap)
+    }
+}
+
+impl Drop for DisarmOnDrop {
+    fn drop(&mut self) {
+        self.0.disarm();
     }
 }
 
@@ -305,6 +334,7 @@ async fn pump(
     queue: mpsc::Sender<Envelope>,
     progress: watch::Sender<CaptureProgress>,
 ) {
+    let mut saturations: u64 = 0;
     loop {
         let envelope = tokio::select! {
             biased;
@@ -320,12 +350,21 @@ async fn pump(
             Err(mpsc::error::TrySendError::Full(envelope)) => Some(envelope),
         };
         if let Some(envelope) = envelope {
-            tracing::warn!(
-                session_id = %session_id,
-                capacity = queue.max_capacity(),
-                "live session event tap: capture queue is full; further events wait in the \
-                 session broadcast, which marks any it cannot hold as StreamTruncated"
-            );
+            saturations += 1;
+            if saturations == 1 {
+                tracing::warn!(
+                    session_id = %session_id,
+                    capacity = queue.max_capacity(),
+                    "live session event tap: capture queue is full; further events wait in the \
+                     session broadcast, which marks any it cannot hold as StreamTruncated"
+                );
+            } else {
+                tracing::debug!(
+                    session_id = %session_id,
+                    saturations,
+                    "live session event tap: capture queue full again"
+                );
+            }
             progress.send_modify(|progress| progress.saturated = true);
             if queue.send(envelope).await.is_err() {
                 return;
