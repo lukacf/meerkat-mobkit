@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `ContinuityRepairPolicy` loses `initial_backoff` and `max_backoff` and is
+  `#[non_exhaustive]`: the continuity repair supervisor no longer runs on a
+  timer (see Changed). Construct it with `ContinuityRepairPolicy::default()`.
+- `IdentityBootstrapEntry` gains `restore: Option<IdentityRestoreProgress>`
+  (see Added). Struct literals must set it, usually to `None`. The JSON field
+  is optional, so older snapshots still parse.
+
 - `BridgeError` and `BridgeAdmissionError` gain an `UnsupportedForMode {
   identity, mode, detail }` variant: meerkat's typed pre-admission refusal
   (`MobError::UnsupportedForMode`) for the member's live runtime mode, which
@@ -69,6 +76,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- The continuity repair supervisor is event-driven. It used to retry Broken
+  identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
+  left members parked for 1 to 15 minutes while the process sat idle. It now
+  runs one pass when it starts and then retries on a typed trigger: another
+  identity's embodiment settled (a resume or a fresh durable mint committed,
+  releasing the store writer it held), a host restore or reconcile pass
+  settled (boot, a roster refresh, `mobkit/reconcile_identity`), a delivery or
+  materialization refused because the identity is Broken (a caller's
+  demand), or an explicit request. It defers a pass while other embodiments
+  are in flight, so a warm-up burst runs one pass and cannot trip the
+  identical-failure park in seconds. Its own passes never re-trigger it. Only
+  a transient cause with no typed signal (an unreachable heal authority, a
+  pass failing on a roster provider or store error, a member Broken on an
+  unavailable store) arms a last-resort fallback wake (1 s doubling to 30 s,
+  shared with the agent-memory observer), so no Broken identity is stranded
+  in a steady deployment. The byte-identical-failure park and the typed
+  terminal parks are unchanged.
 
 - Improve console reading and composition in the stock and reusable hosts:
   preserve the reading position while output streams, render complete Markdown
@@ -154,6 +179,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Typed per-member restore progress on the identity bootstrap status. During
+  an eager restore pass each entry carries `restore`: `registered`,
+  `resuming`, `minted`, `resumed`, or `broken` with the typed continuity
+  failure kind, and a member's bootstrap state settles (`active` / `broken`)
+  as soon as its own restore does, before the whole pass ends.
+  `IdentityRuntime::watch_identity_bootstrap_status` streams the snapshot in
+  process; the Python SDK parses it as `IdentityRestoreProgress`.
+- `mobkit/request_continuity_repair` (and `request_continuity_repair()` /
+  `requestContinuityRepair()` in the SDKs,
+  `IdentityFirstRuntimeContext::request_continuity_repair` in Rust) asks the
+  continuity repair supervisor for a pass and answers, typed, what it reached:
+  `scheduled`, `nothing_to_repair` or `no_supervisor`. `mobkit/reconcile_identity`
+  reports the same for the supervisor pass its settled pass triggered
+  (`continuity_repair`), and a `broken` outcome now carries its typed `kind`.
+- The TypeScript SDK gains `identityBootstrapStatus()` and
+  `waitIdentityBootstrap()`, parsing each identity's typed `restore` progress.
+
+- Server-side, event-driven completion waits (#468). `mobkit/wait_for_completion`
+  resolves when an identity's completion cursor moves past `after` (or, with no
+  `after`, counts its first completed turn), returning the typed `outcome`
+  (`completed`, `incarnation_changed`, `timed_out`, `untracked`) and the
+  cursor. `mobkit/wait_for_turn` is `mobkit/turn_result` taken once the ticket
+  settles. The gateway parks the request on the runtime's typed change signals
+  (the identity table and completion cursor, and the ticket registry), so
+  neither side polls; `timeout_ms` is only the caller's deadline.
+  `mobkit/completion_cursor` is a one-shot cursor read. None of them touch the
+  member session. A completion wait also ends typed on `run_failed`,
+  `broken`, `retiring`, `identity_gone` and `shutting_down` instead of running
+  to its deadline, and a turn wait reports `wait: shutting_down`. Waits default
+  to a 60 s deadline and clamp `timeout_ms` to 10 min (the SDKs re-issue up to
+  their own deadline). `IdentityRuntime::await_completion` returns the typed,
+  non-exhaustive `CompletionWait`, `IdentityRuntime::wait_for_turn_outcome`
+  returns `TurnWait`, and `IdentityRuntime::wait_for_completion` /
+  `wait_for_turn` wait on those signals instead of sleeping between reads.
+  The identity health monitor records failed runs
+  (`IdentityRuntime::record_turn_failed`). The SDKs raise the typed
+  `WaitEndedError` (with `outcome`) for the non-completion outcomes.
+- The SDKs' `wait_for_completion` / `waitForCompletion`, `wait_for_turn` /
+  `waitForTurn` (and so `send_and_wait` / `sendAndWait`), `wait_for_output(after=...)`
+  and `wait_until_ready` / `waitUntilReady` are now one server-side wait each
+  and read the member's output once, at completion, instead of polling
+  `mobkit/inspect_identity` or `mobkit/turn_result`. They fall back to the
+  previous polling only against a gateway that predates the server-side waits.
+  New `completion_cursor()` / `completionCursor()` reads, and TypeScript gains
+  `waitUntilReady`. The docs name `track_turn` plus `wait_for_turn` as the
+  recommended completion barrier.
 
 - Console voice shows the agent's speech while it is still speaking. The
   console voice host installs a provisional caption sink on its public Live
@@ -310,7 +382,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   twenty times that many stalls overall. Each stall logs a WARN with member,
   stage, attempt, and elapsed time, and completion after stalls logs an INFO.
   Any other activation error stays fatal.
-
+- The agent-memory member-event observer no longer retries
+  `subscribe_agent_events` once a second per member. It subscribes on the mob's
+  machine-state change that makes a member live, skips passes while the mob is
+  not Running, and backs a failing member off exponentially per identity (1 s
+  doubling to 30 s), the backoff deadline being only the fallback wake. A
+  stream that closes within a second of its subscribe counts as a failure, so
+  it cannot spin. During a cold boot this was a flood of actor commands
+  (meerkat #1250).
+- `mobkit/send_message` to a raw roster member with an interaction id retries
+  once on `StaleFenceToken` against the re-read binding (a respawn between the
+  binding read and the submit no longer fails the send), and no longer makes a
+  redundant `member()` round trip: SubmitWork admission already refuses a
+  restore-failed member with the typed `MemberRestoreFailed` (#479).
+- The console store's unobserved-start phase clear also clears a stale
+  callback pause (#479).
+- `mobkit/interact` refuses a caller-supplied `interaction_id` that is still in
+  flight on the identity with `-32602` and `error.data.code:
+  "interaction_id_in_flight"`, before delivering anything (#479). A settled id
+  may be sent again.
+- The gateway_composition console-drain tests use a unique mob id per
+  composition, so in-process `cargo test` no longer fails them with
+  `ParticipantNameOccupied` (#480).
 - Console response phase no longer stays set after a run whose start was not
   observed (#469). A typed `run_completed` / `run_failed` that names a run but
   no interaction, with no tracked active run and no active interaction for the

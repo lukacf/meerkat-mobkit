@@ -277,44 +277,57 @@ impl ConsoleEventStore {
         origin: &str,
         content: Value,
     ) -> Result<(), &'static str> {
-        // If projection later fails to resolve an identity (e.g. runtime id
-        // format changes), stale pending entries can accumulate. Rather than
-        // reject new interactions once the per-identity cap is hit — which
-        // would deadlock legitimate traffic behind orphans — evict the oldest
-        // entry and surface an `interaction_failed` event so the client
-        // stops waiting.
         let evicted = {
             let mut state = self.state.write().await;
-            let queue = state
-                .pending_by_identity
-                .entry(identity.to_string())
-                .or_default();
-            let evicted = if queue.len() >= PENDING_INTERACTION_CAP {
-                queue.pop_front()
-            } else {
-                None
-            };
-            queue.push_back(PendingInteraction {
-                interaction_id: interaction_id.to_string(),
-                origin: origin.to_string(),
+            push_pending_interaction(
+                &mut state,
+                identity,
+                runtime_member_id,
+                interaction_id,
+                origin,
                 content,
-            });
-            if let Some(runtime_member_id) =
-                runtime_member_id.filter(|value| !value.trim().is_empty())
-            {
-                state
-                    .runtime_to_identity
-                    .insert(runtime_member_id.to_string(), identity.to_string());
-            }
-            if !state.active_run_by_identity.contains_key(identity)
-                && !state.active_interaction_by_identity.contains_key(identity)
-            {
-                state
-                    .response_phase_by_identity
-                    .insert(identity.to_string(), Some("waiting".to_string()));
-            }
-            evicted
+            )
         };
+        self.report_evicted_interaction(identity, evicted).await;
+        Ok(())
+    }
+
+    /// Reserve a caller-supplied interaction id, refusing one that is still
+    /// in flight for this identity: queued, the active interaction, or the
+    /// interaction of the run currently tracked. Two in-flight reservations
+    /// under one id would make every later frame and terminal of either run
+    /// ambiguous. The check and the reservation share one state lock.
+    pub(crate) async fn reserve_caller_interaction_value(
+        &self,
+        identity: &str,
+        runtime_member_id: Option<&str>,
+        interaction_id: &str,
+        origin: &str,
+        content: Value,
+    ) -> Result<(), InteractionIdInFlight> {
+        let evicted = {
+            let mut state = self.state.write().await;
+            if interaction_in_flight(&state, identity, interaction_id) {
+                return Err(InteractionIdInFlight);
+            }
+            push_pending_interaction(
+                &mut state,
+                identity,
+                runtime_member_id,
+                interaction_id,
+                origin,
+                content,
+            )
+        };
+        self.report_evicted_interaction(identity, evicted).await;
+        Ok(())
+    }
+
+    async fn report_evicted_interaction(
+        &self,
+        identity: &str,
+        evicted: Option<PendingInteraction>,
+    ) {
         if let Some(evicted) = evicted {
             tracing::warn!(
                 identity = %identity,
@@ -333,7 +346,6 @@ impl ConsoleEventStore {
             )
             .await;
         }
-        Ok(())
     }
 
     pub(crate) async fn record_lifecycle(&self, identity: &str, event_type: &str, data: Value) {
@@ -629,7 +641,10 @@ impl ConsoleEventStore {
                         // no tracked run and no active interaction there is no
                         // current owner it could close, so the phase that run
                         // left behind is stale. Pending reservations remain
-                        // queued until their own typed terminals arrive.
+                        // queued until their own typed terminals arrive. A
+                        // callback pause that run left behind is just as
+                        // stale: no current owner can resume it.
+                        state.callback_pending_by_identity.remove(&identity);
                         state
                             .response_phase_by_identity
                             .insert(identity.clone(), None);
@@ -872,6 +887,78 @@ fn select_interaction_for_directed_terminal(
                     .any(|pending| pending.interaction_id == directed)
             });
     (runtime_owned || reserved).then(|| directed.to_string())
+}
+
+/// A caller-supplied interaction id is already in flight for the identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InteractionIdInFlight;
+
+fn interaction_in_flight(
+    state: &ConsoleEventReplayState,
+    identity: &str,
+    interaction_id: &str,
+) -> bool {
+    state
+        .pending_by_identity
+        .get(identity)
+        .is_some_and(|queue| {
+            queue
+                .iter()
+                .any(|pending| pending.interaction_id == interaction_id)
+        })
+        || state
+            .active_interaction_by_identity
+            .get(identity)
+            .is_some_and(|active| active == interaction_id)
+        || state
+            .active_run_by_identity
+            .get(identity)
+            .and_then(lineage_interaction_id)
+            .as_deref()
+            == Some(interaction_id)
+}
+
+/// Queue one reservation. If projection later fails to resolve an identity
+/// (e.g. runtime id format changes), stale pending entries can accumulate.
+/// Rather than reject new interactions once the per-identity cap is hit,
+/// which would deadlock legitimate traffic behind orphans, evict the oldest
+/// entry; the caller surfaces an `interaction_failed` event for it so the
+/// client stops waiting.
+fn push_pending_interaction(
+    state: &mut ConsoleEventReplayState,
+    identity: &str,
+    runtime_member_id: Option<&str>,
+    interaction_id: &str,
+    origin: &str,
+    content: Value,
+) -> Option<PendingInteraction> {
+    let queue = state
+        .pending_by_identity
+        .entry(identity.to_string())
+        .or_default();
+    let evicted = if queue.len() >= PENDING_INTERACTION_CAP {
+        queue.pop_front()
+    } else {
+        None
+    };
+    queue.push_back(PendingInteraction {
+        interaction_id: interaction_id.to_string(),
+        origin: origin.to_string(),
+        content,
+    });
+    if let Some(runtime_member_id) = runtime_member_id.filter(|value| !value.trim().is_empty()) {
+        state
+            .runtime_to_identity
+            .insert(runtime_member_id.to_string(), identity.to_string());
+    }
+    if !state.active_run_by_identity.contains_key(identity)
+        && !state.active_interaction_by_identity.contains_key(identity)
+    {
+        state
+            .response_phase_by_identity
+            .insert(identity.to_string(), Some("waiting".to_string()));
+    }
+    evicted
 }
 
 /// Drop one console interaction from the identity's pending queue and, when
@@ -3391,6 +3478,83 @@ mod tests {
                     && event.interaction_id.as_deref() == Some("queued-console-send")
             }));
         }
+    }
+
+    /// #479: the unobserved-start phase clear also drops a callback pause the
+    /// ended run left behind. Otherwise a later `pending_tool_results` start
+    /// would consume that stale flag as if it resumed a live callback.
+    #[tokio::test]
+    async fn unobserved_start_interactionless_terminal_clears_stale_callback_pending() {
+        let store = ConsoleEventStore::new();
+        let paused = typed_lineage(321, 421);
+        let unobserved = json!({"run_id": uuid::Uuid::from_u128(422).to_string()});
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity": paused, "input": {"kind": "content", "content": "hello"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "callback",
+                "rt:worker:1",
+                "interaction_callback_pending",
+                json!({
+                    "interaction_id": paused["interaction_id"],
+                    "tool_name": "host_tool",
+                    "args": {},
+                }),
+            ))
+            .await;
+        assert!(
+            store
+                .state
+                .read()
+                .await
+                .callback_pending_by_identity
+                .contains("worker")
+        );
+        // The paused run's terminal falls inside a stream gap, and the next
+        // observed frames belong to a run whose start was missed.
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "gap",
+                "rt:worker:1",
+                "stream_truncated",
+                json!({"reason": {"kind": "stream_lagged", "dropped": 3}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "output",
+                "rt:worker:1",
+                "text_delta",
+                json!({"identity": unobserved, "delta": "partial"}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "failed",
+                "rt:worker:1",
+                "run_failed",
+                json!({"identity": unobserved, "error": "provider failed"}),
+            ))
+            .await;
+        assert_eq!(store.response_phase_for_identity("worker").await, None);
+        assert!(
+            !store
+                .state
+                .read()
+                .await
+                .callback_pending_by_identity
+                .contains("worker"),
+            "the phase clear must not leave a stale callback pause behind"
+        );
     }
 
     /// The same interaction-less terminal must never close another current

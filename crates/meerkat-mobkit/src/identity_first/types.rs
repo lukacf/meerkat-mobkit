@@ -332,6 +332,80 @@ pub enum CompletionProgress {
     IncarnationChanged,
 }
 
+/// How a completion wait ([`await_completion`]) ended. Each variant carries
+/// the cursor it observed last.
+///
+/// [`await_completion`]: super::runtime::IdentityRuntime::await_completion
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompletionWait {
+    /// The cursor moved past the baseline (or, with no baseline, counts at
+    /// least one completed turn).
+    Completed(CompletionCursor),
+    /// The identity's runtime incarnation changed; see
+    /// [`CompletionProgress::IncarnationChanged`].
+    IncarnationChanged(CompletionCursor),
+    /// A run on the identity failed (or was cancelled) during the wait. Only
+    /// failures observed while the wait runs count: one that ended before the
+    /// wait started is not visible to it.
+    RunFailed(CompletionCursor),
+    /// The identity was registered when the wait started and no longer is
+    /// (deleted, or removed from the roster).
+    IdentityGone(CompletionCursor),
+    /// The identity is parked Broken.
+    Broken(CompletionCursor),
+    /// The identity is retiring or retired.
+    Retiring(CompletionCursor),
+    /// The runtime is shutting down.
+    ShuttingDown(CompletionCursor),
+    /// The caller's deadline passed first.
+    TimedOut(CompletionCursor),
+}
+
+impl CompletionWait {
+    /// Wire token of the outcome.
+    pub fn wire_str(&self) -> &'static str {
+        match self {
+            Self::Completed(_) => "completed",
+            Self::IncarnationChanged(_) => "incarnation_changed",
+            Self::RunFailed(_) => "run_failed",
+            Self::IdentityGone(_) => "identity_gone",
+            Self::Broken(_) => "broken",
+            Self::Retiring(_) => "retiring",
+            Self::ShuttingDown(_) => "shutting_down",
+            Self::TimedOut(_) => "timed_out",
+        }
+    }
+
+    /// The cursor the wait observed last.
+    pub fn cursor(&self) -> CompletionCursor {
+        match self {
+            Self::Completed(cursor)
+            | Self::IncarnationChanged(cursor)
+            | Self::RunFailed(cursor)
+            | Self::IdentityGone(cursor)
+            | Self::Broken(cursor)
+            | Self::Retiring(cursor)
+            | Self::ShuttingDown(cursor)
+            | Self::TimedOut(cursor) => *cursor,
+        }
+    }
+}
+
+/// How a ticketed turn wait ([`wait_for_turn_outcome`]) ended.
+///
+/// [`wait_for_turn_outcome`]: super::runtime::IdentityRuntime::wait_for_turn_outcome
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TurnWait {
+    /// The turn left pending (or the ticket is unknown).
+    Settled(TurnOutcome),
+    /// The caller's deadline passed with the turn still pending.
+    TimedOut(TurnOutcome),
+    /// The runtime is shutting down; the turn's state at that moment.
+    ShuttingDown(TurnOutcome),
+}
+
 /// Delivery receipt for [`dispatch_admission_tracked`], carrying what a caller
 /// needs to wait for the specific turn it just submitted.
 ///
@@ -1280,12 +1354,33 @@ pub enum IdentityBootstrapState {
     Broken,
 }
 
+/// Where one identity's eager restore stands, published on the bootstrap
+/// status while the restore pass runs, so a host can follow each member
+/// instead of waiting on the whole pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum IdentityRestoreProgress {
+    /// The roster metadata is registered; embodiment has not started.
+    Registered,
+    /// The identity's embodiment (a resume, or a fresh mint) is running.
+    Resuming,
+    /// A fresh identity's durable continuity record and session were minted.
+    Minted,
+    /// The identity resumed its durable session.
+    Resumed,
+    /// The identity is parked Broken with this typed cause.
+    Broken { kind: ContinuityFailureKind },
+}
+
 /// Bootstrap progress for one durable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityBootstrapEntry {
     pub state: IdentityBootstrapState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Typed eager-restore progress; `None` outside an eager restore pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<IdentityRestoreProgress>,
 }
 
 /// Aggregate bootstrap-state counts.

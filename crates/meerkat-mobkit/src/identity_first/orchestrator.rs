@@ -13,8 +13,8 @@ use super::contracts::{AgentCustomizer, TopologyProvider};
 use super::runtime::{EmbodimentOverrides, IdentityRuntime, IdentityRuntimeError};
 use super::types::{
     AgentBuildDraft, AgentIdentity, ContinuityFailure, ContinuityFailureKind, ContinuityRecord,
-    ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, ManagedPeerEdge,
-    TopologyContext,
+    ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, IdentityRestoreProgress,
+    ManagedPeerEdge, TopologyContext,
 };
 
 pub(crate) const IDENTITY_RESTORE_CONCURRENCY: usize = 4;
@@ -123,6 +123,20 @@ pub enum RestoreOutcome {
     /// Broken continuity or a member-scoped embodiment failure, surfaced with
     /// its exact typed cause while unrelated members continue restoring.
     Broken(ContinuityFailure),
+}
+
+impl RestoreOutcome {
+    /// The typed restore progress this settled outcome publishes.
+    pub fn restore_progress(&self) -> IdentityRestoreProgress {
+        match self {
+            Self::Dormant { .. } => IdentityRestoreProgress::Registered,
+            Self::Created { .. } => IdentityRestoreProgress::Minted,
+            Self::Resumed { .. } => IdentityRestoreProgress::Resumed,
+            Self::Broken(failure) => IdentityRestoreProgress::Broken {
+                kind: failure.kind.clone(),
+            },
+        }
+    }
 }
 
 /// Result of the full restore flow.
@@ -316,6 +330,19 @@ pub async fn restore_flow(
     let registered = register_roster_metadata(runtime, roster, topology_provider, false).await?;
     let managed_edges = registered.managed_edges;
     let registered_outcomes = registered.outcomes;
+    // Typed per-member progress on the bootstrap status, so a host follows
+    // each member instead of waiting on the whole pass.
+    for (identity, outcome) in &registered_outcomes {
+        let error = match outcome {
+            RestoreOutcome::Broken(failure) => Some(failure.detail.clone()),
+            _ => None,
+        };
+        let progress = match outcome {
+            RestoreOutcome::Broken(_) => outcome.restore_progress(),
+            _ => IdentityRestoreProgress::Registered,
+        };
+        runtime.publish_restore_progress(identity, progress, error);
+    }
 
     // Concrete embodiment is deliberately per identity. Eager restore, lazy
     // foreground materialization, and background warming now use the same
@@ -345,6 +372,11 @@ pub async fn restore_flow(
                         | RestoreOutcome::Created { .. }
                         | RestoreOutcome::Resumed { .. },
                     ) => {
+                        runtime.publish_restore_progress(
+                            &identity,
+                            IdentityRestoreProgress::Resuming,
+                            None,
+                        );
                         let mut bound_bootstrap_generation = None;
                         match runtime
                             .embody_identity(
@@ -397,6 +429,11 @@ pub async fn restore_flow(
                     }
                 };
 
+                let error = match &outcome {
+                    RestoreOutcome::Broken(failure) => Some(failure.detail.clone()),
+                    _ => None,
+                };
+                runtime.publish_restore_progress(&identity, outcome.restore_progress(), error);
                 trace_identity_restore_completed(&identity, member_started_at);
                 (index, identity, outcome)
             }

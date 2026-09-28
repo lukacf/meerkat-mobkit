@@ -44,7 +44,8 @@ pub use orchestrator::{
     lazy_register_flow, restore_flow,
 };
 pub use runtime::{
-    ContinuityRepairPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
-    IdentityRuntimeError, wire_cross_mob_by_identity,
+    ContinuityRepairPolicy, ContinuityRepairRequestOutcome, ContinuityRepairTrigger,
+    IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, IdentityRuntimeError,
+    wire_cross_mob_by_identity,
 };
 pub use types::*;

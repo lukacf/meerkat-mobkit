@@ -346,7 +346,8 @@ not establish that no identities are registered.
 | `mobkit/member_health` | `{member_id}` | `MemberHealthReport`: lifecycle state, materialization in flight, last delivery error class, actor-loop verdict and open `stall_id`; in-process reads only, so it answers during an actor stall |
 | `mobkit/reconcile_edges` | none | `UnifiedRuntimeReconcileEdgesReport` |
 | `mobkit/rediscover` (SDK/stdin only) | none | `RediscoverReport`, or `{status: "no_discovery_configured"}` |
-| `mobkit/reconcile_identity` (SDK/stdin only) | none | `{outcomes: {identity: {outcome, ...}}, managed_edges}` (identity-first runtimes only) |
+| `mobkit/reconcile_identity` (SDK/stdin only) | none | `{outcomes: {identity: {outcome, ...}}, managed_edges, continuity_repair}` (identity-first runtimes only). A `broken` outcome carries its typed `kind`. The settled pass triggers the continuity repair supervisor; `continuity_repair` says what that reached: `scheduled`, `nothing_to_repair` or `no_supervisor` |
+| `mobkit/request_continuity_repair` (SDK/stdin only) | none | `{continuity_repair}`: the explicit continuity repair trigger, answering `scheduled`, `nothing_to_repair` or `no_supervisor` (identity-first runtimes only) |
 | `mobkit/reconcile` (SDK/stdin only) | `{modules: string[]}` | module reconcile report; this reconciles modules, not the roster |
 
 ### `mobkit/ensure_member`
@@ -1078,6 +1079,95 @@ means the delivery happened, exactly once, on the ordinary lane:
 | `session_rotated` | once | A re-dispatch meant to be deduplicated onto a tracked admission landed on a different session (a delivery repair or respawn moved the member), whose runtime had never seen the idempotency key, so it ran as a turn of its own |
 | `not_delivered` | no | Nothing was delivered (no session bridge or no bound runtime); there is no turn to wait for |
 
+`mobkit/interact` refuses a caller-supplied `interaction_id` that is still in
+flight on the identity (queued, the active interaction, or the interaction of
+the run in progress) with `-32602` and `error.data`
+`{"code": "interaction_id_in_flight", "identity", "interaction_id"}`, before
+anything is delivered: two in-flight runs under one transcript interaction id
+would make both runs' frames and terminals ambiguous. An id whose interaction
+has settled may be sent again, but the transcript then holds two interactions
+with the same id, so mint a fresh UUID per send.
+
+### Waiting for completion
+
+Completion waits are server-side and event-driven. The gateway parks the
+request and answers when the awaited change happens: it waits on the
+runtime's typed completion and ticket-settlement signals, so neither the
+client nor the gateway polls. The caller's `timeout_ms` is only a deadline;
+reaching it is a typed answer, not an error.
+
+The recommended completion barrier is `"track_turn": true` on the delivery
+plus `mobkit/wait_for_turn` on the returned ticket (the SDKs' `send_and_wait`
+/ `sendAndWait`, or `wait_for_turn` / `waitForTurn`). It reads only the ticket
+ledger, names exactly one admitted turn, and returns that turn's own output.
+
+An identity-wide wait on `completion_baseline` uses
+`mobkit/wait_for_completion` and reads the output once, afterwards. Do not
+poll `mobkit/inspect_identity` for completion: it reads the member session (an
+execution snapshot on its session task), and a tight poll of it can hold a
+staged run from starting on large sessions. The SDKs' `wait_for_completion` /
+`waitForCompletion`, `wait_for_output(after=...)` and `wait_until_ready` /
+`waitUntilReady` use the server-side waits, and fall back to polling only
+against a gateway that predates them.
+
+### `mobkit/wait_for_completion`
+
+Wait until the identity's completion cursor moves past `after`, or, with no
+`after`, until it counts at least one completed turn (a startup readiness
+barrier; the identity may not be materialized yet when the wait starts).
+Return `{identity, outcome, completion_cursor}`. It never touches the member
+session, and every wake re-reads the identity's entry, so it never runs to its
+deadline on an identity that can no longer complete:
+
+| `outcome` | Meaning |
+|-----------|---------|
+| `completed` | The cursor moved past `after` (or counts a first turn) |
+| `incarnation_changed` | The lease incarnation moved, so turn counts are not comparable; capture a fresh baseline |
+| `run_failed` | A run on the identity failed or was cancelled while the wait ran (one that ended before the wait started is not visible to it) |
+| `broken` | The identity is parked Broken |
+| `retiring` | The identity is retiring, retired, or being deleted (deletion retires first) |
+| `identity_gone` | The identity was registered when the wait started and no longer is |
+| `shutting_down` | The gateway is shutting down |
+| `timed_out` | The deadline passed first |
+| `untracked` | A raw live alias that no identity authority tracks; `completion_cursor` is `null` |
+
+A baseline for an identity that is not registered is the typed `-32001`
+unknown-identity error. Callers must tolerate future `outcome` values.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | The identity to wait on |
+| `after` | `{epoch, turns}` | no | The baseline, usually a delivery's `completion_baseline` |
+| `timeout_ms` | `integer` | no | The caller's deadline; default 60 000, clamped to 600 000 (10 min). A caller with a longer deadline re-issues the wait on `timed_out`, as the SDKs do |
+</Accordion>
+
+### `mobkit/completion_cursor`
+
+Return `{identity, state, completion_cursor}`: the identity's lifecycle state
+and its completion cursor `{epoch, turns}`, read from memory. A one-shot read
+that never touches the member session; wait with
+`mobkit/wait_for_completion`, not by polling this. `completion_cursor` and
+`state` are `null` for a raw live alias that no identity authority tracks (not
+"no turns yet"). An unknown identity is the typed `-32001` unknown-identity
+error.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | The identity to read |
+</Accordion>
+
+### `mobkit/wait_for_turn`
+
+The `mobkit/turn_result` report, taken once the ticket settles: the gateway
+waits on the ticket registry's settlement signal. The result adds `wait`:
+`settled` (the turn left pending, or the ticket is unknown), `timed_out` (the
+deadline passed with the turn still `pending`) or `shutting_down` (the gateway
+is shutting down; the turn's state at that moment). An unknown ticket answers
+`unknown` at once. Parameters are those of `mobkit/turn_result` plus the
+optional `timeout_ms` (default 60 000, clamped to 600 000).
+
 ### `mobkit/turn_result`
 
 Report one ticketed turn: `{identity, ticket, state, completion_cursor, ...}`.
@@ -1108,7 +1198,8 @@ Report one ticketed turn: `{identity, ticket, state, completion_cursor, ...}`.
 </Accordion>
 
 The SDKs' `send_and_wait` / `sendAndWait` and `dispatch*_and_wait` send with
-`track_turn` and poll `mobkit/turn_result`. They warn, typed, when they return
+`track_turn` and wait with `mobkit/wait_for_turn` (polling
+`mobkit/turn_result` only against a gateway that predates it). They warn, typed, when they return
 truncated text or a turn completed without output of its own. When a delivery
 returns no ticket they fall back to the identity-wide cursor with a typed
 warning naming the `turn_unavailable` code (so on `autonomous_host` members,

@@ -11109,39 +11109,68 @@ async fn send_message_on_mob_inner(
     // Wire member ids are public aliases; the roster id is the comms-safe
     // encoding (meerkat 0.7 MemberCommsName).
     let mid = crate::member_comms_id::mob_member_id(member_id);
-    let member = handle.member(&mid).await?;
     match interaction_id {
         None => {
-            member.send(content, handling_mode).await?;
+            handle
+                .member(&mid)
+                .await?
+                .send(content, handling_mode)
+                .await?;
         }
         Some(interaction_id) => {
             // The member-send verb has no interaction carrier, so submit the
             // same external-origin work with the id on its WorkSpec, bound to
             // the current roster binding (the identity bridge's pattern).
-            let entry = handle
-                .get_member(&mid)
-                .await?
-                .ok_or_else(|| MobError::MemberNotFound(mid.clone()))?;
+            // No `member()` preflight: SubmitWork admission already refuses a
+            // restore-failed (Broken) member with the typed MemberRestoreFailed.
             let spec =
                 meerkat_mob::WorkSpec::new(content.clone(), meerkat_mob::WorkOrigin::External)
                     .with_interaction_id(interaction_id);
-            match handle
-                .submit_work_with_mode(
-                    entry.agent_runtime_id,
-                    entry.fence_token,
-                    meerkat_mob::WorkRef::new(),
-                    spec,
-                    handling_mode,
-                )
-                .await
-            {
-                Ok(_receipt) => {}
+            let work_ref = meerkat_mob::WorkRef::new();
+            let member_id = &mid;
+            let submitted = submit_on_current_binding_with_stale_fence_retry(
+                || async move {
+                    match handle.get_member(member_id).await? {
+                        Some(entry) => Ok((entry.agent_runtime_id, entry.fence_token)),
+                        None => {
+                            // A member the roster no longer lists may still
+                            // carry a restore-failure diagnostic, which only
+                            // `member()` reports.
+                            handle.member(member_id).await?;
+                            Err(MobError::MemberNotFound(member_id.clone()))
+                        }
+                    }
+                },
+                |runtime_id, fence_token| {
+                    let work_ref = work_ref.clone();
+                    let spec = spec.clone();
+                    async move {
+                        handle
+                            .submit_work_with_mode(
+                                runtime_id,
+                                fence_token,
+                                work_ref,
+                                spec,
+                                handling_mode,
+                            )
+                            .await
+                            .map(|_receipt| ())
+                    }
+                },
+            )
+            .await;
+            match submitted {
+                Ok(()) => {}
                 // Legacy peer-only members cannot represent a transcript
                 // interaction id. Meerkat refuses the carrier before admission,
                 // so nothing was delivered and the plain send is not a second
                 // delivery; that run simply carries no reservation lineage.
                 Err(MobError::UnsupportedForMode { .. }) => {
-                    member.send(content, handling_mode).await?;
+                    handle
+                        .member(&mid)
+                        .await?
+                        .send(content, handling_mode)
+                        .await?;
                 }
                 Err(err) => return Err(err.into()),
             }
@@ -11159,6 +11188,36 @@ async fn send_message_on_mob_inner(
     Err(MobRuntimeError::Mob(MobError::Internal(
         "member has no bridge session after send".to_string(),
     )))
+}
+
+/// Submit to a member's current roster binding, re-reading the binding and
+/// retrying exactly once when the submit is refused with `StaleFenceToken`.
+///
+/// The binding read and the submit are separate actor round trips, so a
+/// respawn that lands between them fences the submit. A stale fence means the
+/// work was not admitted, so one retry against the re-read binding is not a
+/// second delivery. A second stale fence (the member keeps churning) is
+/// returned to the caller.
+async fn submit_on_current_binding_with_stale_fence_retry<Read, ReadFut, Submit, SubmitFut>(
+    mut read_binding: Read,
+    mut submit: Submit,
+) -> Result<(), MobError>
+where
+    Read: FnMut() -> ReadFut,
+    ReadFut: std::future::Future<
+            Output = Result<(meerkat_mob::AgentRuntimeId, meerkat_mob::FenceToken), MobError>,
+        >,
+    Submit: FnMut(meerkat_mob::AgentRuntimeId, meerkat_mob::FenceToken) -> SubmitFut,
+    SubmitFut: std::future::Future<Output = Result<(), MobError>>,
+{
+    let (runtime_id, fence_token) = read_binding().await?;
+    match submit(runtime_id, fence_token).await {
+        Err(MobError::StaleFenceToken { .. }) => {
+            let (runtime_id, fence_token) = read_binding().await?;
+            submit(runtime_id, fence_token).await
+        }
+        other => other,
+    }
 }
 
 /// Console-only local human submission pinned to the member snapshot resolved
@@ -11231,6 +11290,98 @@ mod tests {
     // within the bound: one test per arm of its mapping. The real-machine
     // arms (a missing runtime, an unknown or gone session) are in
     // tests/bridge_completion_seam.rs.
+
+    /// Bindings read by the stale-fence retry, in order, and the bindings
+    /// each submit was fenced with.
+    fn stale_fence_binding(fence: u64) -> (meerkat_mob::AgentRuntimeId, meerkat_mob::FenceToken) {
+        (
+            meerkat_mob::AgentRuntimeId::new(
+                meerkat_mob::AgentIdentity::from("worker"),
+                meerkat_mob::ids::Generation::INITIAL,
+            ),
+            meerkat_mob::FenceToken::new(fence),
+        )
+    }
+
+    fn stale_fence_error(fence: u64) -> MobError {
+        let (runtime_id, _) = stale_fence_binding(fence);
+        MobError::StaleFenceToken {
+            runtime_id,
+            expected: meerkat_mob::FenceToken::new(fence + 1),
+            actual: meerkat_mob::FenceToken::new(fence),
+        }
+    }
+
+    /// Drive the retry with scripted binding reads and submit outcomes;
+    /// returns the result, the number of reads, and the fences submitted.
+    async fn drive_stale_fence_retry(
+        submits: Vec<Result<(), MobError>>,
+    ) -> (Result<(), MobError>, usize, Vec<u64>) {
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let submitted = std::sync::Mutex::new(Vec::new());
+        let outcomes = std::sync::Mutex::new(std::collections::VecDeque::from(submits));
+        let result = submit_on_current_binding_with_stale_fence_retry(
+            || {
+                let fence = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u64 + 1;
+                async move { Ok(stale_fence_binding(fence)) }
+            },
+            |_runtime_id, fence_token| {
+                submitted.lock().unwrap().push(fence_token.get());
+                let outcome = outcomes.lock().unwrap().pop_front().unwrap();
+                async move { outcome }
+            },
+        )
+        .await;
+        let submitted = submitted.lock().unwrap().clone();
+        (
+            result,
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            submitted,
+        )
+    }
+
+    /// #479: a respawn between the binding read and the submit fences the
+    /// submit; the send re-reads the binding and retries once, against the
+    /// successor.
+    #[tokio::test]
+    async fn send_message_retries_once_on_a_stale_fence_against_the_reread_binding() {
+        let (result, reads, submitted) =
+            drive_stale_fence_retry(vec![Err(stale_fence_error(1)), Ok(())]).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(reads, 2);
+        assert_eq!(
+            submitted,
+            [1, 2],
+            "the retry is fenced with the re-read binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_returns_a_second_stale_fence() {
+        let (result, reads, submitted) =
+            drive_stale_fence_retry(vec![Err(stale_fence_error(1)), Err(stale_fence_error(2))])
+                .await;
+        assert!(
+            matches!(result, Err(MobError::StaleFenceToken { .. })),
+            "{result:?}"
+        );
+        assert_eq!(reads, 2, "exactly one retry");
+        assert_eq!(submitted, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn send_message_does_not_retry_other_submit_errors() {
+        let (result, reads, submitted) = drive_stale_fence_retry(vec![Err(
+            MobError::MemberNotFound(meerkat_mob::AgentIdentity::from("worker")),
+        )])
+        .await;
+        assert!(
+            matches!(result, Err(MobError::MemberNotFound(_))),
+            "{result:?}"
+        );
+        assert_eq!(reads, 1);
+        assert_eq!(submitted, [1]);
+    }
 
     #[tokio::test]
     async fn session_commit_pending_reports_pending_input() {

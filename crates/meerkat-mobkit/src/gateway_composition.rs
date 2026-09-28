@@ -1488,9 +1488,14 @@ mod tests {
                 meerkat::Config::default(),
                 1,
             ));
-        let definition = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"gateway-console-drain\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
-        )?;
+        // Every composition gets its own mob id. In-process `cargo test` runs
+        // these tests concurrently in one process, and the comms participant
+        // registry is process-wide, so a shared id fails the second bootstrap
+        // with ParticipantNameOccupied (#480).
+        let mob_id = format!("gateway-console-drain-{}", uuid::Uuid::new_v4().simple());
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n"
+        ))?;
         let spec = MobBootstrapSpec::new(definition, meerkat_mob::MobStorage::in_memory(), service)
             .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
@@ -1502,7 +1507,7 @@ mod tests {
         let config = MobKitConfig {
             modules: Vec::new(),
             discovery: crate::types::DiscoverySpec {
-                namespace: "gateway-console-drain".to_string(),
+                namespace: mob_id.clone(),
                 modules: Vec::new(),
             },
             pre_spawn: Vec::new(),

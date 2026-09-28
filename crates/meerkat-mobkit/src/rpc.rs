@@ -2091,10 +2091,14 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/reset",
                     "mobkit/delete_identity",
                     "mobkit/inspect_identity",
+                    "mobkit/completion_cursor",
+                    "mobkit/wait_for_completion",
                     "mobkit/turn_result",
+                    "mobkit/wait_for_turn",
                     "mobkit/compact_member",
                     "mobkit/bound_member_transcript",
                     "mobkit/reconcile_identity",
+                    "mobkit/request_continuity_repair",
                     "mobkit/status_identity_bootstrap",
                     "mobkit/wait_identity_bootstrap",
                 ]);
@@ -3730,42 +3734,87 @@ async fn handle_unified_rpc_json_inner(
                 .get("origin")
                 .and_then(|v| v.as_str())
                 .unwrap_or("console");
-            let interaction_id = request
+            let caller_interaction_id = request
                 .params
                 .get("interaction_id")
                 .and_then(|v| v.as_str())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| meerkat_core::types::SessionId::new().to_string());
+                .map(ToString::to_string);
             let runtime_member_id = identity_rt
                 .status(&identity)
                 .await
                 .ok()
                 .and_then(|status| status.agent_runtime_id.map(|id| id.as_str().to_string()));
 
-            if let Err(err) = runtime
-                .reserve_identity_interaction(
-                    identity.as_str(),
-                    runtime_member_id.as_deref(),
-                    &interaction_id,
-                    origin,
-                    content_val,
-                )
-                .await
-            {
-                return maybe_error_response(
-                    is_notification,
-                    response_id,
-                    -32003,
-                    format!("failed to reserve interaction: {err}"),
-                );
-            }
+            let interaction_id = match caller_interaction_id {
+                // A caller-supplied id rides into the runtime as the run's
+                // transcript interaction id. Two in-flight sends under one id
+                // would make both runs' frames and terminals ambiguous, so a
+                // reuse while the first is still in flight is refused, typed,
+                // before anything is delivered.
+                Some(interaction_id) => {
+                    if runtime
+                        .reserve_caller_identity_interaction(
+                            identity.as_str(),
+                            runtime_member_id.as_deref(),
+                            &interaction_id,
+                            origin,
+                            content_val,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        if is_notification {
+                            return String::new();
+                        }
+                        return serialize_response(&JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!(
+                                    "interaction_id {interaction_id} is already in flight for {}",
+                                    identity.as_str()
+                                ),
+                                data: Some(serde_json::json!({
+                                    "code": "interaction_id_in_flight",
+                                    "identity": identity.as_str(),
+                                    "interaction_id": interaction_id,
+                                })),
+                            }),
+                        });
+                    }
+                    interaction_id
+                }
+                None => {
+                    let interaction_id = meerkat_core::types::SessionId::new().to_string();
+                    if let Err(err) = runtime
+                        .reserve_identity_interaction(
+                            identity.as_str(),
+                            runtime_member_id.as_deref(),
+                            &interaction_id,
+                            origin,
+                            content_val,
+                        )
+                        .await
+                    {
+                        return maybe_error_response(
+                            is_notification,
+                            response_id,
+                            -32003,
+                            format!("failed to reserve interaction: {err}"),
+                        );
+                    }
+                    interaction_id
+                }
+            };
 
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
             let send_result = if rpc_track_turn_requested(&request.params) {
                 // The reserved interaction id rides the admission unchanged;
-                // the ticket is minted per admission, so a caller reusing an
-                // interaction id still gets a ticket of its own.
+                // the ticket is minted per admission, so a caller reusing a
+                // settled interaction id still gets a ticket of its own.
                 identity_rt
                     .send_with_turn_ticket(
                         &identity,
@@ -3936,7 +3985,21 @@ async fn handle_unified_rpc_json_inner(
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
-        "mobkit/turn_result" => {
+        "mobkit/turn_result" | "mobkit/wait_for_turn" => {
+            // `mobkit/wait_for_turn` is the same read, taken once the ticket
+            // settles: the server waits on the ticket registry's change signal
+            // (#468), so a caller never polls turn_result. `timeout_ms` is the
+            // caller's deadline; reaching it returns the ticket still pending.
+            let wait_timeout = if request.method == "mobkit/wait_for_turn" {
+                match rpc_wait_timeout(&request.params) {
+                    Ok(wait_timeout) => Some(wait_timeout),
+                    Err(message) => {
+                        return maybe_error_response(is_notification, response_id, -32602, message);
+                    }
+                }
+            } else {
+                None
+            };
             let identity_rt = match identity_ctx {
                 Some(ctx) => &ctx.runtime,
                 None => return maybe_identity_not_configured(is_notification, response_id),
@@ -3984,9 +4047,28 @@ async fn handle_unified_rpc_json_inner(
                     );
                 }
             };
-            let outcome = identity_rt.turn_outcome(&identity, ticket);
+            let (outcome, wait) = match wait_timeout {
+                Some(wait_timeout) => match identity_rt
+                    .wait_for_turn_outcome(&identity, ticket, wait_timeout)
+                    .await
+                {
+                    crate::identity_first::TurnWait::Settled(outcome) => (outcome, Some("settled")),
+                    crate::identity_first::TurnWait::TimedOut(outcome) => {
+                        (outcome, Some("timed_out"))
+                    }
+                    crate::identity_first::TurnWait::ShuttingDown(outcome) => {
+                        (outcome, Some("shutting_down"))
+                    }
+                },
+                None => (identity_rt.turn_outcome(&identity, ticket), None),
+            };
             let completion_cursor = identity_rt.completion_cursor(&identity).await;
             let mut result = turn_outcome_json(&outcome);
+            if let (Value::Object(fields), Some(wait)) = (&mut result, wait) {
+                // How the server-side wait ended: `settled`, `timed_out` (the
+                // turn is still pending) or `shutting_down`.
+                fields.insert("wait".to_string(), Value::from(wait));
+            }
             if let Value::Object(fields) = &mut result {
                 fields.insert("identity".to_string(), Value::from(identity.as_str()));
                 fields.insert("ticket".to_string(), Value::from(ticket.to_string()));
@@ -4804,6 +4886,190 @@ async fn handle_unified_rpc_json_inner(
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
+        "mobkit/wait_for_completion" => {
+            // Server-side completion wait (#468): resolves when the identity's
+            // completion cursor moves past `after` (or, with no `after`,
+            // counts one completed turn), woken by the runtime's typed
+            // completion and identity-table change signal. Nothing polls, and
+            // the member session is never touched. `timeout_ms` is the
+            // caller's deadline; reaching it is the typed `timed_out` outcome.
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &ctx.runtime,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            let wait_timeout = match rpc_wait_timeout(&request.params) {
+                Ok(wait_timeout) => wait_timeout,
+                Err(message) => {
+                    return maybe_error_response(is_notification, response_id, -32602, message);
+                }
+            };
+            let after = match request.params.get("after") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    match serde_json::from_value::<crate::identity_first::CompletionCursor>(
+                        value.clone(),
+                    ) {
+                        Ok(cursor) => Some(cursor),
+                        Err(err) => {
+                            return maybe_error_response(
+                                is_notification,
+                                response_id,
+                                -32602,
+                                format!("invalid after cursor: {err}"),
+                            );
+                        }
+                    }
+                }
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let target =
+                match resolve_rpc_identity_control_target(runtime, identity_rt, identity_str).await
+                {
+                    Ok(target) => target,
+                    Err(e) => {
+                        return maybe_error_response(
+                            is_notification,
+                            response_id,
+                            -32602,
+                            format!("invalid identity: {e}"),
+                        );
+                    }
+                };
+            let identity = target.identity.clone();
+            if let Some(response) =
+                rpc_stale_live_alias_error_response(identity_rt, &target, response_id.clone()).await
+            {
+                return if is_notification {
+                    String::new()
+                } else {
+                    serialize_response(&response)
+                };
+            }
+            let registered = match identity_rt.status(&identity).await {
+                Ok(_) => true,
+                Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => false,
+                Err(e) => {
+                    return if is_notification {
+                        String::new()
+                    } else {
+                        serialize_response(&identity_error_response(response_id, &e))
+                    };
+                }
+            };
+            if !registered && target.live.is_some() {
+                // A raw live alias: no identity authority tracks its turns,
+                // so there is nothing to wait on. Null, never a fabricated
+                // zero cursor.
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity.as_str(),
+                        "outcome": "untracked",
+                        "completion_cursor": Value::Null,
+                    })),
+                    error: None,
+                }
+            } else if !registered && after.is_some() {
+                // A baseline names an incarnation of a registered identity.
+                // (A readiness wait, with no baseline, may start before its
+                // identity materializes.)
+                identity_error_response(
+                    response_id,
+                    &crate::identity_first::IdentityRuntimeError::UnknownIdentity(identity),
+                )
+            } else {
+                let wait = identity_rt
+                    .await_completion(&identity, after, wait_timeout)
+                    .await;
+                let (outcome, cursor) = (wait.wire_str(), wait.cursor());
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity.as_str(),
+                        "outcome": outcome,
+                        "completion_cursor": completion_cursor_json(cursor),
+                    })),
+                    error: None,
+                }
+            }
+        }
+        "mobkit/completion_cursor" => {
+            // Cursor-only completion read for pollers (#468). It reads the
+            // identity's in-memory completion cursor and lifecycle entry and
+            // never touches the member session: unlike inspect_identity, it
+            // sends no execution snapshot to the member's session task, so a
+            // tight completion poll cannot hold a staged run.
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &ctx.runtime,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let target =
+                match resolve_rpc_identity_control_target(runtime, identity_rt, identity_str).await
+                {
+                    Ok(target) => target,
+                    Err(e) => {
+                        return maybe_error_response(
+                            is_notification,
+                            response_id,
+                            -32602,
+                            format!("invalid identity: {e}"),
+                        );
+                    }
+                };
+            let identity = target.identity.clone();
+            if let Some(response) =
+                rpc_stale_live_alias_error_response(identity_rt, &target, response_id.clone()).await
+            {
+                return if is_notification {
+                    String::new()
+                } else {
+                    serialize_response(&response)
+                };
+            }
+            match identity_rt.status(&identity).await {
+                Ok(status) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity.as_str(),
+                        "state": identity_lifecycle_state_json(status.state),
+                        "completion_cursor": completion_cursor_json(
+                            identity_rt.completion_cursor(&identity).await,
+                        ),
+                    })),
+                    error: None,
+                },
+                // Raw live aliases are not identity-first owned, so no
+                // identity authority tracks their completions: null, as on
+                // inspect_identity, never a fabricated zero.
+                Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_))
+                    if target.live.is_some() =>
+                {
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "identity": identity.as_str(),
+                            "state": Value::Null,
+                            "completion_cursor": Value::Null,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
         "mobkit/inspect_identity" => {
             let identity_rt = match identity_ctx {
                 Some(ctx) => &ctx.runtime,
@@ -4924,6 +5190,25 @@ async fn handle_unified_rpc_json_inner(
             ))
             .await
         }
+        "mobkit/request_continuity_repair" => {
+            // Explicit continuity repair trigger: the supervisor retries its
+            // repairable Broken identities. The answer says, typed, whether a
+            // running supervisor will act on it.
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            ctx.runtime.trigger_continuity_repair(
+                crate::identity_first::ContinuityRepairTrigger::Requested,
+            );
+            let outcome = ctx.runtime.continuity_repair_request_outcome().await;
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({ "continuity_repair": outcome })),
+                error: None,
+            }
+        }
         "mobkit/reconcile_identity" => {
             let ctx = match identity_ctx {
                 Some(ctx) => ctx,
@@ -4954,13 +5239,20 @@ async fn handle_unified_rpc_json_inner(
                             );
                         }
                     };
-                    ctx.runtime
+                    let result = ctx
+                        .runtime
                         .restore_flow_tracked(
                             roster_specs,
                             ctx.topology_provider.clone(),
                             ctx.customizer.clone(),
                         )
-                        .await
+                        .await;
+                    // The attached context fires this itself when its pass
+                    // settles; the unattached pass reports it here.
+                    ctx.runtime.trigger_continuity_repair(
+                        crate::identity_first::ContinuityRepairTrigger::RestorePassSettled,
+                    );
+                    result
                 }
                 Err(error) => Err(error),
             };
@@ -5008,6 +5300,7 @@ async fn handle_unified_rpc_json_inner(
                                     serde_json::json!({
                                         "outcome": "broken",
                                         "identity": failure.identity.as_str(),
+                                        "kind": failure.kind,
                                         "detail": failure.detail,
                                     })
                                 }
@@ -5015,12 +5308,16 @@ async fn handle_unified_rpc_json_inner(
                             (id.to_string(), val)
                         })
                         .collect();
+                    // The settled pass triggered the continuity repair
+                    // supervisor; report what that trigger reached, typed.
+                    let continuity_repair = ctx.runtime.continuity_repair_request_outcome().await;
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
                             "outcomes": outcomes,
                             "managed_edges": result.managed_edges.len(),
+                            "continuity_repair": continuity_repair,
                         })),
                         error: None,
                     }
@@ -5733,6 +6030,28 @@ fn maybe_identity_not_configured(is_notification: bool, response_id: Value) -> S
         String::new()
     } else {
         identity_not_configured(response_id)
+    }
+}
+
+/// The caller's deadline for a server-side wait: `timeout_ms` when given,
+/// else the dispatcher's RPC timeout.
+/// Default deadline of a server-side wait (`mobkit/wait_for_completion`,
+/// `mobkit/wait_for_turn`) when the caller gives no `timeout_ms`.
+pub const RPC_WAIT_DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
+/// Longest deadline one server-side wait accepts; a longer `timeout_ms` is
+/// clamped to it (the SDKs re-issue the wait until their own deadline).
+pub const RPC_WAIT_MAX_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// The caller's deadline for a server-side wait: `timeout_ms` when given
+/// (clamped to [`RPC_WAIT_MAX_TIMEOUT`]), else [`RPC_WAIT_DEFAULT_TIMEOUT`].
+/// Deliberately independent of the dispatcher's generic RPC timeout.
+fn rpc_wait_timeout(params: &Value) -> Result<Duration, String> {
+    match params.get("timeout_ms") {
+        None | Some(Value::Null) => Ok(RPC_WAIT_DEFAULT_TIMEOUT),
+        Some(value) => value
+            .as_u64()
+            .map(|ms| Duration::from_millis(ms).min(RPC_WAIT_MAX_TIMEOUT))
+            .ok_or_else(|| "timeout_ms must be a non-negative integer".to_string()),
     }
 }
 
@@ -9907,6 +10226,14 @@ external_addressable = true
 
 [profiles.worker.tools]
 comms = true
+
+[profiles.autonomous]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+external_addressable = true
+
+[profiles.autonomous.tools]
+comms = true
 "#,
         )?;
         let identity = AgentIdentity::parse("identity:settler")?;
@@ -9948,9 +10275,20 @@ comms = true
                 None,
             ))
             .await?;
+        // #479: an autonomous host must carry the send_message interaction id
+        // on the run lineage it starts, the same as a turn-driven member.
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "autonomous".to_string(),
+                "raw-autonomous-settler".to_string(),
+                Some("You are an autonomous raw roster worker.".into()),
+                None,
+                None,
+            ))
+            .await?;
 
         let sends = crate::unified_runtime::console_events::PENDING_INTERACTION_CAP + 4;
-        for member_id in [identity.as_str(), "raw-settler"] {
+        for member_id in [identity.as_str(), "raw-settler", "raw-autonomous-settler"] {
             for index in 0..sends {
                 let raw = handle_unified_rpc_json(
                     &runtime,

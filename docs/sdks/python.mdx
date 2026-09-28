@@ -186,6 +186,7 @@ else:
 
 # Observation (no mob_handle, no member IDs needed)
 inspection = await triage.inspect()   # output_preview, completion_cursor, peers
+cursor = await triage.completion_cursor()  # cursor only; never reads the member session
 output = await triage.wait_for_output(timeout=90)   # any output, including an earlier turn's
 await rt.wait_until_ready(["triage:main", "identity:luka"])
 
@@ -242,6 +243,23 @@ identity-wide primitives: any completion on the identity after the baseline
 satisfies them, and the returned `output_preview` is the session's latest
 output, not necessarily a specific send's answer. Use `wait_for_turn(ticket)`
 or `wait_for_output(turn=ticket)` to wait for one specific turn.
+
+The recommended completion barrier is `track_turn=True` plus
+`wait_for_turn(ticket)` (or `send_and_wait`): it reads only the ticket ledger.
+Every wait is server-side and event-driven: `wait_for_turn` is one
+`mobkit/wait_for_turn` request, and the identity-wide waits
+(`wait_for_completion`, `wait_for_output(after=...)`, `rt.wait_until_ready`)
+are one `mobkit/wait_for_completion` request each. The gateway answers when
+the ticket settles or a completion is recorded, so nothing polls, and the
+member's output is read once, at completion. `timeout` is only the deadline;
+`poll_interval` applies only against a gateway that predates the server-side
+waits. `completion_cursor()` is a one-shot cursor read that never touches the
+member session. `inspect()` does read the member session, so do not poll it.
+
+A wait that ends before a completion (a failed or cancelled run, a Broken,
+retiring or deleted identity, or gateway shutdown) raises the typed
+`WaitEndedError`, whose `outcome` names why; only the deadline raises
+`TimeoutError`.
 
 ### DurableAgentSpec fields
 

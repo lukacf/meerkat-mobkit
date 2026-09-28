@@ -389,8 +389,19 @@ export class PersistentTransport {
     }
   }
 
-  async sendAsync(request: Record<string, unknown>): Promise<unknown> {
-    const response = await this._sendAsyncWithTimeout(request, this._timeout);
+  /**
+   * Send one request and await its response. `options.timeoutMs` overrides
+   * the transport's request timeout for this request only (a server-side
+   * wait whose own deadline is longer than the default).
+   */
+  async sendAsync(
+    request: Record<string, unknown>,
+    options: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    const response = await this._sendAsyncWithTimeout(
+      request,
+      options.timeoutMs ?? this._timeout,
+    );
     if (request.method === "mobkit/init") {
       const result =
         typeof response === "object" && response !== null
