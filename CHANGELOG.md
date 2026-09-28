@@ -103,6 +103,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still load and still keep their member, and host-side code may still set
   it.
 
+- Bind the Meerkat family to published 0.8.46. Public Live under
+  `ProviderManagedUnmeasured` (console voice on gpt-live-1) now commits one
+  canonical assistant row per provider turn segment instead of one row per
+  transcript delta (lukacf/meerkat#1237), so the spoken answer lands as one
+  message when its segment seals (turn end, a typed between-speech boundary,
+  or channel close). Also included: a reopen whose context summary missed the
+  pre-open bound is no longer silent when a typed turn is queued
+  (#474), and playback snapshot rows always name their channel. MobKit builds
+  against 0.8.46 without source changes. See Added for the console captions
+  that cover the time until the row lands.
 - Bind the Meerkat family to published 0.8.45: bounded per-member status
   observations with a typed `preview_unavailable` reason, fork lineage on the
   builds of fork-derived members (`SessionBuildOptions::fork_source`), the
