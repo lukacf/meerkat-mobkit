@@ -3777,13 +3777,15 @@ async fn handle_unified_rpc_json_inner(
                     .await
                     .map(|ticketed| (ticketed.admission, Some(ticketed.turn)))
             } else {
+                // The untracked lane threads the same reserved id, so the
+                // run's typed lineage settles this exact reservation too.
                 identity_rt
                     .send_admission_tracked(
                         &identity,
                         expected_alias,
                         &content,
                         meerkat_core::types::HandlingMode::Queue,
-                        None,
+                        Some(&interaction_id),
                     )
                     .await
                     .map(|admission| (admission, None))
@@ -9842,6 +9844,161 @@ shell = true
             "unexpected error message: {message}"
         );
 
+        Ok(())
+    }
+
+    /// #469: `mobkit/send_message` used to reserve "mobkit-send-..." ids that
+    /// no delivery path could thread, so every reservation stayed pending
+    /// until the 256 cap evicted settled sends with a false
+    /// `interaction_failed { reason: "queue_overflow" }`. The id is now a UUID
+    /// carried as typed lineage on both delivery targets (identity bridge and
+    /// raw roster member), and each run's terminal closes its reservation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_reservations_close_on_their_run_past_the_pending_cap()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "send-message-reservation-settlement-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )?;
+        let identity = AgentIdentity::parse("identity:settler")?;
+        let roster = Arc::new(crate::identity_first::MutableRosterProvider::new(vec![
+            DurableAgentSpec {
+                identity: identity.clone(),
+                profile: meerkat_mob::ProfileName::from("worker"),
+                addressability: AgentAddressability::Addressable,
+                display_name: None,
+                labels: BTreeMap::new(),
+                context: None,
+                additional_instructions: Vec::new(),
+                initial_message: None,
+                runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+                backend: None,
+                binding: None,
+                placement: None,
+            },
+        ]));
+        let scratch = tempfile::tempdir()?;
+        let runtime = UnifiedRuntime::builder()
+            .definition(definition)
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory()?))
+            .lease_provider(Arc::new(LocalLeaseProvider::new()))
+            .roster_provider(roster)
+            .scratch_dir(scratch.path())
+            .identity_runtime_instance_id("send-message-reservation-settlement-test")
+            .default_llm_client(Arc::new(TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            )))
+            .build()
+            .await?;
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "raw-settler".to_string(),
+                Some("You are a raw roster worker.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let sends = crate::unified_runtime::console_events::PENDING_INTERACTION_CAP + 4;
+        for member_id in [identity.as_str(), "raw-settler"] {
+            for index in 0..sends {
+                let raw = handle_unified_rpc_json(
+                    &runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": index,
+                        "method": "mobkit/send_message",
+                        "params": {
+                            "member_id": member_id,
+                            "message": format!("probe {index}"),
+                        },
+                    })
+                    .to_string(),
+                    Duration::from_secs(10),
+                    None,
+                    None,
+                )
+                .await;
+                let response: Value = serde_json::from_str(&raw)?;
+                assert!(
+                    response["error"].is_null(),
+                    "send {index} to {member_id} must be accepted: {response:#?}"
+                );
+
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                loop {
+                    runtime.drain_mob_agent_events().await?;
+                    if runtime
+                        .console_events()
+                        .pending_interaction_ids(member_id)
+                        .await
+                        .is_empty()
+                    {
+                        break;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "reservation for send {index} to {member_id} never closed: {:?}",
+                        runtime
+                            .console_events()
+                            .pending_interaction_ids(member_id)
+                            .await
+                    );
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+
+            let replay = runtime
+                .console_events()
+                .replay_all(None)
+                .await
+                .map_err(|err| format!("console replay unavailable: {err:?}"))?;
+            let member_events = replay
+                .iter()
+                .filter(|event| event.identity == member_id)
+                .collect::<Vec<_>>();
+            let reserved = member_events
+                .iter()
+                .filter(|event| {
+                    event.event_type == "user_input"
+                        && event.data["origin"] == json!("mobkit/send_message")
+                })
+                .filter_map(|event| event.interaction_id.clone())
+                .collect::<Vec<_>>();
+            assert!(!reserved.is_empty(), "{member_id} sends must be recorded");
+            for interaction_id in &reserved {
+                assert!(
+                    uuid::Uuid::parse_str(interaction_id).is_ok(),
+                    "send_message reservation ids are UUIDs: {interaction_id}"
+                );
+                assert!(
+                    member_events.iter().any(|event| {
+                        event.event_type == "interaction_complete"
+                            && event.interaction_id.as_deref() == Some(interaction_id)
+                    }),
+                    "{member_id} reservation {interaction_id} must settle from its own run"
+                );
+            }
+            assert!(
+                !member_events
+                    .iter()
+                    .any(|event| event.data.get("reason") == Some(&json!("queue_overflow"))),
+                "{member_id}: no settled send may be evicted as queue overflow"
+            );
+        }
+
+        runtime.shutdown().await;
         Ok(())
     }
 

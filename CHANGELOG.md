@@ -239,6 +239,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console response phase no longer stays set after a run whose start was not
+  observed (#469). A typed `run_completed` / `run_failed` that names a run but
+  no interaction, with no tracked active run and no active interaction for the
+  identity, now clears the phase that run left behind (for example
+  `run_failed` with no final `turn_completed`), so the console drain gate stops
+  parking the queue. Such a terminal never closes another current run or
+  interaction and settles no reservation.
+- `mobkit/send_message` console reservations now close when their run settles
+  (#469). The reservation id is a UUID (was `mobkit-send-...`) threaded as the
+  run's typed interaction lineage on both delivery targets: the identity
+  bridge carries it into the WorkSpec, and raw roster members receive it on
+  an external-origin WorkSpec. Previously the ids could not be threaded, so
+  reservations accumulated to the 256 cap and each new send evicted a settled
+  one with a false `interaction_failed { reason: "queue_overflow" }`. The
+  untracked `mobkit/send` lane now threads its reserved id as well. The id is
+  not part of the `send_message` response; it appears only as the console
+  event `interaction_id`.
+
 - Ordinary append boundaries no longer run the rewrite-chain provers. The
   committed-to-durable projection compared the durable row with the
   committed transcript's current revision, which includes the turn's own

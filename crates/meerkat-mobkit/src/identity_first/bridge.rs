@@ -1897,7 +1897,8 @@ impl ActorAdmissionDeadline {
 ///   committed transcript messages carry the SAME id the console minted at
 ///   send time — the exact live↔history join the console dedup needs. Only
 ///   UUID-form ids exist here (the identity-first console send mints v5
-///   UUIDs); anything else is skipped rather than corrupted.
+///   UUIDs; `mobkit/send` and `mobkit/send_message` reserve UUIDs); anything
+///   else is skipped rather than corrupted.
 fn internal_bridge_work_spec(
     content: &meerkat_core::ContentInput,
     system_prompt: Option<&str>,
