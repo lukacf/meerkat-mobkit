@@ -44,6 +44,7 @@ pub(crate) mod member_status_observation;
 pub mod member_tool_policy;
 pub mod memory;
 pub mod memory_wiring;
+pub(crate) mod mob_activation_retry;
 pub mod mob_composition_manifest;
 pub mod mob_handle_runtime;
 pub mod mobpack;

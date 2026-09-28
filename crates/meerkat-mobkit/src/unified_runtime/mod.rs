@@ -5680,6 +5680,161 @@ model = "gpt-5.5"
         runtime.shutdown().await;
     }
 
+    /// Stage resume outcomes on the pending activation a restart left, ahead
+    /// of the real `MobHandle::resume`.
+    async fn inject_activation_outcomes(
+        runtime: &UnifiedRuntime,
+        max_consecutive_stalls: u32,
+        outcomes: Vec<meerkat_mob::MobError>,
+    ) {
+        let mut slot = runtime.pending_mob_activation.lock().await;
+        let pending = slot
+            .as_mut()
+            .expect("restarting a Stopped persistent mob stages an activation");
+        pending.set_stall_policy_for_test(
+            crate::mob_activation_retry::ActivationStallPolicy::with_max_consecutive_stalls(
+                max_consecutive_stalls,
+            ),
+        );
+        pending.inject_resume_outcomes_for_test(outcomes);
+    }
+
+    fn restart_member_activation_stall() -> meerkat_mob::MobError {
+        meerkat_mob::MobError::LifecycleOperationProgressStalled {
+            intent: "explicit_resume".to_string(),
+            member_id: Some(meerkat_mob::AgentIdentity::from(RESTART_MEMBER)),
+            stage: "resume_member",
+        }
+    }
+
+    /// Boot, commit a turn, shut down, and boot again up to the activation.
+    async fn restart_before_activation(
+        mob_id: &str,
+        temp: &tempfile::TempDir,
+    ) -> (
+        PersistentBootBeforeActivation,
+        meerkat_core::types::SessionId,
+    ) {
+        let mob_path = temp.path().join("mob.sqlite3");
+        let state_root = temp.path().join("state");
+        let (first, first_identity, _) =
+            boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
+        let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
+        first.shutdown().await;
+        (
+            boot_persistent_before_activation(mob_id, &mob_path, &state_root).await,
+            session_id,
+        )
+    }
+
+    /// The HomeCore crash loop: an explicit resume that stalls past Meerkat's
+    /// patience window is re-joined in-process, and bootstrap completes on
+    /// the same runtime instead of shutting down.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stalled_activation_that_later_resumes_completes_bootstrap() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (boot, session_id) =
+            restart_before_activation("activation-stall-recovers", &temp).await;
+        inject_activation_outcomes(
+            &boot.runtime,
+            3,
+            vec![
+                restart_member_activation_stall(),
+                restart_member_activation_stall(),
+            ],
+        )
+        .await;
+        let identity_runtime = boot.identity_runtime.clone();
+        let (runtime, _) = boot.activate().await;
+        assert_eq!(
+            runtime.mob_handle().status().await.expect("mob status"),
+            meerkat_mob::MobState::Running,
+            "the re-joined resume lifted the mob"
+        );
+        let revived = commit_restart_member_turn(&identity_runtime, "after restart").await;
+        assert_eq!(revived, session_id, "the restore resumed the same session");
+        runtime.shutdown().await;
+    }
+
+    /// K consecutive stalls at the same member and stage still fail the
+    /// bootstrap, and the runtime is shut down as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consecutive_activation_stalls_at_one_point_fail_bootstrap() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (boot, _) = restart_before_activation("activation-stall-exhausts", &temp).await;
+        inject_activation_outcomes(
+            &boot.runtime,
+            2,
+            vec![
+                restart_member_activation_stall(),
+                restart_member_activation_stall(),
+            ],
+        )
+        .await;
+        let PersistentBootBeforeActivation {
+            mut runtime,
+            context,
+            roster,
+            ..
+        } = boot;
+        let error = runtime
+            .install_and_bootstrap_identity_first_context(context, &roster)
+            .await
+            .expect_err("K consecutive stalls exhaust the activation");
+        assert!(
+            matches!(
+                &error,
+                crate::identity_first::IdentityRuntimeError::Internal(message)
+                    if message.starts_with("activating the prepared mob")
+            ),
+            "{error:?}"
+        );
+        assert_ne!(
+            runtime.mob_handle().status_observation_snapshot(),
+            meerkat_mob::MobState::Running,
+            "the failed activation never lifted the mob"
+        );
+        assert!(
+            runtime.pending_mob_activation.lock().await.is_none(),
+            "the obligation was consumed, not re-staged"
+        );
+    }
+
+    /// Any other activation error stays fatal on the first attempt: the
+    /// queued stall behind it is never reached.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_non_stall_activation_error_fails_bootstrap_immediately() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (boot, _) = restart_before_activation("activation-error-fatal", &temp).await;
+        inject_activation_outcomes(
+            &boot.runtime,
+            10,
+            vec![
+                meerkat_mob::MobError::Internal("injected activation failure".to_string()),
+                restart_member_activation_stall(),
+            ],
+        )
+        .await;
+        let PersistentBootBeforeActivation {
+            mut runtime,
+            context,
+            roster,
+            ..
+        } = boot;
+        let error = runtime
+            .install_and_bootstrap_identity_first_context(context, &roster)
+            .await
+            .expect_err("a non-stall activation error is fatal");
+        assert!(
+            matches!(
+                &error,
+                crate::identity_first::IdentityRuntimeError::Internal(message)
+                    if message.contains("injected activation failure")
+            ),
+            "{error:?}"
+        );
+    }
+
     /// Discard the member's live actor, as a durability or lifecycle path
     /// does; the member keeps its binding and the next send revives a
     /// successor actor for the same session.

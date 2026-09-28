@@ -296,6 +296,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   lossless; the tests now assert the first run appears exactly once. The
   capture's adoption over a pending backoff stays pinned deterministically by
   the driven restore test.
+- A mob activation whose explicit resume stalls no longer fails bootstrap.
+  On a memory-starved host one member's resume can go past meerkat's 30 s
+  patience window, which returns the retryable
+  `MobError::LifecycleOperationProgressStalled`. MobKit treated it as fatal,
+  shut down, and exited, so a supervisor restarted the whole boot from scratch
+  in a loop (seen in HomeCore production). Activation now re-joins the same
+  meerkat operation in-process (`MobHandle::resume` on the prepared handle
+  joins the still-current Resume) for as long as it makes progress: a changed
+  member or stage resets the count. It gives up after
+  `MOBKIT_ACTIVATION_STALL_RETRIES` consecutive stalls at one member and stage
+  (default 10, clamped to 1-1000; about five minutes without progress) or
+  twenty times that many stalls overall. Each stall logs a WARN with member,
+  stage, attempt, and elapsed time, and completion after stalls logs an INFO.
+  Any other activation error stays fatal.
 
 - Console response phase no longer stays set after a run whose start was not
   observed (#469). A typed `run_completed` / `run_failed` that names a run but
