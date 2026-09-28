@@ -288,6 +288,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   state, never runs two checks for one agent at a time, retries a failed
   check after 1, 2, 4 and 8 s (capped at 15 s), and aborts the request when
   the view changes.
+- `console_timeline_carries_a_revived_members_first_run_after_restart` (and
+  its archived twin) no longer assert which stream the real console forwarder
+  attached first, which raced: the forwarder's ordinary subscription can land
+  between the revived session becoming subscribable and the create-time
+  capture's install. Both paths precede the actor's first run, so both are
+  lossless; the tests now assert the first run appears exactly once. The
+  capture's adoption over a pending backoff stays pinned deterministically by
+  the driven restore test.
 
 - Console response phase no longer stays set after a run whose start was not
   observed (#469). A typed `run_completed` / `run_failed` that names a run but

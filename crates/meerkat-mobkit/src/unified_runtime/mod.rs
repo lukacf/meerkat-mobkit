@@ -5239,7 +5239,18 @@ model = "gpt-5.5"
     /// same durable store revives the member through the restore route while
     /// the console forwarder already runs, and the revived actor's first run
     /// still reaches the console timeline from `run_started` (seq 1) and
-    /// `turn_started` (seq 2).
+    /// `turn_started` (seq 2), exactly once.
+    ///
+    /// The real forwarder races the restore here, so this asserts only what
+    /// holds under every legal interleaving. Which stream attaches first is
+    /// not fixed: the forwarder adopts the create-time capture, or its
+    /// ordinary subscription (a backoff retry, or a machine-change pass) lands
+    /// in the window between the revived session becoming subscribable and
+    /// the capture's install. Both precede the actor's first run for a
+    /// deferred create, so both are lossless. That the capture is adopted
+    /// over a pending backoff is fixed deterministically, with the
+    /// interleaving pinned, by
+    /// `restored_members_first_run_reaches_the_console_after_stream_not_found_backoff`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn console_timeline_carries_a_revived_members_first_run_after_restart() {
         console_timeline_after_restart("console-tap-restart", RestartShape::Live).await;
@@ -5310,29 +5321,30 @@ model = "gpt-5.5"
                     .filter(|frame| frame.data.get("session_id") == Some(&json!(session_id)))
                     .collect()
             };
-        let starts_first_run =
-            |frames: &[crate::console_contracts::ConsoleIdentityEventEnvelope]| {
-                let at = |event_type: &str, seq: u64| {
-                    frames.iter().any(|frame| {
-                        frame.event_type == event_type
-                            && frame.data.get("source_sequence") == Some(&json!(seq))
-                    })
-                };
-                at("run_started", 1) && at("turn_started", 2)
-            };
+        let count_at = |frames: &[crate::console_contracts::ConsoleIdentityEventEnvelope],
+                        event_type: &str,
+                        seq: u64| {
+            frames
+                .iter()
+                .filter(|frame| {
+                    frame.event_type == event_type
+                        && frame.data.get("source_sequence") == Some(&json!(seq))
+                })
+                .count()
+        };
         crate::test_wait::poll_until(
             "the revived member's first run starts on the console timeline",
             crate::test_wait::STRUCTURAL_BACKSTOP,
-            async || starts_first_run(&session_frames().await),
+            async || {
+                let frames = session_frames().await;
+                count_at(&frames, "run_started", 1) > 0 && count_at(&frames, "turn_started", 2) > 0
+            },
         )
         .await;
-        // In-process the forwarder's ordinary subscription can also win this
-        // race; the timeline above must therefore have come through the
-        // capture, which adoption consumes.
-        assert!(
-            !tap.holds_live(&session_id),
-            "the console forwarder attached to the revived actor through its capture"
-        );
+        // Whichever stream attached first carried the head, once: never both.
+        let frames = session_frames().await;
+        assert_eq!(count_at(&frames, "run_started", 1), 1, "{frames:#?}");
+        assert_eq!(count_at(&frames, "turn_started", 2), 1, "{frames:#?}");
 
         second.shutdown().await;
     }
