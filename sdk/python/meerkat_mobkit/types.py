@@ -818,7 +818,9 @@ class MemberReloadResult:
 
     ``disposition`` is ``"discarded"`` (the live registration was replaced by
     a re-materialization of the SAME durable session), ``"not_degraded"`` (a
-    success no-op; only produced once meerkat exposes durability state) or
+    success no-op; only produced once meerkat exposes durability state),
+    ``"reattached"`` (the registration had lost its runtime attachment and was
+    re-attached to the same durable session) or
     ``"not_current"`` (nothing live to reload). ``session_id`` and
     ``generation`` are the identity's binding AFTER the reload; a reload never
     advances the generation. Tolerate future disposition strings.
@@ -864,7 +866,7 @@ class MemberHealth:
     last_delivery_error: dict[str, Any] | None
     durability: Any | None
     bootstrap_state: str | None = None
-    #: ``{"outcome": "discarded" | "not_degraded" | "not_current" | "refused" |
+    #: ``{"outcome": "discarded" | "reattached" | "not_degraded" | "not_current" | "refused" |
     #: "timed_out" | "failed", "detail"?, "at_unix_ms"}`` for the most recent
     #: reload attempt; ``refused`` carries meerkat's reason (store not healthy).
     last_reload: dict[str, Any] | None = None
