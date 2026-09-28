@@ -5917,6 +5917,18 @@ macro_rules! delegate_mob_session_service {
                 self.inner.observe_member_status_view(session_id).await
             }
 
+            // Forwarded exactly: the inner service observes the durable
+            // source from authority, catalog and lifecycle rows without a
+            // body read. Required since meerkat 0.8.47; a wrapper that
+            // answered it itself would make every voice readiness poll a
+            // whole-transcript read.
+            async fn observe_live_durable_source(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<meerkat_mob::LiveDurableSourceObservation, SessionError> {
+                self.inner.observe_live_durable_source(session_id).await
+            }
+
             #[cfg(feature = "openai-live")]
             async fn validate_live_bridge_member_eligibility(
                 &self,
@@ -7023,6 +7035,15 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::SessionId,
     ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
         self.inner.observe_member_status_view(session_id).await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: the body-free
+    // durable-source observation behind voice readiness.
+    async fn observe_live_durable_source(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::LiveDurableSourceObservation, SessionError> {
+        self.inner.observe_live_durable_source(session_id).await
     }
 
     #[cfg(feature = "openai-live")]
@@ -14142,6 +14163,15 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // In-memory double (meerkat 0.8.47): export visibility is its durable source.
+        async fn observe_live_durable_source(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::LiveDurableSourceObservation, meerkat_core::SessionError> {
+            meerkat_mob::observe_live_durable_source_via_projection_visibility(self, session_id)
+                .await
+        }
+
         // In-memory double: `read` is its published state (meerkat 0.8.45).
         async fn observe_member_status_view(
             &self,
@@ -14486,6 +14516,7 @@ comms = true
     /// tell a forwarded answer from a wrapper-level read.
     const FORWARDED_STATUS_PREVIEW: &str = "committed preview from the inner service";
     const FORWARDED_STATUS_TOKENS: u64 = 4242;
+    const FORWARDED_DURABLE_REVISION: u64 = 7;
 
     #[derive(Default)]
     struct ForwardingProbe {
@@ -14692,6 +14723,16 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn observe_live_durable_source(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::LiveDurableSourceObservation, meerkat_core::SessionError> {
+            self.record("observe_live_durable_source");
+            Ok(meerkat_mob::LiveDurableSourceObservation::Committed {
+                revision: Some(FORWARDED_DURABLE_REVISION),
+            })
+        }
+
         async fn observe_member_status_view(
             &self,
             _session_id: &meerkat_core::SessionId,
@@ -15298,6 +15339,47 @@ comms = true
     /// wrapper can answer it with a `read` that waits on the member's running
     /// turn. Both production decorators must forward it exactly once and
     /// return the inner service's view unchanged.
+    /// meerkat 0.8.47 made `observe_live_durable_source` required: voice
+    /// readiness asks it on every poll and it must stay body-free. Both
+    /// production decorators forward it exactly once and return the inner
+    /// observation unchanged.
+    #[tokio::test]
+    async fn wrappers_forward_the_live_durable_source_observation_exactly() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            live_event_tap: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            assert_eq!(
+                wrapper
+                    .observe_live_durable_source(&session_id)
+                    .await
+                    .expect("the inner observation is forwarded"),
+                meerkat_mob::LiveDurableSourceObservation::Committed {
+                    revision: Some(FORWARDED_DURABLE_REVISION),
+                }
+            );
+        }
+        assert_eq!(
+            probe.calls(),
+            vec!["observe_live_durable_source", "observe_live_durable_source"],
+            "each wrapper forwards exactly once and adds no read of its own"
+        );
+    }
+
     #[tokio::test]
     async fn wrappers_forward_the_member_status_view_exactly() {
         let probe = Arc::new(ForwardingProbe::default());

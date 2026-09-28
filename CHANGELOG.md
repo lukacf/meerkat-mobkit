@@ -103,6 +103,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still load and still keep their member, and host-side code may still set
   it.
 
+- Bind the Meerkat family to published 0.8.47. Voice readiness no longer
+  loads the session body (lukacf/meerkat#1244): meerkat adds the required
+  `MobSessionService::observe_live_durable_source` (forwarded by both MobKit
+  session decorators) and `MobHandle::observe_live_durable_source_readiness`,
+  and MobKit's live binding authorities override
+  `observe_live_durable_source_readiness` with it. The probe checks the
+  member's live binding against the published machine snapshot, observes the
+  durable source body-free, authorizes the binding and checks credential
+  readiness, with no mob actor command, no preface and no pending channel.
+  The real open keeps the full, actor-validated durable check.
 - Bind the Meerkat family to published 0.8.46. Public Live under
   `ProviderManagedUnmeasured` (console voice on gpt-live-1) now commits one
   canonical assistant row per provider turn segment instead of one row per
@@ -266,6 +276,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
+
+- Console voice readiness is fast and never a false "no". The server bounds
+  a check at 4 s (below the console's 5 s request timeout) and, on expiry,
+  logs the typed stage that was running with every stage's elapsed time, then
+  answers the typed `voice_readiness_timed_out` error instead of
+  "unavailable". Concurrent checks for one principal and identity share one
+  check, which is dropped when the last caller gives up. The voice target is
+  one typed lookup instead of a roster scan that cloned the whole mob machine
+  state per member. The console shows the voice button at once in a checking
+  state, never runs two checks for one agent at a time, retries a failed
+  check after 1, 2, 4 and 8 s (capped at 15 s), and aborts the request when
+  the view changes.
 
 - Console response phase no longer stays set after a run whose start was not
   observed (#469). A typed `run_completed` / `run_failed` that names a run but
