@@ -664,6 +664,14 @@ impl ConsoleEventStore {
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
                 }
+                "stream_truncated" => {
+                    // A typed gap in the member's live stream: whether the
+                    // current run ended inside it is unknown, so events after
+                    // it must not borrow that run's lineage. Explicit carriers
+                    // (the next run_started, a terminal's identity) still
+                    // attribute exactly.
+                    state.active_run_by_identity.remove(&identity);
+                }
                 _ => {}
             }
         }
@@ -2986,6 +2994,63 @@ mod tests {
         assert_eq!(
             store.response_phase_for_identity("worker").await.as_deref(),
             Some("generating")
+        );
+    }
+
+    /// Events after a typed stream gap never inherit the run that was
+    /// current before it: the gap may hold that run's terminal and the start
+    /// of another run.
+    #[tokio::test]
+    async fn stream_truncation_ends_inherited_run_lineage() {
+        let store = ConsoleEventStore::new();
+        let run = uuid::Uuid::from_u128(241).to_string();
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity":{"run_id":run},"input":{"kind":"content","content":"first"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "before-gap",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"first run"}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "gap",
+                "rt:worker:1",
+                "stream_truncated",
+                json!({"reason":{"kind":"stream_lagged","dropped":7}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "after-gap",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta":"some run"}),
+            ))
+            .await;
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
+        let frame = |id: &str| {
+            replay
+                .iter()
+                .find(|event| event.event_id == id)
+                .expect("projected frame")
+        };
+        assert_eq!(frame("before-gap").data["run_id"], run);
+        assert!(frame("gap").data.get("run_id").is_none());
+        assert!(
+            frame("after-gap").data.get("run_id").is_none(),
+            "a delta after the gap is not attributed to the run before it"
         );
     }
 
