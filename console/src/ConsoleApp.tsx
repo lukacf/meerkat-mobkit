@@ -32,6 +32,7 @@ import {
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
+  settledHistoryActivity,
   topologyMutationIntent,
 } from "@console-core";
 
@@ -573,6 +574,7 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "boundary_append_applied",
   "boundary_appends_discarded",
   "runtime_notice_snapshot",
+  "assistant_history_snapshot",
   "frame_updated",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
@@ -594,6 +596,7 @@ const ACTIVITY_SKIP_EVENTS = new Set([
   "reasoning_complete",
   "snapshot_complete",
   "snapshot_started",
+  "assistant_history_snapshot",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -1212,11 +1215,19 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!updated || !updated.id) return false;
       const merged = mergeFrameUpdate(log, updated);
       if (!merged) return false;
-      // The incremental busy fold only depends on lifecycle transitions in
-      // timestamp order: replay it when the frame moved or its transition
-      // changed (a user_input going terminal), not for a tool status flip.
+      // History coverage also depends on exact ownership and cursor. A row
+      // enriched or corrected in place must be checked against its boundary
+      // again, even when its timestamp and busy transition did not change.
       if (
         merged.moved ||
+        merged.previous.event !== merged.next.event ||
+        merged.previous.sourceKind !== merged.next.sourceKind ||
+        merged.previous.runtimeKey !== merged.next.runtimeKey ||
+        merged.previous.identity !== merged.next.identity ||
+        merged.previous.sessionId !== merged.next.sessionId ||
+        merged.previous.cursor !== merged.next.cursor ||
+        merged.previous.event === "assistant_history_snapshot" ||
+        merged.next.event === "assistant_history_snapshot" ||
         busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)
       ) {
         log.busyFoldValid = false;
@@ -1359,10 +1370,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     identity: string,
     frame: ConsoleFrame,
   ): void {
-    if (busyTransitionForFrame(frame) === null) return;
     const log = getOrCreateLog(identity);
+    if (frame.event === "assistant_history_snapshot"
+      || (frame.event === "frame_updated" && !log.busyFoldValid)) {
+      recomputeBusyStateFromLog(identity);
+      return;
+    }
+    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
-    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs) {
+    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
@@ -1382,8 +1398,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const log = getOrCreateLog(identity);
     const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const ordered = sortedEvents(log)
-      .filter((frame) => busyTransitionForFrame(frame) !== null)
+    const frames = sortedEvents(log);
+    const coveredHistory = settledHistoryActivity(frames);
+    const ordered = frames
+      // A committed tool row remains transcript evidence. Once the same
+      // session's settled observation covers it, it cannot reopen the queue.
+      .filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame))
       .sort((a, b) => {
         const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
         if (timeDelta !== 0) return timeDelta;
@@ -1430,7 +1450,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!appendFrame(identity, frame)) continue;
       changed = true;
       appended = true;
-      if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
     // A backfill page can carry frames older than the live fold, so it
     // invalidates the incremental busy fold and replays once; a page that
@@ -2088,6 +2107,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
 
   // Helper: update phase for ALL panels showing a given identity
   function updatePhaseForIdentity(identity: string, frame: ConsoleFrame): boolean {
+    // Replayed history can arrive after the settled observation that covers
+    // it. Reconcile the complete evidence instead of animating that old work
+    // as a new live operation. In-place updates may change the same scope.
+    if (frame.sourceKind === "session_history" || frame.event === "assistant_history_snapshot"
+      || frame.event === "frame_updated") {
+      return recomputePhaseForIdentity(identity);
+    }
     let changed = false;
     const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {

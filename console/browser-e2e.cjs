@@ -3235,6 +3235,7 @@ const scenarios = [
 
 const allScenarios = [
     ...scenarios,
+    ...require("./scenarios/settled-history-queue.cjs").scenarios,
     ...require("./scenarios/storage-lock.cjs").scenarios,
     ...require("./scenarios/real-conversation.cjs").scenarios,
     ...require("./scenarios/real-recovery-scope.cjs").scenarios,

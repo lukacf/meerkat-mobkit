@@ -6,6 +6,7 @@ import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } f
 import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "./runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import { parseConsoleContextMessage } from "./context-record";
+import { settledHistoryActivity } from "./settled-history-activity";
 import {
   decodeMemberAlias,
   entryOriginFromFrameData,
@@ -4226,12 +4227,13 @@ export function inferResponsePhaseFromFrames(
   frames: ConsoleFrame[],
   fallback: ResponsePhase = null,
 ): ResponsePhase {
+  const coveredHistory = settledHistoryActivity(frames);
   let phase: ResponsePhase = fallback;
   let interactionOpen = false;
   let runOpen = false;
   for (const frame of frames) {
     // A saved intermediate message supplies content, not current lifecycle.
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
     switch (frame.event) {
       case "user_input":
         if (isTerminalUserInputStatus(frame.status)) phase = null;
@@ -4327,9 +4329,10 @@ export function resolvePanelResponsePhase(args: {
 }
 
 function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
+  const coveredHistory = settledHistoryActivity(frames);
   for (let index = frames.length - 1; index >= 0; index -= 1) {
     const frame = frames[index];
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
     switch (frame.event) {
       case "user_input":
         return isTerminalUserInputStatus(frame.status);
@@ -4363,6 +4366,8 @@ function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
         break;
     }
   }
+  // A history observation only covers its historical prefix. It cannot
+  // override a server phase that may describe newer work not yet received.
   return false;
 }
 

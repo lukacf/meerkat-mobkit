@@ -116,16 +116,31 @@ function text(value) {
   if (!value || typeof value !== "object") return "";
   return text(value.text ?? value.result ?? value.content ?? "");
 }
-function finalText(frame) {
-  // Live's mirrored output deltas also project as interaction_complete.
-  // Only an actual provider-backed, final background assistant message counts.
+function providerFinalTextBlock(block) {
+  return block.block_type === "text" && typeof block.data?.text === "string" &&
+    block.data.meta?.provider === "open_ai_assistant_message" && block.data.meta.phase === "final_answer" &&
+    typeof block.data.meta.response_id === "string" && block.data.meta.response_id.length > 0;
+}
+function finalText(frame, expectedScope = {}) {
+  // Recognize a provider final message committed to canonical history.
+  // text_complete alone is not final, and this does not assert run terminality.
+  // Native member progress and tool/close witnesses retain that responsibility.
   const message = frame.payload?.message;
-  const providerFinal = message?.role === "block_assistant" && message.stop_reason === "end_turn" &&
-    message.blocks?.some(block => block.block_type === "text" &&
-      block.data?.meta?.provider === "open_ai_assistant_message" &&
-      block.data.meta.phase === "final_answer" && typeof block.data.meta.response_id === "string");
-  return frame.kind === "interaction_complete" && frame.status === "completed" &&
-    providerFinal && frame.payload?.is_error !== true ? text(frame.payload) : "";
+  if (frame.kind !== "text_complete" || frame.source?.kind !== "session_history" || frame.status !== "completed" ||
+    frame.payload?.is_error === true || message?.role !== "block_assistant" || message.stop_reason !== "end_turn" ||
+    typeof message.assistant_message_id !== "string" || !message.assistant_message_id ||
+    frame.payload.assistant_message_id !== message.assistant_message_id || !Array.isArray(message.blocks)) return "";
+  for (const key of ["identity", "session_id", "run_id"]) {
+    if (typeof frame[key] !== "string" || !frame[key]) return "";
+  }
+  for (const key of ["identity", "session_id", "run_id", "interaction_id"]) {
+    if (Object.hasOwn(expectedScope, key) && (typeof expectedScope[key] !== "string" || !expectedScope[key] ||
+      frame[key] !== expectedScope[key])) return "";
+  }
+  if (message.identity?.run_id !== frame.run_id ||
+    (message.identity?.interaction_id ?? null) !== (frame.interaction_id ?? null) ||
+    (frame.interaction_id != null && (typeof frame.interaction_id !== "string" || !frame.interaction_id))) return "";
+  return message.blocks.filter(providerFinalTextBlock).map(block => block.data.text).join("");
 }
 function canonicalInputText(message) {
   if (message.role === "system_notice") return typeof message.body === "string" ? message.body : null;
@@ -231,9 +246,7 @@ function successfulSend(frames, expected) {
 }
 function backgroundResponseIds(frames, expected) {
   return new Set(frames.filter(frame => contains(finalText(frame), expected)).flatMap(frame =>
-    frame.payload.message.blocks.filter(block => block.block_type === "text" &&
-      block.data?.meta?.provider === "open_ai_assistant_message" && block.data.meta.phase === "final_answer" &&
-      typeof block.data.meta.response_id === "string")
+    frame.payload.message.blocks.filter(providerFinalTextBlock)
       .map(block => block.data.meta.response_id)));
 }
 function occurrences(value, expected) {
@@ -501,16 +514,71 @@ function selfTest() {
   assert.equal(finalText({ kind: "interaction_complete", payload: { result: "amber", is_error: true } }), "");
   assert.equal(finalText({ kind: "interaction_complete", status: "completed", payload: { result: "amber" } }), "",
     "Mirrored Live transcript must not masquerade as a real background result");
-  const backgroundFinal = { kind: "interaction_complete", status: "completed", payload: {
-    result: "amber", message: { role: "block_assistant", stop_reason: "end_turn",
-      blocks: [{ block_type: "text", data: { meta: { provider: "open_ai_assistant_message",
-        phase: "final_answer", response_id: "response-evidence" } } }] },
-  } };
+  // Exact canonical frame retained from the 2026-09-28 acceptance bootstrap.
+  // It proves a provider final message in history, not committed run terminality.
+  const recordedFinal = JSON.parse(fs.readFileSync(path.join(ASSETS, "committed-assistant-final.json")));
+  const recordedText = "KEEPER READY 0158d5c0-fa97-4cb9-85b2-f6896c049adc";
+  assert.equal(finalText(recordedFinal), recordedText,
+    "The recorded committed provider final must be accepted as text_complete");
+  const scope = Object.fromEntries(["identity", "session_id", "run_id", "interaction_id"]
+    .map(key => [key, recordedFinal[key]]));
+  assert.equal(finalText(recordedFinal, scope), recordedText);
+  for (const key of Object.keys(scope)) {
+    assert.equal(finalText(recordedFinal, { ...scope, [key]: "wrong-scope" }), "", `Reject wrong expected ${key}`);
+    assert.equal(finalText(recordedFinal, { ...scope, [key]: undefined }), "", `Reject missing expected ${key}`);
+  }
+  const rejectFinal = (label, change) => {
+    const frame = structuredClone(recordedFinal);
+    change(frame);
+    assert.equal(finalText(frame), "", label);
+  };
+  rejectFinal("Stream-only text is not committed history", frame => { frame.source.kind = "console_event"; });
+  rejectFinal("Absent provenance is not committed history", frame => { delete frame.source; });
+  rejectFinal("A legacy interaction_complete is not the canonical assistant history frame", frame => { frame.kind = "interaction_complete"; });
+  rejectFinal("A running frame is not a completed assistant message", frame => { frame.status = "running"; });
+  rejectFinal("An errored final must not count", frame => { frame.payload.is_error = true; });
+  rejectFinal("A user message is not an assistant reply", frame => { frame.payload.message.role = "user"; });
+  rejectFinal("Tool-use text does not finish the provider response", frame => { frame.payload.message.stop_reason = "tool_use"; });
+  rejectFinal("Truncated text is not a final reply", frame => { frame.payload.message.stop_reason = "max_tokens"; });
+  rejectFinal("An intermediate provider block is not a final answer", frame => { frame.payload.message.blocks[0].data.meta.phase = "commentary"; });
+  rejectFinal("Only the configured provider's actual final counts", frame => { frame.payload.message.blocks[0].data.meta.provider = "live_mirror"; });
+  rejectFinal("Provider final metadata is mandatory", frame => { delete frame.payload.message.blocks[0].data.meta; });
+  rejectFinal("A nonempty provider response ID is mandatory", frame => { frame.payload.message.blocks[0].data.meta.response_id = ""; });
+  rejectFinal("Flattened result cannot substitute for canonical authored text", frame => { delete frame.payload.message.blocks[0].data.text; });
+  rejectFinal("Tool-only history cannot count as a final text reply", frame => { frame.payload.message.blocks[0].block_type = "tool_use"; });
+  rejectFinal("History must name its assistant message", frame => { delete frame.payload.message.assistant_message_id; });
+  rejectFinal("Projection must name the same assistant message", frame => { frame.payload.assistant_message_id = "wrong-message"; });
+  for (const key of ["identity", "session_id", "run_id"]) {
+    rejectFinal(`History must name its ${key}`, frame => { delete frame[key]; });
+  }
+  for (const key of ["run_id", "interaction_id"]) {
+    rejectFinal(`Canonical message must retain the same ${key}`, frame => { frame.payload.message.identity[key] = "wrong-scope"; });
+  }
+  rejectFinal("An interaction cannot disappear from its projection", frame => { delete frame.interaction_id; });
+  const uncorrelatedFinal = structuredClone(recordedFinal);
+  delete uncorrelatedFinal.interaction_id;
+  delete uncorrelatedFinal.payload.message.identity.interaction_id;
+  assert.equal(finalText(uncorrelatedFinal), recordedText, "System-origin replies need not have a console interaction");
+  assert.equal(finalText(uncorrelatedFinal, scope), "", "Uncorrelated replies cannot satisfy an exact accepted input");
+  const misleadingMirror = structuredClone(recordedFinal);
+  misleadingMirror.payload.result = misleadingMirror.payload.text = "unverified mirror text";
+  assert.equal(finalText(misleadingMirror), recordedText, "Read the provider final block, never the flattened mirror");
+  const mixedBlocks = structuredClone(recordedFinal);
+  mixedBlocks.payload.message.blocks.unshift({ block_type: "text", data: {
+    text: "intermediate text", meta: { provider: "open_ai_assistant_message", phase: "commentary", response_id: "intermediate" },
+  } });
+  assert.equal(finalText(mixedBlocks), recordedText, "Intermediate blocks cannot borrow final-answer provenance");
+  const reply = value => {
+    const frame = structuredClone(recordedFinal);
+    frame.payload.result = frame.payload.text = frame.payload.message.blocks[0].data.text = value;
+    return frame;
+  };
+  const backgroundFinal = reply("amber");
   assert.equal(finalText(backgroundFinal), "amber");
-  const wordReply = { ...backgroundFinal, payload: { ...backgroundFinal.payload, result: "maple amber" } };
+  const wordReply = reply("maple amber");
   assert.equal(verifiedWordReply(wordReply, ["amber", "maple"], "jade birch"), false,
     "Trivial reversed words without keeper-only knowledge cannot satisfy phase one");
-  const completeWordReply = { ...wordReply, payload: { ...wordReply.payload, result: "maple amber; code jade birch" } };
+  const completeWordReply = reply("maple amber; code jade birch");
   assert.equal(verifiedWordReply(completeWordReply, ["amber", "maple"], "jade birch"), true);
   assert.equal(verifiedWordReply({ ...completeWordReply, payload: { ...completeWordReply.payload, message: undefined } },
     ["amber", "maple"], "jade birch"), false, "A Live-only answer cannot masquerade as a verified background reply");
@@ -555,7 +623,7 @@ function selfTest() {
   assert.throws(() => decodeAgentSse(KEEPER, () => {})(
     `id: rt:${KEEPER}:0:0\nevent: tool_execution_started\ndata: {"type":"tool_execution_started","id":"real-shell-call","name":"shell"}\n\n`),
   "The SSE prefix must match the public identity actually subscribed, not runtime bookkeeping");
-  assert.equal(hasPendingResults([backgroundFinal], ["amber"]), false, "Already-completed work cannot prove close-under-load");
+  assert.equal(hasPendingResults([backgroundFinal], ["amber"]), false, "A result already in canonical history cannot be reported as absent");
   assert.equal(hasPendingResults([backgroundFinal], ["amber", "jade"]), true);
   const readyIdentity = { identity: "primary", state: "active", response_phase: null, session_id: "canonical" };
   const idleMember = { current_session_id: "canonical", error: null,
@@ -615,7 +683,7 @@ function selfTest() {
   assert.deepEqual(manifest.phrases, PHRASES);
   assert.deepEqual(manifest.word_fixtures, WORDS);
   log("offline-pass", { fixtures: WORDS.length + Object.keys(PHRASES).length,
-    checks: "transcript/audio windows, source provenance, native send success, duplicate projections/executions, receipt isolation" });
+    checks: "transcript/audio windows, canonical provider final and scope, native send success, duplicate projections/executions, receipt isolation" });
 }
 
 async function startPeerGate(facts) {
@@ -1276,6 +1344,7 @@ async function runBrowser(url, facts, directory, gate) {
     activation_receipt: active.activationReceipt });
   const status = active => rpc("mobkit/live/status", controlParams(active));
   const history = new Map();
+  const sessionIds = new Map();
   const frames = async identity => {
     const result = await rpc("mobkit/console/query_timeline", { identity, mode: "recent", limit: 1000 });
     for (const frame of result.frames ?? []) history.set(frame.id, frame);
@@ -1283,8 +1352,9 @@ async function runBrowser(url, facts, directory, gate) {
   };
   const watermark = async identity => new Set((await frames(identity)).map(frame => frame.id));
   const since = async (identity, previous) => (await frames(identity)).filter(frame => !previous.has(frame.id));
-  const final = (identity, previous, expected) => poll(`${identity} source final: ${expected}`, async () =>
-    (await since(identity, previous)).find(frame => contains(finalText(frame), expected)), 120_000, 500);
+  const final = (identity, previous, expected, scope = {}) => poll(`${identity} source final: ${expected}`, async () =>
+    (await since(identity, previous)).find(frame => contains(finalText(frame,
+      { identity, ...(sessionIds.has(identity) ? { session_id: sessionIds.get(identity) } : {}), ...scope }), expected)), 120_000, 500);
   const sourceSend = (identity, previous, expected) => poll(`${identity} successful native send: ${expected}`,
     async () => successfulSend(await since(identity, previous), expected), 120_000, 500);
   const send = async (identity, content) => {
@@ -1391,17 +1461,21 @@ async function runBrowser(url, facts, directory, gate) {
     await page.goto(`${url}/console`);
     await page.getByTestId(`chat-composer:${PRIMARY}`).waitFor({ timeout: 30_000 });
     const [warm, keeperWarm] = await Promise.all([watermark(PRIMARY), watermark(KEEPER)]);
-    await Promise.all([
+    const [primaryBarrier, keeperBarrier] = await Promise.all([
       send(PRIMARY, `Bootstrap barrier. Process this after prior queued startup work. Use no peer or shell tools for this operator message. Reply exactly ORIGINAL READY ${facts.nonce}.`),
       peerSend(`Bootstrap barrier. Process this after prior queued startup work. Use no peer or shell tools for this operator message. Reply exactly KEEPER READY ${facts.nonce}.`),
     ]);
     const barriers = await Promise.all([
-      final(PRIMARY, warm, `ORIGINAL READY ${facts.nonce}`),
-      final(KEEPER, keeperWarm, `KEEPER READY ${facts.nonce}`),
+      final(PRIMARY, warm, `ORIGINAL READY ${facts.nonce}`, { interaction_id: primaryBarrier.result.interaction_id }),
+      final(KEEPER, keeperWarm, `KEEPER READY ${facts.nonce}`, { interaction_id: keeperBarrier.interaction_id }),
     ]);
     const records = [];
     for (const identity of [PRIMARY, KEEPER]) {
-      records.push((await rpc("mobkit/console/inspect_identity", { identity })).identity);
+      const record = (await rpc("mobkit/console/inspect_identity", { identity })).identity;
+      assert.equal(barriers.find(frame => frame.identity === identity)?.session_id, record.session_id,
+        "Startup barrier must belong to the inspected canonical session");
+      sessionIds.set(identity, record.session_id);
+      records.push(record);
     }
     let lastWitness;
     let stableReads = 0;
@@ -1495,7 +1569,7 @@ async function runBrowser(url, facts, directory, gate) {
     const typedMark = await mark(page);
     const content = `CURRENT_VALUE ${facts.typed}. Request nonce ${facts.nonce}-typed. Store this exact four-word value and confirm all four words once.`;
     const typed = await send(PRIMARY, content);
-    await final(PRIMARY, beforeTyped, facts.typed);
+    await final(PRIMARY, beforeTyped, facts.typed, { interaction_id: typed.result.interaction_id });
     const typedSource = readCommittedTypedSource(directory, original.session_id);
     const canonicalTypedUser = assertCanonicalTypedUser(typedSource, original.session_id, typed.result.interaction_id, content);
     observations.typedCanonicalSource = { sessionId: typedSource.sessionId, storeRevision: typedSource.storeRevision,
@@ -1550,7 +1624,7 @@ async function runBrowser(url, facts, directory, gate) {
     await final(PRIMARY, overlapBefore, facts.oldTyped);
     const concurrentContent = `CURRENT_VALUE ${facts.overlapValue}. Request nonce ${facts.nonce}-concurrent-append. Replace the earlier console value and confirm these four words while the keeper checks finish.`;
     const concurrent = await send(PRIMARY, concurrentContent);
-    await final(PRIMARY, overlapBefore, facts.overlapValue);
+    await final(PRIMARY, overlapBefore, facts.overlapValue, { interaction_id: concurrent.result.interaction_id });
     observations.nativeKeeperSubscription = {};
     keeperObserver = await subscribeNativeAgent(url, KEEPER, observations.nativeKeeperSubscription);
     observations.nativeKeeperEvents = keeperObserver.events;
@@ -1587,8 +1661,8 @@ async function runBrowser(url, facts, directory, gate) {
       "The old voice result must not already be in canonical history at reopen");
     const newBefore = await watermark(PRIMARY);
     const newMark = await mark(page);
-    await send(PRIMARY, `CURRENT_VALUE ${facts.reopened}. Request nonce ${facts.nonce}-reopened. Replace the earlier value. Confirm only this fresh four-word value; do not recap previous tasks.`);
-    await final(PRIMARY, newBefore, facts.reopened);
+    const reopenedInput = await send(PRIMARY, `CURRENT_VALUE ${facts.reopened}. Request nonce ${facts.nonce}-reopened. Replace the earlier value. Confirm only this fresh four-word value; do not recap previous tasks.`);
+    await final(PRIMARY, newBefore, facts.reopened, { interaction_id: reopenedInput.result.interaction_id });
     await hear(newMark, facts.reopened, "new-session current value");
 
     const lateRelease = await mark(page);
@@ -1859,8 +1933,8 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
     await page.addInitScript(instrumentBrowser);
     await page.goto(`${gateway.url}/console`);
     await page.getByTestId(`chat-composer:${PRIMARY}`).waitFor({ timeout: 30_000 });
-    const finals = async () => new Set(((await rpc("mobkit/console/query_timeline", { identity: PRIMARY, mode: "recent", limit: 1000 }))
-      .frames ?? []).filter(frame => finalText(frame)).map(frame => frame.id));
+    const finals = async (scope = {}) => new Set(((await rpc("mobkit/console/query_timeline", { identity: PRIMARY, mode: "recent", limit: 1000 }))
+      .frames ?? []).filter(frame => finalText(frame, { identity: PRIMARY, ...scope })).map(frame => frame.id));
     const seedStarted = Date.now();
     const turns = Math.max(1, seedTurns);
     for (let turn = 1; turn <= turns; turn++) {
@@ -1868,8 +1942,9 @@ async function timeToTalk({ runs, seedTurns, seedWords, holdMs }) {
       const content = seedTurns < 1
         ? `Startup barrier ${nonce}. Use no tools. Reply exactly READY.`
         : `Seed turn ${turn} of ${turns}. Use no tools. Reply in about ${seedWords} words of plain prose that mention the number ${turn} and give facts about the word ${WORDS[turn % WORDS.length]}.`;
-      await rpc("mobkit/console/send", { identity: PRIMARY, content, origin: "voice-time-to-talk", idempotency_key: crypto.randomUUID() });
-      await poll(`seed turn ${turn} final`, async () => [...await finals()].some(id => !before.has(id)), 120_000, 500);
+      const accepted = await rpc("mobkit/console/send", { identity: PRIMARY, content, origin: "voice-time-to-talk", idempotency_key: crypto.randomUUID() });
+      await poll(`seed turn ${turn} final`, async () => [...await finals({ interaction_id: accepted.interaction_id })]
+        .some(id => !before.has(id)), 120_000, 500);
     }
     const original = (await rpc("mobkit/console/inspect_identity", { identity: PRIMARY })).identity;
     // Let the last turn's checkpoint commit before reading the store.

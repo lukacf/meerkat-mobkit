@@ -31,9 +31,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-// node_modules/inline-style-parser/cjs/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/inline-style-parser/cjs/index.js
 var require_cjs = __commonJS({
-  "node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
+  "../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
     "use strict";
     var COMMENT_REGEX = /\/\*[^*]*\*+([^/*][^*]*\*+)*\//g;
     var NEWLINE_REGEX = /\n/g;
@@ -170,9 +170,9 @@ var require_cjs = __commonJS({
   }
 });
 
-// node_modules/style-to-object/cjs/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-object/cjs/index.js
 var require_cjs2 = __commonJS({
-  "node_modules/style-to-object/cjs/index.js"(exports) {
+  "../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-object/cjs/index.js"(exports) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -204,9 +204,9 @@ var require_cjs2 = __commonJS({
   }
 });
 
-// node_modules/style-to-js/cjs/utilities.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-js/cjs/utilities.js
 var require_utilities = __commonJS({
-  "node_modules/style-to-js/cjs/utilities.js"(exports) {
+  "../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-js/cjs/utilities.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.camelCase = void 0;
@@ -243,9 +243,9 @@ var require_utilities = __commonJS({
   }
 });
 
-// node_modules/style-to-js/cjs/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-js/cjs/index.js
 var require_cjs3 = __commonJS({
-  "node_modules/style-to-js/cjs/index.js"(exports, module2) {
+  "../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/style-to-js/cjs/index.js"(exports, module2) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -269,9 +269,9 @@ var require_cjs3 = __commonJS({
   }
 });
 
-// node_modules/extend/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/extend/index.js
 var require_extend = __commonJS({
-  "node_modules/extend/index.js"(exports, module2) {
+  "../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/extend/index.js"(exports, module2) {
     "use strict";
     var hasOwn = Object.prototype.hasOwnProperty;
     var toStr = Object.prototype.toString;
@@ -418,7 +418,7 @@ async function withConsoleSendStorageLock(key, update) {
 // src/ConsoleApp.tsx
 var import_react45 = __toESM(require("react"));
 
-// node_modules/clsx/dist/clsx.mjs
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -750,6 +750,53 @@ function assistantHistorySnapshot(frame) {
     assistantMessageIds.add(id);
   }
   return { sessionId: frame.sessionId, observedThrough, assistantMessageIds };
+}
+
+// ../packages/console-core/src/settled-history-activity.ts
+var LEGACY_ACTIVITY = /* @__PURE__ */ new Set([
+  "reasoning_delta",
+  "reasoning_complete",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
+  "server_tool_content"
+]);
+function exactScope(frame) {
+  const fields = [frame.runtimeKey, frame.identity, frame.sessionId];
+  return fields.every((value) => typeof value === "string" && value.trim()) ? JSON.stringify(fields) : void 0;
+}
+function settledHistoryActivity(frames) {
+  const observations = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const snapshot = assistantHistorySnapshot(frame);
+    const scope = exactScope(frame);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (!snapshot || !scope || cursor === void 0) continue;
+    const previous3 = observations.get(scope);
+    if (!previous3 || cursor > previous3.cursor) {
+      observations.set(scope, {
+        cursor,
+        through: snapshot.observedThrough,
+        ids: snapshot.assistantMessageIds,
+        conflict: false
+      });
+    } else if (cursor === previous3.cursor && (snapshot.observedThrough !== previous3.through || snapshot.assistantMessageIds.size !== previous3.ids.size || [...snapshot.assistantMessageIds].some((id) => !previous3.ids.has(id)))) {
+      previous3.conflict = true;
+    }
+  }
+  const covered = /* @__PURE__ */ new Set();
+  for (const frame of frames) {
+    if (frame.sourceKind !== "session_history" || !LEGACY_ACTIVITY.has(frame.event)) continue;
+    const scope = exactScope(frame);
+    const observation = scope && observations.get(scope);
+    const cursor = assistantMessageCursorSequence(frame.cursor);
+    if (observation && !observation.conflict && cursor !== void 0 && cursor <= observation.through) {
+      covered.add(frame);
+    }
+  }
+  return covered;
 }
 
 // ../packages/console-core/src/control-plane.ts
@@ -3938,6 +3985,300 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+function formatServerToolAnnotations(annotations) {
+  return annotations.map((annotation, index2) => {
+    const record4 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record4?.title === "string" && record4.title.trim() ? record4.title.trim() : typeof record4?.text === "string" && record4.text.trim() ? record4.text.trim() : `Source ${index2 + 1}`;
+    const url = typeof record4?.url === "string" && record4.url.trim() ? record4.url.trim() : "";
+    return url ? `${index2 + 1}. ${title}
+${url}` : `${index2 + 1}. ${title}`;
+  }).join("\n\n").trim();
+}
+function serverToolContentSummary(frame) {
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
+  const status = typeof content3?.status === "string" ? content3.status : typeof record4?.status === "string" ? record4.status : "";
+  if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
+    return { status: "error" };
+  }
+  if (Array.isArray(content3?.annotations)) {
+    const result = formatServerToolAnnotations(content3.annotations);
+    return {
+      status: "success",
+      ...result ? { result } : {}
+    };
+  }
+  if (type.includes(".completed") || type.includes(".done") || status === "completed" || status === "done" || status === "succeeded") {
+    return { status: "success" };
+  }
+  if (type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || status === "in_progress" || status === "searching" || status === "queued" || type.includes("_call")) {
+    return { status: "pending" };
+  }
+  return null;
+}
+function isActiveServerToolContentFrame(frame) {
+  return serverToolContentSummary(frame)?.status === "pending";
+}
+function isTerminalServerToolContentFrame(frame) {
+  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
+  const type = typeof content3?.type === "string" ? content3.type : "";
+  if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
+  const status = serverToolContentSummary(frame)?.status;
+  return status === "success" || status === "error";
+}
+function textFromUnknown(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function typedNoticeBlockText(block) {
+  const parts = [
+    textFromUnknown(block.summary),
+    textFromUnknown(block.body),
+    textFromUnknown(block.detail),
+    textFromUnknown(block.state),
+    textFromUnknown(block.status)
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+function isExternalEventOnlySystemNotice(message) {
+  if (!message || typeof message !== "object") return false;
+  const record4 = message;
+  if (textFromUnknown(record4.kind) === "external_event") return true;
+  const blocks = record4.blocks;
+  if (!Array.isArray(blocks)) return false;
+  let sawExternalEventBlock = false;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const type = textFromUnknown(block.type);
+    if (!type) continue;
+    if (type !== "external_event") return false;
+    sawExternalEventBlock = true;
+  }
+  return sawExternalEventBlock;
+}
+function systemNoticeMessageRecord(frame) {
+  if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
+    return null;
+  }
+  const data = frame.data;
+  if (data.message && typeof data.message === "object") {
+    return data.message;
+  }
+  return data;
+}
+function systemNoticeBlockRecords(record4) {
+  const blocks = record4.blocks;
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter((block) => Boolean(block) && typeof block === "object");
+}
+function legacyPeerNoticeTextCandidates(record4) {
+  const candidates = [];
+  const body = textFromUnknown(record4.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record4)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content3 = block.content;
+    if (!Array.isArray(content3)) continue;
+    for (const item of content3) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown(data.text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
+  }
+  return candidates;
+}
+function isLegacyPeerNoticeText(text8) {
+  return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text8.trim());
+}
+function canUseLegacyPeerNoticeText(record4) {
+  const kind = textFromUnknown(record4.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record4).map((block) => textFromUnknown(block.type)).filter(Boolean);
+  return blockTypes.every((type) => type === "text");
+}
+function systemNoticeClearsBusyState(frame) {
+  const record4 = systemNoticeMessageRecord(frame);
+  if (!record4 || isExternalEventOnlySystemNotice(record4)) return false;
+  if (textFromUnknown(record4.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record4);
+  if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText(record4)) return false;
+  return legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+}
+function isIntermediateHistoryAssistantStep(frame) {
+  if (frame.sourceKind !== "session_history" || frame.event !== "text_complete" && frame.event !== "interaction_complete") return false;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = data.message && typeof data.message === "object" ? data.message : {};
+  return message.role === "block_assistant" && message.stop_reason === "tool_use";
+}
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  const coveredHistory = settledHistoryActivity(frames);
+  let phase2 = fallback;
+  let interactionOpen = false;
+  let runOpen = false;
+  for (const frame of frames) {
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+    switch (frame.event) {
+      case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
+        else phase2 = "waiting";
+        break;
+      case "interaction_started":
+        interactionOpen = true;
+        phase2 = "waiting";
+        break;
+      case "run_started":
+        runOpen = true;
+        phase2 = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+        phase2 = "tool-executing";
+        break;
+      case "server_tool_content":
+        if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
+        else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
+        break;
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase2 = "waiting";
+        break;
+      case "reasoning_delta":
+        phase2 = "generating";
+        break;
+      case "reasoning_complete":
+        phase2 = "waiting";
+        break;
+      case "text_delta":
+        phase2 = "generating";
+        break;
+      case "text_complete":
+        phase2 = interactionOpen || runOpen ? "waiting" : null;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        phase2 = null;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        phase2 = interactionOpen ? "waiting" : null;
+        break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) phase2 = null;
+        break;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
+          phase2 = interactionOpen || runOpen ? "waiting" : null;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return phase2;
+}
+function isTerminalUserInputStatus(status) {
+  return status === "completed" || status === "delivery_failed" || status === "failed";
+}
+function resolvePanelResponsePhase(args) {
+  if (args.hasLocalPhase) {
+    return args.localPhase ?? null;
+  }
+  if (args.frames.length > 0) {
+    const localPhase = inferResponsePhaseFromFrames(args.frames, null);
+    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
+      return args.serverPhase;
+    }
+    return localPhase;
+  }
+  return args.serverPhase ?? null;
+}
+function latestRoutableFrameIsTerminal(frames) {
+  const coveredHistory = settledHistoryActivity(frames);
+  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
+    const frame = frames[index2];
+    if (coveredHistory.has(frame) || isIntermediateHistoryAssistantStep(frame)) continue;
+    switch (frame.event) {
+      case "user_input":
+        return isTerminalUserInputStatus(frame.status);
+      case "text_complete":
+      case "run_completed":
+      case "run_failed":
+        return !hasOpenLifecycleBefore(frames, index2);
+      case "interaction_complete":
+      case "interaction_failed":
+      case "message_delivery_failed":
+        return true;
+      case "system_notice":
+        return systemNoticeClearsBusyState(frame);
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+      }
+      case "interaction_started":
+      case "run_started":
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+      case "reasoning_delta":
+      case "reasoning_complete":
+      case "text_delta":
+        return false;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+function hasOpenLifecycleBefore(frames, beforeIndex) {
+  let interactionOpen = false;
+  let runOpen = false;
+  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
+    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
+    switch (frames[index2].event) {
+      case "interaction_started":
+        interactionOpen = true;
+        break;
+      case "run_started":
+        runOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        break;
+      case "message_delivery_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      default:
+        break;
+    }
+  }
+  return interactionOpen || runOpen;
+}
 
 // ../packages/console-core/src/contract.ts
 var CONSOLE_RPC_METHODS = {
@@ -5845,13 +6186,13 @@ var import_react7 = require("react");
 // ../packages/console-components/src/conversation/conversation-markdown.tsx
 var import_react6 = require("react");
 
-// node_modules/devlop/lib/default.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/devlop/lib/default.js
 function ok() {
 }
 function unreachable() {
 }
 
-// node_modules/comma-separated-tokens/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/comma-separated-tokens/index.js
 function stringify(values, options) {
   const settings = options || {};
   const input = values[values.length - 1] === "" ? [...values, ""] : values;
@@ -5860,7 +6201,7 @@ function stringify(values, options) {
   ).trim();
 }
 
-// node_modules/estree-util-is-identifier-name/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/estree-util-is-identifier-name/lib/index.js
 var nameRe = /^[$_\p{ID_Start}][$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var nameReJsx = /^[$_\p{ID_Start}][-$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var emptyOptions = {};
@@ -5870,7 +6211,7 @@ function name(name2, options) {
   return re2.test(name2);
 }
 
-// node_modules/hast-util-whitespace/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/hast-util-whitespace/lib/index.js
 var re = /[ \t\n\f\r]/g;
 function whitespace(thing) {
   return typeof thing === "object" ? thing.type === "text" ? empty(thing.value) : false : empty(thing);
@@ -5879,7 +6220,7 @@ function empty(value) {
   return value.replace(re, "") === "";
 }
 
-// node_modules/property-information/lib/util/schema.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/schema.js
 var Schema = class {
   /**
    * @param {SchemaType['property']} property
@@ -5903,7 +6244,7 @@ Schema.prototype.normal = {};
 Schema.prototype.property = {};
 Schema.prototype.space = void 0;
 
-// node_modules/property-information/lib/util/merge.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/merge.js
 function merge(definitions, space2) {
   const property = {};
   const normal = {};
@@ -5914,12 +6255,12 @@ function merge(definitions, space2) {
   return new Schema(property, normal, space2);
 }
 
-// node_modules/property-information/lib/normalize.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/normalize.js
 function normalize(value) {
   return value.toLowerCase();
 }
 
-// node_modules/property-information/lib/util/info.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/info.js
 var Info = class {
   /**
    * @param {string} property
@@ -5947,7 +6288,7 @@ Info.prototype.property = "";
 Info.prototype.spaceSeparated = false;
 Info.prototype.space = void 0;
 
-// node_modules/property-information/lib/util/types.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/types.js
 var types_exports = {};
 __export(types_exports, {
   boolean: () => boolean2,
@@ -5970,7 +6311,7 @@ function increment() {
   return 2 ** ++powers;
 }
 
-// node_modules/property-information/lib/util/defined-info.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/defined-info.js
 var checks = (
   /** @type {ReadonlyArray<keyof typeof types>} */
   Object.keys(types_exports)
@@ -6008,7 +6349,7 @@ function mark(values, key, value) {
   }
 }
 
-// node_modules/property-information/lib/util/create.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/create.js
 function create(definition3) {
   const properties = {};
   const normals = {};
@@ -6029,7 +6370,7 @@ function create(definition3) {
   return new Schema(properties, normals, definition3.space);
 }
 
-// node_modules/property-information/lib/aria.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/aria.js
 var aria = create({
   properties: {
     ariaActiveDescendant: null,
@@ -6087,17 +6428,17 @@ var aria = create({
   }
 });
 
-// node_modules/property-information/lib/util/case-sensitive-transform.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/case-sensitive-transform.js
 function caseSensitiveTransform(attributes, attribute) {
   return attribute in attributes ? attributes[attribute] : attribute;
 }
 
-// node_modules/property-information/lib/util/case-insensitive-transform.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/util/case-insensitive-transform.js
 function caseInsensitiveTransform(attributes, property) {
   return caseSensitiveTransform(attributes, property.toLowerCase());
 }
 
-// node_modules/property-information/lib/html.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/html.js
 var html = create({
   attributes: {
     acceptcharset: "accept-charset",
@@ -6471,7 +6812,7 @@ var html = create({
   transform: caseInsensitiveTransform
 });
 
-// node_modules/property-information/lib/svg.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/svg.js
 var svg = create({
   attributes: {
     accentHeight: "accent-height",
@@ -7035,7 +7376,7 @@ var svg = create({
   transform: caseSensitiveTransform
 });
 
-// node_modules/property-information/lib/xlink.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/xlink.js
 var xlink = create({
   properties: {
     xLinkActuate: null,
@@ -7052,7 +7393,7 @@ var xlink = create({
   }
 });
 
-// node_modules/property-information/lib/xmlns.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/xmlns.js
 var xmlns = create({
   attributes: { xmlnsxlink: "xmlns:xlink" },
   properties: { xmlnsXLink: null, xmlns: null },
@@ -7060,7 +7401,7 @@ var xmlns = create({
   transform: caseInsensitiveTransform
 });
 
-// node_modules/property-information/lib/xml.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/xml.js
 var xml = create({
   properties: { xmlBase: null, xmlLang: null, xmlSpace: null },
   space: "xml",
@@ -7069,7 +7410,7 @@ var xml = create({
   }
 });
 
-// node_modules/property-information/lib/hast-to-react.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/hast-to-react.js
 var hastToReact = {
   classId: "classID",
   dataType: "datatype",
@@ -7090,7 +7431,7 @@ var hastToReact = {
   xmlnsXLink: "xmlnsXlink"
 };
 
-// node_modules/property-information/lib/find.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/lib/find.js
 var cap = /[A-Z]/g;
 var dash = /-[a-z]/g;
 var valid = /^data[-\w.:]+$/i;
@@ -7126,19 +7467,19 @@ function camelcase($0) {
   return $0.charAt(1).toUpperCase();
 }
 
-// node_modules/property-information/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/property-information/index.js
 var html2 = merge([aria, html, xlink, xmlns, xml], "html");
 var svg2 = merge([aria, svg, xlink, xmlns, xml], "svg");
 
-// node_modules/space-separated-tokens/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/space-separated-tokens/index.js
 function stringify2(values) {
   return values.join(" ").trim();
 }
 
-// node_modules/hast-util-to-jsx-runtime/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/hast-util-to-jsx-runtime/lib/index.js
 var import_style_to_js = __toESM(require_cjs3(), 1);
 
-// node_modules/unist-util-position/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-position/lib/index.js
 var pointEnd = point("end");
 var pointStart = point("start");
 function point(type) {
@@ -7162,7 +7503,7 @@ function position(node2) {
   }
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -7188,7 +7529,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/vfile-message/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile-message/lib/index.js
 var VFileMessage = class extends Error {
   /**
    * Create a message for `reason`.
@@ -7324,7 +7665,7 @@ VFileMessage.prototype.place = void 0;
 VFileMessage.prototype.ruleId = void 0;
 VFileMessage.prototype.source = void 0;
 
-// node_modules/hast-util-to-jsx-runtime/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/hast-util-to-jsx-runtime/lib/index.js
 var own = {}.hasOwnProperty;
 var emptyMap = /* @__PURE__ */ new Map();
 var cap2 = /[A-Z]/g;
@@ -7703,7 +8044,7 @@ function toDash($0) {
   return "-" + $0.toLowerCase();
 }
 
-// node_modules/html-url-attributes/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/html-url-attributes/lib/index.js
 var urlAttributes = {
   action: ["form"],
   cite: ["blockquote", "del", "ins", "q"],
@@ -7728,11 +8069,11 @@ var urlAttributes = {
   ]
 };
 
-// node_modules/react-markdown/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/react-markdown/lib/index.js
 var import_jsx_runtime11 = require("react/jsx-runtime");
 var import_react5 = require("react");
 
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions2 = {};
 function toString(value, options) {
   const settings = options || emptyOptions2;
@@ -7769,7 +8110,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -9898,13 +10239,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/decode-named-character-reference/index.js
 var own2 = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own2.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-chunked/index.js
 function splice(list4, start2, remove, items) {
   const end = list4.length;
   let chunkStart = 0;
@@ -9938,7 +10279,7 @@ function push(list4, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -9978,7 +10319,7 @@ function constructs(existing, list4) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code4 = Number.parseInt(value, base);
   if (
@@ -9996,12 +10337,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code4);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -10033,7 +10374,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-util-sanitize-uri/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-sanitize-uri/index.js
 function normalizeUri(value) {
   const result = [];
   let index2 = -1;
@@ -10072,7 +10413,7 @@ function normalizeUri(value) {
   return result.join("") + value.slice(start2);
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok3, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -10094,7 +10435,7 @@ function factorySpace(effects, ok3, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -10144,7 +10485,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/initialize/document.js
 var document2 = {
   tokenize: initializeDocument
 };
@@ -10326,7 +10667,7 @@ function tokenizeContainer(effects, ok3, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok3, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code4) {
   if (code4 === null || markdownLineEndingOrSpace(code4) || unicodeWhitespace(code4)) {
     return 1;
@@ -10336,7 +10677,7 @@ function classifyCharacter(code4) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -10350,7 +10691,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -10481,7 +10822,7 @@ function movePoint(point4, offset) {
   point4._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -10582,7 +10923,7 @@ function tokenizeAutolink(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -10597,7 +10938,7 @@ function tokenizeBlankLine(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -10655,7 +10996,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -10681,7 +11022,7 @@ function tokenizeCharacterEscape(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -10746,7 +11087,7 @@ function tokenizeCharacterReference(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -10929,7 +11270,7 @@ function tokenizeNonLazyContinuation(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -10993,7 +11334,7 @@ function tokenizeFurtherStart(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -11108,7 +11449,7 @@ function tokenizeCodeText(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -11301,7 +11642,7 @@ function chunkedPush(list4, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -11454,7 +11795,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -11525,7 +11866,7 @@ function tokenizeContinuation(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -11617,7 +11958,7 @@ function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerT
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   const self2 = this;
   let size = 0;
@@ -11678,7 +12019,7 @@ function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   let marker;
   return start2;
@@ -11740,7 +12081,7 @@ function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok3) {
   let seen;
   return start2;
@@ -11759,7 +12100,7 @@ function factoryWhitespace(effects, ok3) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -11845,7 +12186,7 @@ function tokenizeTitleBefore(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -11866,7 +12207,7 @@ function tokenizeHardBreakEscape(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -11957,7 +12298,7 @@ function tokenizeHeadingAtx(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -12024,7 +12365,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -12403,7 +12744,7 @@ function tokenizeBlankLineBefore(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -12709,7 +13050,7 @@ function tokenizeHtmlText(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -12935,7 +13276,7 @@ function tokenizeReferenceCollapsed(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -12966,7 +13307,7 @@ function tokenizeLabelStartImage(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -12988,7 +13329,7 @@ function tokenizeLabelStartLink(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -13003,7 +13344,7 @@ function tokenizeLineEnding(effects, ok3) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -13042,7 +13383,7 @@ function tokenizeThematicBreak(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -13172,7 +13513,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -13264,7 +13605,7 @@ function tokenizeSetextUnderline(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -13302,7 +13643,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -13441,7 +13782,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -13516,7 +13857,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point4 = {
     _bufferIndex: -1,
@@ -13839,7 +14180,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/parse.js
 function parse2(options) {
   const settings = options || {};
   const constructs2 = (
@@ -13865,14 +14206,14 @@ function parse2(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -13951,7 +14292,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -13969,7 +14310,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-from-markdown/lib/index.js
 var own3 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -14678,7 +15019,7 @@ function defaultOnError(left, right) {
   }
 }
 
-// node_modules/remark-parse/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/remark-parse/lib/index.js
 function remarkParse(options) {
   const self2 = this;
   self2.parser = parser;
@@ -14695,7 +15036,7 @@ function remarkParse(options) {
   }
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
 function blockquote(state, node2) {
   const result = {
     type: "element",
@@ -14707,14 +15048,14 @@ function blockquote(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/break.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/break.js
 function hardBreak(state, node2) {
   const result = { type: "element", tagName: "br", properties: {}, children: [] };
   state.patch(node2, result);
   return [state.applyData(node2, result), { type: "text", value: "\n" }];
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/code.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/code.js
 function code(state, node2) {
   const value = node2.value ? node2.value + "\n" : "";
   const properties = {};
@@ -14738,7 +15079,7 @@ function code(state, node2) {
   return result;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/delete.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/delete.js
 function strikethrough(state, node2) {
   const result = {
     type: "element",
@@ -14750,7 +15091,7 @@ function strikethrough(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
 function emphasis(state, node2) {
   const result = {
     type: "element",
@@ -14762,7 +15103,7 @@ function emphasis(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
 function footnoteReference(state, node2) {
   const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
   const id = String(node2.identifier).toUpperCase();
@@ -14801,7 +15142,7 @@ function footnoteReference(state, node2) {
   return state.applyData(node2, sup);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/heading.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/heading.js
 function heading(state, node2) {
   const result = {
     type: "element",
@@ -14813,7 +15154,7 @@ function heading(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/html.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/html.js
 function html3(state, node2) {
   if (state.options.allowDangerousHtml) {
     const result = { type: "raw", value: node2.value };
@@ -14823,7 +15164,7 @@ function html3(state, node2) {
   return void 0;
 }
 
-// node_modules/mdast-util-to-hast/lib/revert.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/revert.js
 function revert(state, node2) {
   const subtype = node2.referenceType;
   let suffix = "]";
@@ -14851,7 +15192,7 @@ function revert(state, node2) {
   return contents;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
 function imageReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14867,7 +15208,7 @@ function imageReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/image.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/image.js
 function image(state, node2) {
   const properties = { src: normalizeUri(node2.url) };
   if (node2.alt !== null && node2.alt !== void 0) {
@@ -14881,7 +15222,7 @@ function image(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
 function inlineCode(state, node2) {
   const text8 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
   state.patch(node2, text8);
@@ -14895,7 +15236,7 @@ function inlineCode(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
 function linkReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -14916,7 +15257,7 @@ function linkReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/link.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/link.js
 function link(state, node2) {
   const properties = { href: normalizeUri(node2.url) };
   if (node2.title !== null && node2.title !== void 0) {
@@ -14932,7 +15273,7 @@ function link(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/list-item.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/list-item.js
 function listItem(state, node2, parent) {
   const results = state.all(node2);
   const loose = parent ? listLoose(parent) : listItemLoose(node2);
@@ -14995,7 +15336,7 @@ function listItemLoose(node2) {
   return spread === null || spread === void 0 ? node2.children.length > 1 : spread;
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/list.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/list.js
 function list2(state, node2) {
   const properties = {};
   const results = state.all(node2);
@@ -15020,7 +15361,7 @@ function list2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
 function paragraph(state, node2) {
   const result = {
     type: "element",
@@ -15032,14 +15373,14 @@ function paragraph(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/root.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/root.js
 function root2(state, node2) {
   const result = { type: "root", children: state.wrap(state.all(node2)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/strong.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/strong.js
 function strong(state, node2) {
   const result = {
     type: "element",
@@ -15051,7 +15392,7 @@ function strong(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table.js
 function table(state, node2) {
   const rows = state.all(node2);
   const firstRow = rows.shift();
@@ -15088,7 +15429,7 @@ function table(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table-row.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table-row.js
 function tableRow(state, node2, parent) {
   const siblings = parent ? parent.children : void 0;
   const rowIndex = siblings ? siblings.indexOf(node2) : 1;
@@ -15122,7 +15463,7 @@ function tableRow(state, node2, parent) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
 function tableCell(state, node2) {
   const result = {
     type: "element",
@@ -15135,7 +15476,7 @@ function tableCell(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/trim-lines/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/trim-lines/index.js
 var tab = 9;
 var space = 32;
 function trimLines(value) {
@@ -15175,14 +15516,14 @@ function trimLine(value, start2, end) {
   return endIndex > startIndex ? value.slice(startIndex, endIndex) : "";
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/text.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/text.js
 function text5(state, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
 function thematicBreak2(state, node2) {
   const result = {
     type: "element",
@@ -15194,7 +15535,7 @@ function thematicBreak2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// node_modules/mdast-util-to-hast/lib/handlers/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/index.js
 var handlers = {
   blockquote,
   break: hardBreak,
@@ -15229,7 +15570,7 @@ function ignore() {
   return void 0;
 }
 
-// node_modules/@ungap/structured-clone/esm/types.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/types.js
 var VOID = -1;
 var PRIMITIVE = 0;
 var ARRAY = 1;
@@ -15241,7 +15582,7 @@ var SET = 6;
 var ERROR = 7;
 var BIGINT = 8;
 
-// node_modules/@ungap/structured-clone/esm/deserialize.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/deserialize.js
 var { defineProperty } = Object;
 var env = typeof self === "object" ? self : globalThis;
 var guard = (name2, init) => {
@@ -15333,7 +15674,7 @@ var deserializer = ($, _) => {
 };
 var deserialize = (serialized) => deserializer(/* @__PURE__ */ new Map(), serialized)(0);
 
-// node_modules/@ungap/structured-clone/esm/serialize.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/serialize.js
 var EMPTY = "";
 var { toString: toString2 } = {};
 var { keys, is } = Object;
@@ -15470,13 +15811,13 @@ var serialize = (value, { json, lossy } = {}) => {
   return serializer(!(json || lossy), !!json, /* @__PURE__ */ new Map(), _)(value), _;
 };
 
-// node_modules/@ungap/structured-clone/esm/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/index.js
 var esm_default = typeof structuredClone === "function" ? (
   /* c8 ignore start */
   (any, options) => options && ("json" in options || "lossy" in options) ? deserialize(serialize(any, options)) : structuredClone(any)
 ) : (any, options) => deserialize(serialize(any, options));
 
-// node_modules/mdast-util-to-hast/lib/footer.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/footer.js
 function defaultFootnoteBackContent(_, rereferenceIndex) {
   const result = [{ type: "text", value: "\u21A9" }];
   if (rereferenceIndex > 1) {
@@ -15586,7 +15927,7 @@ function footer(state) {
   };
 }
 
-// node_modules/unist-util-is/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-is/lib/index.js
 var convert = (
   // Note: overloads in JSDoc can’t yet use different `@template`s.
   /**
@@ -15685,12 +16026,12 @@ function looksLikeANode(value) {
   return value !== null && typeof value === "object" && "type" in value;
 }
 
-// node_modules/unist-util-visit-parents/lib/color.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-visit-parents/lib/color.js
 function color(d) {
   return d;
 }
 
-// node_modules/unist-util-visit-parents/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-visit-parents/lib/index.js
 var empty2 = [];
 var CONTINUE = true;
 var EXIT = false;
@@ -15767,7 +16108,7 @@ function toResult(value) {
   return value === null || value === void 0 ? empty2 : [value];
 }
 
-// node_modules/unist-util-visit/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unist-util-visit/lib/index.js
 function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   let reverse;
   let test;
@@ -15789,7 +16130,7 @@ function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   }
 }
 
-// node_modules/mdast-util-to-hast/lib/state.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/state.js
 var own4 = {}.hasOwnProperty;
 var emptyOptions3 = {};
 function createState(tree, options) {
@@ -15931,7 +16272,7 @@ function trimMarkdownSpaceStart(value) {
   return value.slice(index2);
 }
 
-// node_modules/mdast-util-to-hast/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/index.js
 function toHast(tree, options) {
   const state = createState(tree, options);
   const node2 = state.one(tree, void 0);
@@ -15944,7 +16285,7 @@ function toHast(tree, options) {
   return result;
 }
 
-// node_modules/remark-rehype/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/remark-rehype/lib/index.js
 function remarkRehype(destination, options) {
   if (destination && "run" in destination) {
     return async function(tree, file) {
@@ -15963,17 +16304,17 @@ function remarkRehype(destination, options) {
   };
 }
 
-// node_modules/bail/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/bail/index.js
 function bail(error) {
   if (error) {
     throw error;
   }
 }
 
-// node_modules/unified/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unified/lib/index.js
 var import_extend = __toESM(require_extend(), 1);
 
-// node_modules/is-plain-obj/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/is-plain-obj/index.js
 function isPlainObject(value) {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -15982,7 +16323,7 @@ function isPlainObject(value) {
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
 
-// node_modules/trough/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/trough/lib/index.js
 function trough() {
   const fns = [];
   const pipeline = { run, use };
@@ -16066,7 +16407,7 @@ function wrap2(middleware, callback) {
   }
 }
 
-// node_modules/vfile/lib/minpath.browser.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile/lib/minpath.browser.js
 var minpath = { basename, dirname, extname, join, sep: "/" };
 function basename(path2, extname2) {
   if (extname2 !== void 0 && typeof extname2 !== "string") {
@@ -16279,13 +16620,13 @@ function assertPath(path2) {
   }
 }
 
-// node_modules/vfile/lib/minproc.browser.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile/lib/minproc.browser.js
 var minproc = { cwd };
 function cwd() {
   return "/";
 }
 
-// node_modules/vfile/lib/minurl.shared.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile/lib/minurl.shared.js
 function isUrl(fileUrlOrPath) {
   return Boolean(
     fileUrlOrPath !== null && typeof fileUrlOrPath === "object" && "href" in fileUrlOrPath && fileUrlOrPath.href && "protocol" in fileUrlOrPath && fileUrlOrPath.protocol && // @ts-expect-error: indexing is fine.
@@ -16293,7 +16634,7 @@ function isUrl(fileUrlOrPath) {
   );
 }
 
-// node_modules/vfile/lib/minurl.browser.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile/lib/minurl.browser.js
 function urlToPath(path2) {
   if (typeof path2 === "string") {
     path2 = new URL(path2);
@@ -16336,7 +16677,7 @@ function getPathFromURLPosix(url) {
   return decodeURIComponent(pathname);
 }
 
-// node_modules/vfile/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/vfile/lib/index.js
 var order = (
   /** @type {const} */
   [
@@ -16792,7 +17133,7 @@ function isUint8Array(value) {
   );
 }
 
-// node_modules/unified/lib/callable-instance.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unified/lib/callable-instance.js
 var CallableInstance = (
   /**
    * @type {new <Parameters extends Array<unknown>, Result>(property: string | symbol) => (...parameters: Parameters) => Result}
@@ -16821,7 +17162,7 @@ var CallableInstance = (
   })
 );
 
-// node_modules/unified/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/unified/lib/index.js
 var own5 = {}.hasOwnProperty;
 var Processor = class _Processor extends CallableInstance {
   /**
@@ -17457,7 +17798,7 @@ function isUint8Array2(value) {
   );
 }
 
-// node_modules/react-markdown/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/react-markdown/lib/index.js
 var changelog = "https://github.com/remarkjs/react-markdown/blob/main/changelog.md";
 var emptyPlugins = [];
 var emptyRemarkRehypeOptions = { allowDangerousHtml: true };
@@ -17603,7 +17944,7 @@ function defaultUrlTransform(value) {
   return "";
 }
 
-// node_modules/ccount/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/ccount/index.js
 function ccount(value, character) {
   const source = String(value);
   if (typeof character !== "string") {
@@ -17618,7 +17959,7 @@ function ccount(value, character) {
   return count;
 }
 
-// node_modules/escape-string-regexp/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/escape-string-regexp/index.js
 function escapeStringRegexp(string4) {
   if (typeof string4 !== "string") {
     throw new TypeError("Expected a string");
@@ -17626,7 +17967,7 @@ function escapeStringRegexp(string4) {
   return string4.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&").replace(/-/g, "\\x2d");
 }
 
-// node_modules/mdast-util-find-and-replace/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-find-and-replace/lib/index.js
 function findAndReplace(tree, list4, options) {
   const settings = options || {};
   const ignored = convert(settings.ignore || []);
@@ -17731,7 +18072,7 @@ function toFunction(replace2) {
   };
 }
 
-// node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
 var inConstruct = "phrasing";
 var notInConstruct = ["autolink", "link", "image", "label"];
 function gfmAutolinkLiteralFromMarkdown() {
@@ -17881,7 +18222,7 @@ function previous2(match, email) {
   (!email || code4 !== 47);
 }
 
-// node_modules/mdast-util-gfm-footnote/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm-footnote/lib/index.js
 footnoteReference2.peek = footnoteReferencePeek;
 function enterFootnoteCallString() {
   this.buffer();
@@ -17994,7 +18335,7 @@ function mapAll(line, index2, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// node_modules/mdast-util-gfm-strikethrough/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm-strikethrough/lib/index.js
 var constructsWithoutStrikethrough = [
   "autolink",
   "destinationLiteral",
@@ -18046,7 +18387,7 @@ function peekDelete() {
   return "~";
 }
 
-// node_modules/markdown-table/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/markdown-table/index.js
 function defaultStringLength(value) {
   return value.length;
 }
@@ -18187,7 +18528,7 @@ function toAlignment(value) {
   return code4 === 67 || code4 === 99 ? 99 : code4 === 76 || code4 === 108 ? 108 : code4 === 82 || code4 === 114 ? 114 : 0;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
 function blockquote2(node2, _, state, info) {
   const exit3 = state.enter("blockquote");
   const tracker = state.createTracker(info);
@@ -18204,7 +18545,7 @@ function map(line, _, blank) {
   return ">" + (blank ? "" : " ") + line;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
 function patternInScope(stack, pattern) {
   return listInScope(stack, pattern.inConstruct, true) && !listInScope(stack, pattern.notInConstruct, false);
 }
@@ -18224,7 +18565,7 @@ function listInScope(stack, list4, none) {
   return false;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/break.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/break.js
 function hardBreak2(_, _1, state, info) {
   let index2 = -1;
   while (++index2 < state.unsafe.length) {
@@ -18235,7 +18576,7 @@ function hardBreak2(_, _1, state, info) {
   return "\\\n";
 }
 
-// node_modules/longest-streak/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/longest-streak/index.js
 function longestStreak(value, substring) {
   const source = String(value);
   let index2 = source.indexOf(substring);
@@ -18259,7 +18600,7 @@ function longestStreak(value, substring) {
   return max;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
 function formatCodeAsIndented(node2, state) {
   return Boolean(
     state.options.fences === false && node2.value && // If there’s no info…
@@ -18269,7 +18610,7 @@ function formatCodeAsIndented(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-fence.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-fence.js
 function checkFence(state) {
   const marker = state.options.fence || "`";
   if (marker !== "`" && marker !== "~") {
@@ -18280,7 +18621,7 @@ function checkFence(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/code.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/code.js
 function code2(node2, _, state, info) {
   const marker = checkFence(state);
   const raw = node2.value || "";
@@ -18332,7 +18673,7 @@ function map2(line, _, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-quote.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-quote.js
 function checkQuote(state) {
   const marker = state.options.quote || '"';
   if (marker !== '"' && marker !== "'") {
@@ -18343,7 +18684,7 @@ function checkQuote(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/definition.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/definition.js
 function definition2(node2, _, state, info) {
   const quote = checkQuote(state);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
@@ -18399,7 +18740,7 @@ function definition2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
 function checkEmphasis(state) {
   const marker = state.options.emphasis || "*";
   if (marker !== "*" && marker !== "_") {
@@ -18410,12 +18751,12 @@ function checkEmphasis(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
 function encodeCharacterReference(code4) {
   return "&#x" + code4.toString(16).toUpperCase() + ";";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/encode-info.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/encode-info.js
 function encodeInfo(outside, inside, marker) {
   const outsideKind = classifyCharacter(outside);
   const insideKind = classifyCharacter(inside);
@@ -18457,7 +18798,7 @@ function encodeInfo(outside, inside, marker) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
 emphasis2.peek = emphasisPeek;
 function emphasis2(node2, _, state, info) {
   const marker = checkEmphasis(state);
@@ -18497,7 +18838,7 @@ function emphasisPeek(_, _1, state) {
   return state.options.emphasis || "*";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
 function formatHeadingAsSetext(node2, state) {
   let literalWithBreak = false;
   visit(node2, function(node3) {
@@ -18511,7 +18852,7 @@ function formatHeadingAsSetext(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/heading.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/heading.js
 function heading2(node2, _, state, info) {
   const rank = Math.max(Math.min(6, node2.depth || 1), 1);
   const tracker = state.createTracker(info);
@@ -18553,7 +18894,7 @@ function heading2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/html.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/html.js
 html4.peek = htmlPeek;
 function html4(node2) {
   return node2.value || "";
@@ -18562,7 +18903,7 @@ function htmlPeek() {
   return "<";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/image.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/image.js
 image2.peek = imagePeek;
 function image2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18619,7 +18960,7 @@ function imagePeek() {
   return "!";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
 imageReference2.peek = imageReferencePeek;
 function imageReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18658,7 +18999,7 @@ function imageReferencePeek() {
   return "!";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
 inlineCode2.peek = inlineCodePeek;
 function inlineCode2(node2, _, state) {
   let value = node2.value || "";
@@ -18689,7 +19030,7 @@ function inlineCodePeek() {
   return "`";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
 function formatLinkAsAutolink(node2, state) {
   const raw = toString(node2);
   return Boolean(
@@ -18704,7 +19045,7 @@ function formatLinkAsAutolink(node2, state) {
   );
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/link.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/link.js
 link2.peek = linkPeek;
 function link2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -18784,7 +19125,7 @@ function linkPeek(node2, _, state) {
   return formatLinkAsAutolink(node2, state) ? "<" : "[";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
 linkReference2.peek = linkReferencePeek;
 function linkReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -18823,7 +19164,7 @@ function linkReferencePeek() {
   return "[";
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
 function checkBullet(state) {
   const marker = state.options.bullet || "*";
   if (marker !== "*" && marker !== "+" && marker !== "-") {
@@ -18834,7 +19175,7 @@ function checkBullet(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
 function checkBulletOther(state) {
   const bullet = checkBullet(state);
   const bulletOther = state.options.bulletOther;
@@ -18854,7 +19195,7 @@ function checkBulletOther(state) {
   return bulletOther;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
 function checkBulletOrdered(state) {
   const marker = state.options.bulletOrdered || ".";
   if (marker !== "." && marker !== ")") {
@@ -18865,7 +19206,7 @@ function checkBulletOrdered(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-rule.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-rule.js
 function checkRule(state) {
   const marker = state.options.rule || "*";
   if (marker !== "*" && marker !== "-" && marker !== "_") {
@@ -18876,7 +19217,7 @@ function checkRule(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/list.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/list.js
 function list3(node2, parent, state, info) {
   const exit3 = state.enter("list");
   const bulletCurrent = state.bulletCurrent;
@@ -18916,7 +19257,7 @@ function list3(node2, parent, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
 function checkListItemIndent(state) {
   const style = state.options.listItemIndent || "one";
   if (style !== "tab" && style !== "one" && style !== "mixed") {
@@ -18927,7 +19268,7 @@ function checkListItemIndent(state) {
   return style;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/list-item.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/list-item.js
 function listItem2(node2, parent, state, info) {
   const listItemIndent = checkListItemIndent(state);
   let bullet = state.bulletCurrent || checkBullet(state);
@@ -18956,7 +19297,7 @@ function listItem2(node2, parent, state, info) {
   }
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
 function paragraph2(node2, _, state, info) {
   const exit3 = state.enter("paragraph");
   const subexit = state.enter("phrasing");
@@ -18966,7 +19307,7 @@ function paragraph2(node2, _, state, info) {
   return value;
 }
 
-// node_modules/mdast-util-phrasing/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-phrasing/lib/index.js
 var phrasing = (
   /** @type {(node?: unknown) => node is Exclude<PhrasingContent, Html>} */
   convert([
@@ -18994,7 +19335,7 @@ var phrasing = (
   ])
 );
 
-// node_modules/mdast-util-to-markdown/lib/handle/root.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/root.js
 function root3(node2, _, state, info) {
   const hasPhrasing = node2.children.some(function(d) {
     return phrasing(d);
@@ -19003,7 +19344,7 @@ function root3(node2, _, state, info) {
   return container.call(state, node2, info);
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-strong.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-strong.js
 function checkStrong(state) {
   const marker = state.options.strong || "*";
   if (marker !== "*" && marker !== "_") {
@@ -19014,7 +19355,7 @@ function checkStrong(state) {
   return marker;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/strong.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/strong.js
 strong2.peek = strongPeek;
 function strong2(node2, _, state, info) {
   const marker = checkStrong(state);
@@ -19054,12 +19395,12 @@ function strongPeek(_, _1, state) {
   return state.options.strong || "*";
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/text.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/text.js
 function text6(node2, _, state, info) {
   return state.safe(node2.value, info);
 }
 
-// node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
 function checkRuleRepetition(state) {
   const repetition = state.options.ruleRepetition || 3;
   if (repetition < 3) {
@@ -19070,13 +19411,13 @@ function checkRuleRepetition(state) {
   return repetition;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
 function thematicBreak3(_, _1, state) {
   const value = (checkRule(state) + (state.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state));
   return state.options.ruleSpaces ? value.slice(0, -1) : value;
 }
 
-// node_modules/mdast-util-to-markdown/lib/handle/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/index.js
 var handle = {
   blockquote: blockquote2,
   break: hardBreak2,
@@ -19100,7 +19441,7 @@ var handle = {
   thematicBreak: thematicBreak3
 };
 
-// node_modules/mdast-util-gfm-table/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm-table/lib/index.js
 function gfmTableFromMarkdown() {
   return {
     enter: {
@@ -19253,7 +19594,7 @@ function gfmTableToMarkdown(options) {
   }
 }
 
-// node_modules/mdast-util-gfm-task-list-item/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm-task-list-item/lib/index.js
 function gfmTaskListItemFromMarkdown() {
   return {
     exit: {
@@ -19326,7 +19667,7 @@ function listItemWithTaskListItem(node2, parent, state, info) {
   }
 }
 
-// node_modules/mdast-util-gfm/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/mdast-util-gfm/lib/index.js
 function gfmFromMarkdown() {
   return [
     gfmAutolinkLiteralFromMarkdown(),
@@ -19348,7 +19689,7 @@ function gfmToMarkdown(options) {
   };
 }
 
-// node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
 var wwwPrefix = {
   tokenize: tokenizeWwwPrefix,
   partial: true
@@ -19690,7 +20031,7 @@ function previousUnbalanced(events) {
   return result;
 }
 
-// node_modules/micromark-extension-gfm-footnote/lib/syntax.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-footnote/lib/syntax.js
 var indent = {
   tokenize: tokenizeIndent2,
   partial: true
@@ -19965,7 +20306,7 @@ function tokenizeIndent2(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
 function gfmStrikethrough(options) {
   const options_ = options || {};
   let single = options_.singleTilde;
@@ -20059,7 +20400,7 @@ function gfmStrikethrough(options) {
   }
 }
 
-// node_modules/micromark-extension-gfm-table/lib/edit-map.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/edit-map.js
 var EditMap = class {
   /**
    * Create a new edit map.
@@ -20145,7 +20486,7 @@ function addImplementation(editMap, at, remove, add) {
   editMap.index.set(at, change);
 }
 
-// node_modules/micromark-extension-gfm-table/lib/infer.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/infer.js
 function gfmTableAlign(events, index2) {
   let inDelimiterRow = false;
   const align = [];
@@ -20172,7 +20513,7 @@ function gfmTableAlign(events, index2) {
   return align;
 }
 
-// node_modules/micromark-extension-gfm-table/lib/syntax.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/syntax.js
 function gfmTable() {
   return {
     flow: {
@@ -20563,7 +20904,7 @@ function getPoint(events, index2) {
   return event[1][side];
 }
 
-// node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
 var tasklistCheck = {
   name: "tasklistCheck",
   tokenize: tokenizeTasklistCheck
@@ -20637,7 +20978,7 @@ function spaceThenNonSpace(effects, ok3, nok) {
   }
 }
 
-// node_modules/micromark-extension-gfm/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/micromark-extension-gfm/index.js
 function gfm(options) {
   return combineExtensions([
     gfmAutolinkLiteral(),
@@ -20648,7 +20989,7 @@ function gfm(options) {
   ]);
 }
 
-// node_modules/remark-gfm/lib/index.js
+// ../../../mobkit-assistant-identity/meerkat-mobkit/console/node_modules/remark-gfm/lib/index.js
 var emptyOptions4 = {};
 function remarkGfm(options) {
   const self2 = (
@@ -21031,7 +21372,7 @@ function parseObjectJson(text8) {
     return null;
   }
 }
-function textFromUnknown(value) {
+function textFromUnknown2(value) {
   if (value == null) {
     return "";
   }
@@ -21051,9 +21392,9 @@ function peerDetailRows(block) {
   const args = parseObjectJson(block.arguments) || {};
   const peerBody = conversationRichPeerBodyForDisplay(block.peerBody, block.peerBodyFormat ?? "legacy");
   const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
-  const body = peerBody || textFromUnknown(args.body) || textFromUnknown(args.message) || textFromUnknown(args.content) || textFromUnknown(args.text);
-  const params = textFromUnknown(args.params);
-  const requestId = textFromUnknown(args.in_reply_to) || textFromUnknown(args.inReplyTo) || textFromUnknown(args.request_id) || textFromUnknown(args.requestId);
+  const body = peerBody || textFromUnknown2(args.body) || textFromUnknown2(args.message) || textFromUnknown2(args.content) || textFromUnknown2(args.text);
+  const params = textFromUnknown2(args.params);
+  const requestId = textFromUnknown2(args.in_reply_to) || textFromUnknown2(args.inReplyTo) || textFromUnknown2(args.request_id) || textFromUnknown2(args.requestId);
   const result = meaningfulPeerResult(block.result);
   const primaryLabel = block.name === "send_request" ? "Request" : block.name === "send_response" ? "Response" : "Message";
   return [
@@ -22513,7 +22854,7 @@ function toolCallsFromFrameData(data) {
   const directName = toolName(data);
   if (directName) {
     calls.push({
-      id: textFromUnknown2(data.id),
+      id: textFromUnknown3(data.id),
       name: directName,
       args: data.args && typeof data.args === "object" ? data.args : null
     });
@@ -22523,12 +22864,12 @@ function toolCallsFromFrameData(data) {
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const blockRecord = block;
-    if (textFromUnknown2(blockRecord.block_type) !== "tool_use") continue;
+    if (textFromUnknown3(blockRecord.block_type) !== "tool_use") continue;
     const toolData = blockRecord.data && typeof blockRecord.data === "object" ? blockRecord.data : null;
     const name2 = toolName(toolData);
     if (!name2) continue;
     calls.push({
-      id: textFromUnknown2(toolData?.id),
+      id: textFromUnknown3(toolData?.id),
       name: name2,
       args: toolData?.args && typeof toolData.args === "object" ? toolData.args : null
     });
@@ -22547,7 +22888,7 @@ function resultText(value) {
 function peerLastSegment(value) {
   return value.split("/").filter(Boolean).pop() || value;
 }
-function textFromUnknown2(value) {
+function textFromUnknown3(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 function capturePeerRegistry(peerRegistry, rawResult) {
@@ -22606,13 +22947,13 @@ function commsBlocksFromFrameData(data) {
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
     const record4 = candidate;
-    const recordKind = textFromUnknown2(record4.kind);
+    const recordKind = textFromUnknown3(record4.kind);
     if (recordKind === "comms") blocks.push(record4);
     if (!Array.isArray(record4.blocks)) continue;
     for (const block of record4.blocks) {
       if (!block || typeof block !== "object") continue;
       const blockRecord = block;
-      if (textFromUnknown2(blockRecord.type) === "comms") blocks.push(blockRecord);
+      if (textFromUnknown3(blockRecord.type) === "comms") blocks.push(blockRecord);
     }
   }
   return blocks;
@@ -22625,12 +22966,12 @@ function typedCommsPulseFromFrame(frame, data, graph) {
   for (const block of blocks) {
     const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
     const peerIdentity = resolveGraphIdentity(
-      textFromUnknown2(peer.display_name) || textFromUnknown2(peer.id),
+      textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id),
       graph
     );
     if (!peerIdentity || peerIdentity === receiver) continue;
-    const direction = textFromUnknown2(block.direction) || "incoming";
-    const requestId = textFromUnknown2(block.request_id);
+    const direction = textFromUnknown3(block.direction) || "incoming";
+    const requestId = textFromUnknown3(block.request_id);
     if (direction === "outgoing") {
       return {
         id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
@@ -25549,7 +25890,7 @@ function buildToolBlocks(frames, cardToolCallIds) {
     if (cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
-      const parsed = serverToolContentSummary(frame);
+      const parsed = serverToolContentSummary2(frame);
       if (!toolCallId) {
         if (parsed && parsed.status !== "pending") {
           const name2 = parseToolName(frame);
@@ -27002,7 +27343,7 @@ function summarizeToolResultForDisplay(toolName2, result) {
   }
   return null;
 }
-function formatServerToolAnnotations(annotations) {
+function formatServerToolAnnotations2(annotations) {
   return annotations.map((annotation, index2) => {
     const record4 = annotation && typeof annotation === "object" ? annotation : null;
     const title = typeof record4?.title === "string" && record4.title.trim() ? record4.title.trim() : typeof record4?.text === "string" && record4.text.trim() ? record4.text.trim() : `Source ${index2 + 1}`;
@@ -27011,7 +27352,7 @@ function formatServerToolAnnotations(annotations) {
 ${url}` : `${index2 + 1}. ${title}`;
   }).join("\n\n").trim();
 }
-function serverToolContentSummary(frame) {
+function serverToolContentSummary2(frame) {
   const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
   const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
   const type = typeof content3?.type === "string" ? content3.type : typeof record4?.type === "string" ? record4.type : "";
@@ -27020,7 +27361,7 @@ function serverToolContentSummary(frame) {
     return { status: "error" };
   }
   if (Array.isArray(content3?.annotations)) {
-    const result = formatServerToolAnnotations(content3.annotations);
+    const result = formatServerToolAnnotations2(content3.annotations);
     return {
       status: "success",
       ...result ? { result } : {}
@@ -27033,17 +27374,6 @@ function serverToolContentSummary(frame) {
     return { status: "pending" };
   }
   return null;
-}
-function isActiveServerToolContentFrame(frame) {
-  return serverToolContentSummary(frame)?.status === "pending";
-}
-function isTerminalServerToolContentFrame(frame) {
-  const record4 = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content3 = record4?.content && typeof record4.content === "object" ? record4.content : null;
-  const type = typeof content3?.type === "string" ? content3.type : "";
-  if (type === "message_annotations" || Array.isArray(content3?.annotations)) return false;
-  const status = serverToolContentSummary(frame)?.status;
-  return status === "success" || status === "error";
 }
 function toolResultTextFromContent(content3) {
   if (typeof content3 === "string") return content3;
@@ -27168,7 +27498,7 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
         hasNonTextBlock = true;
         actionAndTextBlocks.push(tool);
       } else if (!id) {
-        const result = serverToolContentSummary(serverFrame)?.result;
+        const result = serverToolContentSummary2(serverFrame)?.result;
         if (result && ![...serverBlocks.values()].some((tool2) => tool2.result === result)) {
           hasNonTextBlock = true;
           actionAndTextBlocks.push({ type: "paragraph", text: result });
@@ -27189,27 +27519,27 @@ function blockAssistantRichBlocks(blocks, peerRegistry, toolResults, textMode = 
   }
   return hasNonTextBlock || textMode === "markdown" ? actionAndTextBlocks : [];
 }
-function textFromUnknown3(value) {
+function textFromUnknown4(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 function typedNoticeContentBlocks(content3, blobBaseUrl) {
   return contentToUserBlocks(content3, blobBaseUrl, "legacy");
 }
-function typedNoticeBlockText(block) {
+function typedNoticeBlockText2(block) {
   const parts = [
-    textFromUnknown3(block.summary),
-    textFromUnknown3(block.body),
-    textFromUnknown3(block.detail),
-    textFromUnknown3(block.state),
-    textFromUnknown3(block.status)
+    textFromUnknown4(block.summary),
+    textFromUnknown4(block.body),
+    textFromUnknown4(block.detail),
+    textFromUnknown4(block.state),
+    textFromUnknown4(block.status)
   ].filter(Boolean);
   return parts.join("\n");
 }
 function typedCommsStableBodyText(block) {
   const parts = [
-    textFromUnknown3(block.summary),
-    textFromUnknown3(block.body),
-    textFromUnknown3(block.detail)
+    textFromUnknown4(block.summary),
+    textFromUnknown4(block.body),
+    textFromUnknown4(block.detail)
   ].filter(Boolean);
   return parts.join("\n");
 }
@@ -27225,23 +27555,23 @@ function stripBareCommsIntentBodyPrefix(text8) {
   const match = text8.match(/^\s*Intent:\s*[^\n]*\n\s*Body:\s*([\s\S]+)$/i);
   return (match?.[1] || text8).trim();
 }
-function isExternalEventOnlySystemNotice(message) {
+function isExternalEventOnlySystemNotice2(message) {
   if (!message || typeof message !== "object") return false;
   const record4 = message;
-  if (textFromUnknown3(record4.kind) === "external_event") return true;
+  if (textFromUnknown4(record4.kind) === "external_event") return true;
   const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
-    const type = textFromUnknown3(block.type);
+    const type = textFromUnknown4(block.type);
     if (!type) continue;
     if (type !== "external_event") return false;
     sawExternalEventBlock = true;
   }
   return sawExternalEventBlock;
 }
-function systemNoticeMessageRecord(frame) {
+function systemNoticeMessageRecord2(frame) {
   if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
     return null;
   }
@@ -27252,7 +27582,7 @@ function systemNoticeMessageRecord(frame) {
   return data;
 }
 function commsNoticeMessageRecord(frame) {
-  const systemNotice = systemNoticeMessageRecord(frame);
+  const systemNotice = systemNoticeMessageRecord2(frame);
   if (systemNotice) return systemNotice;
   if (frame.sourceKind !== "session_history" || !frame.data || typeof frame.data !== "object") {
     return null;
@@ -27263,37 +27593,37 @@ function commsNoticeMessageRecord(frame) {
   const message = frame.data.message;
   if (!message || typeof message !== "object") return null;
   const record4 = message;
-  return textFromUnknown3(record4.role) === "system_notice" ? record4 : null;
+  return textFromUnknown4(record4.role) === "system_notice" ? record4 : null;
 }
-function systemNoticeBlockRecords(record4) {
+function systemNoticeBlockRecords2(record4) {
   const blocks = record4.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates(record4) {
+function legacyPeerNoticeTextCandidates2(record4) {
   const candidates = [];
-  const body = textFromUnknown3(record4.body).trim();
+  const body = textFromUnknown4(record4.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords(record4)) {
-    const blockText = typedNoticeBlockText(block).trim();
+  for (const block of systemNoticeBlockRecords2(record4)) {
+    const blockText = typedNoticeBlockText2(block).trim();
     if (blockText) candidates.push(blockText);
     const content3 = block.content;
     if (!Array.isArray(content3)) continue;
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
       const itemRecord = item;
-      const itemText = textFromUnknown3(itemRecord.text).trim();
+      const itemText = textFromUnknown4(itemRecord.text).trim();
       if (itemText) candidates.push(itemText);
       const data = itemRecord.data;
       if (data && typeof data === "object") {
-        const dataText = textFromUnknown3(data.text).trim();
+        const dataText = textFromUnknown4(data.text).trim();
         if (dataText) candidates.push(dataText);
       }
     }
   }
   return candidates;
 }
-function isLegacyPeerNoticeText(text8) {
+function isLegacyPeerNoticeText2(text8) {
   return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text8.trim());
 }
 function isCommsLikeRunStartedPrompt(text8) {
@@ -27416,8 +27746,8 @@ function commsKindFromText(text8) {
 }
 function systemNoticeCommsSignatures(frame) {
   const record4 = commsNoticeMessageRecord(frame);
-  if (!record4 || isExternalEventOnlySystemNotice(record4)) return [];
-  const isCommsNotice = textFromUnknown3(record4.kind) === "comms" || systemNoticeBlockRecords(record4).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record4) && legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+  if (!record4 || isExternalEventOnlySystemNotice2(record4)) return [];
+  const isCommsNotice = textFromUnknown4(record4.kind) === "comms" || systemNoticeBlockRecords2(record4).some((block) => textFromUnknown4(block.type) === "comms") || canUseLegacyPeerNoticeText2(record4) && legacyPeerNoticeTextCandidates2(record4).some(isLegacyPeerNoticeText2);
   if (!isCommsNotice) return [];
   const signatures = [];
   const seenSignatures = /* @__PURE__ */ new Set();
@@ -27447,26 +27777,26 @@ function systemNoticeCommsSignatures(frame) {
       sourceKind: frame.sourceKind
     });
   };
-  const noticeOccurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id);
-  const noticeBlocks = systemNoticeBlockRecords(record4);
-  const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown3(block.type) === "comms");
+  const noticeOccurrenceId = textFromUnknown4(record4.request_id) || textFromUnknown4(record4.correlation_id) || textFromUnknown4(record4.id);
+  const noticeBlocks = systemNoticeBlockRecords2(record4);
+  const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown4(block.type) === "comms");
   if (!typedCommsBlocks.length) {
-    for (const candidate of legacyPeerNoticeTextCandidates(record4)) {
+    for (const candidate of legacyPeerNoticeTextCandidates2(record4)) {
       pushCandidate(candidate, [], noticeOccurrenceId);
     }
   }
-  const body = textFromUnknown3(record4.body);
+  const body = textFromUnknown4(record4.body);
   if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
   for (let index2 = 0; index2 < typedCommsBlocks.length; index2++) {
     const block = typedCommsBlocks[index2];
     const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
     const peerAliases = normalizedPeerAliases(
-      textFromUnknown3(peer.display_name),
-      textFromUnknown3(peer.id)
+      textFromUnknown4(peer.display_name),
+      textFromUnknown4(peer.id)
     );
-    const blockOccurrenceId = textFromUnknown3(block.request_id) || textFromUnknown3(block.correlation_id) || textFromUnknown3(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index2}` : `${index2}`);
-    const blockKind = textFromUnknown3(block.kind);
-    const blockDirection = textFromUnknown3(block.direction);
+    const blockOccurrenceId = textFromUnknown4(block.request_id) || textFromUnknown4(block.correlation_id) || textFromUnknown4(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index2}` : `${index2}`);
+    const blockKind = textFromUnknown4(block.kind);
+    const blockDirection = textFromUnknown4(block.direction);
     const contentText = typedNoticeContentBlocks(block.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
     const stableBodyText = typedCommsStableBodyText(block);
     const candidateText = contentText || stableBodyText || body;
@@ -27602,7 +27932,7 @@ function markCommsNoticeDedupeKey(key, frame, emitted) {
   emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
 }
 function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
-  const type = textFromUnknown3(record4.type);
+  const type = textFromUnknown4(record4.type);
   const keys2 = [];
   const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
     const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
@@ -27622,24 +27952,24 @@ function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
   if (type === "comms") {
     const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
     const peerAliases = normalizedPeerAliases(
-      textFromUnknown3(peer.display_name),
-      textFromUnknown3(peer.id)
+      textFromUnknown4(peer.display_name),
+      textFromUnknown4(peer.id)
     );
     const contentText = typedNoticeContentBlocks(record4.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
     const stableBodyText = typedCommsStableBodyText(record4);
-    const occurrenceId = textFromUnknown3(record4.request_id) || textFromUnknown3(record4.correlation_id) || textFromUnknown3(record4.id) || `${index2}`;
+    const occurrenceId = textFromUnknown4(record4.request_id) || textFromUnknown4(record4.correlation_id) || textFromUnknown4(record4.id) || `${index2}`;
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
       occurrenceId,
-      textFromUnknown3(record4.kind) || "message",
-      textFromUnknown3(record4.direction) || "incoming"
+      textFromUnknown4(record4.kind) || "message",
+      textFromUnknown4(record4.direction) || "incoming"
     );
     return keys2;
   }
   if (type && type !== "text") return keys2;
-  const blockText = typedNoticeBlockText(record4).trim();
-  if (blockText && isLegacyPeerNoticeText(blockText)) {
+  const blockText = typedNoticeBlockText2(record4).trim();
+  if (blockText && isLegacyPeerNoticeText2(blockText)) {
     pushKey(blockText);
   }
   const content3 = record4.content;
@@ -27647,14 +27977,14 @@ function commsNoticeDedupeKeysFromBlock(record4, fallbackBody, index2) {
     for (const item of content3) {
       if (!item || typeof item !== "object") continue;
       const itemRecord = item;
-      const itemText = textFromUnknown3(itemRecord.text).trim();
-      if (itemText && isLegacyPeerNoticeText(itemText)) {
+      const itemText = textFromUnknown4(itemRecord.text).trim();
+      if (itemText && isLegacyPeerNoticeText2(itemText)) {
         pushKey(itemText);
       }
       const data = itemRecord.data;
       if (data && typeof data === "object") {
-        const dataText = textFromUnknown3(data.text).trim();
-        if (dataText && isLegacyPeerNoticeText(dataText)) {
+        const dataText = textFromUnknown4(data.text).trim();
+        if (dataText && isLegacyPeerNoticeText2(dataText)) {
           pushKey(dataText);
         }
       }
@@ -27680,8 +28010,8 @@ function shouldSuppressDuplicateCommsNotice(frame, emitted) {
   if (duplicateCount === keys2.length) {
     return true;
   }
-  const record4 = systemNoticeMessageRecord(frame);
-  const hasBlockLevelComms = record4 ? systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record4.body), index2).length > 0) : false;
+  const record4 = systemNoticeMessageRecord2(frame);
+  const hasBlockLevelComms = record4 ? systemNoticeBlockRecords2(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown4(record4.body), index2).length > 0) : false;
   if (!hasBlockLevelComms) {
     for (const key of keys2) {
       markCommsNoticeDedupeKey(key, frame, emitted);
@@ -27695,24 +28025,24 @@ function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
   }
   return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
-function canUseLegacyPeerNoticeText(record4) {
-  const kind = textFromUnknown3(record4.kind);
+function canUseLegacyPeerNoticeText2(record4) {
+  const kind = textFromUnknown4(record4.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords(record4).map((block) => textFromUnknown3(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords2(record4).map((block) => textFromUnknown4(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState2(frame) {
-  const record4 = systemNoticeMessageRecord(frame);
-  if (!record4 || isExternalEventOnlySystemNotice(record4)) return false;
-  if (textFromUnknown3(record4.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords(record4);
-  if (blocks.some((block) => textFromUnknown3(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText(record4)) return false;
-  return legacyPeerNoticeTextCandidates(record4).some(isLegacyPeerNoticeText);
+  const record4 = systemNoticeMessageRecord2(frame);
+  if (!record4 || isExternalEventOnlySystemNotice2(record4)) return false;
+  if (textFromUnknown4(record4.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords2(record4);
+  if (blocks.some((block) => textFromUnknown4(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText2(record4)) return false;
+  return legacyPeerNoticeTextCandidates2(record4).some(isLegacyPeerNoticeText2);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock, textMode = "legacy") {
   const rich = [];
-  const bodyText = textFromUnknown3(body);
+  const bodyText = textFromUnknown4(body);
   if (!Array.isArray(blocks)) {
     if (bodyText) rich.push({ type: "paragraph", text: bodyText });
     return rich;
@@ -27722,7 +28052,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
     const block = blocks[index2];
     if (!block || typeof block !== "object") continue;
     const record4 = block;
-    const type = textFromUnknown3(record4.type);
+    const type = textFromUnknown4(record4.type);
     if (type === "comms") {
       const dedupeKeys = commsNoticeDedupeKeysFromBlock(record4, bodyText, index2);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
@@ -27730,15 +28060,15 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         continue;
       }
       const peer = record4.peer && typeof record4.peer === "object" ? record4.peer : {};
-      const peerLabel = peerLastSegment2(textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id) || "peer");
+      const peerLabel = peerLastSegment2(textFromUnknown4(peer.display_name) || textFromUnknown4(peer.id) || "peer");
       const peerAliases = normalizedPeerAliases(
-        textFromUnknown3(peer.display_name),
-        textFromUnknown3(peer.id)
+        textFromUnknown4(peer.display_name),
+        textFromUnknown4(peer.id)
       );
-      const kind = textFromUnknown3(record4.kind) || "message";
-      const direction = textFromUnknown3(record4.direction);
-      const intent = textFromUnknown3(record4.intent);
-      const requestId = textFromUnknown3(record4.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const kind = textFromUnknown4(record4.kind) || "message";
+      const direction = textFromUnknown4(record4.direction);
+      const intent = textFromUnknown4(record4.intent);
+      const requestId = textFromUnknown4(record4.request_id) || `typed-comms:${peerLabel}:${kind}`;
       const contentBlocks2 = typedNoticeContentBlocks(record4.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
@@ -27788,7 +28118,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
     if (type === "tool_config" || type === "mcp") {
       const payload = record4.payload && typeof record4.payload === "object" ? record4.payload : record4;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text8 = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record4) || label;
+      const text8 = bodyText || typedNoticeBlockText2(payload) || typedNoticeBlockText2(record4) || label;
       rich.push({ type: "divider", text: text8 });
       continue;
     }
@@ -27799,12 +28129,12 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         status: record4.status,
         ...typeof record4.display_name === "string" ? { displayName: record4.display_name } : {},
         detail: typeof record4.detail === "string" ? record4.detail : "",
-        copyText: typedNoticeBlockText(record4) || bodyText
+        copyText: typedNoticeBlockText2(record4) || bodyText
       });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
-      const text8 = typedNoticeBlockText(record4) || type.replace(/_/g, " ");
+      const text8 = typedNoticeBlockText2(record4) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text: text8 });
       continue;
     }
@@ -27813,7 +28143,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       rich.push(...contentBlocks);
       continue;
     }
-    rich.push({ type: "divider", text: typedNoticeBlockText(record4) || "Runtime metadata" });
+    rich.push({ type: "divider", text: typedNoticeBlockText2(record4) || "Runtime metadata" });
   }
   if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
     rich.push({ type: "paragraph", text: bodyText });
@@ -27841,9 +28171,9 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
         textMode
       );
       const duplicateCommsConsumed = Boolean(
-        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords2(record4).some((block, index2) => commsNoticeDedupeKeysFromBlock(
           block,
-          textFromUnknown3(record4.body),
+          textFromUnknown4(record4.body),
           index2
         ).length > 0)
       );
@@ -27944,14 +28274,14 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
   const record4 = frame.data && typeof frame.data === "object" ? frame.data : {};
   const rawMessage = record4.message && typeof record4.message === "object" ? record4.message : null;
-  const message = rawMessage ? textFromUnknown3(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
+  const message = rawMessage ? textFromUnknown4(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
     kind: record4.kind,
     render_class: record4.render_class,
     body: record4.body,
     blocks: record4.blocks
   };
-  if (isExternalEventOnlySystemNotice(message)) return null;
+  if (isExternalEventOnlySystemNotice2(message)) return null;
   const parsed = historyMessageText(
     message,
     void 0,
@@ -28564,170 +28894,6 @@ function createUserEntry2(message, images = [], options = {}) {
 }
 function appendOptimisticConversationEntry2(entries, optimisticEntry) {
   return optimisticEntry ? [...entries, optimisticEntry] : entries;
-}
-function isIntermediateHistoryAssistantStep(frame) {
-  if (frame.sourceKind !== "session_history" || frame.event !== "text_complete" && frame.event !== "interaction_complete") return false;
-  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = data.message && typeof data.message === "object" ? data.message : {};
-  return message.role === "block_assistant" && message.stop_reason === "tool_use";
-}
-function inferResponsePhaseFromFrames2(frames, fallback = null) {
-  let phase2 = fallback;
-  let interactionOpen = false;
-  let runOpen = false;
-  for (const frame of frames) {
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        if (isTerminalUserInputStatus(frame.status)) phase2 = null;
-        else phase2 = "waiting";
-        break;
-      case "interaction_started":
-        interactionOpen = true;
-        phase2 = "waiting";
-        break;
-      case "run_started":
-        runOpen = true;
-        phase2 = "waiting";
-        break;
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-        phase2 = "tool-executing";
-        break;
-      case "server_tool_content":
-        if (isActiveServerToolContentFrame(frame)) phase2 = "tool-executing";
-        else if (isTerminalServerToolContentFrame(frame)) phase2 = "waiting";
-        break;
-      case "tool_result_received":
-      case "tool_execution_completed":
-        phase2 = "waiting";
-        break;
-      case "reasoning_delta":
-        phase2 = "generating";
-        break;
-      case "reasoning_complete":
-        phase2 = "waiting";
-        break;
-      case "text_delta":
-        phase2 = "generating";
-        break;
-      case "text_complete":
-        phase2 = interactionOpen || runOpen ? "waiting" : null;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        phase2 = null;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        phase2 = interactionOpen ? "waiting" : null;
-        break;
-      case "system_notice":
-        if (systemNoticeClearsBusyState2(frame)) phase2 = null;
-        break;
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
-          phase2 = interactionOpen || runOpen ? "waiting" : null;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  return phase2;
-}
-function isTerminalUserInputStatus(status) {
-  return status === "completed" || status === "delivery_failed" || status === "failed";
-}
-function resolvePanelResponsePhase2(args) {
-  if (args.hasLocalPhase) {
-    return args.localPhase ?? null;
-  }
-  if (args.frames.length > 0) {
-    const localPhase = inferResponsePhaseFromFrames2(args.frames, null);
-    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
-      return args.serverPhase;
-    }
-    return localPhase;
-  }
-  return args.serverPhase ?? null;
-}
-function latestRoutableFrameIsTerminal(frames) {
-  for (let index2 = frames.length - 1; index2 >= 0; index2 -= 1) {
-    const frame = frames[index2];
-    if (isIntermediateHistoryAssistantStep(frame)) continue;
-    switch (frame.event) {
-      case "user_input":
-        return isTerminalUserInputStatus(frame.status);
-      case "text_complete":
-      case "run_completed":
-      case "run_failed":
-        return !hasOpenLifecycleBefore(frames, index2);
-      case "interaction_complete":
-      case "interaction_failed":
-      case "message_delivery_failed":
-        return true;
-      case "system_notice":
-        return systemNoticeClearsBusyState2(frame);
-      case "turn_completed": {
-        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        const stopReason = data.stop_reason ?? data.stopReason;
-        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
-      }
-      case "interaction_started":
-      case "run_started":
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-      case "reasoning_delta":
-      case "reasoning_complete":
-      case "text_delta":
-        return false;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-function hasOpenLifecycleBefore(frames, beforeIndex) {
-  let interactionOpen = false;
-  let runOpen = false;
-  for (let index2 = 0; index2 < beforeIndex; index2 += 1) {
-    if (isIntermediateHistoryAssistantStep(frames[index2])) continue;
-    switch (frames[index2].event) {
-      case "interaction_started":
-        interactionOpen = true;
-        break;
-      case "run_started":
-        runOpen = true;
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      case "run_completed":
-      case "run_failed":
-        runOpen = false;
-        break;
-      case "message_delivery_failed":
-        interactionOpen = false;
-        runOpen = false;
-        break;
-      default:
-        break;
-    }
-  }
-  return interactionOpen || runOpen;
 }
 
 // src/lib/errors.ts
@@ -41577,6 +41743,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "boundary_append_applied",
   "boundary_appends_discarded",
   "runtime_notice_snapshot",
+  "assistant_history_snapshot",
   "frame_updated"
 ]);
 var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
@@ -41597,6 +41764,7 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "reasoning_complete",
   "snapshot_complete",
   "snapshot_started",
+  "assistant_history_snapshot",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -42098,7 +42266,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!updated || !updated.id) return false;
       const merged = mergeFrameUpdate(log, updated);
       if (!merged) return false;
-      if (merged.moved || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
+      if (merged.moved || merged.previous.event !== merged.next.event || merged.previous.sourceKind !== merged.next.sourceKind || merged.previous.runtimeKey !== merged.next.runtimeKey || merged.previous.identity !== merged.next.identity || merged.previous.sessionId !== merged.next.sessionId || merged.previous.cursor !== merged.next.cursor || merged.previous.event === "assistant_history_snapshot" || merged.next.event === "assistant_history_snapshot" || busyTransitionForFrame(merged.previous) !== busyTransitionForFrame(merged.next)) {
         log.busyFoldValid = false;
       }
       clearOptimisticUserForFrame(identity, updated);
@@ -42184,10 +42352,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     return lifecycle.interactionOpen || lifecycle.runOpen || lifecycle.legacyBusy;
   }
   function updateBusyStateForFrame(identity, frame) {
-    if (busyTransitionForFrame(frame) === null) return;
     const log = getOrCreateLog(identity);
+    if (frame.event === "assistant_history_snapshot" || frame.event === "frame_updated" && !log.busyFoldValid) {
+      recomputeBusyStateFromLog(identity);
+      return;
+    }
+    if (busyTransitionForFrame(frame) === null) return;
     const ts = frame.timestampMs ?? log.busyFoldedThroughMs;
-    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs) {
+    if (!log.busyFoldValid || ts < log.busyFoldedThroughMs || frame.sourceKind === "session_history") {
       recomputeBusyStateFromLog(identity);
       return;
     }
@@ -42203,7 +42375,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const log = getOrCreateLog(identity);
     const lifecycle = { interactionOpen: false, runOpen: false, legacyBusy: false };
     let foldedThrough = Number.NEGATIVE_INFINITY;
-    const ordered = sortedEvents(log).filter((frame) => busyTransitionForFrame(frame) !== null).sort((a, b) => {
+    const frames = sortedEvents(log);
+    const coveredHistory = settledHistoryActivity(frames);
+    const ordered = frames.filter((frame) => busyTransitionForFrame(frame) !== null && !coveredHistory.has(frame)).sort((a, b) => {
       const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
       if (timeDelta !== 0) return timeDelta;
       const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
@@ -42234,7 +42408,6 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!appendFrame(identity, frame)) continue;
       changed = true;
       appended = true;
-      if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
     if (appended || !log.busyFoldValid) {
       log.busyFoldValid = false;
@@ -42745,6 +42918,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const dockRef = import_react45.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
+    if (frame.sourceKind === "session_history" || frame.event === "assistant_history_snapshot" || frame.event === "frame_updated") {
+      return recomputePhaseForIdentity(identity);
+    }
     let changed = false;
     const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
@@ -42787,7 +42963,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const frames = getSortedFrames(identity).filter(
       (frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)
     );
-    const phase2 = inferResponsePhaseFromFrames2(frames, null);
+    const phase2 = inferResponsePhaseFromFrames(frames, null);
     let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
@@ -44460,7 +44636,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       panelKey
     );
     const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
-    const phase2 = resolvePanelResponsePhase2({
+    const phase2 = resolvePanelResponsePhase({
       frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
       localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
       hasLocalPhase: honorLocalPhase,
