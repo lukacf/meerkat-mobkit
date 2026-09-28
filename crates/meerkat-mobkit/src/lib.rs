@@ -37,7 +37,7 @@ pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
 pub mod live_contracts;
-mod live_session_event_tap;
+pub(crate) mod live_session_event_tap;
 pub mod live_wiring;
 pub mod member_comms_id;
 pub(crate) mod member_status_observation;

@@ -6057,6 +6057,9 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
+                // Read after the pre-build hook: the tap only covers creates
+                // that defer their initial turn.
+                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
@@ -6065,12 +6068,17 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
-                // Before any run of this actor can start (the caller still
-                // holds its turn boundary), so the console forwarder can
-                // adopt a stream that misses nothing.
+                // For a deferred create no run of this actor can start yet
+                // (the caller still holds its turn boundary), so the console
+                // forwarder can adopt a stream that misses nothing.
                 if let Some(tap) = self.live_event_tap.as_ref() {
-                    tap.capture(self.inner.as_ref(), actor_witness_slot, &result.session_id)
-                        .await;
+                    tap.capture(
+                        self.inner.as_ref(),
+                        actor_witness_slot,
+                        &result.session_id,
+                        initial_turn,
+                    )
+                    .await;
                 }
                 Ok(self
                     .complete_create(result, context, capability_context)
@@ -6106,6 +6114,7 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
+                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
@@ -6117,8 +6126,13 @@ macro_rules! delegate_mob_session_service {
                     .await?;
                 // Same create-time capture as the actor-witness create above.
                 if let Some(tap) = self.live_event_tap.as_ref() {
-                    tap.capture(self.inner.as_ref(), actor_witness_slot, &result.session_id)
-                        .await;
+                    tap.capture(
+                        self.inner.as_ref(),
+                        actor_witness_slot,
+                        &result.session_id,
+                        initial_turn,
+                    )
+                    .await;
                 }
                 Ok(self
                     .complete_create(result, context, capability_context)
@@ -8305,6 +8319,11 @@ impl MobBootstrapSpec {
             session_read_absorber: None,
             archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they must see the base layer `Self::new` adds (the create-time live
+        // event tap, like the gateway's `with_agent_mob_tools` order).
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8312,9 +8331,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
             // Ephemeral mob, ephemeral councils. Writing a durable council
@@ -8322,7 +8341,6 @@ impl MobBootstrapSpec {
             // behind that no later boot of this mob can claim.
             None,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -8769,6 +8787,11 @@ impl MobBootstrapSpec {
             )))),
             archived_terminal_authority: Some(archived_terminal_authority),
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they must see the base layer `Self::new` adds (the create-time live
+        // event tap, like the gateway's `with_agent_mob_tools` order).
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8776,9 +8799,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             workgraph_service.clone(),
             Some(session_llm_default_client_slot),
             // Persistent mob: councils become durable, so a restart can see
@@ -8794,7 +8817,6 @@ impl MobBootstrapSpec {
                 &crate::council_wiring::council_db_for_store_path(&store_path),
             )?,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_authority_prewarm = Some(runtime_authority_prewarm);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
@@ -9090,6 +9112,11 @@ impl MobBootstrapSpec {
             session_read_absorber: None,
             archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they must see the base layer `Self::new` adds (the create-time live
+        // event tap, like the gateway's `with_agent_mob_tools` order).
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9097,9 +9124,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
             // Persistent mob: councils become durable here too. This site
@@ -9117,7 +9144,6 @@ impl MobBootstrapSpec {
             // preceding `persistent_*` function and read as correct.
             None,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
