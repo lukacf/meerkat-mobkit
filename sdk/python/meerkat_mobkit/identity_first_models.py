@@ -168,10 +168,38 @@ class IdentityBootstrapCounts:
 
 
 @dataclass(frozen=True)
+class IdentityRestoreProgress:
+    """Typed eager-restore progress for one identity, published on the
+    bootstrap status while the restore pass runs.
+
+    ``stage`` is ``registered``, ``resuming``, ``minted``, ``resumed`` or
+    ``broken`` (callers must tolerate future values); ``kind`` is the typed
+    continuity failure kind when ``stage`` is ``broken``.
+    """
+
+    stage: str
+    kind: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityRestoreProgress:
+        if not isinstance(data, dict) or not isinstance(data.get("stage"), str):
+            raise TypeError("restore progress must be an object with a string stage")
+        kind = data.get("kind")
+        return cls(stage=data["stage"], kind=kind if isinstance(kind, str) else None)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"stage": self.stage}
+        if self.kind is not None:
+            result["kind"] = self.kind
+        return result
+
+
+@dataclass(frozen=True)
 class IdentityBootstrapEntry:
     identity: str
     state: IdentityBootstrapState
     error: str | None = None
+    restore: IdentityRestoreProgress | None = None
 
     @classmethod
     def from_dict(
@@ -187,16 +215,24 @@ class IdentityBootstrapEntry:
         error = data.get("error") if "error" in data else None
         if error is not None and not isinstance(error, str):
             raise TypeError(f"bootstrap error for {identity!r} must be a string")
+        restore = data.get("restore")
         return cls(
             identity=identity,
             state=IdentityBootstrapState.parse(state),
             error=error,
+            restore=(
+                IdentityRestoreProgress.from_dict(restore)
+                if restore is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"state": self.state.value}
         if self.error is not None:
             result["error"] = self.error
+        if self.restore is not None:
+            result["restore"] = self.restore.to_dict()
         return result
 
 

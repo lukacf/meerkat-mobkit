@@ -35,11 +35,12 @@ use super::types::{
     ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DeliveryErrorClass,
     DeliveryErrorRecord, DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec,
     FencingToken, HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode,
-    IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus,
-    LeaseGrant, LeaseInfo, ManagedPeerEdge, MemberHealthReport, MemberReloadDisposition,
-    MemberReloadOutcome, NotAddressable, ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext,
-    SendAdmission, SessionRepairRequired, SessionRepairScope, SessionSnapshot, Ticketed,
-    TopologyContext, TurnOutcome, TurnOutput, TurnTicket, TurnTracking, TurnUntrackable,
+    IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
+    IdentityRestoreProgress, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge,
+    MemberHealthReport, MemberReloadDisposition, MemberReloadOutcome, NotAddressable,
+    ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext, SendAdmission, SessionRepairRequired,
+    SessionRepairScope, SessionSnapshot, Ticketed, TopologyContext, TurnOutcome, TurnOutput,
+    TurnTicket, TurnTracking, TurnUntrackable,
 };
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
@@ -1279,7 +1280,8 @@ impl IdentityFirstRuntimeContext {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
-        self.apply_roster_controlled(generation, roster).await
+        self.apply_roster_controlled(generation, roster, RestorePassOrigin::Host)
+            .await
     }
 
     /// Apply a roster under the runtime's single bootstrap controller.
@@ -1309,6 +1311,24 @@ impl IdentityFirstRuntimeContext {
     }
 
     async fn apply_roster_controlled(
+        &self,
+        generation: u64,
+        roster: &[DurableAgentSpec],
+        origin: RestorePassOrigin,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let result = self.apply_roster_pass(generation, roster).await;
+        // A settled pass released every store writer it held, so a Broken
+        // identity's retry can now succeed. The supervisor's own passes do not
+        // re-trigger it (that would loop on a persistent failure); the
+        // embodiments they settle do, through `EmbodimentSettled`.
+        if origin == RestorePassOrigin::Host {
+            self.runtime
+                .trigger_continuity_repair(ContinuityRepairTrigger::RestorePassSettled);
+        }
+        result
+    }
+
+    async fn apply_roster_pass(
         &self,
         generation: u64,
         roster: &[DurableAgentSpec],
@@ -1385,6 +1405,22 @@ impl IdentityFirstRuntimeContext {
     pub async fn refresh_desired_topology(
         &self,
     ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        self.refresh_desired_topology_from(RestorePassOrigin::Host)
+            .await
+    }
+
+    /// Ask the continuity repair supervisor for a pass now. The supervisor
+    /// retries Broken identities only on typed triggers; this is the host's
+    /// explicit one.
+    pub fn request_continuity_repair(&self) {
+        self.runtime
+            .trigger_continuity_repair(ContinuityRepairTrigger::Requested);
+    }
+
+    async fn refresh_desired_topology_from(
+        &self,
+        origin: RestorePassOrigin,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
         // One runtime owns one controller from roster discovery through task
         // installation. Provider calls are user code and can be slow; publish
         // the in-flight pass before awaiting them so concurrent readiness RPCs
@@ -1413,7 +1449,8 @@ impl IdentityFirstRuntimeContext {
             }
         };
 
-        self.apply_roster_controlled(generation, &roster).await
+        self.apply_roster_controlled(generation, &roster, origin)
+            .await
     }
 
     /// Cancellation-safe reconcile for RPC/host request boundaries.
@@ -1439,14 +1476,21 @@ impl IdentityFirstRuntimeContext {
     /// restart. HomeCore 0.7.23 sat with 14 preserved-but-parked identities
     /// because of exactly that gap.
     ///
-    /// The loop sleeps, and only when at least one identity is Broken re-runs
-    /// [`Self::refresh_desired_topology`] — the same idempotent flow the
-    /// reconcile RPC runs (eager: `restore_flow` retries the resume; lazy:
-    /// `lazy_register_flow` re-registers a store-Ready identity as Dormant so
-    /// on-demand materialization retries). Backoff doubles while identities
-    /// stay Broken — persistent causes (e.g. an upstream store regression)
-    /// produce bounded log noise, and transient causes (disk full, lock
-    /// contention) heal without a restart.
+    /// The supervisor has no timer. It runs one pass when it starts (the boot
+    /// pass has just settled) and then waits for a typed
+    /// [`ContinuityRepairTrigger`]: another identity's embodiment settled (a
+    /// resume or a fresh durable mint committed, releasing the store writer
+    /// it held), a host restore or reconcile pass settled (boot, a roster
+    /// refresh, `mobkit/reconcile_identity`), or a host asked
+    /// ([`Self::request_continuity_repair`]). Only when at least one identity
+    /// is Broken does a pass re-run [`Self::refresh_desired_topology`], the
+    /// same idempotent flow the reconcile RPC runs (eager: `restore_flow`
+    /// retries the resume; lazy: `lazy_register_flow` re-registers a
+    /// store-Ready identity as Dormant so on-demand materialization retries).
+    /// The supervisor's own passes never re-trigger it, so a persistent cause
+    /// costs one pass per real event, and a transient one (store writer
+    /// contention during a reseed boot) heals as soon as the contending
+    /// embodiment settles instead of after a doubling sleep.
     pub fn spawn_broken_identity_repair_task(
         self: Arc<Self>,
         policy: ContinuityRepairPolicy,
@@ -1465,10 +1509,12 @@ impl IdentityFirstRuntimeContext {
 
     async fn run_broken_identity_repair_loop(
         self: Arc<Self>,
-        policy: ContinuityRepairPolicy,
+        _policy: ContinuityRepairPolicy,
         mut cancellation: Option<watch::Receiver<bool>>,
     ) {
-        let mut backoff = policy.initial_backoff;
+        // Subscribe before the first pass so a trigger landing during it
+        // still wakes the next wait.
+        let mut triggers = self.runtime.subscribe_continuity_repair_triggers();
         // Bounded non-identical retries (OB3 0.8.12-era evidence): a repair
         // pass whose failure comes back byte-identical N times in a row is a
         // deterministic wall, and each blind retry re-executes the pass's
@@ -1476,31 +1522,45 @@ impl IdentityFirstRuntimeContext {
         // Track consecutive per-identity failure signatures and park typed
         // after [`REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS`].
         let mut identical_failure_streaks: HashMap<AgentIdentity, (String, u32)> = HashMap::new();
+        // The supervisor starts once the boot pass settled, which is itself a
+        // trigger: one pass up front, then only on typed triggers.
+        let mut trigger = Some(ContinuityRepairTrigger::RestorePassSettled);
         loop {
-            if let Some(cancellation) = cancellation.as_mut() {
-                if *cancellation.borrow() {
-                    return;
-                }
-                tokio::select! {
-                    () = tokio::time::sleep(backoff) => {}
-                    changed = cancellation.changed() => {
-                        match changed {
-                            Ok(()) if *cancellation.borrow() => return,
-                            Ok(()) => continue,
-                            // Dropping the runtime-owned supervisor drops the
-                            // only sender. Treat that as cancellation; looping
-                            // on the permanently closed receiver would spin a
-                            // detached task at 100% CPU.
-                            Err(_) => return,
+            if trigger.is_none() {
+                trigger = match cancellation.as_mut() {
+                    Some(cancellation) => {
+                        if *cancellation.borrow() {
+                            return;
+                        }
+                        tokio::select! {
+                            changed = triggers.changed() => match changed {
+                                Ok(()) => triggers.borrow_and_update().last,
+                                Err(_) => return,
+                            },
+                            changed = cancellation.changed() => match changed {
+                                Ok(()) if *cancellation.borrow() => return,
+                                Ok(()) => continue,
+                                // Dropping the runtime-owned supervisor drops
+                                // the only sender. Treat that as cancellation;
+                                // looping on the permanently closed receiver
+                                // would spin a detached task at 100% CPU.
+                                Err(_) => return,
+                            },
                         }
                     }
-                }
-            } else {
-                tokio::time::sleep(backoff).await;
+                    None => match triggers.changed().await {
+                        Ok(()) => triggers.borrow_and_update().last,
+                        Err(_) => return,
+                    },
+                };
             }
+            let Some(cause) = trigger.take() else {
+                continue;
+            };
+            // Triggers that landed before this pass are covered by it.
+            triggers.borrow_and_update();
             let broken = self.runtime.broken_identities().await;
             if broken.is_empty() {
-                backoff = policy.initial_backoff;
                 continue;
             }
             // Heal must be REAL before reconcile runs: reconcile alone only
@@ -1558,14 +1618,14 @@ impl IdentityFirstRuntimeContext {
             }
             if repairable.is_empty() {
                 // Nothing eligible this pass: either every Broken identity
-                // carries a terminal verdict (idle at base cadence — a cheap
-                // read, no reconcile churn) or recovery itself failed
-                // transiently (back off before retrying recovery).
-                backoff = if recovery_failures > 0 {
-                    (backoff * 2).min(policy.max_backoff)
-                } else {
-                    policy.initial_backoff
-                };
+                // carries a terminal verdict (no reconcile churn) or recovery
+                // itself failed transiently; the next trigger retries it.
+                if recovery_failures > 0 {
+                    tracing::debug!(
+                        recovery_failures,
+                        "continuity repair: heal authority unavailable; waiting for the next trigger"
+                    );
+                }
                 if cancellation
                     .as_ref()
                     .is_some_and(|cancellation| *cancellation.borrow())
@@ -1576,16 +1636,19 @@ impl IdentityFirstRuntimeContext {
             }
             tracing::info!(
                 broken = repairable.len(),
+                trigger = ?cause,
                 "continuity repair: retrying restore for Broken identities"
             );
-            let pass = match self.refresh_desired_topology().await {
+            let pass = match self
+                .refresh_desired_topology_from(RestorePassOrigin::ContinuityRepair)
+                .await
+            {
                 Ok(pass) => pass,
                 Err(err) => {
                     tracing::warn!(
                         error = %err,
-                        "continuity repair reconcile failed; backing off"
+                        "continuity repair reconcile failed; waiting for the next trigger"
                     );
-                    backoff = (backoff * 2).min(policy.max_backoff);
                     if cancellation
                         .as_ref()
                         .is_some_and(|cancellation| *cancellation.borrow())
@@ -1665,11 +1728,6 @@ impl IdentityFirstRuntimeContext {
                     }
                 }
             }
-            backoff = if still_broken.is_empty() && recovery_failures == 0 {
-                policy.initial_backoff
-            } else {
-                (backoff * 2).min(policy.max_backoff)
-            };
             if cancellation
                 .as_ref()
                 .is_some_and(|cancellation| *cancellation.borrow())
@@ -1830,22 +1888,45 @@ impl TrackedLeaseRenewalTask {
 /// re-executing the pass's destructive dispose steps on a timer.
 const REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS: u32 = 3;
 
-/// Retry cadence for [`IdentityFirstRuntimeContext::spawn_broken_identity_repair_task`].
+/// Configuration for [`IdentityFirstRuntimeContext::spawn_broken_identity_repair_task`].
+///
+/// The supervisor has no timer: it retries Broken identities when a typed
+/// [`ContinuityRepairTrigger`] fires, so there is no cadence to configure.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct ContinuityRepairPolicy {}
+
+/// What woke the continuity repair supervisor. Each is an event after which
+/// a Broken identity's retry can succeed where the last attempt failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContinuityRepairPolicy {
-    /// Delay before the first check and after every fully-healed pass.
-    pub initial_backoff: Duration,
-    /// Ceiling for the doubling backoff while identities stay Broken.
-    pub max_backoff: Duration,
+pub enum ContinuityRepairTrigger {
+    /// Another identity's embodiment settled: a resume, or a fresh durable
+    /// mint, committed, releasing the store writer it held.
+    EmbodimentSettled,
+    /// A restore or reconcile pass the supervisor did not run itself (boot, a
+    /// roster refresh, `mobkit/reconcile_identity`) finished, releasing every
+    /// writer it held.
+    RestorePassSettled,
+    /// A host asked for a repair pass
+    /// ([`IdentityFirstRuntimeContext::request_continuity_repair`]).
+    Requested,
 }
 
-impl Default for ContinuityRepairPolicy {
-    fn default() -> Self {
-        Self {
-            initial_backoff: Duration::from_secs(30),
-            max_backoff: Duration::from_mins(10),
-        }
-    }
+/// Who ran a restore pass, so the repair supervisor's own passes do not
+/// trigger it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestorePassOrigin {
+    /// Boot, a roster refresh, or `mobkit/reconcile_identity`.
+    Host,
+    /// The continuity repair supervisor.
+    ContinuityRepair,
+}
+
+/// The supervisor's wake signal: a monotonic epoch and the latest cause.
+#[derive(Debug, Clone, Copy, Default)]
+struct ContinuityRepairWake {
+    epoch: u64,
+    last: Option<ContinuityRepairTrigger>,
 }
 
 /// Weak keyed locks serialize claims on the shared raw/durable alias
@@ -2042,6 +2123,10 @@ pub struct IdentityRuntime {
     /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
     /// polling the registry. Carries no state.
     turn_outcome_changes: Arc<watch::Sender<()>>,
+    /// Typed wake-ups for the continuity repair supervisor: bumped whenever
+    /// something happened that can let a Broken identity's retry succeed
+    /// ([`ContinuityRepairTrigger`]). The supervisor has no timer.
+    continuity_repair_triggers: watch::Sender<ContinuityRepairWake>,
     /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
     inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
 }
@@ -2449,6 +2534,7 @@ impl IdentityRuntime {
             completion_cursors: StdMutex::new(BTreeMap::new()),
             turn_outcomes: Arc::default(),
             turn_outcome_changes: Arc::new(watch::channel(()).0),
+            continuity_repair_triggers: watch::channel(ContinuityRepairWake::default()).0,
             inspections: StdMutex::new(BTreeMap::new()),
         }
     }
@@ -2495,6 +2581,13 @@ impl IdentityRuntime {
     pub(crate) fn subscribe_identity_bootstrap_status(
         &self,
     ) -> watch::Receiver<IdentityBootstrapStatus> {
+        self.bootstrap_status.subscribe()
+    }
+
+    /// Change stream of the typed bootstrap snapshot, including each
+    /// identity's eager-restore progress, so an in-process host can wait on
+    /// typed per-member progress instead of a timeout.
+    pub fn watch_identity_bootstrap_status(&self) -> watch::Receiver<IdentityBootstrapStatus> {
         self.bootstrap_status.subscribe()
     }
 
@@ -2634,7 +2727,11 @@ impl IdentityRuntime {
                 };
                 (
                     spec.identity.clone(),
-                    IdentityBootstrapEntry { state, error: None },
+                    IdentityBootstrapEntry {
+                        state,
+                        error: None,
+                        restore: None,
+                    },
                 )
             })
             .collect();
@@ -2761,6 +2858,7 @@ impl IdentityRuntime {
                     IdentityBootstrapEntry {
                         state: IdentityBootstrapState::Dormant,
                         error: None,
+                        restore: None,
                     },
                 );
             }
@@ -2818,9 +2916,22 @@ impl IdentityRuntime {
                 }
                 (None, _) => (IdentityBootstrapState::Dormant, None),
             };
+            // The eager pass's typed per-member progress survives into the
+            // settled snapshot.
+            let restore = match mode {
+                IdentityBootstrapMode::EagerMaterialize => result
+                    .outcomes
+                    .get(&spec.identity)
+                    .map(super::orchestrator::RestoreOutcome::restore_progress),
+                _ => None,
+            };
             status.identities.insert(
                 spec.identity.clone(),
-                IdentityBootstrapEntry { state, error },
+                IdentityBootstrapEntry {
+                    state,
+                    error,
+                    restore,
+                },
             );
         }
         status.refresh_aggregates();
@@ -2972,6 +3083,36 @@ impl IdentityRuntime {
                 entry.error = None;
                 snapshot.refresh_aggregates();
             }
+        });
+    }
+
+    /// Publish one identity's typed eager-restore progress on the bootstrap
+    /// status as the restore pass reaches it. A settled stage also settles
+    /// the identity's bootstrap state, so per-member barriers can pass before
+    /// the whole pass ends.
+    pub(crate) fn publish_restore_progress(
+        &self,
+        identity: &AgentIdentity,
+        progress: IdentityRestoreProgress,
+        error: Option<String>,
+    ) {
+        self.modify_bootstrap_status(None, |snapshot| {
+            let Some(entry) = snapshot.identities.get_mut(identity) else {
+                return;
+            };
+            match &progress {
+                IdentityRestoreProgress::Minted | IdentityRestoreProgress::Resumed => {
+                    entry.state = IdentityBootstrapState::Active;
+                    entry.error = None;
+                }
+                IdentityRestoreProgress::Broken { .. } => {
+                    entry.state = IdentityBootstrapState::Broken;
+                    entry.error = error;
+                }
+                IdentityRestoreProgress::Registered | IdentityRestoreProgress::Resuming => {}
+            }
+            entry.restore = Some(progress);
+            snapshot.refresh_aggregates();
         });
     }
 
@@ -5724,6 +5865,41 @@ impl IdentityRuntime {
     /// per-identity tokio mutex is not reentrant, so the body is split rather
     /// than re-acquired.
     async fn embody_identity_locked(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        cancellation: Option<&mut watch::Receiver<bool>>,
+        expected_bootstrap_generation: Option<u64>,
+        bound_bootstrap_generation: &mut Option<u64>,
+        overrides: EmbodimentOverrides<'_>,
+    ) -> Result<EmbodimentOutcome, IdentityRuntimeError> {
+        let was_active = self
+            .entries
+            .read()
+            .await
+            .get(identity)
+            .is_some_and(|entry| entry.state == IdentityLifecycleState::Active);
+        let result = self
+            .embody_identity_transaction(
+                identity,
+                expected_alias,
+                cancellation,
+                expected_bootstrap_generation,
+                bound_bootstrap_generation,
+                overrides,
+            )
+            .await;
+        // A genuine embodiment (a resume, or a fresh mint) committed and
+        // released the store writer it held: a typed repair trigger. A
+        // converged Active identity re-validated by a pass is not one, so a
+        // repair pass cannot wake itself through its healthy members.
+        if result.is_ok() && !was_active {
+            self.trigger_continuity_repair(ContinuityRepairTrigger::EmbodimentSettled);
+        }
+        result
+    }
+
+    async fn embody_identity_transaction(
         &self,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
@@ -12814,6 +12990,22 @@ impl IdentityRuntime {
     }
 
     // -----------------------------------------------------------------------
+    // Continuity repair triggers
+    // -----------------------------------------------------------------------
+
+    /// Wake the continuity repair supervisor with a typed cause.
+    pub(crate) fn trigger_continuity_repair(&self, trigger: ContinuityRepairTrigger) {
+        self.continuity_repair_triggers.send_modify(|wake| {
+            wake.epoch = wake.epoch.wrapping_add(1);
+            wake.last = Some(trigger);
+        });
+    }
+
+    fn subscribe_continuity_repair_triggers(&self) -> watch::Receiver<ContinuityRepairWake> {
+        self.continuity_repair_triggers.subscribe()
+    }
+
+    // -----------------------------------------------------------------------
     // Turn-completion cursor
     // -----------------------------------------------------------------------
 
@@ -17468,12 +17660,13 @@ mod continuity_repair_supervisor_tests {
             None,
             None,
         ));
-        let task = context.spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy {
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(10),
-        });
+        let task = Arc::clone(&context)
+            .spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy::default());
 
-        // The park must arrive after EXACTLY the bounded attempt count.
+        // The park must arrive after EXACTLY the bounded attempt count. The
+        // supervisor has no timer: its first pass runs at start, and each
+        // later pass follows an explicit trigger (as `mobkit/reconcile_identity`
+        // gives it).
         let deadline = Instant::now() + Duration::from_secs(30);
         let park = loop {
             if let Some(park) = runtime.continuity_unrecoverable(&identity).await {
@@ -17483,6 +17676,7 @@ mod continuity_repair_supervisor_tests {
                 task.cancel_and_join().await;
                 return Err("repair loop never parked the identically-failing identity".into());
             }
+            context.request_continuity_repair();
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         assert!(
@@ -17502,8 +17696,11 @@ mod continuity_repair_supervisor_tests {
             "the destructive repair must run exactly the bounded attempt count"
         );
 
-        // Parked = no further destructive re-execution on the timer.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Parked = no further destructive re-execution, whatever triggers it.
+        for _ in 0..10 {
+            context.request_continuity_repair();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert_eq!(
             bridge.attempts(),
             attempts_at_park,
@@ -17540,11 +17737,8 @@ mod continuity_repair_supervisor_tests {
             None,
             None,
         ));
-        let TrackedContinuityRepairTask { cancel, join } = context
-            .spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy {
-                initial_backoff: Duration::from_mins(1),
-                max_backoff: Duration::from_mins(1),
-            });
+        let TrackedContinuityRepairTask { cancel, join } =
+            context.spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy::default());
 
         // This is what happens if the owning runtime is dropped without an
         // explicit shutdown: JoinHandle detaches, while the sender disappears.
@@ -17626,6 +17820,7 @@ mod bootstrap_failure_attribution_tests {
                     IdentityBootstrapEntry {
                         state: IdentityBootstrapState::Broken,
                         error: Some(culprit_cause.to_string()),
+                        restore: None,
                     },
                 );
                 snapshot.identities.insert(
@@ -17633,6 +17828,7 @@ mod bootstrap_failure_attribution_tests {
                     IdentityBootstrapEntry {
                         state: IdentityBootstrapState::Warming,
                         error: None,
+                        restore: None,
                     },
                 );
                 snapshot.identities.insert(
@@ -17640,6 +17836,7 @@ mod bootstrap_failure_attribution_tests {
                     IdentityBootstrapEntry {
                         state: IdentityBootstrapState::Active,
                         error: None,
+                        restore: None,
                     },
                 );
                 snapshot.refresh_aggregates();
@@ -17749,6 +17946,7 @@ mod bootstrap_failure_attribution_tests {
                     IdentityBootstrapEntry {
                         state: IdentityBootstrapState::Broken,
                         error: Some(first_cause.to_string()),
+                        restore: None,
                     },
                 );
                 snapshot.refresh_aggregates();

@@ -674,6 +674,26 @@ rather than leaving the barrier pending indefinitely. Provider or restore
 failures that apply to the whole pass are reported in the snapshot's optional
 `error` field.
 
+During an eager restore pass each identity's entry also carries typed
+`restore` progress: `{"stage": "registered"}`, `"resuming"`, `"minted"` (a
+fresh identity's durable record and session were created), `"resumed"`, or
+`{"stage": "broken", "kind": "<continuity failure kind>"}`. A minted or resumed
+member is `active` (and a broken one `broken`) as soon as its own restore
+settles, before the whole pass ends. In process,
+`IdentityRuntime::watch_identity_bootstrap_status` streams the snapshot. On
+the stdio gateway `mobkit/init` still returns after the eager pass; a host
+that must not wait on the whole fleet uses `lazy_with_background_warm` and
+follows the same typed progress with `mobkit/wait_identity_bootstrap`.
+
+Broken identities are retried by the continuity repair supervisor, which has
+no timer. It runs one pass when it starts and then waits for a typed trigger:
+another identity's embodiment settled (a resume or a fresh durable mint
+committed, releasing the store writer it held), a host restore or reconcile
+pass settled (boot, a roster refresh, `mobkit/reconcile_identity`), or an
+explicit request (`IdentityFirstRuntimeContext::request_continuity_repair`).
+Its own passes never re-trigger it. `mobkit/reconcile_identity` remains the
+operator's explicit trigger.
+
 The stock persistent gateway also advertises a private shutdown handshake and
 its bounded `stdio_shutdown_horizon_ms` in the `mobkit/init` result. SDK hosts
 keep stdin and provider callbacks open until that handshake completes, then

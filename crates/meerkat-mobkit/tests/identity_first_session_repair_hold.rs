@@ -355,11 +355,8 @@ async fn first_divergent_resume_parks_typed_and_reload_member_resumes_after_repa
     ));
     let repair = context
         .clone()
-        .spawn_broken_identity_repair_task(ContinuityRepairPolicy {
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(40),
-        });
-    tokio::time::sleep(Duration::from_millis(250)).await;
+        .spawn_broken_identity_repair_task(ContinuityRepairPolicy::default());
+    request_repairs_during(&context, Duration::from_millis(250)).await;
     repair.abort();
     assert_eq!(
         bridge.recover_calls.load(Ordering::SeqCst),
@@ -607,11 +604,8 @@ async fn heal_verdict_divergence_parks_the_identity_after_one_recovery_call() {
     ));
     let repair = context
         .clone()
-        .spawn_broken_identity_repair_task(ContinuityRepairPolicy {
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(40),
-        });
-    tokio::time::sleep(Duration::from_millis(250)).await;
+        .spawn_broken_identity_repair_task(ContinuityRepairPolicy::default());
+    request_repairs_during(&context, Duration::from_millis(250)).await;
     repair.abort();
 
     assert_eq!(
@@ -627,4 +621,21 @@ async fn heal_verdict_divergence_parks_the_identity_after_one_recovery_call() {
         status.session_repair_required.as_ref().unwrap(),
         &session_id,
     );
+}
+
+/// Ask the continuity repair supervisor for passes across `window`, the
+/// explicit trigger a host uses (`mobkit/reconcile_identity`), now that the
+/// supervisor retries only on typed triggers and has no timer.
+async fn request_repairs_during(
+    context: &meerkat_mobkit::identity_first::IdentityFirstRuntimeContext,
+    window: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        context.request_continuity_repair();
+        if tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5).min(window)).await;
+    }
 }

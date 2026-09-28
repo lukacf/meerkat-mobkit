@@ -1296,12 +1296,33 @@ pub enum IdentityBootstrapState {
     Broken,
 }
 
+/// Where one identity's eager restore stands, published on the bootstrap
+/// status while the restore pass runs, so a host can follow each member
+/// instead of waiting on the whole pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum IdentityRestoreProgress {
+    /// The roster metadata is registered; embodiment has not started.
+    Registered,
+    /// The identity's embodiment (a resume, or a fresh mint) is running.
+    Resuming,
+    /// A fresh identity's durable continuity record and session were minted.
+    Minted,
+    /// The identity resumed its durable session.
+    Resumed,
+    /// The identity is parked Broken with this typed cause.
+    Broken { kind: ContinuityFailureKind },
+}
+
 /// Bootstrap progress for one durable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityBootstrapEntry {
     pub state: IdentityBootstrapState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Typed eager-restore progress; `None` outside an eager restore pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<IdentityRestoreProgress>,
 }
 
 /// Aggregate bootstrap-state counts.

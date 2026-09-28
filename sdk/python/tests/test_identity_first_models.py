@@ -89,6 +89,34 @@ class TestIdentityBootstrapModels:
         assert status.startup_ready is False
         assert status.to_dict()["error"] == "one or more identities failed to warm"
 
+    def test_status_parser_reads_typed_restore_progress(self):
+        from meerkat_mobkit import IdentityRestoreProgress
+
+        payload = self._status_payload(
+            identities={
+                "agent:resuming": {"state": "warming", "restore": {"stage": "resuming"}},
+                "agent:broken": {
+                    "state": "broken",
+                    "error": "resume rejected",
+                    "restore": {"stage": "broken", "kind": "resume_rejected"},
+                },
+                "agent:older": {"state": "active"},
+            }
+        )
+        status = IdentityBootstrapStatus.from_dict(payload)
+
+        assert status.identities["agent:resuming"].restore == IdentityRestoreProgress(
+            stage="resuming"
+        )
+        assert status.identities["agent:broken"].restore == IdentityRestoreProgress(
+            stage="broken", kind="resume_rejected"
+        )
+        assert status.identities["agent:older"].restore is None
+        assert status.identities["agent:broken"].to_dict()["restore"] == {
+            "stage": "broken",
+            "kind": "resume_rejected",
+        }
+
     def test_status_parser_preserves_unknown_state_as_typed_unknown(self):
         status = IdentityBootstrapStatus.from_dict(
             {

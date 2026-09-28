@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `ContinuityRepairPolicy` loses `initial_backoff` and `max_backoff` and is
+  `#[non_exhaustive]`: the continuity repair supervisor no longer runs on a
+  timer (see Changed). Construct it with `ContinuityRepairPolicy::default()`.
+- `IdentityBootstrapEntry` gains `restore: Option<IdentityRestoreProgress>`
+  (see Added). Struct literals must set it, usually to `None`. The JSON field
+  is optional, so older snapshots still parse.
+
 - `BridgeError` and `BridgeAdmissionError` gain an `UnsupportedForMode {
   identity, mode, detail }` variant: meerkat's typed pre-admission refusal
   (`MobError::UnsupportedForMode`) for the member's live runtime mode, which
@@ -69,6 +76,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- The continuity repair supervisor is event-driven. It used to retry Broken
+  identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
+  left members parked for 1 to 15 minutes while the process sat idle. It now
+  runs one pass when it starts and then retries only on a typed trigger:
+  another identity's embodiment settled (a resume or a fresh durable mint
+  committed, releasing the store writer it held), a host restore or reconcile
+  pass settled (boot, a roster refresh, `mobkit/reconcile_identity`), or an
+  explicit request. Its own passes never re-trigger it, and the
+  byte-identical-failure park and the typed terminal parks are unchanged.
 
 - Improve console reading and composition in the stock and reusable hosts:
   preserve the reading position while output streams, render complete Markdown
@@ -154,6 +171,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Typed per-member restore progress on the identity bootstrap status. During
+  an eager restore pass each entry carries `restore`: `registered`,
+  `resuming`, `minted`, `resumed`, or `broken` with the typed continuity
+  failure kind, and a member's bootstrap state settles (`active` / `broken`)
+  as soon as its own restore does, before the whole pass ends.
+  `IdentityRuntime::watch_identity_bootstrap_status` streams the snapshot in
+  process; the Python SDK parses it as `IdentityRestoreProgress`.
+- `IdentityFirstRuntimeContext::request_continuity_repair` asks the
+  continuity repair supervisor for a pass (typed `ContinuityRepairTrigger`).
 
 - Server-side, event-driven completion waits (#468). `mobkit/wait_for_completion`
   resolves when an identity's completion cursor moves past `after` (or, with no
