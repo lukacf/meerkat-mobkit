@@ -10868,10 +10868,42 @@ pub async fn send_message_on_mob_with_mode(
     content: impl Into<meerkat_core::ContentInput>,
     handling_mode: meerkat_core::types::HandlingMode,
 ) -> Result<String, MobRuntimeError> {
+    send_message_on_mob_inner(handle, member_id, content.into(), handling_mode, None).await
+}
+
+/// Direct member send whose runtime admission carries the host-minted
+/// interaction id, so the run's typed lineage names the exact console
+/// reservation `mobkit/send_message` made for it and that run's terminal
+/// settles it. Delivery semantics otherwise match
+/// [`send_message_on_mob_with_mode`]: the same external-origin work on the
+/// same SubmitWork path.
+pub(crate) async fn send_message_on_mob_with_interaction(
+    handle: &MobHandle,
+    member_id: &str,
+    content: impl Into<meerkat_core::ContentInput>,
+    handling_mode: meerkat_core::types::HandlingMode,
+    interaction_id: meerkat_core::interaction::InteractionId,
+) -> Result<String, MobRuntimeError> {
+    send_message_on_mob_inner(
+        handle,
+        member_id,
+        content.into(),
+        handling_mode,
+        Some(interaction_id),
+    )
+    .await
+}
+
+async fn send_message_on_mob_inner(
+    handle: &MobHandle,
+    member_id: &str,
+    content: meerkat_core::ContentInput,
+    handling_mode: meerkat_core::types::HandlingMode,
+    interaction_id: Option<meerkat_core::interaction::InteractionId>,
+) -> Result<String, MobRuntimeError> {
     if member_id.trim().is_empty() {
         return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
     }
-    let content = content.into();
     let is_empty = match &content {
         meerkat_core::ContentInput::Text(s) => s.trim().is_empty(),
         meerkat_core::ContentInput::Blocks(blocks) => blocks.is_empty(),
@@ -10882,11 +10914,44 @@ pub async fn send_message_on_mob_with_mode(
     // Wire member ids are public aliases; the roster id is the comms-safe
     // encoding (meerkat 0.7 MemberCommsName).
     let mid = crate::member_comms_id::mob_member_id(member_id);
-    let _receipt = handle
-        .member(&mid)
-        .await?
-        .send(content, handling_mode)
-        .await?;
+    let member = handle.member(&mid).await?;
+    match interaction_id {
+        None => {
+            member.send(content, handling_mode).await?;
+        }
+        Some(interaction_id) => {
+            // The member-send verb has no interaction carrier, so submit the
+            // same external-origin work with the id on its WorkSpec, bound to
+            // the current roster binding (the identity bridge's pattern).
+            let entry = handle
+                .get_member(&mid)
+                .await?
+                .ok_or_else(|| MobError::MemberNotFound(mid.clone()))?;
+            let spec =
+                meerkat_mob::WorkSpec::new(content.clone(), meerkat_mob::WorkOrigin::External)
+                    .with_interaction_id(interaction_id);
+            match handle
+                .submit_work_with_mode(
+                    entry.agent_runtime_id,
+                    entry.fence_token,
+                    meerkat_mob::WorkRef::new(),
+                    spec,
+                    handling_mode,
+                )
+                .await
+            {
+                Ok(_receipt) => {}
+                // Legacy peer-only members cannot represent a transcript
+                // interaction id. Meerkat refuses the carrier before admission,
+                // so nothing was delivered and the plain send is not a second
+                // delivery; that run simply carries no reservation lineage.
+                Err(MobError::UnsupportedForMode { .. }) => {
+                    member.send(content, handling_mode).await?;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
     if let Some(session_id) = handle.resolve_bridge_session_id(&mid).await {
         return Ok(session_id.to_string());
     }

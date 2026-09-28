@@ -17,7 +17,7 @@ const EVENT_CHANNEL_BASE_CAP: usize = 4096;
 const EVENT_CHANNEL_CAP_PER_MEMBER: usize = 128;
 const EVENT_CHANNEL_DEFAULT_MEMBER_BUDGET: usize = 256;
 const EVENT_CHANNEL_MAX_CAP: usize = 65_536;
-const PENDING_INTERACTION_CAP: usize = 256;
+pub(crate) const PENDING_INTERACTION_CAP: usize = 256;
 
 pub(crate) fn event_channel_capacity_for_members(member_count: usize) -> usize {
     EVENT_CHANNEL_BASE_CAP
@@ -616,6 +616,23 @@ impl ConsoleEventStore {
                         // An exact foreign/older terminal can settle only its
                         // own reservation, never another current run.
                         close_console_interaction(&mut state, &identity, interaction_id);
+                    } else if interaction_id.is_none()
+                        && terminal
+                            .as_ref()
+                            .is_some_and(|lineage| lineage.run_id.is_some())
+                        && !state.active_run_by_identity.contains_key(&identity)
+                        && !state.active_interaction_by_identity.contains_key(&identity)
+                    {
+                        // A typed terminal whose start was never observed
+                        // (missed run_started, interaction-less peer/flow/
+                        // schedule run) names no reservation to settle. With
+                        // no tracked run and no active interaction there is no
+                        // current owner it could close, so the phase that run
+                        // left behind is stale. Pending reservations remain
+                        // queued until their own typed terminals arrive.
+                        state
+                            .response_phase_by_identity
+                            .insert(identity.clone(), None);
                     }
                 }
                 "interaction_callback_pending" => {
@@ -660,6 +677,22 @@ impl ConsoleEventStore {
             .get(identity)
             .cloned()
             .flatten()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pending_interaction_ids(&self, identity: &str) -> Vec<String> {
+        self.state
+            .read()
+            .await
+            .pending_by_identity
+            .get(identity)
+            .map(|queue| {
+                queue
+                    .iter()
+                    .map(|pending| pending.interaction_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Snapshot known activity under one read lock. A present null phase is
@@ -3222,6 +3255,260 @@ mod tests {
         assert_eq!(
             store.state.read().await.pending_by_identity["worker"].len(),
             1
+        );
+    }
+
+    /// #469: a run whose start was never observed and whose typed terminal
+    /// names no interaction used to leave its phase set (no final
+    /// turn_completed after run_failed), parking the console drain gate.
+    #[tokio::test]
+    async fn unobserved_start_interactionless_terminal_clears_stale_phase() {
+        for (phase_event, expected_phase) in [
+            ("text_delta", "generating"),
+            ("tool_call_requested", "tool-executing"),
+        ] {
+            let store = ConsoleEventStore::new();
+            let run = json!({"run_id": uuid::Uuid::from_u128(301).to_string()});
+            store
+                .register_runtime_identity("rt:worker:1", "worker")
+                .await;
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    "queued-console-send",
+                    "console",
+                    json!("queued"),
+                )
+                .await
+                .expect("reserve queued console interaction");
+            // run_started was missed: the first observed frame is output.
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    "output",
+                    "rt:worker:1",
+                    phase_event,
+                    json!({"identity": run, "delta": "partial"}),
+                ))
+                .await;
+            assert_eq!(
+                store.response_phase_for_identity("worker").await.as_deref(),
+                Some(expected_phase)
+            );
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    "failed",
+                    "rt:worker:1",
+                    "run_failed",
+                    json!({"identity": run, "error": "provider failed"}),
+                ))
+                .await;
+            assert_eq!(store.response_phase_for_identity("worker").await, None);
+            // The terminal named no reservation, so it settles none.
+            assert_eq!(
+                store.pending_interaction_ids("worker").await,
+                vec!["queued-console-send".to_string()]
+            );
+            let replay = store
+                .replay_all(None)
+                .await
+                .expect("replay retained console frames");
+            assert!(
+                replay
+                    .iter()
+                    .find(|event| event.event_id == "failed")
+                    .expect("projected failed frame")
+                    .interaction_id
+                    .is_none()
+            );
+            assert!(!replay.iter().any(|event| {
+                event.event_type == "interaction_failed"
+                    && event.interaction_id.as_deref() == Some("queued-console-send")
+            }));
+        }
+    }
+
+    /// The same interaction-less terminal must never close another current
+    /// owner: neither a tracked typed run nor a legacy active interaction.
+    #[tokio::test]
+    async fn foreign_interactionless_terminal_preserves_active_run_and_interaction_phase() {
+        let store = ConsoleEventStore::new();
+        let active = typed_lineage(311, 411);
+        let foreign = json!({"run_id": uuid::Uuid::from_u128(412).to_string()});
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "start",
+                "rt:worker:1",
+                "run_started",
+                json!({"identity": active, "input": {"kind": "content", "content": "hello"}}),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "delta",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta": "working"}),
+            ))
+            .await;
+        for (id, kind) in [
+            ("foreign-failed", "run_failed"),
+            ("foreign-done", "run_completed"),
+        ] {
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    id,
+                    "rt:worker:1",
+                    kind,
+                    json!({"identity": foreign}),
+                ))
+                .await;
+            assert_eq!(
+                store.response_phase_for_identity("worker").await.as_deref(),
+                Some("generating")
+            );
+        }
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "still-current",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta": "more"}),
+            ))
+            .await;
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
+        assert_eq!(
+            replay
+                .iter()
+                .find(|event| event.event_id == "still-current")
+                .expect("projected still-current frame")
+                .data["identity"],
+            active
+        );
+
+        // Legacy identity-free start bound by content: an active interaction
+        // without a typed run still owns the phase.
+        let legacy = ConsoleEventStore::new();
+        legacy
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        legacy
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "legacy-turn",
+                "console",
+                json!("legacy prompt"),
+            )
+            .await
+            .expect("reserve legacy console interaction");
+        legacy
+            .project_unified_event(&agent_event_with_payload(
+                "legacy-start",
+                "rt:worker:1",
+                "run_started",
+                json!({"input": {"kind": "content", "content": "legacy prompt"}}),
+            ))
+            .await;
+        legacy
+            .project_unified_event(&agent_event_with_payload(
+                "legacy-delta",
+                "rt:worker:1",
+                "text_delta",
+                json!({"delta": "working"}),
+            ))
+            .await;
+        legacy
+            .project_unified_event(&agent_event_with_payload(
+                "legacy-foreign-failed",
+                "rt:worker:1",
+                "run_failed",
+                json!({"identity": foreign}),
+            ))
+            .await;
+        assert_eq!(
+            legacy
+                .response_phase_for_identity("worker")
+                .await
+                .as_deref(),
+            Some("generating")
+        );
+        assert_eq!(
+            legacy.state.read().await.active_interaction_by_identity["worker"],
+            "legacy-turn"
+        );
+    }
+
+    /// #469: typed reservations close on their own run's terminal, so a
+    /// long-lived identity never reaches the pending cap and never evicts a
+    /// settled send with a false `queue_overflow`.
+    #[tokio::test]
+    async fn typed_reservations_close_on_their_run_terminal_past_pending_cap() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        let sends = PENDING_INTERACTION_CAP + 8;
+        for index in 0..sends {
+            let lineage = typed_lineage(10_000 + index as u128, 20_000 + index as u128);
+            let interaction = lineage["interaction_id"]
+                .as_str()
+                .expect("typed interaction id")
+                .to_string();
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    &interaction,
+                    "mobkit/send_message",
+                    json!(format!("probe {index}")),
+                )
+                .await
+                .expect("reserve typed interaction");
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    &format!("start-{index}"),
+                    "rt:worker:1",
+                    "run_started",
+                    json!({"identity": lineage, "input": {"kind": "content", "content": format!("probe {index}")}}),
+                ))
+                .await;
+            // Alternate settled and failed runs; a failed run has no final
+            // turn_completed.
+            let terminal = if index % 2 == 0 {
+                "run_completed"
+            } else {
+                "run_failed"
+            };
+            store
+                .project_unified_event(&agent_event_with_payload(
+                    &format!("terminal-{index}"),
+                    "rt:worker:1",
+                    terminal,
+                    json!({"identity": lineage}),
+                ))
+                .await;
+            assert!(
+                store.pending_interaction_ids("worker").await.is_empty(),
+                "reservation {index} must close on its own run terminal"
+            );
+            assert_eq!(store.response_phase_for_identity("worker").await, None);
+        }
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("replay retained console frames");
+        assert!(
+            !replay
+                .iter()
+                .any(|event| event.data.get("reason") == Some(&json!("queue_overflow"))),
+            "settled reservations must never be evicted as queue overflow"
         );
     }
 }

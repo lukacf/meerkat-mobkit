@@ -12,8 +12,8 @@ use crate::blob_store::is_valid_blob_id_value;
 use crate::mob_handle_runtime::{
     assert_member_accepts_images, is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
     model_routing_status_for_member, model_routing_status_for_session, resolved_tools_for_member,
-    resolved_tools_for_session, send_message_on_mob_with_mode, topology_restore_failed_peer_ids,
-    topology_restore_warning_json,
+    resolved_tools_for_session, send_message_on_mob_with_interaction,
+    topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use crate::unified_runtime::UnifiedRuntime;
 
@@ -237,7 +237,7 @@ fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMo
 ///    identity) falls through to raw member-id semantics so the original
 ///    mob `member not found` error surfaces unchanged.
 enum SendMessageTarget {
-    /// Deliver through the mob roster (`send_message_on_mob_with_mode`).
+    /// Deliver through the mob roster (`send_message_on_mob_with_interaction`).
     MobMember,
     /// Reserved generated aliases never degrade into the raw member plane.
     AuthorityUnavailable { alias: String },
@@ -446,7 +446,13 @@ pub(super) async fn handle_send_message(
                 };
             }
             let content_value = content_input_to_console_value(&content);
-            let interaction_id = format!("mobkit-send-{}", meerkat_core::types::SessionId::new());
+            // A UUID reservation id rides the delivery as typed lineage (the
+            // identity bridge threads it into the WorkSpec; the roster path
+            // sets it on its own WorkSpec), so the run's terminal settles
+            // exactly this reservation. A non-UUID id could never be threaded
+            // and its reservation would never close.
+            let interaction = meerkat_core::InteractionId::new();
+            let interaction_id = interaction.to_string();
             let handling_mode_value = match handling_mode {
                 meerkat_core::types::HandlingMode::Queue => "queue",
                 meerkat_core::types::HandlingMode::Steer => "steer",
@@ -487,11 +493,12 @@ pub(super) async fn handle_send_message(
                 )
                 .await;
             let delivery: Result<String, String> = match &target {
-                SendMessageTarget::MobMember => send_message_on_mob_with_mode(
+                SendMessageTarget::MobMember => send_message_on_mob_with_interaction(
                     &runtime.mob_handle(),
                     &member_id,
                     content.clone(),
                     handling_mode,
+                    interaction,
                 )
                 .await
                 .map_err(|err| err.to_string()),
