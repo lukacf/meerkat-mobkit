@@ -5,10 +5,13 @@
 //!
 //! HomeCore's 0.8.43 candidate recheck saw `mob_check_member` and
 //! `mob_retire_member` on calendar's fork child return access_denied. The child
-//! had already been idle-retired: meerkat's owned-member admission reports a
-//! target that is no longer on the roster as access_denied (meerkat #1234).
+//! had already been idle-retired, and meerkat's owned-member admission used to
+//! report a target no longer on the roster as access_denied. Since meerkat
+//! #1234 it observes presence first: an absent target is the typed tool error
+//! `execution_failed` with `data.kind` `member_retired` or `member_not_found`,
+//! and access_denied only means a present member the caller does not own.
 //! The first two tests pin that ownership itself works, in one process and
-//! across a restart; the third pins the current answer for a retired child.
+//! across a restart; the third pins the typed answer for a retired child.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -362,12 +365,14 @@ async fn a_forker_checks_and_retires_its_own_fork_child() {
     deliver(&bridge, &runtime_id, "fork, check and retire").await;
 
     let (check, retire) = check_and_retire_results(&script);
-    assert!(
-        !check.contains("access_denied"),
+    assert_eq!(
+        tool_error(&check, "call-check"),
+        None,
         "the forker may check its own fork child: {check}"
     );
-    assert!(
-        !retire.contains("access_denied"),
+    assert_eq!(
+        tool_error(&retire, "call-retire"),
+        None,
         "the forker may retire its own fork child: {retire}"
     );
     unified.shutdown().await;
@@ -432,12 +437,14 @@ async fn a_forker_checks_and_retires_its_idle_fork_child_after_a_restart() {
     );
     deliver(&bridge, &runtime_id, CHECK_PROMPT).await;
     let (check, retire) = check_and_retire_results(&script);
-    assert!(
-        !check.contains("access_denied"),
+    assert_eq!(
+        tool_error(&check, "call-check"),
+        None,
         "the forker may check its own fork child after a restart: {check}"
     );
-    assert!(
-        !retire.contains("access_denied"),
+    assert_eq!(
+        tool_error(&retire, "call-retire"),
+        None,
         "the forker may retire its own fork child after a restart: {retire}"
     );
     unified.shutdown().await;
@@ -456,14 +463,35 @@ fn check_and_retire_results(script: &ForkerScript) -> (String, String) {
     (find("call-check"), find("call-retire"))
 }
 
+/// The typed tool error a recorded tool-results message carries for `call`:
+/// `(error, data.kind)` from meerkat's canonical transcript payload, or `None`
+/// when the call succeeded.
+fn tool_error(recorded: &str, call: &str) -> Option<(String, Option<String>)> {
+    let message: Message = serde_json::from_str(recorded).expect("recorded tool results");
+    let Message::ToolResults { results, .. } = message else {
+        panic!("recorded a non tool-results message: {recorded}");
+    };
+    let result = results
+        .iter()
+        .find(|result| result.tool_use_id == call)
+        .unwrap_or_else(|| panic!("{call} has a result: {recorded}"));
+    if !result.is_error {
+        return None;
+    }
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.text_content()).expect("typed tool error payload");
+    Some((
+        payload["error"].as_str().unwrap_or_default().to_string(),
+        payload["data"]["kind"].as_str().map(ToString::to_string),
+    ))
+}
+
 /// HomeCore's case: the fork child was idle-retired (the default is 300 s,
-/// here 1 s) before the forker checked and retired it. Meerkat's owned-member
-/// admission reads a target that is no longer on the roster as not owned, so
-/// both tools answer access_denied, "not allowed by policy" (meerkat #1234).
-/// This pins the current answer: when #1234 reports a retired or missing
-/// target as not found, flip these assertions.
+/// here 1 s) before the forker checked and retired it. Meerkat #1234 observes
+/// the target's presence before ownership, so both tools answer the typed
+/// `member_retired` tool error, never access_denied.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_idle_retired_fork_child_reads_as_access_denied_until_meerkat_1234() {
+async fn an_idle_retired_fork_child_reads_as_typed_member_retired() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
     let script = ForkerScript::default();
@@ -498,16 +526,18 @@ async fn an_idle_retired_fork_child_reads_as_access_denied_until_meerkat_1234() 
         .store(PHASE_CHECK_AND_RETIRE, std::sync::atomic::Ordering::SeqCst);
     deliver(&bridge, &runtime_id, CHECK_PROMPT).await;
     let (check, retire) = check_and_retire_results(&script);
-    // Current behavior, meerkat #1234: a missing target reads as access_denied.
-    assert!(
-        check.contains("access_denied")
-            && check.contains("Tool 'mob_check_member' is not allowed by policy"),
-        "a retired child's check answers access_denied until meerkat #1234: {check}"
-    );
-    assert!(
-        retire.contains("access_denied")
-            && retire.contains("Tool 'mob_retire_member' is not allowed by policy"),
-        "a retired child's retire answers access_denied until meerkat #1234: {retire}"
-    );
+    for (tool, recorded, call) in [
+        ("mob_check_member", &check, "call-check"),
+        ("mob_retire_member", &retire, "call-retire"),
+    ] {
+        assert_eq!(
+            tool_error(recorded, call),
+            Some((
+                "execution_failed".to_string(),
+                Some("member_retired".to_string())
+            )),
+            "a retired child's {tool} answers the typed member_retired error: {recorded}"
+        );
+    }
     unified.shutdown().await;
 }
