@@ -449,6 +449,7 @@ impl UnifiedRuntime {
         mob_runtime: MobRuntime,
         module_runtime: MobkitRuntimeHandle,
         persistent_metadata: Arc<dyn PersistentMetadataStore>,
+        live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
     ) -> Self {
         // Construct the metadata table first so the structural-events store
         // can be wired with it — every projected envelope picks up the
@@ -461,6 +462,7 @@ impl UnifiedRuntime {
             mob_runtime.agent_mob_mcp_state(),
             mob_events_store.clone(),
             Arc::clone(&identity_runtime_authority),
+            live_event_tap,
         ));
         let mob_events_task = Self::spawn_mob_events_subscriber(
             mob_runtime.handle(),
@@ -718,6 +720,11 @@ impl UnifiedRuntime {
             .bind_authority(topology_authority)
             .await
             .map_err(|error| UnifiedRuntimeBootstrapError::Topology(error.to_string()))?;
+        // Armed before `prepare` so members materialized inside it are
+        // captured too: the console forwarder built in `from_parts` adopts
+        // those captures instead of subscribing after their first run.
+        let live_event_tap = mob_spec.live_session_event_tap();
+        live_event_tap.arm();
         // `prepare`, not `bootstrap`: an identity-first resume of a persistent
         // log must stay Stopped until its continuity owners are registered,
         // because the lift is what triggers session revival.
@@ -732,8 +739,13 @@ impl UnifiedRuntime {
 
         match module_start_result {
             Ok(Ok(module_runtime)) => {
-                let mut runtime =
-                    Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await;
+                let mut runtime = Self::from_parts(
+                    mob_runtime,
+                    module_runtime,
+                    persistent_metadata,
+                    live_event_tap,
+                )
+                .await;
                 runtime.topology_controller = topology_controller;
                 // Configuration-only; dispatches nothing into the mob.
                 runtime
@@ -1632,6 +1644,7 @@ impl UnifiedRuntime {
         identity_runtime: Arc<
             std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>,
         >,
+        live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
     ) -> MobEventIngress {
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
@@ -1650,6 +1663,7 @@ impl UnifiedRuntime {
             agent_mob_mcp_state,
             event_tx,
             mob_events,
+            live_event_tap,
         ));
         MobEventIngress::Forwarder(MobEventForwarder {
             event_rx,
@@ -1783,6 +1797,9 @@ const RECONCILE_SAFETY_INTERVAL: Duration = Duration::from_secs(30);
 struct ReconcileCadence {
     machine_watchers: BTreeMap<String, meerkat_mob::MobMachineStateChanges>,
     mob_set_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    /// New create-time captures on the live session event tap (console
+    /// forwarder only): adopting one must not wait for a backoff deadline.
+    tap_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// Absolute deadline for the next safety reconcile, anchored at the last
     /// completed reconcile pass ([`Self::rebind`]). Persisting it here is
     /// load-bearing: the callers' outer `select!` drops and recreates the
@@ -1793,12 +1810,16 @@ struct ReconcileCadence {
 }
 
 impl ReconcileCadence {
-    fn new(agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>) -> Self {
+    fn new(
+        agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
+        tap_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    ) -> Self {
         Self {
             machine_watchers: BTreeMap::new(),
             mob_set_changes: agent_mob_mcp_state
                 .as_ref()
                 .map(|state| state.mob_set_changes()),
+            tap_changes,
             next_safety_deadline: tokio::time::Instant::now() + RECONCILE_SAFETY_INTERVAL,
         }
     }
@@ -1836,6 +1857,7 @@ impl ReconcileCadence {
         let Self {
             machine_watchers,
             mob_set_changes,
+            tap_changes,
             ..
         } = self;
 
@@ -1868,15 +1890,26 @@ impl ReconcileCadence {
             }
         };
 
-        let mob_set_closed = tokio::select! {
-            () = machine_change => false,
-            result = mob_set_change => result.is_err(),
-            () = tokio::time::sleep_until(deadline) => false,
+        let tap_change = async {
+            match tap_changes.as_mut() {
+                Some(rx) => rx.changed().await,
+                None => std::future::pending().await,
+            }
+        };
+
+        let (mob_set_closed, tap_closed) = tokio::select! {
+            () = machine_change => (false, false),
+            result = mob_set_change => (result.is_err(), false),
+            result = tap_change => (false, result.is_err()),
+            () = tokio::time::sleep_until(deadline) => (false, false),
         };
         if mob_set_closed {
             // The dispatcher state is gone; a closed watch completes
             // immediately, so it must not stay selectable.
             self.mob_set_changes = None;
+        }
+        if tap_closed {
+            self.tap_changes = None;
         }
     }
 }
@@ -2080,11 +2113,12 @@ async fn run_resilient_mob_agent_event_forwarder(
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     event_tx: Sender<ForwardedMemberEvent>,
     mob_events: MobEventsStore,
+    live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state);
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, Some(live_event_tap.changes()));
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2093,6 +2127,7 @@ async fn run_resilient_mob_agent_event_forwarder(
         &mut subscribe_failures,
         &mut streams,
         None,
+        Some(&live_event_tap),
     ))
     .await;
     cadence.rebind(&handles);
@@ -2129,13 +2164,13 @@ async fn run_resilient_mob_agent_event_forwarder(
                         // A closure is itself the re-subscribe trigger: the
                         // member may still be live (stream lag/teardown race),
                         // and no machine transition is guaranteed to follow.
-                        let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+                        let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None, Some(&live_event_tap))).await;
                         cadence.rebind(&handles);
                     }
                 }
             }
             () = cadence.wait(earliest_backoff_attempt(&subscribe_failures)) => {
-                let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+                let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None, Some(&live_event_tap))).await;
                 cadence.rebind(&handles);
             }
         }
@@ -2153,7 +2188,7 @@ async fn run_identity_stream_health_monitor(
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state);
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, None);
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2162,6 +2197,7 @@ async fn run_identity_stream_health_monitor(
         &mut subscribe_failures,
         &mut streams,
         Some(&identity_runtime),
+        None,
     ))
     .await;
     cadence.rebind(&handles);
@@ -2197,6 +2233,7 @@ async fn run_identity_stream_health_monitor(
                             &mut subscribe_failures,
                             &mut streams,
                             Some(&identity_runtime),
+                            None,
                         )).await;
                         cadence.rebind(&handles);
                     }
@@ -2210,6 +2247,7 @@ async fn run_identity_stream_health_monitor(
                     &mut subscribe_failures,
                     &mut streams,
                     Some(&identity_runtime),
+                    None,
                 )).await;
                 cadence.rebind(&handles);
             }
@@ -2228,6 +2266,7 @@ async fn reconcile_agent_event_streams(
     identity_runtime: Option<
         &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     >,
+    live_event_tap: Option<&crate::live_session_event_tap::LiveSessionEventTap>,
 ) -> Vec<MobHandle> {
     let primary_mob_id = handle.mob_id().to_string();
     let mut handles = vec![handle.clone()];
@@ -2329,10 +2368,24 @@ async fn reconcile_agent_event_streams(
                 continue;
             }
 
+            // A stream captured when this member's live actor was created
+            // predates its first run; a subscription opened now may not
+            // (the session stream has no replay). Adopt it ahead of any
+            // backoff: the capture is typed by the machine's session binding
+            // and the exact actor incarnation's liveness.
+            let adopted = match live_event_tap {
+                Some(tap) => handle
+                    .resolve_bridge_session_id(&tracked_key.member_identity)
+                    .await
+                    .and_then(|session_id| tap.take_live(&session_id)),
+                None => None,
+            };
+
             // Back off an Active member that keeps failing to subscribe (a
             // genuinely stuck injector), so even that case can't spin the log.
             let now = tokio::time::Instant::now();
-            if let Some(backoff) = subscribe_failures.get(&tracked_key)
+            if adopted.is_none()
+                && let Some(backoff) = subscribe_failures.get(&tracked_key)
                 && now < backoff.next_attempt
             {
                 continue;
@@ -2340,9 +2393,17 @@ async fn reconcile_agent_event_streams(
 
             let role = entry.role.clone();
 
-            match subscribe_agent_events_for_console_forwarder(handle, &tracked_key.member_identity)
-                .await
-            {
+            let subscription = match adopted {
+                Some(stream) => Ok(stream),
+                None => {
+                    subscribe_agent_events_for_console_forwarder(
+                        handle,
+                        &tracked_key.member_identity,
+                    )
+                    .await
+                }
+            };
+            match subscription {
                 Ok(stream) => {
                     let close_key = tracked_key.clone();
                     let durable_identity: Option<Arc<str>> = tracked_key
@@ -3016,7 +3077,7 @@ mod tests {
     /// the cadence and eventually complete a recreated `wait`.
     #[tokio::test(start_paused = true)]
     async fn reconcile_cadence_safety_deadline_survives_recreated_waits() {
-        let mut cadence = ReconcileCadence::new(&None);
+        let mut cadence = ReconcileCadence::new(&None, None);
         let mut fired = false;
         // Seven 5s rounds = 35s of simulated event churn; the 30s deadline
         // anchored at construction must fire within them.
@@ -3040,7 +3101,7 @@ mod tests {
     /// re-arm the deadline.
     #[tokio::test(start_paused = true)]
     async fn reconcile_cadence_rebind_rearms_safety_deadline() {
-        let mut cadence = ReconcileCadence::new(&None);
+        let mut cadence = ReconcileCadence::new(&None, None);
         tokio::time::sleep(Duration::from_secs(20)).await;
         cadence.rebind(&[]);
         tokio::select! {
@@ -4073,5 +4134,293 @@ model = "gpt-5.5"
             parse_probe_secs(Some("junk"), ACTOR_LOOP_PROBE_BUDGET),
             ACTOR_LOOP_PROBE_BUDGET
         );
+    }
+
+    const TAPPED_WORKER: &str = "worker";
+
+    /// A runtime-backed mob (the builder's ephemeral shape) with an armed
+    /// live event tap and one idle turn-driven member, seated while no
+    /// console forwarder exists yet: the post-restore window in which the
+    /// forwarder has not attached to a live member.
+    async fn tapped_mob_with_idle_worker(
+        mob_id: &str,
+        temp_dir: &tempfile::TempDir,
+    ) -> (
+        MobRuntime,
+        crate::live_session_event_tap::LiveSessionEventTap,
+        meerkat_core::types::SessionId,
+    ) {
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\
+             external_addressable = true\n\n[profiles.worker.tools]\ncomms = true\n"
+        ))
+        .expect("mob definition");
+        let spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            temp_dir.path().to_path_buf(),
+            16,
+            None,
+            "test session store",
+            None,
+            None,
+            None,
+            None,
+            crate::mob_handle_runtime::CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let tap = spec.live_session_event_tap();
+        tap.arm();
+        let mob_runtime = MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap mob runtime");
+        let handle = mob_runtime.handle();
+        let mut member = SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            AgentIdentity::from(TAPPED_WORKER),
+        );
+        member.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+        handle.ensure_member(member).await.expect("seat worker");
+        let session_id = handle
+            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .await
+            .expect("worker session binding");
+        assert!(
+            tap.holds_live(&session_id),
+            "the worker's materialization went through the witness-bearing create"
+        );
+        (mob_runtime, tap, session_id)
+    }
+
+    /// Run one worker turn and return meerkat's own events for it, observed
+    /// on a test-owned subscription opened before the send.
+    async fn run_worker_turn(
+        handle: &MobHandle,
+        content: &str,
+    ) -> Vec<meerkat_core::event::EventEnvelope<AgentEvent>> {
+        let mut probe = handle
+            .subscribe_agent_events(&AgentIdentity::from(TAPPED_WORKER))
+            .await
+            .expect("probe subscription");
+        crate::mob_handle_runtime::send_message_on_mob(handle, TAPPED_WORKER, content)
+            .await
+            .expect("send to worker");
+        let mut events = Vec::new();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(event) = probe.next().await {
+                let terminal = matches!(
+                    event.payload,
+                    AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
+                );
+                events.push(event);
+                if terminal {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("worker turn reaches a terminal");
+        assert!(
+            matches!(
+                events.last().map(|event| &event.payload),
+                Some(AgentEvent::RunCompleted { .. })
+            ),
+            "worker turn completes: {events:?}"
+        );
+        events
+    }
+
+    /// A run that started, and finished, before the console forwarder
+    /// existed still reaches the console timeline with meerkat's own
+    /// sequence, and so does the next run. Before the create-time tap the
+    /// forwarder subscribed only once it existed, so the first run was gone
+    /// (the session stream has no replay).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn console_forwarder_delivers_runs_that_started_before_it_attached() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mob_runtime, tap, session_id) =
+            tapped_mob_with_idle_worker("console-tap-first-run", &temp_dir).await;
+        let handle = mob_runtime.handle();
+        let first_run = run_worker_turn(&handle, "probe-1").await;
+        let first_terminal_seq = first_run.last().expect("first run events").seq;
+
+        let module_runtime = std::thread::spawn(|| {
+            start_mobkit_runtime_with_options(
+                MobKitConfig {
+                    modules: vec![],
+                    discovery: crate::types::DiscoverySpec {
+                        namespace: "console-tap-first-run".to_string(),
+                        modules: vec![],
+                    },
+                    pre_spawn: vec![],
+                },
+                Vec::new(),
+                Duration::from_secs(2),
+                RuntimeOptions::default(),
+            )
+        })
+        .join()
+        .expect("module runtime thread")
+        .expect("module runtime");
+        let runtime = UnifiedRuntime::from_parts(
+            mob_runtime,
+            module_runtime,
+            Arc::new(InMemoryMetadataStore::new()),
+            tap,
+        )
+        .await;
+
+        let second_run = run_worker_turn(&handle, "probe-2").await;
+        let second_terminal_seq = second_run.last().expect("second run events").seq;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let frames = loop {
+            runtime
+                .drain_mob_agent_events()
+                .await
+                .expect("drain member events");
+            let frames: Vec<_> = runtime
+                .console_events()
+                .replay_all(None)
+                .await
+                .expect("console replay")
+                .into_iter()
+                .filter(|frame| frame.identity == TAPPED_WORKER)
+                .collect();
+            let second_terminal_projected = frames.iter().any(|frame| {
+                frame.event_type == "interaction_complete"
+                    && frame.data.get("session_id") == Some(&json!(session_id))
+                    && frame.data.get("source_sequence") == Some(&json!(second_terminal_seq))
+            });
+            if second_terminal_projected {
+                break frames;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "probe-2's terminal never reached the console timeline; worker frames: {:?}",
+                frames
+                    .iter()
+                    .map(|frame| (&frame.event_type, frame.data.get("source_sequence")))
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        let run_started_prompts: Vec<Option<String>> = frames
+            .iter()
+            .filter(|frame| frame.event_type == "run_started")
+            .map(|frame| {
+                frame
+                    .data
+                    .get("input")
+                    .cloned()
+                    .and_then(|input| {
+                        serde_json::from_value::<meerkat_core::types::RunInput>(input).ok()
+                    })
+                    .and_then(|input| input.prompt_text())
+            })
+            .collect();
+        assert_eq!(
+            run_started_prompts,
+            vec![Some("probe-1".to_string()), Some("probe-2".to_string())],
+            "both runs start on the console timeline, in order"
+        );
+
+        let mut first_run_sequences: Vec<u64> = frames
+            .iter()
+            .filter(|frame| frame.data.get("session_id") == Some(&json!(session_id)))
+            .filter_map(|frame| {
+                frame
+                    .data
+                    .get("source_sequence")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .filter(|seq| *seq <= first_terminal_seq)
+            .collect();
+        first_run_sequences.sort_unstable();
+        assert_eq!(
+            first_run_sequences,
+            (1..=first_terminal_seq).collect::<Vec<_>>(),
+            "the pre-attach run arrives complete from meerkat's first sequence"
+        );
+
+        runtime.shutdown().await;
+    }
+
+    /// The forwarder adopts a create-time capture even while the member's
+    /// ordinary subscription is parked behind a backoff deadline, and the
+    /// adopted stream still holds the already-finished first run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reconcile_adopts_capture_over_pending_backoff() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mob_runtime, tap, _session_id) =
+            tapped_mob_with_idle_worker("console-tap-backoff", &temp_dir).await;
+        let handle = mob_runtime.handle();
+        run_worker_turn(&handle, "probe-1").await;
+
+        let entry = handle
+            .list_members_including_retiring()
+            .await
+            .into_iter()
+            .find(|entry| entry.agent_identity == TAPPED_WORKER)
+            .expect("worker roster entry");
+        let (runtime_id, fence_token) = entry.binding_atoms().expect("worker binding atoms");
+        let key = TrackedAgentEventStream {
+            mob_id: handle.mob_id().to_string(),
+            durable_identity: durable_identity_label(&entry.labels),
+            member_identity: entry.agent_identity.clone(),
+            runtime_id,
+            identity_fencing_token: None,
+            fence_token,
+        };
+        let mut tracked = HashSet::new();
+        let mut subscribe_failures = HashMap::from([(
+            key.clone(),
+            SubscribeBackoff {
+                next_attempt: tokio::time::Instant::now() + Duration::from_secs(30),
+                consecutive_failures: 1,
+            },
+        )]);
+        let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
+
+        Box::pin(reconcile_agent_event_streams(
+            &handle,
+            &None,
+            &mut tracked,
+            &mut subscribe_failures,
+            &mut streams,
+            None,
+            Some(&tap),
+        ))
+        .await;
+
+        assert!(tracked.contains(&key), "the capture was adopted");
+        assert!(
+            subscribe_failures.is_empty(),
+            "adoption clears the pending backoff"
+        );
+        let first = tokio::time::timeout(Duration::from_secs(5), streams.next())
+            .await
+            .expect("adopted stream yields")
+            .expect("adopted stream open");
+        let ForwardedAgentEvent::Event(event) = first else {
+            panic!("adopted stream closed before yielding the first run");
+        };
+        let (_, _, _, envelope, _) = *event;
+        assert!(
+            matches!(envelope.payload, AgentEvent::RunStarted { .. }),
+            "the adopted stream starts at the finished run's start, got {:?}",
+            envelope.payload
+        );
+        assert_eq!(envelope.seq, 1);
+
+        drop(streams);
+        let _ = handle.shutdown().await;
     }
 }
