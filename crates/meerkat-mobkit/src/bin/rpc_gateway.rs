@@ -13785,8 +13785,6 @@ external_addressable = true
             ))
             .await;
     }
-    let event_drain_task = runtime.clone().spawn_event_drain_task();
-
     // 6. The HTTP listener was bound at init, right behind the exposure gate
     // (see `http_binding` above); only serving it waits for the runtime.
 
@@ -14275,8 +14273,6 @@ external_addressable = true
                 if let Err(error) = console_voice_controller.shutdown().await {
                     tracing::warn!(%error, "console voice shutdown did not attest complete cleanup");
                 }
-                event_drain_task.abort();
-                let _ = event_drain_task.await;
             },
             || async {},
         )
