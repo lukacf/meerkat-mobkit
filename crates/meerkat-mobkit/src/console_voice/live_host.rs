@@ -711,9 +711,114 @@ pub(crate) mod tests {
         machine: Arc<meerkat_runtime::MeerkatMachine>,
         factory: meerkat::AgentFactory,
         config: Config,
+        /// Whole-blob session body reads through the runtime store.
+        body_reads: Arc<AtomicUsize>,
+        /// What the scripted stuck-tool client observed.
+        stuck_tool: Arc<StuckToolProbe>,
     }
+
+    /// Trigger text: the scripted client answers it with a `shell` call
+    /// that never returns within the test.
+    const STUCK_TOOL_TRIGGER: &str = "STUCK_TOOL_TRIGGER";
+
+    /// Answers every turn with "ok", except a turn whose newest user message
+    /// is [`STUCK_TOOL_TRIGGER`] (and has no tool result yet): that one calls
+    /// the `shell` tool with a command that outlives the test.
+    #[derive(Default)]
+    struct StuckToolProbe {
+        /// Notified when the client asked for the never-returning tool.
+        started: tokio::sync::Notify,
+        /// Model calls that carried a tool result: the tool returned.
+        tool_results: AtomicUsize,
+    }
+
+    struct StuckToolClient {
+        probe: Arc<StuckToolProbe>,
+    }
+
+    #[async_trait]
+    impl meerkat_client::LlmClient for StuckToolClient {
+        fn project_replay_messages(
+            &self,
+            messages: &[meerkat_core::Message],
+        ) -> Result<Vec<meerkat_core::Message>, meerkat_client::LlmError> {
+            Ok(messages.to_vec())
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: &'a meerkat_client::LlmRequest,
+        ) -> meerkat_client::types::LlmStream<'a> {
+            use meerkat_client::{LlmDoneOutcome, LlmEvent};
+            if matches!(
+                request.messages.last(),
+                Some(meerkat_core::Message::ToolResults { .. })
+            ) {
+                self.probe.tool_results.fetch_add(1, Ordering::SeqCst);
+            }
+            // `internal_turn` content arrives as an external-event notice.
+            let wants_tool = matches!(
+                request.messages.last(),
+                Some(meerkat_core::Message::SystemNotice(notice))
+                    if notice.body.as_deref() == Some(STUCK_TOOL_TRIGGER)
+            );
+            let usage = LlmEvent::UsageUpdate {
+                usage: meerkat_core::TurnUsage::host_declared(
+                    meerkat_core::Provider::OpenAI,
+                    &request.model,
+                    meerkat_core::Usage::default(),
+                ),
+            };
+            let events = if wants_tool {
+                self.probe.started.notify_one();
+                vec![
+                    LlmEvent::ToolCallComplete {
+                        id: "stuck-call".to_string(),
+                        name: "shell".to_string(),
+                        args: json!({"command": "sleep 60"}),
+                        meta: None,
+                    },
+                    usage,
+                    LlmEvent::Done {
+                        outcome: LlmDoneOutcome::Success {
+                            stop_reason: meerkat_core::StopReason::ToolUse,
+                        },
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        delta: "ok".to_string(),
+                        meta: None,
+                    },
+                    usage,
+                    LlmEvent::Done {
+                        outcome: LlmDoneOutcome::Success {
+                            stop_reason: meerkat_core::StopReason::EndTurn,
+                        },
+                    },
+                ]
+            };
+            Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
+        }
+
+        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+            Ok(())
+        }
+    }
+
     impl RealRuntime {
         async fn start(suffix: &str) -> Self {
+            Self::start_with(suffix, false).await
+        }
+
+        /// `stuck_tool`: members get the shell tool and the scripted
+        /// [`StuckToolClient`] instead of the plain test client.
+        async fn start_with(suffix: &str, stuck_tool: bool) -> Self {
             // Several tests share a logical suffix and `cargo test` runs them
             // on parallel threads in one process. The mob id becomes the comms
             // participant name and the discovery namespace is shared, so two
@@ -734,12 +839,19 @@ pub(crate) mod tests {
                 meerkat_store::SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
                     .expect("session store"),
             );
+            let body_reads = Arc::new(AtomicUsize::new(0));
             let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
-                meerkat_runtime::store::SqliteRuntimeStore::new(
-                    directory.path().join("runtime.sqlite"),
-                )
-                .expect("runtime store"),
+                super::super::body_read_counting_store::BodyReadCountingRuntimeStore {
+                    inner: Arc::new(
+                        meerkat_runtime::store::SqliteRuntimeStore::new(
+                            directory.path().join("runtime.sqlite"),
+                        )
+                        .expect("runtime store"),
+                    ),
+                    body_reads: Arc::clone(&body_reads),
+                },
             );
+            let stuck_tool_probe = Arc::new(StuckToolProbe::default());
             let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
             let blobs: Arc<dyn meerkat_core::BlobStore> =
                 Arc::new(Base64BlobStoreAdapter::new(binary.clone()));
@@ -751,13 +863,20 @@ pub(crate) mod tests {
                 .session_store(store.clone())
                 .runtime_root(directory.path())
                 .project_root(directory.path())
-                .builtins(false)
+                .builtins(stuck_tool)
+                .shell(stuck_tool)
                 .mob(true)
                 .comms(true);
             let config = config();
-            let client = Arc::new(meerkat_client::TestClient::for_provider(
-                meerkat_core::Provider::OpenAI,
-            ));
+            let client: Arc<dyn meerkat_client::LlmClient> = if stuck_tool {
+                Arc::new(StuckToolClient {
+                    probe: Arc::clone(&stuck_tool_probe),
+                })
+            } else {
+                Arc::new(meerkat_client::TestClient::for_provider(
+                    meerkat_core::Provider::OpenAI,
+                ))
+            };
             let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), config.clone());
             builder.default_llm_client = Some(client.clone());
             builder.default_blob_store = Some(blobs.clone());
@@ -779,6 +898,7 @@ pub(crate) mod tests {
     skills = ["voice-notes"]
     [profiles.agent.tools]
     comms = true
+    shell = {stuck_tool}
     [skills.voice-notes]
     source = "inline"
     content = "Keep spoken answers short."
@@ -865,9 +985,334 @@ pub(crate) mod tests {
                 machine,
                 factory,
                 config,
+                body_reads,
+                stuck_tool: stuck_tool_probe,
             }
         }
     }
+    /// The console host over a real runtime, with the fixture provider.
+    fn real_console_host(
+        runtime: &Arc<UnifiedRuntime>,
+        service: &Arc<PersistentSessionService<meerkat::FactoryAgentBuilder>>,
+        machine: &Arc<meerkat_runtime::MeerkatMachine>,
+        factory: &meerkat::AgentFactory,
+        config: &Config,
+        provider_url: &str,
+    ) -> ConsoleVoiceController {
+        let policy = LiveContextSummaryPolicy::new(
+            Arc::new(Summary {
+                calls: Arc::new(AtomicUsize::new(0)),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scenario: SummaryScenario::Success,
+            }),
+            4 * 1024 * 1024,
+            4096,
+            Duration::from_secs(30),
+        )
+        .expect("summary policy");
+        let registration = PublicLiveRegistration::parse(&json!({
+            "principal":"voice@example.com","realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+        }))
+        .expect("registration");
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(service),
+            Arc::clone(machine),
+            factory,
+            config.clone(),
+            String::new(),
+            None,
+        ));
+        ConsoleVoiceController::compose_live_host(
+            runtime,
+            ctx,
+            Arc::clone(service),
+            Arc::clone(machine),
+            factory.clone(),
+            registration,
+            Some((policy, provider_url.to_string())),
+        )
+        .expect("console host")
+    }
+
+    async fn timed_readiness(controller: &ConsoleVoiceController, identity: &str) -> Duration {
+        let started = std::time::Instant::now();
+        let flight = controller
+            .readiness_flight("voice@example.com", identity)
+            .expect("flight");
+        let report = tokio::time::timeout(Duration::from_secs(5), flight.result)
+            .await
+            .expect("readiness answers within the server budget")
+            .expect("readiness");
+        assert!(report.available, "{identity} must be voice-ready");
+        started.elapsed()
+    }
+
+    /// meerkat 0.8.47: readiness observes the durable source body-free and
+    /// actor-free. With a ~20 MB whole-blob member, 50 polls read the body
+    /// zero times and stay fast; the full open-path validation, as a
+    /// positive control, does read it.
+    #[tokio::test]
+    async fn readiness_reads_no_body_of_a_large_whole_blob_member_across_fifty_polls() {
+        const BODY_BYTES: usize = 20 * 1024 * 1024;
+        const POLLS: usize = 50;
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let fixture = RealRuntime::start("readiness-large-body").await;
+        let handle = fixture.runtime.mob_handle();
+        let member = meerkat_mob::AgentIdentity::from("agent-a");
+        let session = handle
+            .resolve_bridge_session_id(&member)
+            .await
+            .expect("member session");
+        // ~20 MB of external user content appended straight into the
+        // member's session and persisted into its whole-blob body (no model
+        // turn: a debug-build turn over 20 MB takes minutes).
+        fixture
+            .service
+            .append_external_user_content(&session, "x".repeat(BODY_BYTES).into())
+            .await
+            .expect("append large content");
+        let snapshot = fixture
+            .service
+            .export_realtime_refresh_session_snapshot(&session)
+            .await
+            .expect("snapshot");
+        assert!(
+            snapshot.messages().iter().any(|message| match message {
+                meerkat_core::types::Message::User(user) => user.content.iter().any(|block| {
+                    matches!(block, meerkat_core::types::ContentBlock::Text { text } if text.len() >= BODY_BYTES)
+                }),
+                _ => false,
+            }),
+            "the ~20 MB content is in the durable body"
+        );
+        let controller = real_console_host(
+            &fixture.runtime,
+            &fixture.service,
+            &fixture.machine,
+            &fixture.factory,
+            &fixture.config,
+            &fixture.provider.url,
+        );
+        // Warm the path once (first-use lazy initialization), then measure.
+        timed_readiness(&controller, "agent-a").await;
+        let before = fixture.body_reads.load(Ordering::SeqCst);
+        let mut samples = Vec::with_capacity(POLLS);
+        for _ in 0..POLLS {
+            samples.push(timed_readiness(&controller, "agent-a").await);
+        }
+        assert_eq!(
+            fixture.body_reads.load(Ordering::SeqCst),
+            before,
+            "readiness polls must never read the session body"
+        );
+        samples.sort();
+        let p99 = samples[(POLLS * 99).div_ceil(100) - 1];
+        eprintln!(
+            "readiness over a ~20 MB member: p50 {:?}, p99 {p99:?}",
+            samples[POLLS / 2]
+        );
+        assert!(
+            p99 < Duration::from_millis(100),
+            "p99 readiness {p99:?} over {POLLS} polls (all: {samples:?})"
+        );
+        // Positive control: the open path's full validation loads the body,
+        // so the counter would have seen a readiness body read.
+        handle
+            .member(&member)
+            .await
+            .expect("member handle")
+            .validate_live_durable_source_availability()
+            .await
+            .expect("full durable validation");
+        assert!(
+            fixture.body_reads.load(Ordering::SeqCst) > before,
+            "the counting store observes whole-blob body reads"
+        );
+        controller.shutdown().await.expect("voice shutdown");
+        fixture.runtime.shutdown().await;
+    }
+
+    /// A member stuck in a tool call that never returns keeps its turn open
+    /// and its session busy; readiness does not wait on either.
+    #[tokio::test]
+    async fn readiness_stays_available_while_the_member_is_stuck_in_a_tool_call() {
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let fixture = RealRuntime::start_with("readiness-stuck-tool", true).await;
+        let handle = fixture.runtime.mob_handle();
+        let member = meerkat_mob::AgentIdentity::from("agent-a");
+        let controller = real_console_host(
+            &fixture.runtime,
+            &fixture.service,
+            &fixture.machine,
+            &fixture.factory,
+            &fixture.config,
+            &fixture.provider.url,
+        );
+        timed_readiness(&controller, "agent-a").await;
+        let started = fixture.stuck_tool.started.notified();
+        handle
+            .member(&member)
+            .await
+            .expect("member handle")
+            .internal_turn(STUCK_TOOL_TRIGGER.to_string())
+            .await
+            .expect("stuck turn");
+        tokio::time::timeout(Duration::from_secs(30), started)
+            .await
+            .expect("the member called the never-returning tool");
+        let before = fixture.body_reads.load(Ordering::SeqCst);
+        for _ in 0..10 {
+            let elapsed = timed_readiness(&controller, "agent-a").await;
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "readiness took {elapsed:?} while the member is stuck in a tool call"
+            );
+        }
+        assert_eq!(
+            fixture.stuck_tool.tool_results.load(Ordering::SeqCst),
+            0,
+            "the tool never returned while readiness was polled"
+        );
+        assert_eq!(fixture.body_reads.load(Ordering::SeqCst), before);
+        controller.shutdown().await.expect("voice shutdown");
+        fixture.runtime.shutdown().await;
+    }
+
+    /// Readiness resolves each member's own session with one typed lookup
+    /// (no roster scan), the preface finds a session's owner the same way,
+    /// and the stage trace follows the real probe through MobKit's
+    /// binding-authority callbacks in order.
+    #[tokio::test]
+    async fn readiness_target_is_one_typed_lookup_and_traces_every_probe_stage() {
+        use super::super::readiness_trace::VoiceReadinessStage;
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let RealRuntime {
+            _directory,
+            provider,
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+            ..
+        } = RealRuntime::start("readiness-target").await;
+        for peer in ["agent-b", "agent-c"] {
+            runtime
+                .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                    "agent".to_string(),
+                    peer.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .expect("peer member");
+        }
+        let handle = runtime.mob_handle();
+        let members = handle.list_members().await;
+        assert_eq!(members.len(), 3);
+        for name in ["agent-a", "agent-b", "agent-c"] {
+            let member = meerkat_mob::AgentIdentity::from(name);
+            let session = handle
+                .resolve_bridge_session_id(&member)
+                .await
+                .expect("member session");
+            let target = crate::rpc::resolve_live_member_target(
+                &handle,
+                runtime.identity_runtime(),
+                false,
+                name,
+            )
+            .await
+            .expect("typed target");
+            assert_eq!(
+                target,
+                crate::rpc::LiveMemberTarget {
+                    member: member.clone(),
+                    session: Some(session.clone()),
+                },
+                "the resolver names the member whose binding it read"
+            );
+            assert_eq!(
+                super::super::capabilities::bridge_session_owner(&handle, &members, &session).await,
+                Some(member),
+                "the preface finds the owner without a clone per member"
+            );
+        }
+        assert_eq!(
+            super::super::capabilities::bridge_session_owner(
+                &handle,
+                &members,
+                &meerkat_core::SessionId::new()
+            )
+            .await,
+            None
+        );
+        let policy = LiveContextSummaryPolicy::new(
+            Arc::new(Summary {
+                calls: Arc::new(AtomicUsize::new(0)),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scenario: SummaryScenario::Success,
+            }),
+            4 * 1024 * 1024,
+            4096,
+            Duration::from_secs(30),
+        )
+        .expect("summary policy");
+        let registration = PublicLiveRegistration::parse(&json!({
+            "principal":"voice@example.com","realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+        }))
+        .expect("registration");
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            config,
+            String::new(),
+            None,
+        ));
+        let controller = ConsoleVoiceController::compose_live_host(
+            &runtime,
+            ctx,
+            service.clone(),
+            machine,
+            factory,
+            registration,
+            Some((policy, provider.url.clone())),
+        )
+        .expect("console host");
+        let flight = controller
+            .readiness_flight("voice@example.com", "agent-b")
+            .expect("flight");
+        let trace = Arc::clone(&flight.trace);
+        assert!(flight.result.await.expect("readiness").available);
+        let snapshot = trace.snapshot();
+        assert_eq!(snapshot.active, None, "{snapshot}");
+        assert_eq!(
+            snapshot
+                .stages
+                .iter()
+                .map(|entry| entry.stage)
+                .collect::<Vec<_>>(),
+            vec![
+                VoiceReadinessStage::Arbiter,
+                VoiceReadinessStage::Target,
+                VoiceReadinessStage::Probe,
+                VoiceReadinessStage::DurableSource,
+                VoiceReadinessStage::BindingSelection,
+                VoiceReadinessStage::BindingAuthorization,
+                VoiceReadinessStage::Credential,
+            ],
+            "{snapshot}"
+        );
+        controller.shutdown().await.expect("voice shutdown");
+        runtime.shutdown().await;
+    }
+
     /// Console voice and the external `mobkit/live/*` door share one live
     /// context and take turns on its voice-path arbiter, newest engagement
     /// first, each loser closed through its own sequence with a typed reason.
@@ -885,6 +1330,7 @@ pub(crate) mod tests {
             machine,
             factory,
             config,
+            ..
         } = RealRuntime::start("shared-owner").await;
         runtime
             .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
@@ -1267,6 +1713,7 @@ pub(crate) mod tests {
             machine,
             factory,
             config,
+            ..
         } = RealRuntime::start("captions").await;
         let session = runtime
             .mob_handle()
@@ -1510,6 +1957,7 @@ pub(crate) mod tests {
             machine,
             factory,
             config,
+            ..
         } = RealRuntime::start(if disconnect_provider {
             "disconnect"
         } else {
@@ -2136,31 +2584,21 @@ impl SharedHost {
         } else {
             false
         };
-        let session = crate::rpc::resolve_live_target(
+        // One typed lookup: the resolver names the member whose machine
+        // binding it read, so that member is the target session's owner.
+        // No roster scan and no per-member machine-state clone.
+        let target = crate::rpc::resolve_live_member_target(
             &self.handle,
             self.identity_runtime.as_ref(),
             authoritative,
-            &json!({"identity": identity}),
+            identity,
         )
         .await
-        .map_err(|error| unavailable(&format!("live target resolution: {error:?}")))?
-        .ok_or_else(|| unavailable("no live-capable session for identity"))?;
-        let mut owner = None;
-        for member in self.handle.list_members().await {
-            if self
-                .handle
-                .resolve_bridge_session_id(&member.agent_identity)
-                .await
-                .as_ref()
-                == Some(&session)
-            {
-                if owner.is_some() {
-                    return Err(unavailable("more than one member owns the target session"));
-                }
-                owner = Some(member.agent_identity);
-            }
-        }
-        let owner = owner.ok_or_else(|| unavailable("no mob member owns the target session"))?;
+        .map_err(|error| unavailable(&format!("live target resolution: {error:?}")))?;
+        let owner = target.member;
+        let session = target
+            .session
+            .ok_or_else(|| unavailable("no live-capable session for identity"))?;
         self.binding
             .register(principal, owner, session)
             .map_err(|error| match error {
@@ -2276,6 +2714,8 @@ fn elapsed_ms(started: std::time::Instant) -> u64 {
 #[async_trait]
 impl ConsoleVoiceHost for Host {
     async fn ready(&self, principal: &str, identity: &str) -> Result<bool, VoiceError> {
+        use super::readiness_trace::{VoiceReadinessStage, enter as enter_stage};
+        enter_stage(VoiceReadinessStage::Target);
         let target_started = std::time::Instant::now();
         let grant = match self.0.target(principal, identity).await {
             Ok(grant) => grant,
@@ -2293,6 +2733,7 @@ impl ConsoleVoiceHost for Host {
         // Shared admission resolves the actual selected configured credential,
         // but does not open/register a provider channel at this preparation seam.
         let probe_started = std::time::Instant::now();
+        enter_stage(VoiceReadinessStage::Probe);
         let probe = self
             .0
             .authority

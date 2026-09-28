@@ -630,8 +630,16 @@ async function main() {
 
     const unauthenticated = await context.newPage();
     const noAuth = await installConsoleFixture(unauthenticated, { available: false });
+    // The button shows a checking state until the first readiness answer; the definite
+    // negative answer for the opened agent then removes it.
+    const alphaReadinessAnswered = unauthenticated.waitForResponse((response) => {
+      const body = response.request().postDataJSON?.();
+      return body?.method === "mobkit/console/voice/readiness" && body?.params?.identity === "identity:alpha";
+    });
     await unauthenticated.goto(`${url}/console`);
     await openAgent(unauthenticated, "Alpha");
+    await alphaReadinessAnswered;
+    await unauthenticated.getByTestId("voice-start").waitFor({ state: "detached" });
     assert.equal(await unauthenticated.getByTestId("voice-start").count(), 0);
     assert.equal(await unauthenticated.evaluate(() => window.voiceFixture.microphoneTracks.length), 0);
     assert.ok(!noAuth.requests.some((request) => request.method === "mobkit/console/voice/open"));

@@ -167,6 +167,23 @@ describe("voice controls", () => {
     view.rerender(<VoiceButton agentLabel="Alpha" active onClick={onClick} />);
     expect(screen.getByRole("button", { name: "End voice with Alpha" })).toHaveAttribute("aria-pressed", "true");
   });
+
+  it("shows a busy, still-usable checking state until readiness is confirmed", () => {
+    const onClick = vi.fn();
+    const view = render(<VoiceButton agentLabel="Alpha" checking onClick={onClick} />);
+    const checking = screen.getByRole("button", { name: "Start voice with Alpha (checking availability)" });
+    expect(checking).toHaveAttribute("aria-busy", "true");
+    expect(checking).toHaveAttribute("data-readiness", "checking");
+    expect(checking).toHaveClass("composer__voice--checking");
+    expect(checking).toBeEnabled();
+    fireEvent.click(checking);
+    expect(onClick).toHaveBeenCalledOnce();
+    view.rerender(<VoiceButton agentLabel="Alpha" onClick={onClick} />);
+    const confirmed = screen.getByRole("button", { name: "Start voice with Alpha" });
+    expect(confirmed).not.toHaveAttribute("aria-busy");
+    expect(confirmed).toHaveAttribute("data-readiness", "confirmed");
+    expect(confirmed).not.toHaveClass("composer__voice--checking");
+  });
 });
 
 describe("voice and text composer", () => {

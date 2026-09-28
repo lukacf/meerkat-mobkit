@@ -19,12 +19,15 @@ use crate::live_wiring::{
 
 #[cfg(feature = "openai-live")]
 mod auth;
+#[cfg(all(test, feature = "openai-live"))]
+pub(crate) mod body_read_counting_store;
 #[cfg(feature = "openai-live")]
 pub(crate) mod capabilities;
 mod captions;
 mod context_status;
 #[cfg(feature = "openai-live")]
 pub(crate) mod live_host;
+pub(crate) mod readiness_trace;
 mod summary;
 #[cfg(feature = "openai-live")]
 mod summary_window;
@@ -139,6 +142,9 @@ pub(crate) enum VoiceError {
     /// The gateway's single live voice path was taken by another owner
     /// ("latest engaged wins"); this call was closed for that reason.
     Superseded(LiveSupersededReason),
+    /// The readiness check did not finish within the server budget. This is
+    /// not an answer: the console keeps what it knew and retries.
+    ReadinessTimedOut,
 }
 
 impl VoiceError {
@@ -178,6 +184,11 @@ impl VoiceError {
                 -32000,
                 "voice_superseded",
                 "Voice conversation was superseded by another live owner",
+            ),
+            Self::ReadinessTimedOut => (
+                -32000,
+                "voice_readiness_timed_out",
+                "Voice readiness could not be checked in time; retry",
             ),
         };
         let mut data = serde_json::json!({ "kind": kind });
@@ -497,6 +508,33 @@ pub struct ConsoleVoiceController {
     /// `mobkit/live/*` door when both are registered. `None` means console
     /// voice is the only door and needs no arbitration.
     arbiter: Option<Arc<LiveOwnerArbiter>>,
+    /// In-flight readiness checks by `(principal, identity)`. Concurrent
+    /// checks for one target (the console's poll and a click, two tabs)
+    /// share one check instead of each paying for the full probe.
+    readiness_flights: Arc<std::sync::Mutex<HashMap<(String, String), ReadinessFlightEntry>>>,
+}
+
+type ReadinessResult = Result<VoiceReadinessReport, VoiceError>;
+type SharedReadiness =
+    futures::future::Shared<futures::future::BoxFuture<'static, ReadinessResult>>;
+
+/// Weak so the map never keeps a check alive: when every caller has given
+/// up (budget expired, client disconnected), the check is dropped.
+struct ReadinessFlightEntry {
+    id: u64,
+    trace: Arc<readiness_trace::VoiceReadinessTrace>,
+    result: futures::future::WeakShared<futures::future::BoxFuture<'static, ReadinessResult>>,
+}
+
+static NEXT_READINESS_FLIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One caller's hold on a readiness check. Dropping the last hold cancels
+/// the check.
+pub(crate) struct ReadinessFlight {
+    pub trace: Arc<readiness_trace::VoiceReadinessTrace>,
+    /// `true` when this caller joined a check another caller started.
+    pub joined: bool,
+    pub result: SharedReadiness,
 }
 
 /// What `mobkit/console/voice/readiness` reports for one target.
@@ -686,16 +724,91 @@ impl ConsoleVoiceController {
     }
 
     /// Readiness with the typed reason and holder when the external live
-    /// channel holds the gateway's voice path. Never opens a provider.
+    /// channel holds the gateway's voice path. Never opens a provider. The
+    /// HTTP route holds the flight itself (see [`Self::readiness_flight`]).
+    #[cfg(test)]
     pub(crate) async fn readiness(
         &self,
         principal: &str,
         identity: &str,
     ) -> Result<VoiceReadinessReport, VoiceError> {
+        self.readiness_flight(principal, identity)?.result.await
+    }
+
+    /// Start, or join, the readiness check for `(principal, identity)`.
+    /// The check runs while at least one returned flight is held; it is
+    /// cancelled when the last one is dropped.
+    pub(crate) fn readiness_flight(
+        &self,
+        principal: &str,
+        identity: &str,
+    ) -> Result<ReadinessFlight, VoiceError> {
         validate_identity(identity)?;
         if principal.trim().is_empty() {
             return Err(VoiceError::Unauthorized);
         }
+        let key = (principal.to_string(), identity.to_string());
+        let mut flights = self
+            .readiness_flights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = flights.get(&key)
+            && let Some(result) = entry.result.upgrade()
+        {
+            return Ok(ReadinessFlight {
+                trace: Arc::clone(&entry.trace),
+                joined: true,
+                result,
+            });
+        }
+        let id = NEXT_READINESS_FLIGHT.fetch_add(1, Ordering::Relaxed);
+        let trace = Arc::new(readiness_trace::VoiceReadinessTrace::new());
+        let controller = self.clone();
+        let registry = Arc::clone(&self.readiness_flights);
+        let flight_key = key.clone();
+        let flight_trace = Arc::clone(&trace);
+        let check: futures::future::BoxFuture<'static, ReadinessResult> =
+            Box::pin(readiness_trace::scope(Arc::clone(&trace), async move {
+                let result = controller
+                    .check_readiness(&flight_key.0, &flight_key.1)
+                    .await;
+                flight_trace.finish();
+                // A finished check is never joined: the next caller starts
+                // a fresh one.
+                let mut flights = registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if flights.get(&flight_key).is_some_and(|entry| entry.id == id) {
+                    flights.remove(&flight_key);
+                }
+                result
+            }));
+        let result = futures::FutureExt::shared(check);
+        let Some(weak) = result.downgrade() else {
+            return Err(VoiceError::HostFailed);
+        };
+        flights.retain(|_, entry| entry.result.upgrade().is_some());
+        flights.insert(
+            key,
+            ReadinessFlightEntry {
+                id,
+                trace: Arc::clone(&trace),
+                result: weak,
+            },
+        );
+        Ok(ReadinessFlight {
+            trace,
+            joined: false,
+            result,
+        })
+    }
+
+    async fn check_readiness(
+        &self,
+        principal: &str,
+        identity: &str,
+    ) -> Result<VoiceReadinessReport, VoiceError> {
+        readiness_trace::enter(readiness_trace::VoiceReadinessStage::Arbiter);
         let holder = match self.arbiter.as_ref() {
             Some(arbiter) => arbiter.holder().await,
             None => None,
@@ -842,6 +955,7 @@ impl ConsoleVoiceController {
             requests: Arc::default(),
             stopped: Arc::default(),
             arbiter: None,
+            readiness_flights: Arc::default(),
         }
     }
 }
@@ -1033,6 +1147,80 @@ impl ConsoleVoiceController {
         tokio::time::timeout(CLOSE_WAIT, slot.wait_closed())
             .await
             .map_err(|_| VoiceError::Busy)?
+    }
+}
+
+/// A host whose readiness check parks in a chosen stage until released, and
+/// records whether its future was dropped (cancelled) before finishing.
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+pub(crate) mod readiness_test_support {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    pub(crate) struct ParkedReadyHost {
+        pub calls: AtomicUsize,
+        pub cancelled: AtomicUsize,
+        pub started: Notify,
+        pub release: tokio::sync::Semaphore,
+        pub park_in: readiness_trace::VoiceReadinessStage,
+    }
+
+    impl ParkedReadyHost {
+        pub(crate) fn new(park_in: readiness_trace::VoiceReadinessStage) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                cancelled: AtomicUsize::new(0),
+                started: Notify::new(),
+                release: tokio::sync::Semaphore::new(0),
+                park_in,
+            })
+        }
+
+        pub(crate) fn controller(self: &Arc<Self>) -> ConsoleVoiceController {
+            ConsoleVoiceController {
+                host: Some(Arc::clone(self) as Arc<dyn ConsoleVoiceHost>),
+                ..ConsoleVoiceController::default()
+            }
+        }
+    }
+
+    struct CancelGuard<'a> {
+        host: &'a ParkedReadyHost,
+        finished: bool,
+    }
+
+    impl Drop for CancelGuard<'_> {
+        fn drop(&mut self) {
+            if !self.finished {
+                self.host.cancelled.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ConsoleVoiceHost for ParkedReadyHost {
+        async fn ready(&self, _principal: &str, _identity: &str) -> Result<bool, VoiceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut guard = CancelGuard {
+                host: self,
+                finished: false,
+            };
+            readiness_trace::enter(readiness_trace::VoiceReadinessStage::Target);
+            readiness_trace::enter(self.park_in);
+            self.started.notify_one();
+            self.release.acquire().await.expect("release").forget();
+            guard.finished = true;
+            Ok(true)
+        }
+
+        async fn open(
+            &self,
+            _principal: &str,
+            _identity: &str,
+        ) -> Result<Arc<dyn ConsoleVoiceSession>, VoiceError> {
+            Err(VoiceError::Unavailable)
+        }
     }
 }
 
@@ -2123,5 +2311,95 @@ mod tests {
             invalid.identity = identity.to_string();
             assert_eq!(invalid.validate(), Err(VoiceError::InvalidRequest));
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_readiness_checks_share_one_host_check_and_a_finished_one_is_never_joined() {
+        use readiness_test_support::ParkedReadyHost;
+        use readiness_trace::VoiceReadinessStage;
+        let host = ParkedReadyHost::new(VoiceReadinessStage::DurableSource);
+        let controller = host.controller();
+        let first = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("first flight");
+        let second = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("second flight");
+        let other_principal = controller
+            .readiness_flight("bob", "agent-a")
+            .expect("other principal flight");
+        assert!(!first.joined);
+        assert!(second.joined, "a check in flight is joined");
+        assert!(!other_principal.joined, "flights are per principal");
+        let first_result = tokio::spawn(first.result.clone());
+        let second_result = tokio::spawn(second.result.clone());
+        let other_result = tokio::spawn(other_principal.result.clone());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.calls.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both checks started");
+        let running = first.trace.snapshot();
+        assert_eq!(running.active, Some(VoiceReadinessStage::DurableSource));
+        assert!(Arc::ptr_eq(&first.trace, &second.trace));
+        host.release.add_permits(2);
+        for answer in [first_result, second_result, other_result] {
+            assert!(answer.await.expect("join").expect("ready").available);
+        }
+        assert_eq!(
+            host.calls.load(Ordering::SeqCst),
+            2,
+            "alice's two concurrent checks ran the host once"
+        );
+        assert_eq!(first.trace.snapshot().active, None, "finished");
+        drop((first, second, other_principal));
+        let fresh = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("fresh flight");
+        assert!(!fresh.joined, "a finished check is never joined");
+        host.release.add_permits(1);
+        assert!(fresh.result.await.expect("ready").available);
+        assert_eq!(host.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(host.cancelled.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_every_hold_cancels_the_readiness_check() {
+        use readiness_test_support::ParkedReadyHost;
+        use readiness_trace::VoiceReadinessStage;
+        let host = ParkedReadyHost::new(VoiceReadinessStage::Probe);
+        let controller = host.controller();
+        let first = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("first");
+        let joined = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("joined");
+        let started = host.started.notified();
+        let polling = tokio::spawn(first.result.clone());
+        started.await;
+        polling.abort();
+        let _ = polling.await;
+        drop(first);
+        assert_eq!(
+            host.cancelled.load(Ordering::SeqCst),
+            0,
+            "a remaining hold keeps the check alive"
+        );
+        drop(joined);
+        assert_eq!(
+            host.cancelled.load(Ordering::SeqCst),
+            1,
+            "the last hold dropped cancels the host check"
+        );
+        let retry = controller
+            .readiness_flight("alice", "agent-a")
+            .expect("retry");
+        assert!(!retry.joined, "a cancelled check is not joined");
+        host.release.add_permits(1);
+        assert!(retry.result.await.expect("ready").available);
+        assert_eq!(host.calls.load(Ordering::SeqCst), 2);
     }
 }

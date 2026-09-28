@@ -12696,6 +12696,17 @@ svg[data-svg=fit],
 .composer__voice:disabled {
   opacity: 0.45;
 }
+.composer__voice--checking {
+  animation: composer-voice-checking 1.4s ease-in-out infinite;
+}
+@keyframes composer-voice-checking {
+  0%, 100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
 .composer__voice .voice-glyph svg {
   width: 22px;
   height: 22px;
@@ -12905,5 +12916,9 @@ svg[data-svg=fit],
 @media (prefers-reduced-motion: reduce) {
   .composer__voice {
     transition: none;
+  }
+  .composer__voice--checking {
+    animation: none;
+    opacity: 0.7;
   }
 }

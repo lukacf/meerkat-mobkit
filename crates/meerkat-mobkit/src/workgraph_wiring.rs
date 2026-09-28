@@ -1958,6 +1958,15 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        // In-memory double (meerkat 0.8.47): export visibility is its durable source.
+        async fn observe_live_durable_source(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::LiveDurableSourceObservation, meerkat_core::SessionError> {
+            meerkat_mob::observe_live_durable_source_via_projection_visibility(self, session_id)
+                .await
+        }
+
         // In-memory double: `read` is its published state (meerkat 0.8.45).
         async fn observe_member_status_view(
             &self,
@@ -2238,6 +2247,15 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        // In-memory double (meerkat 0.8.47): export visibility is its durable source.
+        async fn observe_live_durable_source(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::LiveDurableSourceObservation, meerkat_core::SessionError> {
+            meerkat_mob::observe_live_durable_source_via_projection_visibility(self, session_id)
+                .await
+        }
+
         // In-memory double: `read` is its published state (meerkat 0.8.45).
         async fn observe_member_status_view(
             &self,

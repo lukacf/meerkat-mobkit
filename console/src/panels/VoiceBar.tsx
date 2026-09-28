@@ -32,24 +32,33 @@ export function VoiceButton({
   agentLabel,
   active = false,
   disabled = false,
+  checking = false,
   onClick,
 }: {
   agentLabel: string;
   active?: boolean;
   disabled?: boolean;
+  /** Readiness has no definite answer yet. The button stays usable: starting voice confirms. */
+  checking?: boolean;
   onClick: () => void;
 }): React.JSX.Element {
-  const label = active ? `End voice with ${agentLabel}` : `Start voice with ${agentLabel}`;
+  const label = active
+    ? `End voice with ${agentLabel}`
+    : checking
+      ? `Start voice with ${agentLabel} (checking availability)`
+      : `Start voice with ${agentLabel}`;
   return (
     <button
       type="button"
-      className="composer__voice"
+      className={checking ? "composer__voice composer__voice--checking" : "composer__voice"}
       aria-label={label}
       aria-pressed={active}
+      aria-busy={checking || undefined}
       title={label}
       disabled={disabled}
       onClick={onClick}
       data-testid="voice-start"
+      data-readiness={checking ? "checking" : "confirmed"}
     >
       <Glyph name="i-voice" />
     </button>

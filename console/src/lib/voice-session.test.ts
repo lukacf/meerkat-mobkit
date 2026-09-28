@@ -1723,6 +1723,14 @@ test("availability helper queries exact target readiness, accepts only explicit 
       globalThis.fetch = (async () => new Response("busy", { status })) as typeof fetch;
       assert.equal(await queryVoiceAvailability("", target.identity), "unknown", String(status));
     }
+    // The gateway's typed budget expiry is not an answer either: retry, keep what was known.
+    globalThis.fetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0", id: request.id, error: voiceContract.readiness_timed_out_error,
+      }), { status: 200 });
+    }) as typeof fetch;
+    assert.equal(await queryVoiceAvailability("", target.identity), "unknown");
     globalThis.fetch = (async () => { throw new Error("offline"); }) as typeof fetch;
     assert.equal(await queryVoiceAvailability("", target.identity), "unknown");
     globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch;

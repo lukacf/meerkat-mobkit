@@ -729,12 +729,263 @@ pub async fn console_rpc_handler(
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
-/// Server-side bound on one readiness answer; exceeding it answers
-/// "unavailable" and is logged with that cause.
-const VOICE_READINESS_SERVER_BUDGET: Duration = Duration::from_secs(5);
+/// Server-side bound on one readiness answer. It sits below the console's
+/// own 5 s request timeout so the console receives the typed
+/// `voice_readiness_timed_out` answer (retry, keep what was known) instead
+/// of a transport timeout. Exceeding it is logged with the active stage.
+const VOICE_READINESS_SERVER_BUDGET: Duration = Duration::from_secs(4);
 /// A readiness answer slower than this is logged at warn even when positive:
 /// the client's own bound is 5 s and it gates the voice button on the answer.
 const VOICE_READINESS_SLOW_BUDGET: Duration = Duration::from_secs(1);
+
+fn elapsed_ms_since(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+#[derive(Debug)]
+enum ReadinessOutcome {
+    Answered(Result<crate::console_voice::VoiceReadinessReport, crate::console_voice::VoiceError>),
+    /// The budget expired; this caller's hold on the check was dropped.
+    TimedOut,
+}
+
+/// One caller's readiness answer and what the check had done when it
+/// answered or the budget expired.
+#[derive(Debug)]
+struct ReadinessAnswer {
+    outcome: ReadinessOutcome,
+    /// `true` when this request joined a check already in flight.
+    joined: bool,
+    budget: Duration,
+    elapsed: Duration,
+    trace: Option<crate::console_voice::readiness_trace::VoiceReadinessTraceSnapshot>,
+}
+
+/// Start or join the readiness check and bound it by `budget`. On expiry
+/// the hold is dropped; the shared check is cancelled once nobody holds it.
+async fn readiness_within_budget(
+    controller: &crate::console_voice::ConsoleVoiceController,
+    principal: &str,
+    identity: &str,
+    budget: Duration,
+) -> ReadinessAnswer {
+    let started = std::time::Instant::now();
+    let flight = match controller.readiness_flight(principal, identity) {
+        Ok(flight) => flight,
+        Err(failure) => {
+            return ReadinessAnswer {
+                outcome: ReadinessOutcome::Answered(Err(failure)),
+                joined: false,
+                budget,
+                elapsed: started.elapsed(),
+                trace: None,
+            };
+        }
+    };
+    let crate::console_voice::ReadinessFlight {
+        trace,
+        joined,
+        result,
+    } = flight;
+    let outcome = match tokio::time::timeout(budget, result).await {
+        Ok(answer) => ReadinessOutcome::Answered(answer),
+        Err(_) => ReadinessOutcome::TimedOut,
+    };
+    ReadinessAnswer {
+        outcome,
+        joined,
+        budget,
+        elapsed: started.elapsed(),
+        trace: Some(trace.snapshot()),
+    }
+}
+
+fn log_voice_readiness(identity: &str, pre_check_ms: u64, answer: &ReadinessAnswer) {
+    let elapsed_ms = u64::try_from(answer.elapsed.as_millis()).unwrap_or(u64::MAX);
+    let slow = answer.elapsed > VOICE_READINESS_SLOW_BUDGET;
+    let stages = answer
+        .trace
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let joined = answer.joined;
+    match &answer.outcome {
+        ReadinessOutcome::TimedOut => {
+            let active_stage = answer
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.active)
+                .map_or("none", |stage| stage.as_str());
+            tracing::warn!(
+                target: "meerkat_mobkit::console_voice::timing",
+                identity,
+                elapsed_ms,
+                pre_check_ms,
+                budget_ms = u64::try_from(answer.budget.as_millis()).unwrap_or(u64::MAX),
+                active_stage,
+                stages = %stages,
+                joined,
+                "console voice readiness budget exceeded; answered voice_readiness_timed_out"
+            );
+        }
+        ReadinessOutcome::Answered(Err(failure)) => tracing::warn!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            elapsed_ms,
+            pre_check_ms,
+            slow,
+            cause = ?failure,
+            stages = %stages,
+            joined,
+            "console voice readiness not available"
+        ),
+        ReadinessOutcome::Answered(Ok(report)) if !report.available => tracing::warn!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            elapsed_ms,
+            pre_check_ms,
+            slow,
+            cause = report.reason.unwrap_or("host reports unavailable"),
+            stages = %stages,
+            joined,
+            "console voice readiness not available"
+        ),
+        ReadinessOutcome::Answered(Ok(_)) if slow => tracing::warn!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            elapsed_ms,
+            pre_check_ms,
+            budget_ms = VOICE_READINESS_SLOW_BUDGET.as_millis() as u64,
+            stages = %stages,
+            joined,
+            "console voice readiness available but slow"
+        ),
+        ReadinessOutcome::Answered(Ok(_)) => tracing::info!(
+            target: "meerkat_mobkit::console_voice::timing",
+            identity,
+            elapsed_ms,
+            pre_check_ms,
+            stages = %stages,
+            joined,
+            "console voice readiness available"
+        ),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod voice_readiness_budget_tests {
+    use super::*;
+    use crate::console_voice::readiness_test_support::ParkedReadyHost;
+    use crate::console_voice::readiness_trace::VoiceReadinessStage;
+    use std::sync::atomic::Ordering;
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn logged(answer: &ReadinessAnswer) -> String {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_voice_readiness("agent-a", 2, answer);
+        });
+        let bytes = capture
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        String::from_utf8(bytes).expect("utf8 log")
+    }
+
+    #[tokio::test]
+    async fn an_expired_budget_names_the_active_stage_answers_typed_and_cancels_the_check() {
+        let host = ParkedReadyHost::new(VoiceReadinessStage::DurableSource);
+        let controller = host.controller();
+        let answer =
+            readiness_within_budget(&controller, "alice", "agent-a", Duration::from_millis(50))
+                .await;
+        assert!(
+            matches!(answer.outcome, ReadinessOutcome::TimedOut),
+            "{answer:?}"
+        );
+        let trace = answer.trace.as_ref().expect("trace");
+        assert_eq!(trace.active, Some(VoiceReadinessStage::DurableSource));
+        assert!(
+            trace
+                .elapsed_of(VoiceReadinessStage::DurableSource)
+                .expect("durable source time")
+                >= Duration::from_millis(40),
+            "{trace}"
+        );
+        assert!(
+            trace.elapsed_of(VoiceReadinessStage::Target).is_some(),
+            "{trace}"
+        );
+        assert_eq!(
+            host.cancelled.load(Ordering::SeqCst),
+            1,
+            "the only caller gave up, so the check was dropped"
+        );
+        let log = logged(&answer);
+        assert!(log.contains("WARN"), "{log}");
+        assert!(log.contains("active_stage=\"durable_source\""), "{log}");
+        assert!(log.contains("durable_source="), "{log}");
+        assert!(log.contains("(active)"), "{log}");
+        assert!(log.contains("budget_ms=50"), "{log}");
+        assert_eq!(
+            crate::console_voice::VoiceError::ReadinessTimedOut
+                .rpc_error()
+                .data,
+            Some(json!({"kind":"voice_readiness_timed_out"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_within_budget_logs_every_stage_at_info() {
+        let host = ParkedReadyHost::new(VoiceReadinessStage::Credential);
+        host.release.add_permits(1);
+        let controller = host.controller();
+        let answer =
+            readiness_within_budget(&controller, "alice", "agent-a", Duration::from_secs(5)).await;
+        assert!(
+            matches!(&answer.outcome, ReadinessOutcome::Answered(Ok(report)) if report.available),
+            "{answer:?}"
+        );
+        let trace = answer.trace.as_ref().expect("trace");
+        assert_eq!(trace.active, None);
+        let log = logged(&answer);
+        assert!(log.contains(" INFO "), "{log}");
+        assert!(log.contains("console voice readiness available"), "{log}");
+        assert!(log.contains("target="), "{log}");
+        assert!(log.contains("credential="), "{log}");
+        assert!(!log.contains("(active)"), "{log}");
+        assert_eq!(host.cancelled.load(Ordering::SeqCst), 0);
+    }
+}
 
 /// Wall time of every console voice control-plane verb. Status polls are
 /// frequent and land at debug; every other verb lands at info.
@@ -751,7 +1002,7 @@ async fn handle_console_voice_rpc(
         .and_then(Value::as_str)
         .map(str::to_string);
     let started = std::time::Instant::now();
-    let response = handle_console_voice_rpc_inner(state, controller, auth, request).await;
+    let response = handle_console_voice_rpc_inner(state, controller, auth, request, started).await;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let ok = response.get("error").is_none_or(Value::is_null);
     let phase = response
@@ -782,6 +1033,7 @@ async fn handle_console_voice_rpc_inner(
     controller: Option<&crate::console_voice::ConsoleVoiceController>,
     auth: &ConsoleHttpAuthContext,
     request: JsonRpcRequest,
+    request_started: std::time::Instant,
 ) -> Value {
     use crate::console_voice::{
         VOICE_ACTIVITY_METHOD, VOICE_ANSWER_RECEIVED_METHOD, VOICE_CAPTIONS_METHOD,
@@ -848,59 +1100,22 @@ async fn handle_console_voice_rpc_inner(
         };
         // The readiness answer is the console's gate for the voice button and
         // for every click. A negative or slow answer must leave a server-side
-        // trace with its cause: the client only sees "unavailable" or, on its
-        // own 5 s timeout, "could not be checked".
-        let started = std::time::Instant::now();
-        let outcome = tokio::time::timeout(
+        // trace with its cause and the stage it spent its time in.
+        let pre_check_ms = elapsed_ms_since(request_started);
+        let answer = readiness_within_budget(
+            controller,
+            principal,
+            &parsed.identity,
             VOICE_READINESS_SERVER_BUDGET,
-            controller.readiness(principal, &parsed.identity),
         )
         .await;
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let slow = started.elapsed() > VOICE_READINESS_SLOW_BUDGET;
-        let cause: Option<String> = match &outcome {
-            Err(_) => Some(format!(
-                "server readiness budget of {} ms exceeded",
-                VOICE_READINESS_SERVER_BUDGET.as_millis()
-            )),
-            Ok(Err(failure)) => Some(format!("{failure:?}")),
-            Ok(Ok(report)) if !report.available => Some(
-                report
-                    .reason
-                    .map_or_else(|| "host reports unavailable".to_string(), str::to_string),
-            ),
-            Ok(Ok(_)) => None,
-        };
-        match &cause {
-            Some(cause) => tracing::warn!(
-                target: "meerkat_mobkit::console_voice::timing",
-                identity = %parsed.identity,
-                elapsed_ms,
-                slow,
-                cause = %cause,
-                "console voice readiness not available"
-            ),
-            None if slow => tracing::warn!(
-                target: "meerkat_mobkit::console_voice::timing",
-                identity = %parsed.identity,
-                elapsed_ms,
-                budget_ms = VOICE_READINESS_SLOW_BUDGET.as_millis() as u64,
-                "console voice readiness available but slow"
-            ),
-            None => tracing::info!(
-                target: "meerkat_mobkit::console_voice::timing",
-                identity = %parsed.identity,
-                elapsed_ms,
-                "console voice readiness available"
-            ),
-        }
-        return match outcome.unwrap_or(Ok(crate::console_voice::VoiceReadinessReport {
-            available: false,
-            reason: None,
-            holder: None,
-        })) {
-            Ok(report) => response_value(id, Some(report.to_wire(&parsed.identity)), None),
-            Err(failure) => error(failure),
+        log_voice_readiness(&parsed.identity, pre_check_ms, &answer);
+        return match answer.outcome {
+            ReadinessOutcome::Answered(Ok(report)) => {
+                response_value(id, Some(report.to_wire(&parsed.identity)), None)
+            }
+            ReadinessOutcome::Answered(Err(failure)) => error(failure),
+            ReadinessOutcome::TimedOut => error(VoiceError::ReadinessTimedOut),
         };
     }
     if request.method == VOICE_CONTEXT_STATUS_METHOD {

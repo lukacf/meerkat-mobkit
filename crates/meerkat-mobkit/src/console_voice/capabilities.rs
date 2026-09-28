@@ -44,8 +44,11 @@ impl MemberCapabilities {
     /// other live member of the mob. Tools and skills come from the member's
     /// inline profile; a realm-referenced profile contributes only the
     /// categories the definition can see, which is none.
-    pub(crate) async fn gather(handle: &MobHandle, identity: &AgentIdentity) -> Option<Self> {
-        let members = handle.list_members().await;
+    fn gather(
+        handle: &MobHandle,
+        members: &[meerkat_mob::runtime::MobMemberListEntry],
+        identity: &AgentIdentity,
+    ) -> Option<Self> {
         let me = members
             .iter()
             .find(|member| &member.agent_identity == identity)?;
@@ -222,21 +225,38 @@ impl MemberPreface {
     /// `None` when the session is not a current member's bridge session or
     /// the member has no inline profile to describe.
     pub(crate) async fn preface_for_session(&self, session_id: &SessionId) -> Option<String> {
-        for member in self.handle.list_members().await {
-            if self
-                .handle
-                .resolve_bridge_session_id(&member.agent_identity)
-                .await
-                .as_ref()
-                == Some(session_id)
-            {
-                return MemberCapabilities::gather(&self.handle, &member.agent_identity)
-                    .await
-                    .map(|capabilities| capabilities.preface());
-            }
-        }
-        None
+        let members = self.handle.list_members().await;
+        let owner = bridge_session_owner(&self.handle, &members, session_id).await?;
+        MemberCapabilities::gather(&self.handle, &members, &owner)
+            .map(|capabilities| capabilities.preface())
     }
+}
+
+/// The member whose bridge session is `session_id`. The roster observation
+/// (a read lock, no machine-state clone) nominates the owner; one
+/// authoritative machine-binding read confirms it. A lagging observation
+/// yields `None`, never another member.
+pub(crate) async fn bridge_session_owner(
+    handle: &MobHandle,
+    members: &[meerkat_mob::runtime::MobMemberListEntry],
+    session_id: &SessionId,
+) -> Option<AgentIdentity> {
+    let mut nominated = None;
+    for member in members {
+        if handle
+            .resolve_bridge_session_id_observation(&member.agent_identity)
+            .await
+            .as_ref()
+            == Some(session_id)
+        {
+            if nominated.is_some() {
+                return None;
+            }
+            nominated = Some(member.agent_identity.clone());
+        }
+    }
+    let owner = nominated?;
+    (handle.resolve_bridge_session_id(&owner).await.as_ref() == Some(session_id)).then_some(owner)
 }
 
 /// The open authority resolves this per canonical session, bounded by

@@ -212,6 +212,15 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    // Forwarded to the wrapped service, like the production decorators
+    // (required since meerkat 0.8.47).
+    async fn observe_live_durable_source(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::LiveDurableSourceObservation, meerkat_core::SessionError> {
+        self.inner.observe_live_durable_source(session_id).await
+    }
+
     async fn observe_member_status_view(
         &self,
         session_id: &meerkat_core::SessionId,
