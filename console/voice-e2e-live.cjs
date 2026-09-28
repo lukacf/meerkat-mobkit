@@ -168,10 +168,26 @@ function assertCanonicalTypedUser(snapshot, sessionId, interactionId, content) {
   assert.equal(canonicalInputText(message), content, "Canonical User must preserve the complete typed request exactly");
   return message;
 }
+// Admission and canonical persistence are different witnesses. History twins
+// remain in the public timeline and must not inflate the admission count.
+function assertTypedSendAdmission(frames, scope, content) {
+  assert.ok(typeof scope.interaction_id === "string" && scope.interaction_id.length > 0,
+    "Typed admission must name its exact interaction");
+  const admissions = frames.filter(frame => frame.kind === "user_input" &&
+    frame.source?.kind === "send" && frame.interaction_id === scope.interaction_id);
+  assert.equal(admissions.length, 1, "Typed request must have exactly one console send admission");
+  const admission = admissions[0];
+  for (const key of ["runtime_key", "identity", "session_id", "interaction_id"]) {
+    assert.ok(typeof scope[key] === "string" && scope[key].length > 0, "Typed admission scope must be explicit");
+    assert.equal(admission[key], scope[key], "Typed admission must preserve exact " + key);
+  }
+  assert.equal(admission.payload?.content, content, "Typed admission must preserve the complete typed request exactly");
+  return admission;
+}
 function readCommittedTypedSource(directory, sessionId) {
-  // The timeline deliberately removes history twins of send frames. Read the
-  // fixture's committed whole-blob authority instead, never a provisional tail
-  // or the legacy runtime_session_snapshots compatibility table.
+  // The timeline retains send admission and committed-history projections.
+  // Prove canonical persistence from the fixture's committed whole-blob
+  // authority, never a provisional tail or the legacy compatibility table.
   const database = path.join(directory, "state", "runtime.sqlite");
   fs.accessSync(database, fs.constants.R_OK);
   const result = spawnSync("python3", ["-c", `
@@ -481,6 +497,35 @@ function selfTest() {
   assert.throws(() => checkCanonical({ ...canonical, messages: [canonicalUser, externalNotice] }), /exactly once/);
   assert.throws(() => checkCanonical({ ...canonical, sessionId: "replacement-session" }), /ORIGINAL/);
   assert.throws(() => checkCanonical({ ...canonical, messages: [{ ...canonicalUser, content: "only an echo" }] }), /complete typed request/);
+  const typedScope = { runtime_key: "default", identity: PRIMARY, session_id: canonical.sessionId };
+  const admittedInput = { ...typedScope, id: "send-input", kind: "user_input", source: { kind: "send" },
+    interaction_id: canonicalUser.identity.interaction_id, payload: { content: typedContent }, status: "delivered" };
+  const committedInput = { ...admittedInput, id: "committed-input", source: { kind: "session_history" },
+    run_id: "canonical-run", payload: { content: canonicalUser.content, message: canonicalUser }, status: "completed" };
+  const checkAdmission = frames => assertTypedSendAdmission(frames,
+    { ...typedScope, interaction_id: admittedInput.interaction_id }, typedContent);
+  assert.equal(checkAdmission([admittedInput]), admittedInput);
+  // Admission and committed history intentionally retain different frame IDs.
+  // They prove one send and one canonical input, not two authored requests.
+  assert.equal(checkAdmission([admittedInput, committedInput]), admittedInput);
+  assert.equal(checkAdmission([committedInput, admittedInput]), admittedInput);
+  assert.throws(() => checkAdmission([committedInput]), /exactly one console send admission/);
+  assert.throws(() => checkAdmission([]), /exactly one console send admission/);
+  assert.throws(() => checkAdmission([admittedInput, { ...admittedInput, id: "duplicate-send" }]), /exactly one console send admission/);
+  for (const key of ["runtime_key", "identity", "session_id"]) {
+    assert.throws(() => checkAdmission([{ ...admittedInput, [key]: `wrong-${key}` }]), /preserve exact/);
+  }
+  for (const key of ["runtime_key", "identity", "session_id", "interaction_id"]) {
+    assert.throws(() => assertTypedSendAdmission([admittedInput],
+      { ...typedScope, interaction_id: admittedInput.interaction_id, [key]: undefined }, typedContent), /explicit|exact interaction/);
+  }
+  assert.throws(() => checkAdmission([{ ...admittedInput, interaction_id: "another-interaction" }]), /exactly one console send admission/);
+  assert.throws(() => checkAdmission([{ ...admittedInput, source: { kind: "console_event" } }]), /exactly one console send admission/);
+  assert.throws(() => checkAdmission([{ ...admittedInput, payload: { content: `${typedContent} ` } }]), /complete typed request/);
+  assert.throws(() => checkAdmission([{ ...admittedInput, payload: { content: canonicalUser.content } }]), /complete typed request/,
+    "The send admission must preserve the exact submitted string, not a different content shape");
+  assert.equal(checkAdmission([admittedInput, { ...admittedInput, id: "other-input", interaction_id: "another-interaction" }]), admittedInput,
+    "A distinct interaction with identical content is not this request's duplicate");
   assert.ok(spokenEvidence(good, mark, "amber maple"));
   assert.equal(spokenEvidence({ ...good, samples: [] }, mark, "amber maple"), null);
   assert.equal(spokenEvidence({ ...good, samples: samples.map(s => ({ ...s, rms: 0 })) }, mark, "amber maple"), null);
@@ -1579,8 +1624,8 @@ async function runBrowser(url, facts, directory, gate) {
     await inputHeard(recall, "current console value");
     await hear(recall, facts.typed, "subsequent spoken recall");
     assert.equal(requests.filter(row => row.method === "mobkit/console/send" && row.params.content === content).length, 1);
-    assert.equal((await frames(PRIMARY)).filter(frame => frame.kind === "user_input" &&
-      frame.interaction_id === typed.result.interaction_id).length, 1, "Typed input must persist exactly once");
+    assertTypedSendAdmission(await frames(PRIMARY), { runtime_key: original.runtime_key, identity: PRIMARY,
+      session_id: original.session_id, interaction_id: typed.result.interaction_id }, content);
     assertCanonicalTypedUser(readCommittedTypedSource(directory, original.session_id),
       original.session_id, typed.result.interaction_id, content);
     await sameOriginal();
@@ -1625,6 +1670,11 @@ async function runBrowser(url, facts, directory, gate) {
     const concurrentContent = `CURRENT_VALUE ${facts.overlapValue}. Request nonce ${facts.nonce}-concurrent-append. Replace the earlier console value and confirm these four words while the keeper checks finish.`;
     const concurrent = await send(PRIMARY, concurrentContent);
     await final(PRIMARY, overlapBefore, facts.overlapValue, { interaction_id: concurrent.result.interaction_id });
+    const concurrentSource = readCommittedTypedSource(directory, original.session_id);
+    const canonicalConcurrentUser = assertCanonicalTypedUser(concurrentSource,
+      original.session_id, concurrent.result.interaction_id, concurrentContent);
+    observations.concurrentTypedCanonicalSource = { sessionId: concurrentSource.sessionId, storeRevision: concurrentSource.storeRevision,
+      blobSha256: concurrentSource.blobSha256, interactionId: concurrent.result.interaction_id, message: canonicalConcurrentUser };
     observations.nativeKeeperSubscription = {};
     keeperObserver = await subscribeNativeAgent(url, KEEPER, observations.nativeKeeperSubscription);
     observations.nativeKeeperEvents = keeperObserver.events;
@@ -1703,8 +1753,10 @@ async function runBrowser(url, facts, directory, gate) {
     await final(PRIMARY, overlapBefore, facts.overlapValue);
     assert.equal(requests.filter(row => row.method === "mobkit/console/send" &&
       row.params.content === concurrentContent).length, 1, "Concurrent typed update must be admitted only once");
-    assert.equal((await frames(PRIMARY)).filter(frame => frame.kind === "user_input" &&
-      frame.interaction_id === concurrent.result.interaction_id).length, 1);
+    assertTypedSendAdmission(await frames(PRIMARY), { runtime_key: original.runtime_key, identity: PRIMARY,
+      session_id: original.session_id, interaction_id: concurrent.result.interaction_id }, concurrentContent);
+    assertCanonicalTypedUser(readCommittedTypedSource(directory, original.session_id),
+      original.session_id, concurrent.result.interaction_id, concurrentContent);
 
     assert.equal((await status(reopened)).phase, "active");
     // This is an intentional adversarial control against this test's isolated
