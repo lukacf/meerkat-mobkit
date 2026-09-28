@@ -1575,9 +1575,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use serde_json::json;
 
-        for profile in [
-            GatewayCompatibilityProfile::ConsoleHttp,
-            GatewayCompatibilityProfile::StdioRpc,
+        for (profile, include_interaction) in [
+            (GatewayCompatibilityProfile::ConsoleHttp, true),
+            (GatewayCompatibilityProfile::ConsoleHttp, false),
+            (GatewayCompatibilityProfile::StdioRpc, true),
+            (GatewayCompatibilityProfile::StdioRpc, false),
         ] {
             let directory = tempfile::tempdir()?;
             let composition = console_drain_test_composition(&directory, profile).await?;
@@ -1587,10 +1589,14 @@ mod tests {
                 .await;
             let store = composition.runtime().console_events();
             let interaction = uuid::Uuid::from_u128(41).to_string();
+            let expected_interaction = include_interaction.then_some(interaction.as_str());
+            let run_id = uuid::Uuid::from_u128(42).to_string();
             let lineage = json!({
-                "interaction_id": interaction,
-                "run_id": uuid::Uuid::from_u128(42).to_string(),
+                "interaction_id": expected_interaction,
+                "run_id": run_id,
             });
+            // A run-only terminal clears its current run phase without
+            // borrowing or claiming to consume this console reservation.
             composition
                 .runtime()
                 .reserve_identity_interaction(
@@ -1652,9 +1658,13 @@ mod tests {
                 "{profile:?} must retain ordered live replay"
             );
             assert!(
-                projected
-                    .iter()
-                    .all(|event| { event.interaction_id.as_deref() == Some(interaction.as_str()) })
+                projected.iter().all(|event| {
+                    event.interaction_id.as_deref() == expected_interaction
+                        && event.data["identity"]["interaction_id"].as_str() == expected_interaction
+                        && event.data["identity"]["run_id"].as_str() == Some(run_id.as_str())
+                        && event.data["run_id"].as_str() == Some(run_id.as_str())
+                }),
+                "{profile:?} include_interaction={include_interaction} must retain exact run attribution"
             );
 
             let drain_abort = composition
