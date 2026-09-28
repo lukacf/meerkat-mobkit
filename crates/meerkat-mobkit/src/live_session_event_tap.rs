@@ -14,23 +14,30 @@
 //! ([`InitialTurnPolicy::RunImmediately`]) create runs its first turn inside
 //! the create itself, so the tap declines it loudly instead of adopting a
 //! stream that already lost that run; stock mob member creates always defer.
+//! The policy is read from the request the session service actually
+//! executes: the tap sits on the innermost MobKit session-service layer (see
+//! `MobBootstrapSpec`), below every pre-build hook that could rewrite it.
 //!
 //! Meerkat's session broadcast keeps only its last 256 envelopes per
 //! receiver, so a receiver left unread until adoption would lose exactly the
-//! head it exists for. Each capture therefore starts a pump that drains the
-//! receiver into an owned queue at once. Adoption stops the pump and hands
-//! the forwarder the drained queue followed by the same receiver, so the
-//! adopted stream is gap-free from the actor's first event. The queue is
-//! bounded by [`CAPTURE_QUEUE_CAPACITY`]; a capture that outgrows it before
-//! adoption is discarded with a warning and the forwarder keeps its ordinary
-//! subscription path.
+//! head it exists for. Each capture therefore starts a pump that moves the
+//! receiver's envelopes into an owned queue of [`CAPTURE_QUEUE_CAPACITY`] as
+//! they arrive; adoption hands the forwarder that queue, which the pump keeps
+//! feeding. The bound is honest rather than silent: a full queue stops the
+//! pump reading, so meerkat's own lag accounting takes over and the stream
+//! carries meerkat's typed `StreamTruncated(StreamLagged { dropped })` marker
+//! at the gap once it drains, exactly like any other lagging subscriber. The
+//! queued prefix, including the actor's first `run_started`, is kept.
 //!
 //! Captures are keyed by `SessionId` and fenced by the exact actor
-//! incarnation's [`LiveSessionActorWitness`]: registries revoke a witness
-//! before removing or replacing its actor, so a capture whose witness is no
-//! longer live names a dead actor and is dropped, never adopted.
+//! incarnation's [`LiveSessionActorWitness`]. A capture's receiver belongs to
+//! that incarnation's broadcast for its whole life, and registries revoke a
+//! witness before (or, on the fatal path, right after) removing or replacing
+//! its actor. The witness is checked after subscribing, so a revocation that
+//! raced the subscription never stores the stream, and again at adoption, so
+//! a capture whose actor was revoked since is dropped, never attributed.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -42,13 +49,15 @@ use meerkat_core::service::InitialTurnPolicy;
 use meerkat_core::types::SessionId;
 use meerkat_mob::MobSessionService;
 use meerkat_session::{LiveSessionActorWitness, LiveSessionActorWitnessSlot};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
-/// Most envelopes one capture holds while it waits for adoption. The console
-/// forwarder adopts on the tap's change signal, so a capture normally holds a
-/// handful; the bound only covers adoption stalled behind a restore (the
+/// Most envelopes one capture queues for its consumer. The console forwarder
+/// adopts on the tap's change signal, so a capture normally holds a handful
+/// before adoption; the bound covers adoption stalled behind a restore (the
 /// forwarder blocked on a full console channel, or queued behind other
-/// members' subscriptions) with a long streamed run in flight.
+/// members' subscriptions) with a long streamed run in flight. Beyond it the
+/// session broadcast's own 256-envelope window applies and meerkat reports
+/// the overflow as a typed `StreamTruncated` marker.
 pub(crate) const CAPTURE_QUEUE_CAPACITY: usize = 4096;
 
 type Envelope = EventEnvelope<AgentEvent>;
@@ -72,30 +81,28 @@ struct TapState {
     changes: watch::Sender<u64>,
 }
 
+/// A capture waiting for adoption. Dropping it (superseded, swept, or
+/// revoked at adoption) closes its queue, which ends the pump.
 struct Capture {
     actor: LiveSessionActorWitness,
-    /// Stops the pump for adoption. Dropping it (capture superseded, swept,
-    /// or discarded) ends the pump and releases its queue.
-    stop: oneshot::Sender<()>,
-    pump: tokio::task::JoinHandle<PumpOutcome>,
+    queue: mpsc::Receiver<Envelope>,
+    progress: watch::Receiver<CaptureProgress>,
 }
 
-enum PumpOutcome {
-    /// Stopped for adoption: everything drained so far, then the receiver.
-    Stopped {
-        drained: VecDeque<Envelope>,
-        stream: EventStream,
-    },
-    /// The actor's stream ended (every sender dropped) before adoption.
-    Ended { drained: VecDeque<Envelope> },
-    /// More envelopes arrived than the queue holds; the capture is void.
-    Overflowed,
-    /// The capture was dropped before adoption.
-    Abandoned,
+/// What a capture's pump has done so far, observable without consuming the
+/// queue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CaptureProgress {
+    /// Envelopes the pump moved into the queue since the capture started.
+    pub(crate) queued: u64,
+    /// The queue is full and the pump stopped reading: the session broadcast
+    /// is retaining (and past its window, dropping with a typed marker) what
+    /// arrives until the consumer drains the queue.
+    pub(crate) saturated: bool,
 }
 
 /// An adopted capture: the actor incarnation it belongs to and its stream,
-/// gap-free from that actor's first event.
+/// which starts at that actor's first event.
 pub(crate) struct AdoptedCapture {
     pub(crate) actor: LiveSessionActorWitness,
     pub(crate) stream: EventStream,
@@ -125,14 +132,20 @@ impl LiveSessionEventTap {
     }
 
     /// Subscribe to the live event stream of the actor `slot` names and
-    /// start draining it into the capture's owned queue.
+    /// start pumping it into the capture's owned queue.
     ///
-    /// Called by the base session-service wrapper right after a
-    /// witness-bearing create returned, with the create's (post-hook)
-    /// initial-turn policy. Never fails the create: an unarmed tap, an eager
-    /// create, an unpublished witness, or a subscribe error leaves the
-    /// forwarder on its ordinary subscription path. Takes only the inner
-    /// service's session read lock, never the turn-finalization boundary.
+    /// Called by the innermost session-service wrapper right after a
+    /// witness-bearing create returned, with the initial-turn policy of the
+    /// request the inner service executed. The caller still holds the
+    /// session's turn-finalization boundary, which the provisioning contract
+    /// requires for creating a successor actor, so a stream obtained while
+    /// the witness is still live afterwards belongs to that witness's actor.
+    ///
+    /// Never fails the create: an unarmed tap, an eager create, an
+    /// unpublished witness, a subscribe error, or a revocation that raced the
+    /// subscription leaves the forwarder on its ordinary subscription path.
+    /// Takes only the inner service's session read lock, never the
+    /// turn-finalization boundary.
     pub(crate) async fn capture(
         &self,
         inner: &dyn MobSessionService,
@@ -174,45 +187,75 @@ impl LiveSessionEventTap {
                 return;
             }
         };
-        // The subscription is only meaningful for the actor the slot names:
-        // if that incarnation was revoked while subscribing, the stream may
-        // belong to a replacement actor and must not be attributed to it.
+        // Fail closed inside `install`: if the incarnation was revoked while
+        // subscribing, the stream cannot be proven to be its own.
+        self.install(id, actor, stream);
+    }
+
+    /// Store a create-time subscription as the capture for `id`, unless its
+    /// actor incarnation was revoked by now: a revocation that raced the
+    /// subscription fails closed, and the stream is dropped unread.
+    fn install(&self, id: &SessionId, actor: LiveSessionActorWitness, stream: EventStream) -> bool {
         if !actor.is_live() {
-            return;
+            return false;
         }
-        let (stop, stop_rx) = oneshot::channel();
-        let pump = tokio::spawn(pump(id.clone(), stream, stop_rx, self.state.capacity));
+        let (queue_tx, queue) = mpsc::channel(self.state.capacity.max(1));
+        let (progress_tx, progress) = watch::channel(CaptureProgress::default());
+        tokio::spawn(pump(id.clone(), stream, queue_tx, progress_tx));
         {
             let mut captures = self.lock_captures();
             captures.retain(|_, capture| capture.actor.is_live());
-            captures.insert(id.clone(), Capture { actor, stop, pump });
+            captures.insert(
+                id.clone(),
+                Capture {
+                    actor,
+                    queue,
+                    progress,
+                },
+            );
         }
         self.state
             .changes
             .send_modify(|version| *version = version.wrapping_add(1));
+        true
     }
 
-    /// Remove the capture for `id` and adopt it, returning its stream only
-    /// while the captured actor incarnation is still live and its queue did
-    /// not overflow.
-    pub(crate) async fn take_live(&self, id: &SessionId) -> Option<AdoptedCapture> {
-        let Capture { actor, stop, pump } = self.lock_captures().remove(id)?;
+    /// Whether a capture of a still-live actor incarnation is waiting for
+    /// `id`. Cheap; lets the forwarder skip binding revalidation for members
+    /// with nothing to adopt.
+    pub(crate) fn holds_live(&self, id: &SessionId) -> bool {
+        self.lock_captures()
+            .get(id)
+            .is_some_and(|capture| capture.actor.is_live())
+    }
+
+    /// Remove the capture for `id` and adopt it. Returns its stream only
+    /// while the captured actor incarnation is still live at this instant;
+    /// a capture whose actor was revoked is dropped, never adopted.
+    pub(crate) fn take_live(&self, id: &SessionId) -> Option<AdoptedCapture> {
+        let Capture {
+            actor,
+            queue,
+            progress,
+        } = self.lock_captures().remove(id)?;
         if !actor.is_live() {
             return None;
         }
-        // A pump that already ended dropped its receiver; its outcome says why.
-        let _ = stop.send(());
-        match pump.await {
-            Ok(PumpOutcome::Stopped { drained, stream }) => Some(AdoptedCapture {
-                actor,
-                stream: Box::pin(futures::stream::iter(drained).chain(stream)),
-            }),
-            Ok(PumpOutcome::Ended { drained }) => Some(AdoptedCapture {
-                actor,
-                stream: Box::pin(futures::stream::iter(drained)),
-            }),
-            Ok(PumpOutcome::Overflowed | PumpOutcome::Abandoned) | Err(_) => None,
-        }
+        let progress = *progress.borrow();
+        tracing::debug!(
+            session_id = %id,
+            queued = progress.queued,
+            saturated = progress.saturated,
+            "live session event tap: capture adopted"
+        );
+        let stream = futures::stream::unfold(queue, |mut queue| async move {
+            let envelope = queue.recv().await?;
+            Some((envelope, queue))
+        });
+        Some(AdoptedCapture {
+            actor,
+            stream: Box::pin(stream),
+        })
     }
 
     /// Whether any capture is waiting to be adopted. Lets the forwarder skip
@@ -232,12 +275,12 @@ impl LiveSessionEventTap {
         self.state.changes.subscribe()
     }
 
-    /// Whether a live capture for `id` is waiting to be adopted.
+    /// The pump progress of the capture waiting for `id`.
     #[cfg(test)]
-    pub(crate) fn holds_live(&self, id: &SessionId) -> bool {
+    pub(crate) fn progress(&self, id: &SessionId) -> Option<watch::Receiver<CaptureProgress>> {
         self.lock_captures()
             .get(id)
-            .is_some_and(|capture| capture.actor.is_live())
+            .map(|capture| capture.progress.clone())
     }
 
     fn lock_captures(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, Capture>> {
@@ -248,41 +291,48 @@ impl LiveSessionEventTap {
     }
 }
 
-/// Drain a captured receiver into an owned queue until adoption stops it,
-/// the capture is dropped, the actor's stream ends, or the queue overflows.
+/// Move a captured receiver's envelopes into the capture's queue until the
+/// actor's stream ends or the queue's consumer (the capture, or the stream
+/// it was adopted as) is dropped.
+///
+/// A full queue parks the pump on the send without reading on, so envelopes
+/// beyond the queue stay in the session broadcast, whose lag-aware stream
+/// yields meerkat's typed `StreamTruncated` marker for whatever its window
+/// could not hold. Nothing is dropped here.
 async fn pump(
     session_id: SessionId,
     mut stream: EventStream,
-    mut stop: oneshot::Receiver<()>,
-    capacity: usize,
-) -> PumpOutcome {
-    let mut drained = VecDeque::new();
+    queue: mpsc::Sender<Envelope>,
+    progress: watch::Sender<CaptureProgress>,
+) {
     loop {
-        tokio::select! {
+        let envelope = tokio::select! {
             biased;
-            signal = &mut stop => {
-                return match signal {
-                    Ok(()) => PumpOutcome::Stopped { drained, stream },
-                    Err(_) => PumpOutcome::Abandoned,
-                };
-            }
+            () = queue.closed() => return,
             next = stream.next() => match next {
-                Some(envelope) => {
-                    if drained.len() >= capacity {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            capacity,
-                            "live session event tap: capture outgrew its queue before the \
-                             console forwarder adopted it; discarding it, the forwarder keeps \
-                             its ordinary subscription path"
-                        );
-                        return PumpOutcome::Overflowed;
-                    }
-                    drained.push_back(envelope);
-                }
-                None => return PumpOutcome::Ended { drained },
+                Some(envelope) => envelope,
+                None => return,
             },
+        };
+        let envelope = match queue.try_send(envelope) {
+            Ok(()) => None,
+            Err(mpsc::error::TrySendError::Closed(_)) => return,
+            Err(mpsc::error::TrySendError::Full(envelope)) => Some(envelope),
+        };
+        if let Some(envelope) = envelope {
+            tracing::warn!(
+                session_id = %session_id,
+                capacity = queue.max_capacity(),
+                "live session event tap: capture queue is full; further events wait in the \
+                 session broadcast, which marks any it cannot hold as StreamTruncated"
+            );
+            progress.send_modify(|progress| progress.saturated = true);
+            if queue.send(envelope).await.is_err() {
+                return;
+            }
+            progress.send_modify(|progress| progress.saturated = false);
         }
+        progress.send_modify(|progress| progress.queued += 1);
     }
 }
 
@@ -432,12 +482,77 @@ mod tests {
         .expect("turn completes");
     }
 
-    fn drain_ready(stream: &mut EventStream) -> Vec<Envelope> {
+    /// Everything a test-owned subscription holds right now. The probe is
+    /// read after every turn, well inside the session broadcast's window,
+    /// so it sees each envelope the actor published exactly once.
+    fn drain_probe(probe: &mut EventStream) -> Vec<Envelope> {
         let mut events = Vec::new();
-        while let Some(Some(event)) = stream.next().now_or_never() {
+        while let Some(Some(event)) = probe.next().now_or_never() {
+            assert!(
+                !matches!(event.payload, AgentEvent::StreamTruncated { .. }),
+                "the test probe never lags"
+            );
             events.push(event);
         }
         events
+    }
+
+    /// Read an adopted stream until it has yielded `terminals` run
+    /// terminals. The pump feeds the stream from its own task, so this
+    /// awaits rather than polls.
+    async fn read_through_terminals(stream: &mut EventStream, terminals: usize) -> Vec<Envelope> {
+        let mut events = Vec::new();
+        let mut seen = 0;
+        tokio::time::timeout(crate::test_wait::STRUCTURAL_BACKSTOP, async {
+            while seen < terminals {
+                let event = stream.next().await.expect("adopted stream open");
+                if matches!(
+                    event.payload,
+                    AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
+                ) {
+                    seen += 1;
+                }
+                events.push(event);
+            }
+        })
+        .await
+        .expect("the adopted stream reaches every terminal");
+        events
+    }
+
+    /// Read exactly `count` envelopes from an adopted stream.
+    async fn read_exactly(stream: &mut EventStream, count: usize) -> Vec<Envelope> {
+        let mut events = Vec::with_capacity(count);
+        tokio::time::timeout(crate::test_wait::STRUCTURAL_BACKSTOP, async {
+            while events.len() < count {
+                events.push(stream.next().await.expect("adopted stream open"));
+            }
+        })
+        .await
+        .expect("the adopted stream yields every envelope");
+        events
+    }
+
+    async fn wait_for_progress(
+        tap: &LiveSessionEventTap,
+        id: &SessionId,
+        what: &str,
+        done: impl FnMut(&CaptureProgress) -> bool,
+    ) {
+        let mut progress = tap.progress(id).expect("capture waiting");
+        tokio::time::timeout(
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            progress.wait_for(done),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("capture pump never reached: {what}"))
+        .expect("capture pump alive");
+    }
+
+    fn assert_contiguous(events: &[Envelope], first_seq: u64, what: &str) {
+        for (offset, event) in events.iter().enumerate() {
+            assert_eq!(event.seq, first_seq + offset as u64, "{what}: contiguous");
+        }
     }
 
     /// The capture predates the actor's first run: a turn that runs to
@@ -465,8 +580,8 @@ mod tests {
             .await
             .expect("late subscription");
 
-        let mut captured = tap.take_live(&id).await.expect("live capture").stream;
-        let events = drain_ready(&mut captured);
+        let mut captured = tap.take_live(&id).expect("live capture").stream;
+        let events = read_through_terminals(&mut captured, 1).await;
         let first = events.first().expect("captured events");
         assert!(
             matches!(first.payload, AgentEvent::RunStarted { .. }),
@@ -474,23 +589,13 @@ mod tests {
             first.payload
         );
         assert_eq!(first.seq, 1, "run_started is the actor's first event");
-        let completed = events
-            .iter()
-            .position(|event| matches!(event.payload, AgentEvent::RunCompleted { .. }))
-            .expect("the capture reaches the run's terminal");
-        for (index, event) in events[..=completed].iter().enumerate() {
-            assert_eq!(
-                event.seq,
-                index as u64 + 1,
-                "captured sequence is contiguous through run_completed"
-            );
-        }
+        assert_contiguous(&events, 1, "captured sequence through run_completed");
         assert!(
             late.next().now_or_never().is_none(),
             "a subscription opened after the run sees nothing: the stream has no replay"
         );
         assert!(
-            tap.take_live(&id).await.is_none(),
+            tap.take_live(&id).is_none(),
             "adoption consumes the capture"
         );
     }
@@ -499,68 +604,71 @@ mod tests {
     /// capture adopted only after far more than that were published still
     /// starts at `run_started` seq 1 and carries every envelope, with no
     /// `StreamTruncated` marker: the pump moved them into the capture's own
-    /// queue as they arrived.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// queue as they arrived. The test waits for the pump after every turn,
+    /// so no turn ever outruns it.
+    #[tokio::test]
     async fn tap_keeps_more_than_the_session_broadcast_holds_before_adoption() {
         let fixture = fixture();
         let tap = fixture.spec.live_session_event_tap();
         tap.arm();
-        // Each turn stays well inside one broadcast window, so only the wait
-        // for adoption, not a single burst, exceeds the session channel.
         let id = create_through(
             &fixture.spec.session_service,
             create_request(chatty_client(60), InitialTurnPolicy::Defer),
         )
         .await;
+        let mut probe = MobSessionService::subscribe_session_events(fixture.raw.as_ref(), &id)
+            .await
+            .expect("probe subscription");
         const TURNS: usize = 10;
+        let mut published = Vec::new();
         for turn in 0..TURNS {
             run_turn(&fixture.raw, &id, &format!("probe-{turn}")).await;
+            published.extend(drain_probe(&mut probe));
+            let total = published.len() as u64;
+            wait_for_progress(&tap, &id, "every published envelope queued", |progress| {
+                progress.queued >= total
+            })
+            .await;
         }
-
-        let mut captured = tap.take_live(&id).await.expect("live capture").stream;
-        let events = drain_ready(&mut captured);
         assert!(
-            events.len() > 2 * 256,
+            published.len() > 2 * 256,
             "the test publishes well past the 256-envelope session broadcast before adoption, \
              got {}",
-            events.len()
+            published.len()
         );
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event.payload, AgentEvent::StreamTruncated { .. })),
-            "nothing was dropped between capture and adoption"
+
+        let mut captured = tap.take_live(&id).expect("live capture").stream;
+        let events = read_through_terminals(&mut captured, TURNS).await;
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            published.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            "the capture holds exactly what the actor published, in order"
         );
         assert!(matches!(
             events.first().map(|event| &event.payload),
             Some(AgentEvent::RunStarted { .. })
         ));
-        for (index, event) in events.iter().enumerate() {
-            assert_eq!(
-                event.seq,
-                index as u64 + 1,
-                "contiguous from the first event"
-            );
-        }
-        let completed = events
-            .iter()
-            .filter(|event| matches!(event.payload, AgentEvent::RunCompleted { .. }))
-            .count();
-        assert_eq!(completed, TURNS, "every pre-adoption run is complete");
+        assert_contiguous(&events, 1, "the capture");
     }
 
-    /// A capture that outgrows its queue before adoption is void: adopting
-    /// it would present a stream with a hole as gap-free.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn tap_discards_a_capture_that_outgrew_its_queue() {
+    /// A capture whose queue fills before adoption keeps its prefix and marks
+    /// the rest honestly: the pump stops reading, the session broadcast holds
+    /// its last 256 envelopes, and the adopted stream yields meerkat's typed
+    /// `StreamTruncated(StreamLagged)` marker counting exactly what fell out
+    /// of that window. The test parks the pump at capacity before publishing
+    /// the overflow, so the split is fixed, not scheduled.
+    #[tokio::test]
+    async fn tap_marks_a_capture_that_outgrew_its_queue_with_a_typed_gap() {
+        const CAPACITY: usize = 4;
+        const WINDOW: u64 = 256;
         let fixture = fixture();
-        let tap = LiveSessionEventTap::with_capacity(4);
+        let tap = LiveSessionEventTap::with_capacity(CAPACITY);
         tap.arm();
         let slot = LiveSessionActorWitnessSlot::default();
         let raw = fixture.raw.clone() as Arc<dyn MobSessionService>;
         let id = raw
             .create_session_with_actor_witness_under_runtime_turn_boundary(
-                deferred_request(),
+                create_request(chatty_client(40), InitialTurnPolicy::Defer),
                 None,
                 &slot,
             )
@@ -569,13 +677,60 @@ mod tests {
             .session_id;
         tap.capture(raw.as_ref(), &slot, &id, InitialTurnPolicy::Defer)
             .await;
-        assert!(tap.holds_live(&id));
+        let mut probe = MobSessionService::subscribe_session_events(fixture.raw.as_ref(), &id)
+            .await
+            .expect("probe subscription");
 
-        run_turn(&fixture.raw, &id, "probe").await;
-
+        run_turn(&fixture.raw, &id, "probe-0").await;
+        let mut published = drain_probe(&mut probe);
+        assert!(published.len() > CAPACITY + 1);
+        // Queue full and one more envelope in the pump's hand.
+        wait_for_progress(&tap, &id, "saturated", |progress| {
+            progress.saturated && progress.queued == CAPACITY as u64
+        })
+        .await;
+        let held = CAPACITY as u64 + 1;
+        const TURNS: usize = 8;
+        for turn in 1..TURNS {
+            run_turn(&fixture.raw, &id, &format!("probe-{turn}")).await;
+            published.extend(drain_probe(&mut probe));
+        }
+        let total = published.len() as u64;
         assert!(
-            tap.take_live(&id).await.is_none(),
-            "an overflowed capture is never adopted"
+            total - held > WINDOW,
+            "the unread remainder exceeds the session broadcast"
+        );
+
+        let mut captured = tap
+            .take_live(&id)
+            .expect("an overflowed capture is still adopted, with its gap marked")
+            .stream;
+        let events = read_exactly(&mut captured, held as usize + 1 + WINDOW as usize).await;
+        let (prefix, rest) = events.split_at(held as usize);
+        assert!(matches!(prefix[0].payload, AgentEvent::RunStarted { .. }));
+        assert_contiguous(prefix, 1, "the queued prefix plus the held envelope");
+        let dropped = total - held - WINDOW;
+        assert!(
+            matches!(
+                &rest[0].payload,
+                AgentEvent::StreamTruncated {
+                    reason: meerkat_core::event::StreamTruncationReason::StreamLagged {
+                        dropped: marked,
+                    },
+                } if *marked == dropped
+            ),
+            "meerkat marks the gap with its exact size ({dropped}), got {:?}",
+            rest[0].payload
+        );
+        let tail = &rest[1..];
+        assert_contiguous(tail, total - WINDOW + 1, "the retained window");
+        assert!(matches!(
+            tail.last().map(|event| &event.payload),
+            Some(AgentEvent::RunCompleted { .. })
+        ));
+        assert!(
+            captured.next().now_or_never().is_none(),
+            "nothing beyond what the actor published"
         );
     }
 
@@ -598,8 +753,83 @@ mod tests {
         )
         .await;
 
-        assert!(tap.take_live(&id).await.is_none());
+        assert!(tap.take_live(&id).is_none());
         assert!(!changes.has_changed().expect("tap alive"));
+    }
+
+    /// A stock constructor with a user pre-build hook: the tap must read the
+    /// initial-turn policy the hook left, not the one the request arrived
+    /// with, because the hook's layer sits below the spec's base wrapper.
+    fn spec_with_initial_turn_hook(
+        dir: &tempfile::TempDir,
+        initial_turn: InitialTurnPolicy,
+    ) -> MobBootstrapSpec {
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"event-tap-hook\"\n")
+            .expect("mob definition");
+        MobBootstrapSpec::ephemeral_with_hook(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            16,
+            None,
+            move |req| {
+                req.initial_turn = initial_turn;
+                Box::pin(async { Ok(()) })
+            },
+        )
+    }
+
+    /// A hook that turns a deferred create eager: the first run happens
+    /// inside the create, so the tap must decline, not present the remainder
+    /// as a capture from the actor's first event.
+    #[tokio::test]
+    async fn tap_declines_a_create_a_pre_build_hook_made_eager() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let spec = spec_with_initial_turn_hook(&dir, InitialTurnPolicy::RunImmediately);
+        let tap = spec.live_session_event_tap();
+        tap.arm();
+        let changes = tap.changes();
+
+        let result = spec
+            .session_service
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                deferred_request(),
+                None,
+                &LiveSessionActorWitnessSlot::default(),
+            )
+            .await
+            .expect("witness-bearing create");
+
+        assert!(
+            result.turns > 0,
+            "the hook made the create eager: its first turn ran inside it"
+        );
+        assert!(!tap.holds_live(&result.session_id));
+        assert!(!changes.has_changed().expect("tap alive"));
+    }
+
+    /// The inverse: a hook that defers an eager request is captured, from
+    /// the actor's first event.
+    #[tokio::test]
+    async fn tap_captures_a_create_a_pre_build_hook_deferred() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let spec = spec_with_initial_turn_hook(&dir, InitialTurnPolicy::Defer);
+        let tap = spec.live_session_event_tap();
+        tap.arm();
+
+        let id = create_through(
+            &spec.session_service,
+            create_request(
+                meerkat_client::TestClient::default(),
+                InitialTurnPolicy::RunImmediately,
+            ),
+        )
+        .await;
+
+        assert!(
+            tap.holds_live(&id),
+            "the executed request deferred, so the capture predates the first run"
+        );
     }
 
     #[tokio::test]
@@ -617,11 +847,47 @@ mod tests {
             .expect("discard live session");
 
         assert!(
-            tap.take_live(&id).await.is_none(),
+            tap.take_live(&id).is_none(),
             "a capture of a revoked actor incarnation is never adopted"
         );
     }
 
+    /// A revocation that lands after the create-time subscription opened but
+    /// before the capture is stored fails closed: the stream is dropped, not
+    /// stored under a witness that no longer names a live actor.
+    #[tokio::test]
+    async fn tap_never_stores_a_subscription_its_actor_lost_while_subscribing() {
+        let fixture = fixture();
+        let tap = LiveSessionEventTap::default();
+        tap.arm();
+        let slot = LiveSessionActorWitnessSlot::default();
+        let raw = fixture.raw.clone() as Arc<dyn MobSessionService>;
+        let id = raw
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                deferred_request(),
+                None,
+                &slot,
+            )
+            .await
+            .expect("witness-bearing create")
+            .session_id;
+        let actor = slot.witness().expect("published witness");
+        let stream = MobSessionService::subscribe_session_events(raw.as_ref(), &id)
+            .await
+            .expect("create-time subscription");
+
+        fixture
+            .raw
+            .discard_live_session(&id)
+            .await
+            .expect("discard live session");
+
+        assert!(!tap.install(&id, actor, stream));
+        assert!(!tap.holds_captures());
+        assert!(!tap.changes().has_changed().expect("tap alive"));
+    }
+
+    /// Sweeping a revoked capture drops its queue, which ends its pump.
     #[tokio::test]
     async fn sweep_releases_revoked_captures() {
         let fixture = fixture();
@@ -629,6 +895,7 @@ mod tests {
         tap.arm();
 
         let id = create_through_spec(&fixture).await;
+        let mut progress = tap.progress(&id).expect("capture waiting");
         fixture
             .raw
             .discard_live_session(&id)
@@ -638,6 +905,11 @@ mod tests {
 
         tap.sweep();
         assert!(!tap.holds_captures());
+        tokio::time::timeout(crate::test_wait::STRUCTURAL_BACKSTOP, async {
+            while progress.changed().await.is_ok() {}
+        })
+        .await
+        .expect("the swept capture's pump ends");
     }
 
     #[tokio::test]
@@ -648,13 +920,13 @@ mod tests {
 
         let id = create_through_spec(&fixture).await;
 
-        assert!(tap.take_live(&id).await.is_none());
+        assert!(tap.take_live(&id).is_none());
         assert!(!changes.has_changed().expect("tap alive"));
     }
 
     /// Child mobs are built on the agent mob tools' session service. A stock
-    /// constructor must hand those tools the spec's final service, carrying
-    /// the tap, or child-mob members keep the lossy late subscription.
+    /// constructor must hand those tools a service carrying the spec's tap,
+    /// or child-mob members keep the lossy late subscription.
     #[tokio::test]
     async fn agent_mob_tools_session_service_feeds_the_spec_tap() {
         let dir = tempfile::tempdir().expect("temp dir");

@@ -611,9 +611,12 @@ struct PreBuildMobSessionService {
     dispatch_taint: Option<crate::memory::dispatch_taint::DispatchTaintSlot>,
     /// Create-time capture of each witness-bearing create's live event
     /// stream for the console forwarder (`crate::live_session_event_tap`).
-    /// Same exactly-one-layer rule as `dispatch_taint`: present ONLY on the
-    /// wrapper `MobBootstrapSpec::new` installs, so re-wraps never open a
-    /// second receiver per create.
+    /// Present on exactly one layer, so re-wraps never open a second
+    /// receiver per create, and that layer is the innermost MobKit one (the
+    /// stock constructors' pre-build-hook layer, else the base wrapper
+    /// `MobBootstrapSpec::new` installs over the caller's service): the tap
+    /// must see the initial-turn policy after every hook that could change
+    /// it.
     live_event_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
@@ -6057,8 +6060,9 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
-                // Read after the pre-build hook: the tap only covers creates
-                // that defer their initial turn.
+                // The tap's layer is the innermost MobKit layer, so this is
+                // the policy the inner service executes: the tap only covers
+                // creates that defer their initial turn.
                 let initial_turn = req.initial_turn;
                 let result = self
                     .inner
@@ -7752,18 +7756,56 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
-        // Every spec construction path funnels through here (the stock
-        // constructors call `Self::new` with their wrapped service), so this
-        // is the ONE layer that carries the dispatch-time taint slot: each
-        // member create passes it exactly once, and later `with_*` re-wraps
-        // never double-decorate.
-        let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
+        // The base layer wraps the caller's service directly, so it is the
+        // innermost MobKit layer and owns the create-time live event tap.
         let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
+        Self::compose(
+            definition,
+            storage,
+            session_service,
+            live_session_event_tap.clone(),
+            Some(live_session_event_tap),
+        )
+    }
+
+    /// [`Self::new`] over a service whose innermost MobKit layer already
+    /// carries `live_session_event_tap`: the stock constructors put it on
+    /// their pre-build-hook layer, the one wrapping the concrete session
+    /// service, so the tap reads the initial-turn policy of the request that
+    /// service actually executes, after every hook that could rewrite it.
+    fn over_tapped_service(
+        definition: MobDefinition,
+        storage: MobStorage,
+        session_service: Arc<dyn MobSessionService>,
+        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+    ) -> Self {
+        Self::compose(
+            definition,
+            storage,
+            session_service,
+            live_session_event_tap,
+            None,
+        )
+    }
+
+    fn compose(
+        definition: MobDefinition,
+        storage: MobStorage,
+        session_service: Arc<dyn MobSessionService>,
+        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+        base_layer_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
+    ) -> Self {
+        // Every spec construction path funnels through here (the stock
+        // constructors call `Self::over_tapped_service` with their wrapped
+        // service), so this is the ONE layer that carries the dispatch-time
+        // taint slot: each member create passes it exactly once, and later
+        // `with_*` re-wraps never double-decorate.
+        let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: Some(dispatch_taint_slot.clone()),
-            live_event_tap: Some(live_session_event_tap.clone()),
+            live_event_tap: base_layer_tap,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -8309,11 +8351,12 @@ impl MobBootstrapSpec {
         } else {
             after_create_hook
         };
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
@@ -8321,9 +8364,10 @@ impl MobBootstrapSpec {
         }) as Arc<dyn MobSessionService>;
         // Wrap first and install the agent mob tools on the spec's final
         // service: child mobs are built on the tools' session service, so
-        // they must see the base layer `Self::new` adds (the create-time live
-        // event tap, like the gateway's `with_agent_mob_tools` order).
-        let mut spec = Self::new(definition, storage, session_service);
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8767,11 +8811,12 @@ impl MobBootstrapSpec {
         > = concrete_session_service.clone();
         let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             // ONE machine for the whole spec. Without the override the
             // wrapped service answers `runtime_adapter()` with the persistent
@@ -8789,9 +8834,10 @@ impl MobBootstrapSpec {
         }) as Arc<dyn MobSessionService>;
         // Wrap first and install the agent mob tools on the spec's final
         // service: child mobs are built on the tools' session service, so
-        // they must see the base layer `Self::new` adds (the create-time live
-        // event tap, like the gateway's `with_agent_mob_tools` order).
-        let mut spec = Self::new(definition, storage, session_service);
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9102,11 +9148,12 @@ impl MobBootstrapSpec {
                 }
             })
         });
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
@@ -9114,9 +9161,10 @@ impl MobBootstrapSpec {
         }) as Arc<dyn MobSessionService>;
         // Wrap first and install the agent mob tools on the spec's final
         // service: child mobs are built on the tools' session service, so
-        // they must see the base layer `Self::new` adds (the create-time live
-        // event tap, like the gateway's `with_agent_mob_tools` order).
-        let mut spec = Self::new(definition, storage, session_service);
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
