@@ -742,10 +742,15 @@ impl PreBuildMobSessionService {
         SessionError,
     > {
         (self.hook)(&mut req).await?;
+        // Only a typed Resume continues a persisted session; a Mint carrier
+        // (a spawn's pre-assigned id, meerkat #1225) has nothing to load.
         let resume_id = req
             .build
             .as_ref()
             .filter(|build| build.initial_tool_filter.is_none())
+            .filter(|build| {
+                build.session_build_intent() == meerkat_core::service::SessionBuildIntent::Resume
+            })
             .and_then(|build| build.resume_session.as_ref())
             .map(|session| session.id().clone());
         let persisted_resume = match resume_id {
