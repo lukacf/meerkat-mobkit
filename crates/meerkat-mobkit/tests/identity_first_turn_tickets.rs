@@ -109,6 +109,9 @@ struct TicketBridge {
     /// Like meerkat's runtime ledger: one per session.
     seen_keys: std::sync::Mutex<HashSet<(AgentRuntimeId, String, String)>>,
     latest_output: std::sync::Mutex<Option<String>>,
+    /// Every `inspect_member` call: the member-session read a completion
+    /// poll must not make.
+    inspections: AtomicUsize,
 }
 
 impl TicketBridge {
@@ -133,6 +136,7 @@ impl TicketBridge {
             finishers: std::sync::Mutex::new(Vec::new()),
             seen_keys: std::sync::Mutex::new(HashSet::new()),
             latest_output: std::sync::Mutex::new(None),
+            inspections: AtomicUsize::new(0),
         })
     }
 
@@ -307,6 +311,7 @@ impl SessionBridge for TicketBridge {
         &self,
         _runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
+        self.inspections.fetch_add(1, Ordering::SeqCst);
         Ok(MemberInspection {
             output_preview: self.latest_output.lock().unwrap().clone(),
             preview_unavailable: None,
@@ -1769,14 +1774,14 @@ async fn identity_cursor(
     runtime: &meerkat_mobkit::UnifiedRuntime,
     ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
 ) -> meerkat_mobkit::identity_first::CompletionCursor {
-    let inspection = rpc(
+    let read = rpc(
         runtime,
         ctx,
-        "mobkit/inspect_identity",
+        "mobkit/completion_cursor",
         json!({"identity": "keeper"}),
     )
     .await;
-    serde_json::from_value(inspection["completion_cursor"].clone()).expect("completion cursor")
+    serde_json::from_value(read["completion_cursor"].clone()).expect("completion cursor")
 }
 
 /// Poll the identity-wide cursor until it has moved past `baseline`.
@@ -1926,4 +1931,458 @@ async fn a_tracked_turn_advances_the_identity_wide_cursor() {
         expected = after;
     }
     runtime.shutdown().await;
+}
+
+/// #479: `mobkit/interact` refuses a caller-supplied interaction id that is
+/// still in flight on the identity, typed, before delivering anything: two
+/// in-flight runs under one transcript interaction id would make both runs'
+/// frames and terminals ambiguous. Once the first interaction settled, the id
+/// may be sent again (and still gets a ticket of its own).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interact_refuses_a_caller_interaction_id_still_in_flight() {
+    let client = NamedReplyClient::default();
+    let release_alpha = client.hold("alpha");
+    let (runtime, ctx, _scratch) =
+        live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
+    let interaction = uuid::Uuid::new_v4().to_string();
+    let interact = |text: &'static str| {
+        let runtime = &runtime;
+        let ctx = &ctx;
+        let interaction = interaction.clone();
+        async move {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/interact",
+                "params": {
+                    "identity": "keeper",
+                    "content": text,
+                    "interaction_id": interaction,
+                    "track_turn": true,
+                },
+            });
+            let reply = meerkat_mobkit::rpc::handle_unified_rpc_json(
+                runtime,
+                &request.to_string(),
+                Duration::from_secs(30),
+                None,
+                Some(ctx),
+            )
+            .await;
+            serde_json::from_str::<Value>(&reply).expect("json-rpc reply")
+        }
+    };
+
+    let first = interact("alpha").await;
+    let first_ticket = first["result"]["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the first interact is tracked: {first}"))
+        .to_string();
+    assert_eq!(first["result"]["interaction_id"], json!(interaction));
+    wait_for_model_call(&client, "alpha").await;
+
+    let reused = interact("beta").await;
+    assert_eq!(reused["error"]["code"], json!(-32602), "{reused}");
+    assert_eq!(
+        reused["error"]["data"]["code"],
+        json!("interaction_id_in_flight"),
+        "{reused}"
+    );
+    assert_eq!(
+        reused["error"]["data"]["interaction_id"],
+        json!(interaction)
+    );
+    assert!(reused.get("result").is_none(), "{reused}");
+
+    release_alpha.send(()).expect("release alpha");
+    assert_eq!(
+        await_turn(&runtime, &ctx, &first_ticket).await["state"],
+        "completed"
+    );
+    // The refused send was never delivered.
+    assert_eq!(client.calls_for("beta"), 0);
+
+    // Once the console projected the first run's terminal, the settled id
+    // is accepted again, as a turn of its own.
+    let again = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            runtime
+                .drain_mob_agent_events()
+                .await
+                .expect("drain member events");
+            let reply = interact("beta").await;
+            if reply.get("error").is_none() {
+                return reply;
+            }
+            assert_eq!(
+                reply["error"]["data"]["code"],
+                json!("interaction_id_in_flight"),
+                "{reply}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the settled interaction id is accepted again");
+    let again_ticket = again["result"]["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the reuse is tracked: {again}"))
+        .to_string();
+    assert_ne!(again_ticket, first_ticket);
+    assert_eq!(
+        await_turn(&runtime, &ctx, &again_ticket).await["output"],
+        "reply to: beta"
+    );
+    runtime.shutdown().await;
+}
+
+/// #468: `mobkit/completion_cursor` reads the identity's completion cursor
+/// without touching the member session. `inspect_identity` reads the member
+/// (an execution snapshot on its session task, which on meerkat 0.8.45+ can
+/// hold a staged run); a completion poll on the cursor RPC never does, and
+/// it reports the same cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_cursor_rpc_never_inspects_the_member() {
+    let client = NamedReplyClient::default();
+    let live = live_runtime_with(
+        meerkat_mob::MobRuntimeMode::TurnDriven,
+        Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+        &client,
+    )
+    .await;
+    let session = meerkat_core::types::SessionId::new();
+    let bridge = TicketBridge::new(true, session.clone());
+    let identity_runtime = make_runtime(Some(bridge.clone()));
+    let watcher = register_bound(&identity_runtime, "watcher", &session).await;
+    let ctx = meerkat_mobkit::rpc::IdentityFirstContext {
+        runtime: identity_runtime.clone(),
+        roster_provider: live.roster.clone(),
+        topology_provider: None,
+        customizer: None,
+        agent_memory_provider: None,
+        mob_definition: None,
+        transcript_edit_service: None,
+        compaction_floors: None,
+    };
+    let cursor_of = |value: &Value| -> meerkat_mobkit::identity_first::CompletionCursor {
+        serde_json::from_value(value["completion_cursor"].clone()).expect("completion cursor")
+    };
+
+    let baseline = identity_runtime.completion_cursor(&watcher).await;
+    for _ in 0..20 {
+        let read = rpc(
+            &live.runtime,
+            &ctx,
+            "mobkit/completion_cursor",
+            json!({"identity": "watcher"}),
+        )
+        .await;
+        assert_eq!(read["identity"], "watcher");
+        assert_eq!(read["state"], "active");
+        assert_eq!(cursor_of(&read), baseline);
+    }
+    identity_runtime.record_turn_completed(&watcher).await;
+    let read = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/completion_cursor",
+        json!({"identity": "watcher"}),
+    )
+    .await;
+    assert_eq!(cursor_of(&read), baseline.advanced());
+    assert_eq!(
+        bridge.inspections.load(Ordering::SeqCst),
+        0,
+        "a cursor read must never inspect the member session"
+    );
+
+    // Control: inspect_identity reports the same cursor, by reading the member.
+    let inspected = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/inspect_identity",
+        json!({"identity": "watcher"}),
+    )
+    .await;
+    assert_eq!(cursor_of(&inspected), baseline.advanced());
+    assert_eq!(bridge.inspections.load(Ordering::SeqCst), 1);
+
+    // An identity nobody registered is a typed unknown identity, not a zero
+    // cursor.
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/completion_cursor",
+        "params": {"identity": "nobody"},
+    });
+    let reply = meerkat_mobkit::rpc::handle_unified_rpc_json(
+        &live.runtime,
+        &request.to_string(),
+        Duration::from_secs(30),
+        None,
+        Some(&ctx),
+    )
+    .await;
+    let reply: Value = serde_json::from_str(&reply).expect("json-rpc reply");
+    assert_eq!(reply["error"]["code"], json!(-32001), "{reply}");
+    live.runtime.shutdown().await;
+}
+
+/// A live test mob plus a separate identity runtime on a [`TicketBridge`],
+/// wired into an RPC context: the bridge stands in for the member session, so
+/// a test sees every member read.
+async fn ticket_bridge_rpc() -> (
+    LiveMob,
+    Arc<TicketBridge>,
+    Arc<IdentityRuntime>,
+    meerkat_mobkit::rpc::IdentityFirstContext,
+    meerkat_core::types::SessionId,
+) {
+    let client = NamedReplyClient::default();
+    let live = live_runtime_with(
+        meerkat_mob::MobRuntimeMode::TurnDriven,
+        Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+        &client,
+    )
+    .await;
+    let session = meerkat_core::types::SessionId::new();
+    let bridge = TicketBridge::new(true, session.clone());
+    let identity_runtime = make_runtime(Some(bridge.clone()));
+    let ctx = meerkat_mobkit::rpc::IdentityFirstContext {
+        runtime: identity_runtime.clone(),
+        roster_provider: live.roster.clone(),
+        topology_provider: None,
+        customizer: None,
+        agent_memory_provider: None,
+        mob_definition: None,
+        transcript_edit_service: None,
+        compaction_floors: None,
+    };
+    (live, bridge, identity_runtime, ctx, session)
+}
+
+/// One raw JSON-RPC exchange (errors included).
+async fn rpc_reply(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    ctx: &meerkat_mobkit::rpc::IdentityFirstContext,
+    method: &str,
+    params: Value,
+) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let reply = meerkat_mobkit::rpc::handle_unified_rpc_json(
+        runtime,
+        &request.to_string(),
+        Duration::from_secs(30),
+        None,
+        Some(ctx),
+    )
+    .await;
+    serde_json::from_str(&reply).expect("json-rpc reply")
+}
+
+/// #468: `mobkit/wait_for_completion` is a server-side wait that resolves on
+/// the completion itself (the runtime's typed completion signal), with no
+/// client or server poll loop, and never reads the member session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_for_completion_rpc_resolves_on_the_completion_signal() {
+    let (live, bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let watcher = register_bound(&identity_runtime, "watcher", &session).await;
+    let baseline = identity_runtime.completion_cursor(&watcher).await;
+
+    let wait = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({
+            "identity": "watcher",
+            "after": {"epoch": baseline.epoch.get(), "turns": baseline.turns},
+            "timeout_ms": 600_000,
+        }),
+    );
+    let complete = async {
+        // Let the wait park on the signal first.
+        tokio::task::yield_now().await;
+        identity_runtime.record_turn_completed(&watcher).await;
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(wait, complete)
+    })
+    .await
+    .expect("the wait resolves on the completion, far inside its 600 s deadline");
+    assert_eq!(result["outcome"], "completed", "{result}");
+    assert_eq!(result["identity"], "watcher");
+    let cursor: meerkat_mobkit::identity_first::CompletionCursor =
+        serde_json::from_value(result["completion_cursor"].clone()).expect("cursor");
+    assert_eq!(cursor, baseline.advanced());
+    assert_eq!(bridge.inspections.load(Ordering::SeqCst), 0);
+
+    // Already past the baseline: resolves at once.
+    let result = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({
+            "identity": "watcher",
+            "after": {"epoch": baseline.epoch.get(), "turns": baseline.turns},
+        }),
+    )
+    .await;
+    assert_eq!(result["outcome"], "completed", "{result}");
+    live.runtime.shutdown().await;
+}
+
+/// The caller's deadline is only a deadline: reaching it is the typed
+/// `timed_out` outcome carrying the cursor, and an incarnation change wakes
+/// the wait as `incarnation_changed`, never as progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_for_completion_rpc_reports_deadline_and_incarnation_change() {
+    let (live, _bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let watcher = register_bound(&identity_runtime, "watcher", &session).await;
+    let baseline = identity_runtime.completion_cursor(&watcher).await;
+    let after = json!({"epoch": baseline.epoch.get(), "turns": baseline.turns});
+
+    let result = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({"identity": "watcher", "after": after, "timeout_ms": 50}),
+    )
+    .await;
+    assert_eq!(result["outcome"], "timed_out", "{result}");
+
+    let wait = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({"identity": "watcher", "after": after, "timeout_ms": 600_000}),
+    );
+    let rotate = async {
+        tokio::task::yield_now().await;
+        // A new lease grant is a new runtime incarnation.
+        identity_runtime
+            .register(
+                make_spec("watcher"),
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: watcher.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:watcher").unwrap(),
+                    session_id: session.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity: watcher.clone(),
+                    fencing_token: FencingToken::new(2),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(wait, rotate)
+    })
+    .await
+    .expect("the incarnation change wakes the wait");
+    assert_eq!(result["outcome"], "incarnation_changed", "{result}");
+    assert_eq!(result["completion_cursor"]["epoch"], 2);
+
+    // A baseline names an incarnation of a registered identity.
+    let reply = rpc_reply(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({"identity": "nobody", "after": after, "timeout_ms": 50}),
+    )
+    .await;
+    assert_eq!(reply["error"]["code"], json!(-32001), "{reply}");
+    live.runtime.shutdown().await;
+}
+
+/// A readiness wait (no `after`) may start before its identity is
+/// registered: it resolves on the identity's first recorded completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_for_completion_rpc_readiness_waits_for_the_first_completion() {
+    let (live, _bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let wait = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_completion",
+        json!({"identity": "latecomer", "timeout_ms": 600_000}),
+    );
+    let materialize = async {
+        tokio::task::yield_now().await;
+        let latecomer = register_bound(&identity_runtime, "latecomer", &session).await;
+        tokio::task::yield_now().await;
+        identity_runtime.record_turn_completed(&latecomer).await;
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(wait, materialize)
+    })
+    .await
+    .expect("readiness resolves on the first completion");
+    assert_eq!(result["outcome"], "completed", "{result}");
+    assert_eq!(result["completion_cursor"]["turns"], 1);
+    live.runtime.shutdown().await;
+}
+
+/// `mobkit/wait_for_turn` answers like `mobkit/turn_result`, once the ticket
+/// settles: the server waits on the ticket registry's change signal, so the
+/// recommended barrier (`track_turn` plus the ticket) involves no polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_for_turn_rpc_resolves_when_the_ticket_settles() {
+    let (live, bridge, identity_runtime, ctx, session) = ticket_bridge_rpc().await;
+    let keeper = register_bound(&identity_runtime, "keeper", &session).await;
+    let sent = identity_runtime
+        .send_with_turn_ticket(&keeper, None, &content("alpha"), HandlingMode::Queue, None)
+        .await
+        .expect("send");
+    let ticket = tracked(&sent.turn).to_string();
+
+    let pending = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_turn",
+        json!({"identity": "keeper", "ticket": ticket, "timeout_ms": 50}),
+    )
+    .await;
+    assert_eq!(
+        pending["state"], "pending",
+        "the deadline returns it pending"
+    );
+
+    let wait = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_turn",
+        json!({"identity": "keeper", "ticket": ticket, "timeout_ms": 600_000}),
+    );
+    let finish = async {
+        tokio::task::yield_now().await;
+        bridge.finish(0, Ok("alpha reply"));
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(wait, finish)
+    })
+    .await
+    .expect("the settlement wakes the wait");
+    assert_eq!(result["state"], "completed", "{result}");
+    assert_eq!(result["output"], "alpha reply", "{result}");
+    assert_eq!(result["ticket"], json!(ticket));
+
+    let unknown = rpc(
+        &live.runtime,
+        &ctx,
+        "mobkit/wait_for_turn",
+        json!({
+            "identity": "keeper",
+            "ticket": uuid::Uuid::new_v4().to_string(),
+            "timeout_ms": 600_000,
+        }),
+    )
+    .await;
+    assert_eq!(
+        unknown["state"], "unknown",
+        "an unknown ticket answers at once"
+    );
+    live.runtime.shutdown().await;
 }

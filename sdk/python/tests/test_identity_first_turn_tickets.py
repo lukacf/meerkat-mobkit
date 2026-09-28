@@ -44,8 +44,10 @@ class TicketTransport:
     ``sends`` is consumed one entry per ``mobkit/send`` (or dispatch) call;
     ``turn_results`` maps a ticket to the states ``mobkit/turn_result`` walks
     through, one per poll, holding the last. ``inspections`` does the same for
-    ``mobkit/inspect_identity``: it models the identity-wide cursor moving for
-    someone else's turn.
+    the identity-wide cursor polls (``mobkit/completion_cursor``): it models
+    the cursor moving for someone else's turn. ``mobkit/inspect_identity``
+    answers the entry the latest cursor poll saw (the output a waiter reads
+    once, at completion), or walks the script itself before any cursor poll.
     """
 
     def __init__(self, *, sends=None, turn_results=None, inspections=None):
@@ -56,6 +58,12 @@ class TicketTransport:
         self._turn_polls: dict[str, int] = {}
         self._inspections = list(inspections or [])
         self._inspect_index = 0
+        self._cursor_reads = 0
+
+    def _walk_inspections(self) -> dict:
+        index = min(self._inspect_index, len(self._inspections) - 1)
+        self._inspect_index += 1
+        return self._inspections[index]
 
     def send_sync(self, request):
         self.calls.append(request)
@@ -69,10 +77,38 @@ class TicketTransport:
             index = min(self._turn_polls.get(ticket, 0), len(script) - 1)
             self._turn_polls[ticket] = self._turn_polls.get(ticket, 0) + 1
             result = {"identity": params["identity"], "ticket": ticket, **script[index]}
+        elif method == "mobkit/wait_for_turn":
+            # The gateway's server-side wait: answer once the ticket leaves
+            # pending, or at the deadline (the script ends still pending).
+            ticket = params["ticket"]
+            script = self._turn_results.get(ticket, [{"state": "unknown"}])
+            index = min(self._turn_polls.get(ticket, 0), len(script) - 1)
+            while index < len(script) - 1 and script[index].get("state") == "pending":
+                index += 1
+            self._turn_polls[ticket] = index + 1
+            result = {"identity": params["identity"], "ticket": ticket, **script[index]}
+        elif method == "mobkit/wait_for_completion":
+            from .test_identity_first_completion_cursor import _serve_completion_wait
+            result = _serve_completion_wait(
+                self._walk_inspections,
+                lambda: self._inspect_index >= len(self._inspections),
+                params,
+            )
+            self._cursor_reads += 1
+        elif method == "mobkit/completion_cursor":
+            self._cursor_reads += 1
+            entry = self._walk_inspections()
+            result = {
+                "identity": entry["identity"],
+                "state": "active",
+                "completion_cursor": entry.get("completion_cursor"),
+            }
         elif method == "mobkit/inspect_identity":
-            index = min(self._inspect_index, len(self._inspections) - 1)
-            result = self._inspections[index]
-            self._inspect_index += 1
+            if self._cursor_reads:
+                index = min(self._inspect_index - 1, len(self._inspections) - 1)
+                result = self._inspections[index]
+            else:
+                result = self._walk_inspections()
         else:
             result = {}
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
@@ -95,6 +131,13 @@ class TicketTransport:
 
     def params_of(self, method: str) -> list[dict]:
         return [call.get("params") or {} for call in self.calls if call["method"] == method]
+
+    def waited_turns(self) -> list[dict]:
+        """The ``mobkit/wait_for_turn`` calls, minus their deadline."""
+        return [
+            {"identity": params["identity"], "ticket": params["ticket"]}
+            for params in self.params_of("mobkit/wait_for_turn")
+        ]
 
 
 def _make_runtime(transport) -> MobKitRuntime:
@@ -164,7 +207,9 @@ class TestSendAndWaitWaitsForItsOwnTurn:
         assert transport.params_of("mobkit/inspect_identity") == [], (
             "a ticketed wait must not read the identity-wide cursor at all"
         )
-        assert len(transport.params_of("mobkit/turn_result")) == 3
+        assert transport.params_of("mobkit/turn_result") == [], "no client polling"
+        assert transport.waited_turns() == [{"identity": "keeper", "ticket": "ticket-a"}]
+        assert transport.params_of("mobkit/wait_for_completion") == []
 
     @pytest.mark.asyncio
     async def test_concurrent_sends_each_get_their_own_output(self):
@@ -281,7 +326,7 @@ class TestSendAndWaitWaitsForItsOwnTurn:
             "dispatch_input": {"content": "School notice", "origin": "connector", **pair},
             "track_turn": True,
         }]
-        assert transport.params_of("mobkit/turn_result") == [{"identity": "keeper", "ticket": ticket}]
+        assert transport.waited_turns() == [{"identity": "keeper", "ticket": ticket}]
         assert transport.params_of("mobkit/inspect_identity") == []
 
 

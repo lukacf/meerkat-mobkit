@@ -155,6 +155,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Server-side, event-driven completion waits (#468). `mobkit/wait_for_completion`
+  resolves when an identity's completion cursor moves past `after` (or, with no
+  `after`, counts its first completed turn), returning the typed `outcome`
+  (`completed`, `incarnation_changed`, `timed_out`, `untracked`) and the
+  cursor. `mobkit/wait_for_turn` is `mobkit/turn_result` taken once the ticket
+  settles. The gateway parks the request on the runtime's typed change signals
+  (the identity table and completion cursor, and the ticket registry), so
+  neither side polls; `timeout_ms` is only the caller's deadline.
+  `mobkit/completion_cursor` is a one-shot cursor read. None of them touch the
+  member session. `IdentityRuntime::await_completion` returns the typed
+  `CompletionWait`, and `IdentityRuntime::wait_for_completion` /
+  `wait_for_turn` wait on those signals instead of sleeping between reads.
+- The SDKs' `wait_for_completion` / `waitForCompletion`, `wait_for_turn` /
+  `waitForTurn` (and so `send_and_wait` / `sendAndWait`), `wait_for_output(after=...)`
+  and `wait_until_ready` / `waitUntilReady` are now one server-side wait each
+  and read the member's output once, at completion, instead of polling
+  `mobkit/inspect_identity` or `mobkit/turn_result`. They fall back to the
+  previous polling only against a gateway that predates the server-side waits.
+  New `completion_cursor()` / `completionCursor()` reads, and TypeScript gains
+  `waitUntilReady`. The docs name `track_turn` plus `wait_for_turn` as the
+  recommended completion barrier.
+
 - Console voice shows the agent's speech while it is still speaking. The
   console voice host installs a provisional caption sink on its public Live
   authority (`with_public_provisional_caption_sink`, meerkat 0.8.46). Each
@@ -310,7 +332,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   twenty times that many stalls overall. Each stall logs a WARN with member,
   stage, attempt, and elapsed time, and completion after stalls logs an INFO.
   Any other activation error stays fatal.
-
+- The agent-memory member-event observer no longer retries
+  `subscribe_agent_events` once a second per member. It subscribes on the mob's
+  machine-state change that makes a member live, skips passes while the mob is
+  not Running, and backs a failing member off exponentially per identity (1 s
+  doubling to 30 s), the backoff deadline being only the fallback wake. During
+  a cold boot this was a flood of actor commands (meerkat #1250).
+- `mobkit/send_message` to a raw roster member with an interaction id retries
+  once on `StaleFenceToken` against the re-read binding (a respawn between the
+  binding read and the submit no longer fails the send), and no longer makes a
+  redundant `member()` round trip: SubmitWork admission already refuses a
+  restore-failed member with the typed `MemberRestoreFailed` (#479).
+- The console store's unobserved-start phase clear also clears a stale
+  callback pause (#479).
+- `mobkit/interact` refuses a caller-supplied `interaction_id` that is still in
+  flight on the identity with `-32602` and `error.data.code:
+  "interaction_id_in_flight"`, before delivering anything (#479). A settled id
+  may be sent again.
+- The gateway_composition console-drain tests use a unique mob id per
+  composition, so in-process `cargo test` no longer fails them with
+  `ParticipantNameOccupied` (#480).
 - Console response phase no longer stays set after a run whose start was not
   observed (#469). A typed `run_completed` / `run_failed` that names a run but
   no interaction, with no tracked active run and no active interaction for the

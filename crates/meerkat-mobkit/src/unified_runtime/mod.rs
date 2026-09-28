@@ -1623,6 +1623,28 @@ impl UnifiedRuntime {
             .await
     }
 
+    /// Reserve a caller-supplied interaction id for `mobkit/interact`,
+    /// refusing one still in flight for the identity (see
+    /// [`console_events::InteractionIdInFlight`]).
+    pub(crate) async fn reserve_caller_identity_interaction(
+        &self,
+        identity: &str,
+        runtime_member_id: Option<&str>,
+        interaction_id: &str,
+        origin: &str,
+        content: serde_json::Value,
+    ) -> Result<(), console_events::InteractionIdInFlight> {
+        self.console_events
+            .reserve_caller_interaction_value(
+                identity,
+                runtime_member_id,
+                interaction_id,
+                origin,
+                content,
+            )
+            .await
+    }
+
     pub(crate) async fn project_console_event_from_unified(
         &self,
         event: &EventEnvelope<UnifiedEvent>,

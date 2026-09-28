@@ -30,7 +30,7 @@ use super::contracts::{
 };
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
-    AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress,
+    AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress, CompletionWait,
     ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityHealth,
     ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DeliveryErrorClass,
     DeliveryErrorRecord, DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec,
@@ -47,9 +47,6 @@ use crate::memory::records::{
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
-/// Poll cadence for [`IdentityRuntime::wait_for_completion`]. The cursor is
-/// advanced by an event, so this only bounds observation latency.
-const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN: usize = 256;
 const BACKGROUND_WARM_CANCELLED: &str =
@@ -159,9 +156,6 @@ fn turn_untrackable(
         None
     }
 }
-
-/// How often [`IdentityRuntime::wait_for_turn`] looks at a pending turn.
-const TURN_WAIT_POLL: Duration = Duration::from_millis(25);
 
 /// The tracked admission was refused for the member's LIVE runtime mode
 /// (by the bridge's pre-submit check of the live roster entry, or by meerkat
@@ -1910,8 +1904,74 @@ pub(crate) trait MemberSessionRotationObserver: Send + Sync {
     );
 }
 
+/// The identity table, with a change signal: releasing a write lock wakes
+/// the completion waiters ([`IdentityRuntime::await_completion`]), which
+/// re-derive their cursor from the table (a lease incarnation change is an
+/// entry write). The signal carries no state and is never read as an event;
+/// a wake only means "re-read now".
+struct IdentityEntries {
+    table: RwLock<BTreeMap<AgentIdentity, IdentityEntry>>,
+    changed: watch::Sender<()>,
+}
+
+impl IdentityEntries {
+    fn new() -> Self {
+        Self {
+            table: RwLock::new(BTreeMap::new()),
+            changed: watch::channel(()).0,
+        }
+    }
+
+    async fn read(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, BTreeMap<AgentIdentity, IdentityEntry>> {
+        self.table.read().await
+    }
+
+    async fn write(&self) -> IdentityEntriesWriteGuard<'_> {
+        IdentityEntriesWriteGuard {
+            guard: self.table.write().await,
+            changed: &self.changed,
+        }
+    }
+
+    /// Wake every waiter subscribed through [`Self::subscribe`].
+    fn notify(&self) {
+        self.changed.send_replace(());
+    }
+
+    fn subscribe(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+}
+
+struct IdentityEntriesWriteGuard<'a> {
+    guard: tokio::sync::RwLockWriteGuard<'a, BTreeMap<AgentIdentity, IdentityEntry>>,
+    changed: &'a watch::Sender<()>,
+}
+
+impl std::ops::Deref for IdentityEntriesWriteGuard<'_> {
+    type Target = BTreeMap<AgentIdentity, IdentityEntry>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for IdentityEntriesWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for IdentityEntriesWriteGuard<'_> {
+    fn drop(&mut self) {
+        self.changed.send_replace(());
+    }
+}
+
 pub struct IdentityRuntime {
-    entries: RwLock<BTreeMap<AgentIdentity, IdentityEntry>>,
+    entries: IdentityEntries,
     event_channels: RwLock<BTreeMap<AgentIdentity, broadcast::Sender<IdentityEvent>>>,
     continuity_store: Arc<dyn ContinuityStore>,
     lease_provider: Arc<dyn LeaseProvider>,
@@ -1978,6 +2038,10 @@ pub struct IdentityRuntime {
     /// ([`Self::send_with_turn_ticket`], [`Self::dispatch_with_turn_ticket`]).
     /// Shared with the waiter tasks that settle them.
     turn_outcomes: Arc<StdMutex<TurnOutcomes>>,
+    /// Fired whenever a ticketed turn is admitted (which may evict another)
+    /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
+    /// polling the registry. Carries no state.
+    turn_outcome_changes: Arc<watch::Sender<()>>,
     /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
     inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
 }
@@ -2342,7 +2406,7 @@ impl IdentityRuntime {
         ));
         let (foreground_cancel, _) = watch::channel(false);
         Self {
-            entries: RwLock::new(BTreeMap::new()),
+            entries: IdentityEntries::new(),
             event_channels: RwLock::new(BTreeMap::new()),
             continuity_store: config.continuity_store,
             lease_provider: config.lease_provider,
@@ -2384,6 +2448,7 @@ impl IdentityRuntime {
             reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
             completion_cursors: StdMutex::new(BTreeMap::new()),
             turn_outcomes: Arc::default(),
+            turn_outcome_changes: Arc::new(watch::channel(()).0),
             inspections: StdMutex::new(BTreeMap::new()),
         }
     }
@@ -8378,22 +8443,30 @@ impl IdentityRuntime {
     /// outcome ([`TurnOutcome::Completed`] carries the turn's own output).
     /// Returns [`TurnOutcome::Unknown`] at once for an unknown ticket, and
     /// [`TurnOutcome::Pending`] if `timeout` elapses first.
+    ///
+    /// Event-driven: the wait sleeps until the ticket registry changes (an
+    /// admission or a settlement) and re-reads it then. `timeout` is only the
+    /// caller's overall deadline.
     pub async fn wait_for_turn(
         &self,
         identity: &AgentIdentity,
         ticket: TurnTicket,
         timeout: Duration,
     ) -> TurnOutcome {
-        let deadline = Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
+        // Subscribe before the first read so a settlement landing between the
+        // read and the wait still wakes it.
+        let mut changes = self.turn_outcome_changes.subscribe();
         loop {
             let outcome = self.turn_outcome(identity, ticket);
-            if outcome != TurnOutcome::Pending || Instant::now() >= deadline {
+            if outcome != TurnOutcome::Pending {
                 return outcome;
             }
-            tokio::time::sleep(
-                TURN_WAIT_POLL.min(deadline.saturating_duration_since(Instant::now())),
-            )
-            .await;
+            match tokio::time::timeout_at(deadline, changes.changed()).await {
+                Ok(Ok(())) => {}
+                // Deadline, or the runtime is gone: report where it stands.
+                Ok(Err(_)) | Err(_) => return self.turn_outcome(identity, ticket),
+            }
         }
     }
 
@@ -8418,7 +8491,10 @@ impl IdentityRuntime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .admit(identity, delivery_key);
+        // An admission can evict the oldest pending turn at the cap.
+        self.turn_outcome_changes.send_replace(());
         let outcomes = Arc::clone(&self.turn_outcomes);
+        let changes = Arc::clone(&self.turn_outcome_changes);
         let owner = identity.clone();
         tokio::spawn(async move {
             let outcome = receipt.wait_turn_output().await;
@@ -8426,6 +8502,7 @@ impl IdentityRuntime {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .settle(&owner, ticket, outcome);
+            changes.send_replace(());
         });
         ticket
     }
@@ -12825,7 +12902,10 @@ impl IdentityRuntime {
             .entry(identity.clone())
             .or_insert_with(|| CompletionCursor::start(epoch));
         *cursor = cursor.rebased(epoch).advanced();
-        *cursor
+        let cursor = *cursor;
+        drop(cursors);
+        self.entries.notify();
+        cursor
     }
 
     /// Wait until a turn completes past `baseline`, or the timeout expires.
@@ -12838,38 +12918,73 @@ impl IdentityRuntime {
     ///
     /// A genuinely stalled turn still times out rather than hanging forever,
     /// and an incarnation change is reported as its own error rather than
-    /// being read as either completion or continued waiting.
+    /// being read as either completion or continued waiting. Event-driven, as
+    /// [`Self::await_completion`].
     pub async fn wait_for_completion(
         &self,
         identity: &AgentIdentity,
         baseline: CompletionCursor,
         timeout: Duration,
     ) -> Result<CompletionCursor, IdentityRuntimeError> {
-        let deadline = Instant::now() + timeout;
+        match self
+            .await_completion(identity, Some(baseline), timeout)
+            .await
+        {
+            CompletionWait::Completed(cursor) => Ok(cursor),
+            CompletionWait::IncarnationChanged(observed) => {
+                Err(IdentityRuntimeError::CompletionIncarnationChanged {
+                    identity: identity.clone(),
+                    baseline,
+                    observed,
+                })
+            }
+            CompletionWait::TimedOut(_) => Err(IdentityRuntimeError::Internal(format!(
+                "timed out after {}s waiting for a turn past {baseline} on {identity}",
+                timeout.as_secs_f64()
+            ))),
+        }
+    }
+
+    /// Wait until the identity's completion cursor moves past `after`, or,
+    /// with no `after`, until it counts at least one completed turn (a
+    /// startup readiness barrier).
+    ///
+    /// Event-driven: the wait sleeps until a completion is recorded or the
+    /// identity table changes (a lease incarnation change is a table write),
+    /// and re-derives the cursor then. `timeout` is only the caller's overall
+    /// deadline; reaching it is [`CompletionWait::TimedOut`], a typed
+    /// outcome rather than an error.
+    ///
+    /// An identity that is not registered yet reads its retained cursor, so a
+    /// readiness wait started before the identity materializes simply waits
+    /// for its first completion.
+    pub async fn await_completion(
+        &self,
+        identity: &AgentIdentity,
+        after: Option<CompletionCursor>,
+        timeout: Duration,
+    ) -> CompletionWait {
+        let deadline = tokio::time::Instant::now() + timeout;
+        // Subscribe before the first read so a completion landing between the
+        // read and the wait still wakes it.
+        let mut changes = self.entries.subscribe();
         loop {
             let cursor = self.completion_cursor(identity).await;
-            match cursor.progress_since(baseline) {
-                CompletionProgress::Completed => return Ok(cursor),
-                CompletionProgress::IncarnationChanged => {
-                    return Err(IdentityRuntimeError::CompletionIncarnationChanged {
-                        identity: identity.clone(),
-                        baseline,
-                        observed: cursor,
-                    });
-                }
-                CompletionProgress::Pending => {}
+            match after {
+                Some(baseline) => match cursor.progress_since(baseline) {
+                    CompletionProgress::Completed => return CompletionWait::Completed(cursor),
+                    CompletionProgress::IncarnationChanged => {
+                        return CompletionWait::IncarnationChanged(cursor);
+                    }
+                    CompletionProgress::Pending => {}
+                },
+                None if cursor.turns > 0 => return CompletionWait::Completed(cursor),
+                None => {}
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(IdentityRuntimeError::Internal(format!(
-                    "timed out after {}s waiting for a turn past {baseline} on {identity}",
-                    timeout.as_secs_f64()
-                )));
+            match tokio::time::timeout_at(deadline, changes.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => return CompletionWait::TimedOut(cursor),
             }
-            tokio::time::sleep(
-                COMPLETION_POLL_INTERVAL.min(deadline.saturating_duration_since(now)),
-            )
-            .await;
         }
     }
 

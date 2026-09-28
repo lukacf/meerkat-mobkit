@@ -332,6 +332,22 @@ pub enum CompletionProgress {
     IncarnationChanged,
 }
 
+/// How a completion wait ([`await_completion`]) ended. Each variant carries
+/// the cursor it observed last.
+///
+/// [`await_completion`]: super::runtime::IdentityRuntime::await_completion
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionWait {
+    /// The cursor moved past the baseline (or, with no baseline, counts at
+    /// least one completed turn).
+    Completed(CompletionCursor),
+    /// The identity's runtime incarnation changed; see
+    /// [`CompletionProgress::IncarnationChanged`].
+    IncarnationChanged(CompletionCursor),
+    /// The caller's deadline passed first.
+    TimedOut(CompletionCursor),
+}
+
 /// Delivery receipt for [`dispatch_admission_tracked`], carrying what a caller
 /// needs to wait for the specific turn it just submitted.
 ///

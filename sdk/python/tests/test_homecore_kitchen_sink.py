@@ -1119,7 +1119,7 @@ async def test_kitchen_sdk_run_only_lineage_requires_own_committed_output(monkey
     clock = [0.0]
 
     async def read_page(runtime, params, remaining):
-        assert transport.params_of("mobkit/turn_result") == [{"identity": "identity:luka", "ticket": ticket}]
+        assert transport.waited_turns() == [{"identity": "identity:luka", "ticket": ticket}]
         foreign = _interaction_fixture("identity:luka", "luka-session", None, "peer-run")
         foreign[0]["payload"] = {"input": {"kind": "peer_message", "content": _LUKA_CLOSURE_NOTICE}}
         if intermediate:
@@ -1318,7 +1318,10 @@ async def test_kitchen_school_sdk_peer_output_requires_cursor_and_exact_history(
 
     async def read_page(runtime, params, remaining):
         assert remaining == 55
-        assert len(transport.params_of("mobkit/inspect_identity")) == 3
+        # The baseline read, then the member read once at completion; the
+        # wait itself is one server-side wait.
+        assert len(transport.params_of("mobkit/inspect_identity")) == 2
+        assert len(transport.params_of("mobkit/wait_for_completion")) == 1
         frames = _interaction_fixture("domain:school", "school-session", "school-envelope")
         frames.append({"id": "school-notice", **_school_history_fixture()})
         return {"frames": frames, "exhausted": True}
@@ -1375,7 +1378,7 @@ async def test_kitchen_sdk_ticket_ignores_identical_foreign_output(monkeypatch, 
     monkeypatch.setattr(handle, "send_and_wait", partial(handle.send_and_wait, poll_interval=0.001))
 
     async def read_page(runtime, params, remaining):
-        assert len(transport.params_of("mobkit/turn_result")) == 2
+        assert len(transport.waited_turns()) == 1
         frames = _interaction_fixture("identity:luka", "luka-session", "previous-input", "previous-run")
         frames += _interaction_fixture("identity:luka", "luka-session", requested_interaction, "requested-run")
         for interaction, content in [
@@ -1399,10 +1402,8 @@ async def test_kitchen_sdk_ticket_ignores_identical_foreign_output(monkeypatch, 
         assert (await operation)["run_id"] == "requested-run"
     assert transport.params_of("mobkit/send")[0]["track_turn"] is True
     assert transport.params_of("mobkit/inspect_identity") == []
-    assert transport.params_of("mobkit/turn_result") == [
-        {"identity": "identity:luka", "ticket": ticket},
-        {"identity": "identity:luka", "ticket": ticket},
-    ]
+    assert transport.params_of("mobkit/turn_result") == []
+    assert transport.waited_turns() == [{"identity": "identity:luka", "ticket": ticket}]
 
 
 @pytest.mark.asyncio

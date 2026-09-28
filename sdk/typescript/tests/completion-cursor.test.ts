@@ -19,16 +19,51 @@ type ScriptedInspection = {
 };
 
 /**
- * Runtime whose `_rpc` answers from a script. `inspect_identity` walks one
- * entry per poll and holds the last, so "still running, then done" is
- * expressible without racing a clock.
+ * Model the gateway's server-side `mobkit/wait_for_completion`: walk the
+ * scripted cursor states (each a later moment) until one satisfies the wait.
+ * A script that ends unsatisfied is the typed `timed_out`.
+ */
+function serveCompletionWait(
+  walk: () => ScriptedInspection,
+  atEnd: () => boolean,
+  identity: unknown,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const after = params.after as { epoch: number; turns: number } | undefined;
+  for (;;) {
+    const entry = walk();
+    const cursor = entry.completion_cursor;
+    const base = { identity, completion_cursor: cursor };
+    if (cursor === null) return { ...base, outcome: "untracked" };
+    if (after !== undefined && cursor.epoch !== after.epoch) {
+      return { ...base, outcome: "incarnation_changed" };
+    }
+    if (cursor.turns > (after?.turns ?? 0)) {
+      return { ...base, outcome: "completed" };
+    }
+    if (atEnd()) return { ...base, outcome: "timed_out" };
+  }
+}
+
+/**
+ * Runtime whose `_rpc` answers from a script of inspection payloads, each a
+ * later moment, holding the last once exhausted, so "still running, then
+ * done" is expressible without racing a clock. `wait_for_completion` models
+ * the gateway's server-side wait ({@link serveCompletionWait}). After a wait
+ * that resolved, `inspect_identity` answers the entry the wait resolved on
+ * (the output a waiter reads once, at completion); otherwise it walks the
+ * script itself, as does `completion_cursor`. `legacyGateway` models a
+ * gateway predating the server-side wait and the cursor read ("method not
+ * found").
  */
 async function makeRuntime(script: {
   send?: Record<string, unknown>;
   dispatch?: Record<string, unknown>;
   inspections?: ScriptedInspection[];
+  legacyGateway?: boolean;
 }) {
   const { MobKitRuntime } = await import("../src/runtime.js");
+  const { RpcError } = await import("../src/errors.js");
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const rt = new MobKitRuntime({
     mobConfigPath: null,
@@ -57,7 +92,13 @@ async function makeRuntime(script: {
     topologyProvider: null,
   });
   const inspections = script.inspections ?? [];
-  let inspectIndex = 0;
+  let index = 0;
+  let pinned = false;
+  const walk = () => {
+    const entry = inspections[Math.min(index, inspections.length - 1)];
+    index += 1;
+    return entry;
+  };
   (rt as unknown as Record<string, unknown>)._rpc = async (
     method: string,
     params?: Record<string, unknown>,
@@ -65,17 +106,48 @@ async function makeRuntime(script: {
     calls.push({ method, params: params ?? {} });
     if (method === "mobkit/send") return script.send ?? {};
     if (method === "mobkit/dispatch") return script.dispatch ?? {};
+    if (
+      script.legacyGateway &&
+      (method === "mobkit/completion_cursor" ||
+        method === "mobkit/wait_for_completion")
+    ) {
+      throw new RpcError(-32601, "method not found", "1", method);
+    }
+    if (method === "mobkit/wait_for_completion") {
+      const result = serveCompletionWait(
+        walk,
+        () => index >= inspections.length,
+        params?.identity ?? "x:1",
+        params ?? {},
+      );
+      pinned =
+        result.outcome === "completed" ||
+        result.outcome === "incarnation_changed";
+      return result;
+    }
+    if (method === "mobkit/completion_cursor") {
+      const entry = walk();
+      return {
+        identity: params?.identity ?? "x:1",
+        state: "active",
+        completion_cursor: entry.completion_cursor,
+      };
+    }
     if (method === "mobkit/inspect_identity") {
-      const entry = inspections[Math.min(inspectIndex, inspections.length - 1)];
-      inspectIndex += 1;
+      const entry = pinned
+        ? inspections[Math.min(index - 1, inspections.length - 1)]
+        : walk();
       return { identity: params?.identity ?? "x:1", is_final: false, ...entry };
     }
     return { accepted: true };
   };
   (rt as unknown as Record<string, unknown>)._running = true;
-  const inspectCalls = () =>
-    calls.filter((c) => c.method === "mobkit/inspect_identity").length;
-  return { rt, calls, inspectCalls };
+  const count = (method: string) =>
+    calls.filter((c) => c.method === method).length;
+  const inspectCalls = () => count("mobkit/inspect_identity");
+  const cursorCalls = () => count("mobkit/completion_cursor");
+  const waitCalls = () => count("mobkit/wait_for_completion");
+  return { rt, calls, inspectCalls, cursorCalls, waitCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +156,7 @@ async function makeRuntime(script: {
 
 describe("identical consecutive output", () => {
   it("detects the second turn when both answer exactly ACK", async () => {
-    const { rt, inspectCalls } = await makeRuntime({
+    const { rt, inspectCalls, cursorCalls, waitCalls } = await makeRuntime({
       send: { fencing_token: 7, completion_baseline: { epoch: 7, turns: 1 } },
       inspections: [
         // Turn 2 in flight — the PREVIOUS turn's ACK is still visible.
@@ -100,15 +172,13 @@ describe("identical consecutive output", () => {
     });
 
     assert.equal(output, "ACK");
-    assert.equal(
-      inspectCalls(),
-      2,
-      "the waiter must poll past the first (unchanged) inspection",
-    );
+    assert.equal(waitCalls(), 1, "one server-side wait, no client polling");
+    assert.equal(cursorCalls(), 0);
+    assert.equal(inspectCalls(), 1, "output is read once, at completion");
   });
 
   it("dispatchAndWait threads its own baseline", async () => {
-    const { rt, inspectCalls } = await makeRuntime({
+    const { rt, inspectCalls, waitCalls } = await makeRuntime({
       dispatch: {
         fencing_token: 4,
         durable: true,
@@ -127,7 +197,8 @@ describe("identical consecutive output", () => {
     );
 
     assert.equal(output, "ACK");
-    assert.equal(inspectCalls(), 2);
+    assert.equal(waitCalls(), 1);
+    assert.equal(inspectCalls(), 1);
   });
 });
 
@@ -206,6 +277,129 @@ describe("waitForCompletion", () => {
       calls.every((c) => c.params.identity === "triage:main"),
       "the waiter must only ever poll its own identity",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Server-side, event-driven waits (#468)
+// ---------------------------------------------------------------------------
+
+describe("server-side completion waits", () => {
+  it("waitForCompletion is one server wait, then one member read", async () => {
+    const { rt, calls } = await makeRuntime({
+      inspections: [
+        { output_preview: "old", completion_cursor: { epoch: 3, turns: 1 } },
+        { output_preview: "old", completion_cursor: { epoch: 3, turns: 1 } },
+        { output_preview: "new", completion_cursor: { epoch: 3, turns: 2 } },
+      ],
+    });
+
+    const output = await rt.waitForCompletion(
+      "triage:main",
+      { epoch: 3, turns: 1 },
+      { timeoutMs: 7000 },
+    );
+
+    assert.equal(output, "new");
+    assert.deepEqual(
+      calls.map((c) => c.method),
+      ["mobkit/wait_for_completion", "mobkit/inspect_identity"],
+    );
+    assert.deepEqual(calls[0]?.params, {
+      identity: "triage:main",
+      after: { epoch: 3, turns: 1 },
+      timeout_ms: 7000,
+    });
+  });
+
+  it("a server timeout rejects with the timeout error", async () => {
+    const { rt, inspectCalls } = await makeRuntime({
+      inspections: [
+        { output_preview: "ACK", completion_cursor: { epoch: 3, turns: 1 } },
+      ],
+    });
+
+    await assert.rejects(
+      rt.waitForCompletion("triage:main", { epoch: 3, turns: 1 }),
+      /did not complete a turn/,
+    );
+    assert.equal(inspectCalls(), 0);
+  });
+
+  it("waitUntilReady is one server wait per identity", async () => {
+    const { rt, calls, inspectCalls, waitCalls } = await makeRuntime({
+      inspections: [
+        { output_preview: null, completion_cursor: { epoch: 3, turns: 0 } },
+        { output_preview: null, completion_cursor: { epoch: 3, turns: 1 } },
+      ],
+    });
+
+    await rt.waitUntilReady(["triage:main"], { timeoutMs: 5000 });
+
+    assert.equal(waitCalls(), 1);
+    assert.equal("after" in (calls[0]?.params ?? {}), false);
+    assert.equal(inspectCalls(), 0);
+  });
+
+  it("waitUntilReady names the identities that did not become ready", async () => {
+    const { rt } = await makeRuntime({
+      inspections: [
+        { output_preview: null, completion_cursor: { epoch: 3, turns: 0 } },
+      ],
+    });
+
+    await assert.rejects(
+      rt.waitUntilReady(["b:1", "a:1"], { timeoutMs: 20 }),
+      /did not become ready within 20ms: a:1, b:1/,
+    );
+  });
+
+  it("waitUntilReady falls back to the preview for a live alias", async () => {
+    const { rt, inspectCalls, waitCalls } = await makeRuntime({
+      inspections: [
+        { output_preview: null, completion_cursor: null },
+        { output_preview: "hi", completion_cursor: null },
+      ],
+    });
+
+    await rt.waitUntilReady(["live:alias"], {
+      timeoutMs: 5000,
+      pollIntervalMs: 1,
+    });
+
+    assert.equal(waitCalls(), 1);
+    assert.equal(inspectCalls(), 1);
+  });
+
+  it("completionCursor reads null as untracked", async () => {
+    const { rt, calls } = await makeRuntime({
+      inspections: [{ output_preview: null, completion_cursor: null }],
+    });
+
+    assert.equal(await rt.completionCursor("live:alias"), null);
+    assert.deepEqual(calls.at(-1)?.params, { identity: "live:alias" });
+  });
+
+  it("falls back to polling on a gateway without server waits", async () => {
+    const { rt } = await makeRuntime({
+      legacyGateway: true,
+      inspections: [
+        { output_preview: "ACK", completion_cursor: { epoch: 7, turns: 1 } },
+        { output_preview: "ACK", completion_cursor: { epoch: 7, turns: 2 } },
+      ],
+    });
+
+    const output = await rt.waitForCompletion(
+      "triage:main",
+      { epoch: 7, turns: 1 },
+      { timeoutMs: 5000, pollIntervalMs: 1 },
+    );
+
+    assert.equal(output, "ACK");
+    assert.deepEqual(await rt.completionCursor("triage:main"), {
+      epoch: 7,
+      turns: 2,
+    });
   });
 });
 

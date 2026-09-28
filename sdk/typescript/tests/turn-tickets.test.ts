@@ -65,6 +65,32 @@ function inspection(preview: string | null, turns: number) {
 }
 
 /**
+ * Model the gateway's server-side `mobkit/wait_for_completion`: walk the
+ * scripted cursor states until one satisfies the wait; a script that ends
+ * unsatisfied is the typed `timed_out`.
+ */
+function serveCompletionWait(
+  walk: () => ReturnType<typeof inspection> | undefined,
+  atEnd: () => boolean,
+  identity: unknown,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const after = params.after as { epoch: number; turns: number } | undefined;
+  for (;;) {
+    const cursor = walk()?.completion_cursor ?? null;
+    const base = { identity, completion_cursor: cursor };
+    if (cursor === null) return { ...base, outcome: "untracked" };
+    if (after !== undefined && cursor.epoch !== after.epoch) {
+      return { ...base, outcome: "incarnation_changed" };
+    }
+    if (cursor.turns > (after?.turns ?? 0)) {
+      return { ...base, outcome: "completed" };
+    }
+    if (atEnd()) return { ...base, outcome: "timed_out" };
+  }
+}
+
+/**
  * Runtime whose `_rpc` answers from a script: `sends` is consumed one per
  * send/dispatch, `turns` maps a ticket to the states `mobkit/turn_result`
  * walks through (one per poll, holding the last), and `inspections` models the
@@ -108,6 +134,7 @@ async function makeRuntime(script: {
   const polls = new Map<string, number>();
   const inspections = script.inspections ?? [];
   let inspectIndex = 0;
+  let cursorReads = 0;
   (rt as unknown as Record<string, unknown>)._rpc = async (
     method: string,
     params?: Record<string, unknown>,
@@ -129,9 +156,40 @@ async function makeRuntime(script: {
         ...states[Math.min(n, states.length - 1)],
       };
     }
-    if (method === "mobkit/inspect_identity") {
+    if (method === "mobkit/wait_for_turn") {
+      // The gateway's server-side wait: answer once the ticket leaves
+      // pending, or at the deadline (the script ends still pending).
+      const ticket = String(p.ticket);
+      const states = turns[ticket] ?? [{ state: "unknown" }];
+      let n = Math.min(polls.get(ticket) ?? 0, states.length - 1);
+      while (n < states.length - 1 && states[n]?.state === "pending") n += 1;
+      polls.set(ticket, n + 1);
+      return { identity: p.identity, ticket, ...states[n] };
+    }
+    if (method === "mobkit/wait_for_completion") {
+      cursorReads += 1;
+      return serveCompletionWait(
+        () => inspections[Math.min(inspectIndex++, inspections.length - 1)],
+        () => inspectIndex >= inspections.length,
+        p.identity,
+        p,
+      );
+    }
+    if (method === "mobkit/completion_cursor") {
+      cursorReads += 1;
       const entry = inspections[Math.min(inspectIndex, inspections.length - 1)];
       inspectIndex += 1;
+      return {
+        identity: p.identity,
+        state: "active",
+        completion_cursor: entry?.completion_cursor ?? null,
+      };
+    }
+    if (method === "mobkit/inspect_identity") {
+      const entry =
+        cursorReads > 0
+          ? inspections[Math.min(inspectIndex - 1, inspections.length - 1)]
+          : inspections[Math.min(inspectIndex++, inspections.length - 1)];
       return { identity: p.identity, is_final: false, ...entry };
     }
     return {};
@@ -183,9 +241,16 @@ describe("sendAndWait waits for its own turn", () => {
     assert.deepEqual(
       paramsOf("mobkit/inspect_identity"),
       [],
+      "a ticketed wait must not read the member",
+    );
+    assert.deepEqual(
+      paramsOf("mobkit/completion_cursor"),
+      [],
       "a ticketed wait must not read the identity-wide cursor",
     );
-    assert.equal(paramsOf("mobkit/turn_result").length, 3);
+    assert.deepEqual(paramsOf("mobkit/turn_result"), [], "no client polling");
+    assert.equal(paramsOf("mobkit/wait_for_turn").length, 1);
+    assert.deepEqual(paramsOf("mobkit/wait_for_completion"), []);
   });
 
   it("gives concurrent sends each their own output", async () => {

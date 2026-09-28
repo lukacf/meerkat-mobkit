@@ -2479,6 +2479,8 @@ fn console_rpc_access_requirements(
         | "mobkit/identity/resolved_tools"
         | "mobkit/identity/routing_status"
         | "mobkit/inspect_identity"
+        | "mobkit/completion_cursor"
+        | "mobkit/wait_for_completion"
         | "mobkit/status_identity"
         | "mobkit/console/inspect_identity" => one(ACTION_AGENT_VIEW, target),
         // WorkGraph spans the whole mob, so both actions are resource-less:

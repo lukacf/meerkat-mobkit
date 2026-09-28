@@ -2885,7 +2885,9 @@ export function parseCompletionCursor(raw: unknown): CompletionCursor {
 }
 
 /** Optional cursor field: absent (older gateway) stays `null`. */
-function parseOptionalCompletionCursor(raw: unknown): CompletionCursor | null {
+export function parseOptionalCompletionCursor(
+  raw: unknown,
+): CompletionCursor | null {
   return typeof raw === "object" && raw !== null
     ? parseCompletionCursor(raw)
     : null;

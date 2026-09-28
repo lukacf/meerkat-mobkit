@@ -920,7 +920,8 @@ impl TaintObserverGuard {
 
 /// Subscribe the taint observer to every active member's agent-event stream
 /// (the same observe-only `subscribe_agent_events` surface the console
-/// forwarder rides), reconciling membership every second.
+/// forwarder rides), reconciling membership whenever the mob's machine state
+/// changes.
 pub fn spawn_taint_observer(
     handle: meerkat_mob::MobHandle,
     tracker: SessionTaintTracker,
@@ -941,103 +942,270 @@ pub fn spawn_member_event_observer(
     }
 }
 
-async fn run_member_event_observer(
-    handle: meerkat_mob::MobHandle,
-    sinks: Vec<Arc<dyn MemberAgentEventSink>>,
-) {
-    use futures::StreamExt;
-    use futures::stream::SelectAll;
+/// What the member-event observer reads from the mob. [`meerkat_mob::MobHandle`]
+/// is the only production source; tests drive the loop through a fake so the
+/// wake-ups and retry cadence are observable.
+trait MemberEventSource: Send + Sync + 'static {
+    type Changes: MemberStateChanges;
 
-    enum Observed {
-        Event(String, Box<meerkat_core::event::EventEnvelope<AgentEvent>>),
-        Closed(String),
+    /// Change signal over the mob's machine state: fires when membership,
+    /// binding or lifecycle truth may have moved.
+    fn state_changes(&self) -> Self::Changes;
+    /// Last actor-published lifecycle phase, read without an actor round trip.
+    fn phase(&self) -> meerkat_mob::MobState;
+    /// Roster ids of the Active members. Only Active members have a live
+    /// runtime delta stream; subscribing others fails every pass (the console
+    /// forwarder learned this the hard way).
+    fn active_members(&self) -> impl Future<Output = Vec<meerkat_mob::AgentIdentity>> + Send;
+    /// Open the member's observe-only agent-event stream.
+    fn subscribe(
+        &self,
+        identity: &meerkat_mob::AgentIdentity,
+    ) -> impl Future<Output = Result<meerkat_core::comms::EventStream, meerkat_mob::MobError>> + Send;
+}
+
+/// A change signal. `Err` means the publisher is gone and the signal will
+/// never fire again.
+trait MemberStateChanges: Send + 'static {
+    fn changed(&mut self) -> impl Future<Output = Result<(), ()>> + Send;
+}
+
+impl MemberStateChanges for meerkat_mob::MobMachineStateChanges {
+    async fn changed(&mut self) -> Result<(), ()> {
+        meerkat_mob::MobMachineStateChanges::changed(self)
+            .await
+            .map_err(|_closed| ())
+    }
+}
+
+impl MemberEventSource for meerkat_mob::MobHandle {
+    type Changes = meerkat_mob::MobMachineStateChanges;
+
+    fn state_changes(&self) -> Self::Changes {
+        self.machine_state_changes()
     }
 
-    let mut streams: SelectAll<futures::stream::BoxStream<'static, Observed>> = SelectAll::new();
-    let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut warned: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(1));
-    reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    fn phase(&self) -> meerkat_mob::MobState {
+        self.status_observation_snapshot()
+    }
 
-    loop {
-        tokio::select! {
-            Some(observed) = streams.next() => match observed {
-                Observed::Event(identity, envelope) => {
-                    for sink in &sinks {
-                        sink.observe(&identity, &envelope);
-                    }
+    async fn active_members(&self) -> Vec<meerkat_mob::AgentIdentity> {
+        self.list_members_including_retiring()
+            .await
+            .into_iter()
+            .filter(|entry| entry.status == meerkat_mob::MobMemberStatus::Active)
+            .map(|entry| entry.agent_identity)
+            .collect()
+    }
+
+    async fn subscribe(
+        &self,
+        identity: &meerkat_mob::AgentIdentity,
+    ) -> Result<meerkat_core::comms::EventStream, meerkat_mob::MobError> {
+        self.subscribe_agent_events(identity).await
+    }
+}
+
+/// First retry after a failed subscribe waits one quantum; later retries
+/// double up to the cap.
+const OBSERVER_SUBSCRIBE_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+const OBSERVER_SUBSCRIBE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Per-identity subscribe-failure backoff for the member-event observer,
+/// keyed by roster id (the handle's namespace).
+///
+/// Subscriptions are driven by machine-state changes, not a timer. The
+/// backoff is only the guard around that: every subscribe attempt is an actor
+/// command, and during a cold boot the machine state changes many times per
+/// second, so a member that cannot be subscribed yet must not be retried on
+/// every change. Its deadline is also the fallback wake for a member that
+/// failed and whose state then stops changing.
+#[derive(Default)]
+struct ObserverSubscribeBackoff {
+    failures: std::collections::HashMap<String, (tokio::time::Instant, u32)>,
+}
+
+impl ObserverSubscribeBackoff {
+    fn delay(consecutive_failures: u32) -> std::time::Duration {
+        OBSERVER_SUBSCRIBE_BACKOFF_BASE
+            .saturating_mul(1u32 << consecutive_failures.min(5))
+            .min(OBSERVER_SUBSCRIBE_BACKOFF_MAX)
+    }
+
+    fn may_attempt(&self, identity: &str, now: tokio::time::Instant) -> bool {
+        self.failures
+            .get(identity)
+            .is_none_or(|(next_attempt, _)| now >= *next_attempt)
+    }
+
+    /// Record a failure; returns whether it is the first in a row.
+    fn record_failure(&mut self, identity: &str, now: tokio::time::Instant) -> bool {
+        let entry = self
+            .failures
+            .entry(identity.to_string())
+            .or_insert((now, 0));
+        entry.0 = now + Self::delay(entry.1);
+        entry.1 = entry.1.saturating_add(1);
+        entry.1 == 1
+    }
+
+    fn record_success(&mut self, identity: &str) {
+        self.failures.remove(identity);
+    }
+
+    /// Forget members that left the active roster so the map stays bounded.
+    fn retain_active(&mut self, active: &std::collections::HashSet<String>) {
+        self.failures
+            .retain(|identity, _| active.contains(identity));
+    }
+
+    /// The earliest pending retry, if any member is backing off.
+    fn next_attempt(&self) -> Option<tokio::time::Instant> {
+        self.failures
+            .values()
+            .map(|(next_attempt, _)| *next_attempt)
+            .min()
+    }
+}
+
+enum ObservedMemberEvent {
+    Event(String, Box<meerkat_core::event::EventEnvelope<AgentEvent>>),
+    Closed(String),
+}
+
+/// Subscription bookkeeping of the member-event observer.
+struct MemberEventSubscriptions {
+    streams: futures::stream::SelectAll<futures::stream::BoxStream<'static, ObservedMemberEvent>>,
+    subscribed: std::collections::HashSet<String>,
+    backoff: ObserverSubscribeBackoff,
+}
+
+impl MemberEventSubscriptions {
+    /// Subscribe every Active member that has no stream and is not backing
+    /// off. A no-op while the mob is not Running: subscribing goes through
+    /// the mob actor, and while the mob is still Creating (cold boot,
+    /// restore) or already stopping, members cannot be subscribed and every
+    /// attempt only adds actor load.
+    async fn reconcile<S: MemberEventSource>(&mut self, source: &S) {
+        use futures::StreamExt;
+
+        if source.phase() != meerkat_mob::MobState::Running {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        let mut active = std::collections::HashSet::new();
+        for member in source.active_members().await {
+            let identity = member.to_string();
+            active.insert(identity.clone());
+            if self.subscribed.contains(&identity) || !self.backoff.may_attempt(&identity, now) {
+                continue;
+            }
+            // Sinks receive the LOGICAL identity (task #53): the roster id is
+            // the comms-safe encoding of the member's alias, and
+            // identity-first internal members now roster under the encoded
+            // DURABLE identity (a generated rt:{identity}:{generation} alias
+            // is incarnation detail, not a roster spelling) - both
+            // decode/strip to the durable identity the memory scopes, the
+            // write gate, and the SDK surface key on. Keying sinks by the
+            // roster id is what split distiller scopes per incarnation
+            // (HomeCore activation smoke). Subscription bookkeeping
+            // (`subscribed`/`Closed`/backoff) stays keyed by the roster id -
+            // that is the handle's namespace.
+            let sink_identity = crate::member_comms_id::logical_memory_identity(&identity);
+            match source.subscribe(&member).await {
+                Ok(stream) => {
+                    self.backoff.record_success(&identity);
+                    self.subscribed.insert(identity.clone());
+                    let close_key = identity.clone();
+                    self.streams.push(
+                        stream
+                            .map(move |envelope| {
+                                ObservedMemberEvent::Event(
+                                    sink_identity.clone(),
+                                    Box::new(envelope),
+                                )
+                            })
+                            .chain(futures::stream::once(async move {
+                                ObservedMemberEvent::Closed(close_key)
+                            }))
+                            .boxed(),
+                    );
                 }
-                Observed::Closed(identity) => {
-                    subscribed.remove(&identity);
-                }
-            },
-            _ = reconcile.tick() => {
-                for entry in handle.list_members_including_retiring().await {
-                    // Only Active members have a live runtime delta stream;
-                    // subscribing others fails every tick (the console
-                    // forwarder learned this the hard way).
-                    if entry.status != meerkat_mob::MobMemberStatus::Active {
-                        continue;
-                    }
-                    let identity = entry.agent_identity.to_string();
-                    if subscribed.contains(&identity) {
-                        continue;
-                    }
-                    // Sinks receive the LOGICAL identity (task #53): the
-                    // roster id is the comms-safe encoding of the member's
-                    // alias, and identity-first internal members now
-                    // roster under the encoded DURABLE identity (a
-                    // generated rt:{identity}:{generation} alias is
-                    // incarnation detail, not a roster spelling) - both
-                    // decode/strip to
-                    // the durable identity the memory scopes, the write
-                    // gate, and the SDK surface key on. Keying sinks by the
-                    // roster id is what split distiller scopes per
-                    // incarnation (HomeCore activation smoke). Subscription
-                    // bookkeeping (`subscribed`/`Closed`) stays keyed by the
-                    // roster id - that is the handle's namespace.
-                    let sink_identity =
-                        crate::member_comms_id::logical_memory_identity(&identity);
-                    match handle.subscribe_agent_events(&entry.agent_identity).await {
-                        Ok(stream) => {
-                            warned.remove(&identity);
-                            subscribed.insert(identity.clone());
-                            let close_key = identity.clone();
-                            streams.push(
-                                stream
-                                    .map(move |envelope| {
-                                        Observed::Event(
-                                            sink_identity.clone(),
-                                            Box::new(envelope),
-                                        )
-                                    })
-                                    .chain(futures::stream::once(async move {
-                                        Observed::Closed(close_key)
-                                    }))
-                                    .boxed(),
-                            );
-                        }
-                        Err(error) => {
-                            // Usually a short-lived spawn race; retried next
-                            // tick. Warn once per identity, then debug.
-                            if warned.insert(identity.clone()) {
-                                tracing::warn!(
-                                    identity = %identity,
-                                    error = %error,
-                                    "agent memory taint observer: failed to subscribe; will retry"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    identity = %identity,
-                                    error = %error,
-                                    "agent memory taint observer: subscribe still failing"
-                                );
-                            }
-                        }
+                Err(error) => {
+                    // Usually a short-lived spawn race. Warn on the first
+                    // failure in a row, then debug.
+                    if self.backoff.record_failure(&identity, now) {
+                        tracing::warn!(
+                            identity = %identity,
+                            error = %error,
+                            "agent memory taint observer: failed to subscribe; will retry on the next state change, with backoff"
+                        );
+                    } else {
+                        tracing::debug!(
+                            identity = %identity,
+                            error = %error,
+                            "agent memory taint observer: subscribe still failing; backing off"
+                        );
                     }
                 }
             }
         }
+        self.backoff.retain_active(&active);
+    }
+}
+
+async fn run_member_event_observer<S: MemberEventSource>(
+    source: S,
+    sinks: Vec<Arc<dyn MemberAgentEventSink>>,
+) {
+    use futures::StreamExt;
+
+    // Bind the change signal before the first pass so a change landing
+    // during it still wakes the next wait.
+    let mut changes = source.state_changes();
+    let mut changes_open = true;
+    let mut subscriptions = MemberEventSubscriptions {
+        streams: futures::stream::SelectAll::new(),
+        subscribed: std::collections::HashSet::new(),
+        backoff: ObserverSubscribeBackoff::default(),
+    };
+    subscriptions.reconcile(&source).await;
+
+    loop {
+        let next_retry = subscriptions.backoff.next_attempt();
+        tokio::select! {
+            Some(observed) = subscriptions.streams.next() => match observed {
+                ObservedMemberEvent::Event(identity, envelope) => {
+                    for sink in &sinks {
+                        sink.observe(&identity, &envelope);
+                    }
+                }
+                ObservedMemberEvent::Closed(identity) => {
+                    subscriptions.subscribed.remove(&identity);
+                    // A closure is itself a re-subscribe trigger: the member
+                    // may still be live (stream lag or teardown race), and no
+                    // machine transition is guaranteed to follow.
+                    subscriptions.reconcile(&source).await;
+                }
+            },
+            changed = changes.changed(), if changes_open => match changed {
+                Ok(()) => subscriptions.reconcile(&source).await,
+                // The mob actor is gone: nothing new can become live. Drain
+                // what is still open, then end.
+                Err(()) => changes_open = false,
+            },
+            () = sleep_until_retry(next_retry), if next_retry.is_some() => {
+                subscriptions.reconcile(&source).await;
+            }
+            else => break,
+        }
+    }
+}
+
+async fn sleep_until_retry(next_retry: Option<tokio::time::Instant>) {
+    match next_retry {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1742,5 +1910,268 @@ mod tests {
         };
         tracker.observe_agent_event("identity:dave", &clean_delivery);
         assert!(tracker.identity_taint("identity:dave").is_none());
+    }
+
+    /// Scripted [`MemberEventSource`]: a settable Active roster and phase, a
+    /// change signal the test fires, and per-identity subscribe outcomes.
+    /// Records every attempt.
+    struct ScriptedMemberSource {
+        phase: Mutex<meerkat_mob::MobState>,
+        members: Mutex<Vec<meerkat_mob::AgentIdentity>>,
+        subscribable: Mutex<std::collections::HashSet<String>>,
+        attempts: Mutex<HashMap<String, Vec<tokio::time::Instant>>>,
+        changes: tokio::sync::watch::Sender<()>,
+    }
+
+    struct ScriptedChanges(tokio::sync::watch::Receiver<()>);
+
+    impl MemberStateChanges for ScriptedChanges {
+        async fn changed(&mut self) -> Result<(), ()> {
+            self.0.changed().await.map_err(|_closed| ())
+        }
+    }
+
+    impl ScriptedMemberSource {
+        fn new(phase: meerkat_mob::MobState, members: &[&str], subscribable: &[&str]) -> Arc<Self> {
+            Arc::new(Self {
+                phase: Mutex::new(phase),
+                members: Mutex::new(
+                    members
+                        .iter()
+                        .map(|member| meerkat_mob::AgentIdentity::from(*member))
+                        .collect(),
+                ),
+                subscribable: Mutex::new(subscribable.iter().map(ToString::to_string).collect()),
+                attempts: Mutex::new(HashMap::new()),
+                changes: tokio::sync::watch::channel(()).0,
+            })
+        }
+
+        /// Publish a machine-state change, as the mob actor does on every
+        /// applied machine input.
+        fn change(&self) {
+            self.changes.send_replace(());
+        }
+
+        fn attempts(&self, identity: &str) -> Vec<tokio::time::Instant> {
+            self.attempts
+                .lock()
+                .unwrap()
+                .get(identity)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    impl MemberEventSource for Arc<ScriptedMemberSource> {
+        type Changes = ScriptedChanges;
+
+        fn state_changes(&self) -> ScriptedChanges {
+            ScriptedChanges(self.changes.subscribe())
+        }
+
+        fn phase(&self) -> meerkat_mob::MobState {
+            *self.phase.lock().unwrap()
+        }
+
+        async fn active_members(&self) -> Vec<meerkat_mob::AgentIdentity> {
+            self.members.lock().unwrap().clone()
+        }
+
+        async fn subscribe(
+            &self,
+            identity: &meerkat_mob::AgentIdentity,
+        ) -> Result<meerkat_core::comms::EventStream, meerkat_mob::MobError> {
+            let identity = identity.to_string();
+            self.attempts
+                .lock()
+                .unwrap()
+                .entry(identity.clone())
+                .or_default()
+                .push(tokio::time::Instant::now());
+            if self.subscribable.lock().unwrap().contains(&identity) {
+                Ok(Box::pin(futures::stream::pending()))
+            } else {
+                Err(meerkat_mob::MobError::Internal(format!(
+                    "no event injector for '{identity}' yet"
+                )))
+            }
+        }
+    }
+
+    /// Let the observer task run everything that is ready, without moving
+    /// the (paused) clock.
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A member is subscribed on the machine-state change that makes it
+    /// live, with no timer involved: the observer sleeps until the state
+    /// changes.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_subscribes_on_the_state_change_that_makes_a_member_live() {
+        let source = ScriptedMemberSource::new(meerkat_mob::MobState::Running, &[], &["worker"]);
+        let started = tokio::time::Instant::now();
+        let task = tokio::spawn(run_member_event_observer(source.clone(), Vec::new()));
+        settle().await;
+
+        // An hour without any state change: no pass, no subscribe.
+        tokio::time::sleep(std::time::Duration::from_hours(1)).await;
+        assert!(source.attempts("worker").is_empty());
+
+        source
+            .members
+            .lock()
+            .unwrap()
+            .push(meerkat_mob::AgentIdentity::from("worker"));
+        source.change();
+        settle().await;
+        let attempts = source.attempts("worker");
+        assert_eq!(attempts.len(), 1, "subscribed on the change itself");
+        assert_eq!(
+            attempts[0].duration_since(started),
+            std::time::Duration::from_hours(1),
+            "no clock time passed between the change and the subscribe"
+        );
+
+        // Later changes do not re-subscribe an open stream.
+        source.change();
+        settle().await;
+        assert_eq!(source.attempts("worker").len(), 1);
+        task.abort();
+    }
+
+    /// The observer never subscribes while the mob is not Running: during
+    /// cold boot each attempt is an actor command competing with the restore,
+    /// however often the machine state changes.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_waits_for_a_running_mob_before_subscribing() {
+        let source =
+            ScriptedMemberSource::new(meerkat_mob::MobState::Creating, &["worker"], &["worker"]);
+        let task = tokio::spawn(run_member_event_observer(source.clone(), Vec::new()));
+        settle().await;
+        for _ in 0..50 {
+            source.change();
+            settle().await;
+        }
+        assert!(
+            source.attempts("worker").is_empty(),
+            "no subscribe attempt while the mob is Creating"
+        );
+
+        *source.phase.lock().unwrap() = meerkat_mob::MobState::Running;
+        source.change();
+        settle().await;
+        assert_eq!(
+            source.attempts("worker").len(),
+            1,
+            "the change into Running subscribes, and the open stream is not re-subscribed"
+        );
+        task.abort();
+    }
+
+    /// A member whose subscribe keeps failing is not retried on every state
+    /// change: a storm of changes (cold boot) costs one attempt per backoff
+    /// window, and a healthy member beside it is unaffected.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_backs_off_a_failing_member_through_a_change_storm() {
+        let source = ScriptedMemberSource::new(
+            meerkat_mob::MobState::Running,
+            &["stuck", "healthy"],
+            &["healthy"],
+        );
+        let task = tokio::spawn(run_member_event_observer(source.clone(), Vec::new()));
+        settle().await;
+        // 18 changes per second for 10 s.
+        for _ in 0..180 {
+            source.change();
+            settle().await;
+            tokio::time::sleep(std::time::Duration::from_millis(55)).await;
+        }
+        let stuck = source.attempts("stuck").len();
+        assert!(
+            (4..=6).contains(&stuck),
+            "backoff bounds a failing member to ~1 attempt per window, saw {stuck}"
+        );
+        assert_eq!(source.attempts("healthy").len(), 1);
+        task.abort();
+    }
+
+    /// With no further state change, a failed member is still retried at its
+    /// backoff deadlines (the fallback guard), and once it becomes
+    /// subscribable the next due attempt succeeds and retries stop.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_retries_a_failed_member_at_its_backoff_deadline() {
+        let source = ScriptedMemberSource::new(meerkat_mob::MobState::Running, &["stuck"], &[]);
+        let started = tokio::time::Instant::now();
+        let task = tokio::spawn(run_member_event_observer(source.clone(), Vec::new()));
+
+        tokio::time::sleep(std::time::Duration::from_mins(2)).await;
+        let stuck = source.attempts("stuck");
+        let offsets: Vec<u64> = stuck
+            .iter()
+            .map(|at| at.duration_since(started).as_secs())
+            .collect();
+        // 1 s, 2 s, 4 s, 8 s, 16 s, then the 30 s cap.
+        assert_eq!(offsets, [0, 1, 3, 7, 15, 31, 61, 91]);
+
+        source
+            .subscribable
+            .lock()
+            .unwrap()
+            .insert("stuck".to_string());
+        tokio::time::sleep(std::time::Duration::from_mins(2)).await;
+        assert_eq!(source.attempts("stuck").len(), stuck.len() + 1);
+        task.abort();
+    }
+
+    /// When the mob actor is gone and no stream is open, the observer ends.
+    #[tokio::test(start_paused = true)]
+    async fn member_event_observer_ends_when_the_mob_actor_is_gone() {
+        struct GoneSource;
+        impl MemberEventSource for GoneSource {
+            type Changes = ScriptedChanges;
+            fn state_changes(&self) -> ScriptedChanges {
+                ScriptedChanges(tokio::sync::watch::channel(()).1)
+            }
+            fn phase(&self) -> meerkat_mob::MobState {
+                meerkat_mob::MobState::Stopped
+            }
+            async fn active_members(&self) -> Vec<meerkat_mob::AgentIdentity> {
+                Vec::new()
+            }
+            async fn subscribe(
+                &self,
+                _identity: &meerkat_mob::AgentIdentity,
+            ) -> Result<meerkat_core::comms::EventStream, meerkat_mob::MobError> {
+                Err(meerkat_mob::MobError::Internal("gone".to_string()))
+            }
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_member_event_observer(GoneSource, Vec::new()),
+        )
+        .await
+        .expect("the observer ends once its change signal is closed");
+    }
+
+    #[test]
+    fn observer_subscribe_backoff_resets_on_success_and_forgets_departed_members() {
+        let now = tokio::time::Instant::now();
+        let mut backoff = ObserverSubscribeBackoff::default();
+        assert!(backoff.record_failure("a", now), "first failure in a row");
+        assert!(!backoff.record_failure("a", now), "second failure in a row");
+        assert!(!backoff.may_attempt("a", now));
+        assert!(backoff.may_attempt("b", now), "backoff is per identity");
+        backoff.record_success("a");
+        assert!(backoff.may_attempt("a", now));
+        assert!(backoff.record_failure("a", now), "success resets the run");
+        backoff.retain_active(&std::collections::HashSet::new());
+        assert!(
+            backoff.may_attempt("a", now),
+            "departed members are forgotten"
+        );
     }
 }

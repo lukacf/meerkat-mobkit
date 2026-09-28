@@ -34,18 +34,37 @@ pytestmark = pytest.mark.filterwarnings(
 class ScriptedTransport:
     """Transport that answers each RPC method from a scripted queue.
 
-    `inspect_identity` walks its script one entry per poll, holding the last
-    entry once exhausted, so a test can model "still running, still running,
-    done" without racing a clock.
+    The script is one list of inspection payloads, each a later moment,
+    holding the last entry once exhausted, so a test can model "still
+    running, still running, done" without racing a clock.
+
+    ``mobkit/wait_for_completion`` models the gateway's server-side wait: it
+    walks the script until an entry satisfies the wait (see
+    ``_serve_completion_wait``). After a wait that resolved,
+    ``mobkit/inspect_identity`` answers the entry the wait resolved on (the
+    output a waiter reads once, at completion); otherwise it walks the script
+    itself, as does ``mobkit/completion_cursor``. ``legacy_gateway=True``
+    models a gateway predating the server-side wait and the cursor read: both
+    are "method not found".
     """
 
-    def __init__(self, *, send=None, dispatch=None, inspections=None):
+    def __init__(self, *, send=None, dispatch=None, inspections=None, legacy_gateway=False):
         self.calls: list[dict] = []
         self.request_timeout = 60.0
         self._send = send or {}
         self._dispatch = dispatch or {}
         self._inspections = list(inspections or [])
-        self._inspect_index = 0
+        self._index = 0
+        self._pinned = False
+        self._legacy_gateway = legacy_gateway
+
+    def _walk(self) -> dict:
+        index = min(self._index, len(self._inspections) - 1)
+        self._index += 1
+        return self._inspections[index]
+
+    def _at_end(self) -> bool:
+        return self._index >= len(self._inspections)
 
     def send_sync(self, request):
         self.calls.append(request)
@@ -54,10 +73,34 @@ class ScriptedTransport:
             result = self._send
         elif method == "mobkit/dispatch":
             result = self._dispatch
+        elif method == "mobkit/completion_cursor":
+            if self._legacy_gateway:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            entry = self._walk()
+            result = {
+                "identity": entry["identity"],
+                "state": "active",
+                "completion_cursor": entry.get("completion_cursor"),
+            }
+        elif method == "mobkit/wait_for_completion":
+            if self._legacy_gateway:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            result = _serve_completion_wait(self._walk, self._at_end, request.get("params") or {})
+            self._pinned = result["outcome"] in ("completed", "incarnation_changed")
         elif method == "mobkit/inspect_identity":
-            index = min(self._inspect_index, len(self._inspections) - 1)
-            result = self._inspections[index]
-            self._inspect_index += 1
+            if self._pinned:
+                index = min(self._index - 1, len(self._inspections) - 1)
+                result = self._inspections[index]
+            else:
+                result = self._walk()
         else:
             result = {}
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
@@ -82,6 +125,37 @@ class ScriptedTransport:
         return sum(
             1 for call in self.calls if call.get("method") == "mobkit/inspect_identity"
         )
+
+    @property
+    def cursor_calls(self) -> int:
+        return sum(
+            1 for call in self.calls if call.get("method") == "mobkit/completion_cursor"
+        )
+
+    @property
+    def wait_calls(self) -> int:
+        return sum(
+            1 for call in self.calls if call.get("method") == "mobkit/wait_for_completion"
+        )
+
+
+def _serve_completion_wait(walk, at_end, params: dict) -> dict:
+    """Model the gateway's server-side ``mobkit/wait_for_completion``: walk
+    the scripted cursor states (each a later moment) until one satisfies the
+    wait. A script that ends unsatisfied is the typed ``timed_out``."""
+    after = params.get("after")
+    while True:
+        entry = walk()
+        cursor = entry.get("completion_cursor")
+        base = {"identity": entry["identity"], "completion_cursor": cursor}
+        if cursor is None:
+            return {**base, "outcome": "untracked"}
+        if after is not None and cursor["epoch"] != after["epoch"]:
+            return {**base, "outcome": "incarnation_changed"}
+        if cursor["turns"] > (after["turns"] if after is not None else 0):
+            return {**base, "outcome": "completed"}
+        if at_end():
+            return {**base, "outcome": "timed_out"}
 
 
 def _make_runtime(transport) -> MobKitRuntime:
@@ -139,10 +213,9 @@ class TestIdenticalConsecutiveOutput:
         output = await handle.send_and_wait("ping", timeout=5, poll_interval=0.01)
 
         assert output == "ACK"
-        assert transport.inspect_calls == 2, (
-            "the waiter must have polled past the first (unchanged) inspection "
-            "instead of returning on it"
-        )
+        assert transport.wait_calls == 1, "one server-side wait, no client polling"
+        assert transport.cursor_calls == 0
+        assert transport.inspect_calls == 1, "output is read once, at completion"
 
     @pytest.mark.asyncio
     async def test_text_baseline_path_cannot_see_the_identical_turn(self):
@@ -192,7 +265,8 @@ class TestIdenticalConsecutiveOutput:
         )
 
         assert output == "ACK"
-        assert transport.inspect_calls == 2
+        assert transport.wait_calls == 1
+        assert transport.inspect_calls == 1, "the member is read only past `after`"
 
     def test_after_and_baseline_are_mutually_exclusive(self):
         transport = ScriptedTransport(inspections=[_inspection("a", None, 1, 0)])
@@ -293,7 +367,165 @@ class TestWaitForCompletion:
         )
 
         assert output == "ACK"
-        assert transport.inspect_calls == 2
+        assert transport.wait_calls == 1
+        assert transport.inspect_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Server-side, event-driven waits (#468)
+# ---------------------------------------------------------------------------
+
+
+class TestServerSideWaits:
+    """``inspect_identity`` reads the member session (an execution snapshot
+    on its session task, which can hold a staged run on meerkat 0.8.45+). The
+    completion waits are one server-side ``mobkit/wait_for_completion`` each,
+    which the gateway answers on the typed completion signal, and read the
+    member once, at completion. Nothing polls."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_completion_is_one_server_wait_then_one_member_read(self):
+        transport = ScriptedTransport(
+            inspections=[
+                _inspection("triage:main", "old", epoch=3, turns=1),
+                _inspection("triage:main", "old", epoch=3, turns=1),
+                _inspection("triage:main", "new", epoch=3, turns=2),
+            ],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        output = await handle.wait_for_completion(
+            CompletionCursor(epoch=3, turns=1), timeout=7, poll_interval=0.01
+        )
+
+        assert output == "new"
+        assert [call["method"] for call in transport.calls] == [
+            "mobkit/wait_for_completion",
+            "mobkit/inspect_identity",
+        ]
+        wait = transport.calls[0]["params"]
+        assert wait == {
+            "identity": "triage:main",
+            "after": {"epoch": 3, "turns": 1},
+            "timeout_ms": wait["timeout_ms"],
+        }
+        assert 6000 < wait["timeout_ms"] <= 7000, "the caller's deadline rides along"
+
+    @pytest.mark.asyncio
+    async def test_a_server_timeout_is_a_timeout_error(self):
+        transport = ScriptedTransport(
+            inspections=[_inspection("triage:main", "ACK", epoch=3, turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        with pytest.raises(TimeoutError, match="did not complete a turn"):
+            await handle.wait_for_completion(CompletionCursor(epoch=3, turns=1), timeout=5)
+        assert transport.inspect_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_is_one_server_wait_per_identity(self):
+        transport = ScriptedTransport(
+            inspections=[
+                _inspection("triage:main", None, epoch=3, turns=0),
+                _inspection("triage:main", None, epoch=3, turns=1),
+            ],
+        )
+        rt = _make_runtime(transport)
+
+        await rt.wait_until_ready(["triage:main"], timeout=5)
+
+        assert transport.wait_calls == 1
+        assert "after" not in transport.calls[0]["params"], "readiness has no baseline"
+        assert transport.inspect_calls == 0, (
+            "readiness is the cursor: an agent whose kickoff committed no text "
+            "is ready without any member read"
+        )
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_names_the_identities_not_ready(self):
+        transport = ScriptedTransport(
+            inspections=[_inspection("x", None, epoch=3, turns=0)],
+        )
+        rt = _make_runtime(transport)
+
+        with pytest.raises(TimeoutError, match=r"\['a:1', 'b:1'\]"):
+            await rt.wait_until_ready(["b:1", "a:1"], timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_falls_back_to_the_preview_for_a_live_alias(self):
+        """A live alias (no identity authority) is untracked; only then does
+        readiness fall back to the committed-output proxy."""
+        transport = ScriptedTransport(
+            inspections=[
+                {"identity": "live:alias", "output_preview": None, "completion_cursor": None},
+                {"identity": "live:alias", "output_preview": "hi", "completion_cursor": None},
+            ],
+        )
+        rt = _make_runtime(transport)
+
+        await rt.wait_until_ready(["live:alias"], timeout=5, poll_interval=0.01)
+
+        assert transport.wait_calls == 1
+        assert transport.inspect_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_completion_cursor_reads_null_as_untracked(self):
+        transport = ScriptedTransport(
+            inspections=[{"identity": "live:alias", "completion_cursor": None}],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "live:alias")
+
+        assert await handle.completion_cursor() is None
+        assert transport.calls[-1]["params"] == {"identity": "live:alias"}
+
+    @pytest.mark.asyncio
+    async def test_a_gateway_without_server_waits_falls_back_to_polling(self):
+        transport = ScriptedTransport(
+            legacy_gateway=True,
+            inspections=[
+                _inspection("triage:main", "ACK", epoch=7, turns=1),
+                _inspection("triage:main", "ACK", epoch=7, turns=2),
+            ],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
+
+        output = await handle.wait_for_completion(
+            CompletionCursor(epoch=7, turns=1), timeout=5, poll_interval=0.01
+        )
+
+        assert output == "ACK"
+        assert await handle.completion_cursor() == CompletionCursor(epoch=7, turns=2)
+
+    @pytest.mark.asyncio
+    async def test_other_rpc_errors_are_not_mistaken_for_an_old_gateway(self):
+        from meerkat_mobkit.errors import RpcError
+
+        class FailingTransport(ScriptedTransport):
+            def send_sync(self, request):
+                if request.get("method") in (
+                    "mobkit/completion_cursor",
+                    "mobkit/wait_for_completion",
+                ):
+                    self.calls.append(request)
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request.get("id"),
+                        "error": {"code": -32001, "message": "unknown identity: nobody"},
+                    }
+                return super().send_sync(request)
+
+        transport = FailingTransport(inspections=[_inspection("nobody", None, 1, 0)])
+        handle = IdentityAgentHandle(_make_runtime(transport), "nobody")
+
+        with pytest.raises(RpcError) as raised:
+            await handle.completion_cursor()
+        assert raised.value.code == -32001
+        with pytest.raises(RpcError) as raised:
+            await handle.wait_for_completion(CompletionCursor(epoch=1, turns=0), timeout=5)
+        assert raised.value.code == -32001
+        with pytest.raises(RpcError):
+            await handle._runtime.wait_until_ready(["nobody"], timeout=5)
+        assert transport.inspect_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -469,11 +701,12 @@ class TestPerIdentityCorrelation:
         polled = {
             call["params"]["identity"]
             for call in transport.calls
-            if call["method"] == "mobkit/inspect_identity"
+            if call["method"] == "mobkit/wait_for_completion"
         }
         assert polled == {"triage:main"}, (
             f"the waiter must poll only its own identity, polled {polled}"
         )
+        assert transport.inspect_calls == 0, "no completion, so no member read"
 
     @pytest.mark.asyncio
     async def test_two_identities_carry_independent_cursors(self):

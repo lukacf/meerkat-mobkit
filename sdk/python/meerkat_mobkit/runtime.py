@@ -47,6 +47,7 @@ from .identity_first_models import (
     CompletionCursor,
     CompletionProgress,
     IdentityBootstrapStatus,
+    _completion_cursor_from,
 )
 from .live import (
     LIVE_EXECUTION_IDENTITY_V1,
@@ -131,6 +132,11 @@ from ._client import _build_request as _rpc_request
 
 _request_counter = itertools.count(1)
 _IDENTITY_BOOTSTRAP_WAIT_TRANSPORT_HEADROOM_SECONDS = 5.0
+# JSON-RPC 2.0 "method not found": an older gateway without the method.
+_JSONRPC_METHOD_NOT_FOUND = -32601
+# Transport allowance beyond a server-side wait's own deadline, so the
+# gateway's typed answer at the deadline arrives before the transport gives up.
+_SERVER_WAIT_TRANSPORT_HEADROOM_SECONDS = 5.0
 
 
 def _next_request_id(method: str) -> str:
@@ -958,6 +964,53 @@ class MobKitRuntime:
         raw = await self._rpc("mobkit/inspect_identity", {"identity": identity})
         return IdentityInspection.from_dict(raw)
 
+    async def completion_cursor(self, identity: str) -> CompletionCursor | None:
+        """Read the identity's completion cursor without touching its session.
+
+        ``mobkit/completion_cursor`` is a cursor-only read: the gateway
+        answers from the identity's in-memory completion cursor and never
+        reads the member session. :meth:`inspect_identity` does read it (an
+        execution snapshot on the member's session task), which a tight
+        completion poll must avoid because it can hold a staged run.
+
+        Returns ``None`` for a live alias with no identity authority (nothing
+        tracks its turns; do not read that as "no turns yet"). Against a
+        gateway predating the method this falls back to
+        :meth:`inspect_identity`.
+        """
+        try:
+            raw = await self._rpc("mobkit/completion_cursor", {"identity": identity})
+        except RpcError as err:
+            if err.code != _JSONRPC_METHOD_NOT_FOUND:
+                raise
+            return (await self.inspect_identity(identity)).completion_cursor
+        if not isinstance(raw, dict):
+            return None
+        return _completion_cursor_from(raw, "completion_cursor")
+
+    async def _server_wait(
+        self, method: str, params: dict[str, Any], timeout: float
+    ) -> dict[str, Any] | None:
+        """Run a server-side wait (``mobkit/wait_for_completion``,
+        ``mobkit/wait_for_turn``) with ``timeout`` as the caller's deadline.
+
+        The gateway answers when the awaited change happens (it waits on the
+        runtime's typed change signal) or, typed, at the deadline. Returns
+        ``None`` against a gateway predating the method.
+        """
+        remaining = max(0.0, timeout)
+        try:
+            raw = await self._rpc(
+                method,
+                {**params, "timeout_ms": int(remaining * 1000)},
+                transport_timeout=remaining + _SERVER_WAIT_TRANSPORT_HEADROOM_SECONDS,
+            )
+        except RpcError as err:
+            if err.code != _JSONRPC_METHOD_NOT_FOUND:
+                raise
+            return None
+        return raw if isinstance(raw, dict) else {}
+
     async def respawn(self, identity: str) -> Any:
         """Non-destructive durable recovery for an identity."""
         return await self._rpc("mobkit/respawn", {"identity": identity})
@@ -1038,34 +1091,73 @@ class MobKitRuntime:
     ) -> None:
         """Wait until all identities have completed their autonomous kickoff turn.
 
-        Readiness is "at least one turn has completed", read from the
-        identity's completion cursor. Gateways predating the cursor fall back
-        to the old proxy (a non-None ``output_preview``), which under-reports
-        an agent whose kickoff turn committed no assistant text.
+        Readiness is "at least one turn has completed" on the identity's
+        completion cursor. The wait is event-driven: one server-side
+        ``mobkit/wait_for_completion`` per identity (no baseline), which the
+        gateway answers when the first completion is recorded. It never reads
+        the member session and does not poll. An identity that has not
+        materialized yet is simply waited for. ``timeout`` is the overall
+        deadline.
+
+        Only as compatibility, a gateway predating the server-side wait, or a
+        live alias with no completion cursor, falls back to the old polling
+        proxy (``poll_interval``): the cursor where one exists, else a
+        non-None ``output_preview``, which under-reports an agent whose
+        kickoff turn committed no assistant text.
+
+        Raises ``TimeoutError`` naming the identities that did not become
+        ready; an RPC error for an identity (an invalid identity) is raised as
+        is.
         """
         import time
         deadline = time.monotonic() + timeout
-        remaining = set(identities)
-        while remaining and time.monotonic() < deadline:
-            for identity in list(remaining):
-                try:
-                    inspection = await self.inspect_identity(identity)
-                    cursor = inspection.completion_cursor
-                    ready = (
-                        cursor.turns > 0
-                        if cursor is not None
-                        else inspection.output_preview is not None
-                    )
-                    if ready:
-                        remaining.discard(identity)
-                except Exception:
-                    pass
-            if remaining:
-                await asyncio.sleep(poll_interval)
+
+        async def ready(identity: str) -> bool:
+            raw = await self._server_wait(
+                "mobkit/wait_for_completion",
+                {"identity": identity},
+                deadline - time.monotonic(),
+            )
+            if raw is None or raw.get("outcome") == "untracked":
+                return await self._poll_ready_compat(identity, deadline, poll_interval)
+            return raw.get("outcome") == "completed"
+
+        results = await asyncio.gather(
+            *(ready(identity) for identity in identities), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        remaining = sorted(
+            identity for identity, result in zip(identities, results) if result is not True
+        )
         if remaining:
             raise TimeoutError(
-                f"identities did not become ready within {timeout}s: {sorted(remaining)}"
+                f"identities did not become ready within {timeout}s: {remaining}"
             )
+
+    async def _poll_ready_compat(
+        self, identity: str, deadline: float, poll_interval: float
+    ) -> bool:
+        """Compatibility readiness poll for a gateway predating
+        ``mobkit/wait_for_completion``, or a live alias with no cursor."""
+        import time
+        while True:
+            try:
+                inspection = await self.inspect_identity(identity)
+                cursor = inspection.completion_cursor
+                if (
+                    cursor.turns > 0
+                    if cursor is not None
+                    else inspection.output_preview is not None
+                ):
+                    return True
+            except Exception:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(poll_interval, remaining))
 
     async def shutdown(self) -> None:
         async with self._lifecycle_lock:
@@ -1159,25 +1251,50 @@ class IdentityAgentHandle:
         Raises :class:`~meerkat_mobkit.errors.TurnFailedError` when the turn
         failed, :class:`~meerkat_mobkit.errors.TurnUnknownError` when the
         gateway knows no such turn for this identity, and ``TimeoutError``.
+
+        Event-driven: one server-side ``mobkit/wait_for_turn``, which the
+        gateway answers when the ticket settles. ``timeout`` is the deadline.
+        ``poll_interval`` applies only against a gateway predating that
+        method, which is polled with ``mobkit/turn_result`` instead.
         """
-        import time
+        from .identity_first_models import TurnResult
+        raw = await self._runtime._server_wait(
+            "mobkit/wait_for_turn",
+            {"identity": self._identity, "ticket": ticket},
+            timeout,
+        )
+        if raw is None:
+            return await self._poll_turn_compat(
+                ticket, timeout=timeout, poll_interval=poll_interval
+            )
+        return self._settled_turn(TurnResult.from_dict(raw), ticket, timeout)
+
+    def _settled_turn(self, result: Any, ticket: str, timeout: float) -> Any:
         from .errors import TurnFailedError, TurnUnknownError
+        from .identity_first_models import TurnState
+        if result.state is TurnState.COMPLETED:
+            return result
+        if result.state is TurnState.FAILED:
+            raise TurnFailedError(self._identity, ticket, result.error or "")
+        if result.state is TurnState.UNKNOWN:
+            raise TurnUnknownError(self._identity, ticket)
+        raise TimeoutError(
+            f"turn {ticket} of identity {self._identity!r} did not "
+            f"complete within {timeout}s"
+        )
+
+    async def _poll_turn_compat(
+        self, ticket: str, *, timeout: float, poll_interval: float
+    ) -> Any:
+        """Compatibility wait for a gateway predating ``mobkit/wait_for_turn``."""
+        import time
         from .identity_first_models import TurnState
         deadline = time.monotonic() + timeout
         while True:
             result = await self.turn_result(ticket)
-            if result.state is TurnState.COMPLETED:
-                return result
-            if result.state is TurnState.FAILED:
-                raise TurnFailedError(self._identity, ticket, result.error or "")
-            if result.state is TurnState.UNKNOWN:
-                raise TurnUnknownError(self._identity, ticket)
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"turn {ticket} of identity {self._identity!r} did not "
-                    f"complete within {timeout}s"
-                )
+            if result.state is not TurnState.PENDING or remaining <= 0:
+                return self._settled_turn(result, ticket, timeout)
             await asyncio.sleep(min(poll_interval, remaining))
 
     async def status(self) -> Any:
@@ -1187,6 +1304,11 @@ class IdentityAgentHandle:
     async def inspect(self) -> Any:
         """Return execution-level inspection (output_preview, peers)."""
         return await self._runtime.inspect_identity(self._identity)
+
+    async def completion_cursor(self) -> CompletionCursor | None:
+        """Read this identity's completion cursor without touching its session
+        (see :meth:`MobKitRuntime.completion_cursor`)."""
+        return await self._runtime.completion_cursor(self._identity)
 
     async def wait_until_ready(self, *, timeout: float = 60) -> None:
         """Wait until this identity's autonomous kickoff turn has completed."""
@@ -1220,7 +1342,13 @@ class IdentityAgentHandle:
         so a later ``wait_for_output(after=baseline)`` or ``wait_for_completion``
         can be satisfied by that earlier turn. Cursor waits stay identity-wide.
 
-        Returns the ``output_preview`` observed at completion (``None`` if the
+        Event-driven: one server-side ``mobkit/wait_for_completion``, which
+        the gateway answers when a completion is recorded (it never reads the
+        member session and does not poll); the output is then read once.
+        ``timeout`` is the deadline. ``poll_interval`` applies only against a
+        gateway predating that method, which is polled instead.
+
+        Returns the ``output_preview`` read at completion (``None`` if the
         turn committed no assistant text).
 
         Raises ``TimeoutError`` if no turn completes in time, and
@@ -1228,11 +1356,50 @@ class IdentityAgentHandle:
         counts do not carry across incarnations, so that is reported rather
         than guessed at in either direction.
         """
+        await self._await_cursor_past(baseline, timeout, poll_interval)
+        return (await self.inspect()).output_preview
+
+    async def _await_cursor_past(
+        self, baseline: CompletionCursor, timeout: float, poll_interval: float
+    ) -> CompletionCursor:
+        """Wait server-side until this identity's cursor moves past
+        ``baseline`` and return it; raise as :meth:`wait_for_completion`."""
+        raw = await self._runtime._server_wait(
+            "mobkit/wait_for_completion",
+            {"identity": self._identity, "after": baseline.to_dict()},
+            timeout,
+        )
+        if raw is None:
+            return await self._poll_cursor_past_compat(baseline, timeout, poll_interval)
+        cursor = _completion_cursor_from(raw, "completion_cursor")
+        outcome = raw.get("outcome")
+        if outcome == "completed" and cursor is not None:
+            return cursor
+        if cursor is None or outcome == "untracked":
+            raise RuntimeError(
+                f"identity {self._identity!r} reports no completion cursor; "
+                "this is a live alias with no identity authority"
+            )
+        if outcome == "incarnation_changed":
+            raise RuntimeError(
+                f"completion baseline {baseline} for identity "
+                f"{self._identity!r} belongs to a superseded runtime "
+                f"incarnation (now {cursor}); capture a fresh baseline"
+            )
+        raise TimeoutError(
+            f"identity {self._identity!r} did not complete a turn past "
+            f"{baseline} within {timeout}s"
+        )
+
+    async def _poll_cursor_past_compat(
+        self, baseline: CompletionCursor, timeout: float, poll_interval: float
+    ) -> CompletionCursor:
+        """Compatibility wait for a gateway predating
+        ``mobkit/wait_for_completion``."""
         import time
         deadline = time.monotonic() + timeout
         while True:
-            inspection = await self.inspect()
-            cursor = inspection.completion_cursor
+            cursor = await self.completion_cursor()
             if cursor is None:
                 raise RuntimeError(
                     f"identity {self._identity!r} reports no completion cursor; "
@@ -1241,7 +1408,7 @@ class IdentityAgentHandle:
                 )
             progress = cursor.progress_since(baseline)
             if progress is CompletionProgress.COMPLETED:
-                return inspection.output_preview
+                return cursor
             if progress is CompletionProgress.INCARNATION_CHANGED:
                 raise RuntimeError(
                     f"completion baseline {baseline} for identity "
@@ -1473,17 +1640,26 @@ class IdentityAgentHandle:
                 stacklevel=2,
             )
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            inspection = await self.inspect()
-            if inspection.output_preview:
-                if after is not None:
-                    cursor = inspection.completion_cursor
-                    if cursor is not None and (
-                        cursor.progress_since(after) is CompletionProgress.COMPLETED
-                    ):
-                        return inspection.output_preview
-                elif baseline is None or inspection.output_preview != baseline:
+        if after is not None:
+            # Server-side waits, one per completion past ``after``; the member
+            # is inspected for its output only once a turn has completed.
+            cursor = after
+            while True:
+                try:
+                    cursor = await self._await_cursor_past(
+                        cursor, deadline - time.monotonic(), poll_interval
+                    )
+                except TimeoutError:
+                    break
+                inspection = await self.inspect()
+                if inspection.output_preview:
                     return inspection.output_preview
+        while after is None and time.monotonic() < deadline:
+            inspection = await self.inspect()
+            if inspection.output_preview and (
+                baseline is None or inspection.output_preview != baseline
+            ):
+                return inspection.output_preview
             await asyncio.sleep(poll_interval)
         raise TimeoutError(
             f"identity {self._identity!r} did not produce output within {timeout}s"
