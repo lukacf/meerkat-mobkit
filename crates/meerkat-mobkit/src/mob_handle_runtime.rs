@@ -609,6 +609,15 @@ struct PreBuildMobSessionService {
     /// double-decorate. The slot is late-bound: compositions fill it when
     /// the memory stack attaches.
     dispatch_taint: Option<crate::memory::dispatch_taint::DispatchTaintSlot>,
+    /// Create-time capture of each witness-bearing create's live event
+    /// stream for the console forwarder (`crate::live_session_event_tap`).
+    /// Present on exactly one layer, so re-wraps never open a second
+    /// receiver per create, and that layer is the innermost MobKit one (the
+    /// stock constructors' pre-build-hook layer, else the base wrapper
+    /// `MobBootstrapSpec::new` installs over the caller's service): the tap
+    /// must see the initial-turn policy after every hook that could change
+    /// it.
+    live_event_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
     /// Installed only on the persistent runtime-backed path: absorbs the
@@ -6051,6 +6060,10 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
+                // The tap's layer is the innermost MobKit layer, so this is
+                // the policy the inner service executes: the tap only covers
+                // creates that defer their initial turn.
+                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
@@ -6059,6 +6072,18 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
+                // For a deferred create no run of this actor can start yet
+                // (the caller still holds its turn boundary), so the console
+                // forwarder can adopt a stream that misses nothing.
+                if let Some(tap) = self.live_event_tap.as_ref() {
+                    tap.capture(
+                        self.inner.as_ref(),
+                        actor_witness_slot,
+                        &result.session_id,
+                        initial_turn,
+                    )
+                    .await;
+                }
                 Ok(self
                     .complete_create(result, context, capability_context)
                     .await)
@@ -6093,6 +6118,7 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
+                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
@@ -6102,6 +6128,16 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
+                // Same create-time capture as the actor-witness create above.
+                if let Some(tap) = self.live_event_tap.as_ref() {
+                    tap.capture(
+                        self.inner.as_ref(),
+                        actor_witness_slot,
+                        &result.session_id,
+                        initial_turn,
+                    )
+                    .await;
+                }
                 Ok(self
                     .complete_create(result, context, capability_context)
                     .await)
@@ -7706,6 +7742,9 @@ pub struct MobBootstrapSpec {
     /// session-service wrapper `Self::new` installs; see
     /// [`Self::dispatch_taint_slot`].
     pub(crate) dispatch_taint_slot: crate::memory::dispatch_taint::DispatchTaintSlot,
+    /// Create-time live event capture carried by the base session-service
+    /// wrapper `Self::new` installs; see [`Self::live_session_event_tap`].
+    pub(crate) live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -7717,16 +7756,56 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
+        // The base layer wraps the caller's service directly, so it is the
+        // innermost MobKit layer and owns the create-time live event tap.
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
+        Self::compose(
+            definition,
+            storage,
+            session_service,
+            live_session_event_tap.clone(),
+            Some(live_session_event_tap),
+        )
+    }
+
+    /// [`Self::new`] over a service whose innermost MobKit layer already
+    /// carries `live_session_event_tap`: the stock constructors put it on
+    /// their pre-build-hook layer, the one wrapping the concrete session
+    /// service, so the tap reads the initial-turn policy of the request that
+    /// service actually executes, after every hook that could rewrite it.
+    fn over_tapped_service(
+        definition: MobDefinition,
+        storage: MobStorage,
+        session_service: Arc<dyn MobSessionService>,
+        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+    ) -> Self {
+        Self::compose(
+            definition,
+            storage,
+            session_service,
+            live_session_event_tap,
+            None,
+        )
+    }
+
+    fn compose(
+        definition: MobDefinition,
+        storage: MobStorage,
+        session_service: Arc<dyn MobSessionService>,
+        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+        base_layer_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
+    ) -> Self {
         // Every spec construction path funnels through here (the stock
-        // constructors call `Self::new` with their wrapped service), so this
-        // is the ONE layer that carries the dispatch-time taint slot: each
-        // member create passes it exactly once, and later `with_*` re-wraps
-        // never double-decorate.
+        // constructors call `Self::over_tapped_service` with their wrapped
+        // service), so this is the ONE layer that carries the dispatch-time
+        // taint slot: each member create passes it exactly once, and later
+        // `with_*` re-wraps never double-decorate.
         let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: Some(dispatch_taint_slot.clone()),
+            live_event_tap: base_layer_tap,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -7769,6 +7848,7 @@ impl MobBootstrapSpec {
             runtime_authority_prewarm: None,
             committed_boundary_recoverer: None,
             dispatch_taint_slot,
+            live_session_event_tap,
             _ephemeral_dir: None,
         }
     }
@@ -7780,6 +7860,16 @@ impl MobBootstrapSpec {
     /// [`crate::SessionTaintTracker`]; unfilled it costs nothing.
     pub fn dispatch_taint_slot(&self) -> crate::memory::dispatch_taint::DispatchTaintSlot {
         self.dispatch_taint_slot.clone()
+    }
+
+    /// The create-time live event tap every member session create built from
+    /// this spec feeds (see `crate::live_session_event_tap`). Unarmed it
+    /// captures nothing; the unified runtime arms it before preparing the mob
+    /// and hands it to the console forwarder that adopts its captures.
+    pub(crate) fn live_session_event_tap(
+        &self,
+    ) -> crate::live_session_event_tap::LiveSessionEventTap {
+        self.live_session_event_tap.clone()
     }
 
     /// Record the composition-time storage durability resolution for a spec
@@ -8005,6 +8095,7 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
             session_read_absorber: None,
@@ -8048,6 +8139,7 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -8095,6 +8187,7 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -8258,15 +8351,23 @@ impl MobBootstrapSpec {
         } else {
             after_create_hook
         };
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
             archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8274,9 +8375,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
             // Ephemeral mob, ephemeral councils. Writing a durable council
@@ -8284,7 +8385,6 @@ impl MobBootstrapSpec {
             // behind that no later boot of this mob can claim.
             None,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -8711,10 +8811,12 @@ impl MobBootstrapSpec {
         > = concrete_session_service.clone();
         let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             // ONE machine for the whole spec. Without the override the
             // wrapped service answers `runtime_adapter()` with the persistent
@@ -8730,6 +8832,12 @@ impl MobBootstrapSpec {
             )))),
             archived_terminal_authority: Some(archived_terminal_authority),
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8737,9 +8845,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             workgraph_service.clone(),
             Some(session_llm_default_client_slot),
             // Persistent mob: councils become durable, so a restart can see
@@ -8755,7 +8863,6 @@ impl MobBootstrapSpec {
                 &crate::council_wiring::council_db_for_store_path(&store_path),
             )?,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_authority_prewarm = Some(runtime_authority_prewarm);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
@@ -9041,15 +9148,23 @@ impl MobBootstrapSpec {
                 }
             })
         });
+        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
+            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
             archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
+        // Wrap first and install the agent mob tools on the spec's final
+        // service: child mobs are built on the tools' session service, so
+        // they get every layer member creates get (the gateway's
+        // `with_agent_mob_tools` order).
+        let mut spec =
+            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9057,9 +9172,9 @@ impl MobBootstrapSpec {
             console_spawn_sink_slot,
             identity_runtime_slot,
         ) = install_agent_mob_tools(
-            &definition,
+            &spec.definition,
             mob_tools_slot,
-            Arc::clone(&session_service),
+            Arc::clone(&spec.session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
             // Persistent mob: councils become durable here too. This site
@@ -9077,7 +9192,6 @@ impl MobBootstrapSpec {
             // preceding `persistent_*` function and read as correct.
             None,
         );
-        let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -12807,6 +12921,7 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -12859,6 +12974,7 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -12904,6 +13020,7 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -13782,6 +13899,7 @@ realm_profile = "worker-v2"
             inner,
             hook,
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -14291,6 +14409,7 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -14942,6 +15061,7 @@ comms = true
                         inner: probe.clone(),
                         hook: Arc::new(|_| panic!("starting a turn must not run a pre-build hook")),
                         dispatch_taint: None,
+                        live_event_tap: None,
                         after_create_hook: None,
                         runtime_adapter_override: None,
                         session_read_absorber: None,
@@ -15044,6 +15164,7 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::clone(&machine)),
             session_read_absorber: None,
@@ -15095,6 +15216,7 @@ comms = true
             inner: probe.clone(),
             hook: Arc::new(|_| panic!("live commit must not invoke a build hook")),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15172,6 +15294,7 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15216,6 +15339,7 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15389,6 +15513,7 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15446,6 +15571,7 @@ comms = true
             inner,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -15578,6 +15704,7 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
+            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
