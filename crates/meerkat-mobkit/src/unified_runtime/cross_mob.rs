@@ -3167,15 +3167,15 @@ mod tests {
             MemberPlane::Local,
             placed_plane("tcp://other-host.test:4300"),
         ] {
-            match choose_install_descriptor(&placed, &target) {
-                InstallDescriptorChoice::PlacedEndpoint(descriptor) => {
-                    assert_eq!(
-                        descriptor.address.to_string(),
-                        "tcp://placed-host.test:4200"
-                    );
-                }
-                other => panic!("a placed member must never be inproc: {other:?}"),
-            }
+            let choice = choose_install_descriptor(&placed, &target);
+            assert!(
+                matches!(
+                    &choice,
+                    InstallDescriptorChoice::PlacedEndpoint(descriptor)
+                        if descriptor.address.to_string() == "tcp://placed-host.test:4200"
+                ),
+                "a placed member must be described by its durable endpoint, never inproc: {choice:?}"
+            );
         }
     }
 
