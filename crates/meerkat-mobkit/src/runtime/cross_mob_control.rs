@@ -2208,7 +2208,134 @@ async fn handle_lookup_member(
     }
 }
 
-async fn handle_lookup_member_raw(
+/// Where a member's runtime lives, classified once per operation from one
+/// `MobHandle::member_endpoint_status` snapshot. Placement decides, never the
+/// presence of a local comms runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MemberPlane {
+    /// The member's runtime lives in this process (or has none yet).
+    Local,
+    /// The member is placed on a remote host and is reachable only at this
+    /// durable host-acknowledged endpoint.
+    Placed(meerkat_core::comms::TrustedPeerDescriptor),
+}
+
+impl MemberPlane {
+    pub(crate) fn is_placed(&self) -> bool {
+        matches!(self, Self::Placed(_))
+    }
+}
+
+/// Why a member's plane could not be classified.
+#[derive(Debug)]
+pub(crate) enum MemberPlaneFault {
+    /// A placed member without a usable endpoint (Broken, or none
+    /// registered). Never downgraded to a local `inproc` address.
+    PlacedUnavailable { reason: String },
+    /// The endpoint query itself failed.
+    Mob(meerkat_mob::MobError),
+}
+
+impl std::fmt::Display for MemberPlaneFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlacedUnavailable { reason } => {
+                write!(f, "placed member has no usable endpoint: {reason}")
+            }
+            Self::Mob(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+/// Classify where `member`'s runtime lives. An absent member classifies as
+/// `Local`; callers report its absence through their own member lookup.
+pub(crate) async fn member_plane(
+    handle: &meerkat_mob::MobHandle,
+    member: &meerkat_mob::ids::AgentIdentity,
+) -> Result<MemberPlane, MemberPlaneFault> {
+    match handle
+        .member_endpoint_status(member)
+        .await
+        .map_err(MemberPlaneFault::Mob)?
+    {
+        Some(meerkat_mob::MobMemberEndpointStatus::Host(descriptor)) => {
+            Ok(MemberPlane::Placed(descriptor))
+        }
+        Some(meerkat_mob::MobMemberEndpointStatus::HostUnavailable { reason }) => {
+            Err(MemberPlaneFault::PlacedUnavailable { reason })
+        }
+        Some(
+            meerkat_mob::MobMemberEndpointStatus::Local(_)
+            | meerkat_mob::MobMemberEndpointStatus::LocalUnavailable { .. },
+        )
+        | None => Ok(MemberPlane::Local),
+        Some(other) => Err(MemberPlaneFault::PlacedUnavailable {
+            reason: format!("unrecognized endpoint status {other:?}"),
+        }),
+    }
+}
+
+/// Where a member can be dialed across processes, in the same resolution
+/// order as every other cross-mob decision (placement first):
+///
+/// * a placed member answers with its durable host-acknowledged address;
+/// * a placed member without a usable endpoint is a typed fault, never a
+///   local `inproc` address;
+/// * a local member answers with its live runtime's advertised address
+///   (`tcp://host:port`, `uds:///path`, or `inproc://name`, which remote
+///   callers reject), or `None` without a live runtime (its registered
+///   address may be stale).
+pub(crate) async fn member_dialable_address(
+    handle: &meerkat_mob::MobHandle,
+    session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
+    member: &meerkat_mob::ids::AgentIdentity,
+) -> Result<Option<String>, MemberPlaneFault> {
+    if let MemberPlane::Placed(descriptor) = member_plane(handle, member).await? {
+        return Ok(Some(descriptor.address.to_string()));
+    }
+    if let Some(service) = session_service
+        && let Some(session_id) = handle.resolve_bridge_session_id(member).await
+        && let Some(comms) = service.comms_runtime(&session_id).await
+    {
+        return Ok(comms.advertised_address());
+    }
+    Ok(None)
+}
+
+/// The address a peer-info read reports for `member`: a placed member's
+/// durable host address, otherwise the in-process `inproc://{comms_name}`
+/// route a same-process caller installs.
+pub(crate) async fn member_peer_info_address(
+    handle: &meerkat_mob::MobHandle,
+    member: &meerkat_mob::ids::AgentIdentity,
+    comms_name: &str,
+) -> Result<String, MemberPlaneFault> {
+    Ok(peer_info_address_for(
+        &member_plane(handle, member).await?,
+        comms_name,
+    ))
+}
+
+/// Pure peer-info address choice: a placed member's durable host address,
+/// otherwise the in-process route.
+pub(crate) fn peer_info_address_for(plane: &MemberPlane, comms_name: &str) -> String {
+    match plane {
+        MemberPlane::Placed(descriptor) => descriptor.address.to_string(),
+        MemberPlane::Local => format!("inproc://{comms_name}"),
+    }
+}
+
+/// The typed LookupMember error for a plane fault.
+pub(crate) fn lookup_address_fault(fault: MemberPlaneFault) -> (String, String) {
+    match fault {
+        MemberPlaneFault::PlacedUnavailable { .. } => {
+            ("placed_member_unavailable".to_string(), fault.to_string())
+        }
+        MemberPlaneFault::Mob(error) => ("mob_error".to_string(), error.to_string()),
+    }
+}
+
+pub(crate) async fn handle_lookup_member_raw(
     handle: &meerkat_mob::MobHandle,
     session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
     remote_member: &str,
@@ -2258,16 +2385,11 @@ async fn handle_lookup_member_raw(
         }
     };
     let pubkey_b64 = entry.transport_public_key().map(str::to_string);
-    // The member's dialable envelope-listener address lives on its live
-    // comms runtime, not in the roster; resolve it through the session
-    // service when the control handler was given one.
-    let mut advertised_address = None;
-    if let Some(service) = session_service
-        && let Some(session_id) = handle.resolve_bridge_session_id(&mid).await
-        && let Some(comms) = service.comms_runtime(&session_id).await
-    {
-        advertised_address = comms.advertised_address();
-    }
+    // The member's dialable envelope-listener address: its live local comms
+    // runtime, or a placed member's host-acknowledged durable endpoint.
+    let advertised_address = member_dialable_address(handle, session_service, &mid)
+        .await
+        .map_err(lookup_address_fault)?;
     Ok(ControlResponse::Member {
         peer_id,
         comms_name,

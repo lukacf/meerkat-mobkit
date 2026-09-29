@@ -541,6 +541,48 @@ async fn spawn_test_member(runtime: &UnifiedRuntime, member: &str) {
         .unwrap_or_else(|error| panic!("spawn {member}: {error}"));
 }
 
+/// A member whose runtime lives in this process presents its durable
+/// endpoint with owner `Local`: cross-mob wiring keeps describing it by its
+/// live runtime (and `inproc` between same-process mobs). Only a placed
+/// member (owner `Host`) is described by its durable host endpoint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_member_durable_endpoint_is_owned_locally() {
+    let _serial = TOPOLOGY_TEST_LOCK.lock().await;
+    let root = tempfile::tempdir().expect("root");
+    let runtime = build_runtime(root.path(), "endpoint-owner", "alice").await;
+    let (peer_id, _, _) = runtime
+        .local_member_peer_info("alice")
+        .await
+        .expect("alice peer info");
+    // Resolve the roster identity the alias maps to by its published peer id.
+    let identity = runtime
+        .mob_handle()
+        .list_all_members()
+        .await
+        .into_iter()
+        .find(|entry| entry.peer_id().is_some_and(|id| id.to_string() == peer_id))
+        .map(|entry| entry.agent_identity)
+        .expect("alice is in the roster");
+    let endpoint = runtime
+        .mob_handle()
+        .member_peer_endpoint(&identity)
+        .await
+        .expect("query alice endpoint")
+        .expect("a spawned member has a durable endpoint");
+    assert_eq!(endpoint.owner, meerkat_mob::MobMemberEndpointOwner::Local);
+    assert_eq!(endpoint.descriptor.peer_id.to_string(), peer_id);
+    assert!(
+        runtime
+            .mob_handle()
+            .member_peer_endpoint(&meerkat_mob::AgentIdentity::from("nobody"))
+            .await
+            .expect("query absent endpoint")
+            .is_none(),
+        "an absent member publishes no endpoint"
+    );
+    shutdown(&runtime).await;
+}
+
 /// Public-host acceptance: query/plan/apply/operation all run through the
 /// coordinator, the resulting edge carries a real sender-attributed peer
 /// message, and a clean process reconstruction restores process-local aliases
