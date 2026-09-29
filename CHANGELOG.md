@@ -365,6 +365,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and 7.86x after (11.95x to 8.03x at about 4 MB). The two
   `unchanged_boundaries_over_*_hash_the_transcript_once` tests bound a
   projection of an unchanged transcript at one digest.
+- The console's recovery history refresh no longer re-reads a busy member's
+  whole session every discovery tick (#487). A member with a staged or
+  running turn is not idle, so its refresh stays unsettled and the member
+  stays on the retry list. Every 5 s pass used to skip the write-epoch gate
+  and read the full document again. An unsettled pass over an unchanged
+  durable write epoch now skips the read and keeps the retry armed. The pass
+  that observes the member settled, any pass after a durable write, and any
+  forced refresh still read
+  (`unsettled_recovery_refresh_does_not_reread_an_unchanged_document`).
 
 - Console voice readiness is fast and never a false "no". The server bounds
   a check at 4 s (below the console's 5 s request timeout) and, on expiry,
