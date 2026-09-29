@@ -4724,6 +4724,32 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    /// Same authority minting as [`Self::load_committed_whole_blob_snapshot`]:
+    /// the metadata read is a view of the same committed document.
+    async fn load_committed_whole_blob_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::CommittedWholeBlobMetadata>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
+        if let Some(metadata) = self
+            .inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await?
+        {
+            return Ok(Some(metadata));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
+        self.inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await
+    }
+
     async fn commit_prepared_whole_blob_snapshot_cas(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -17368,10 +17394,19 @@ comms = true
             Arc::clone(&inner),
             Arc::clone(&adapter) as Arc<dyn SessionStore>,
         ));
-        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
-            .await
-            .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
-            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        let committed =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
+                .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        // meerkat #1255: the decorator forwards the metadata-only read of the
+        // same committed row (never the trait default), with its authority.
+        let metadata =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_metadata(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"))
+                .unwrap_or_else(|| panic!("the committed metadata must be readable"));
+        assert_eq!(metadata.authority(), committed.authority());
 
         let successor_revision = successor
             .transcript_revision()
