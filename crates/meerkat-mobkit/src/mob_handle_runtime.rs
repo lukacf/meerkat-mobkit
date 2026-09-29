@@ -6342,6 +6342,20 @@ macro_rules! delegate_mob_session_service {
                 self.inner.observe_member_status_view(session_id).await
             }
 
+            // Forwarded exactly: the inner persistent service records the
+            // interrupted-run notice in the durable transcript without a turn.
+            // The trait default refuses, so behind this wrapper the notice
+            // would stay owed instead of being recorded.
+            async fn append_system_notice_under_runtime_turn_boundary(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                record: meerkat_core::types::SystemNoticeRecord,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .append_system_notice_under_runtime_turn_boundary(session_id, record)
+                    .await
+            }
+
             // Forwarded exactly: the inner service observes the durable
             // source from authority, catalog and lifecycle rows without a
             // body read. Required since meerkat 0.8.47; a wrapper that
@@ -7459,6 +7473,18 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::SessionId,
     ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
         self.inner.observe_member_status_view(session_id).await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: the typed
+    // system-notice append the runtime uses for interrupted-run notices.
+    async fn append_system_notice_under_runtime_turn_boundary(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        record: meerkat_core::types::SystemNoticeRecord,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .append_system_notice_under_runtime_turn_boundary(session_id, record)
+            .await
     }
 
     // Forwarded exactly, as in `delegate_mob_session_service!`: the body-free
