@@ -67,9 +67,19 @@ type Envelope = EventEnvelope<AgentEvent>;
 /// Unarmed taps capture nothing: only a runtime that also runs the console
 /// forwarder (which adopts captures) arms it, so MobRuntime-only embedders
 /// never buffer events nobody reads.
+///
+/// A tap carries two independent lanes over the same create-time captures:
+/// the console forwarder's (this handle) and the identity health monitor's
+/// ([`Self::identity_health_lane`]). Each lane has its own captures, arm flag
+/// and change signal, so each consumer adopts its own stream of every
+/// actor's events from its first one, and neither consumer's adoption or
+/// disarm affects the other.
 #[derive(Clone)]
 pub(crate) struct LiveSessionEventTap {
     state: Arc<TapState>,
+    /// The identity health monitor's lane, present on the root tap only; a
+    /// lane handle (from [`Self::identity_health_lane`]) has none.
+    health: Option<Arc<TapState>>,
 }
 
 struct TapState {
@@ -79,6 +89,17 @@ struct TapState {
     /// Bumped on every new capture so the forwarder can reconcile at once
     /// instead of waiting for its next scheduled attempt.
     changes: watch::Sender<u64>,
+}
+
+impl TapState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            armed: AtomicBool::new(false),
+            capacity,
+            captures: Mutex::new(HashMap::new()),
+            changes: watch::channel(0).0,
+        }
+    }
 }
 
 /// A capture waiting for adoption. Dropping it (superseded, swept, or
@@ -117,12 +138,18 @@ impl Default for LiveSessionEventTap {
 impl LiveSessionEventTap {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            state: Arc::new(TapState {
-                armed: AtomicBool::new(false),
-                capacity,
-                captures: Mutex::new(HashMap::new()),
-                changes: watch::channel(0).0,
-            }),
+            state: Arc::new(TapState::new(capacity)),
+            health: Some(Arc::new(TapState::new(capacity))),
+        }
+    }
+
+    /// The identity health monitor's lane: a tap handle over the same
+    /// create-time captures with its own queues, arm flag and change signal.
+    /// A lane handle captures only into its own lane.
+    pub(crate) fn identity_health_lane(&self) -> Self {
+        Self {
+            state: Arc::clone(self.health.as_ref().unwrap_or(&self.state)),
+            health: None,
         }
     }
 
@@ -155,6 +182,24 @@ impl LiveSessionEventTap {
     /// Takes only the inner service's session read lock, never the
     /// turn-finalization boundary.
     pub(crate) async fn capture(
+        &self,
+        inner: &dyn MobSessionService,
+        slot: &LiveSessionActorWitnessSlot,
+        id: &SessionId,
+        initial_turn: InitialTurnPolicy,
+    ) {
+        self.capture_lane(inner, slot, id, initial_turn).await;
+        if let Some(health) = self.health.as_ref() {
+            let lane = Self {
+                state: Arc::clone(health),
+                health: None,
+            };
+            lane.capture_lane(inner, slot, id, initial_turn).await;
+        }
+    }
+
+    /// [`Self::capture`] into this handle's own lane only.
+    async fn capture_lane(
         &self,
         inner: &dyn MobSessionService,
         slot: &LiveSessionActorWitnessSlot,
@@ -270,6 +315,12 @@ impl LiveSessionEventTap {
     /// the per-member session resolution when there is nothing to adopt.
     pub(crate) fn holds_captures(&self) -> bool {
         !self.lock_captures().is_empty()
+    }
+
+    /// Drop the capture for `id`, if any, ending its pump: its consumer will
+    /// never adopt it.
+    pub(crate) fn discard(&self, id: &SessionId) {
+        self.lock_captures().remove(id);
     }
 
     /// Drop captures whose actor incarnation was revoked, ending their pumps.
