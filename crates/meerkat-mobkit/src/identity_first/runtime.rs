@@ -2385,13 +2385,13 @@ pub(crate) trait MemberSessionRotationObserver: Send + Sync {
 }
 
 /// Run completions of a member's actor that already happened but are not
-/// counted yet: the identity health monitor's create-time capture of the
-/// actor, while it waits for adoption. [`IdentityRuntime::completion_cursor`]
+/// counted yet: the session's events that meerkat retains past the point the
+/// identity health monitor credited. [`IdentityRuntime::completion_cursor`]
 /// credits them before every read.
 #[async_trait::async_trait]
 pub(crate) trait PendingCompletionDrain: Send + Sync {
-    /// Consume the uncounted events of `session_id`'s capture and return how
-    /// many were run completions.
+    /// Consume the uncounted events of `session_id` published so far and
+    /// return how many were run completions.
     async fn drain(&self, session_id: &SessionId) -> u64;
 }
 
@@ -14248,7 +14248,7 @@ impl IdentityRuntime {
     /// this read cannot rewind.
     ///
     /// Credit before read: completions that already happened but are still
-    /// queued in an unadopted create-time capture are credited first, so the
+    /// uncounted in the session's retained events are credited first, so the
     /// read never precedes the credit of a completion that happened before it
     /// (a baseline taken now can then never be satisfied by an older turn).
     pub async fn completion_cursor(&self, identity: &AgentIdentity) -> CompletionCursor {
@@ -14292,7 +14292,8 @@ impl IdentityRuntime {
     }
 
     /// Install the source of completions that happened but are not counted
-    /// yet: the identity health monitor's unadopted create-time captures.
+    /// yet: meerkat's retained session events past the health monitor's
+    /// credited position.
     pub(crate) fn install_pending_completion_drain(&self, drain: Arc<dyn PendingCompletionDrain>) {
         *self
             .pending_completion_drain

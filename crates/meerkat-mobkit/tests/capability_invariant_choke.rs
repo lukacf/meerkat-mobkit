@@ -113,13 +113,10 @@ fn unified_builder_roots_funnel_through_wrapped_stock_constructors() {
             "builder root must retain {constructor}"
         );
     }
-    // `over_tapped_service` composes the same common wrapper as
-    // `Self::new`; the stock constructors use it because their pre-build-hook
-    // layer, not the common wrapper, carries the create-time live event tap.
     assert_eq!(
         occurrences(
             RUNTIME_SOURCE,
-            "Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);"
+            "let mut spec = Self::new(definition, storage, session_service);"
         ),
         3,
         "every stock constructor used by the builder must install the common wrapper"

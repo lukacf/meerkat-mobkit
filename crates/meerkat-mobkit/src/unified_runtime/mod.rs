@@ -265,10 +265,10 @@ pub struct UnifiedRuntime {
     /// installed identity runtime; the identity health monitor's typed wake
     /// for attaching a member whose lease just landed.
     identity_lease_wake: tokio::sync::watch::Sender<u64>,
-    /// The identity health monitor's lane of the live session event tap,
-    /// armed only once an identity-first context is installed (nothing else
-    /// adopts its captures).
-    identity_health_tap: crate::live_session_event_tap::LiveSessionEventTap,
+    /// Per-session sequence through which the identity health monitor and
+    /// the completion-cursor drain credited run completions, shared so each
+    /// completion is credited exactly once.
+    identity_completion_ledger: Arc<HealthCompletionLedger>,
     identity_lease_renewal_task:
         tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedLeaseRenewalTask>>,
     identity_continuity_repair_task:
@@ -457,7 +457,6 @@ impl UnifiedRuntime {
         mob_runtime: MobRuntime,
         module_runtime: MobkitRuntimeHandle,
         persistent_metadata: Arc<dyn PersistentMetadataStore>,
-        live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
     ) -> Self {
         // Construct the metadata table first so the structural-events store
         // can be wired with it — every projected envelope picks up the
@@ -466,13 +465,13 @@ impl UnifiedRuntime {
         let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
         let identity_runtime_authority = Arc::new(std::sync::RwLock::new(None));
         let identity_lease_wake = tokio::sync::watch::channel(0_u64).0;
-        let identity_health_tap = live_event_tap.identity_health_lane();
+        let identity_completion_ledger = Arc::new(HealthCompletionLedger::default());
         let mob_event_ingress = Some(Self::create_event_ingress(
             mob_runtime.handle(),
             mob_runtime.agent_mob_mcp_state(),
             mob_events_store.clone(),
             Arc::clone(&identity_runtime_authority),
-            live_event_tap,
+            Arc::clone(&identity_completion_ledger),
             identity_lease_wake.subscribe(),
         ));
         let mob_events_task = Self::spawn_mob_events_subscriber(
@@ -550,7 +549,7 @@ impl UnifiedRuntime {
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             implicit_delegate_identity_runtime: identity_runtime_authority,
             identity_lease_wake,
-            identity_health_tap,
+            identity_completion_ledger,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             retired_supervisor_cleanups: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
@@ -733,11 +732,6 @@ impl UnifiedRuntime {
             .bind_authority(topology_authority)
             .await
             .map_err(|error| UnifiedRuntimeBootstrapError::Topology(error.to_string()))?;
-        // Armed before `prepare` so members materialized inside it are
-        // captured too: the console forwarder built in `from_parts` adopts
-        // those captures instead of subscribing after their first run.
-        let live_event_tap = mob_spec.live_session_event_tap();
-        live_event_tap.arm();
         // `prepare`, not `bootstrap`: an identity-first resume of a persistent
         // log must stay Stopped until its continuity owners are registered,
         // because the lift is what triggers session revival.
@@ -752,13 +746,8 @@ impl UnifiedRuntime {
 
         match module_start_result {
             Ok(Ok(module_runtime)) => {
-                let mut runtime = Self::from_parts(
-                    mob_runtime,
-                    module_runtime,
-                    persistent_metadata,
-                    live_event_tap,
-                )
-                .await;
+                let mut runtime =
+                    Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await;
                 runtime.topology_controller = topology_controller;
                 // Configuration-only; dispatches nothing into the mob.
                 runtime
@@ -1181,15 +1170,17 @@ impl UnifiedRuntime {
         context
             .runtime
             .install_lease_observer(self.identity_lease_wake.clone());
-        // Identity-first only: capture each new actor's stream for the health
-        // monitor from its first event, and let completion-cursor reads credit
-        // what such a capture already holds before they answer.
-        self.identity_health_tap.arm();
-        context
-            .runtime
-            .install_pending_completion_drain(Arc::new(HealthLaneCompletions(
-                self.identity_health_tap.clone(),
-            )));
+        // Let completion-cursor reads credit the completions a member's actor
+        // already published but the health monitor has not credited yet,
+        // replayed from meerkat's retained session events.
+        if let Some(session_service) = self.mob_runtime.session_service().cloned() {
+            context
+                .runtime
+                .install_pending_completion_drain(Arc::new(ReplayedCompletionDrain {
+                    session_service,
+                    ledger: Arc::clone(&self.identity_completion_ledger),
+                }));
+        }
         self.identity_first_context = Some(context);
         if let Some(projection) = self.console_projection.get() {
             projection.update_identity_authority("default", self.identity_runtime().cloned());
@@ -1693,7 +1684,7 @@ impl UnifiedRuntime {
         identity_runtime: Arc<
             std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>,
         >,
-        live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+        completion_ledger: Arc<HealthCompletionLedger>,
         identity_lease_changes: tokio::sync::watch::Receiver<u64>,
     ) -> MobEventIngress {
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
@@ -1707,7 +1698,7 @@ impl UnifiedRuntime {
             mob_handle.clone(),
             agent_mob_mcp_state.clone(),
             identity_runtime,
-            live_event_tap.identity_health_lane(),
+            completion_ledger,
             identity_lease_changes,
         ));
         let task = tokio::spawn(run_resilient_mob_agent_event_forwarder(
@@ -1715,7 +1706,6 @@ impl UnifiedRuntime {
             agent_mob_mcp_state,
             event_tx,
             mob_events,
-            live_event_tap,
         ));
         MobEventIngress::Forwarder(MobEventForwarder {
             event_rx,
@@ -1741,8 +1731,7 @@ impl UnifiedRuntime {
         if let Some(MobEventIngress::Forwarder(forwarder)) = replaced {
             forwarder.task.abort();
             forwarder.identity_stream_health_task.abort();
-            // Settle the aborted tasks' drops (the console forwarder disarms
-            // the live event tap on exit) before the test takes over.
+            // Settle the aborted tasks' drops before the test takes over.
             let _ = forwarder.task.await;
             let _ = forwarder.identity_stream_health_task.await;
         }
@@ -1872,12 +1861,43 @@ type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 struct AttachedStreams {
     /// The attachment serving each current roster binding.
     current: HashMap<TrackedAgentEventStream, StreamAttachment>,
-    /// Streams of known actor incarnations (adopted from a create-time
-    /// capture) whose binding left the roster while they are still open, by
-    /// attachment generation. A live one is re-keyed when its member is
+    /// Streams of known actor incarnations (the console forwarder's
+    /// subscriptions name theirs) whose binding left the roster while they
+    /// are still open, by attachment generation. A live one is re-keyed when its member is
     /// rebound onto the same actor; a revoked one is a predecessor still
     /// draining, and holds back its member's next attachment until it closes.
     departed: HashMap<u64, DepartedStream>,
+    /// Event ids each member's streams already forwarded (console forwarder
+    /// only). A replaying subscription can overlap what an earlier stream of
+    /// the same member forwarded; those envelopes are not repeated.
+    forwarded: HashMap<MemberStreamOwner, Arc<std::sync::Mutex<ForwardedEventIds>>>,
+}
+
+/// Most recent event ids remembered per member: meerkat's per-actor replay
+/// window (1024 envelopes) with headroom.
+const FORWARDED_EVENT_ID_WINDOW: usize = 2048;
+
+/// A bounded window of the event ids one member's streams forwarded.
+#[derive(Default)]
+struct ForwardedEventIds {
+    order: std::collections::VecDeque<uuid::Uuid>,
+    seen: HashSet<uuid::Uuid>,
+}
+
+impl ForwardedEventIds {
+    /// Record `event_id`; `false` when it was already forwarded.
+    fn first_sighting(&mut self, event_id: uuid::Uuid) -> bool {
+        if !self.seen.insert(event_id) {
+            return false;
+        }
+        self.order.push_back(event_id);
+        while self.order.len() > FORWARDED_EVENT_ID_WINDOW {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
+        }
+        true
+    }
 }
 
 struct DepartedStream {
@@ -1995,6 +2015,33 @@ impl AttachedStreams {
             .map(|(generation, _)| *generation)
     }
 
+    /// The forwarded-event window shared by `owner`'s streams.
+    fn forwarded_for(
+        &mut self,
+        owner: &MemberStreamOwner,
+    ) -> Arc<std::sync::Mutex<ForwardedEventIds>> {
+        Arc::clone(self.forwarded.entry(owner.clone()).or_default())
+    }
+
+    /// Forget the forwarded-event windows of members that left the roster
+    /// and hold no open stream.
+    fn retain_forwarded_for(&mut self, roster: &HashSet<TrackedAgentEventStream>) {
+        let Self {
+            current,
+            departed,
+            forwarded,
+        } = self;
+        forwarded.retain(|owner, _| {
+            roster
+                .iter()
+                .any(|key| MemberStreamOwner::of(key) == *owner)
+                || current
+                    .keys()
+                    .any(|key| MemberStreamOwner::of(key) == *owner)
+                || departed.values().any(|departed| departed.owner == *owner)
+        });
+    }
+
     fn holds_departed(&self, owner: &MemberStreamOwner) -> bool {
         self.departed
             .values()
@@ -2030,8 +2077,8 @@ struct StreamAttachment {
     /// own mapping so a same-actor rebinding re-keys it in place instead of
     /// opening a second stream to the same actor.
     attribution: Arc<std::sync::Mutex<StreamAttribution>>,
-    /// The exact actor incarnation the stream belongs to, when it was adopted
-    /// from a create-time capture. Ordinary subscriptions do not learn it.
+    /// The exact actor incarnation the stream belongs to, when its
+    /// subscription named it (the console forwarder's local members).
     actor: Option<meerkat_session::LiveSessionActorWitness>,
     /// Cuts the stream off; it then yields [`ForwardedAgentEvent::Abandoned`]
     /// and closes.
@@ -2098,12 +2145,25 @@ fn attach_member_event_stream(
     role: ProfileName,
     stream: EventStream,
     actor: Option<meerkat_session::LiveSessionActorWitness>,
+    forwarded: Option<Arc<std::sync::Mutex<ForwardedEventIds>>>,
 ) -> StreamAttachment {
     static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let attribution = Arc::new(std::sync::Mutex::new(StreamAttribution::new(key, role)));
     let events = Arc::clone(&attribution);
     let closing = Arc::clone(&attribution);
+    let stream = match forwarded {
+        Some(forwarded) => stream
+            .filter(move |envelope| {
+                let first = forwarded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .first_sighting(envelope.event_id);
+                futures::future::ready(first)
+            })
+            .boxed(),
+        None => stream,
+    };
     let (stream, abort) = futures::stream::abortable(stream);
     let cut_off = abort.clone();
     let session_id = actor.as_ref().map(|actor| actor.session_id().clone());
@@ -2172,8 +2232,8 @@ const PERMANENT_STREAM_FAILURE_THRESHOLD: u32 = 4;
 
 /// Upper bound between reconcile passes when no change signal fires. The
 /// reconcilers are event-driven (machine-state watches + managed-mob-set
-/// epoch + stream closures + backoff deadlines, plus new create-time
-/// captures for the console forwarder); this tick only bounds drift
+/// epoch + stream closures + backoff deadlines, plus identity lease changes
+/// for the health monitor); this tick only bounds drift
 /// from signals they cannot observe — identity-lease fencing-token motion
 /// without a machine transition, and membership changes that land inside the
 /// unwatched window while a brand-new mob's watcher is being bound. It must
@@ -2188,8 +2248,7 @@ const RECONCILE_SAFETY_INTERVAL: Duration = Duration::from_secs(30);
 /// - any tracked mob's [`meerkat_mob::MobMachineStateChanges`] firing (the
 ///   mob actor publishes on every applied machine input),
 /// - the managed mob-set epoch changing (child mob created/removed),
-/// - a new create-time capture on the live session event tap (console
-///   forwarder only),
+/// - an identity lease landing or moving (identity health monitor only),
 /// - the earliest pending subscribe-backoff deadline,
 /// - the [`RECONCILE_SAFETY_INTERVAL`] safety tick.
 ///
@@ -2203,9 +2262,6 @@ const RECONCILE_SAFETY_INTERVAL: Duration = Duration::from_secs(30);
 struct ReconcileCadence {
     machine_watchers: BTreeMap<String, meerkat_mob::MobMachineStateChanges>,
     mob_set_changes: Option<tokio::sync::watch::Receiver<u64>>,
-    /// New create-time captures on the live session event tap (console
-    /// forwarder only): adopting one must not wait for a backoff deadline.
-    tap_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// Identity lease changes (identity health monitor only): the monitor
     /// attaches a member only once its identity lease exists, and a lease
     /// can land with no mob machine transition after it.
@@ -2220,16 +2276,12 @@ struct ReconcileCadence {
 }
 
 impl ReconcileCadence {
-    fn new(
-        agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
-        tap_changes: Option<tokio::sync::watch::Receiver<u64>>,
-    ) -> Self {
+    fn new(agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>) -> Self {
         Self {
             machine_watchers: BTreeMap::new(),
             mob_set_changes: agent_mob_mcp_state
                 .as_ref()
                 .map(|state| state.mob_set_changes()),
-            tap_changes,
             lease_changes: None,
             next_safety_deadline: tokio::time::Instant::now() + RECONCILE_SAFETY_INTERVAL,
         }
@@ -2274,7 +2326,6 @@ impl ReconcileCadence {
         let Self {
             machine_watchers,
             mob_set_changes,
-            tap_changes,
             lease_changes,
             ..
         } = self;
@@ -2308,13 +2359,6 @@ impl ReconcileCadence {
             }
         };
 
-        let tap_change = async {
-            match tap_changes.as_mut() {
-                Some(rx) => rx.changed().await,
-                None => std::future::pending().await,
-            }
-        };
-
         let lease_change = async {
             match lease_changes.as_mut() {
                 Some(rx) => rx.changed().await,
@@ -2322,12 +2366,11 @@ impl ReconcileCadence {
             }
         };
 
-        let (mob_set_closed, tap_closed, lease_closed) = tokio::select! {
-            () = machine_change => (false, false, false),
-            result = mob_set_change => (result.is_err(), false, false),
-            result = tap_change => (false, result.is_err(), false),
-            result = lease_change => (false, false, result.is_err()),
-            () = tokio::time::sleep_until(deadline) => (false, false, false),
+        let (mob_set_closed, lease_closed) = tokio::select! {
+            () = machine_change => (false, false),
+            result = mob_set_change => (result.is_err(), false),
+            result = lease_change => (false, result.is_err()),
+            () = tokio::time::sleep_until(deadline) => (false, false),
         };
         if lease_closed {
             self.lease_changes = None;
@@ -2336,9 +2379,6 @@ impl ReconcileCadence {
             // The dispatcher state is gone; a closed watch completes
             // immediately, so it must not stay selectable.
             self.mob_set_changes = None;
-        }
-        if tap_closed {
-            self.tap_changes = None;
         }
     }
 }
@@ -2397,87 +2437,111 @@ async fn current_identity_fencing_token(
         .map(|lease| lease.fencing_token.get())
 }
 
-/// Whether the identity health monitor may still attach a member it skips
-/// today for having no identity lease: only an identity-first member of the
-/// primary mob whose identity is neither Broken nor retiring can gain one.
-async fn health_capture_may_attach(
-    primary_mob_id: &str,
-    mob_id: &str,
-    durable_identity: Option<&str>,
-    identity_runtime: Option<
-        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    >,
-) -> bool {
-    if mob_id != primary_mob_id {
-        return false;
-    }
-    let Some(identity) =
-        durable_identity.and_then(|label| crate::identity_first::AgentIdentity::parse(label).ok())
-    else {
-        return false;
-    };
-    let Some(authority) = identity_runtime.and_then(|slot| {
-        slot.read()
+/// The per-session envelope sequence through which run completions were
+/// credited to the identity completion cursor.
+///
+/// Meerkat numbers a session's events monotonically for the life of the
+/// session service, across its actor incarnations, and replays retained
+/// events from a cursor. The identity health monitor's replaying streams and
+/// the completion-cursor drain ([`ReplayedCompletionDrain`]) both read those
+/// events; each claims an envelope's sequence before crediting it, and a
+/// claim succeeds only above the session's high-water, so every envelope is
+/// credited by exactly one of them. Both read in sequence order, so an
+/// envelope skipped by one was already claimed by the other.
+#[derive(Default)]
+struct HealthCompletionLedger {
+    credited_through: std::sync::Mutex<HashMap<meerkat_core::types::SessionId, u64>>,
+}
+
+impl HealthCompletionLedger {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<meerkat_core::types::SessionId, u64>> {
+        self.credited_through
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }) else {
-        // No identity authority installed yet: it may still lease.
-        return true;
-    };
-    !matches!(
-        authority.status(&identity).await.map(|status| status.state),
-        Ok(crate::identity_first::IdentityLifecycleState::Broken
-            | crate::identity_first::IdentityLifecycleState::Retiring)
-            | Err(_)
-    )
-}
-
-/// Credit `completions` drained from a capture to `durable_identity`.
-async fn credit_drained_completions(
-    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    durable_identity: Option<&str>,
-    completions: u64,
-) {
-    if completions == 0 {
-        return;
     }
-    let authority = identity_runtime
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let (Some(authority), Some(identity)) = (
-        authority,
-        durable_identity.and_then(|label| crate::identity_first::AgentIdentity::parse(label).ok()),
-    ) else {
-        return;
-    };
-    for _ in 0..completions {
-        authority.record_turn_completed(&identity).await;
+
+    /// Claim `seq` of `session_id` for crediting. `false` when an envelope
+    /// at or past it was already claimed. Synthetic gap markers carry
+    /// sequence 0 and are never claimed.
+    fn claim(&self, session_id: &meerkat_core::types::SessionId, seq: u64) -> bool {
+        if seq == 0 {
+            return false;
+        }
+        let mut credited = self.lock();
+        let high_water = credited.entry(session_id.clone()).or_default();
+        if seq <= *high_water {
+            return false;
+        }
+        *high_water = seq;
+        true
+    }
+
+    /// Where the drain resumes reading `session_id`'s events.
+    fn resume_cursor(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> meerkat_core::comms::SessionEventCursor {
+        match self.lock().get(session_id) {
+            Some(seq) => meerkat_core::comms::SessionEventCursor::After(*seq),
+            None => meerkat_core::comms::SessionEventCursor::Earliest,
+        }
+    }
+
+    /// Treat everything `session_id` published through `tail` as credited:
+    /// its sequence space no longer matches the ledger's, so nothing at or
+    /// below the tail may be credited again (an under-count, never an
+    /// over-count).
+    fn settle_through(&self, session_id: &meerkat_core::types::SessionId, tail: u64) {
+        self.lock().insert(session_id.clone(), tail);
     }
 }
 
-/// The health monitor's adoption: credit what the capture already holds
-/// (under the capture's exclusive drain, so nothing is counted twice), then
-/// take the rest as the attached stream.
-async fn take_health_capture(
-    tap: &crate::live_session_event_tap::LiveSessionEventTap,
-    session_id: &meerkat_core::types::SessionId,
-    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    durable_identity: Option<&str>,
-) -> Option<crate::live_session_event_tap::AdoptedCapture> {
-    let completions = tap.drain_completions(session_id).await;
-    credit_drained_completions(identity_runtime, durable_identity, completions).await;
-    tap.take_live(session_id)
+/// Credits the run completions a member's actor already published but the
+/// identity health monitor has not credited yet, before every completion
+/// cursor read under a lease ([`crate::identity_first::runtime::PendingCompletionDrain`]).
+///
+/// It replays the session's retained events after the ledger's high-water.
+/// Meerkat captures the replayed prefix atomically with publication, so
+/// every completion published before the read is in it; only that prefix is
+/// consumed (the subscription's live tail is left to the monitor).
+struct ReplayedCompletionDrain {
+    session_service: Arc<dyn meerkat_mob::MobSessionService>,
+    ledger: Arc<HealthCompletionLedger>,
 }
-
-/// The identity health monitor's unadopted captures as the identity
-/// runtime's source of completions that happened but are not counted yet.
-struct HealthLaneCompletions(crate::live_session_event_tap::LiveSessionEventTap);
 
 #[async_trait::async_trait]
-impl crate::identity_first::runtime::PendingCompletionDrain for HealthLaneCompletions {
+impl crate::identity_first::runtime::PendingCompletionDrain for ReplayedCompletionDrain {
     async fn drain(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
-        self.0.drain_completions(session_id).await
+        use futures::FutureExt as _;
+        let cursor = self.ledger.resume_cursor(session_id);
+        let subscription = match self
+            .session_service
+            .subscribe_agent_session_events_from(session_id, cursor)
+            .await
+        {
+            Ok(subscription) => subscription,
+            Err(meerkat_core::comms::StreamError::CursorRejected {
+                reason: meerkat_core::comms::SessionEventCursorRejection::AheadOfTail { tail },
+                ..
+            }) => {
+                self.ledger.settle_through(session_id, tail);
+                return 0;
+            }
+            // No live actor serves the session here (a placed member, or
+            // one not materialized yet): nothing is retained to credit.
+            Err(_) => return 0,
+        };
+        let mut stream = subscription.stream;
+        let mut completions = 0;
+        while let Some(Some(envelope)) = stream.next().now_or_never() {
+            // Claim every envelope so the high-water tracks the read
+            // position; only a claimed completion is credited.
+            let claimed = self.ledger.claim(session_id, envelope.seq);
+            if claimed && matches!(envelope.payload, AgentEvent::RunCompleted { .. }) {
+                completions += 1;
+            }
+        }
+        completions
     }
 }
 
@@ -2494,32 +2558,39 @@ impl crate::identity_first::runtime::PendingCompletionDrain for HealthLaneComple
 /// Losing the subscription mid-turn means a missed completion, so the cursor
 /// under-counts rather than over-counts: a waiter times out instead of being
 /// told a turn finished that did not. A completion that happened before a
-/// cursor read is never credited after it: while the monitor's create-time
-/// capture of the actor waits for adoption, every cursor read (and the
-/// adoption itself) first credits what the capture already holds
-/// ([`crate::identity_first::runtime::PendingCompletionDrain`]), and each
-/// captured event is consumed exactly once. The one lag left is the
-/// monitor's own: a completion its attached stream has delivered but its task
-/// has not processed yet, which is bounded by one scheduling hop.
+/// cursor read is never credited after it: every cursor read under a lease
+/// first credits the completions the actor already published
+/// ([`ReplayedCompletionDrain`]), and the [`HealthCompletionLedger`] lets
+/// each envelope be credited once, by the drain or by the monitor's
+/// replaying stream. Returns whether this envelope credited a completion.
 async fn record_identity_turn_completion(
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    ledger: &HealthCompletionLedger,
     durable_identity: Option<&str>,
     envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
-) {
+) -> bool {
+    // Claim every envelope, not only terminals, so the ledger's high-water
+    // tracks the stream's position.
+    let claimed = envelope
+        .source_session_id()
+        .is_some_and(|session_id| ledger.claim(session_id, envelope.seq));
     let failed = match envelope.payload {
         AgentEvent::RunCompleted { .. } => false,
         AgentEvent::RunFailed { .. } => true,
-        _ => return,
+        _ => return false,
     };
+    if !claimed {
+        return false;
+    }
     let Some(durable_identity) = durable_identity else {
-        return;
+        return false;
     };
     let authority = identity_runtime
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     let Some(authority) = authority else {
-        return;
+        return false;
     };
     let identity = match crate::identity_first::AgentIdentity::parse(durable_identity) {
         Ok(identity) => identity,
@@ -2529,13 +2600,15 @@ async fn record_identity_turn_completion(
                 error = %error,
                 "mobkit identity health monitor: run completion carried an unparseable durable identity"
             );
-            return;
+            return false;
         }
     };
     if failed {
         authority.record_turn_failed(&identity).await;
+        false
     } else {
         authority.record_turn_completed(&identity).await;
+        true
     }
 }
 
@@ -2639,15 +2712,11 @@ async fn run_resilient_mob_agent_event_forwarder(
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     event_tx: Sender<ForwardedMemberEvent>,
     mob_events: MobEventsStore,
-    live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = AttachedStreams::default();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, Some(live_event_tap.changes()));
-    // Nothing adopts captures once this task ends (or is aborted), so stop
-    // capturing and release what is held.
-    let _disarm = crate::live_session_event_tap::DisarmOnDrop::new(live_event_tap.clone());
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state);
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2656,7 +2725,6 @@ async fn run_resilient_mob_agent_event_forwarder(
         &mut subscribe_failures,
         &mut streams,
         None,
-        Some(&live_event_tap),
     ))
     .await;
     cadence.rebind(&handles);
@@ -2703,13 +2771,13 @@ async fn run_resilient_mob_agent_event_forwarder(
                         // A closure is itself the re-subscribe trigger: the
                         // member may still be live (stream lag/teardown race),
                         // and no machine transition is guaranteed to follow.
-                        let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None, Some(&live_event_tap))).await;
+                        let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
                         cadence.rebind(&handles);
                     }
                 }
             }
             () = cadence.wait(earliest_reconcile_deadline(&subscribe_failures, &tracked)) => {
-                let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None, Some(&live_event_tap))).await;
+                let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
                 cadence.rebind(&handles);
             }
         }
@@ -2723,31 +2791,19 @@ async fn run_identity_stream_health_monitor(
     handle: MobHandle,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    health_tap: crate::live_session_event_tap::LiveSessionEventTap,
+    completion_ledger: Arc<HealthCompletionLedger>,
     lease_changes: tokio::sync::watch::Receiver<u64>,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = AttachedStreams::default();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    // Two typed wakes beyond machine changes: a new create-time capture in
-    // this monitor's own tap lane, and an identity lease landing. A member is
-    // attached only once its lease exists; its capture, taken when its actor
-    // was created, predates every run, so the completion of a turn that ran
-    // before the attach is still read from it, once, in order (credited by
-    // the next cursor read or by the adoption, whichever comes first).
-    //
-    // Creates that bypass the tap (a plain `create_session`, the
-    // witness-less creates, a RunImmediately create) leave no capture; such a
-    // member is attached by an ordinary subscription as soon as the lease
-    // wake fires. A turn that completes between the lease landing and that
-    // subscription is missed, so the cursor under-counts (a waiter times
-    // out) and never over-counts. Routing those creates through the tap
-    // needs a witness slot meerkat does not hand the plain create, and a
-    // RunImmediately create has already run its first turn inside the create.
-    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, Some(health_tap.changes()))
-        .with_lease_changes(lease_changes);
-    // Nothing adopts this lane's captures once the monitor ends.
-    let _disarm = crate::live_session_event_tap::DisarmOnDrop::new(health_tap.clone());
+    // One typed wake beyond machine changes: an identity lease landing. A
+    // member is attached only once its lease exists, and its subscription
+    // replays the actor's retained events from the first, so the completion
+    // of a turn that ran before the attach is still read, once, in order:
+    // credited by the next cursor read's drain or by this stream, whichever
+    // claims it first in the completion ledger.
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state).with_lease_changes(lease_changes);
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2756,7 +2812,6 @@ async fn run_identity_stream_health_monitor(
         &mut subscribe_failures,
         &mut streams,
         Some(&identity_runtime),
-        Some(&health_tap),
     ))
     .await;
     cadence.rebind(&handles);
@@ -2767,8 +2822,9 @@ async fn run_identity_stream_health_monitor(
                 match forwarded {
                     ForwardedAgentEvent::Event(event) => {
                         let (_, _, _, envelope, durable_identity) = *event;
-                        record_identity_turn_completion(
+                        let _credited = record_identity_turn_completion(
                             &identity_runtime,
+                            &completion_ledger,
                             durable_identity.as_deref(),
                             &envelope,
                         ).await;
@@ -2797,7 +2853,6 @@ async fn run_identity_stream_health_monitor(
                             &mut subscribe_failures,
                             &mut streams,
                             Some(&identity_runtime),
-                            Some(&health_tap),
                         )).await;
                         cadence.rebind(&handles);
                     }
@@ -2811,7 +2866,6 @@ async fn run_identity_stream_health_monitor(
                     &mut subscribe_failures,
                     &mut streams,
                     Some(&identity_runtime),
-                    Some(&health_tap),
                 )).await;
                 cadence.rebind(&handles);
             }
@@ -2830,11 +2884,7 @@ async fn reconcile_agent_event_streams(
     identity_runtime: Option<
         &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     >,
-    live_event_tap: Option<&crate::live_session_event_tap::LiveSessionEventTap>,
 ) -> Vec<MobHandle> {
-    if let Some(tap) = live_event_tap {
-        tap.sweep();
-    }
     let primary_mob_id = handle.mob_id().to_string();
     let mut handles = vec![handle.clone()];
     if let Some(state) = agent_mob_mcp_state {
@@ -2902,6 +2952,13 @@ async fn reconcile_agent_event_streams(
     // Drop backoff bookkeeping for members that have left the roster so the
     // map can't grow without bound across the runtime's lifetime.
     subscribe_failures.retain(|key, _| current.contains(key));
+    tracked.retain_forwarded_for(&current);
+    // The console forwarder tracks the exact actor incarnation so a revoked
+    // predecessor's stream drains before its successor's; the identity
+    // health monitor keeps its ordinary untracked streams. Both replay each
+    // actor's retained events from the first, so a run that started before
+    // the attach is still read from `RunStarted`.
+    let console = identity_runtime.is_none();
 
     for handle in &handles {
         let mob_id = handle.mob_id().to_string();
@@ -2920,24 +2977,8 @@ async fn reconcile_agent_event_streams(
             )
             .await;
             if identity_runtime.is_some() && identity_fencing_token.is_none() {
-                // The identity health monitor never tracks a member outside
-                // the identity-first primary mob; its create-time capture in
-                // the monitor's lane would never be adopted, so drop it. An
-                // identity member whose lease has not landed yet keeps its
-                // capture: the lease wake re-runs this pass and adopts it.
-                if let Some(tap) = live_event_tap
-                    && tap.holds_captures()
-                    && !health_capture_may_attach(
-                        &primary_mob_id,
-                        &mob_id,
-                        durable_identity.as_deref(),
-                        identity_runtime,
-                    )
-                    .await
-                    && let Some(session_id) = handle.resolve_bridge_session_id(&identity).await
-                {
-                    tap.discard(&session_id);
-                }
+                // An identity member whose lease has not landed yet is
+                // attached by the lease wake's pass.
                 continue;
             }
             let tracked_key = TrackedAgentEventStream {
@@ -2951,11 +2992,11 @@ async fn reconcile_agent_event_streams(
             if let Some(attachment) = tracked.current.get_mut(&tracked_key) {
                 // Served. A served stream whose actor was revoked (a
                 // replacement kept the same binding atoms) keeps serving until
-                // its close re-runs this pass: the successor's capture is
-                // adopted only after the predecessor's last event, so no
-                // predecessor event can follow the successor's first on the
-                // console, which attributes lineage-less events to the
-                // identity's current run. Bounded by the drain deadline.
+                // its close re-runs this pass: the successor is subscribed
+                // only after the predecessor's last event, so no predecessor
+                // event can follow the successor's first on the console,
+                // which attributes lineage-less events to the identity's
+                // current run. Bounded by the drain deadline.
                 if attachment
                     .actor
                     .as_ref()
@@ -2976,16 +3017,6 @@ async fn reconcile_agent_event_streams(
             // their streams age out once their binding leaves the roster.
             if !forwarder_should_subscribe(entry.status) {
                 subscribe_failures.remove(&tracked_key);
-                // The health monitor will not attach a member that is no
-                // longer Active; drop its capture instead of holding it for
-                // the actor's lifetime.
-                if identity_runtime.is_some()
-                    && let Some(tap) = live_event_tap
-                    && tap.holds_captures()
-                    && let Some(session_id) = handle.resolve_bridge_session_id(&identity).await
-                {
-                    tap.discard(&session_id);
-                }
                 continue;
             }
 
@@ -3005,29 +3036,24 @@ async fn reconcile_agent_event_streams(
             }
 
             // The member's session, observed together with this exact
-            // binding, only when the tap or a departed stream could answer
-            // for it.
-            let bound_session = match live_event_tap {
-                Some(tap) if tap.holds_captures() || tracked.holds_departed(&owner) => {
-                    match handle.resolve_bridge_session_id(&identity).await {
-                        Some(candidate)
-                            if tap.holds_live(&candidate)
-                                || tracked.live_departed_for(&owner, &candidate).is_some() =>
-                        {
-                            match observe_bound_session(handle, &tracked_key).await {
-                                Some(session_id) => Some(session_id),
-                                // This member's binding or session moved
-                                // while observing; the machine change that
-                                // moved it re-runs this pass. Nothing is
-                                // attached meanwhile, so a successor's stream
-                                // never lands under a predecessor's binding.
-                                None => continue,
-                            }
+            // binding, only when a departed stream could answer for it.
+            let bound_session = if tracked.holds_departed(&owner) {
+                match handle.resolve_bridge_session_id(&identity).await {
+                    Some(candidate) if tracked.live_departed_for(&owner, &candidate).is_some() => {
+                        match observe_bound_session(handle, &tracked_key).await {
+                            Some(session_id) => Some(session_id),
+                            // This member's binding or session moved while
+                            // observing; the machine change that moved it
+                            // re-runs this pass. Nothing is attached
+                            // meanwhile, so a successor's stream never lands
+                            // under a predecessor's binding.
+                            None => continue,
                         }
-                        _ => None,
                     }
+                    _ => None,
                 }
-                _ => None,
+            } else {
+                None
             };
 
             // Rebound onto the same live actor: move its stream to the new
@@ -3045,30 +3071,10 @@ async fn reconcile_agent_event_streams(
                 continue;
             }
 
-            // A stream captured when this member's live actor was created
-            // predates its first run; a subscription opened now may not
-            // (the session stream has no replay). Adopt it ahead of any
-            // backoff: the capture is typed by the session this binding is
-            // bound to and the exact actor incarnation's liveness.
-            let adopted = match (live_event_tap, bound_session.as_ref(), identity_runtime) {
-                (Some(tap), Some(session_id), Some(identity_runtime)) => {
-                    take_health_capture(
-                        tap,
-                        session_id,
-                        identity_runtime,
-                        tracked_key.durable_identity.as_deref(),
-                    )
-                    .await
-                }
-                (Some(tap), Some(session_id), None) => tap.take_live(session_id),
-                _ => None,
-            };
-
             // Back off an Active member that keeps failing to subscribe (a
             // genuinely stuck injector), so even that case can't spin the log.
             let now = tokio::time::Instant::now();
-            if adopted.is_none()
-                && let Some(backoff) = subscribe_failures.get(&tracked_key)
+            if let Some(backoff) = subscribe_failures.get(&tracked_key)
                 && now < backoff.next_attempt
             {
                 continue;
@@ -3076,41 +3082,19 @@ async fn reconcile_agent_event_streams(
 
             let role = entry.role.clone();
 
-            let subscription = match adopted {
-                Some(capture) => Ok((capture.stream, Some(capture.actor))),
-                None => match subscribe_agent_events_for_console_forwarder(handle, &identity).await
-                {
-                    Ok(stream) => {
-                        match capture_landed_while_subscribing(
-                            handle,
-                            live_event_tap,
-                            &tracked_key,
-                            identity_runtime,
-                        )
-                        .await
-                        {
-                            LandedCapture::None => Ok((stream, None)),
-                            LandedCapture::Adopted(capture) => {
-                                Ok((capture.stream, Some(capture.actor)))
-                            }
-                            // Drop the ordinary stream rather than leave the
-                            // capture behind to be adopted (and replayed) on
-                            // a later pass; the change re-runs this one.
-                            LandedCapture::Unconfirmed => continue,
-                        }
-                    }
-                    Err(error) => Err(error),
-                },
-            };
+            let subscription =
+                subscribe_agent_events_for_console_forwarder(handle, &identity, console).await;
             match subscription {
                 Ok((stream, actor)) => {
                     subscribe_failures.remove(&tracked_key);
+                    let forwarded = console.then(|| tracked.forwarded_for(&owner));
                     let attachment = attach_member_event_stream(
                         streams,
                         tracked_key.clone(),
                         role,
                         stream,
                         actor,
+                        forwarded,
                     );
                     tracked.current.insert(tracked_key, attachment);
                 }
@@ -3199,65 +3183,34 @@ async fn observe_bound_session(
     (bound && after.as_ref() == Some(&before)).then_some(before)
 }
 
-/// Whether a capture landed for the member while its ordinary subscription
-/// was opening.
-enum LandedCapture {
-    None,
-    /// It covers the actor from its first event: use it instead of the
-    /// ordinary stream, so it is not left behind to be adopted again later.
-    Adopted(crate::live_session_event_tap::AdoptedCapture),
-    /// A live capture waits for the member's session, but its binding could
-    /// not be confirmed in one machine state.
-    Unconfirmed,
-}
-
-async fn capture_landed_while_subscribing(
-    handle: &MobHandle,
-    live_event_tap: Option<&crate::live_session_event_tap::LiveSessionEventTap>,
-    key: &TrackedAgentEventStream,
-    identity_runtime: Option<
-        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    >,
-) -> LandedCapture {
-    let Some(tap) = live_event_tap.filter(|tap| tap.holds_captures()) else {
-        return LandedCapture::None;
-    };
-    let Some(candidate) = handle.resolve_bridge_session_id(&key.member_identity).await else {
-        return LandedCapture::None;
-    };
-    if !tap.holds_live(&candidate) {
-        return LandedCapture::None;
-    }
-    match observe_bound_session(handle, key).await {
-        Some(session_id) => match match identity_runtime {
-            Some(identity_runtime) => {
-                take_health_capture(
-                    tap,
-                    &session_id,
-                    identity_runtime,
-                    key.durable_identity.as_deref(),
-                )
-                .await
-            }
-            None => tap.take_live(&session_id),
-        } {
-            Some(capture) => LandedCapture::Adopted(capture),
-            None => LandedCapture::None,
-        },
-        None => LandedCapture::Unconfirmed,
-    }
-}
-
 async fn subscribe_agent_events_for_console_forwarder(
     handle: &MobHandle,
     identity: &AgentIdentity,
-) -> Result<EventStream, meerkat_mob::MobError> {
+    console: bool,
+) -> Result<
+    (
+        EventStream,
+        Option<meerkat_session::LiveSessionActorWitness>,
+    ),
+    meerkat_mob::MobError,
+> {
     // Keep the console forwarder on the same authoritative subscription path
     // as `/agents/{id}/events`. The observation shortcut can lag the actor's
     // runtime-member projection in identity-first/runtime-backed packs, which
     // leaves the console with only session-history backfill while direct agent
     // SSE streams live deltas correctly.
-    handle.subscribe_agent_events(identity).await
+    //
+    // Meerkat retains each actor incarnation's recent events, so replaying
+    // from the earliest retained one covers a run that started before this
+    // attach (a restored member's first run included); a gap beyond the
+    // retained window arrives as meerkat's typed `StreamTruncated` marker.
+    let subscription = handle
+        .subscribe_agent_events_from(identity, meerkat_core::comms::SessionEventCursor::Earliest)
+        .await?;
+    // The identity health monitor does not hold successors back, so it
+    // leaves the actor untracked (its departed streams are cut off instead).
+    let actor = if console { subscription.actor } else { None };
+    Ok((subscription.stream, actor))
 }
 
 /// Streaming subscription against the meerkat mob event ledger. Each
@@ -3844,7 +3797,7 @@ mod tests {
     /// the cadence and eventually complete a recreated `wait`.
     #[tokio::test(start_paused = true)]
     async fn reconcile_cadence_safety_deadline_survives_recreated_waits() {
-        let mut cadence = ReconcileCadence::new(&None, None);
+        let mut cadence = ReconcileCadence::new(&None);
         let mut fired = false;
         // Seven 5s rounds = 35s of simulated event churn; the 30s deadline
         // anchored at construction must fire within them.
@@ -3868,7 +3821,7 @@ mod tests {
     /// re-arm the deadline.
     #[tokio::test(start_paused = true)]
     async fn reconcile_cadence_rebind_rearms_safety_deadline() {
-        let mut cadence = ReconcileCadence::new(&None, None);
+        let mut cadence = ReconcileCadence::new(&None);
         tokio::time::sleep(Duration::from_secs(20)).await;
         cadence.rebind(&[]);
         tokio::select! {
@@ -4903,20 +4856,16 @@ model = "gpt-5.5"
         );
     }
 
-    const TAPPED_WORKER: &str = "worker";
+    const IDLE_WORKER: &str = "worker";
 
-    /// A runtime-backed mob (the builder's ephemeral shape) with an armed
-    /// live event tap and one idle turn-driven member, seated while no
-    /// console forwarder exists yet: the post-restore window in which the
-    /// forwarder has not attached to a live member.
-    async fn tapped_mob_with_idle_worker(
+    /// A runtime-backed mob (the builder's ephemeral shape) with one idle
+    /// turn-driven member, seated while no console forwarder exists yet: the
+    /// post-restore window in which the forwarder has not attached to a live
+    /// member.
+    async fn mob_with_idle_worker(
         mob_id: &str,
         temp_dir: &tempfile::TempDir,
-    ) -> (
-        MobRuntime,
-        crate::live_session_event_tap::LiveSessionEventTap,
-        meerkat_core::types::SessionId,
-    ) {
+    ) -> (MobRuntime, meerkat_core::types::SessionId) {
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\
              external_addressable = true\n\n[profiles.worker.tools]\ncomms = true\n"
@@ -4942,27 +4891,21 @@ model = "gpt-5.5"
             notify_orchestrator_on_resume: true,
             default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
         });
-        let tap = spec.live_session_event_tap();
-        tap.arm();
         let mob_runtime = MobRuntime::bootstrap(spec)
             .await
             .expect("bootstrap mob runtime");
         let handle = mob_runtime.handle();
         let mut member = SpawnMemberSpec::new(
             ProfileName::from("worker"),
-            AgentIdentity::from(TAPPED_WORKER),
+            AgentIdentity::from(IDLE_WORKER),
         );
         member.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
         handle.ensure_member(member).await.expect("seat worker");
         let session_id = handle
-            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .resolve_bridge_session_id(&AgentIdentity::from(IDLE_WORKER))
             .await
             .expect("worker session binding");
-        assert!(
-            tap.holds_live(&session_id),
-            "the worker's materialization went through the witness-bearing create"
-        );
-        (mob_runtime, tap, session_id)
+        (mob_runtime, session_id)
     }
 
     /// Run one worker turn and return meerkat's own events for it, observed
@@ -4972,10 +4915,10 @@ model = "gpt-5.5"
         content: &str,
     ) -> Vec<meerkat_core::event::EventEnvelope<AgentEvent>> {
         let mut probe = handle
-            .subscribe_agent_events(&AgentIdentity::from(TAPPED_WORKER))
+            .subscribe_agent_events(&AgentIdentity::from(IDLE_WORKER))
             .await
             .expect("probe subscription");
-        crate::mob_handle_runtime::send_message_on_mob(handle, TAPPED_WORKER, content)
+        crate::mob_handle_runtime::send_message_on_mob(handle, IDLE_WORKER, content)
             .await
             .expect("send to worker");
         let mut events = Vec::new();
@@ -5005,14 +4948,13 @@ model = "gpt-5.5"
 
     /// A run that started, and finished, before the console forwarder
     /// existed still reaches the console timeline with meerkat's own
-    /// sequence, and so does the next run. Before the create-time tap the
-    /// forwarder subscribed only once it existed, so the first run was gone
-    /// (the session stream has no replay).
+    /// sequence, and so does the next run: the forwarder replays the actor's
+    /// retained events from its first.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn console_forwarder_delivers_runs_that_started_before_it_attached() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, session_id) =
-            tapped_mob_with_idle_worker("console-tap-first-run", &temp_dir).await;
+        let (mob_runtime, session_id) =
+            mob_with_idle_worker("console-replay-first-run", &temp_dir).await;
         let handle = mob_runtime.handle();
         let first_run = run_worker_turn(&handle, "probe-1").await;
         let first_terminal_seq = first_run.last().expect("first run events").seq;
@@ -5022,7 +4964,7 @@ model = "gpt-5.5"
                 MobKitConfig {
                     modules: vec![],
                     discovery: crate::types::DiscoverySpec {
-                        namespace: "console-tap-first-run".to_string(),
+                        namespace: "console-replay-first-run".to_string(),
                         modules: vec![],
                     },
                     pre_spawn: vec![],
@@ -5039,7 +4981,6 @@ model = "gpt-5.5"
             mob_runtime,
             module_runtime,
             Arc::new(InMemoryMetadataStore::new()),
-            tap,
         )
         .await;
 
@@ -5058,7 +4999,7 @@ model = "gpt-5.5"
                     .await
                     .expect("console replay")
                     .into_iter()
-                    .filter(|frame| frame.identity == TAPPED_WORKER)
+                    .filter(|frame| frame.identity == IDLE_WORKER)
                     .collect()
             };
         crate::test_wait::poll_until(
@@ -5116,14 +5057,14 @@ model = "gpt-5.5"
         runtime.shutdown().await;
     }
 
-    /// The forwarder adopts a create-time capture even while the member's
-    /// ordinary subscription is parked behind a backoff deadline, and the
-    /// adopted stream still holds the already-finished first run.
+    /// The forwarder's subscription, opened after the member's first run
+    /// already finished, names the member's actor and starts at that run's
+    /// `RunStarted`; a lapsed subscribe backoff is cleared by it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn reconcile_adopts_capture_over_pending_backoff() {
+    async fn reconcile_attaches_from_the_actors_first_event_after_a_finished_run() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, _session_id) =
-            tapped_mob_with_idle_worker("console-tap-backoff", &temp_dir).await;
+        let (mob_runtime, _session_id) =
+            mob_with_idle_worker("console-replay-backoff", &temp_dir).await;
         let handle = mob_runtime.handle();
         run_worker_turn(&handle, "probe-1").await;
 
@@ -5131,7 +5072,7 @@ model = "gpt-5.5"
             .list_members_including_retiring()
             .await
             .into_iter()
-            .find(|entry| entry.agent_identity == TAPPED_WORKER)
+            .find(|entry| entry.agent_identity == IDLE_WORKER)
             .expect("worker roster entry");
         let (runtime_id, fence_token) = entry.binding_atoms().expect("worker binding atoms");
         let key = TrackedAgentEventStream {
@@ -5146,7 +5087,7 @@ model = "gpt-5.5"
         let mut subscribe_failures = HashMap::from([(
             key.clone(),
             SubscribeBackoff {
-                next_attempt: tokio::time::Instant::now() + Duration::from_secs(30),
+                next_attempt: tokio::time::Instant::now(),
                 consecutive_failures: 1,
             },
         )]);
@@ -5159,7 +5100,6 @@ model = "gpt-5.5"
             &mut subscribe_failures,
             &mut streams,
             None,
-            Some(&tap),
         ))
         .await;
 
@@ -5168,23 +5108,23 @@ model = "gpt-5.5"
                 .current
                 .get(&key)
                 .is_some_and(|attachment| attachment.actor.is_some()),
-            "the capture was adopted"
+            "the subscription names the member's actor"
         );
         assert!(
             subscribe_failures.is_empty(),
-            "adoption clears the pending backoff"
+            "the subscription clears the lapsed backoff"
         );
         let first = tokio::time::timeout(Duration::from_secs(5), streams.next())
             .await
-            .expect("adopted stream yields")
-            .expect("adopted stream open");
+            .expect("attached stream yields")
+            .expect("attached stream open");
         let ForwardedAgentEvent::Event(event) = first else {
-            panic!("adopted stream closed before yielding the first run");
+            panic!("attached stream closed before yielding the first run");
         };
         let (_, _, _, envelope, _) = *event;
         assert!(
             matches!(envelope.payload, AgentEvent::RunStarted { .. }),
-            "the adopted stream starts at the finished run's start, got {:?}",
+            "the stream starts at the finished run's start, got {:?}",
             envelope.payload
         );
         assert_eq!(envelope.seq, 1);
@@ -5193,36 +5133,15 @@ model = "gpt-5.5"
         let _ = handle.shutdown().await;
     }
 
-    /// A new create-time capture wakes the console forwarder's cadence at
-    /// once: adopting it never waits for a backoff deadline or the safety
-    /// tick.
-    #[tokio::test(start_paused = true)]
-    async fn reconcile_cadence_wakes_on_a_new_tap_capture() {
-        let fixture = crate::live_session_event_tap::test_support::fixture();
-        let tap = fixture.spec.live_session_event_tap();
-        tap.arm();
-        let changes = tap.changes();
-        crate::live_session_event_tap::test_support::create_through_spec(&fixture).await;
-
-        let mut cadence = ReconcileCadence::new(&None, Some(changes));
-        let before = tokio::time::Instant::now();
-        cadence.wait(None).await;
-        assert_eq!(
-            tokio::time::Instant::now(),
-            before,
-            "the capture woke the cadence without any time passing, not its {RECONCILE_SAFETY_INTERVAL:?} safety tick"
-        );
-    }
-
     /// A member rebound (new binding atoms) onto the same live actor keeps
-    /// its adopted stream: the reconciler re-keys it instead of opening a
+    /// its stream: the reconciler re-keys it instead of opening a
     /// second stream to that actor, and attributes its events to the new
     /// binding from then on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn reconcile_rekeys_an_adopted_stream_onto_a_same_actor_rebinding() {
+    async fn reconcile_rekeys_a_stream_onto_a_same_actor_rebinding() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, _session_id) =
-            tapped_mob_with_idle_worker("console-tap-rekey", &temp_dir).await;
+        let (mob_runtime, _session_id) =
+            mob_with_idle_worker("console-replay-rekey", &temp_dir).await;
         let handle = mob_runtime.handle();
         let mut tracked = AttachedStreams::default();
         let mut subscribe_failures = HashMap::new();
@@ -5234,18 +5153,17 @@ model = "gpt-5.5"
             &mut subscribe_failures,
             &mut streams,
             None,
-            Some(&tap),
         ))
         .await;
         let (key, attachment) = tracked
             .current
             .drain()
             .next()
-            .expect("the capture was adopted");
+            .expect("the worker's stream attached");
         assert!(attachment.actor.is_some());
         let generation = attachment.generation;
 
-        // The same adopted stream, tracked under atoms the roster no longer
+        // The same stream, tracked under atoms the roster no longer
         // lists: the member's previous binding onto this actor.
         let mut previous = key.clone();
         previous.fence_token = FenceToken::new(key.fence_token.get() + 1_000);
@@ -5263,7 +5181,6 @@ model = "gpt-5.5"
             &mut subscribe_failures,
             &mut streams,
             None,
-            Some(&tap),
         ))
         .await;
 
@@ -5301,22 +5218,18 @@ model = "gpt-5.5"
     const RESTART_MEMBER: &str = "lead-1";
 
     /// One gateway-shaped boot against a durable store: a persistent spec,
-    /// `UnifiedRuntime::bootstrap` (which arms the tap and starts the console
-    /// forwarder), then identity-first activation and restore, which revives
-    /// the persisted member. Returns the spec's tap for inspection.
+    /// `UnifiedRuntime::bootstrap` (which starts the console forwarder), then
+    /// identity-first activation and restore, which revives the persisted
+    /// member.
     async fn boot_identity_first_persistent(
         mob_id: &str,
         mob_path: &std::path::Path,
         state_root: &std::path::Path,
-    ) -> (
-        UnifiedRuntime,
-        Arc<crate::identity_first::IdentityRuntime>,
-        crate::live_session_event_tap::LiveSessionEventTap,
-    ) {
+    ) -> (UnifiedRuntime, Arc<crate::identity_first::IdentityRuntime>) {
         let boot = boot_persistent_before_activation(mob_id, mob_path, state_root).await;
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, tap) = boot.activate().await;
-        (runtime, identity_runtime, tap)
+        let runtime = boot.activate().await;
+        (runtime, identity_runtime)
     }
 
     /// A booted persistent runtime whose identity-first restore has not run
@@ -5328,28 +5241,21 @@ model = "gpt-5.5"
         identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
         roster: Vec<crate::identity_first::DurableAgentSpec>,
-        tap: crate::live_session_event_tap::LiveSessionEventTap,
     }
 
     impl PersistentBootBeforeActivation {
-        async fn activate(
-            self,
-        ) -> (
-            UnifiedRuntime,
-            crate::live_session_event_tap::LiveSessionEventTap,
-        ) {
+        async fn activate(self) -> UnifiedRuntime {
             let Self {
                 mut runtime,
                 context,
                 roster,
-                tap,
                 ..
             } = self;
             runtime
                 .install_and_bootstrap_identity_first_context(context, &roster)
                 .await
                 .expect("activate and restore identity-first runtime");
-            (runtime, tap)
+            runtime
         }
     }
 
@@ -5392,7 +5298,6 @@ model = "gpt-5.5"
             notify_orchestrator_on_resume: true,
             default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
         });
-        let tap = spec.live_session_event_tap();
         let runtime = UnifiedRuntime::bootstrap(
             spec,
             MobKitConfig {
@@ -5457,7 +5362,6 @@ model = "gpt-5.5"
             identity_runtime,
             context,
             roster,
-            tap,
         }
     }
 
@@ -5499,54 +5403,52 @@ model = "gpt-5.5"
     /// `turn_started` (seq 2), exactly once.
     ///
     /// The real forwarder races the restore here, so this asserts only what
-    /// holds under every legal interleaving. Which stream attaches first is
-    /// not fixed: the forwarder adopts the create-time capture, or its
-    /// ordinary subscription (a backoff retry, or a machine-change pass) lands
-    /// in the window between the revived session becoming subscribable and
-    /// the capture's install. Both precede the actor's first run for a
-    /// deferred create, so both are lossless. That the capture is adopted
-    /// over a pending backoff is fixed deterministically, with the
-    /// interleaving pinned, by
+    /// holds under every legal interleaving: whenever the forwarder's
+    /// subscription lands (a backoff retry, or a machine-change pass), it
+    /// replays the revived actor's retained events from its first, so the
+    /// head arrives exactly once. The late-attach schedule is fixed
+    /// deterministically by
     /// `restored_members_first_run_reaches_the_console_after_stream_not_found_backoff`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn console_timeline_carries_a_revived_members_first_run_after_restart() {
-        console_timeline_after_restart("console-tap-restart", RestartShape::Live).await;
+        console_timeline_after_restart("console-replay-restart", RestartShape::Live).await;
     }
 
     /// Same, for a member the restore revives from its archived session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn console_timeline_carries_an_archived_members_first_run_after_restart() {
-        console_timeline_after_restart("console-tap-restart-archived", RestartShape::Retired).await;
+        console_timeline_after_restart("console-replay-restart-archived", RestartShape::Retired)
+            .await;
     }
 
     /// Boot twice against one durable store; the second boot's runtime has
     /// its own event ingress stopped (so a test drives the health monitor)
-    /// and its identity-health lane armed, and is activated (the revived
-    /// member's actor is captured in that lane, and its lease lands).
-    async fn health_lane_restart(
+    /// and is activated (the revived member's actor exists and its lease
+    /// lands). Returns the runtime's completion ledger, which its installed
+    /// completion drain shares.
+    async fn health_restart(
         mob_id: &str,
         temp: &tempfile::TempDir,
     ) -> (
         UnifiedRuntime,
         Arc<crate::identity_first::IdentityRuntime>,
-        crate::live_session_event_tap::LiveSessionEventTap,
+        Arc<HealthCompletionLedger>,
         crate::identity_first::AgentIdentity,
     ) {
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         commit_restart_member_turn(&first_identity, "before restart").await;
         first.shutdown().await;
 
         let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
-        // The runtime's own forwarder and health monitor stop (disarming both
-        // lanes); the test drives the monitor.
+        // The runtime's own forwarder and health monitor stop; the test
+        // drives the monitor.
         let _ingress = boot.runtime.install_test_event_ingress().await;
-        let health = boot.tap.identity_health_lane();
-        health.arm();
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, _) = boot.activate().await;
+        let runtime = boot.activate().await;
+        let ledger = Arc::clone(&runtime.identity_completion_ledger);
         let identity =
             crate::identity_first::AgentIdentity::parse(RESTART_MEMBER).expect("identity");
         assert!(
@@ -5558,53 +5460,60 @@ model = "gpt-5.5"
                 .is_some(),
             "the lease landed"
         );
-        (runtime, identity_runtime, health, identity)
+        (runtime, identity_runtime, ledger, identity)
     }
 
-    /// Drain the monitor's streams until one run completion went through,
-    /// crediting completions exactly as the monitor does.
-    async fn drive_health_until_a_completion(
-        streams: &mut SelectAll<TaggedAgentEventStream>,
-        slot: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    ) {
-        tokio::time::timeout(crate::test_wait::STRUCTURAL_BACKSTOP, async {
+    /// Drain the monitor's streams for the rest of the test, crediting
+    /// completions exactly as the monitor does.
+    fn drive_health_streams(
+        mut streams: SelectAll<TaggedAgentEventStream>,
+        slot: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+        ledger: Arc<HealthCompletionLedger>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
             while let Some(forwarded) = streams.next().await {
                 if let ForwardedAgentEvent::Event(event) = forwarded {
                     let (_, _, _, envelope, durable_identity) = *event;
-                    let completed = matches!(envelope.payload, AgentEvent::RunCompleted { .. });
-                    record_identity_turn_completion(slot, durable_identity.as_deref(), &envelope)
-                        .await;
-                    if completed {
-                        return;
-                    }
+                    let _credited = record_identity_turn_completion(
+                        &slot,
+                        &ledger,
+                        durable_identity.as_deref(),
+                        &envelope,
+                    )
+                    .await;
                 }
             }
-            panic!("the monitor's streams ended");
         })
-        .await
-        .expect("a run completion reaches the monitor");
+    }
+
+    /// A drain that credits nothing, so only the monitor can count a turn.
+    struct NoPendingCompletions;
+
+    #[async_trait::async_trait]
+    impl crate::identity_first::runtime::PendingCompletionDrain for NoPendingCompletions {
+        async fn drain(&self, _session_id: &meerkat_core::types::SessionId) -> u64 {
+            0
+        }
     }
 
     /// The identity health monitor's window (the MobKit operator-method
     /// seed-turn timeouts), and the late-replay over-count it must not
     /// cause. A turn runs and completes while the monitor is not attached.
     /// It is credited before the next completion-cursor read (credit before
-    /// read), so a baseline taken now already includes it; attaching later
-    /// credits nothing twice, and a wait on that baseline is satisfied only
-    /// by a newer turn, which the attached stream counts exactly once.
+    /// read, replayed from meerkat's retained session events), so a baseline
+    /// taken now already includes it. The monitor attaching later replays
+    /// the same events and credits nothing twice; a wait on that baseline is
+    /// satisfied only by a newer turn, counted exactly once whether the
+    /// monitor's stream or a cursor read's drain claims it first.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn identity_health_credits_a_window_turn_before_any_later_baseline() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let (runtime, identity_runtime, health, identity) =
-            health_lane_restart("identity-health-window", &temp).await;
+        let (runtime, identity_runtime, ledger, identity) =
+            health_restart("identity-health-window", &temp).await;
 
         let before = identity_runtime.completion_cursor(&identity).await;
         // The window: a turn runs and completes with no monitor attached.
-        let session_id = commit_restart_member_turn(&identity_runtime, "in the window").await;
-        assert!(
-            health.holds_live(&session_id),
-            "the monitor's lane holds the revived actor's capture"
-        );
+        commit_restart_member_turn(&identity_runtime, "in the window").await;
         let baseline = identity_runtime.completion_cursor(&identity).await;
         assert_eq!(
             baseline,
@@ -5612,7 +5521,7 @@ model = "gpt-5.5"
             "the read credited the window turn first, exactly once"
         );
 
-        // The monitor attaches now: it adopts the rest of the capture.
+        // The monitor attaches now and replays the actor's retained events.
         let slot = Arc::new(std::sync::RwLock::new(Some(identity_runtime.clone())));
         let handle = runtime.mob_handle();
         let mut tracked = AttachedStreams::default();
@@ -5625,45 +5534,32 @@ model = "gpt-5.5"
             &mut failures,
             &mut streams,
             Some(&slot),
-            Some(&health),
         ))
         .await;
-        assert!(
-            tracked
-                .current
-                .values()
-                .any(|attachment| attachment.actor.is_some()),
-            "the monitor attached through its capture"
-        );
-        assert!(!health.holds_live(&session_id));
-        assert_eq!(
-            identity_runtime.completion_cursor(&identity).await,
-            baseline,
-            "adoption credits nothing twice"
-        );
+        assert!(!tracked.current.is_empty(), "the monitor attached");
+        let monitor = drive_health_streams(streams, Arc::clone(&slot), Arc::clone(&ledger));
         assert!(
             identity_runtime
                 .wait_for_completion(&identity, baseline, Duration::from_millis(300))
                 .await
                 .is_err(),
-            "an older turn never satisfies a newer baseline"
+            "the replayed window turn is not credited twice, and never satisfies a newer baseline"
         );
 
-        // A newer turn is counted once, through the attached stream.
-        let turn = {
-            let identity_runtime = identity_runtime.clone();
-            tokio::spawn(async move {
-                commit_restart_member_turn(&identity_runtime, "after the attach").await
-            })
-        };
-        drive_health_until_a_completion(&mut streams, &slot).await;
-        turn.await.expect("turn task");
+        // A newer turn is counted once.
+        commit_restart_member_turn(&identity_runtime, "after the attach").await;
         let completed = identity_runtime
             .wait_for_completion(&identity, baseline, Duration::from_secs(5))
             .await
             .expect("the newer turn completes the wait");
         assert_eq!(completed, baseline.advanced(), "counted exactly once");
+        assert_eq!(
+            identity_runtime.completion_cursor(&identity).await,
+            baseline.advanced(),
+            "the monitor's replay and the drain never both credit it"
+        );
 
+        monitor.abort();
         runtime.shutdown().await;
     }
 
@@ -5671,19 +5567,15 @@ model = "gpt-5.5"
     /// not a hand-driven reconcile, attaches a member because its lease wake
     /// fired. The monitor starts with no identity authority installed, so its
     /// first passes skip the member; installing the authority and its lease
-    /// observer is the only wake, far inside the 30 s safety tick.
+    /// observer is the only wake, far inside the 30 s safety tick. The
+    /// completion drain is replaced by one that credits nothing, so only the
+    /// attached monitor can count the turn.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_health_monitor_attaches_on_the_lease_wake() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let (runtime, identity_runtime, health, identity) =
-            health_lane_restart("identity-health-wake", &temp).await;
-        let session_id = identity_runtime
-            .status(&identity)
-            .await
-            .expect("status")
-            .session_id
-            .expect("bound session");
-        assert!(health.holds_live(&session_id));
+        let (runtime, identity_runtime, ledger, identity) =
+            health_restart("identity-health-wake", &temp).await;
+        identity_runtime.install_pending_completion_drain(Arc::new(NoPendingCompletions));
 
         let slot = Arc::new(std::sync::RwLock::new(None));
         let (lease_wake, lease_changes) = tokio::sync::watch::channel(0_u64);
@@ -5691,32 +5583,22 @@ model = "gpt-5.5"
             runtime.mob_handle(),
             None,
             Arc::clone(&slot),
-            health.clone(),
+            ledger,
             lease_changes,
         ));
+        let baseline = identity_runtime.completion_cursor(&identity).await;
         // With no authority the monitor cannot attach.
         tokio::task::yield_now().await;
-        assert!(health.holds_live(&session_id));
 
         *slot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_runtime.clone());
         identity_runtime.install_lease_observer(lease_wake);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while health.holds_live(&session_id) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the lease wake attached the monitor, well inside the safety tick");
-
-        // The attached real monitor counts a turn.
-        let baseline = identity_runtime.completion_cursor(&identity).await;
         commit_restart_member_turn(&identity_runtime, "after the wake").await;
         identity_runtime
             .wait_for_completion(&identity, baseline, Duration::from_secs(10))
             .await
-            .expect("the monitor counted the turn");
+            .expect("the lease wake attached the monitor, well inside the safety tick");
 
         monitor.abort();
         runtime.shutdown().await;
@@ -5727,7 +5609,7 @@ model = "gpt-5.5"
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
 
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
         if let RestartShape::Retired = shape {
@@ -5754,12 +5636,8 @@ model = "gpt-5.5"
         }
         first.shutdown().await;
 
-        let (second, second_identity, tap) =
+        let (second, second_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
-        assert!(
-            *tap.changes().borrow() >= 1,
-            "the restore's revival materialized the member through a create-time capture"
-        );
         let revived_session = commit_restart_member_turn(&second_identity, "after restart").await;
         assert_eq!(
             revived_session, session_id,
@@ -5801,7 +5679,7 @@ model = "gpt-5.5"
             },
         )
         .await;
-        // Whichever stream attached first carried the head, once: never both.
+        // The head arrives once, however the subscription raced the run.
         let frames = session_frames().await;
         assert_eq!(count_at(&frames, "run_started", 1), 1, "{frames:#?}");
         assert_eq!(count_at(&frames, "turn_started", 2), 1, "{frames:#?}");
@@ -5831,7 +5709,6 @@ model = "gpt-5.5"
             &mut self,
             handle: &MobHandle,
             agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
-            tap: &crate::live_session_event_tap::LiveSessionEventTap,
         ) {
             Box::pin(reconcile_agent_event_streams(
                 handle,
@@ -5840,7 +5717,6 @@ model = "gpt-5.5"
                 &mut self.subscribe_failures,
                 &mut self.streams,
                 None,
-                Some(tap),
             ))
             .await;
         }
@@ -5859,11 +5735,10 @@ model = "gpt-5.5"
             &mut self,
             runtime: &UnifiedRuntime,
             ingress: &Sender<ForwardedMemberEvent>,
-            tap: &crate::live_session_event_tap::LiveSessionEventTap,
             terminals: usize,
         ) -> Vec<ForwarderStep> {
             let mut seen = 0;
-            self.forward_until(runtime, ingress, tap, |payload| {
+            self.forward_until(runtime, ingress, |payload| {
                 if matches!(
                     payload,
                     AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
@@ -5880,7 +5755,6 @@ model = "gpt-5.5"
             &mut self,
             runtime: &UnifiedRuntime,
             ingress: &Sender<ForwardedMemberEvent>,
-            tap: &crate::live_session_event_tap::LiveSessionEventTap,
             mut done: impl FnMut(&AgentEvent) -> bool,
         ) -> Vec<ForwarderStep> {
             let handle = runtime.mob_handle();
@@ -5927,7 +5801,7 @@ model = "gpt-5.5"
                             self.subscribe_failures.remove(&key);
                         }
                         steps.push(ForwarderStep::Closed { generation, served });
-                        self.reconcile(&handle, &None, tap).await;
+                        self.reconcile(&handle, &None).await;
                     }
                 }
             }
@@ -6021,10 +5895,11 @@ model = "gpt-5.5"
                     .expect("source sequence")
             })
             .collect();
+        let first = sequences.first().copied().expect("frames carry sequences");
         assert_eq!(
             sequences,
-            (1..=frames.len() as u64).collect::<Vec<_>>(),
-            "meerkat's own sequence from the actor's first event, none missing or repeated"
+            (first..first + frames.len() as u64).collect::<Vec<_>>(),
+            "meerkat's own contiguous sequence for the run, none missing or repeated"
         );
         let run_id = frames[0]
             .data
@@ -6054,19 +5929,20 @@ model = "gpt-5.5"
     /// restart the persisted member is listed Active with its restored
     /// binding while no actor serves its session, so the forwarder's
     /// subscription fails with "stream not found" and the member is parked
-    /// in backoff. The restore then revives the actor, and its first run
-    /// completes before the forwarder attaches again. The forwarder adopts
-    /// the create-time capture over the backoff, and the console timeline
-    /// carries that run exactly: `run_started` (seq 1, its own prompt),
-    /// `turn_started` (seq 2), through its terminal, all with the run's
-    /// typed lineage.
+    /// in backoff; meerkat reports the missing actor as the typed
+    /// `MemberSessionNotLive`. The restore then revives the actor, and its
+    /// first run completes before the forwarder attaches again. When the
+    /// backoff lapses the forwarder's subscription replays the actor's
+    /// retained events, and the console timeline carries that run exactly:
+    /// `run_started` (seq 1, its own prompt), `turn_started` (seq 2),
+    /// through its terminal, all with the run's typed lineage.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn restored_members_first_run_reaches_the_console_after_stream_not_found_backoff() {
-        let mob_id = "console-tap-restore-backoff";
+        let mob_id = "console-replay-restore-backoff";
         let temp = tempfile::tempdir().expect("temp dir");
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
         first.shutdown().await;
@@ -6075,17 +5951,28 @@ model = "gpt-5.5"
         // The test takes over the forwarder's steps; the runtime's own
         // forwarder is stopped and the console drain is fed from here.
         let ingress = boot.runtime.install_test_event_ingress().await;
-        // The runtime's own forwarder exited and disarmed the tap; this
-        // test drives the forwarder's steps itself.
-        boot.tap.arm();
         let handle = boot.runtime.mob_handle();
-        let tap = boot.tap.clone();
         let mut forwarder = DrivenForwarder::new();
 
         let restored = restart_member_entry(&handle).await;
         assert_eq!(restored.status, MobMemberStatus::Active);
         let key = restart_member_key(&restored, mob_id);
-        forwarder.reconcile(&handle, &None, &tap).await;
+        let not_live = match handle
+            .subscribe_agent_events(&restored.agent_identity)
+            .await
+        {
+            Ok(_) => panic!("no actor serves the restored member's session yet"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                &not_live,
+                meerkat_mob::MobError::MemberSessionNotLive { session_id: missing, .. }
+                    if missing == &session_id
+            ),
+            "{not_live:?}"
+        );
+        forwarder.reconcile(&handle, &None).await;
         assert!(
             forwarder.tracked.current.is_empty(),
             "no actor to attach to yet"
@@ -6095,16 +5982,12 @@ model = "gpt-5.5"
             .get_mut(&key)
             .expect("the failed subscription parked the member in backoff");
         assert_eq!(backoff.consecutive_failures, 1);
-        // Keep the member parked for the rest of the test, whatever the
-        // scheduling: only adoption may attach it.
+        // Keep the member parked until its run finished unobserved,
+        // whatever the scheduling.
         backoff.next_attempt = tokio::time::Instant::now() + Duration::from_hours(1);
 
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, _) = boot.activate().await;
-        assert!(
-            tap.holds_live(&session_id),
-            "the restore revived the member's session through a create-time capture"
-        );
+        let runtime = boot.activate().await;
         assert_eq!(
             restart_member_key(&restart_member_entry(&handle).await, mob_id),
             key,
@@ -6117,21 +6000,29 @@ model = "gpt-5.5"
             "the run finished unobserved"
         );
 
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
+        assert!(
+            forwarder.tracked.current.is_empty(),
+            "the pending backoff still parks the member"
+        );
+        // The backoff lapses.
+        forwarder
+            .subscribe_failures
+            .get_mut(&key)
+            .expect("parked member")
+            .next_attempt = tokio::time::Instant::now();
+        forwarder.reconcile(&handle, &None).await;
         assert!(
             forwarder
                 .tracked
                 .current
                 .get(&key)
                 .is_some_and(|attachment| attachment.actor.is_some()),
-            "the capture was adopted over the pending backoff"
+            "the late subscription attached to the revived actor"
         );
         assert!(forwarder.subscribe_failures.is_empty());
-        assert!(!tap.holds_live(&session_id));
 
-        forwarder
-            .forward_terminals(&runtime, &ingress, &tap, 1)
-            .await;
+        forwarder.forward_terminals(&runtime, &ingress, 1).await;
         assert_one_attributed_run(
             &session_timeline(&runtime, &session_id).await,
             "after restart",
@@ -6177,7 +6068,7 @@ model = "gpt-5.5"
     ) {
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
         first.shutdown().await;
@@ -6205,7 +6096,7 @@ model = "gpt-5.5"
         )
         .await;
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, _) = boot.activate().await;
+        let runtime = boot.activate().await;
         assert_eq!(
             runtime.mob_handle().status().await.expect("mob status"),
             meerkat_mob::MobState::Running,
@@ -6312,41 +6203,39 @@ model = "gpt-5.5"
             .expect("discard the live actor");
     }
 
-    /// A same-binding successor actor: the predecessor's stream is adopted,
+    /// A same-binding successor actor: the predecessor's stream is attached,
     /// its run is still unread when the actor is discarded, and a successor
     /// for the same session and binding atoms runs to completion. The
-    /// successor's capture is held back until the predecessor's stream has
+    /// successor is subscribed only after the predecessor's stream has
     /// drained and closed, so every predecessor event reaches the console
-    /// before the successor's first, and each run's frames carry their own
-    /// run's lineage.
+    /// before the successor's first, the successor's replay still starts at
+    /// its own `run_started`, its sequence continues the predecessor's, and
+    /// each run's frames carry their own run's lineage.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn same_binding_successor_is_adopted_only_after_its_predecessor_drained() {
-        let mob_id = "console-tap-successor";
+    async fn same_binding_successor_attaches_only_after_its_predecessor_drained() {
+        let mob_id = "console-replay-successor";
         let temp = tempfile::tempdir().expect("temp dir");
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
         first.shutdown().await;
 
         let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
         let ingress = boot.runtime.install_test_event_ingress().await;
-        // The runtime's own forwarder exited and disarmed the tap; this
-        // test drives the forwarder's steps itself.
-        boot.tap.arm();
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, tap) = boot.activate().await;
+        let runtime = boot.activate().await;
         let handle = runtime.mob_handle();
         let key = restart_member_key(&restart_member_entry(&handle).await, mob_id);
         let mut forwarder = DrivenForwarder::new();
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         let predecessor = forwarder
             .tracked
             .current
             .get(&key)
             .map(|attachment| attachment.generation)
-            .expect("the revived actor's capture was adopted");
+            .expect("the revived actor's stream attached");
 
         commit_restart_member_turn(&identity_runtime, "predecessor run").await;
         discard_restart_member_actor(&runtime, &session_id).await;
@@ -6356,9 +6245,8 @@ model = "gpt-5.5"
             key,
             "the successor kept the binding atoms"
         );
-        assert!(tap.holds_live(&session_id), "the successor was captured");
 
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         assert_eq!(
             forwarder
                 .tracked
@@ -6366,17 +6254,11 @@ model = "gpt-5.5"
                 .get(&key)
                 .map(|attachment| attachment.generation),
             Some(predecessor),
-            "the predecessor's stream still serves the binding"
-        );
-        assert!(
-            tap.holds_live(&session_id),
-            "the successor waits for the predecessor to drain"
+            "the predecessor's stream still serves the binding; the successor waits"
         );
         assert_eq!(forwarder.streams.len(), 1);
 
-        let steps = forwarder
-            .forward_terminals(&runtime, &ingress, &tap, 2)
-            .await;
+        let steps = forwarder.forward_terminals(&runtime, &ingress, 2).await;
         let close = steps
             .iter()
             .position(|step| matches!(step, ForwarderStep::Closed { .. }))
@@ -6404,7 +6286,18 @@ model = "gpt-5.5"
             Some("run_completed"),
             "{before:?}"
         );
-        assert_eq!(after.first(), Some(&(1, "run_started")), "{after:?}");
+        let predecessor_tail = before.last().map_or(0, |event| event.0);
+        assert_eq!(
+            after.first().map(|event| event.1),
+            Some("run_started"),
+            "{after:?}"
+        );
+        assert!(
+            after
+                .first()
+                .is_some_and(|event| event.0 > predecessor_tail),
+            "the successor's sequence continues the predecessor's: {after:?}"
+        );
         assert_eq!(
             after.last().map(|event| event.1),
             Some("run_completed"),
@@ -6418,7 +6311,7 @@ model = "gpt-5.5"
                 .is_some_and(
                     |attachment| attachment.generation != predecessor && attachment.actor.is_some()
                 ),
-            "the successor's capture serves the binding now"
+            "the successor's stream serves the binding now"
         );
 
         let timeline = session_timeline(&runtime, &session_id).await;
@@ -6436,60 +6329,54 @@ model = "gpt-5.5"
         runtime.shutdown().await;
     }
 
-    /// A capture whose actor is discarded before the forwarder adopts it is
-    /// never adopted: no stream is attributed to the member from a revoked
-    /// witness. The successor actor's own capture is adopted next, from its
-    /// own first event.
+    /// An actor discarded before the forwarder attached is never attached:
+    /// no stream is attributed to the member from a revoked actor. The
+    /// successor actor's stream attaches next, from its own first event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn capture_discarded_before_adoption_is_never_attributed() {
-        let mob_id = "console-tap-discarded";
+    async fn discarded_actor_is_never_attributed_and_its_successor_attaches_from_its_first_event() {
+        let mob_id = "console-replay-discarded";
         let temp = tempfile::tempdir().expect("temp dir");
         let mob_path = temp.path().join("mob.sqlite3");
         let state_root = temp.path().join("state");
-        let (first, first_identity, _) =
+        let (first, first_identity) =
             boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
         let session_id = commit_restart_member_turn(&first_identity, "before restart").await;
         first.shutdown().await;
 
         let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
         let ingress = boot.runtime.install_test_event_ingress().await;
-        // The runtime's own forwarder exited and disarmed the tap; this
-        // test drives the forwarder's steps itself.
-        boot.tap.arm();
         let identity_runtime = boot.identity_runtime.clone();
-        let (runtime, tap) = boot.activate().await;
+        let runtime = boot.activate().await;
         let handle = runtime.mob_handle();
         let key = restart_member_key(&restart_member_entry(&handle).await, mob_id);
         commit_restart_member_turn(&identity_runtime, "revoked run").await;
-        assert!(tap.holds_live(&session_id));
         discard_restart_member_actor(&runtime, &session_id).await;
-        assert!(
-            !tap.holds_live(&session_id),
-            "the capture's witness is revoked"
-        );
 
         let mut forwarder = DrivenForwarder::new();
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         assert!(
             forwarder.tracked.current.is_empty(),
-            "nothing is attached from a revoked capture, and no actor serves the session"
+            "nothing is attached from a revoked actor, and no actor serves the session"
         );
-        assert!(!tap.holds_captures(), "the revoked capture was swept");
         assert!(forwarder.subscribe_failures.contains_key(&key));
 
         commit_restart_member_turn(&identity_runtime, "successor run").await;
-        forwarder.reconcile(&handle, &None, &tap).await;
+        // The backoff lapses.
+        forwarder
+            .subscribe_failures
+            .get_mut(&key)
+            .expect("parked member")
+            .next_attempt = tokio::time::Instant::now();
+        forwarder.reconcile(&handle, &None).await;
         assert!(
             forwarder
                 .tracked
                 .current
                 .get(&key)
                 .is_some_and(|attachment| attachment.actor.is_some()),
-            "the successor's capture was adopted over the backoff"
+            "the successor's stream attached"
         );
-        forwarder
-            .forward_terminals(&runtime, &ingress, &tap, 1)
-            .await;
+        forwarder.forward_terminals(&runtime, &ingress, 1).await;
         assert_one_attributed_run(
             &session_timeline(&runtime, &session_id).await,
             "successor run",
@@ -6517,6 +6404,7 @@ model = "gpt-5.5"
             ProfileName::from("worker"),
             Box::pin(futures::stream::empty()),
             None,
+            None,
         );
         let superseded_generation = superseded.generation;
         let serving = attach_member_event_stream(
@@ -6524,6 +6412,7 @@ model = "gpt-5.5"
             key.clone(),
             ProfileName::from("worker"),
             Box::pin(futures::stream::pending()),
+            None,
             None,
         );
         let serving_generation = serving.generation;
@@ -6549,19 +6438,18 @@ model = "gpt-5.5"
         assert!(tracked.current.is_empty());
     }
 
-    /// Child mobs are built on the agent mob tools' session service, which
-    /// carries the spec's tap: a child-mob member's first run, finished
-    /// before any forwarder attached, is adopted under the child mob.
+    /// Child mobs are built on the agent mob tools' session service: a
+    /// child-mob member's first run, finished before any forwarder attached,
+    /// is replayed under the child mob.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn child_mob_members_first_run_is_adopted_under_the_child_mob() {
+    async fn child_mob_members_first_run_is_replayed_under_the_child_mob() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, _) =
-            tapped_mob_with_idle_worker("console-tap-parent", &temp_dir).await;
+        let (mob_runtime, _) = mob_with_idle_worker("console-replay-parent", &temp_dir).await;
         let state = mob_runtime
             .agent_mob_mcp_state()
             .expect("stock constructor installs agent mob tools");
         let child_definition = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"console-tap-child\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\
+            "[mob]\nid = \"console-replay-child\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n\
              external_addressable = true\n\n[profiles.worker.tools]\ncomms = true\n",
         )
         .expect("child mob definition");
@@ -6573,34 +6461,26 @@ model = "gpt-5.5"
             .await
             .expect("managed mobs")
             .into_iter()
-            .find(|(mob_id, _)| mob_id.as_str() == "console-tap-child")
+            .find(|(mob_id, _)| mob_id.as_str() == "console-replay-child")
             .map(|(_, handle)| handle)
             .expect("child mob handle");
         let mut member = SpawnMemberSpec::new(
             ProfileName::from("worker"),
-            AgentIdentity::from(TAPPED_WORKER),
+            AgentIdentity::from(IDLE_WORKER),
         );
         member.runtime_mode = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
         child
             .ensure_member(member)
             .await
             .expect("seat child worker");
-        let child_session = child
-            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
-            .await
-            .expect("child worker session");
-        assert!(
-            tap.holds_live(&child_session),
-            "the child member's materialization fed the parent spec's tap"
-        );
         run_worker_turn(&child, "child probe").await;
 
         let mut forwarder = DrivenForwarder::new();
         forwarder
-            .reconcile(&mob_runtime.handle(), &Some(state), &tap)
+            .reconcile(&mob_runtime.handle(), &Some(state))
             .await;
         let ForwardedAgentEvent::Event(event) = forwarder.next().await else {
-            panic!("the adopted child stream yields its first run");
+            panic!("the child stream yields its first run");
         };
         let (runtime_id, _, _, envelope, _) = *event;
         assert!(matches!(envelope.payload, AgentEvent::RunStarted { .. }));
@@ -6610,10 +6490,10 @@ model = "gpt-5.5"
                 .tracked
                 .current
                 .keys()
-                .any(|key| key.mob_id == "console-tap-child"
+                .any(|key| key.mob_id == "console-replay-child"
                     && key.runtime_id == runtime_id
                     && forwarder.tracked.current[key].actor.is_some()),
-            "attributed to the child mob's member through its capture"
+            "attributed to the child mob's member, with its actor"
         );
 
         drop(forwarder);
@@ -6621,9 +6501,9 @@ model = "gpt-5.5"
     }
 
     /// The drain deadline bounds how long a revoked predecessor holds back
-    /// its member. The predecessor actor's stream is adopted, then the member
-    /// is respawned (new binding, new session) and its successor runs to
-    /// completion and is captured. The predecessor's stream is kept open past
+    /// its member. The predecessor actor's stream is attached, then the
+    /// member is respawned (new binding, new session) and its successor runs
+    /// to completion. The predecessor's stream is kept open past
     /// its actor's revocation, as it stays when the actor's task never exits
     /// (a turn stuck in a tool or provider call that a discard does not
     /// interrupt, or a teardown that parks); in-process, meerkat's retire
@@ -6631,20 +6511,20 @@ model = "gpt-5.5"
     /// predecessor may still drain. Once the predecessor has held it for the
     /// deadline (the test moves the hold's clock instead of waiting), the
     /// predecessor's stream is cut off with an explicit `stream_truncated`
-    /// gap, and only then does the successor attach, from its own
+    /// gap, and only then does the successor attach, replaying from its own
     /// `run_started` (seq 1) through its terminal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn stuck_predecessor_is_cut_off_at_its_drain_deadline() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, _) =
-            tapped_mob_with_idle_worker("console-tap-stuck-predecessor", &temp_dir).await;
+        let (mob_runtime, _) =
+            mob_with_idle_worker("console-replay-stuck-predecessor", &temp_dir).await;
         let handle = mob_runtime.handle();
         let module_runtime = std::thread::spawn(|| {
             start_mobkit_runtime_with_options(
                 MobKitConfig {
                     modules: vec![],
                     discovery: crate::types::DiscoverySpec {
-                        namespace: "console-tap-stuck-predecessor".to_string(),
+                        namespace: "console-replay-stuck-predecessor".to_string(),
                         modules: vec![],
                     },
                     pre_spawn: vec![],
@@ -6661,39 +6541,42 @@ model = "gpt-5.5"
             mob_runtime,
             module_runtime,
             Arc::new(InMemoryMetadataStore::new()),
-            tap.clone(),
         )
         .await;
         let ingress = runtime.install_test_event_ingress().await;
-        // The runtime's own forwarder exited and disarmed the tap; this
-        // test drives the forwarder's steps itself, from a fresh actor the
-        // exited forwarder never saw.
-        tap.arm();
+        // This test drives the forwarder's steps itself, from a fresh actor
+        // the exited forwarder never saw.
         handle
-            .respawn(AgentIdentity::from(TAPPED_WORKER), None)
+            .respawn(AgentIdentity::from(IDLE_WORKER), None)
             .await
             .expect("respawn onto a fresh actor");
         let predecessor_session = handle
-            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .resolve_bridge_session_id(&AgentIdentity::from(IDLE_WORKER))
             .await
             .expect("predecessor session");
         let entry = handle
             .list_members_including_retiring()
             .await
             .into_iter()
-            .find(|entry| entry.agent_identity == TAPPED_WORKER)
+            .find(|entry| entry.agent_identity == IDLE_WORKER)
             .expect("worker roster entry");
         let predecessor_key = restart_member_key(&entry, handle.mob_id().as_str());
-        let capture = tap
-            .take_live(&predecessor_session)
-            .expect("the fresh actor was captured");
+        let subscription = handle
+            .subscribe_agent_events_from(
+                &AgentIdentity::from(IDLE_WORKER),
+                meerkat_core::comms::SessionEventCursor::Earliest,
+            )
+            .await
+            .expect("subscribe to the fresh actor");
+        assert!(subscription.actor.is_some(), "the fresh actor is named");
         let mut forwarder = DrivenForwarder::new();
         let attachment = attach_member_event_stream(
             &mut forwarder.streams,
             predecessor_key.clone(),
             entry.role.clone(),
-            Box::pin(capture.stream.chain(futures::stream::pending())),
-            Some(capture.actor),
+            Box::pin(subscription.stream.chain(futures::stream::pending())),
+            subscription.actor,
+            None,
         );
         let predecessor = attachment.generation;
         forwarder
@@ -6701,26 +6584,20 @@ model = "gpt-5.5"
             .current
             .insert(predecessor_key.clone(), attachment);
         run_worker_turn(&handle, "predecessor run").await;
-        forwarder
-            .forward_terminals(&runtime, &ingress, &tap, 1)
-            .await;
+        forwarder.forward_terminals(&runtime, &ingress, 1).await;
 
         handle
-            .respawn(AgentIdentity::from(TAPPED_WORKER), None)
+            .respawn(AgentIdentity::from(IDLE_WORKER), None)
             .await
             .expect("respawn the member");
         let successor_session = handle
-            .resolve_bridge_session_id(&AgentIdentity::from(TAPPED_WORKER))
+            .resolve_bridge_session_id(&AgentIdentity::from(IDLE_WORKER))
             .await
             .expect("successor session");
         assert_ne!(successor_session, predecessor_session);
         run_worker_turn(&handle, "successor run").await;
-        assert!(
-            tap.holds_live(&successor_session),
-            "the successor was captured"
-        );
 
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         assert!(
             forwarder.tracked.current.is_empty(),
             "the successor's new binding waits for the predecessor"
@@ -6737,9 +6614,9 @@ model = "gpt-5.5"
             Some(held_since + PREDECESSOR_DRAIN_DEADLINE),
             "the forwarder wakes itself at the drain deadline"
         );
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         assert!(
-            tap.holds_live(&successor_session),
+            forwarder.tracked.current.is_empty(),
             "the successor still waits before the deadline"
         );
         {
@@ -6758,15 +6635,13 @@ model = "gpt-5.5"
             .expect("draining predecessor")
             .attachment
             .held_since = Some(held_since - PREDECESSOR_DRAIN_DEADLINE);
-        forwarder.reconcile(&handle, &None, &tap).await;
+        forwarder.reconcile(&handle, &None).await;
         assert!(
-            tap.holds_live(&successor_session),
+            forwarder.tracked.current.is_empty(),
             "the successor attaches only after the gap marker went out"
         );
 
-        let steps = forwarder
-            .forward_terminals(&runtime, &ingress, &tap, 1)
-            .await;
+        let steps = forwarder.forward_terminals(&runtime, &ingress, 1).await;
         assert!(
             matches!(
                 steps.as_slice(),
@@ -6798,7 +6673,7 @@ model = "gpt-5.5"
             .current
             .keys()
             .next()
-            .expect("the successor's capture serves its binding")
+            .expect("the successor's stream serves its binding")
             .clone();
         assert_ne!(successor_key, predecessor_key);
 
@@ -6854,19 +6729,43 @@ model = "gpt-5.5"
     /// current session the same stream is a re-key candidate instead.
     #[tokio::test]
     async fn departed_live_actor_on_another_session_drains_until_its_deadline() {
-        let fixture = crate::live_session_event_tap::test_support::fixture();
-        let slot = meerkat_session::LiveSessionActorWitnessSlot::default();
-        let raw = fixture.raw.clone() as Arc<dyn meerkat_mob::MobSessionService>;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let raw = Arc::new(meerkat::build_ephemeral_service(
+            meerkat::AgentFactory::new(dir.path()),
+            meerkat::Config::default(),
+            16,
+        )) as Arc<dyn meerkat_mob::MobSessionService>;
+        let request = meerkat_core::service::CreateSessionRequest {
+            model: "gpt-5.5".to_string(),
+            prompt: meerkat_core::ContentInput::Text("probe".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+            build: Some(meerkat_core::service::SessionBuildOptions {
+                llm_client_override: Some(meerkat::encode_llm_client_override_for_service(
+                    Arc::new(meerkat_client::TestClient::default()),
+                )),
+                ..Default::default()
+            }),
+            labels: None,
+            injected_context: Vec::new(),
+        };
         let old_session = raw
-            .create_session_with_actor_witness_under_runtime_turn_boundary(
-                crate::live_session_event_tap::test_support::deferred_request(),
-                None,
-                &slot,
+            .create_session(request)
+            .await
+            .expect("deferred create")
+            .session_id;
+        let actor = raw
+            .subscribe_agent_session_events_from(
+                &old_session,
+                meerkat_core::comms::SessionEventCursor::Live,
             )
             .await
-            .expect("witness-bearing create")
-            .session_id;
-        let actor = slot.witness().expect("published witness");
+            .expect("subscribe")
+            .actor
+            .expect("the ephemeral service names its actor");
         let new_session = meerkat_core::types::SessionId::new();
         let key = TrackedAgentEventStream {
             mob_id: "departed-other-session".to_string(),
@@ -6884,6 +6783,7 @@ model = "gpt-5.5"
             ProfileName::from("worker"),
             Box::pin(futures::stream::pending()),
             Some(actor),
+            None,
         );
         let generation = attachment.generation;
         let mut tracked = AttachedStreams::default();
@@ -6922,47 +6822,5 @@ model = "gpt-5.5"
         };
         assert!(!tracked.close(&closed_key, closed));
         assert!(!tracked.predecessor_draining(&owner, Some(&new_session), now));
-    }
-
-    /// The console forwarder disarms the tap however it exits, so captures
-    /// are neither taken nor held once nothing would adopt them.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn console_forwarder_exit_disarms_the_tap() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let (mob_runtime, tap, _) =
-            tapped_mob_with_idle_worker("console-tap-disarm", &temp_dir).await;
-        let module_runtime = std::thread::spawn(|| {
-            start_mobkit_runtime_with_options(
-                MobKitConfig {
-                    modules: vec![],
-                    discovery: crate::types::DiscoverySpec {
-                        namespace: "console-tap-disarm".to_string(),
-                        modules: vec![],
-                    },
-                    pre_spawn: vec![],
-                },
-                Vec::new(),
-                Duration::from_secs(2),
-                RuntimeOptions::default(),
-            )
-        })
-        .join()
-        .expect("module runtime thread")
-        .expect("module runtime");
-        let runtime = UnifiedRuntime::from_parts(
-            mob_runtime,
-            module_runtime,
-            Arc::new(InMemoryMetadataStore::new()),
-            tap.clone(),
-        )
-        .await;
-        assert!(tap.is_armed());
-
-        // Replacing the ingress aborts the forwarder task.
-        let _ingress = runtime.install_test_event_ingress().await;
-
-        assert!(!tap.is_armed(), "the exited forwarder disarmed the tap");
-        assert!(!tap.holds_captures(), "and released what it held");
-        runtime.shutdown().await;
     }
 }

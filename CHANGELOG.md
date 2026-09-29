@@ -99,6 +99,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The console forwarder and the identity health monitor no longer need
+  MobKit's create-time live event tap (meerkat #1236). Meerkat 0.8.49
+  retains each session actor's recent events and replays them on
+  `MobHandle::subscribe_agent_events_from(identity,
+  SessionEventCursor::Earliest)`, so both attach whenever they reconcile and
+  still read a run that started before they attached, including a restored
+  member's first run after a gateway restart, from `run_started`. A gap
+  beyond meerkat's 1024-envelope window arrives as meerkat's typed
+  `StreamTruncated(StreamLagged)` marker. The console subscription names the
+  exact actor incarnation for every local member, so a revoked predecessor's
+  stream still drains (bounded by the drain deadline) before its successor
+  attaches, now also for members the tap never captured (eager creates, and
+  creates outside the witness-bearing routes). Replayed envelopes an earlier
+  stream of the same member already forwarded are not repeated. The
+  completion-cursor drain replays the session's retained events past the
+  health monitor's credited position instead of draining an unadopted
+  capture. The tap module (both lanes, capture queues, pumps, byte bounds,
+  arming) and its spec and session-service plumbing are removed.
+  Session-service decorators forward meerkat's new
+  `subscribe_session_events_from` and `subscribe_agent_session_events_from`.
+- A successor actor for the same session now continues the session's
+  meerkat event sequence instead of restarting at 1 (meerkat #1236), so the
+  console's per-session `source_sequence` ordering places a successor's run
+  after its predecessor's.
 - Behaviour: queue-mode sends and dispatches return their admission receipt
   before the target's peer neighbourhood is hydrated. A send to an
   already-Active member no longer builds its Dormant peers or reconciles
@@ -429,20 +453,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   monitor attaches a member only once its identity lease exists, and it used
   to learn about the lease only from a later mob machine change or its 30 s
   safety tick. It is now woken, typed, when any identity lease lands or
-  moves (`IdentityRuntime::install_lease_observer`). It also adopts its own
-  create-time capture of each actor's event stream (a second lane of the live
-  session event tap, independent of the console forwarder's), which predates
-  every run, so a turn completed between the lease landing and the attach is
-  counted exactly once, in order, instead of lost to the stream's lack of
-  replay. A completion that already happened is credited before the next
-  completion-cursor read (and before the adoption), so a baseline taken after
-  it can never be satisfied by it: the cursor under-counts at worst, never
-  over-counts. Captures of members the monitor will not attach (outside the
-  identity-first primary mob, Broken or retiring, no longer Active) are
-  dropped, captures are bounded by bytes (64 MiB) as well as envelopes, and
-  the health lane is armed only on identity-first runtimes. An identity lease
-  rotation cuts the monitor's previous ordinary subscription off instead of
-  counting its completions a second time.
+  moves (`IdentityRuntime::install_lease_observer`). Its subscription
+  replays the actor's retained events from the first (meerkat #1236), so a
+  turn completed between the lease landing and the attach is counted exactly
+  once, in order. A completion that already happened is credited before the
+  next completion-cursor read, replayed from meerkat's retained session
+  events, so a baseline taken after it can never be satisfied by it: the
+  cursor under-counts at worst, never over-counts. A per-session completion
+  ledger lets the monitor's stream and a cursor read's drain each credit an
+  event at most once between them. An identity lease rotation cuts the
+  monitor's previous ordinary subscription off instead of counting its
+  completions a second time.
 
 - `mobkit/force_cancel_member` on the unified RPC keyed an identity-resolved
   member by the undecoded `rt:` runtime alias, so an alias call missed the
