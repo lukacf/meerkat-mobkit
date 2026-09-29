@@ -369,6 +369,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A console send that fails now says why, in both queue and steer modes and
+  on the multipart (attachment) door. Before, a refused or failed request
+  (e.g. a 401 from an off-network browser with no console token) could leave
+  the queued row on "Awaiting acceptance / Waiting for confirmation" with the
+  agent shown as busy. Every other failure collapsed into a generic
+  "Acceptance unknown". The console now classifies failures from typed
+  transport facts: HTTP status, JSON-RPC code or `data.kind`, and the fetch
+  layer's timeout, unreachable or non-JSON marker. A 401 is shown as "Not
+  authorized from this network (401)", with the same treatment for 403,
+  read-only, invalid params and listed pre-ingress statuses. Each of these
+  is a definite rejection with "Retry same attempt", and the saved message
+  is kept. Unreachable, timeout, 5xx, unreadable answers and other typed
+  refusals stay reconcilable, each with its named reason. The row shows the
+  typed label and message instead of hiding them under "Details", and the
+  optimistic busy mark is cleared on every failure. "Check acceptance" now
+  reports its own typed outcome on the row: could not check (401,
+  unreachable, ...) or no receipt. The gateway's console RPC 401 (JSON and
+  multipart) carries `error.data.kind: "unauthenticated"` and
+  `http_status: 401`, and the JSON-RPC code stays `-32600`.
+
 - A queued console message to a busy member is admitted at once instead of
   sitting on "Awaiting acceptance". The identity-first console dispatch ran
   the ordinary-send peer hydration before admission. That hydration

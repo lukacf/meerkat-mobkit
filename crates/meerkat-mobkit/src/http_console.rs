@@ -645,17 +645,7 @@ pub async fn console_rpc_handler(
     let auth_context = match console_request_auth_context(&state, &headers, &uri) {
         Some(context) => context,
         None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json::<Value>(serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": parsed_request.id.unwrap_or(Value::Null),
-                    "error": {
-                        "code": -32600,
-                        "message": "unauthorized: console rpc requires a valid auth token",
-                    }
-                })),
-            );
+            return console_rpc_unauthenticated_response(parsed_request.id.unwrap_or(Value::Null));
         }
     };
     // By this point the request is always authorized:
@@ -2281,6 +2271,32 @@ fn timeline_event_identity(event: &ConsoleTimelineEvent) -> Option<&str> {
 
 pub(crate) const ACCESS_DENIED_RPC_CODE: i64 = -32030;
 
+/// Typed kind carried by a console RPC refused before authentication. The
+/// request never reached dispatch, so a console send refused here was
+/// definitely not reserved; the browser renders it as a rejection it can
+/// name ("not authorized"), never as a pending acceptance.
+pub(crate) const CONSOLE_UNAUTHENTICATED_KIND: &str = "unauthenticated";
+
+/// The 401 body for the JSON and multipart console RPC doors. The JSON-RPC
+/// code stays `-32600` for existing clients; `data.kind` is the typed reason.
+fn console_rpc_unauthenticated_response(response_id: Value) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json::<Value>(serde_json::json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": response_id,
+            "error": {
+                "code": -32600,
+                "message": "unauthorized: console rpc requires a valid auth token",
+                "data": {
+                    "kind": CONSOLE_UNAUTHENTICATED_KIND,
+                    "http_status": StatusCode::UNAUTHORIZED.as_u16(),
+                },
+            }
+        })),
+    )
+}
+
 fn retain_visible_timeline_frames(page: &mut ConsoleTimelineWindowPage, view: Option<&AccessView>) {
     let Some(view) = view.filter(|view| view.enforced()) else {
         return;
@@ -3570,17 +3586,7 @@ pub async fn console_rpc_multipart_handler(
     let auth_context = match console_request_auth_context(&state, &headers, &uri) {
         Some(context) => context,
         None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json::<Value>(serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": Value::Null,
-                    "error": {
-                        "code": -32600,
-                        "message": "unauthorized: console rpc requires a valid auth token",
-                    }
-                })),
-            );
+            return console_rpc_unauthenticated_response(Value::Null);
         }
     };
 

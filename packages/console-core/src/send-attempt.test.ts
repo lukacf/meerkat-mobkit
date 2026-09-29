@@ -91,3 +91,59 @@ it("reconciles a canonical alias receipt only with exact owner-proven correspond
   expect(reconcileConsoleSendReceipt(attempt, { ...frame, data: { ...frame.data, idempotency_key: "other" } }, resolution)).toBeNull();
   expect(reconcileConsoleSendReceipt(attempt, { ...frame, identity: "other" }, resolution)).toBeNull();
 });
+
+import { classifyConsoleSendFailure, consoleSendFailureLabel, describeConsoleAcceptanceCheckFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT } from "./send-attempt";
+describe("typed send failures", () => {
+  it.each([
+    [{ httpStatus: 401 }, "definitely-rejected", "unauthenticated", "Not authorized"],
+    [{ httpStatus: 401, responseRpcError: { code: -32600, data: { kind: "unauthenticated" } } }, "definitely-rejected", "unauthenticated", "Not authorized"],
+    [{ httpStatus: 403 }, "definitely-rejected", "access_denied", "Not allowed"],
+    [{ rpcError: { code: -32030, message: "access denied: agent.send", data: { kind: "access_denied" } } }, "definitely-rejected", "access_denied", "Not allowed"],
+    [{ rpcError: { code: -32000, data: { kind: "read_only" } } }, "definitely-rejected", "read_only", "Console read-only"],
+    [{ rpcError: { code: -32602, message: "content must be non-empty" } }, "definitely-rejected", "rejected", "Rejected"],
+    [{ rpcError: { code: -32001, message: "unknown identity domain:nope" } }, "outcome-unknown", "refused", "Send failed"],
+    [{ httpStatus: 429 }, "definitely-rejected", "rejected", "Rejected"],
+    [Object.assign(new Error("console rpc timeout after 60 s"), { transportFailure: "timeout", timeoutMs: 60_000 }), "outcome-unknown", "timeout", "No response"],
+    [Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" }), "outcome-unknown", "unreachable", "Gateway unreachable"],
+    [Object.assign(new Error("non-JSON"), { transportFailure: "invalid_response", httpStatus: 200 }), "outcome-unknown", "invalid_response", "Unreadable response"],
+    [{ httpStatus: 502 }, "outcome-unknown", "gateway_error", "Gateway error"],
+    [Object.assign(new Error("host human input refused"), { rpcError: { code: -32000, message: "host human input refused; inspect the typed reason before retrying" } }), "outcome-unknown", "refused", "Send failed"],
+    [{ rpcError: { code: -32009, message: "idempotency key conflict: k", data: { kind: "idempotency_conflict" } } }, "outcome-unknown", "refused", "Send failed"],
+    [new Error("lost response"), "outcome-unknown", "unknown", "Acceptance unknown"],
+  ] as const)("classifies %o", (error, state, kind, label) => {
+    const failure = classifyConsoleSendFailure(error);
+    expect(failure.state).toBe(state);
+    expect(failure.kind).toBe(kind);
+    expect(failure.message.trim().length).toBeGreaterThan(0);
+    expect(consoleSendFailureState(error)).toBe(state);
+    expect(consoleSendFailureLabel({ state: failure.state, failureKind: failure.kind })).toBe(label);
+  });
+  it("never classifies from message text", () => {
+    expect(classifyConsoleSendFailure(new Error("request failed 401 unauthorized access_denied")).kind).toBe("unknown");
+  });
+  it("records the typed kind on the settled attempt and clears it on retry", () => {
+    const attempted = beginConsoleSendAttempt(draft(), { owner: "tab", now: 2, handlingMode: "queue" });
+    const failure = classifyConsoleSendFailure({ httpStatus: 401 });
+    const rejected = finishConsoleSendAttempt(attempted, { state: failure.state, error: failure.message, kind: failure.kind });
+    expect(rejected).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated", error: failure.message });
+    expect(() => validateConsoleSendAttempt(JSON.parse(JSON.stringify(rejected)))).not.toThrow();
+    const retried = beginConsoleSendAttempt(rejected, { owner: "tab", now: 3, handlingMode: "queue", retryRejected: true });
+    expect(retried.failureKind).toBeUndefined();
+    expect(retried.error).toBeUndefined();
+    expect(() => validateConsoleSendAttempt({ ...attempted, failureKind: "unauthenticated" })).toThrow();
+    // A newer tab's kind does not block the saved queue.
+    expect(() => validateConsoleSendAttempt({ ...rejected, failureKind: "future_kind" as never })).not.toThrow();
+    expect(consoleSendFailureLabel({ state: "definitely-rejected", failureKind: "future_kind" as never })).toBe("Not accepted");
+  });
+  it("names a failed acceptance check without claiming anything about the send", () => {
+    expect(describeConsoleAcceptanceCheckFailure({ httpStatus: 401 })).toEqual({
+      kind: "unauthenticated",
+      message: "Could not check acceptance: not authorized from this network (401). The saved message is unchanged and was not resent.",
+    });
+    expect(describeConsoleAcceptanceCheckFailure(Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" })).message)
+      .toBe("Could not check acceptance: gateway unreachable. The saved message is unchanged and was not resent.");
+    expect(describeConsoleAcceptanceCheckFailure(Object.assign(new Error("boom"), { httpStatus: 500 })).message)
+      .toBe("Could not check acceptance (HTTP 500): boom. The saved message is unchanged and was not resent.");
+    expect(CONSOLE_ACCEPTANCE_NO_RECEIPT.kind).toBe("no_receipt");
+  });
+});

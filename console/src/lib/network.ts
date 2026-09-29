@@ -224,11 +224,68 @@ async function fetchWithConsoleTimeout(
     });
   } catch (error) {
     if (controller.signal.aborted && typeof controller.signal.reason === "string") {
-      throw new Error(controller.signal.reason);
+      const failure = new Error(controller.signal.reason) as ConsoleTransportFailure;
+      failure.transportFailure = "timeout";
+      failure.timeoutMs = timeoutMs;
+      throw failure;
+    }
+    // A caller cancellation keeps its own abort error. Anything else is the
+    // fetch itself failing (DNS, refused, reset, offline, CORS): no HTTP
+    // response exists, so the gateway could not be reached or did not answer.
+    if (!signal?.aborted && error && typeof error === "object") {
+      (error as ConsoleTransportFailure).transportFailure = "unreachable";
     }
     throw error;
   } finally {
     globalThis.clearTimeout(timer);
+  }
+}
+
+/** Typed failure of the console fetch layer. Set only where the failure is
+ * observed (timer, fetch rejection, non-JSON body, HTTP status), never parsed
+ * back out of a message. */
+export type ConsoleTransportFailureKind = "timeout" | "unreachable" | "invalid_response";
+export interface ConsoleTransportFailure extends Error {
+  httpStatus?: number;
+  transportFailure?: ConsoleTransportFailureKind;
+  timeoutMs?: number;
+  /** JSON-RPC error carried by a non-2xx response body (e.g. the typed 401
+   * `data.kind: "unauthenticated"`). Kept apart from `rpcError`, which marks
+   * an answered 200 JSON-RPC error. */
+  responseRpcError?: { code?: unknown; message?: unknown; data?: unknown };
+}
+
+function jsonRpcErrorFromText(text: string): ConsoleTransportFailure["responseRpcError"] | undefined {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const error = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).error : undefined;
+    return error && typeof error === "object" ? error as ConsoleTransportFailure["responseRpcError"] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function consoleResponseFailure(label: string, response: Response): Promise<ConsoleTransportFailure> {
+  const text = await response.text().catch(() => "");
+  const preview = responseTextErrorPreview(text);
+  const failure = new Error(`${label} ${response.status}${preview ? `: ${preview}` : ""}`) as ConsoleTransportFailure;
+  failure.httpStatus = response.status;
+  const responseRpcError = jsonRpcErrorFromText(text);
+  if (responseRpcError) failure.responseRpcError = responseRpcError;
+  return failure;
+}
+
+async function consoleResponseJson(label: string, response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch (error) {
+    const failure = new Error(
+      `${label} returned a non-JSON response (HTTP ${response.status}${response.headers.get("content-type") ? `, ${response.headers.get("content-type")}` : ""})`,
+      { cause: error },
+    ) as ConsoleTransportFailure;
+    failure.httpStatus = response.status;
+    failure.transportFailure = "invalid_response";
+    throw failure;
   }
 }
 
@@ -313,13 +370,10 @@ async function rpc<T>(
   );
 
   if (!response.ok) {
-    const preview = await responseErrorPreview(response);
-    const error = new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
-    (error as Error & { httpStatus?: number }).httpStatus = response.status;
-    throw error;
+    throw await consoleResponseFailure(`${method} request failed`, response);
   }
 
-  const result = await response.json();
+  const result = await consoleResponseJson(method, response);
   if (result.error) {
     const typedError = normalizeConsoleInteractionRejectedError(result.error) as ConsoleGatewayInteractionRejectedError | null;
     if (typedError) {
@@ -402,12 +456,18 @@ export async function sendConsoleMultipart(
     timeoutMs,
   );
   if (!response.ok) {
-    const preview = await responseErrorPreview(response);
-    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    throw await consoleResponseFailure(`${CONSOLE_RPC_METHODS.send} multipart failed`, response);
   }
-  const result = await response.json();
+  const result = await consoleResponseJson(`${CONSOLE_RPC_METHODS.send} multipart`, response);
   if (result.error) {
-    throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    // Same typed annotation as the JSON door, so a multipart send's refusal
+    // is classified exactly like a text send's.
+    const error = new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    (error as Error & { rpcError?: { code?: unknown; message?: unknown; data?: unknown } }).rpcError = result.error;
+    if (result.error.code === -32030 || result.error.data?.kind === "access_denied") {
+      (error as Error & { httpStatus?: number }).httpStatus = 403;
+    }
+    throw error;
   }
   return normalizeConsoleTimelineAccepted(result.result);
 }
