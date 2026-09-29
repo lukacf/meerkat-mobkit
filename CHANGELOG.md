@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and `BridgeDelivery` gains `skill_references: Vec<SkillKey>` (see Added).
   Struct literals must set them, usually to `Vec::new()`; the JSON field is
   optional and omitted when empty.
+- `MobRuntimeError` gains `HostHumanInput(HostHumanInputError)`: a typed
+  refusal on the explicit host-human lane (a skill selection sent to an
+  externally bound member on the member-only console lane). Exhaustive
+  matches must add the arm.
 
 - `ContinuityRepairPolicy` loses `initial_backoff` and `max_backoff` and is
   `#[non_exhaustive]`: the continuity repair supervisor no longer runs on a

@@ -2036,6 +2036,21 @@ impl MobKitConsoleAggregator {
         let handling_mode = parse_handling_mode(request.handling_mode.as_deref())?;
         // A peer-only member has no local session and so no host-human skill
         // carrier: refuse a selection before the interaction is reserved.
+        //
+        // Remote placement and an external backend are not refused here.
+        // Neither `MobMemberListEntry` nor `RosterEntry` exposes them (a placed
+        // member's bridge session names its remote resident session), and the
+        // only read that does is the member status observation, an actor
+        // round trip that joins the member's status observation and can hold
+        // a pending kickoff turn off (meerkat #1226). The member lane already
+        // performs that observation once, at dispatch. There the external
+        // branch refuses the selection typed (`HostHumanInputError::
+        // Unsupported`), and meerkat's host-human admission refuses a
+        // remotely hosted member typed (`MobError::UnsupportedForMode`)
+        // before any transport delivery. Both land on the `user_input` frame
+        // as `delivery_failed` with a typed `message_delivery_failed` frame
+        // (`data.kind = "host_human_input_unsupported"`); nothing is
+        // delivered to the member.
         if !request.skill_refs.is_empty() {
             let local_session = resolved
                 .handle
@@ -3687,6 +3702,11 @@ async fn dispatch_message_to_resolved_member(
                 crate::identity_first::IdentityRuntimeError::HostHumanInput(
                     crate::identity_first::bridge::HostHumanInputError::Mob(Box::new(error)),
                 ),
+            ))
+        }
+        crate::mob_handle_runtime::MobRuntimeError::HostHumanInput(error) => {
+            ConsoleSendError::RuntimeOperation(Box::new(
+                crate::identity_first::IdentityRuntimeError::HostHumanInput(error),
             ))
         }
         error => ConsoleSendError::Dispatch(error.to_string()),

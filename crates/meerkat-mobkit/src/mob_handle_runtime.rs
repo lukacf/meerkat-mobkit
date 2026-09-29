@@ -9364,6 +9364,9 @@ impl MobBootstrapSpec {
 pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
+    /// A typed refusal on the explicit host-human lane (for example a skill
+    /// selection sent to a member that has no native carrier for it).
+    HostHumanInput(crate::identity_first::bridge::HostHumanInputError),
     InvalidConfig(String),
     /// A persistent mob storage path could not be proven to match the supplied
     /// composition. Raised before the mob actuates.
@@ -9375,6 +9378,7 @@ impl std::fmt::Display for MobRuntimeError {
         match self {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
+            Self::HostHumanInput(err) => write!(f, "{err}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
         }
@@ -11315,8 +11319,10 @@ pub(crate) async fn send_console_human_on_mob(
         // Remote work has no native member-turn skill carrier: refuse a
         // selection instead of running the turn without it.
         if !skill_references.is_empty() {
-            return Err(MobRuntimeError::InvalidInput(
-                "selected skills require a local session-backed member",
+            return Err(MobRuntimeError::HostHumanInput(
+                crate::identity_first::bridge::HostHumanInputError::Unsupported(
+                    "selected skills require a local session-backed member".to_string(),
+                ),
             ));
         }
         // Keep remote work transport semantics, but use the original binding:

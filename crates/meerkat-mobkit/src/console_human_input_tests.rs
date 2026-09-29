@@ -1356,3 +1356,138 @@ fn console_send_request_skill_refs_are_typed_and_optional() {
         "untyped legacy skill strings are refused, not folded"
     );
 }
+
+fn dormant_spec(identity: &str) -> DurableAgentSpec {
+    DurableAgentSpec {
+        identity: AgentIdentity::parse(identity).unwrap(),
+        profile: "human".into(),
+        addressability: AgentAddressability::Addressable,
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::AutonomousHost),
+        backend: None,
+        binding: None,
+        placement: None,
+    }
+}
+
+fn selected_skill() -> SkillRef {
+    SkillRef::Structured(SkillKey::new(
+        SourceUuid::parse("5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11").unwrap(),
+        SkillName::parse("house-style").unwrap(),
+    ))
+}
+
+/// An identity-first target without a native host-human skill carrier (an
+/// external backend, or a remote placement) refuses a nonempty selection
+/// typed BEFORE the interaction is reserved: no reservation, no frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_refused_before_reservation_for_external_or_placed_identity() {
+    let h = Harness::new(WAIT).await;
+    let mut external = dormant_spec("external-target");
+    external.backend = Some(meerkat_mob::MobBackendKind::External);
+    let mut placed = dormant_spec("placed-target");
+    placed.placement = Some(meerkat_contracts::WireHostRef("remote-host".to_string()));
+    for spec in [external, placed] {
+        let identity = spec.identity.to_string();
+        h.identity_runtime
+            .register(spec, IdentityLifecycleState::Dormant, None, None)
+            .await;
+        let request = ConsoleSendRequest {
+            identity: identity.clone(),
+            skill_refs: vec![selected_skill()],
+            ..h.request("refused-selection", HUMAN)
+        };
+        let refusal = h.send(request).await;
+        assert!(
+            matches!(
+                &refusal,
+                Err(crate::console_aggregator::ConsoleSendError::InvalidRequest(
+                    _
+                ))
+            ),
+            "{identity}: {refusal:?}"
+        );
+        let frames = h
+            .aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .frames;
+        assert!(
+            frames.is_empty(),
+            "{identity}: nothing was reserved: {frames:?}"
+        );
+    }
+    h.stop().await;
+}
+
+/// On the member-only lane, meerkat's host-human admission is the refusal
+/// point for targets the roster cannot classify cheaply (remote placement,
+/// external backends). A typed admission refusal of a selection-carrying
+/// send surfaces typed on the console: the input frame is `delivery_failed`
+/// and the failure frame carries `data.kind = "host_human_input_unsupported"`.
+/// The refusal here is meerkat's refusal of a host-human Steer during an
+/// unresolved kickoff, which travels the same admission and mapping path.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_member_lane_admission_refusal_surfaces_typed() {
+    let h = Harness::new(WAIT).await;
+    let calls_before = h.client.requests.lock().unwrap().len();
+    h.client.gate.send_replace(false);
+    h.unified
+        .mob_handle()
+        .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
+            "human".to_string(),
+            "worker".to_string(),
+            Some("worker kickoff".into()),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        while h.client.requests.lock().unwrap().len() <= calls_before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the worker kickoff reaches the provider");
+    let request = ConsoleSendRequest {
+        identity: "worker".to_string(),
+        handling_mode: Some("steer".to_string()),
+        skill_refs: vec![selected_skill()],
+        ..h.request("member-lane-refusal", HUMAN)
+    };
+    let accepted = h.aggregator.send(request).await.unwrap();
+    h.wait_status(&accepted, ConsoleFrameStatus::DeliveryFailed)
+        .await;
+    let frames = h
+        .aggregator
+        .query_timeline(ConsoleTimelineQuery {
+            identity: Some(accepted.identity.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .frames;
+    let failure = frames
+        .iter()
+        .find(|frame| {
+            frame.kind == "message_delivery_failed"
+                && frame.parent_frame_id.as_deref() == Some(accepted.input_frame_id.as_str())
+        })
+        .expect("a typed delivery failure frame");
+    assert_eq!(
+        failure.payload["data"]["kind"], "host_human_input_unsupported",
+        "{:?}",
+        failure.payload
+    );
+    h.client.gate.send_replace(true);
+    h.stop().await;
+}
