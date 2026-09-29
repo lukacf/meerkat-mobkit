@@ -16733,6 +16733,7 @@ comms = true
                     origin: "test".to_string(),
                     idempotency_key: "idem-busy-queue".to_string(),
                     handling_mode: Some("queue".to_string()),
+                    skill_refs: Vec::new(),
                     origin_kind: None,
                 },
             ),
