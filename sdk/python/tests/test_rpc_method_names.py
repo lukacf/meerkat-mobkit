@@ -949,7 +949,28 @@ async def test_stop_member_run_rpc_name_and_receipt():
     result = await handle.stop_member_run("w1", "r-1", reason="stop")
     assert calls[0][0] == "mobkit/stop_member_run"
     assert calls[0][1] == {"member_id": "w1", "run_id": "r-1", "reason": "stop"}
-    assert result == receipt
+    assert result.outcome == "not_current"
+    assert result.run_id == "r-1"
+    assert result.current_run_id == "r-2"
+
+
+@pytest.mark.asyncio
+async def test_stop_member_run_parses_stopped_contributors():
+    receipt = {
+        "outcome": "stopped",
+        "run_id": "r-1",
+        "contributors": [
+            {"input_id": "i-1", "completion": "cancelled", "terminal": "cancelled"},
+            {"input_id": "i-2", "completion": "runtime_terminated", "terminal": "cancelled"},
+        ],
+    }
+    handle, _calls = make_mock_mob_handle(
+        {"mobkit/stop_member_run": {"member_id": "w1", "receipt": receipt}}
+    )
+    result = await handle.stop_member_run("w1", "r-1", reason="stop")
+    assert result.outcome == "stopped"
+    assert [row.input_id for row in result.contributors] == ["i-1", "i-2"]
+    assert all(row.terminal == "cancelled" for row in result.contributors)
 
 
 @pytest.mark.asyncio

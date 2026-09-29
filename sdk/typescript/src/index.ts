@@ -104,6 +104,7 @@ export type {
   TurnWarningType,
   MemberRunStopContributor,
   MemberRunStopReceipt,
+  MemberRuntimeState,
 } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------

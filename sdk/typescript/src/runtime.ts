@@ -4153,4 +4153,14 @@ export interface MemberRunStopContributor {
 export type MemberRunStopReceipt =
   | { outcome: "stopped"; run_id: string; contributors: MemberRunStopContributor[] }
   | { outcome: "not_current"; run_id: string; current_run_id?: string | null }
-  | { outcome: "not_stoppable"; run_id: string; state: string };
+  | { outcome: "not_stoppable"; run_id: string; state: MemberRuntimeState };
+
+/** meerkat's public runtime state projection (`WireRuntimeState`). */
+export type MemberRuntimeState =
+  | "initializing"
+  | "idle"
+  | "attached"
+  | "running"
+  | "retired"
+  | "stopped"
+  | "destroyed";
