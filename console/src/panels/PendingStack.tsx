@@ -1,6 +1,6 @@
 import React from "react";
 import { QuoteContextChips } from "../../../packages/console-components/src/conversation/context-chips";
-import type { ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
+import { consoleSendFailureLabel, type ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { Icon } from "../icon";
 
 /// One row in the per-identity pending-message stack. Lives entirely
@@ -9,6 +9,8 @@ import { Icon } from "../icon";
 export interface PendingItem extends ConsoleSendAttempt {
   expanded?: boolean;
   editing?: boolean;
+  /** Typed outcome of the last explicit "Check acceptance" on this row. */
+  checkResult?: string;
   status?: "entering" | "promoting" | "trashing" | "draining" | null;
 }
 
@@ -173,17 +175,21 @@ function StackItem({
 
   const isDraft = item.state === "draft";
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
-  const statusLabel = item.state === "outcome-unknown" ? "Acceptance unknown"
-    : item.state === "definitely-rejected" ? "Not accepted"
+  const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
+  // A settled failure names its typed reason (label + the classified
+  // message); only a request still in flight reads "Awaiting acceptance".
+  const statusLabel = settledFailure ? consoleSendFailureLabel(item)
     : item.state === "attempting" ? "Awaiting acceptance"
     : item.state === "accepted" ? "Accepted" : "Queued";
-  const explanation = item.state === "outcome-unknown"
-    ? "Your message may already have been accepted. Check its status before discarding it."
-    : item.state === "attempting"
-      ? "Waiting for confirmation. Checking acceptance will not send the message again."
-      : item.state === "definitely-rejected"
-        ? "This attempt was rejected. Retry sends the same saved message."
-        : undefined;
+  const explanation = settledFailure && item.error
+    ? `${item.error}${item.state === "definitely-rejected" ? " Retry sends the same saved message." : ""}`
+    : item.state === "outcome-unknown"
+      ? "Your message may already have been accepted. Check its status before discarding it."
+      : item.state === "attempting"
+        ? "Waiting for confirmation. Checking acceptance will not send the message again."
+        : item.state === "definitely-rejected"
+          ? "This attempt was rejected. Retry sends the same saved message."
+          : undefined;
   const previewId = React.useId();
 
   const cls = [
@@ -228,7 +234,7 @@ function StackItem({
         {isDraft && <span className="stk-item__grip" aria-label="Drag to reorder" title="Drag to reorder">
           <span /><span /><span /><span /><span /><span />
         </span>}
-        <span className="stk-item__queue-glyph" aria-hidden="true"><Icon name={item.state === "outcome-unknown" ? "i-info" : "i-clock"} /></span>
+        <span className="stk-item__queue-glyph" aria-hidden="true"><Icon name={settledFailure ? "i-info" : "i-clock"} /></span>
       </div>
 
       {item.editing ? (
@@ -288,8 +294,8 @@ function StackItem({
             onEdit={item.state === "draft" && !item.envelopeJson && onEditContext ? (contextId, quote) => onEditContext(item.id, contextId, quote) : undefined}
             onRemove={item.state === "draft" ? (contextId) => onRemoveContext(item.id, contextId) : undefined}
             onReorder={item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : undefined} />}
-          {explanation && <p className="stk-item__explanation">{explanation}</p>}
-          {item.error && <details className="stk-item__error"><summary>Details</summary><p>{item.error}</p></details>}
+          {explanation && <p className="stk-item__explanation" data-testid={`pending-explanation:${item.id}`}>{explanation}</p>}
+          {item.checkResult && needsAcceptance && <p className="stk-item__explanation" role="status" data-testid={`pending-check:${item.id}`}>{item.checkResult}</p>}
         </div>
       )}
 

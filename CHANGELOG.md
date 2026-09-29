@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionBridge` implementations and test doubles) must set it, usually to
   `None`.
 
+- `IdentityRuntimeError` gains `PeerWiringTimedOut { operation, waited }` and
+  `PeerTopologySuperseded { attempts }` (see Fixed): a managed-topology wiring
+  call that exceeds its budget, and a topology plan that stayed stale across
+  its bounded replans. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add both arms. `PeerWiringTimedOut.operation` can
+  also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
+
 ### Storage and wire compatibility
 
 - `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
@@ -85,6 +92,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- Behaviour: queue-mode sends and dispatches return their admission receipt
+  before the target's peer neighbourhood is hydrated. A send to an
+  already-Active member no longer builds its Dormant peers or reconciles
+  managed edges before admission. A woken member's first turn can reach only
+  peers that were already Active; Dormant peers are built and wired right
+  after admission.
+- Behaviour: topology reconcile and topology mutations no longer take
+  identity lifecycle locks, so a lifecycle operation (reset, retire, alias
+  rebind) can run concurrently with wiring. The commit revalidates bindings
+  and replans instead of serializing.
+- Behaviour (console): a failed send is classified from typed transport
+  facts. 401, 403, read-only, -32602 and listed pre-ingress statuses are
+  definite rejections ("Retry same attempt"). Unreachable, timeout, 429, 5xx,
+  non-JSON answers, interrupted and other typed refusals stay reconcilable
+  ("Check acceptance"), each with its named reason. A saved attempt answered
+  after its console view ended is settled in its own storage namespace
+  instead of staying "Awaiting acceptance".
 
 - The continuity repair supervisor is event-driven. It used to retry Broken
   identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
@@ -368,6 +393,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
+
+- A console send that fails now says why, in both queue and steer modes and
+  on the multipart (attachment) door. Before, a refused or failed request
+  (e.g. a 401 from an off-network browser with no console token) could leave
+  the queued row on "Awaiting acceptance / Waiting for confirmation" with the
+  agent shown as busy. Every other failure collapsed into a generic
+  "Acceptance unknown". The console now classifies failures from typed
+  transport facts: HTTP status, JSON-RPC code or `data.kind`, and the fetch
+  layer's timeout, unreachable or non-JSON marker. A 401 is shown as "Not
+  authorized from this network (401)", with the same treatment for 403,
+  read-only, invalid params and listed pre-ingress statuses. Each of these
+  is a definite rejection with "Retry same attempt", and the saved message
+  is kept. Unreachable, timeout, 429 (the REST send answers it after
+  reservation), 5xx, unreadable answers, a send interrupted by a console
+  reload, and other typed refusals stay reconcilable, each with its named
+  reason. A saved attempt answered after its console view ended is settled
+  in its own storage namespace, and a failed send also removes its
+  optimistic topology frame. The row shows the
+  typed label and message instead of hiding them under "Details", and the
+  optimistic busy mark is cleared on every failure. "Check acceptance" now
+  reports its own typed outcome on the row: could not check (401,
+  unreachable, ...) or no receipt. The gateway's console RPC 401 (JSON and
+  multipart) carries `error.data.kind: "unauthenticated"` and
+  `http_status: 401`, and the JSON-RPC code stays `-32600`.
+
+- Queued input to a busy member is admitted at once instead of waiting
+  behind peer-topology work. Every queue-mode send and dispatch went through
+  the ordinary-send peer hydration before admission: console input, the
+  `send_*` and `dispatch*` lanes, and the RPC gateway and SDK `dispatch`
+  that use them. That hydration serializes on the process-global topology
+  guard, the managed-peer reconcile lock and every topology identity's
+  lifecycle lock, and awaits unbounded mob wiring and member builds (host
+  callbacks bounded only by the 130 s callback wire deadline) under them. So
+  slow or wedged topology work held back the admission receipt, including
+  for a member mid-turn. Now:
+  - For an already-Active target, admission waits only on its lifecycle
+    lock, alias validation, its lease, the bounded recall and the bounded
+    bridge admission. meerkat queues the input behind the running turn.
+  - A send that wakes a Dormant or retired target first reconciles that
+    target's own managed edges (only edges touching it, under one 30 s
+    end-to-end budget, and skipped if a concurrent wake already activated
+    it), so the
+    woken member's first turn can reach its peers. A failure there is logged
+    and retried after admission, never a refused message.
+  - Peer hydration (peer builds plus the managed-edge reconcile) runs after
+    admission. It is detached and runtime-tracked when the runtime's owning
+    `Arc` is known. Concurrent post-admission hydrations for one target merge
+    into one.
+  - The managed topology reconcile and topology edge mutations no longer
+    hold lifecycle locks across mob wiring calls. They plan against one
+    snapshot of the endpoints' runtime bindings, run the wiring calls with no
+    lifecycle lock held, and commit the managed-edge bookkeeping under the
+    entries read lock, only if no binding moved.
+  - Each wiring call is bounded and settles as
+    `IdentityRuntimeError::PeerWiringTimedOut` instead of parking.
+  - A reset or respawn during the wiring, or a wiring refusal while an
+    endpoint's binding moved, makes the plan stale. Nothing is committed and
+    the reconcile replans, up to three times, then settles as
+    `PeerTopologySuperseded`.
+  - A wire or unwire whose reply timed out may still be queued in the mob
+    actor, where inspection cannot see it, so its edge is recorded as
+    unsettled. A reconcile settles it only with an ordered command that
+    succeeded after it: an idempotent wire if still desired, a tolerant
+    unwire if not, whatever inspection reports.
+  A wedged wiring call or peer build therefore no longer blocks admission to
+  any other identity, queue or steer.
 
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript

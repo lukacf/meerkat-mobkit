@@ -214,6 +214,238 @@ struct SendRequest<'a> {
     console_human: Option<ConsoleHumanSend<'a>>,
 }
 
+/// Budget for ONE managed-topology wiring call to the session bridge (a wire,
+/// unwire or wire inspection; each is a mob-actor round trip that also awaits
+/// comms trust installs and peer notices). The reconcile or topology mutation
+/// settles with [`IdentityRuntimeError::PeerWiringTimedOut`] instead of
+/// parking behind a wedged call. No admission waits on these calls at all.
+const PEER_WIRING_CALL_BUDGET: Duration = Duration::from_secs(30);
+
+/// End-to-end budget for the wake path's target-only topology reconcile
+/// (lock acquisition plus every wiring call), so a woken member's admission
+/// is delayed by at most this much. A failure is logged and retried after
+/// admission; it never refuses the input.
+const WAKE_TOPOLOGY_BUDGET: Duration = Duration::from_secs(30);
+
+/// How many times a managed-topology plan is made before a reconcile or
+/// topology mutation gives up with
+/// [`IdentityRuntimeError::PeerTopologySuperseded`] because an endpoint's
+/// runtime binding kept changing while the plan's wiring ran.
+const PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS: u32 = 3;
+
+/// Run one managed-topology bridge wiring call under
+/// [`PEER_WIRING_CALL_BUDGET`].
+async fn bounded_peer_wiring<T>(
+    operation: &'static str,
+    call: impl Future<Output = T>,
+) -> Result<T, IdentityRuntimeError> {
+    bounded_peer_wiring_by(operation, None, call).await
+}
+
+/// [`bounded_peer_wiring`], additionally capped by an optional end-to-end
+/// `deadline` (the wake path's single budget for its whole target
+/// reconcile). Whichever comes first ends the call as `PeerWiringTimedOut`,
+/// through the same unsettled-edge bookkeeping as any other timeout.
+async fn bounded_peer_wiring_by<T>(
+    operation: &'static str,
+    deadline: Option<tokio::time::Instant>,
+    call: impl Future<Output = T>,
+) -> Result<T, IdentityRuntimeError> {
+    let start = tokio::time::Instant::now();
+    let per_call = start + PEER_WIRING_CALL_BUDGET;
+    let until = deadline.map_or(per_call, |deadline| deadline.min(per_call));
+    tokio::time::timeout_at(until, call).await.map_err(|_| {
+        IdentityRuntimeError::PeerWiringTimedOut {
+            operation,
+            waited: until.saturating_duration_since(start),
+        }
+    })
+}
+
+/// The runtime bindings a managed-topology plan was made against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PeerBindingEpoch {
+    /// Every identity with a continuity record, to its runtime id.
+    known: BTreeMap<AgentIdentity, AgentRuntimeId>,
+    /// The Active subset of `known`.
+    active: BTreeMap<AgentIdentity, AgentRuntimeId>,
+}
+
+impl PeerBindingEpoch {
+    /// Whether none of `identities` changed binding (runtime id or activity)
+    /// between `self` and `current`.
+    fn unchanged_for(&self, current: &Self, identities: &BTreeSet<AgentIdentity>) -> bool {
+        identities.iter().all(|identity| {
+            self.known.get(identity) == current.known.get(identity)
+                && self.active.get(identity) == current.active.get(identity)
+        })
+    }
+}
+
+/// The binding epoch of an entries table (see [`PeerBindingEpoch`]).
+fn peer_binding_epoch_of(entries: &BTreeMap<AgentIdentity, IdentityEntry>) -> PeerBindingEpoch {
+    let mut epoch = PeerBindingEpoch::default();
+    for (identity, entry) in entries {
+        let Some(record) = entry.continuity.as_ref() else {
+            continue;
+        };
+        epoch
+            .known
+            .insert(identity.clone(), record.agent_runtime_id.clone());
+        if entry.state == IdentityLifecycleState::Active {
+            epoch
+                .active
+                .insert(identity.clone(), record.agent_runtime_id.clone());
+        }
+    }
+    epoch
+}
+
+/// Outcome of one plan / wire / revalidate pass over the managed topology.
+enum PeerTopologyAttempt {
+    Committed,
+    /// An involved endpoint's binding changed during the wiring; nothing was
+    /// committed and the plan must be remade.
+    Stale,
+}
+
+/// Whether a send or dispatch result means meerkat admitted the input, so the
+/// post-admission peer hydration it deferred is still owed. A completion or
+/// post-admission failure is a turn that WAS admitted.
+///
+/// `LeaseLost` and `CompletionIncarnationChanged` are deliberately absent:
+/// on the send and dispatch lanes a lease loss is only raised by the lease
+/// checks that run BEFORE the bridge admission (the first one, and the
+/// re-check after a reload-for-delivery), so nothing was admitted; and
+/// `CompletionIncarnationChanged` is raised only by `wait_for_completion`,
+/// which is outside these lanes. Neither is a turn that ran.
+fn input_was_admitted<T>(result: &Result<T, IdentityRuntimeError>) -> bool {
+    matches!(
+        result,
+        Ok(_)
+            | Err(IdentityRuntimeError::CompletionFailed { .. }
+                | IdentityRuntimeError::PostAdmissionResolutionFailed { .. }
+                | IdentityRuntimeError::PostAdmissionSuperseded { .. })
+    )
+}
+
+/// One target's in-flight post-admission hydration: the claim that owns it
+/// and whether another pass was requested while it ran.
+#[derive(Debug, Clone, Copy)]
+struct PeerHydrationClaim {
+    token: u64,
+    rerun: bool,
+}
+
+/// In-flight post-admission hydrations, one per target, plus the token
+/// counter that makes every claim distinguishable.
+#[derive(Debug, Default)]
+struct PeerHydrations {
+    next_token: u64,
+    in_flight: BTreeMap<AgentIdentity, PeerHydrationClaim>,
+}
+
+impl PeerHydrations {
+    /// Claim `identity`'s slot, returning the claim token. `None` when a
+    /// hydration is already in flight; that one is asked to run once more.
+    fn claim(&mut self, identity: &AgentIdentity) -> Option<u64> {
+        if let Some(claim) = self.in_flight.get_mut(identity) {
+            claim.rerun = true;
+            return None;
+        }
+        self.next_token = self.next_token.wrapping_add(1);
+        let token = self.next_token;
+        self.in_flight.insert(
+            identity.clone(),
+            PeerHydrationClaim {
+                token,
+                rerun: false,
+            },
+        );
+        Some(token)
+    }
+
+    /// Release `identity`'s slot only if `token` still owns it, so a stale
+    /// release (a second removal after a panic, or a refused spawn racing a
+    /// newer claim) can never drop someone else's claim.
+    fn release(&mut self, identity: &AgentIdentity, token: u64) {
+        if self
+            .in_flight
+            .get(identity)
+            .is_some_and(|claim| claim.token == token)
+        {
+            self.in_flight.remove(identity);
+        }
+    }
+}
+
+/// A claimed post-admission hydration slot; releasing it (also on panic or
+/// cancellation) lets the next admission to that target hydrate again.
+struct PeerHydrationSlot<'a> {
+    hydrations: &'a StdMutex<PeerHydrations>,
+    identity: AgentIdentity,
+    token: u64,
+}
+
+impl PeerHydrationSlot<'_> {
+    /// Finish one pass: under one lock, either consume a rerun request (keep
+    /// the slot, return true) or release the slot (return false). Atomic, so
+    /// a request that arrives as the pass ends is never lost.
+    fn finish_pass(&self) -> bool {
+        let mut hydrations = self
+            .hydrations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match hydrations.in_flight.get_mut(&self.identity) {
+            Some(claim) if claim.token == self.token && claim.rerun => {
+                claim.rerun = false;
+                true
+            }
+            _ => {
+                hydrations.release(&self.identity, self.token);
+                false
+            }
+        }
+    }
+
+    /// Run hydration passes until no rerun is pending, then release.
+    async fn run(self, runtime: &IdentityRuntime) {
+        loop {
+            #[cfg(test)]
+            runtime
+                .peer_hydration_passes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            runtime.hydrate_peer_topology_logged(&self.identity).await;
+            if !self.finish_pass() {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for PeerHydrationSlot<'_> {
+    /// Release this claim (a no-op once `finish_pass` released it, or when a
+    /// newer claim owns the slot): covers a pass that panicked or was
+    /// cancelled mid-flight, so the next admission can hydrate again.
+    fn drop(&mut self) {
+        self.hydrations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(&self.identity, self.token);
+    }
+}
+
+/// Whether a foreground materialization reconciles the whole managed peer
+/// topology after the embodiment commits, or leaves that to the admission
+/// path (which reconciles only the woken target's own edges before admission
+/// and hydrates the rest after it; see
+/// [`IdentityRuntime::materialize_for_admission`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopologyAfterEmbody {
+    Reconcile,
+    DeferToPostAdmission,
+}
+
 struct ConsoleHumanSend<'a> {
     delivery_identity: &'a meerkat_mob::MobDeliveryIdentity,
     expected_session: Option<&'a str>,
@@ -634,6 +866,23 @@ pub enum IdentityRuntimeError {
     /// this identity when an eager fleet restore converts it into a visible
     /// `RestoreOutcome::Broken`.
     EmbodimentRejected(Box<ContinuityFailure>),
+    /// A managed-topology wiring call to the session bridge (a wire, unwire or
+    /// wire inspection, each one a mob-actor round trip) was not observed
+    /// within its budget. The reconcile or topology mutation that issued it
+    /// settles with this instead of parking. The call's own effect is
+    /// unknown; nothing was recorded as managed for it, and the next
+    /// reconcile observes the live graph and converges.
+    PeerWiringTimedOut {
+        operation: &'static str,
+        waited: Duration,
+    },
+    /// A managed-topology plan kept going stale: an endpoint's runtime binding
+    /// changed (reset, respawn, retire) while its wiring calls ran, on every
+    /// one of `attempts` replans. Nothing stale was committed; the next
+    /// reconcile replans from the live bindings.
+    PeerTopologySuperseded {
+        attempts: u32,
+    },
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -808,6 +1057,16 @@ impl std::fmt::Display for IdentityRuntimeError {
                 "identity {} embodiment was rejected: {}",
                 failure.identity, failure.detail
             ),
+            Self::PeerWiringTimedOut { operation, waited } => write!(
+                f,
+                "managed topology wiring call {operation} was not observed within {waited:?}; \
+                 its effect is unknown and nothing was recorded as managed for it"
+            ),
+            Self::PeerTopologySuperseded { attempts } => write!(
+                f,
+                "managed topology plan went stale on all {attempts} attempts: an endpoint's \
+                 runtime binding changed while its wiring ran; nothing stale was committed"
+            ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
     }
@@ -970,6 +1229,13 @@ impl IdentityRuntimeError {
                     ],
                 }))
             }
+            Self::PeerWiringTimedOut { operation, waited } => Some(serde_json::json!({
+                "kind": "peer_wiring_timed_out", "operation": operation,
+                "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+            })),
+            Self::PeerTopologySuperseded { attempts } => Some(serde_json::json!({
+                "kind": "peer_topology_superseded", "attempts": attempts,
+            })),
             _ => None,
         }
     }
@@ -2197,6 +2463,27 @@ pub struct IdentityRuntime {
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     managed_peer_reconcile_lock: Mutex<()>,
+    /// Managed edges whose wire or unwire call timed out: the reply was
+    /// dropped, but the mob command may still be queued in the actor, and
+    /// inspection (which reads roster and machine state directly) cannot see
+    /// a queued command, so the edge's fate is unknown. A reconcile settles
+    /// each one only with an ORDERED command that succeeded after it: an
+    /// (idempotent) wire if still desired, a tolerant unwire if not. An edge
+    /// stays here until such a command succeeded, or until an endpoint has no
+    /// member left for the pending command to land on.
+    unsettled_peer_wiring: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
+    /// Post-admission peer hydrations in flight, per target, with whether
+    /// another admission asked for a rerun meanwhile. Concurrent admissions
+    /// to one target merge into the running hydration instead of stacking.
+    peer_hydrations_in_flight: StdMutex<PeerHydrations>,
+    /// Post-admission hydration passes run (test observability only).
+    #[cfg(test)]
+    peer_hydration_passes: std::sync::atomic::AtomicUsize,
+    /// A weak handle to the owning `Arc`, remembered by the first
+    /// `Arc`-receiving entry point (tracked foreground work, the lease
+    /// supervisor). Lets `&self` admission paths detach their post-admission
+    /// peer hydration instead of running it inline before they return.
+    self_handle: std::sync::OnceLock<std::sync::Weak<IdentityRuntime>>,
     desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
     topology_controller: StdRwLock<Option<crate::topology_control::TopologyController>>,
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
@@ -2545,6 +2832,9 @@ pub(crate) struct EmbodimentOutcome {
     pub(crate) record: ContinuityRecord,
     pub(crate) resumed: bool,
     pub(crate) draft: AgentBuildDraft,
+    /// The identity was already Active when the embodiment door ran (a
+    /// converged re-validation, not a wake).
+    pub(crate) already_active: bool,
 }
 
 /// Eager-only inputs to the shared embodiment transaction. Lazy foreground
@@ -2645,6 +2935,11 @@ impl IdentityRuntime {
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
             managed_peer_reconcile_lock: Mutex::new(()),
+            unsettled_peer_wiring: RwLock::new(BTreeSet::new()),
+            peer_hydrations_in_flight: StdMutex::new(PeerHydrations::default()),
+            #[cfg(test)]
+            peer_hydration_passes: std::sync::atomic::AtomicUsize::new(0),
+            self_handle: std::sync::OnceLock::new(),
             desired_peer_edges: RwLock::new(Vec::new()),
             topology_controller: StdRwLock::new(None),
             materialization_locks: RwLock::new(BTreeMap::new()),
@@ -3558,6 +3853,7 @@ impl IdentityRuntime {
     /// Spawn a background supervisor that renews active identity leases before
     /// they reach their TTL deadline.
     pub fn spawn_lease_renewal_task(self: Arc<Self>) -> JoinHandle<()> {
+        self.remember_self_handle();
         self.spawn_lease_renewal_task_with_poll_interval(DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL)
     }
 
@@ -3575,6 +3871,7 @@ impl IdentityRuntime {
         self: Arc<Self>,
         max_poll_interval: Duration,
     ) -> TrackedLeaseRenewalTask {
+        self.remember_self_handle();
         let (cancel, receiver) = watch::channel(false);
         let join = tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, Some(receiver)));
         TrackedLeaseRenewalTask { cancel, join }
@@ -3587,7 +3884,18 @@ impl IdentityRuntime {
         self: Arc<Self>,
         max_poll_interval: Duration,
     ) -> JoinHandle<()> {
+        self.remember_self_handle();
         tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, None))
+    }
+
+    /// Remember the owning `Arc` (weakly) for detached post-admission work.
+    fn remember_self_handle(self: &Arc<Self>) {
+        let _ = self.self_handle.set(Arc::downgrade(self));
+    }
+
+    /// The owning `Arc`, when an `Arc`-receiving entry point has run.
+    fn shared_handle(&self) -> Option<Arc<Self>> {
+        self.self_handle.get().and_then(std::sync::Weak::upgrade)
     }
 
     async fn run_lease_renewal_loop(
@@ -3890,93 +4198,148 @@ impl IdentityRuntime {
 
     /// Logical identity actuator used only while the shared topology
     /// controller's admission lock is already held by TopologyRuntimeHandle.
+    ///
+    /// Same plan / wire / revalidate contract as
+    /// [`Self::reconcile_managed_peer_edges_admitted`]: the endpoints'
+    /// runtime bindings are resolved from one snapshot, the bounded bridge
+    /// calls run with no lifecycle lock held, and the bookkeeping commits
+    /// (under the entries read lock, never a lifecycle lock) only if neither
+    /// binding moved; otherwise the mutation is replanned against the live
+    /// bindings. A wiring error while an endpoint's binding moved (e.g. it
+    /// was just retired) is a replan too, not a failure. A wiring call that
+    /// timed out leaves the edge in the unsettled set for the next reconcile.
     pub(crate) async fn mutate_managed_peer_edge_admitted(
         &self,
         action: crate::topology_control::TopologyAction,
         edge: &ManagedPeerEdge,
     ) -> Result<(), IdentityRuntimeError> {
         let _guard = self.managed_peer_reconcile_lock.lock().await;
-        let _lifecycle_guards = self
-            .lifecycle_guards_for([edge.a().clone(), edge.b().clone()])
-            .await;
         let Some(bridge) = self.bridge.clone() else {
             return Err(IdentityRuntimeError::Internal(
                 "topology mutation requires a session bridge".to_string(),
             ));
         };
-        let (runtime_a, runtime_b) = {
-            let entries = self.entries.read().await;
-            let resolve = |identity: &AgentIdentity| {
-                entries
-                    .get(identity)
-                    .filter(|entry| entry.state == IdentityLifecycleState::Active)
-                    .and_then(|entry| entry.continuity.as_ref())
-                    .map(|record| record.agent_runtime_id.clone())
-                    .ok_or_else(|| {
-                        IdentityRuntimeError::Internal(format!(
-                            "topology endpoint is not active: {identity}"
-                        ))
-                    })
-            };
-            (resolve(edge.a())?, resolve(edge.b())?)
-        };
+        let endpoints: BTreeSet<AgentIdentity> =
+            [edge.a().clone(), edge.b().clone()].into_iter().collect();
         let key = (edge.a().clone(), edge.b().clone());
-        let current = bridge.current_member_wires().await.map_err(|error| {
-            IdentityRuntimeError::Internal(format!("bridge current_member_wires: {error}"))
-        })?;
+        for _attempt in 0..PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS {
+            let epoch = self.peer_binding_epoch().await;
+            match self
+                .mutate_managed_peer_edge_attempt(&bridge, action, edge, &key, &endpoints, &epoch)
+                .await
+            {
+                Ok(PeerTopologyAttempt::Committed) => return Ok(()),
+                Ok(PeerTopologyAttempt::Stale) => {}
+                Err(error) => {
+                    if matches!(error, IdentityRuntimeError::PeerWiringTimedOut { .. }) {
+                        self.record_unsettled_peer_wiring([key.clone()]).await;
+                        return Err(error);
+                    }
+                    if self.peer_bindings_moved(&epoch, &endpoints).await {
+                        tracing::debug!(
+                            edge = ?key,
+                            %error,
+                            "identity-first topology mutation failed while an endpoint's binding \
+                             moved; replanning"
+                        );
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+            tracing::debug!(
+                edge = ?key,
+                "identity-first topology mutation went stale during wiring; replanning"
+            );
+        }
+        Err(IdentityRuntimeError::PeerTopologySuperseded {
+            attempts: PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS,
+        })
+    }
+
+    /// One plan / wire / revalidate pass of
+    /// [`Self::mutate_managed_peer_edge_admitted`] against `epoch`.
+    async fn mutate_managed_peer_edge_attempt(
+        &self,
+        bridge: &Arc<dyn SessionBridge>,
+        action: crate::topology_control::TopologyAction,
+        edge: &ManagedPeerEdge,
+        key: &(AgentIdentity, AgentIdentity),
+        endpoints: &BTreeSet<AgentIdentity>,
+        epoch: &PeerBindingEpoch,
+    ) -> Result<PeerTopologyAttempt, IdentityRuntimeError> {
+        let resolve = |identity: &AgentIdentity| {
+            epoch.active.get(identity).cloned().ok_or_else(|| {
+                IdentityRuntimeError::Internal(format!(
+                    "topology endpoint is not active: {identity}"
+                ))
+            })
+        };
+        let (runtime_a, runtime_b) = (resolve(edge.a())?, resolve(edge.b())?);
+        let current = bounded_peer_wiring("current_member_wires", bridge.current_member_wires())
+            .await?
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!("bridge current_member_wires: {error}"))
+            })?;
         let actual = current.iter().any(|(a, b)| {
             (a == &runtime_a && b == &runtime_b) || (a == &runtime_b && b == &runtime_a)
         });
-        let any_half = bridge
-            .current_member_wires_any_half()
-            .await
+        let any_half = bounded_peer_wiring(
+            "current_member_wires_any_half",
+            bridge.current_member_wires_any_half(),
+        )
+        .await?
+        .map_err(|error| {
+            IdentityRuntimeError::Internal(format!("bridge current_member_wires_any_half: {error}"))
+        })?
+        .iter()
+        .any(|(a, b)| (a == &runtime_a && b == &runtime_b) || (a == &runtime_b && b == &runtime_a));
+        let wire = || async {
+            bounded_peer_wiring(
+                "wire_peers_batch",
+                bridge.wire_peers_batch(&[(runtime_a.clone(), runtime_b.clone())]),
+            )
+            .await?
             .map_err(|error| {
-                IdentityRuntimeError::Internal(format!(
-                    "bridge current_member_wires_any_half: {error}"
-                ))
-            })?
-            .iter()
-            .any(|(a, b)| {
-                (a == &runtime_a && b == &runtime_b) || (a == &runtime_b && b == &runtime_a)
-            });
-        match action {
-            crate::topology_control::TopologyAction::Connect if !actual => bridge
-                .wire_peers_batch(&[(runtime_a, runtime_b)])
-                .await
-                .map_err(|error| {
-                    IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {error}"))
-                })?,
-            crate::topology_control::TopologyAction::Reconnect => {
-                if any_half {
-                    bridge
-                        .unwire_peer(&runtime_a, &runtime_b)
-                        .await
-                        .map_err(|error| {
-                            IdentityRuntimeError::Internal(format!("bridge unwire_peer: {error}"))
-                        })?;
-                }
-                bridge
-                    .wire_peers_batch(&[(runtime_a, runtime_b)])
-                    .await
-                    .map_err(|error| {
-                        IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {error}"))
-                    })?;
-            }
-            crate::topology_control::TopologyAction::Disconnect if any_half => bridge
-                .unwire_peer(&runtime_a, &runtime_b)
-                .await
+                IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {error}"))
+            })
+        };
+        let unwire = || async {
+            bounded_peer_wiring("unwire_peer", bridge.unwire_peer(&runtime_a, &runtime_b))
+                .await?
                 .map_err(|error| {
                     IdentityRuntimeError::Internal(format!("bridge unwire_peer: {error}"))
-                })?,
+                })
+        };
+        match action {
+            crate::topology_control::TopologyAction::Connect if !actual => {
+                wire().await?;
+            }
+            crate::topology_control::TopologyAction::Reconnect => {
+                if any_half {
+                    unwire().await?;
+                }
+                wire().await?;
+            }
+            crate::topology_control::TopologyAction::Disconnect if any_half => {
+                unwire().await?;
+            }
             _ => {}
         }
-        let mut managed = self.managed_peer_edges.write().await;
-        if matches!(action, crate::topology_control::TopologyAction::Disconnect) {
-            managed.remove(&key);
+        let committed = self
+            .commit_managed_edges_if_current(epoch, endpoints, |managed| {
+                if matches!(action, crate::topology_control::TopologyAction::Disconnect) {
+                    managed.remove(key);
+                } else {
+                    managed.insert(key.clone());
+                }
+            })
+            .await;
+        Ok(if committed.is_some() {
+            PeerTopologyAttempt::Committed
         } else {
-            managed.insert(key);
-        }
-        Ok(())
+            PeerTopologyAttempt::Stale
+        })
     }
 
     /// Apply identity-first managed topology to the concrete mob graph.
@@ -4109,6 +4472,19 @@ impl IdentityRuntime {
 
     /// Reconcile an already-composed desired topology while the caller holds
     /// the shared topology-controller admission guard.
+    ///
+    /// Plan / wire / revalidate. The plan is computed from one snapshot of the
+    /// endpoints' runtime bindings (its epoch) with no lifecycle lock held;
+    /// the bridge wiring calls (mob-actor round trips, each bounded by
+    /// [`PEER_WIRING_CALL_BUDGET`]) run with no lifecycle lock held either.
+    /// The commit takes no lifecycle lock at all: it revalidates the involved
+    /// endpoints' bindings and writes the managed-edge bookkeeping while
+    /// holding the entries read lock (see
+    /// [`Self::commit_managed_edges_if_current`]), so no admission path ever
+    /// waits behind a topology commit. A binding that changed meanwhile
+    /// (reset, respawn, retire) makes the plan Stale: nothing is committed
+    /// and the reconcile replans from the live bindings, at most
+    /// [`PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS`] times.
     pub(crate) async fn reconcile_managed_peer_edges_admitted(
         &self,
         desired_edges: &[ManagedPeerEdge],
@@ -4117,66 +4493,113 @@ impl IdentityRuntime {
         let Some(bridge) = self.bridge.clone() else {
             return Ok(());
         };
-
-        let managed_snapshot = self.managed_peer_edges.read().await.clone();
-        let topology_identities = desired_edges
+        let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
             .iter()
-            .flat_map(|edge| [edge.a().clone(), edge.b().clone()])
-            .chain(
-                managed_snapshot
-                    .iter()
-                    .flat_map(|(a, b)| [a.clone(), b.clone()]),
-            );
-        let _lifecycle_guards = self.lifecycle_guards_for(topology_identities).await;
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect();
+        self.reconcile_managed_peer_edges_planned(&bridge, &desired, None, None)
+            .await
+    }
 
-        let (known_runtimes, active_runtimes): (
-            BTreeMap<AgentIdentity, AgentRuntimeId>,
-            BTreeMap<AgentIdentity, AgentRuntimeId>,
-        ) = {
-            let entries = self.entries.read().await;
-            let known = entries
-                .iter()
-                .filter_map(|(identity, entry)| {
-                    entry
-                        .continuity
-                        .as_ref()
-                        .map(|record| (identity.clone(), record.agent_runtime_id.clone()))
-                })
-                .collect::<BTreeMap<_, _>>();
-            let active = entries
-                .iter()
-                .filter_map(|(identity, entry)| {
-                    if entry.state != IdentityLifecycleState::Active {
-                        return None;
-                    }
-                    entry
-                        .continuity
-                        .as_ref()
-                        .map(|record| (identity.clone(), record.agent_runtime_id.clone()))
-                })
-                .collect();
-            (known, active)
+    /// The replan loop shared by the full reconcile and the wake path's
+    /// target-scoped reconcile. The caller holds the managed-peer reconcile
+    /// lock (and the topology admission guard when a controller exists).
+    async fn reconcile_managed_peer_edges_planned(
+        &self,
+        bridge: &Arc<dyn SessionBridge>,
+        desired: &BTreeSet<(AgentIdentity, AgentIdentity)>,
+        scope: Option<&AgentIdentity>,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<(), IdentityRuntimeError> {
+        for _attempt in 0..PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS {
+            match self
+                .reconcile_managed_peer_edges_attempt(bridge, desired, scope, deadline)
+                .await?
+            {
+                PeerTopologyAttempt::Committed => return Ok(()),
+                PeerTopologyAttempt::Stale => {
+                    tracing::debug!(
+                        "identity-first topology plan went stale during wiring; replanning"
+                    );
+                }
+            }
+        }
+        Err(IdentityRuntimeError::PeerTopologySuperseded {
+            attempts: PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS,
+        })
+    }
+
+    /// One plan / wire / revalidate pass of
+    /// [`Self::reconcile_managed_peer_edges_planned`]. With a `scope`, only
+    /// edges touching that identity are planned, wired or cleaned up (the
+    /// wake path's target-only reconcile); every other edge is left alone.
+    async fn reconcile_managed_peer_edges_attempt(
+        &self,
+        bridge: &Arc<dyn SessionBridge>,
+        desired: &BTreeSet<(AgentIdentity, AgentIdentity)>,
+        scope: Option<&AgentIdentity>,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<PeerTopologyAttempt, IdentityRuntimeError> {
+        let in_scope = |edge: &(AgentIdentity, AgentIdentity)| {
+            scope.is_none_or(|target| &edge.0 == target || &edge.1 == target)
         };
-        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = known_runtimes
+        // Edges whose earlier wiring call timed out. Their command may still
+        // be queued in the mob actor, and inspection reads roster and machine
+        // state directly (not through the actor queue), so what inspection
+        // says about them is not their fate. Each is settled only by an
+        // ORDERED command that succeeded after it: a wire if it is still
+        // desired, a tolerant unwire (not-wired is Ok) if not. Until then it
+        // stays unsettled and inspection is never trusted for it.
+        let unsettled: BTreeSet<(AgentIdentity, AgentIdentity)> = self
+            .unsettled_peer_wiring
+            .read()
+            .await
+            .iter()
+            .filter(|edge| in_scope(edge))
+            .cloned()
+            .collect();
+        let managed_snapshot: BTreeSet<(AgentIdentity, AgentIdentity)> = self
+            .managed_peer_edges
+            .read()
+            .await
+            .iter()
+            .filter(|edge| in_scope(edge))
+            .cloned()
+            .collect();
+        let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired
+            .iter()
+            .filter(|edge| in_scope(edge))
+            .cloned()
+            .collect();
+        let epoch = self.peer_binding_epoch().await;
+        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = epoch
+            .known
             .iter()
             .map(|(identity, runtime_id)| (runtime_id.clone(), identity.clone()))
             .collect();
+        let logical = |runtime_edges: &[(AgentRuntimeId, AgentRuntimeId)]| {
+            runtime_edges
+                .iter()
+                .filter_map(|(runtime_a, runtime_b)| {
+                    let a = runtime_identities.get(runtime_a)?;
+                    let b = runtime_identities.get(runtime_b)?;
+                    if a <= b {
+                        Some((a.clone(), b.clone()))
+                    } else {
+                        Some((b.clone(), a.clone()))
+                    }
+                })
+                .collect::<BTreeSet<_>>()
+        };
         let current_logical_edges: Option<BTreeSet<(AgentIdentity, AgentIdentity)>> =
-            match bridge.current_member_wires().await {
-                Ok(current_runtime_edges) => Some(
-                    current_runtime_edges
-                        .iter()
-                        .filter_map(|(runtime_a, runtime_b)| {
-                            let a = runtime_identities.get(runtime_a)?;
-                            let b = runtime_identities.get(runtime_b)?;
-                            if a <= b {
-                                Some((a.clone(), b.clone()))
-                            } else {
-                                Some((b.clone(), a.clone()))
-                            }
-                        })
-                        .collect(),
-                ),
+            match bounded_peer_wiring_by(
+                "current_member_wires",
+                deadline,
+                bridge.current_member_wires(),
+            )
+            .await?
+            {
+                Ok(current_runtime_edges) => Some(logical(&current_runtime_edges)),
                 Err(err) => {
                     tracing::debug!(
                         error = %err,
@@ -4186,21 +4609,14 @@ impl IdentityRuntime {
                 }
             };
         let current_any_half_edges: Option<BTreeSet<(AgentIdentity, AgentIdentity)>> =
-            match bridge.current_member_wires_any_half().await {
-                Ok(current_runtime_edges) => Some(
-                    current_runtime_edges
-                        .iter()
-                        .filter_map(|(runtime_a, runtime_b)| {
-                            let a = runtime_identities.get(runtime_a)?;
-                            let b = runtime_identities.get(runtime_b)?;
-                            if a <= b {
-                                Some((a.clone(), b.clone()))
-                            } else {
-                                Some((b.clone(), a.clone()))
-                            }
-                        })
-                        .collect(),
-                ),
+            match bounded_peer_wiring_by(
+                "current_member_wires_any_half",
+                deadline,
+                bridge.current_member_wires_any_half(),
+            )
+            .await?
+            {
+                Ok(current_runtime_edges) => Some(logical(&current_runtime_edges)),
                 Err(error) => {
                     tracing::debug!(
                         %error,
@@ -4209,11 +4625,7 @@ impl IdentityRuntime {
                     None
                 }
             };
-
-        let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
-            .iter()
-            .map(|edge| (edge.a().clone(), edge.b().clone()))
-            .collect();
+        let active_runtimes = &epoch.active;
 
         let edge_is_managed_and_live = |edge: &(AgentIdentity, AgentIdentity)| {
             // Managed-but-missing live edges are retried deliberately so tolerant topology restores self-heal.
@@ -4224,6 +4636,7 @@ impl IdentityRuntime {
         };
         let retained_logical_edges: Vec<(AgentIdentity, AgentIdentity)> = desired
             .iter()
+            .filter(|edge| !unsettled.contains(*edge))
             .filter(|edge| !edge_is_managed_and_live(edge))
             .filter(|edge| {
                 current_logical_edges
@@ -4235,11 +4648,14 @@ impl IdentityRuntime {
             .collect();
         let to_wire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = desired
             .iter()
-            .filter(|edge| !edge_is_managed_and_live(edge))
             .filter(|edge| {
-                current_logical_edges
-                    .as_ref()
-                    .is_none_or(|edges| !edges.contains(*edge))
+                // A still-desired unsettled edge gets an ordered (idempotent)
+                // wire whatever inspection reports.
+                unsettled.contains(*edge)
+                    || (!edge_is_managed_and_live(edge)
+                        && current_logical_edges
+                            .as_ref()
+                            .is_none_or(|edges| !edges.contains(*edge)))
             })
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
@@ -4251,8 +4667,33 @@ impl IdentityRuntime {
         let stale: Vec<(AgentIdentity, AgentIdentity)> = managed_snapshot
             .iter()
             .filter(|edge| !desired.contains(*edge))
+            .filter(|edge| !unsettled.contains(*edge))
             .cloned()
             .collect();
+        // No longer desired and unsettled: an ordered, tolerant unwire,
+        // issued whatever inspection says (it queues behind a pending wire).
+        // One whose endpoint is no longer Active has no member left for a
+        // late wire to land on (retire removes the roster entry and its
+        // wiring), so it settles without a command.
+        let (forced_unwire, unsettled_without_members): (Vec<_>, Vec<_>) = unsettled
+            .iter()
+            .filter(|edge| !desired.contains(*edge))
+            .map(
+                |(a, b)| match (active_runtimes.get(a), active_runtimes.get(b)) {
+                    (Some(runtime_a), Some(runtime_b)) => {
+                        Ok((a.clone(), b.clone(), runtime_a.clone(), runtime_b.clone()))
+                    }
+                    _ => Err((a.clone(), b.clone())),
+                },
+            )
+            .partition(Result::is_ok);
+        let forced_unwire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> =
+            forced_unwire.into_iter().filter_map(Result::ok).collect();
+        let unsettled_without_members: Vec<(AgentIdentity, AgentIdentity)> =
+            unsettled_without_members
+                .into_iter()
+                .filter_map(Result::err)
+                .collect();
         let to_unwire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = stale
             .iter()
             .filter_map(|(a, b)| {
@@ -4268,6 +4709,19 @@ impl IdentityRuntime {
             })
             .collect();
 
+        // Every endpoint whose binding this plan relied on.
+        let involved: BTreeSet<AgentIdentity> = retained_logical_edges
+            .iter()
+            .chain(stale.iter())
+            .flat_map(|(a, b)| [a.clone(), b.clone()])
+            .chain(
+                to_wire
+                    .iter()
+                    .chain(forced_unwire.iter())
+                    .flat_map(|(a, b, _, _)| [a.clone(), b.clone()]),
+            )
+            .collect();
+
         let wire_logical_edges = to_wire
             .iter()
             .map(|(a, b, _, _)| (a.clone(), b.clone()))
@@ -4277,53 +4731,180 @@ impl IdentityRuntime {
             .map(|(_, _, runtime_a, runtime_b)| (runtime_a.clone(), runtime_b.clone()))
             .collect::<Vec<_>>();
         if !wire_runtime_edges.is_empty() {
-            bridge
-                .wire_peers_batch(&wire_runtime_edges)
-                .await
-                .map_err(|e| {
-                    IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {e}"))
-                })?;
-        }
-
-        let unwire_results =
-            stream::iter(to_unwire.into_iter().map(|(a, b, runtime_a, runtime_b)| {
-                let bridge = bridge.clone();
-                async move {
-                    let result = bridge
-                        .unwire_peer(&runtime_a, &runtime_b)
-                        .await
-                        .map_err(|e| format!("{e}"));
-                    (a, b, result)
-                }
-            }))
-            .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-
-        let mut managed = self.managed_peer_edges.write().await;
-        for (a, b) in retained_logical_edges {
-            managed.insert((a, b));
-        }
-        for (a, b) in wire_logical_edges {
-            managed.insert((a, b));
-        }
-
-        for (a, b) in stale {
-            let key = (a.clone(), b.clone());
-            if current_any_half_edges
-                .as_ref()
-                .is_some_and(|edges| !edges.contains(&key))
+            match bounded_peer_wiring_by(
+                "wire_peers_batch",
+                deadline,
+                bridge.wire_peers_batch(&wire_runtime_edges),
+            )
+            .await
             {
-                managed.remove(&key);
+                Ok(Ok(())) => {
+                    // An ordered wire succeeded after any pending command for
+                    // these edges: their fate is known again.
+                    self.settle_unsettled_peer_wiring(wire_logical_edges.iter().cloned())
+                        .await;
+                }
+                Ok(Err(error)) => {
+                    // A refusal from an endpoint that was retired or respawned
+                    // under the plan is the plan going stale, not a failure.
+                    if self.peer_bindings_moved(&epoch, &involved).await {
+                        return Ok(PeerTopologyAttempt::Stale);
+                    }
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "bridge wire_peers_batch: {error}"
+                    )));
+                }
+                Err(timed_out) => {
+                    // The batch may still land in the actor after its reply
+                    // was dropped: its edges' fate is unknown.
+                    self.record_unsettled_peer_wiring(wire_logical_edges.iter().cloned())
+                        .await;
+                    return Err(timed_out);
+                }
             }
         }
-        for (a, b, result) in unwire_results {
-            result
-                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge unwire_peer: {e}")))?;
-            managed.remove(&(a, b));
-        }
 
-        Ok(())
+        let unwire_results = stream::iter(to_unwire.into_iter().chain(forced_unwire).map(
+            |(a, b, runtime_a, runtime_b)| {
+                let bridge = bridge.clone();
+                async move {
+                    // The bridge's unwire is tolerant: an edge that is not
+                    // wired (or a peer that is gone) is Ok.
+                    let result = bounded_peer_wiring_by(
+                        "unwire_peer",
+                        deadline,
+                        bridge.unwire_peer(&runtime_a, &runtime_b),
+                    )
+                    .await
+                    .map(|outcome| outcome.map_err(|e| format!("{e}")));
+                    (a, b, result)
+                }
+            },
+        ))
+        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        let timed_out_unwires: Vec<(AgentIdentity, AgentIdentity)> = unwire_results
+            .iter()
+            .filter(|(_, _, result)| result.is_err())
+            .map(|(a, b, _)| (a.clone(), b.clone()))
+            .collect();
+        if !timed_out_unwires.is_empty() {
+            self.record_unsettled_peer_wiring(timed_out_unwires).await;
+        }
+        // Ordered unwires that succeeded, and unsettled edges with no member
+        // left, are settled; a refused or timed-out one stays unsettled.
+        self.settle_unsettled_peer_wiring(
+            unwire_results
+                .iter()
+                .filter(|(_, _, result)| matches!(result, Ok(Ok(()))))
+                .map(|(a, b, _)| (a.clone(), b.clone()))
+                .filter(|edge| unsettled.contains(edge))
+                .chain(unsettled_without_members.iter().cloned()),
+        )
+        .await;
+
+        // Commit only if none of the involved bindings moved since the plan
+        // was made; no lifecycle lock is taken.
+        let committed = self
+            .commit_managed_edges_if_current(&epoch, &involved, |managed| {
+                for edge in retained_logical_edges {
+                    managed.insert(edge);
+                }
+                for edge in wire_logical_edges {
+                    managed.insert(edge);
+                }
+                for (a, b) in stale {
+                    let key = (a.clone(), b.clone());
+                    if current_any_half_edges
+                        .as_ref()
+                        .is_some_and(|edges| !edges.contains(&key))
+                    {
+                        managed.remove(&key);
+                    }
+                }
+                for edge in unsettled_without_members {
+                    managed.remove(&edge);
+                }
+                for (a, b, result) in unwire_results {
+                    result?.map_err(|e| {
+                        IdentityRuntimeError::Internal(format!("bridge unwire_peer: {e}"))
+                    })?;
+                    managed.remove(&(a, b));
+                }
+                Ok::<(), IdentityRuntimeError>(())
+            })
+            .await;
+        match committed {
+            Some(result) => result.map(|()| PeerTopologyAttempt::Committed),
+            None => Ok(PeerTopologyAttempt::Stale),
+        }
+    }
+
+    /// Commit managed-edge bookkeeping if none of `involved` changed binding
+    /// since `epoch`. The entries read lock is held across the revalidation
+    /// and the commit, so no binding change (every one is an entries write)
+    /// can interleave; this is what the endpoints' lifecycle locks used to
+    /// guarantee, without making any admission wait on a topology commit.
+    /// `managed_peer_edges` is only ever taken after `entries`, never while
+    /// awaiting it. Returns `None` (nothing committed) when the plan is stale.
+    async fn commit_managed_edges_if_current<R>(
+        &self,
+        epoch: &PeerBindingEpoch,
+        involved: &BTreeSet<AgentIdentity>,
+        commit: impl FnOnce(&mut BTreeSet<(AgentIdentity, AgentIdentity)>) -> R,
+    ) -> Option<R> {
+        let entries = self.entries.read().await;
+        if !epoch.unchanged_for(&peer_binding_epoch_of(&entries), involved) {
+            return None;
+        }
+        let mut managed = self.managed_peer_edges.write().await;
+        Some(commit(&mut managed))
+    }
+
+    /// Whether any of `involved` changed binding since `epoch`.
+    async fn peer_bindings_moved(
+        &self,
+        epoch: &PeerBindingEpoch,
+        involved: &BTreeSet<AgentIdentity>,
+    ) -> bool {
+        !epoch.unchanged_for(&self.peer_binding_epoch().await, involved)
+    }
+
+    /// Record edges whose wiring call timed out (see
+    /// [`IdentityRuntime::unsettled_peer_wiring`]).
+    async fn record_unsettled_peer_wiring(
+        &self,
+        edges: impl IntoIterator<Item = (AgentIdentity, AgentIdentity)>,
+    ) {
+        self.unsettled_peer_wiring.write().await.extend(edges);
+    }
+
+    /// Settle unsettled edges: an ordered command for each succeeded after
+    /// its timed-out one (or no member is left for it to land on).
+    async fn settle_unsettled_peer_wiring(
+        &self,
+        edges: impl IntoIterator<Item = (AgentIdentity, AgentIdentity)>,
+    ) {
+        let mut unsettled = self.unsettled_peer_wiring.write().await;
+        for edge in edges {
+            unsettled.remove(&edge);
+        }
+    }
+
+    /// Edges whose last wiring call timed out and that no ordered command has
+    /// settled yet.
+    #[cfg(test)]
+    pub(crate) async fn unsettled_peer_wiring_snapshot(
+        &self,
+    ) -> BTreeSet<(AgentIdentity, AgentIdentity)> {
+        self.unsettled_peer_wiring.read().await.clone()
+    }
+
+    /// One consistent snapshot of every registered identity's runtime binding:
+    /// the epoch a managed-topology plan is made against and revalidated with.
+    async fn peer_binding_epoch(&self) -> PeerBindingEpoch {
+        peer_binding_epoch_of(&*self.entries.read().await)
     }
 
     /// Emit an event for the given identity. Best-effort — no error if no subscribers.
@@ -4773,21 +5354,6 @@ impl IdentityRuntime {
         })?
     }
 
-    /// Acquire several identity lifecycle locks in stable identity order.
-    /// Topology operations span two or more generated aliases; global ordering
-    /// prevents opposite-direction edge requests from deadlocking.
-    async fn lifecycle_guards_for(
-        &self,
-        identities: impl IntoIterator<Item = AgentIdentity>,
-    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
-        let identities = identities.into_iter().collect::<BTreeSet<_>>();
-        let mut guards = Vec::with_capacity(identities.len());
-        for identity in identities {
-            guards.push(self.lifecycle_lock_for(&identity).await.lock_owned().await);
-        }
-        guards
-    }
-
     /// Run an externally-cancellable operation under runtime ownership.
     ///
     /// Dropping the caller only drops the result receiver; the transaction
@@ -4802,6 +5368,7 @@ impl IdentityRuntime {
         T: Send + 'static,
         F: Future<Output = Result<T, IdentityRuntimeError>> + Send + 'static,
     {
+        self.remember_self_handle();
         if self.foreground_shutdown.load(Ordering::Acquire) {
             return Err(IdentityRuntimeError::Internal(
                 "identity runtime is shutting down".to_string(),
@@ -5044,8 +5611,129 @@ impl IdentityRuntime {
             identity,
             expected_alias,
             std::future::ready(()),
+            TopologyAfterEmbody::Reconcile,
+            &mut false,
         )
         .await
+    }
+
+    /// Materialize a Dormant/retired send or dispatch target on the admission
+    /// path (the wake path).
+    ///
+    /// The target's own embodiment is required for admission, and so are its
+    /// own managed edges: the input wakes the member, and its first turn must
+    /// be able to reach the peers it is wired to (a peer message sent before
+    /// the edge exists fails as "peer not found" with no wait or retry). So
+    /// after the embodiment commits, the TARGET's edges (only edges touching
+    /// it) are reconciled before admission, bounded (see
+    /// [`Self::reconcile_target_topology_for_wake`]). The fleet-wide
+    /// reconcile and the peer builds an ordinary materialization would run
+    /// are not needed for admission and would serialize it behind every
+    /// topology identity; the sender hydrates those after admission (see
+    /// [`Self::hydrate_peer_topology_after_admission`]). Already-Active
+    /// targets never come here: they are admitted first (the mid-turn case).
+    ///
+    /// A failed target reconcile (typed: `PeerWiringTimedOut`,
+    /// `PeerTopologySuperseded`, a bridge refusal) is logged and does not
+    /// refuse the input. That is the contract topology reconcile has always
+    /// had on this path (a reconcile warning never failed a send), and the
+    /// post-admission hydration retries it; refusing the operator's message
+    /// because one edge could not be wired would trade a degraded first turn
+    /// for a lost one.
+    async fn materialize_for_admission(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let mut already_active = false;
+        let record = self
+            .materialize_with_expected_member_alias_after_inner(
+                identity,
+                expected_alias,
+                std::future::ready(()),
+                TopologyAfterEmbody::DeferToPostAdmission,
+                &mut already_active,
+            )
+            .await?;
+        // A concurrent materialization won: the target was already Active
+        // when the embodiment door ran, so this send woke nothing and is
+        // admitted first like any send to an Active target.
+        if already_active {
+            return Ok(record);
+        }
+        if let Err(error) = self.reconcile_target_topology_for_wake(identity).await {
+            tracing::warn!(
+                identity = %identity,
+                %error,
+                "woken target's managed edges were not reconciled before admission; the \
+                 post-admission hydration retries them"
+            );
+        }
+        Ok(record)
+    }
+
+    /// Reconcile only `target`'s own managed edges, for the wake path.
+    ///
+    /// Bounded end to end by ONE deadline ([`WAKE_TOPOLOGY_BUDGET`] from the
+    /// start): acquiring the topology admission guard and the managed-peer
+    /// reconcile lock settles as
+    /// `PeerWiringTimedOut { operation: "wake_topology_locks" }` when the
+    /// deadline passes first, and every wiring call inside is capped by the
+    /// remaining time (a timed-out wire is recorded unsettled like any
+    /// other); a plan that keeps going stale settles as
+    /// `PeerTopologySuperseded`. Only edges whose
+    /// other endpoint is already Active can be wired here; a Dormant peer is
+    /// built and wired by the post-admission hydration.
+    async fn reconcile_target_topology_for_wake(
+        &self,
+        target: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.clone() else {
+            return Ok(());
+        };
+        let touches = |a: &AgentIdentity, b: &AgentIdentity| a == target || b == target;
+        let declared = self.desired_peer_edges.read().await.clone();
+        let controller = self.topology_controller();
+        if controller.is_none()
+            && !declared.iter().any(|edge| touches(edge.a(), edge.b()))
+            && !self
+                .managed_peer_edges
+                .read()
+                .await
+                .iter()
+                .any(|(a, b)| touches(a, b))
+        {
+            return Ok(());
+        }
+        let deadline = tokio::time::Instant::now() + WAKE_TOPOLOGY_BUDGET;
+        let (_topology_guard, _reconcile_guard) =
+            bounded_peer_wiring_by("wake_topology_locks", Some(deadline), async {
+                let topology_guard = match controller.as_ref() {
+                    Some(controller) => Some(controller.mutation_guard().await),
+                    None => None,
+                };
+                (
+                    topology_guard,
+                    self.managed_peer_reconcile_lock.lock().await,
+                )
+            })
+            .await?;
+        let desired_edges = match controller.as_ref() {
+            Some(controller) => controller
+                .compose_managed_peer_edges(&declared)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology overlay: {error}"))
+                })?,
+            None => declared,
+        };
+        let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
+            .iter()
+            .filter(|edge| touches(edge.a(), edge.b()))
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect();
+        self.reconcile_managed_peer_edges_planned(&bridge, &desired, Some(target), Some(deadline))
+            .await
     }
 
     /// Complete a foreground materialization with an internal seam after the
@@ -5057,6 +5745,8 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         after_inner: F,
+        topology: TopologyAfterEmbody,
+        already_active: &mut bool,
     ) -> Result<ContinuityRecord, IdentityRuntimeError>
     where
         F: Future<Output = ()>,
@@ -5078,7 +5768,10 @@ impl IdentityRuntime {
                 EmbodimentOverrides::default(),
             )
             .await
-            .map(|outcome| outcome.record);
+            .map(|outcome| {
+                *already_active = outcome.already_active;
+                outcome.record
+            });
         after_inner.await;
         // A caller wanted this identity and it is parked Broken: that demand
         // is a typed repair trigger (it would otherwise wait for an unrelated
@@ -5108,7 +5801,7 @@ impl IdentityRuntime {
         if matches!(&result, Err(IdentityRuntimeError::StaleRuntimeAlias { .. })) {
             return result;
         }
-        if result.is_ok() {
+        if result.is_ok() && topology == TopologyAfterEmbody::Reconcile {
             let desired_edges = self.desired_peer_edges.read().await.clone();
             let has_pending_topology_recovery = match self.topology_controller() {
                 Some(controller) => controller.has_pending().await,
@@ -6115,6 +6808,7 @@ impl IdentityRuntime {
             let record = self.reuse_active_restore_state(&spec).await?;
             self.clear_materialization_backoff(identity).await;
             return Ok(EmbodimentOutcome {
+                already_active: true,
                 record,
                 resumed: true,
                 draft: AgentBuildDraft {
@@ -6881,6 +7575,7 @@ impl IdentityRuntime {
         .await;
         self.clear_materialization_backoff(identity).await;
         Ok(EmbodimentOutcome {
+            already_active: false,
             record,
             resumed,
             draft,
@@ -9030,6 +9725,113 @@ impl IdentityRuntime {
         .await
     }
 
+    /// Converge an identity's reachable peer neighbourhood AFTER a queue-mode
+    /// send or dispatch to it was admitted.
+    ///
+    /// Admission never waits for this: hydration materializes peers (member
+    /// builds, host callbacks) and reconciles the managed topology (the
+    /// topology guard, the reconcile lock and mob wiring calls), none of which
+    /// the target's admission needs. meerkat already holds the admitted input
+    /// durably and queues it behind any running turn. When the runtime's
+    /// owning `Arc` is known the hydration is detached and runtime-tracked
+    /// (shutdown joins it at its own commit/rollback boundary); otherwise it
+    /// runs inline here, after admission and with no admission lock held.
+    /// Best effort either way: a failure is logged, like the materialization
+    /// warnings it wraps.
+    ///
+    /// Concurrent admissions to one target merge: while a hydration for it is
+    /// in flight, a new admission only asks it to run once more when it
+    /// finishes (so the latest topology is still converged), instead of
+    /// stacking another hydration behind the same locks.
+    async fn hydrate_peer_topology_after_admission(&self, identity: &AgentIdentity) {
+        let Some(token) = self.claim_peer_hydration(identity) else {
+            return;
+        };
+        if let Some(runtime) = self.shared_handle() {
+            runtime.spawn_post_admission_peer_hydration(identity.clone(), token);
+            return;
+        }
+        PeerHydrationSlot {
+            hydrations: &self.peer_hydrations_in_flight,
+            identity: identity.clone(),
+            token,
+        }
+        .run(self)
+        .await;
+    }
+
+    fn spawn_post_admission_peer_hydration(self: &Arc<Self>, identity: AgentIdentity, token: u64) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let hydrator = Arc::clone(&runtime);
+            let owner = identity.clone();
+            let _ = runtime
+                .run_tracked_foreground(async move {
+                    PeerHydrationSlot {
+                        hydrations: &hydrator.peer_hydrations_in_flight,
+                        identity: owner,
+                        token,
+                    }
+                    .run(&hydrator)
+                    .await;
+                    Ok::<(), IdentityRuntimeError>(())
+                })
+                .await
+                .inspect_err(|error| {
+                    // Refused at shutdown: release this claim (only this
+                    // one) so nothing stays marked in flight.
+                    runtime
+                        .peer_hydrations_in_flight
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .release(&identity, token);
+                    tracing::warn!(
+                        identity = %identity,
+                        %error,
+                        "input was admitted; post-admission peer hydration was not run"
+                    );
+                });
+        });
+    }
+
+    async fn hydrate_peer_topology_logged(&self, identity: &AgentIdentity) {
+        if let Err(error) = self.hydrate_peer_topology(identity).await {
+            tracing::warn!(
+                identity = %identity,
+                %error,
+                "input was admitted; post-admission peer hydration failed"
+            );
+        }
+    }
+
+    /// Claim `identity`'s hydration slot (see [`PeerHydrations::claim`]).
+    fn claim_peer_hydration(&self, identity: &AgentIdentity) -> Option<u64> {
+        self.peer_hydrations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .claim(identity)
+    }
+
+    /// The topology work an ordinary send used to run before admission:
+    /// materialize the reachable peers and reconcile the managed edges, plus
+    /// the pending-recovery reconcile that a wake-path materialization
+    /// ([`Self::materialize_for_admission`], which reconciles only the
+    /// target's own edges) left to it.
+    async fn hydrate_peer_topology(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        self.materialize_reachable_peers(identity).await?;
+        let desired_edges = self.desired_peer_edges.read().await.clone();
+        if desired_edges.is_empty()
+            && let Some(controller) = self.topology_controller()
+            && controller.has_pending().await
+        {
+            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        }
+        Ok(())
+    }
+
     /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
     /// 0.7.25 ask 15 addendum). The id rides `WorkSpec` into runtime
     /// admission, so the turn's live events and its committed transcript
@@ -9090,6 +9892,30 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         request: SendRequest<'_>,
     ) -> Result<SendCoreOutcome, IdentityRuntimeError> {
+        // Steers keep their established contract: no topology work at all
+        // (background and full-fleet materialization own the peers).
+        let hydrate = request.handling_mode != HandlingMode::Steer;
+        let result = self.send_core_admit(identity, request).await;
+        if hydrate && input_was_admitted(&result) {
+            self.hydrate_peer_topology_after_admission(identity).await;
+        }
+        result
+    }
+
+    /// Admission for [`Self::send_core`]. For an already-Active target it
+    /// waits only on the target's lifecycle lock, alias validation, its
+    /// lease, the bounded memory recall and the bounded bridge admission: it
+    /// never hydrates peers, reconciles topology or takes another identity's
+    /// lifecycle lock, so a queued input gets meerkat's durable admission
+    /// receipt while the member is mid-turn (meerkat queues it behind the
+    /// running turn). A Dormant or retired target is woken first, and the
+    /// wake reconciles that target's own managed edges, bounded, so its first
+    /// turn can reach its peers (see [`Self::materialize_for_admission`]).
+    async fn send_core_admit(
+        &self,
+        identity: &AgentIdentity,
+        request: SendRequest<'_>,
+    ) -> Result<SendCoreOutcome, IdentityRuntimeError> {
         let SendRequest {
             expected_alias,
             content,
@@ -9123,21 +9949,8 @@ impl IdentityRuntime {
             )
         };
         if should_materialize {
-            self.materialize_with_expected_member_alias(identity, expected_alias)
+            self.materialize_for_admission(identity, expected_alias)
                 .await?;
-        }
-        // Live steers are latency-sensitive operator input for an already
-        // active turn. Ordinary sends may hydrate the reachable topology first,
-        // but a steer must reach the current session boundary before the tool
-        // turn resumes; background/full-fleet materialization owns the peers.
-        if handling_mode != HandlingMode::Steer {
-            if let Some(expected_alias) = expected_alias {
-                let lifecycle_lock = self.lifecycle_lock_for(identity).await;
-                let _lifecycle_guard = lifecycle_lock.lock().await;
-                self.ensure_expected_member_alias_current(identity, expected_alias)
-                    .await?;
-            }
-            self.materialize_reachable_peers(identity).await?;
         }
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
@@ -9820,6 +10633,27 @@ impl IdentityRuntime {
         input: &DispatchInput,
         track_turn: bool,
     ) -> Result<DispatchOutcome, IdentityRuntimeError> {
+        let result = self
+            .dispatch_core_admit(identity, expected_alias, expected, input, track_turn)
+            .await;
+        // A maintenance dispatch (`expected` incarnation) never touched the
+        // topology; an ordinary one hydrates it, after admission.
+        if expected.is_none() && input_was_admitted(&result) {
+            self.hydrate_peer_topology_after_admission(identity).await;
+        }
+        result
+    }
+
+    /// Admission for [`Self::dispatch_core`]; the same admission-first
+    /// contract as [`Self::send_core_admit`].
+    async fn dispatch_core_admit(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        expected: Option<&CapturedIncarnation>,
+        input: &DispatchInput,
+        track_turn: bool,
+    ) -> Result<DispatchOutcome, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -9836,17 +10670,8 @@ impl IdentityRuntime {
             )
         };
         if should_materialize && expected.is_none() {
-            self.materialize_with_expected_member_alias(identity, expected_alias)
+            self.materialize_for_admission(identity, expected_alias)
                 .await?;
-        }
-        if let Some(expected_alias) = expected_alias {
-            let lifecycle_lock = self.lifecycle_lock_for(identity).await;
-            let _lifecycle_guard = lifecycle_lock.lock().await;
-            self.ensure_expected_member_alias_current(identity, expected_alias)
-                .await?;
-        }
-        if expected.is_none() {
-            self.materialize_reachable_peers(identity).await?;
         }
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
@@ -16884,6 +17709,8 @@ mod reset_reprofile_tests {
                             completion_entered.notify_one();
                             release_completion.notified().await;
                         },
+                        TopologyAfterEmbody::Reconcile,
+                        &mut false,
                     )
                     .await
             }
@@ -18563,5 +19390,1280 @@ model = "gpt-5.5"
             meerkat_mob::MobRuntimeMode::default(),
             "with no definition installed MobKit has no profile table; default, documented"
         );
+    }
+}
+
+/// Admission-first delivery and plan / wire / revalidate topology reconcile:
+/// no send, steer or dispatch waits behind managed-topology wiring or a peer
+/// build, and a binding change during wiring replans instead of committing a
+/// stale plan.
+#[cfg(test)]
+mod admission_first_topology_tests {
+    use super::*;
+    use std::sync::Mutex as StdTestMutex;
+
+    use super::super::bridge::{BridgeDelivery, BridgeError, ResumeSessionOutcome};
+    use super::super::local_lease::LocalLeaseProvider;
+    use super::super::local_store::LocalContinuityStore;
+    use super::super::types::{AgentBuildDraft, SessionSnapshot};
+
+    const ADMISSION_WAIT: Duration = Duration::from_secs(5);
+
+    /// A session bridge whose managed-topology calls and member builds can
+    /// be wedged behind `gate` (closed while false), and which records every
+    /// admission and wire call it sees.
+    struct WedgeableTopologyBridge {
+        gate: watch::Receiver<bool>,
+        wedge_inspection: bool,
+        /// Park only the FIRST wire call (0 = never park).
+        wedge_first_wire: bool,
+        wedge_builds: bool,
+        /// Park EVERY wire call until the test releases it (one
+        /// `wire_release` permit per call).
+        wedge_every_wire: bool,
+        sessions: StdTestMutex<HashMap<String, SessionId>>,
+        admissions: StdTestMutex<Vec<(String, HandlingMode)>>,
+        wire_calls: StdTestMutex<Vec<Vec<(AgentRuntimeId, AgentRuntimeId)>>>,
+        unwire_calls: StdTestMutex<Vec<(AgentRuntimeId, AgentRuntimeId)>>,
+        /// The physical wires the inspection reports (a late-landing wire is
+        /// simulated by adding to it).
+        live_wires: StdTestMutex<Vec<(AgentRuntimeId, AgentRuntimeId)>>,
+        /// Wire and admission calls in the order the bridge saw them.
+        events: StdTestMutex<Vec<String>>,
+        inspection_entered: Notify,
+        wire_entered: Notify,
+        wire_release: Notify,
+        build_entered: Notify,
+    }
+
+    impl WedgeableTopologyBridge {
+        fn new(gate: watch::Receiver<bool>) -> Self {
+            Self {
+                gate,
+                wedge_inspection: false,
+                wedge_first_wire: false,
+                wedge_builds: false,
+                wedge_every_wire: false,
+                sessions: StdTestMutex::new(HashMap::new()),
+                admissions: StdTestMutex::new(Vec::new()),
+                wire_calls: StdTestMutex::new(Vec::new()),
+                unwire_calls: StdTestMutex::new(Vec::new()),
+                live_wires: StdTestMutex::new(Vec::new()),
+                events: StdTestMutex::new(Vec::new()),
+                inspection_entered: Notify::new(),
+                wire_entered: Notify::new(),
+                wire_release: Notify::new(),
+                build_entered: Notify::new(),
+            }
+        }
+
+        fn log(&self, event: String) {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        fn unwire_calls(&self) -> Vec<(AgentRuntimeId, AgentRuntimeId)> {
+            self.unwire_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        fn land_wire(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) {
+            let mut live = self
+                .live_wires
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            live.push((a.clone(), b.clone()));
+            live.push((b.clone(), a.clone()));
+        }
+
+        fn bind_session(&self, runtime_id: &AgentRuntimeId, session_id: &SessionId) {
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(runtime_id.as_str().to_string(), session_id.clone());
+        }
+
+        fn admissions(&self) -> Vec<(String, HandlingMode)> {
+            self.admissions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        fn wire_calls(&self) -> Vec<Vec<(AgentRuntimeId, AgentRuntimeId)>> {
+            self.wire_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        async fn park_until_open(&self) {
+            let mut gate = self.gate.clone();
+            while !*gate.borrow_and_update() {
+                if gate.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for WedgeableTopologyBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            self.build_entered.notify_one();
+            if self.wedge_builds {
+                // A member build parked in the host's build callback.
+                self.park_until_open().await;
+            }
+            self.bind_session(runtime_id, session_id);
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            self.build_entered.notify_one();
+            if self.wedge_builds {
+                self.park_until_open().await;
+            }
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver_admitted(
+            &self,
+            runtime_id: &AgentRuntimeId,
+            delivery: BridgeDelivery,
+        ) -> Result<SessionId, BridgeError> {
+            self.admissions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((runtime_id.as_str().to_string(), delivery.handling_mode));
+            self.log(format!("admit:{runtime_id}"));
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(runtime_id.as_str())
+                .cloned()
+                .ok_or_else(|| BridgeError::Mob(format!("no session bound to {runtime_id}")))
+        }
+
+        async fn wire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            let first = {
+                let mut calls = self
+                    .wire_calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                calls.push(vec![(a.clone(), b.clone())]);
+                calls.len() == 1
+            };
+            self.log(format!("wire:{a}:{b}"));
+            self.wire_entered.notify_one();
+            if first && self.wedge_first_wire {
+                self.park_until_open().await;
+            }
+            if self.wedge_every_wire {
+                self.wire_release.notified().await;
+            }
+            Ok(())
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            self.inspection_entered.notify_one();
+            if self.wedge_inspection {
+                self.park_until_open().await;
+            }
+            Ok(self
+                .live_wires
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone())
+        }
+
+        async fn unwire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.unwire_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((a.clone(), b.clone()));
+            self.live_wires
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(x, y)| !((x == a && y == b) || (x == b && y == a)));
+            Ok(())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in this test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    fn spec(identity: &AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: identity.clone(),
+            profile: meerkat_mob::ProfileName::from("default"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+            placement: None,
+        }
+    }
+
+    fn runtime_with(
+        bridge: Arc<WedgeableTopologyBridge>,
+        name: &str,
+    ) -> Result<Arc<IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: name.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })))
+    }
+
+    /// Register `identity` Active on runtime generation `generation`, bound
+    /// to a fresh session the bridge delivers to.
+    async fn register_active(
+        runtime: &IdentityRuntime,
+        bridge: &WedgeableTopologyBridge,
+        identity: &AgentIdentity,
+        generation: u64,
+    ) -> Result<AgentRuntimeId, Box<dyn std::error::Error + Send + Sync>> {
+        let runtime_id = AgentRuntimeId::parse(&format!("rt:{}:{generation}", identity.as_str()))?;
+        let session_id = SessionId::new();
+        bridge.bind_session(&runtime_id, &session_id);
+        runtime
+            .register(
+                spec(identity),
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: runtime_id.clone(),
+                    session_id,
+                    generation: ContinuityGeneration::new(generation),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7 + generation),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        Ok(runtime_id)
+    }
+
+    /// A topology reconcile wedged inside a wiring call (a mob-actor round
+    /// trip that cannot settle, e.g. behind a member mid-turn) holds no
+    /// lifecycle lock, so a queue send, a dispatch and a steer to either
+    /// endpoint are all admitted while it is parked. Before the fix the
+    /// queue send and dispatch ran that same reconcile before admission (and
+    /// waited on its lock), and the steer waited on its endpoint lifecycle
+    /// lock, which the reconcile held for the whole wiring.
+    #[tokio::test]
+    async fn queue_dispatch_and_steer_are_admitted_while_topology_wiring_is_wedged()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:wedge-alpha")?;
+        let beta = AgentIdentity::parse("agent:wedge-beta")?;
+        let (open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_inspection = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "admission-first-wedged-wiring")?;
+        let alpha_rt = register_active(&runtime, &bridge, &alpha, 0).await?;
+        let beta_rt = register_active(&runtime, &bridge, &beta, 0).await?;
+        let edges = vec![ManagedPeerEdge::new(alpha.clone(), beta.clone())?];
+        runtime.set_desired_peer_edges(edges.clone()).await;
+
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.reconcile_managed_peer_edges(&edges).await }
+        });
+        tokio::time::timeout(ADMISSION_WAIT, bridge.inspection_entered.notified())
+            .await
+            .map_err(|_| "the reconcile should reach its wiring inspection")?;
+
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.send_with_mode_tracked(
+                &alpha,
+                &meerkat_core::ContentInput::Text("queued".to_string()),
+                HandlingMode::Queue,
+            ),
+        )
+        .await
+        .map_err(|_| "a queue send must not wait behind wedged topology wiring")??;
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.dispatch_tracked(&beta, &DispatchInput::system("dispatched")),
+        )
+        .await
+        .map_err(|_| "a dispatch must not wait behind wedged topology wiring")??;
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.send_with_mode_tracked(
+                &beta,
+                &meerkat_core::ContentInput::Text("steered".to_string()),
+                HandlingMode::Steer,
+            ),
+        )
+        .await
+        .map_err(|_| "a steer must not wait behind wedged topology wiring")??;
+
+        let admissions = bridge.admissions();
+        assert!(
+            admissions.contains(&(alpha_rt.as_str().to_string(), HandlingMode::Queue)),
+            "queue send admitted: {admissions:?}"
+        );
+        assert!(
+            admissions.contains(&(beta_rt.as_str().to_string(), HandlingMode::Steer)),
+            "steer admitted: {admissions:?}"
+        );
+        assert_eq!(
+            admissions
+                .iter()
+                .filter(|(runtime_id, _)| runtime_id == beta_rt.as_str())
+                .count(),
+            2,
+            "dispatch and steer each admitted exactly once: {admissions:?}"
+        );
+        assert!(
+            !reconcile.is_finished(),
+            "the reconcile is still parked inside its wiring call"
+        );
+
+        open_gate.send_replace(true);
+        tokio::time::timeout(ADMISSION_WAIT, reconcile)
+            .await
+            .map_err(|_| "the reconcile settles once its wiring does")???;
+        assert!(
+            runtime
+                .managed_peer_edges_snapshot()
+                .await
+                .contains(&(alpha.clone(), beta.clone())),
+            "the released reconcile commits the edge"
+        );
+        Ok(())
+    }
+
+    /// A peer whose member build is wedged (the host's build callback never
+    /// answers) does not hold up a queue send or a steer to its neighbour:
+    /// the neighbour is admitted first and the peer hydration that reaches
+    /// the wedged build runs after admission.
+    #[tokio::test]
+    async fn admission_does_not_wait_behind_a_wedged_peer_build()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let target = AgentIdentity::parse("agent:build-target")?;
+        let peer = AgentIdentity::parse("agent:build-peer")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_builds = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "admission-first-wedged-build")?;
+        let target_rt = register_active(&runtime, &bridge, &target, 0).await?;
+        runtime
+            .register(spec(&peer), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        runtime
+            .set_desired_peer_edges(vec![ManagedPeerEdge::new(target.clone(), peer.clone())?])
+            .await;
+
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.send_with_mode_tracked(
+                &target,
+                &meerkat_core::ContentInput::Text("queued".to_string()),
+                HandlingMode::Queue,
+            ),
+        )
+        .await
+        .map_err(|_| "a queue send must not wait behind a wedged peer build")??;
+        tokio::time::timeout(ADMISSION_WAIT, bridge.build_entered.notified())
+            .await
+            .map_err(|_| "the post-admission hydration should reach the peer build")?;
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.send_with_mode_tracked(
+                &target,
+                &meerkat_core::ContentInput::Text("steered".to_string()),
+                HandlingMode::Steer,
+            ),
+        )
+        .await
+        .map_err(|_| "a steer must not wait behind a wedged peer build")??;
+
+        assert_eq!(
+            bridge.admissions(),
+            vec![
+                (target_rt.as_str().to_string(), HandlingMode::Queue),
+                (target_rt.as_str().to_string(), HandlingMode::Steer),
+            ]
+        );
+        Ok(())
+    }
+
+    /// An endpoint respawned (new runtime binding) while the reconcile's wire
+    /// call is parked makes the plan stale: nothing is committed for the old
+    /// incarnation, the reconcile replans from the live bindings and wires
+    /// the new incarnation, then commits.
+    #[tokio::test]
+    async fn topology_reconcile_replans_when_an_endpoint_binding_changes_during_wiring()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:replan-alpha")?;
+        let beta = AgentIdentity::parse("agent:replan-beta")?;
+        let (open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_first_wire = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "topology-replan")?;
+        let alpha_rt = register_active(&runtime, &bridge, &alpha, 0).await?;
+        let beta_rt_old = register_active(&runtime, &bridge, &beta, 0).await?;
+        let edges = vec![ManagedPeerEdge::new(alpha.clone(), beta.clone())?];
+        runtime.set_desired_peer_edges(edges.clone()).await;
+
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.reconcile_managed_peer_edges(&edges).await }
+        });
+        tokio::time::timeout(ADMISSION_WAIT, bridge.wire_entered.notified())
+            .await
+            .map_err(|_| "the reconcile should reach its first wire call")?;
+
+        // beta is respawned onto a new incarnation while the wire is parked.
+        let beta_rt_new = register_active(&runtime, &bridge, &beta, 1).await?;
+        assert!(
+            runtime.managed_peer_edges_snapshot().await.is_empty(),
+            "nothing is committed while the wiring is in flight"
+        );
+        open_gate.send_replace(true);
+        tokio::time::timeout(ADMISSION_WAIT, reconcile)
+            .await
+            .map_err(|_| "the reconcile settles after replanning")???;
+
+        let calls = bridge.wire_calls();
+        let wired_pair = |call: &Vec<(AgentRuntimeId, AgentRuntimeId)>,
+                          beta_rt: &AgentRuntimeId| {
+            call.iter()
+                .any(|(a, b)| (a == &alpha_rt && b == beta_rt) || (a == beta_rt && b == &alpha_rt))
+        };
+        assert_eq!(
+            calls.len(),
+            2,
+            "one stale wire, one replanned wire: {calls:?}"
+        );
+        assert!(
+            wired_pair(&calls[0], &beta_rt_old),
+            "first plan wired the old incarnation"
+        );
+        assert!(
+            wired_pair(&calls[1], &beta_rt_new),
+            "the replan wired the live incarnation: {calls:?}"
+        );
+        assert!(
+            runtime
+                .managed_peer_edges_snapshot()
+                .await
+                .contains(&(alpha.clone(), beta.clone())),
+            "the replanned edge is committed"
+        );
+        Ok(())
+    }
+
+    /// Waking a Dormant member reconciles ITS managed edges before the input
+    /// is admitted, so the woken member's first turn can message its peer:
+    /// the bridge sees the wire before the admission.
+    #[tokio::test]
+    async fn waking_a_dormant_member_wires_its_peers_before_admitting_its_first_turn()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let sleeper = AgentIdentity::parse("agent:wake-sleeper")?;
+        let peer = AgentIdentity::parse("agent:wake-peer")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        let runtime = runtime_with(bridge.clone(), "wake-wires-before-admission")?;
+        let peer_rt = register_active(&runtime, &bridge, &peer, 0).await?;
+        runtime
+            .register(spec(&sleeper), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        runtime
+            .set_desired_peer_edges(vec![ManagedPeerEdge::new(sleeper.clone(), peer.clone())?])
+            .await;
+
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.send_with_mode_tracked(
+                &sleeper,
+                &meerkat_core::ContentInput::Text("ask agent:wake-peer for the plan".to_string()),
+                HandlingMode::Queue,
+            ),
+        )
+        .await
+        .map_err(|_| "the wake send should be admitted")??;
+
+        let sleeper_rt = runtime
+            .status(&sleeper)
+            .await?
+            .agent_runtime_id
+            .ok_or("the woken member has a runtime binding")?;
+        let events = bridge.events();
+        let wired = events.iter().position(|event| {
+            event == &format!("wire:{sleeper_rt}:{peer_rt}")
+                || event == &format!("wire:{peer_rt}:{sleeper_rt}")
+        });
+        let admitted = events
+            .iter()
+            .position(|event| event == &format!("admit:{sleeper_rt}"));
+        match (wired, admitted) {
+            (Some(wired), Some(admitted)) => assert!(
+                wired < admitted,
+                "the woken member's edge must exist before its first turn is admitted: {events:?}"
+            ),
+            _ => return Err(format!("expected a wire and an admission: {events:?}").into()),
+        }
+        let edge = ManagedPeerEdge::new(sleeper.clone(), peer.clone())?;
+        assert!(
+            runtime
+                .managed_peer_edges_snapshot()
+                .await
+                .contains(&(edge.a().clone(), edge.b().clone())),
+            "the woken member's edge is committed"
+        );
+        Ok(())
+    }
+
+    /// A wiring call that never answers settles as a typed
+    /// `PeerWiringTimedOut` after its budget instead of parking the
+    /// reconcile.
+    #[tokio::test(start_paused = true)]
+    async fn a_wedged_wiring_inspection_settles_as_peer_wiring_timed_out()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:timeout-alpha")?;
+        let beta = AgentIdentity::parse("agent:timeout-beta")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_inspection = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "wiring-timeout")?;
+        register_active(&runtime, &bridge, &alpha, 0).await?;
+        register_active(&runtime, &bridge, &beta, 0).await?;
+        let edges = vec![ManagedPeerEdge::new(alpha, beta)?];
+
+        match runtime.reconcile_managed_peer_edges(&edges).await {
+            Err(IdentityRuntimeError::PeerWiringTimedOut { operation, waited }) => {
+                assert_eq!(operation, "current_member_wires");
+                assert_eq!(waited, PEER_WIRING_CALL_BUDGET);
+            }
+            other => return Err(format!("expected PeerWiringTimedOut, got {other:?}").into()),
+        }
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+        Ok(())
+    }
+
+    /// A wire whose reply timed out may still land in the actor. Its edge is
+    /// recorded as unsettled; once the desired topology no longer wants it,
+    /// the next reconcile sends an ordered, tolerant unwire for it (whatever
+    /// inspection says) and settles it, instead of leaking an unmanaged wire.
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_wire_that_lands_late_is_unwired_once_no_longer_desired()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:late-alpha")?;
+        let beta = AgentIdentity::parse("agent:late-beta")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_first_wire = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "late-landing-wire")?;
+        let alpha_rt = register_active(&runtime, &bridge, &alpha, 0).await?;
+        let beta_rt = register_active(&runtime, &bridge, &beta, 0).await?;
+        let edge = ManagedPeerEdge::new(alpha.clone(), beta.clone())?;
+        let key = (edge.a().clone(), edge.b().clone());
+
+        match runtime
+            .reconcile_managed_peer_edges(std::slice::from_ref(&edge))
+            .await
+        {
+            Err(IdentityRuntimeError::PeerWiringTimedOut { operation, .. }) => {
+                assert_eq!(operation, "wire_peers_batch");
+            }
+            other => return Err(format!("expected a wire timeout, got {other:?}").into()),
+        }
+        assert!(
+            runtime.managed_peer_edges_snapshot().await.is_empty(),
+            "a timed-out wire is not committed as managed"
+        );
+        assert!(
+            runtime
+                .unsettled_peer_wiring_snapshot()
+                .await
+                .contains(&key),
+            "the timed-out edge's fate is recorded as unknown"
+        );
+
+        // The dropped wire command lands in the actor after all.
+        bridge.land_wire(&alpha_rt, &beta_rt);
+        // The desired topology no longer wants the edge.
+        runtime.set_desired_peer_edges(Vec::new()).await;
+        runtime.reconcile_managed_peer_edges(&[]).await?;
+
+        let unwired = bridge.unwire_calls();
+        assert!(
+            unwired.iter().any(
+                |(a, b)| (a == &alpha_rt && b == &beta_rt) || (a == &beta_rt && b == &alpha_rt)
+            ),
+            "the late-landed wire is unwired: {unwired:?}"
+        );
+        assert!(runtime.unsettled_peer_wiring_snapshot().await.is_empty());
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+        Ok(())
+    }
+
+    /// An endpoint whose binding moves during every plan's wiring exhausts
+    /// the bounded replans and settles as `PeerTopologySuperseded`, having
+    /// committed nothing.
+    #[tokio::test]
+    async fn a_binding_that_keeps_moving_settles_as_peer_topology_superseded()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:superseded-alpha")?;
+        let beta = AgentIdentity::parse("agent:superseded-beta")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_every_wire = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "topology-superseded")?;
+        register_active(&runtime, &bridge, &alpha, 0).await?;
+        register_active(&runtime, &bridge, &beta, 0).await?;
+        let edges = vec![ManagedPeerEdge::new(alpha.clone(), beta.clone())?];
+
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.reconcile_managed_peer_edges(&edges).await }
+        });
+        for generation in 1..=u64::from(PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS) {
+            tokio::time::timeout(ADMISSION_WAIT, bridge.wire_entered.notified())
+                .await
+                .map_err(|_| "each plan reaches its wire call")?;
+            // beta is respawned while this plan's wire is in flight.
+            register_active(&runtime, &bridge, &beta, generation).await?;
+            bridge.wire_release.notify_one();
+        }
+        match tokio::time::timeout(ADMISSION_WAIT, reconcile).await?? {
+            Err(IdentityRuntimeError::PeerTopologySuperseded { attempts }) => {
+                assert_eq!(attempts, PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS);
+            }
+            other => return Err(format!("expected PeerTopologySuperseded, got {other:?}").into()),
+        }
+        assert_eq!(
+            bridge.wire_calls().len(),
+            PEER_TOPOLOGY_MAX_PLAN_ATTEMPTS as usize,
+            "one wire per plan"
+        );
+        assert!(
+            runtime.managed_peer_edges_snapshot().await.is_empty(),
+            "a stale plan commits nothing"
+        );
+        Ok(())
+    }
+
+    /// A topology mutation whose endpoint is respawned while its wire is in
+    /// flight replans and wires the live incarnation, committing only that.
+    #[tokio::test]
+    async fn a_topology_mutation_replans_when_an_endpoint_binding_changes_during_wiring()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:mutate-alpha")?;
+        let beta = AgentIdentity::parse("agent:mutate-beta")?;
+        let (open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_first_wire = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "topology-mutation-replan")?;
+        let alpha_rt = register_active(&runtime, &bridge, &alpha, 0).await?;
+        register_active(&runtime, &bridge, &beta, 0).await?;
+        let edge = ManagedPeerEdge::new(alpha.clone(), beta.clone())?;
+
+        let mutation = tokio::spawn({
+            let runtime = runtime.clone();
+            let edge = edge.clone();
+            async move {
+                runtime
+                    .mutate_managed_peer_edge_admitted(
+                        crate::topology_control::TopologyAction::Connect,
+                        &edge,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(ADMISSION_WAIT, bridge.wire_entered.notified())
+            .await
+            .map_err(|_| "the mutation reaches its wire call")?;
+        let beta_rt_new = register_active(&runtime, &bridge, &beta, 1).await?;
+        open_gate.send_replace(true);
+        tokio::time::timeout(ADMISSION_WAIT, mutation).await???;
+
+        let calls = bridge.wire_calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "one stale wire, one replanned wire: {calls:?}"
+        );
+        assert!(
+            calls[1]
+                .iter()
+                .any(|(a, b)| (a == &alpha_rt && b == &beta_rt_new)
+                    || (a == &beta_rt_new && b == &alpha_rt)),
+            "the replan wired the live incarnation: {calls:?}"
+        );
+        assert!(
+            runtime
+                .managed_peer_edges_snapshot()
+                .await
+                .contains(&(edge.a().clone(), edge.b().clone()))
+        );
+        Ok(())
+    }
+
+    /// A session bridge whose wiring commands run in order on one simulated
+    /// mob actor: a command enqueued later runs after an earlier one, even
+    /// when the earlier command's caller stopped waiting for its reply. The
+    /// inspection, like the real one, reads live state directly (NOT through
+    /// the actor queue), so a command still queued is invisible to it.
+    struct OrderedActorBridge {
+        actor: Arc<tokio::sync::Mutex<()>>,
+        gate: watch::Receiver<bool>,
+        park_first_wire: std::sync::atomic::AtomicBool,
+        live_wires: Arc<StdTestMutex<Vec<(AgentRuntimeId, AgentRuntimeId)>>>,
+        events: Arc<StdTestMutex<Vec<String>>>,
+        wire_entered: Notify,
+        unwire_entered: Notify,
+    }
+
+    impl OrderedActorBridge {
+        fn new(gate: watch::Receiver<bool>) -> Self {
+            Self {
+                actor: Arc::new(tokio::sync::Mutex::new(())),
+                gate,
+                park_first_wire: std::sync::atomic::AtomicBool::new(true),
+                live_wires: Arc::new(StdTestMutex::new(Vec::new())),
+                events: Arc::new(StdTestMutex::new(Vec::new())),
+                wire_entered: Notify::new(),
+                unwire_entered: Notify::new(),
+            }
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        fn live_wires(&self) -> Vec<(AgentRuntimeId, AgentRuntimeId)> {
+            self.live_wires
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for OrderedActorBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver_admitted(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _delivery: BridgeDelivery,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "delivery not used in this test".to_string(),
+            ))
+        }
+
+        async fn wire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            // Enqueue on the actor: once holding its turn, the command runs
+            // to completion in the actor even if this caller is dropped.
+            let turn = self.actor.clone().lock_owned().await;
+            let park = self
+                .park_first_wire
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            let (done, reply) = tokio::sync::oneshot::channel();
+            let mut gate = self.gate.clone();
+            let live = self.live_wires.clone();
+            let events = self.events.clone();
+            let (a, b) = (a.clone(), b.clone());
+            self.wire_entered.notify_one();
+            tokio::spawn(async move {
+                let _turn = turn;
+                if park {
+                    while !*gate.borrow_and_update() {
+                        if gate.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                {
+                    let mut live = live
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    live.push((a.clone(), b.clone()));
+                    live.push((b.clone(), a.clone()));
+                }
+                events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(format!("wire-landed:{a}:{b}"));
+                let _ = done.send(());
+            });
+            reply
+                .await
+                .map_err(|_| BridgeError::Mob("actor dropped the wire".to_string()))
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            Ok(self.live_wires())
+        }
+
+        async fn unwire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.unwire_entered.notify_one();
+            // Ordered behind every earlier command, and tolerant: removing a
+            // wire that is not there is Ok.
+            let _turn = self.actor.clone().lock_owned().await;
+            self.live_wires
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(x, y)| !((x == a && y == b) || (x == b && y == a)));
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("unwire-applied:{a}:{b}"));
+            Ok(())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in this test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    /// A wire whose reply timed out is still queued in a wedged actor when
+    /// the next reconcile runs, so inspection cannot see it. That reconcile
+    /// must not trust inspection for the unsettled edge: it issues an
+    /// ordered, tolerant unwire, which runs after the wire lands, and the
+    /// edge stays unsettled until that unwire succeeded. Before the fix the
+    /// edge was folded into the managed set, found absent, dropped at commit,
+    /// and then landed unmanaged (a leaked wire).
+    #[tokio::test(start_paused = true)]
+    async fn a_wire_that_lands_after_the_next_reconcile_is_still_unwired()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:ordered-alpha")?;
+        let beta = AgentIdentity::parse("agent:ordered-beta")?;
+        let (open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(OrderedActorBridge::new(gate));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "ordered-late-wire".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let mut runtime_ids = Vec::new();
+        for identity in [&alpha, &beta] {
+            let runtime_id = AgentRuntimeId::parse(&format!("rt:{}:0", identity.as_str()))?;
+            runtime
+                .register(
+                    spec(identity),
+                    IdentityLifecycleState::Active,
+                    Some(ContinuityRecord {
+                        identity: identity.clone(),
+                        agent_runtime_id: runtime_id.clone(),
+                        session_id: SessionId::new(),
+                        generation: ContinuityGeneration::new(0),
+                        checkpoint_version: CheckpointVersion::new(0),
+                    }),
+                    Some(LeaseGrant {
+                        identity: identity.clone(),
+                        fencing_token: FencingToken::new(7),
+                        ttl: Duration::from_mins(1),
+                    }),
+                )
+                .await;
+            runtime_ids.push(runtime_id);
+        }
+        let edge = ManagedPeerEdge::new(alpha.clone(), beta.clone())?;
+        let key = (edge.a().clone(), edge.b().clone());
+
+        // 1. The wire is enqueued, parks in the actor, and its reply times out.
+        match runtime
+            .reconcile_managed_peer_edges(std::slice::from_ref(&edge))
+            .await
+        {
+            Err(IdentityRuntimeError::PeerWiringTimedOut { operation, .. }) => {
+                assert_eq!(operation, "wire_peers_batch");
+            }
+            other => return Err(format!("expected a wire timeout, got {other:?}").into()),
+        }
+        assert!(
+            runtime
+                .unsettled_peer_wiring_snapshot()
+                .await
+                .contains(&key)
+        );
+        assert!(bridge.live_wires().is_empty(), "the wire is still queued");
+
+        // 2. The desired set drops the edge and the next reconcile runs while
+        //    the wire is STILL queued (inspection sees nothing).
+        runtime.set_desired_peer_edges(Vec::new()).await;
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.reconcile_managed_peer_edges(&[]).await }
+        });
+        tokio::time::timeout(ADMISSION_WAIT, bridge.unwire_entered.notified())
+            .await
+            .map_err(|_| "the reconcile issues an ordered unwire for the unsettled edge")?;
+        assert!(
+            runtime
+                .unsettled_peer_wiring_snapshot()
+                .await
+                .contains(&key),
+            "the edge stays unsettled until an ordered command succeeded"
+        );
+
+        // 3. Only now does the queued wire land; the unwire runs after it.
+        open_gate.send_replace(true);
+        tokio::time::timeout(ADMISSION_WAIT, reconcile)
+            .await
+            .map_err(|_| "the reconcile settles once the actor drains")???;
+
+        let events = bridge.events();
+        let landed = events
+            .iter()
+            .position(|event| event.starts_with("wire-landed:"));
+        let unwired = events
+            .iter()
+            .position(|event| event.starts_with("unwire-applied:"));
+        match (landed, unwired) {
+            (Some(landed), Some(unwired)) => assert!(
+                landed < unwired,
+                "the ordered unwire runs after the late wire: {events:?}"
+            ),
+            _ => return Err(format!("expected a late wire then an unwire: {events:?}").into()),
+        }
+        assert!(bridge.live_wires().is_empty(), "no wire leaked");
+        assert!(runtime.unsettled_peer_wiring_snapshot().await.is_empty());
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+        Ok(())
+    }
+
+    /// The topology commit takes no lifecycle lock: a reconcile completes and
+    /// commits its edge while the test holds an endpoint's lifecycle lock (as
+    /// a lifecycle operation or an admission would).
+    #[tokio::test]
+    async fn a_topology_commit_goes_through_while_an_endpoint_lifecycle_lock_is_held()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let alpha = AgentIdentity::parse("agent:locked-alpha")?;
+        let beta = AgentIdentity::parse("agent:locked-beta")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        let runtime = runtime_with(bridge.clone(), "commit-without-lifecycle-locks")?;
+        register_active(&runtime, &bridge, &alpha, 0).await?;
+        register_active(&runtime, &bridge, &beta, 0).await?;
+        let edge = ManagedPeerEdge::new(alpha.clone(), beta.clone())?;
+
+        let alpha_lock = runtime.lifecycle_lock_for(&alpha).await;
+        let beta_lock = runtime.lifecycle_lock_for(&beta).await;
+        let _alpha_held = alpha_lock.lock().await;
+        let _beta_held = beta_lock.lock().await;
+        tokio::time::timeout(
+            ADMISSION_WAIT,
+            runtime.reconcile_managed_peer_edges(std::slice::from_ref(&edge)),
+        )
+        .await
+        .map_err(|_| "the topology commit must not wait on an endpoint lifecycle lock")??;
+        assert!(
+            runtime
+                .managed_peer_edges_snapshot()
+                .await
+                .contains(&(edge.a().clone(), edge.b().clone())),
+            "the edge is committed while both lifecycle locks are held"
+        );
+        Ok(())
+    }
+
+    /// The wake path's target reconcile is bounded end to end: when its
+    /// topology locks stay held past the budget, it settles as
+    /// `PeerWiringTimedOut { operation: "wake_topology_locks" }`, which is
+    /// logged, and the woken member's input is still admitted.
+    #[tokio::test(start_paused = true)]
+    async fn a_wake_topology_lock_timeout_does_not_refuse_admission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let sleeper = AgentIdentity::parse("agent:wake-lock-sleeper")?;
+        let peer = AgentIdentity::parse("agent:wake-lock-peer")?;
+        let (_open_gate, gate) = watch::channel(false);
+        let bridge = Arc::new(WedgeableTopologyBridge::new(gate));
+        let runtime = runtime_with(bridge.clone(), "wake-lock-timeout")?;
+        register_active(&runtime, &bridge, &peer, 0).await?;
+        runtime
+            .register(spec(&sleeper), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        runtime
+            .set_desired_peer_edges(vec![ManagedPeerEdge::new(sleeper.clone(), peer.clone())?])
+            .await;
+
+        // Another topology operation holds the reconcile lock throughout.
+        let _held = runtime.managed_peer_reconcile_lock.lock().await;
+        let started = tokio::time::Instant::now();
+        runtime
+            .send_with_mode_tracked(
+                &sleeper,
+                &meerkat_core::ContentInput::Text("wake up".to_string()),
+                HandlingMode::Queue,
+            )
+            .await?;
+        assert!(
+            started.elapsed() >= WAKE_TOPOLOGY_BUDGET,
+            "the wake reconcile waited out its single budget"
+        );
+        let sleeper_rt = runtime
+            .status(&sleeper)
+            .await?
+            .agent_runtime_id
+            .ok_or("the woken member has a runtime binding")?;
+        assert!(
+            bridge
+                .admissions()
+                .iter()
+                .any(|(runtime_id, mode)| runtime_id == sleeper_rt.as_str()
+                    && *mode == HandlingMode::Queue),
+            "the woken member's input is admitted despite the lock timeout"
+        );
+        assert!(
+            bridge.wire_calls().is_empty(),
+            "nothing was wired while the reconcile lock was held"
+        );
+        Ok(())
+    }
+
+    /// Concurrent admissions to one target merge their post-admission
+    /// hydrations: while the first is parked (building a Dormant peer), two
+    /// more admissions only request ONE more pass, and no second hydration
+    /// runs in parallel.
+    #[tokio::test]
+    async fn concurrent_hydrations_to_one_target_merge_into_one_rerun()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let target = AgentIdentity::parse("agent:merge-target")?;
+        let peer = AgentIdentity::parse("agent:merge-peer")?;
+        let (open_gate, gate) = watch::channel(false);
+        let mut bridge = WedgeableTopologyBridge::new(gate);
+        bridge.wedge_builds = true;
+        let bridge = Arc::new(bridge);
+        let runtime = runtime_with(bridge.clone(), "merged-hydrations")?;
+        register_active(&runtime, &bridge, &target, 0).await?;
+        runtime
+            .register(spec(&peer), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        runtime
+            .set_desired_peer_edges(vec![ManagedPeerEdge::new(target.clone(), peer.clone())?])
+            .await;
+        let passes = || {
+            runtime
+                .peer_hydration_passes
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let send = |text: &'static str| {
+            let runtime = runtime.clone();
+            let target = target.clone();
+            async move {
+                runtime
+                    .send_with_mode_tracked(
+                        &target,
+                        &meerkat_core::ContentInput::Text(text.to_string()),
+                        HandlingMode::Queue,
+                    )
+                    .await
+            }
+        };
+
+        tokio::time::timeout(ADMISSION_WAIT, send("first"))
+            .await
+            .map_err(|_| "the first send is admitted")??;
+        // Its hydration parks building the Dormant peer.
+        tokio::time::timeout(ADMISSION_WAIT, bridge.build_entered.notified())
+            .await
+            .map_err(|_| "the first hydration reaches the peer build")?;
+        for text in ["second", "third"] {
+            tokio::time::timeout(ADMISSION_WAIT, send(text))
+                .await
+                .map_err(|_| "a later send is admitted while hydration is parked")??;
+        }
+        assert_eq!(passes(), 1, "no second hydration started in parallel");
+        {
+            let hydrations = runtime
+                .peer_hydrations_in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(hydrations.in_flight.len(), 1);
+            assert!(
+                hydrations
+                    .in_flight
+                    .get(&target)
+                    .is_some_and(|claim| claim.rerun),
+                "the later admissions requested one more pass"
+            );
+        }
+
+        open_gate.send_replace(true);
+        tokio::time::timeout(ADMISSION_WAIT, async {
+            loop {
+                let idle = runtime
+                    .peer_hydrations_in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .in_flight
+                    .is_empty();
+                if idle {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| "the merged hydration finishes")?;
+        assert_eq!(passes(), 2, "three admissions ran exactly one extra pass");
+        assert_eq!(bridge.admissions().len(), 3);
+        Ok(())
+    }
+
+    /// A stale release (a second removal after a panic, or a refused spawn)
+    /// only releases its own claim, never a newer one.
+    #[test]
+    fn a_stale_hydration_release_never_drops_a_newer_claim()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let target = AgentIdentity::parse("agent:claim-target")?;
+        let hydrations = StdMutex::new(PeerHydrations::default());
+        let lock = || {
+            hydrations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let first = lock().claim(&target).ok_or("first claim")?;
+        {
+            let slot = PeerHydrationSlot {
+                hydrations: &hydrations,
+                identity: target.clone(),
+                token: first,
+            };
+            assert!(!slot.finish_pass(), "no rerun pending: released");
+            // Dropping the slot releases again; it must be a no-op.
+        }
+        let second = lock().claim(&target).ok_or("the slot is free again")?;
+        assert_ne!(first, second);
+        // The first claim's stale release does not drop the second.
+        lock().release(&target, first);
+        assert!(
+            lock()
+                .in_flight
+                .get(&target)
+                .is_some_and(|claim| claim.token == second)
+        );
+        assert!(
+            lock().claim(&target).is_none(),
+            "the second claim still owns it"
+        );
+        Ok(())
     }
 }

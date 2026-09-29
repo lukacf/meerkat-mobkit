@@ -5423,7 +5423,9 @@ function validateConsoleSendAttempt(value) {
   if (!value || value.version !== 1 || !nonemptyString(value.id) || !nonemptyString(value.scope) || !nonemptyString(value.destination) || !nonemptyString(value.origin) || !nonemptyString(value.idempotencyKey) || typeof value.text !== "string" || !value.text.trim() || !Number.isFinite(value.addedAt) || !Array.isArray(value.contexts) || !["draft", "attempting", "accepted", "definitely-rejected", "outcome-unknown"].includes(value.state)) {
     throw new Error("The saved send attempt is invalid or uses an unsupported version.");
   }
-  if (value.error !== void 0 && typeof value.error !== "string" || value.lease !== void 0 && (!value.lease || !nonemptyString(value.lease.owner) || !Number.isFinite(value.lease.expiresAt)) || value.state === "attempting" && !value.lease || value.state !== "attempting" && value.lease !== void 0 || value.state === "accepted" && (!value.accepted || !nonemptyString(value.accepted.interactionId) || value.accepted.inputFrameId !== void 0 && !nonemptyString(value.accepted.inputFrameId)) || value.state !== "accepted" && value.accepted !== void 0) {
+  if (value.error !== void 0 && typeof value.error !== "string" || // An unrecognized kind (a newer tab's vocabulary) renders with the
+  // state's generic label rather than blocking the whole saved queue.
+  value.failureKind !== void 0 && (!nonemptyString(value.failureKind) || value.state !== "definitely-rejected" && value.state !== "outcome-unknown") || value.lease !== void 0 && (!value.lease || !nonemptyString(value.lease.owner) || !Number.isFinite(value.lease.expiresAt)) || value.state === "attempting" && !value.lease || value.state !== "attempting" && value.lease !== void 0 || value.state === "accepted" && (!value.accepted || !nonemptyString(value.accepted.interactionId) || value.accepted.inputFrameId !== void 0 && !nonemptyString(value.accepted.inputFrameId)) || value.state !== "accepted" && value.accepted !== void 0) {
     throw new Error("The saved send lease or acceptance receipt is invalid.");
   }
   validateConsoleContexts(value.contexts);
@@ -5460,7 +5462,8 @@ function beginConsoleSendAttempt(attempt, options) {
     state: "attempting",
     envelopeJson: attempt.envelopeJson ?? JSON.stringify(envelope),
     lease: { owner: options.owner, expiresAt: options.now + 15e3 },
-    error: void 0
+    error: void 0,
+    failureKind: void 0
   };
 }
 function recoverConsoleSendAttempt(attempt, now) {
@@ -5486,14 +5489,140 @@ function finishConsoleSendAttempt(attempt, result) {
       state: "accepted",
       lease: void 0,
       error: void 0,
+      failureKind: void 0,
       accepted: { interactionId: result.interactionId, inputFrameId: result.inputFrameId }
     };
   }
-  return { ...attempt, state: result.state, lease: void 0, error: result.error };
+  return { ...attempt, state: result.state, lease: void 0, error: result.error, failureKind: result.kind };
 }
-function consoleSendFailureState(error) {
-  const rpc2 = error?.rpcError;
-  return rpc2?.code === -32602 || rpc2?.data?.kind === "access_denied" ? "definitely-rejected" : "outcome-unknown";
+var PRE_INGRESS_REFUSAL_STATUSES = /* @__PURE__ */ new Set([400, 404, 405, 413, 414, 415, 422, 431]);
+function classifyConsoleSendFailure(error) {
+  const typed = error && typeof error === "object" ? error : {};
+  const rpc2 = typed.rpcError ?? typed.responseRpcError;
+  const rpcKind = typeof rpc2?.data?.kind === "string" ? rpc2.data.kind : void 0;
+  const rpcMessage = typeof rpc2?.message === "string" && rpc2.message.trim() ? rpc2.message.trim() : void 0;
+  const status = typeof typed.httpStatus === "number" ? typed.httpStatus : void 0;
+  const detail = error instanceof Error && error.message.trim() ? error.message.trim() : typeof typed.message === "string" && typed.message.trim() ? typed.message.trim() : void 0;
+  if (rpcKind === "unauthenticated" || status === 401) {
+    return {
+      state: "definitely-rejected",
+      kind: "unauthenticated",
+      message: "Not authorized from this network (401). The gateway refused the request before accepting it, so nothing was sent. Sign in or connect from a trusted network, then retry."
+    };
+  }
+  if (rpcKind === "access_denied" || rpc2?.code === -32030 || status === 403) {
+    return {
+      state: "definitely-rejected",
+      kind: "access_denied",
+      message: `Not allowed to send to this agent (403)${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.`
+    };
+  }
+  if (rpcKind === "read_only") {
+    return {
+      state: "definitely-rejected",
+      kind: "read_only",
+      message: "The console is read-only. Nothing was sent."
+    };
+  }
+  if (rpc2?.code === -32602) {
+    return {
+      state: "definitely-rejected",
+      kind: "rejected",
+      message: `Send rejected: ${rpcMessage ?? detail ?? "invalid request"}. Nothing was sent.`
+    };
+  }
+  if (typed.name === "AbortError" && typed.transportFailure === void 0) {
+    return {
+      state: "outcome-unknown",
+      kind: "interrupted",
+      message: "The console was reloaded or switched while this send was in flight, so its answer was not received. It may have been accepted: check acceptance before retrying."
+    };
+  }
+  if (typed.transportFailure === "timeout") {
+    const seconds = typeof typed.timeoutMs === "number" ? ` within ${Math.round(typed.timeoutMs / 1e3)} s` : "";
+    return {
+      state: "outcome-unknown",
+      kind: "timeout",
+      message: `No response from the gateway${seconds}. It may still have accepted the message: check acceptance before retrying.`
+    };
+  }
+  if (typed.transportFailure === "unreachable") {
+    return {
+      state: "outcome-unknown",
+      kind: "unreachable",
+      message: `Gateway unreachable${detail ? ` (${detail})` : ""}. The console could not confirm whether the message arrived: check acceptance once the connection is back.`
+    };
+  }
+  if (typed.transportFailure === "invalid_response") {
+    return {
+      state: "outcome-unknown",
+      kind: "invalid_response",
+      message: `${detail ?? "The gateway returned an unreadable response"}. Something between the console and the gateway answered instead of it: check acceptance before retrying.`
+    };
+  }
+  if (status !== void 0 && PRE_INGRESS_REFUSAL_STATUSES.has(status)) {
+    return {
+      state: "definitely-rejected",
+      kind: "rejected",
+      message: `Send rejected by the gateway (HTTP ${status})${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.`
+    };
+  }
+  if (typed.rpcError && (rpcMessage || detail)) {
+    return {
+      state: "outcome-unknown",
+      kind: "refused",
+      message: `Send failed: ${rpcMessage ?? detail}. The gateway may have recorded this attempt: check acceptance before retrying.`
+    };
+  }
+  if (status === 429) {
+    return {
+      state: "outcome-unknown",
+      kind: "rate_limited",
+      message: "The agent is not taking more input right now (HTTP 429). It may already have recorded this attempt: check acceptance before retrying."
+    };
+  }
+  if (status !== void 0 && status >= 500) {
+    return {
+      state: "outcome-unknown",
+      kind: "gateway_error",
+      message: `Gateway error (HTTP ${status}). The console could not confirm acceptance: check acceptance before retrying.`
+    };
+  }
+  return {
+    state: "outcome-unknown",
+    kind: "unknown",
+    message: `The console could not confirm acceptance${detail ? `: ${detail}` : ""}. Check acceptance before retrying.`
+  };
+}
+function consoleSendFailureLabel(attempt) {
+  switch (attempt.failureKind) {
+    case "unauthenticated":
+      return "Not authorized";
+    case "access_denied":
+      return "Not allowed";
+    case "read_only":
+      return "Console read-only";
+    case "capability_unavailable":
+      return "Send unavailable";
+    case "unreachable":
+      return "Gateway unreachable";
+    case "timeout":
+      return "No response";
+    case "invalid_response":
+      return "Unreadable response";
+    case "gateway_error":
+      return "Gateway error";
+    case "rejected":
+      return "Rejected";
+    case "refused":
+      return "Send failed";
+    case "rate_limited":
+      return "Gateway busy";
+    case "interrupted":
+      return "Interrupted";
+    default:
+      return attempt.state === "definitely-rejected" ? "Not accepted" : "Acceptance unknown";
+  }
 }
 function sameFrozenContent(actual, expected) {
   if (typeof expected === "string") return actual === expected;
@@ -5507,6 +5636,29 @@ function reconcileConsoleSendReceipt(attempt, frame, resolution) {
   const payload = frame.data;
   if (!payload || payload.origin !== envelope.origin || payload.origin_kind !== envelope.origin_kind || payload.idempotency_key !== envelope.idempotency_key || payload.handling_mode !== envelope.handling_mode || !sameFrozenContent(payload.content, envelope.content)) return null;
   return finishConsoleSendAttempt(attempt, { state: "accepted", interactionId: frame.interactionId, inputFrameId: frame.id });
+}
+var CONSOLE_ACCEPTANCE_NO_RECEIPT = {
+  kind: "no_receipt",
+  message: "No acceptance receipt: this agent's timeline has no record of this message. It remains saved and will not be resent automatically."
+};
+function describeConsoleAcceptanceCheckFailure(error) {
+  const failure = classifyConsoleSendFailure(error);
+  const unchanged = "The saved message is unchanged and was not resent.";
+  switch (failure.kind) {
+    case "unauthenticated":
+      return { kind: failure.kind, message: `Could not check acceptance: not authorized from this network (401). ${unchanged}` };
+    case "access_denied":
+      return { kind: failure.kind, message: `Could not check acceptance: not allowed to read this agent's timeline (403). ${unchanged}` };
+    case "unreachable":
+      return { kind: failure.kind, message: `Could not check acceptance: gateway unreachable. ${unchanged}` };
+    case "timeout":
+      return { kind: failure.kind, message: `Could not check acceptance: no response from the gateway. ${unchanged}` };
+    default: {
+      const status = error?.httpStatus;
+      const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "the check failed";
+      return { kind: failure.kind, message: `Could not check acceptance${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${detail}. ${unchanged}` };
+    }
+  }
 }
 
 // ../packages/console-core/src/context-edit.ts
@@ -29179,11 +29331,48 @@ async function fetchWithConsoleTimeout(input, init, label, timeoutMs = DEFAULT_C
     });
   } catch (error) {
     if (controller.signal.aborted && typeof controller.signal.reason === "string") {
-      throw new Error(controller.signal.reason);
+      const failure = new Error(controller.signal.reason);
+      failure.transportFailure = "timeout";
+      failure.timeoutMs = timeoutMs;
+      throw failure;
+    }
+    if (!signal?.aborted && error && typeof error === "object") {
+      error.transportFailure = "unreachable";
     }
     throw error;
   } finally {
     globalThis.clearTimeout(timer);
+  }
+}
+function jsonRpcErrorFromText(text8) {
+  try {
+    const parsed = JSON.parse(text8);
+    const error = parsed && typeof parsed === "object" ? parsed.error : void 0;
+    return error && typeof error === "object" ? error : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function consoleResponseFailure(label, response) {
+  const text8 = await response.text().catch(() => "");
+  const preview = responseTextErrorPreview(text8);
+  const failure = new Error(`${label} ${response.status}${preview ? `: ${preview}` : ""}`);
+  failure.httpStatus = response.status;
+  const responseRpcError = jsonRpcErrorFromText(text8);
+  if (responseRpcError) failure.responseRpcError = responseRpcError;
+  return failure;
+}
+async function consoleResponseJson(label, response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    const failure = new Error(
+      `${label} returned a non-JSON response (HTTP ${response.status}${response.headers.get("content-type") ? `, ${response.headers.get("content-type")}` : ""})`,
+      { cause: error }
+    );
+    failure.httpStatus = response.status;
+    failure.transportFailure = "invalid_response";
+    throw failure;
   }
 }
 async function responseErrorPreview(response) {
@@ -29246,12 +29435,9 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
     signal
   );
   if (!response.ok) {
-    const preview = await responseErrorPreview(response);
-    const error = new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
-    error.httpStatus = response.status;
-    throw error;
+    throw await consoleResponseFailure(`${method} request failed`, response);
   }
-  const result = await response.json();
+  const result = await consoleResponseJson(method, response);
   if (result.error) {
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
@@ -29317,12 +29503,16 @@ async function sendConsoleMultipart2(baseUrl, identity, contentInput, attachment
     timeoutMs
   );
   if (!response.ok) {
-    const preview = await responseErrorPreview(response);
-    throw new Error(`${CONSOLE_RPC_METHODS2.send} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    throw await consoleResponseFailure(`${CONSOLE_RPC_METHODS2.send} multipart failed`, response);
   }
-  const result = await response.json();
+  const result = await consoleResponseJson(`${CONSOLE_RPC_METHODS2.send} multipart`, response);
   if (result.error) {
-    throw new Error(`${CONSOLE_RPC_METHODS2.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error = new Error(`${CONSOLE_RPC_METHODS2.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    error.rpcError = result.error;
+    if (result.error.code === -32030 || result.error.data?.kind === "access_denied") {
+      error.httpStatus = 403;
+    }
+    throw error;
   }
   return normalizeConsoleTimelineAccepted(result.result);
 }
@@ -39689,8 +39879,9 @@ function StackItem({
   };
   const isDraft = item.state === "draft";
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
-  const statusLabel2 = item.state === "outcome-unknown" ? "Acceptance unknown" : item.state === "definitely-rejected" ? "Not accepted" : item.state === "attempting" ? "Awaiting acceptance" : item.state === "accepted" ? "Accepted" : "Queued";
-  const explanation = item.state === "outcome-unknown" ? "Your message may already have been accepted. Check its status before discarding it." : item.state === "attempting" ? "Waiting for confirmation. Checking acceptance will not send the message again." : item.state === "definitely-rejected" ? "This attempt was rejected. Retry sends the same saved message." : void 0;
+  const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
+  const statusLabel2 = settledFailure ? consoleSendFailureLabel(item) : item.state === "attempting" ? "Awaiting acceptance" : item.state === "accepted" ? "Accepted" : "Queued";
+  const explanation = settledFailure && item.error ? `${item.error}${item.state === "definitely-rejected" ? " Retry sends the same saved message." : ""}` : item.state === "outcome-unknown" ? "Your message may already have been accepted. Check its status before discarding it." : item.state === "attempting" ? "Waiting for confirmation. Checking acceptance will not send the message again." : item.state === "definitely-rejected" ? "This attempt was rejected. Retry sends the same saved message." : void 0;
   const previewId = import_react42.default.useId();
   const cls = [
     "stk-item",
@@ -39738,7 +39929,7 @@ function StackItem({
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {}),
             /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: item.state === "outcome-unknown" ? "i-info" : "i-clock" }) })
+          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: settledFailure ? "i-info" : "i-clock" }) })
         ] }),
         item.editing ? /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__edit", children: [
           /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
@@ -39821,11 +40012,8 @@ function StackItem({
               onReorder: item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : void 0
             }
           ),
-          explanation && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", children: explanation }),
-          item.error && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("details", { className: "stk-item__error", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("summary", { children: "Details" }),
-            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { children: item.error })
-          ] })
+          explanation && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", "data-testid": `pending-explanation:${item.id}`, children: explanation }),
+          item.checkResult && needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", role: "status", "data-testid": `pending-check:${item.id}`, children: item.checkResult })
         ] }),
         !item.editing && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__actions", children: [
           item.state === "definitely-rejected" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", onClick: () => onRetry(item.id), children: "Retry same attempt" }),
@@ -41816,6 +42004,25 @@ function browserLocalStorage() {
     return window.localStorage;
   } catch {
     return null;
+  }
+}
+async function settleDetachedConsoleSendAttempt(namespace, identity, id, settle, removeWhenAccepted) {
+  const storage = browserLocalStorage();
+  if (!storage) return;
+  const key = consoleSendStorageKey(namespace, identity);
+  await withConsoleSendStorageLock(key, () => {
+    const loaded = loadConsoleSendAttempts(storage, namespace, identity);
+    if (loaded.kind !== "ready") return;
+    const current = loaded.attempts.find((attempt) => attempt.id === id);
+    if (!current?.envelopeJson || current.state === "accepted" || current.state === "draft") return;
+    const settled = settle(current);
+    const next = removeWhenAccepted && settled.state === "accepted" ? loaded.attempts.filter((attempt) => attempt.id !== id) : loaded.attempts.map((attempt) => attempt.id === id ? settled : attempt);
+    saveConsoleSendAttempts(storage, namespace, identity, next, loaded.attempts);
+  }).catch(() => {
+  });
+  try {
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  } catch {
   }
 }
 function browserComposerStorage() {
@@ -44041,8 +44248,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     };
     commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
+    const attemptNamespace = persistentSendScopeRef.current;
+    const optimisticTopologyFrameId = `optimistic-topology:${identity}:${Date.now()}`;
     commitLiveFrames([{
-      id: `optimistic-topology:${identity}:${Date.now()}`,
+      id: optimisticTopologyFrameId,
       event: "interaction_started",
       identity,
       interactionId: "",
@@ -44069,7 +44278,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         }
       )).accepted.value;
       if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) => finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }), true);
+        }
+        return false;
+      }
       if (pendingAttempt) {
         if (await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
           await setPendingStack(identity, (previous3) => previous3.filter((item) => item.id !== pendingAttempt.id));
@@ -44092,23 +44306,32 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
-      if (pendingAttempt) {
-        const state = submitError instanceof ConsoleCapabilityUnavailableError2 ? "definitely-rejected" : consoleSendFailureState(submitError);
-        await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
-      } else {
-        setActionError(errorMessage(submitError));
+      const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
+      if (lifetimeRef.current.active) {
+        optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
+          (url) => URL.revokeObjectURL(url)
+        );
+        delete optimisticUserByPanelKeyRef.current[panelKey];
+        commitPanelPhase(panelKey, null);
+        identityBusyRef.current[identity] = false;
+        commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
       }
-      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
-        (url) => URL.revokeObjectURL(url)
-      );
-      delete optimisticUserByPanelKeyRef.current[panelKey];
-      commitPanelPhase(panelKey, null);
-      identityBusyRef.current[identity] = false;
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) => finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
+        }
+        if (lifetimeRef.current.active) forceRender();
+        return false;
+      }
+      if (pendingAttempt) {
+        await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }) : item));
+      } else {
+        setActionError(failure.message);
+      }
       forceRender();
       return false;
     } finally {
-      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) setSendingPanels((c) => {
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current) setSendingPanels((c) => {
         const n = new Set(c);
         n.delete(panelKey);
         return n;
@@ -44201,7 +44424,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!item || item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected") || item.scope !== scope || !target) return null;
       let attempting;
       try {
-        attempting = beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected });
+        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected }), checkResult: void 0 };
       } catch (error2) {
         setActionError(errorMessage(error2));
         return null;
@@ -44227,6 +44450,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && controller === sendControllerRef.current;
     const original = getPendingStack(identity).find((candidate) => candidate.id === id);
     if (!original?.envelopeJson) return;
+    const noteCheckResult = (message) => {
+      setActionError(message);
+      setPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? { ...candidate, checkResult: message } : candidate));
+    };
     let page;
     let canonicalIdentity;
     try {
@@ -44240,7 +44467,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       canonicalIdentity = owner.identity;
       page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error2) {
-      if (active()) setActionError(errorMessage(error2));
+      if (active()) noteCheckResult(describeConsoleAcceptanceCheckFailure(error2).message);
       return;
     }
     if (!active()) return;
@@ -44253,7 +44480,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
     if (logChanged || metadataChanged) forceRender();
     if (!accepted) {
-      setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically.");
+      noteCheckResult(CONSOLE_ACCEPTANCE_NO_RECEIPT.message);
       return;
     }
     if (await setPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted }) : candidate))) {

@@ -177,7 +177,7 @@ import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
-import { beginConsoleSendAttempt, createConsoleSendAttempt, finishConsoleSendAttempt, consoleSendFailureState, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope } from "../../packages/console-core/src/send-attempt";
+import { beginConsoleSendAttempt, classifyConsoleSendFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT, createConsoleSendAttempt, describeConsoleAcceptanceCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
 import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
 import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
 import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
@@ -438,6 +438,34 @@ function browserLocalStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/// Settle a saved send attempt in its own namespace after the view that
+/// dispatched it ended (remount) or moved to another principal's scope. Runs
+/// under the same storage lock and merge rules as every durable writer, then
+/// announces the key so a live view of that namespace reloads it.
+async function settleDetachedConsoleSendAttempt(
+  namespace: string,
+  identity: string,
+  id: string,
+  settle: (attempt: ConsoleSendAttempt) => ConsoleSendAttempt,
+  removeWhenAccepted: boolean,
+): Promise<void> {
+  const storage = browserLocalStorage();
+  if (!storage) return;
+  const key = consoleSendStorageKey(namespace, identity);
+  await withConsoleSendStorageLock(key, () => {
+    const loaded = loadConsoleSendAttempts(storage, namespace, identity);
+    if (loaded.kind !== "ready") return;
+    const current = loaded.attempts.find((attempt) => attempt.id === id);
+    if (!current?.envelopeJson || current.state === "accepted" || current.state === "draft") return;
+    const settled = settle(current);
+    const next = removeWhenAccepted && settled.state === "accepted"
+      ? loaded.attempts.filter((attempt) => attempt.id !== id)
+      : loaded.attempts.map((attempt) => attempt.id === id ? settled : attempt);
+    saveConsoleSendAttempts(storage, namespace, identity, next, loaded.attempts);
+  }).catch(() => { /* A live view recovers the lease to "Acceptance unknown". */ });
+  try { window.dispatchEvent(new StorageEvent("storage", { key })); } catch { /* No window. */ }
 }
 
 function browserComposerStorage(): Storage | null {
@@ -3399,8 +3427,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     // which we want anyway, but `currentPhase` would read undefined.
     commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
+    // The saved attempt lives in this namespace even if the scope or the
+    // console lifetime ends before the request settles.
+    const attemptNamespace = persistentSendScopeRef.current;
+    const optimisticTopologyFrameId = `optimistic-topology:${identity}:${Date.now()}`;
     commitLiveFrames([{
-      id: `optimistic-topology:${identity}:${Date.now()}`,
+      id: optimisticTopologyFrameId,
       event: "interaction_started",
       identity,
       interactionId: "",
@@ -3428,7 +3460,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         },
       )).accepted.value;
       if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) {
+        // The receipt is still proof for the saved attempt it answers:
+        // settle it in its own namespace so no later view shows it pending.
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) =>
+            finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }), true);
+        }
+        return false;
+      }
       if (pendingAttempt) {
         // Save acceptance before removing the row; if storage fails, retain the attempt.
         if (await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
@@ -3458,25 +3498,49 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      const failure: ConsoleSendFailure = submitError instanceof ConsoleCapabilityUnavailableError
+        ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` }
+        : classifyConsoleSendFailure(submitError);
+      // The console lifetime ended (a transport or base-URL change remounts
+      // it) or another principal's scope now owns the view: neither may
+      // touch the current view's rows. The saved attempt still belongs to
+      // its own namespace, so settle it there with the typed failure rather
+      // than leaving it "Awaiting acceptance" behind a dead request.
+      // Undo this send's optimistic busy/phase/topology marks first, in any
+      // scope: they were set by this attempt alone on this live view, so a
+      // failed request must never leave the agent looking busy ("Agent
+      // busy", later sends diverted into the queue). Only a dead lifetime
+      // has no view left to undo.
+      if (lifetimeRef.current.active) {
+        optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
+          (url) => URL.revokeObjectURL(url),
+        );
+        delete optimisticUserByPanelKeyRef.current[panelKey];
+        commitPanelPhase(panelKey, null);
+        identityBusyRef.current[identity] = false;
+        commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+      }
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) =>
+            finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
+        }
+        if (lifetimeRef.current.active) forceRender();
+        return false;
+      }
       if (pendingAttempt) {
-        const state = submitError instanceof ConsoleCapabilityUnavailableError ? "definitely-rejected" : consoleSendFailureState(submitError);
         // The saved row owns recovery instructions. Persistence failures retain
         // their own banner instead of being overwritten by the transport error.
-        await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state, error: errorMessage(submitError) }) : item));
+        await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }) : item));
       } else {
-        setActionError(errorMessage(submitError));
+        // Attachment sends are not queued rows: the composer keeps the text
+        // and files, and the banner names the typed reason.
+        setActionError(failure.message);
       }
-      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
-        (url) => URL.revokeObjectURL(url),
-      );
-      delete optimisticUserByPanelKeyRef.current[panelKey];
-      commitPanelPhase(panelKey, null);
-      identityBusyRef.current[identity] = false;
       forceRender();
       return false;
     } finally {
-      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current && dispatchController === sendControllerRef.current) setSendingPanels((c) => {
+      if (lifetimeRef.current.active && attemptScope === sendScopeRef.current) setSendingPanels((c) => {
         const n = new Set(c);
         n.delete(panelKey);
         return n;
@@ -3596,7 +3660,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!item || (item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected")) || item.scope !== scope || !target) return null;
       let attempting: PendingItem;
       try {
-        attempting = beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected });
+        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected }), checkResult: undefined };
       } catch (error) { setActionError(errorMessage(error)); return null; }
       if (!commitPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
       return { attempting, target };
@@ -3620,6 +3684,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       && scope === sendScopeRef.current && controller === sendControllerRef.current;
     const original = getPendingStack(identity).find((candidate) => candidate.id === id);
     if (!original?.envelopeJson) return;
+    // The check's own typed outcome lands on the row it checked (and the
+    // banner), so "Check acceptance" always answers with a named state.
+    const noteCheckResult = (message: string) => {
+      setActionError(message);
+      setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? { ...candidate, checkResult: message } : candidate));
+    };
     let page: ConsoleTimelinePage;
     let canonicalIdentity: string;
     try {
@@ -3637,7 +3707,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // Defer both the log merge and its cursor until this check still owns
       // the current scope and saved attempt when the query returns.
       page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
-    } catch (error) { if (active()) setActionError(errorMessage(error)); return; }
+    } catch (error) {
+      if (active()) noteCheckResult(describeConsoleAcceptanceCheckFailure(error).message);
+      return;
+    }
     if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
     if (!item || item.envelopeJson !== original.envelopeJson) return;
@@ -3650,7 +3723,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
     const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
     if (logChanged || metadataChanged) forceRender();
-    if (!accepted) { setActionError("No exact acceptance receipt is available. This attempt remains saved; it will not be resent automatically."); return; }
+    if (!accepted) { noteCheckResult(CONSOLE_ACCEPTANCE_NO_RECEIPT.message); return; }
     if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
       await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));
     }

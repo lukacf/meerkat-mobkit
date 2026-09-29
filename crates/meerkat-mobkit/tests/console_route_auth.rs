@@ -486,3 +486,86 @@ fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced(
         json!(keep_alive_event)
     );
 }
+
+/// A console send refused before authentication (e.g. an off-network browser
+/// with no console token) answers 401 with a typed body on both send doors.
+/// The console app renders `data.kind == "unauthenticated"` as a definite
+/// rejection ("not authorized from this network"), never as a pending
+/// acceptance: the request never reached dispatch, so nothing was reserved.
+#[tokio::test]
+async fn console_send_without_auth_returns_typed_unauthenticated_body_on_both_doors() {
+    use tower::ServiceExt;
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    let app = meerkat_mobkit::console_json_router_with_aggregator_and_access(
+        state,
+        meerkat_mobkit::MobKitConsoleAggregator::new(std::sync::Arc::new(
+            meerkat_mobkit::InMemoryConsoleLogStore::default(),
+        )),
+        None,
+    );
+    let send_params = json!({
+        "identity": "domain:calendar",
+        "content": "queued from off the home network",
+        "origin": "console:panel-1",
+        "origin_kind": "operator",
+        "idempotency_key": "idem-unauthenticated-send",
+        "handling_mode": "queue",
+    });
+
+    let json_request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/rpc")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "jsonrpc": "2.0", "id": "send-1", "method": "mobkit/console/send",
+                "params": send_params.clone(),
+            })
+            .to_string(),
+        ))
+        .expect("json request");
+
+    let boundary = "mobkit-unauthenticated-boundary";
+    let payload = json!({
+        "jsonrpc": "2.0", "id": "send-2", "method": "mobkit/console/send",
+        "params": send_params,
+    })
+    .to_string();
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"payload\"\r\n\r\n{payload}\r\n--{boundary}--\r\n"
+    );
+    let multipart_request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/rpc/multipart")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(axum::body::Body::from(multipart_body))
+        .expect("multipart request");
+
+    for (door, request) in [("json", json_request), ("multipart", multipart_request)] {
+        let response = app.clone().oneshot(request).await.expect("response");
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "{door}: an unauthenticated send is refused before dispatch"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let body: Value = serde_json::from_slice(&body).expect("typed json body");
+        assert_eq!(body["jsonrpc"], "2.0", "{door}: {body}");
+        assert_eq!(body["error"]["code"], -32600, "{door}: {body}");
+        assert_eq!(
+            body["error"]["data"]["kind"], "unauthenticated",
+            "{door}: the refusal names its typed reason: {body}"
+        );
+        assert_eq!(body["error"]["data"]["http_status"], 401, "{door}: {body}");
+        assert!(
+            body.get("result").is_none(),
+            "{door}: no acceptance receipt: {body}"
+        );
+    }
+}

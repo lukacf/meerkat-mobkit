@@ -645,17 +645,7 @@ pub async fn console_rpc_handler(
     let auth_context = match console_request_auth_context(&state, &headers, &uri) {
         Some(context) => context,
         None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json::<Value>(serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": parsed_request.id.unwrap_or(Value::Null),
-                    "error": {
-                        "code": -32600,
-                        "message": "unauthorized: console rpc requires a valid auth token",
-                    }
-                })),
-            );
+            return console_rpc_unauthenticated_response(parsed_request.id.unwrap_or(Value::Null));
         }
     };
     // By this point the request is always authorized:
@@ -2281,6 +2271,32 @@ fn timeline_event_identity(event: &ConsoleTimelineEvent) -> Option<&str> {
 
 pub(crate) const ACCESS_DENIED_RPC_CODE: i64 = -32030;
 
+/// Typed kind carried by a console RPC refused before authentication. The
+/// request never reached dispatch, so a console send refused here was
+/// definitely not reserved; the browser renders it as a rejection it can
+/// name ("not authorized"), never as a pending acceptance.
+pub(crate) const CONSOLE_UNAUTHENTICATED_KIND: &str = "unauthenticated";
+
+/// The 401 body for the JSON and multipart console RPC doors. The JSON-RPC
+/// code stays `-32600` for existing clients; `data.kind` is the typed reason.
+fn console_rpc_unauthenticated_response(response_id: Value) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json::<Value>(serde_json::json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": response_id,
+            "error": {
+                "code": -32600,
+                "message": "unauthorized: console rpc requires a valid auth token",
+                "data": {
+                    "kind": CONSOLE_UNAUTHENTICATED_KIND,
+                    "http_status": StatusCode::UNAUTHORIZED.as_u16(),
+                },
+            }
+        })),
+    )
+}
+
 fn retain_visible_timeline_frames(page: &mut ConsoleTimelineWindowPage, view: Option<&AccessView>) {
     let Some(view) = view.filter(|view| view.enforced()) else {
         return;
@@ -3570,17 +3586,7 @@ pub async fn console_rpc_multipart_handler(
     let auth_context = match console_request_auth_context(&state, &headers, &uri) {
         Some(context) => context,
         None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json::<Value>(serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": Value::Null,
-                    "error": {
-                        "code": -32600,
-                        "message": "unauthorized: console rpc requires a valid auth token",
-                    }
-                })),
-            );
+            return console_rpc_unauthenticated_response(Value::Null);
         }
     };
 
@@ -11504,6 +11510,21 @@ mod tests {
         reload_error: Mutex<Option<BridgeError>>,
     }
 
+    /// A member mid-turn on a long tool call. Its in-flight turn is
+    /// `turn_finished`; peer-wiring inspection parks until that turn ends,
+    /// the way topology reconcile parks behind a busy member (unbounded mob
+    /// wiring and member builds under the topology and lifecycle locks).
+    /// Admission itself is meerkat's: it queues the input behind the running
+    /// turn and returns the receipt at once, recording whether the turn was
+    /// still in flight when the input was admitted.
+    struct MidTurnPeerWiringBridge {
+        session_id: meerkat_core::types::SessionId,
+        turn_finished: tokio::sync::watch::Receiver<bool>,
+        admissions: Arc<Mutex<Vec<(HandlingMode, bool)>>>,
+        wire_inspections: Arc<AtomicUsize>,
+        wired_edges: Arc<AtomicUsize>,
+    }
+
     #[async_trait::async_trait]
     impl SessionBridge for BlockingIdentityBridge {
         async fn deliver_host_human_input(
@@ -11618,6 +11639,90 @@ mod tests {
                 .map_err(|_| BridgeError::Mob("handling modes mutex poisoned".to_string()))?
                 .push(delivery.handling_mode);
             Ok(self.session_id.clone())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob("checkpoint not used in test".to_string()))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for MidTurnPeerWiringBridge {
+        async fn deliver_host_human_input(
+            &self,
+            runtime_id: &AgentRuntimeId,
+            _expected_session: &meerkat_core::SessionId,
+            delivery: crate::identity_first::BridgeDelivery,
+        ) -> Result<meerkat_core::SessionId, BridgeError> {
+            self.deliver_admitted(runtime_id, delivery).await
+        }
+
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver_admitted(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            delivery: crate::identity_first::BridgeDelivery,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            let turn_in_flight = !*self.turn_finished.borrow();
+            self.admissions
+                .lock()
+                .map_err(|_| BridgeError::Mob("admissions mutex poisoned".to_string()))?
+                .push((delivery.handling_mode, turn_in_flight));
+            Ok(self.session_id.clone())
+        }
+
+        async fn wire_peer(
+            &self,
+            _a: &AgentRuntimeId,
+            _b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.wired_edges.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            self.wire_inspections.fetch_add(1, Ordering::SeqCst);
+            let mut turn_finished = self.turn_finished.clone();
+            while !*turn_finished.borrow_and_update() {
+                if turn_finished.changed().await.is_err() {
+                    break;
+                }
+            }
+            Ok(Vec::new())
         }
 
         async fn checkpoint_session(
@@ -16534,6 +16639,180 @@ comms = true
             deliver_calls.load(Ordering::SeqCst),
             1,
             "steer delivery should have reached the bridge before the console response waits"
+        );
+        Ok(())
+    }
+
+    /// A queued console send to a member that is mid-turn on a long tool
+    /// call gets its durable admission receipt at once: meerkat admits it in
+    /// Queue mode behind the running turn and the console frame reaches
+    /// `Delivered` while that turn is still in flight. Before the fix the
+    /// detached dispatch hydrated the member's peer neighbourhood first, so
+    /// admission parked behind topology reconcile (here: wiring inspection
+    /// that cannot settle until the turn ends) and the console sat on
+    /// "Awaiting acceptance" with no SubmitWork ever issued. The peer
+    /// hydration still runs, after admission, once the turn releases it.
+    #[tokio::test]
+    async fn identity_first_console_queue_send_is_admitted_while_member_is_mid_turn()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:busy-console")?;
+        let peer = AgentIdentity::parse("agent:busy-console-peer")?;
+        let session_id = meerkat_core::types::SessionId::new();
+        let (finish_turn, turn_finished) = tokio::sync::watch::channel(false);
+        let admissions = Arc::new(Mutex::new(Vec::new()));
+        let wire_inspections = Arc::new(AtomicUsize::new(0));
+        let wired_edges = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-busy-queue-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(MidTurnPeerWiringBridge {
+                session_id: session_id.clone(),
+                turn_finished,
+                admissions: admissions.clone(),
+                wire_inspections: wire_inspections.clone(),
+                wired_edges: wired_edges.clone(),
+            })),
+            default_timeout: None,
+        }));
+        for (member, member_session) in [
+            (identity.clone(), session_id.clone()),
+            (peer.clone(), meerkat_core::types::SessionId::new()),
+        ] {
+            let record = ContinuityRecord {
+                identity: member.clone(),
+                agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{}:0", member.as_str()))?,
+                session_id: member_session,
+                generation: ContinuityGeneration::new(0),
+                checkpoint_version: CheckpointVersion::new(0),
+            };
+            runtime
+                .register(
+                    DurableAgentSpec {
+                        identity: member.clone(),
+                        profile: ProfileName::from("default"),
+                        addressability: AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
+                        placement: None,
+                    },
+                    IdentityLifecycleState::Active,
+                    Some(record),
+                    Some(LeaseGrant {
+                        identity: member,
+                        fencing_token: FencingToken::new(7),
+                        ttl: Duration::from_mins(1),
+                    }),
+                )
+                .await;
+        }
+        runtime
+            .set_desired_peer_edges(vec![ManagedPeerEdge::new(identity.clone(), peer.clone())?])
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            console_send_identity_first(
+                &aggregator,
+                runtime,
+                None,
+                crate::console_aggregator::ConsoleSendRequest {
+                    identity: identity.as_str().to_string(),
+                    content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                        "queued while the member is mid-turn".to_string(),
+                    ))?,
+                    origin: "test".to_string(),
+                    idempotency_key: "idem-busy-queue".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                    skill_refs: Vec::new(),
+                    origin_kind: None,
+                },
+            ),
+        )
+        .await
+        .map_err(|_| "queued console send must return its acceptance at once")??;
+        assert_eq!(accepted.status, ConsoleFrameStatus::Accepted);
+
+        // The durable receipt: meerkat admitted the input, in Queue mode,
+        // while the member's turn was still running, and the console frame
+        // left "Awaiting acceptance" for Delivered.
+        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let page = aggregator
+                    .query_timeline(ConsoleTimelineQuery {
+                        identity: Some(identity.as_str().to_string()),
+                        ..ConsoleTimelineQuery::default()
+                    })
+                    .await
+                    .map_err(|err| format!("query timeline: {err}"))?;
+                if page.frames.iter().any(|frame| {
+                    frame.id == accepted.input_frame_id
+                        && frame.status == ConsoleFrameStatus::Delivered
+                }) {
+                    return Ok::<(), String>(());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        match delivered {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => {
+                return Err(
+                    "a queued console send to a mid-turn member must be admitted \
+                            without waiting for the turn or its peer topology"
+                        .into(),
+                );
+            }
+        }
+        assert_eq!(
+            admissions
+                .lock()
+                .map_err(|_| "admissions mutex poisoned")?
+                .as_slice(),
+            &[(HandlingMode::Queue, true)],
+            "exactly one admission, in Queue mode, while the member's turn was in flight"
+        );
+        assert_eq!(
+            wired_edges.load(Ordering::SeqCst),
+            0,
+            "peer hydration must not have completed before the turn released it"
+        );
+
+        // The turn ends; the post-admission peer hydration it was holding up
+        // converges the neighbourhood, and nothing is admitted a second time.
+        finish_turn.send_replace(true);
+        if tokio::time::timeout(Duration::from_secs(5), async {
+            while wired_edges.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            return Err("post-admission peer hydration should wire the peer edge".into());
+        }
+        assert!(
+            wire_inspections.load(Ordering::SeqCst) >= 1,
+            "the hydration reached topology reconcile"
+        );
+        assert_eq!(
+            admissions
+                .lock()
+                .map_err(|_| "admissions mutex poisoned")?
+                .len(),
+            1,
+            "hydration never re-delivers the admitted input"
         );
         Ok(())
     }
