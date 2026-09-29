@@ -2462,25 +2462,26 @@ async fn current_identity_fencing_token(
 /// restarts the session's high-water.
 #[derive(Default)]
 struct HealthCompletionLedger {
-    credited_through: std::sync::Mutex<
-        HashMap<
-            meerkat_core::types::SessionId,
-            (Option<meerkat_core::comms::SessionEventEpoch>, u64),
-        >,
-    >,
+    sessions: std::sync::Mutex<HashMap<meerkat_core::types::SessionId, SessionCreditLedger>>,
+}
+
+/// One session's credited positions, per sequence space. A space's
+/// high-water is kept even after a newer space appears, so a late stream of
+/// an older space (a replaced placed residency) re-attaching claims nothing
+/// it already credited.
+#[derive(Default)]
+struct SessionCreditLedger {
+    /// The newest space observed; the drain resumes in it.
+    current: Option<Option<meerkat_core::comms::SessionEventEpoch>>,
+    high_water: HashMap<Option<meerkat_core::comms::SessionEventEpoch>, u64>,
 }
 
 impl HealthCompletionLedger {
     fn lock(
         &self,
-    ) -> std::sync::MutexGuard<
-        '_,
-        HashMap<
-            meerkat_core::types::SessionId,
-            (Option<meerkat_core::comms::SessionEventEpoch>, u64),
-        >,
-    > {
-        self.credited_through
+    ) -> std::sync::MutexGuard<'_, HashMap<meerkat_core::types::SessionId, SessionCreditLedger>>
+    {
+        self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -2497,46 +2498,37 @@ impl HealthCompletionLedger {
         if seq == 0 {
             return false;
         }
-        let mut credited = self.lock();
-        let entry = credited.entry(session_id.clone()).or_insert((epoch, 0));
-        if entry.0 != epoch {
-            *entry = (epoch, 0);
+        let mut sessions = self.lock();
+        let session = sessions.entry(session_id.clone()).or_default();
+        if !session.high_water.contains_key(&epoch) {
+            // A space not seen before is the newest one.
+            session.current = Some(epoch);
         }
-        if seq <= entry.1 {
+        let high_water = session.high_water.entry(epoch).or_default();
+        if seq <= *high_water {
             return false;
         }
-        entry.1 = seq;
+        *high_water = seq;
         true
     }
 
-    /// Where the drain resumes reading `session_id`'s events.
+    /// Where the drain resumes reading `session_id`'s events: after the
+    /// newest space's high-water, or from the earliest retained event.
     fn resume_cursor(
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> meerkat_core::comms::SessionEventCursor {
-        match self.lock().get(session_id) {
-            Some((Some(epoch), seq)) => meerkat_core::comms::SessionEventCursor::After {
-                epoch: *epoch,
-                seq: *seq,
+        let sessions = self.lock();
+        let Some(session) = sessions.get(session_id) else {
+            return meerkat_core::comms::SessionEventCursor::Earliest;
+        };
+        match session.current {
+            Some(Some(epoch)) => meerkat_core::comms::SessionEventCursor::After {
+                epoch,
+                seq: session.high_water.get(&Some(epoch)).copied().unwrap_or(0),
             },
             _ => meerkat_core::comms::SessionEventCursor::Earliest,
         }
-    }
-
-    /// Treat everything `session_id` allocated through `tail` as credited:
-    /// its sequence space no longer matches the ledger's, so nothing at or
-    /// below the tail may be credited again (an under-count, never an
-    /// over-count).
-    fn settle_through(&self, session_id: &meerkat_core::types::SessionId, tail: u64) {
-        let mut credited = self.lock();
-        let entry = credited.entry(session_id.clone()).or_insert((None, 0));
-        entry.1 = entry.1.max(tail);
-    }
-
-    /// Forget `session_id`'s position: the next read starts over in the
-    /// session's current sequence space.
-    fn forget(&self, session_id: &meerkat_core::types::SessionId) {
-        self.lock().remove(session_id);
     }
 }
 
@@ -2571,21 +2563,14 @@ impl crate::identity_first::runtime::PendingCompletionDrain for ReplayedCompleti
                 .await
             {
                 Ok(subscription) => break subscription,
-                // A new sequence space: start over in it. What it holds
-                // happened after the space began and was never credited.
+                // A new sequence space: read it from its earliest retained
+                // event. Its envelopes are claimed in their own space's
+                // high-water, so nothing it holds was credited before.
                 Err(StreamError::CursorRejected {
                     reason: SessionEventCursorRejection::EpochMismatch { .. },
                     ..
                 }) if cursor != meerkat_core::comms::SessionEventCursor::Earliest => {
-                    self.ledger.forget(session_id);
                     cursor = meerkat_core::comms::SessionEventCursor::Earliest;
-                }
-                Err(StreamError::CursorRejected {
-                    reason: SessionEventCursorRejection::AheadOfTail { tail },
-                    ..
-                }) => {
-                    self.ledger.settle_through(session_id, tail);
-                    return terminals;
                 }
                 // No live actor serves the session here (a placed member, or
                 // one not materialized yet): nothing is retained to credit.
@@ -5580,6 +5565,86 @@ model = "gpt-5.5"
         }
     }
 
+    /// Activation installs the completion drain before the lease observer, so
+    /// the health monitor's first lease-woken attach may already replay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_completion_drain_is_installed_before_the_lease_observer() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, _ledger, _identity) =
+            health_restart("identity-health-drain-order", &temp).await;
+        assert!(identity_runtime.has_pending_completion_drain());
+        assert!(
+            identity_runtime.lease_observer_installed_after_drain(),
+            "the lease observer saw the drain installed"
+        );
+        runtime.shutdown().await;
+    }
+
+    /// A drain that reports one failed run once armed.
+    struct FailingOnceDrain {
+        armed: std::sync::atomic::AtomicBool,
+        calls: tokio::sync::watch::Sender<u64>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::identity_first::runtime::PendingCompletionDrain for FailingOnceDrain {
+        async fn drain(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> crate::identity_first::runtime::PendingRunTerminals {
+            self.calls.send_modify(|calls| *calls += 1);
+            crate::identity_first::runtime::PendingRunTerminals {
+                completed: 0,
+                failed: u64::from(self.armed.swap(false, std::sync::atomic::Ordering::AcqRel)),
+            }
+        }
+    }
+
+    /// K4: a failed run the drain consumes is recorded, so a failure-aware
+    /// completion wait ends typed instead of running to its deadline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_drained_failed_run_ends_a_completion_wait_typed() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, _ledger, identity) =
+            health_restart("identity-health-drained-failure", &temp).await;
+        let (calls, mut observed) = tokio::sync::watch::channel(0_u64);
+        let drain = Arc::new(FailingOnceDrain {
+            armed: std::sync::atomic::AtomicBool::new(false),
+            calls,
+        });
+        identity_runtime.install_pending_completion_drain(drain.clone());
+        let baseline = identity_runtime.completion_cursor(&identity).await;
+        let calls_before_wait = *observed.borrow_and_update();
+        let wait = {
+            let identity_runtime = identity_runtime.clone();
+            let identity = identity.clone();
+            tokio::spawn(async move {
+                identity_runtime
+                    .await_completion(&identity, Some(baseline), Duration::from_secs(10))
+                    .await
+            })
+        };
+        // The wait drained twice (before its failure baseline, then its first
+        // read), so the baseline is taken.
+        observed
+            .wait_for(|calls| *calls >= calls_before_wait + 2)
+            .await
+            .expect("drain calls observed");
+        drain
+            .armed
+            .store(true, std::sync::atomic::Ordering::Release);
+        identity_runtime.completion_cursor(&identity).await;
+        let outcome = tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .expect("the wait ends promptly")
+            .expect("wait task");
+        assert!(
+            matches!(outcome, crate::identity_first::CompletionWait::RunFailed(_)),
+            "{outcome:?}"
+        );
+        runtime.shutdown().await;
+    }
+
     #[test]
     fn health_completion_ledger_claims_each_sequence_once_per_space() {
         use meerkat_core::comms::{SessionEventCursor, SessionEventEpoch};
@@ -5602,19 +5667,37 @@ model = "gpt-5.5"
                 seq: 3,
             }
         );
-        // A new sequence space (a placed member's host restart) restarts the
-        // high-water instead of refusing its first sequences.
+        // A new sequence space (a placed member's host restart) starts its
+        // own high-water instead of refusing its first sequences, and becomes
+        // the space the drain resumes in.
         let restarted = Some(SessionEventEpoch::new());
         assert!(ledger.claim(&session, restarted, 1));
         assert!(!ledger.claim(&session, restarted, 1));
-        ledger.settle_through(&session, 5);
-        assert!(
-            !ledger.claim(&session, restarted, 4),
-            "settled through the tail"
+        assert_eq!(
+            ledger.resume_cursor(&session),
+            SessionEventCursor::After {
+                epoch: restarted.expect("epoch"),
+                seq: 1,
+            }
         );
-        assert!(ledger.claim(&session, restarted, 6));
-        ledger.forget(&session);
-        assert_eq!(ledger.resume_cursor(&session), SessionEventCursor::Earliest);
+        // A late stream of the older space re-attaching claims nothing it
+        // already credited, and does not move the drain back to that space.
+        assert!(
+            !ledger.claim(&session, space, 3),
+            "credited in its own space"
+        );
+        assert!(!ledger.claim(&session, space, 1));
+        assert!(
+            ledger.claim(&session, space, 4),
+            "only past its own high-water"
+        );
+        assert_eq!(
+            ledger.resume_cursor(&session),
+            SessionEventCursor::After {
+                epoch: restarted.expect("epoch"),
+                seq: 1,
+            }
+        );
     }
 
     /// The drain (under a cursor read) and the monitor's replaying stream

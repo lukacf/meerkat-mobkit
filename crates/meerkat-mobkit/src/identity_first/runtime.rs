@@ -2631,6 +2631,10 @@ pub struct IdentityRuntime {
     /// yet credited.
     completion_credit_locks:
         StdMutex<BTreeMap<AgentIdentity, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    /// Whether a completion drain was installed when the lease observer was
+    /// (the first lease-woken attach may replay only with one).
+    #[cfg(test)]
+    lease_observer_saw_drain: std::sync::atomic::AtomicBool,
     /// Fired whenever a ticketed turn is admitted (which may evict another)
     /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
     /// polling the registry. Carries no state.
@@ -3062,6 +3066,8 @@ impl IdentityRuntime {
             run_failures: StdMutex::new(BTreeMap::new()),
             pending_completion_drain: StdRwLock::new(None),
             completion_credit_locks: StdMutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            lease_observer_saw_drain: std::sync::atomic::AtomicBool::new(false),
             continuity_repair_triggers: watch::channel(ContinuityRepairWake::default()).0,
             continuity_repair_supervisors: AtomicUsize::new(0),
             embodiments_in_flight: watch::channel(0).0,
@@ -5496,6 +5502,9 @@ impl IdentityRuntime {
     /// re-reads leases that predate the installation. The unified runtime
     /// installs its identity health monitor's wake here.
     pub(crate) fn install_lease_observer(&self, observer: watch::Sender<u64>) {
+        #[cfg(test)]
+        self.lease_observer_saw_drain
+            .store(self.has_pending_completion_drain(), Ordering::Release);
         *self
             .entries
             .lease_observer
@@ -14362,6 +14371,12 @@ impl IdentityRuntime {
         }
     }
 
+    /// Whether a completion drain was installed before the lease observer.
+    #[cfg(test)]
+    pub(crate) fn lease_observer_installed_after_drain(&self) -> bool {
+        self.lease_observer_saw_drain.load(Ordering::Acquire)
+    }
+
     /// Whether a completion-cursor drain is installed
     /// ([`Self::install_pending_completion_drain`]).
     pub(crate) fn has_pending_completion_drain(&self) -> bool {
@@ -14488,6 +14503,10 @@ impl IdentityRuntime {
         // read and the wait still wakes it.
         let mut changes = self.entries.subscribe();
         let mut shutdown = self.foreground_cancel.subscribe();
+        // Credit what already happened before taking the failure baseline: a
+        // failure that preceded this wait but is credited by its first read
+        // must not end the wait as its own failure.
+        let _ = self.completion_cursor(identity).await;
         let failures_at_start = self.run_failure_count(identity);
         let registered_at_start = self.entries.read().await.contains_key(identity);
         loop {

@@ -374,7 +374,7 @@ impl UnifiedRuntime {
             ))
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
             .merge(agent_events_sse_router_with_access_and_priming(
-                Arc::new(move |agent_id| {
+                Arc::new(move |agent_id, cursor| {
                     let runtime = agent_runtime.clone();
                     let identity_runtime = agent_identity_runtime.clone();
                     Box::pin(async move {
@@ -431,26 +431,20 @@ impl UnifiedRuntime {
                                         authority_identity.as_str(),
                                     )
                                     .await;
-                                    // Replay the actor's retained events, so a
-                                    // client that connects after a run started
-                                    // still receives it from `run_started`
-                                    // (meerkat #1236). Replayed envelopes keep
-                                    // their event ids.
-                                    let event_stream = handle
-                                        .subscribe_agent_events_from(
-                                            &member_id,
-                                            meerkat_core::comms::SessionEventCursor::Earliest,
-                                        )
-                                        .await
-                                        .map_err(|error| error.to_string())?
-                                        .stream;
-                                    Ok(generation_authoritative_agent_event_stream(
-                                        event_stream,
-                                        identity_events,
-                                        authority_runtime,
-                                        authority_identity,
-                                        expected_alias,
-                                    ))
+                                    let subscription =
+                                        subscribe_agent_events_resuming(&handle, &member_id, cursor)
+                                            .await
+                                            .map_err(|error| error.to_string())?;
+                                    Ok(crate::http_sse::AgentEventReplay {
+                                        epoch: subscription.epoch,
+                                        stream: generation_authoritative_agent_event_stream(
+                                            subscription.stream,
+                                            identity_events,
+                                            authority_runtime,
+                                            authority_identity,
+                                            expected_alias,
+                                        ),
+                                    })
                                 },
                             )
                             .await
@@ -459,13 +453,12 @@ impl UnifiedRuntime {
                             });
                         }
                         let member_id = resolve_agent_event_member_id(&handle, &agent_id).await;
-                        handle
-                            .subscribe_agent_events_from(
-                                &member_id,
-                                meerkat_core::comms::SessionEventCursor::Earliest,
-                            )
+                        subscribe_agent_events_resuming(&handle, &member_id, cursor)
                             .await
-                            .map(|subscription| subscription.stream)
+                            .map(|subscription| crate::http_sse::AgentEventReplay {
+                                epoch: subscription.epoch,
+                                stream: subscription.stream,
+                            })
                             .map_err(Into::into)
                     })
                 }),
@@ -498,6 +491,32 @@ impl UnifiedRuntime {
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,
             ))
+    }
+}
+
+/// Subscribe to a member's agent events for an SSE connection: from the
+/// cursor its `Last-Event-ID` names, or from the actor's earliest retained
+/// event (meerkat #1236), so a client that connects after a run started
+/// still receives it from `run_started` and a reconnect resumes after the
+/// last event it received. A cursor from another sequence space (a restart
+/// since) or ahead of it replays the current space from its earliest event.
+async fn subscribe_agent_events_resuming(
+    handle: &meerkat_mob::MobHandle,
+    member_id: &meerkat_mob::AgentIdentity,
+    cursor: meerkat_core::comms::SessionEventCursor,
+) -> Result<meerkat_mob::AgentEventSubscription, meerkat_mob::MobError> {
+    match handle.subscribe_agent_events_from(member_id, cursor).await {
+        Err(meerkat_mob::MobError::AgentEventCursorRejected { .. })
+            if cursor != meerkat_core::comms::SessionEventCursor::Earliest =>
+        {
+            handle
+                .subscribe_agent_events_from(
+                    member_id,
+                    meerkat_core::comms::SessionEventCursor::Earliest,
+                )
+                .await
+        }
+        result => result,
     }
 }
 
