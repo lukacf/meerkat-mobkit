@@ -7132,7 +7132,9 @@ shell = true
                 assert_eq!(advertised_address, None);
                 assert!(pubkey_b64.is_some(), "the member's key is still published");
             }
-            other => panic!("expected a Member response, got {other:?}"),
+            other => {
+                return Err(format!("expected a Member response, got {other:?}").into());
+            }
         }
         runtime.shutdown().await;
         Ok(())
