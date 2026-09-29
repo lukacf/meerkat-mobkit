@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionBridge` implementations and test doubles) must set it, usually to
   `None`.
 
+- `IdentityRuntimeError` gains `PeerWiringTimedOut { operation, waited }` and
+  `PeerTopologySuperseded { attempts }` (see Fixed): a managed-topology wiring
+  call that exceeds its budget, and a topology plan that stayed stale across
+  its bounded replans. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add both arms.
+
 ### Storage and wire compatibility
 
 - `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
@@ -403,6 +409,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   admission. meerkat then queues the input behind the running turn and the
   frame reaches `Delivered`. The peer neighbourhood is hydrated in a
   runtime-tracked background task after admission.
+
+- Every queue-mode send and dispatch (`send_*`, `dispatch*`, including the
+  ones the RPC gateway and SDK `dispatch` use) is now admitted before any peer
+  topology work, not only console input. Admission waits only on the target's
+  own embodiment (a Dormant target is still materialized, but without the
+  topology reconcile), its lifecycle lock, alias validation, its lease, the
+  bounded recall and the bounded bridge admission. Peer hydration (peer
+  builds plus the managed-edge reconcile) runs after admission, detached and
+  runtime-tracked when the runtime's owning `Arc` is known. The managed
+  topology reconcile and topology edge mutations no longer hold every
+  topology identity's lifecycle lock across mob wiring calls. They plan
+  against one snapshot of the endpoints' runtime bindings, run the wiring
+  calls with no lifecycle lock held (each call bounded, settling as
+  `IdentityRuntimeError::PeerWiringTimedOut` instead of parking), and commit
+  under the involved endpoints' lifecycle locks only if no binding moved. A
+  reset or respawn during the wiring makes the plan stale: nothing is
+  committed and the reconcile replans, up to three times, then settles as
+  `PeerTopologySuperseded`. A wedged wiring call or peer build can therefore
+  no longer block admission to any identity, queue or steer.
 
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
