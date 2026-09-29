@@ -405,7 +405,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session event tap, independent of the console forwarder's), which predates
   every run, so a turn completed between the lease landing and the attach is
   counted exactly once, in order, instead of lost to the stream's lack of
-  replay. Captures of members the monitor never tracks are dropped.
+  replay. A completion that already happened is credited before the next
+  completion-cursor read (and before the adoption), so a baseline taken after
+  it can never be satisfied by it: the cursor under-counts at worst, never
+  over-counts. Captures of members the monitor will not attach (outside the
+  identity-first primary mob, Broken or retiring, no longer Active) are
+  dropped, captures are bounded by bytes (64 MiB) as well as envelopes, and
+  the health lane is armed only on identity-first runtimes. An identity lease
+  rotation cuts the monitor's previous ordinary subscription off instead of
+  counting its completions a second time.
 
 - A console send that fails now says why, in both queue and steer modes and
   on the multipart (attachment) door. Before, a refused or failed request
