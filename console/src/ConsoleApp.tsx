@@ -95,6 +95,7 @@ import {
   type ConsoleTopologyRpcOperation,
 } from "./lib/topology";
 import { findPaneResizeRoot } from "./lib/pane-resize";
+import { activeRunIdFromFrames, describeRunStopReceipt, parseRunStopResult } from "./lib/run-stop";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -843,6 +844,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // Recoverable per-action failures (e.g. an access-denied send). Rendered
   // as a dismissible banner inside the shell — never the fatal error screen.
   const [actionError, setActionError] = React.useState("");
+  // Last run-stop receipt summary per identity (shown in the chat header).
+  const [runStopNotices, setRunStopNotices] = React.useState<Record<string, string>>({});
   const [transportState, setTransportState] = React.useState<ConsoleTransportState>({
     phase: "connecting", stale: true, freshness: "unknown",
   });
@@ -3875,6 +3878,22 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
   }
 
+  async function onStopRun(identity: string, runId: string) {
+    if (consoleReadOnly) return;
+    try {
+      const result = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.stopMemberRun,
+        identityWorkbenchTarget(identity, "chat"),
+        { member_id: identity, run_id: runId, reason: "Stopped from the console" },
+      );
+      const notice = describeRunStopReceipt(parseRunStopResult(result));
+      setRunStopNotices((current) => ({ ...current, [identity]: notice }));
+      setActionError("");
+    } catch (stopError) {
+      setActionError(errorMessage(stopError));
+    }
+  }
+
   async function onGatingDecision(
     pendingId: string,
     decision: "approve" | "reject" | "escalate",
@@ -4440,6 +4459,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       !consoleReadOnly &&
       configuredActionVisibility.retire &&
       agent?.affordances?.can_retire === true;
+    // Offered only while the timeline names the in-flight run, and with the
+    // same authority as force-cancel (the gateway authorizes it as retire).
+    const activeRunId = activeRunIdFromFrames(sortedFrames);
+    const canStopRun =
+      !consoleReadOnly && agent?.affordances?.can_retire === true && activeRunId !== null;
 
     const stackItems = getPendingStack(identity);
     let hasLegacyQueue = false;
@@ -4575,6 +4599,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
             ? () => void onLifecycleAction(identity, "mobkit/retire")
             : undefined
         }
+        onStopRun={
+          canStopRun && activeRunId
+            ? () => void onStopRun(identity, activeRunId)
+            : undefined
+        }
+        runStopNotice={runStopNotices[identity] ?? null}
         inspectLabel={configuredActionLabels.inspect}
         respawnLabel={configuredActionLabels.respawn}
         retireLabel={configuredActionLabels.retire}

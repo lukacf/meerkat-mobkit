@@ -4291,6 +4291,7 @@ var CONSOLE_RPC_METHODS = {
   retireIdentity: "mobkit/retire",
   respawnIdentity: "mobkit/respawn",
   resetIdentity: "mobkit/reset",
+  stopMemberRun: "mobkit/stop_member_run",
   routingRoutesList: "mobkit/routing/routes/list",
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
@@ -4814,6 +4815,7 @@ var CONSOLE_COMMAND_NAMES = {
   retireIdentity: "retireIdentity",
   respawnIdentity: "respawnIdentity",
   resetIdentity: "resetIdentity",
+  stopMemberRun: "stopMemberRun",
   listRoutingRoutes: "listRoutingRoutes",
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
@@ -4880,6 +4882,15 @@ var CONSOLE_COMMAND_SPECS = {
   },
   [CONSOLE_COMMAND_NAMES.resetIdentity]: {
     method: CONSOLE_RPC_METHODS.resetIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  // Run-fenced Stop: params carry `member_id`, `run_id` and `reason`
+  // explicitly (the run id comes from the member's `run_started`).
+  [CONSOLE_COMMAND_NAMES.stopMemberRun]: {
+    method: CONSOLE_RPC_METHODS.stopMemberRun,
     targetKinds: /* @__PURE__ */ new Set([
       "mobkit/identity-chat",
       "mobkit/identity-inspect"
@@ -29133,6 +29144,7 @@ var CONSOLE_RPC_METHODS2 = {
   retireIdentity: "mobkit/retire",
   respawnIdentity: "mobkit/respawn",
   resetIdentity: "mobkit/reset",
+  stopMemberRun: "mobkit/stop_member_run",
   routingRoutesList: "mobkit/routing/routes/list",
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
@@ -29733,6 +29745,7 @@ var CONSOLE_COMMAND_NAMES2 = {
   retireIdentity: "retireIdentity",
   respawnIdentity: "respawnIdentity",
   resetIdentity: "resetIdentity",
+  stopMemberRun: "stopMemberRun",
   listRoutingRoutes: "listRoutingRoutes",
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
@@ -29800,6 +29813,15 @@ var CONSOLE_COMMAND_SPECS2 = {
   },
   [CONSOLE_COMMAND_NAMES2.resetIdentity]: {
     method: CONSOLE_RPC_METHODS2.resetIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  // Run-fenced Stop: params carry `member_id`, `run_id` and `reason`
+  // explicitly (the run id comes from the member's `run_started`).
+  [CONSOLE_COMMAND_NAMES2.stopMemberRun]: {
+    method: CONSOLE_RPC_METHODS2.stopMemberRun,
     targetKinds: /* @__PURE__ */ new Set([
       "mobkit/identity-chat",
       "mobkit/identity-inspect"
@@ -30860,6 +30882,94 @@ function findPaneResizeRoot(handle2) {
   if (workbenchRoot instanceof HTMLElement) return workbenchRoot;
   const shellRoot = handle2.closest(".shell");
   return shellRoot instanceof HTMLElement ? shellRoot : null;
+}
+
+// src/lib/run-stop.ts
+function frameRunId(frame) {
+  const direct = frame.runId?.trim();
+  if (direct) return direct;
+  if (frame.data && typeof frame.data === "object") {
+    const identity = frame.data.identity;
+    if (identity && typeof identity === "object") {
+      const runId = identity.run_id;
+      if (typeof runId === "string" && runId.trim()) return runId.trim();
+    }
+  }
+  return null;
+}
+function isSteerDelivery(frame) {
+  return frame.event === "interaction_complete" && !!frame.data && typeof frame.data === "object" && frame.data.reason === "steer_delivered";
+}
+function isRunTerminal(frame) {
+  switch (frame.event) {
+    case "run_completed":
+    case "run_failed":
+    case "interaction_failed":
+      return true;
+    case "interaction_complete":
+      return !isSteerDelivery(frame);
+    default:
+      return false;
+  }
+}
+function activeRunIdFromFrames(frames) {
+  let active = null;
+  for (const frame of frames) {
+    if (frame.event === "run_started") {
+      const runId = frameRunId(frame);
+      if (runId) active = runId;
+      continue;
+    }
+    if (active && isRunTerminal(frame)) {
+      const runId = frameRunId(frame);
+      if (!runId || runId === active) active = null;
+    }
+  }
+  return active;
+}
+function parseRunStopResult(result) {
+  const receipt = result && typeof result === "object" ? result.receipt : void 0;
+  if (!receipt || typeof receipt !== "object") {
+    throw new Error("invalid mobkit/stop_member_run result: missing receipt");
+  }
+  const record5 = receipt;
+  if (typeof record5.run_id !== "string") {
+    throw new Error("invalid mobkit/stop_member_run receipt: missing run_id");
+  }
+  switch (record5.outcome) {
+    case "stopped":
+      if (!Array.isArray(record5.contributors) || !record5.contributors.every(
+        (row) => !!row && typeof row === "object" && typeof row.input_id === "string" && typeof row.completion === "string"
+      )) {
+        throw new Error("invalid mobkit/stop_member_run receipt: malformed contributors");
+      }
+      break;
+    case "not_current":
+      break;
+    case "not_stoppable":
+      if (typeof record5.state !== "string") {
+        throw new Error("invalid mobkit/stop_member_run receipt: missing state");
+      }
+      break;
+    default:
+      throw new Error(`invalid mobkit/stop_member_run receipt outcome: ${String(record5.outcome)}`);
+  }
+  return receipt;
+}
+function describeRunStopReceipt(receipt) {
+  switch (receipt.outcome) {
+    case "stopped": {
+      const cancelled = receipt.contributors.filter((row) => row.terminal === "cancelled").length;
+      const consumed = receipt.contributors.length - cancelled;
+      const parts = [`${cancelled} input${cancelled === 1 ? "" : "s"} cancelled`];
+      if (consumed > 0) parts.push(`${consumed} kept`);
+      return `Run stopped: ${parts.join(", ")}.`;
+    }
+    case "not_current":
+      return "That run already ended; nothing was stopped.";
+    case "not_stoppable":
+      return `The run cannot be stopped right now (runtime ${receipt.state}).`;
+  }
 }
 
 // src/lib/read-only-override.ts
@@ -38783,6 +38893,9 @@ function ChatPane({
   onInspect,
   onRespawn,
   onRetire,
+  onStopRun,
+  stopRunLabel = "Stop run",
+  runStopNotice = null,
   inspectLabel = "Details",
   respawnLabel = "Respawn",
   retireLabel = "Retire",
@@ -39291,6 +39404,7 @@ function ChatPane({
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__actions", children: [
         { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
+        { id: "stop-run", label: stopRunLabel, icon: "i-stop", onClick: onStopRun },
         { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : void 0 },
         { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : void 0 }
       ].filter((action) => action.onClick).map((action) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
@@ -39310,6 +39424,7 @@ function ChatPane({
         action.id
       )) })
     ] }),
+    runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__notice", role: "status", "data-testid": `run-stop-notice:${identity}`, children: runStopNotice }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       TranscriptView,
       {
@@ -42321,6 +42436,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const [loadingHistory, setLoadingHistory] = import_react45.default.useState({});
   const [error, setError] = import_react45.default.useState("");
   const [actionError, setActionError] = import_react45.default.useState("");
+  const [runStopNotices, setRunStopNotices] = import_react45.default.useState({});
   const [transportState, setTransportState] = import_react45.default.useState({
     phase: "connecting",
     stale: true,
@@ -44616,6 +44732,21 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }
+  async function onStopRun(identity, runId) {
+    if (consoleReadOnly) return;
+    try {
+      const result = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.stopMemberRun,
+        identityWorkbenchTarget(identity, "chat"),
+        { member_id: identity, run_id: runId, reason: "Stopped from the console" }
+      );
+      const notice = describeRunStopReceipt(parseRunStopResult(result));
+      setRunStopNotices((current) => ({ ...current, [identity]: notice }));
+      setActionError("");
+    } catch (stopError) {
+      setActionError(errorMessage(stopError));
+    }
+  }
   async function onGatingDecision(pendingId, decision) {
     await approvalResourceRef.current?.decide(pendingId, decision);
     if (dock.viewState.panels.some((panel) => panel.target?.kind === "gating" || panel.target?.kind === "gates")) {
@@ -45025,6 +45156,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     });
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+    const activeRunId = activeRunIdFromFrames(sortedFrames);
+    const canStopRun = !consoleReadOnly && agent?.affordances?.can_retire === true && activeRunId !== null;
     const stackItems = getPendingStack(identity);
     let hasLegacyQueue = false;
     try {
@@ -45153,6 +45286,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         } : void 0,
         onRespawn: canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : void 0,
         onRetire: canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : void 0,
+        onStopRun: canStopRun && activeRunId ? () => void onStopRun(identity, activeRunId) : void 0,
+        runStopNotice: runStopNotices[identity] ?? null,
         inspectLabel: configuredActionLabels.inspect,
         respawnLabel: configuredActionLabels.respawn,
         retireLabel: configuredActionLabels.retire,

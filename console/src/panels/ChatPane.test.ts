@@ -293,6 +293,47 @@ test("chat pane disables composer in read-only mode", () => {
   assert.match(html, /view only/);
 });
 
+test("chat pane offers Stop run only when handed an active run, and shows the receipt", () => {
+  const props = {
+    agent: {
+      agent_id: "agent",
+      member_id: "agent",
+      identity: "agent",
+      label: "Agent",
+      kind: "mob_agent",
+      role: "worker",
+      state: "active",
+      model_capabilities: { image_input: true },
+    },
+    agentLabel: "Agent",
+    identity: "agent",
+    entries: [],
+    phase: "generating" as const,
+    draft: "",
+    sending: false,
+    readOnly: false,
+    staged: [],
+    onDraftChange: () => undefined,
+    onStagedChange: () => undefined,
+    onSend: () => true,
+  };
+  const idle = renderToStaticMarkup(React.createElement(ChatPane, props));
+  assert.doesNotMatch(idle, /conv-action:stop-run/);
+  assert.doesNotMatch(idle, /run-stop-notice:agent/);
+
+  const active = renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      ...props,
+      onStopRun: () => undefined,
+      runStopNotice: "That run already ended; nothing was stopped.",
+    }),
+  );
+  assert.match(active, /data-testid="conv-action:stop-run"/);
+  assert.match(active, /Stop run/);
+  assert.match(active, /data-testid="run-stop-notice:agent"/);
+  assert.match(active, /That run already ended; nothing was stopped\./);
+});
+
 function renderChat(args: {
   entries: ConversationTimelineEntry[];
   phase: "waiting" | "tool-executing" | "generating" | null;

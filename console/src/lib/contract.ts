@@ -25,6 +25,7 @@ export const CONSOLE_RPC_METHODS = {
   retireIdentity: "mobkit/retire",
   respawnIdentity: "mobkit/respawn",
   resetIdentity: "mobkit/reset",
+  stopMemberRun: "mobkit/stop_member_run",
   routingRoutesList: "mobkit/routing/routes/list",
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",

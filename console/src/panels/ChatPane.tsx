@@ -77,6 +77,12 @@ interface ChatPaneProps extends ConversationApprovalProps {
   onInspect?: () => void;
   onRespawn?: () => void;
   onRetire?: () => void;
+  /// Run-fenced Stop of the member's in-flight run. ConsoleApp passes it only
+  /// while the timeline names an active run id.
+  onStopRun?: () => void;
+  stopRunLabel?: string;
+  /// Operator-facing summary of the last run-stop receipt, if any.
+  runStopNotice?: string | null;
   inspectLabel?: string;
   respawnLabel?: string;
   retireLabel?: string;
@@ -1398,6 +1404,9 @@ export function ChatPane({
   onInspect,
   onRespawn,
   onRetire,
+  onStopRun,
+  stopRunLabel = "Stop run",
+  runStopNotice = null,
   inspectLabel = "Details",
   respawnLabel = "Respawn",
   retireLabel = "Retire",
@@ -1968,6 +1977,7 @@ export function ChatPane({
         <div className="conv__actions">
           {[
             { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
+            { id: "stop-run", label: stopRunLabel, icon: "i-stop", onClick: onStopRun },
             { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : undefined },
             { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : undefined },
           ].filter(action => action.onClick).map(action => (
@@ -1979,6 +1989,11 @@ export function ChatPane({
           ))}
         </div>
       </div>
+      {runStopNotice ? (
+        <div className="conv__notice" role="status" data-testid={`run-stop-notice:${identity}`}>
+          {runStopNotice}
+        </div>
+      ) : null}
       <TranscriptView
         identity={identity}
         agentLabel={agentLabel}

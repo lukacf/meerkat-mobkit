@@ -99,6 +99,7 @@ export const CONSOLE_COMMAND_NAMES = {
   retireIdentity: "retireIdentity",
   respawnIdentity: "respawnIdentity",
   resetIdentity: "resetIdentity",
+  stopMemberRun: "stopMemberRun",
   listRoutingRoutes: "listRoutingRoutes",
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
@@ -175,6 +176,15 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   },
   [CONSOLE_COMMAND_NAMES.resetIdentity]: {
     method: CONSOLE_RPC_METHODS.resetIdentity,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect",
+    ]),
+  },
+  // Run-fenced Stop: params carry `member_id`, `run_id` and `reason`
+  // explicitly (the run id comes from the member's `run_started`).
+  [CONSOLE_COMMAND_NAMES.stopMemberRun]: {
+    method: CONSOLE_RPC_METHODS.stopMemberRun,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
       "mobkit/identity-chat",
       "mobkit/identity-inspect",
