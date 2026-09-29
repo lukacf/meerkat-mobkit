@@ -431,10 +431,19 @@ impl UnifiedRuntime {
                                         authority_identity.as_str(),
                                     )
                                     .await;
+                                    // Replay the actor's retained events, so a
+                                    // client that connects after a run started
+                                    // still receives it from `run_started`
+                                    // (meerkat #1236). Replayed envelopes keep
+                                    // their event ids.
                                     let event_stream = handle
-                                        .subscribe_agent_events(&member_id)
+                                        .subscribe_agent_events_from(
+                                            &member_id,
+                                            meerkat_core::comms::SessionEventCursor::Earliest,
+                                        )
                                         .await
-                                        .map_err(|error| error.to_string())?;
+                                        .map_err(|error| error.to_string())?
+                                        .stream;
                                     Ok(generation_authoritative_agent_event_stream(
                                         event_stream,
                                         identity_events,
@@ -450,7 +459,14 @@ impl UnifiedRuntime {
                             });
                         }
                         let member_id = resolve_agent_event_member_id(&handle, &agent_id).await;
-                        handle.subscribe_agent_events(&member_id).await.map_err(Into::into)
+                        handle
+                            .subscribe_agent_events_from(
+                                &member_id,
+                                meerkat_core::comms::SessionEventCursor::Earliest,
+                            )
+                            .await
+                            .map(|subscription| subscription.stream)
+                            .map_err(Into::into)
                     })
                 }),
                 Some(sse_decisions_a),

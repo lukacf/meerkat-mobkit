@@ -6218,7 +6218,10 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 id: &meerkat_core::types::SessionId,
                 cursor: meerkat_core::comms::SessionEventCursor,
-            ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+            ) -> Result<
+                meerkat_core::comms::SessionEventSubscription,
+                meerkat_core::comms::StreamError,
+            > {
                 meerkat_core::service::SessionService::subscribe_session_events_from(
                     self.inner.as_ref(),
                     id,
@@ -7338,7 +7341,8 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         &self,
         id: &meerkat_core::types::SessionId,
         cursor: meerkat_core::comms::SessionEventCursor,
-    ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+    ) -> Result<meerkat_core::comms::SessionEventSubscription, meerkat_core::comms::StreamError>
+    {
         meerkat_core::service::SessionService::subscribe_session_events_from(
             self.inner.as_ref(),
             id,

@@ -1165,14 +1165,11 @@ impl UnifiedRuntime {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
-        // After the authority is visible: the install itself wakes the
-        // monitor once, for leases that predate it.
-        context
-            .runtime
-            .install_lease_observer(self.identity_lease_wake.clone());
         // Let completion-cursor reads credit the completions a member's actor
         // already published but the health monitor has not credited yet,
-        // replayed from meerkat's retained session events.
+        // replayed from meerkat's retained session events. Installed before
+        // the lease observer, so the monitor's first lease-woken attach
+        // already knows it may replay.
         if let Some(session_service) = self.mob_runtime.session_service().cloned() {
             context
                 .runtime
@@ -1181,6 +1178,11 @@ impl UnifiedRuntime {
                     ledger: Arc::clone(&self.identity_completion_ledger),
                 }));
         }
+        // After the authority is visible: the install itself wakes the
+        // monitor once, for leases that predate it.
+        context
+            .runtime
+            .install_lease_observer(self.identity_lease_wake.clone());
         self.identity_first_context = Some(context);
         if let Some(projection) = self.console_projection.get() {
             projection.update_identity_authority("default", self.identity_runtime().cloned());
@@ -1767,6 +1769,8 @@ type TaggedAgentEvent = (
     ProfileName,
     meerkat_core::event::EventEnvelope<AgentEvent>,
     Option<Arc<str>>,
+    // Sequence space of the stream the envelope came from.
+    Option<meerkat_core::comms::SessionEventEpoch>,
 );
 
 enum ForwardedAgentEvent {
@@ -2145,6 +2149,7 @@ fn attach_member_event_stream(
     role: ProfileName,
     stream: EventStream,
     actor: Option<meerkat_session::LiveSessionActorWitness>,
+    epoch: Option<meerkat_core::comms::SessionEventEpoch>,
     forwarded: Option<Arc<std::sync::Mutex<ForwardedEventIds>>>,
 ) -> StreamAttachment {
     static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2176,6 +2181,7 @@ fn attach_member_event_stream(
                 attribution.role.clone(),
                 envelope,
                 attribution.durable_identity.clone(),
+                epoch,
             )))
         })
         .chain(
@@ -2437,42 +2443,69 @@ async fn current_identity_fencing_token(
         .map(|lease| lease.fencing_token.get())
 }
 
-/// The per-session envelope sequence through which run completions were
+/// The per-session envelope sequence through which run terminals were
 /// credited to the identity completion cursor.
 ///
-/// Meerkat numbers a session's events monotonically for the life of the
-/// session service, across its actor incarnations, and replays retained
-/// events from a cursor. The identity health monitor's replaying streams and
-/// the completion-cursor drain ([`ReplayedCompletionDrain`]) both read those
-/// events; each claims an envelope's sequence before crediting it, and a
-/// claim succeeds only above the session's high-water, so every envelope is
-/// credited by exactly one of them. Both read in sequence order, so an
-/// envelope skipped by one was already claimed by the other.
+/// Meerkat numbers a session's events monotonically within one sequence
+/// space (a session service for a local member, an event pump residency for
+/// a placed one; [`meerkat_core::comms::SessionEventEpoch`]) and replays
+/// retained events from a cursor. The identity health monitor's replaying
+/// streams and the completion-cursor drain ([`ReplayedCompletionDrain`]) both
+/// read those events; each claims an envelope's sequence before crediting it,
+/// and a claim succeeds only above the session's high-water in the same
+/// space, so every envelope is credited by exactly one of them. Both read in
+/// sequence order, so an envelope skipped by one was already claimed by the
+/// other. A terminal is claimed and credited under the identity's
+/// completion-credit lock ([`crate::identity_first::IdentityRuntime::credit_observed_terminal`]),
+/// which a cursor read holds across its drain, so a read never sees a claim
+/// without its credit. A new sequence space (a placed member's host restart)
+/// restarts the session's high-water.
 #[derive(Default)]
 struct HealthCompletionLedger {
-    credited_through: std::sync::Mutex<HashMap<meerkat_core::types::SessionId, u64>>,
+    credited_through: std::sync::Mutex<
+        HashMap<
+            meerkat_core::types::SessionId,
+            (Option<meerkat_core::comms::SessionEventEpoch>, u64),
+        >,
+    >,
 }
 
 impl HealthCompletionLedger {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<meerkat_core::types::SessionId, u64>> {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        HashMap<
+            meerkat_core::types::SessionId,
+            (Option<meerkat_core::comms::SessionEventEpoch>, u64),
+        >,
+    > {
         self.credited_through
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Claim `seq` of `session_id` for crediting. `false` when an envelope
-    /// at or past it was already claimed. Synthetic gap markers carry
-    /// sequence 0 and are never claimed.
-    fn claim(&self, session_id: &meerkat_core::types::SessionId, seq: u64) -> bool {
+    /// Claim `seq` of `session_id` in sequence space `epoch` for crediting.
+    /// `false` when an envelope at or past it was already claimed in that
+    /// space. Synthetic gap markers carry sequence 0 and are never claimed.
+    fn claim(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        epoch: Option<meerkat_core::comms::SessionEventEpoch>,
+        seq: u64,
+    ) -> bool {
         if seq == 0 {
             return false;
         }
         let mut credited = self.lock();
-        let high_water = credited.entry(session_id.clone()).or_default();
-        if seq <= *high_water {
+        let entry = credited.entry(session_id.clone()).or_insert((epoch, 0));
+        if entry.0 != epoch {
+            *entry = (epoch, 0);
+        }
+        if seq <= entry.1 {
             return false;
         }
-        *high_water = seq;
+        entry.1 = seq;
         true
     }
 
@@ -2482,28 +2515,40 @@ impl HealthCompletionLedger {
         session_id: &meerkat_core::types::SessionId,
     ) -> meerkat_core::comms::SessionEventCursor {
         match self.lock().get(session_id) {
-            Some(seq) => meerkat_core::comms::SessionEventCursor::After(*seq),
-            None => meerkat_core::comms::SessionEventCursor::Earliest,
+            Some((Some(epoch), seq)) => meerkat_core::comms::SessionEventCursor::After {
+                epoch: *epoch,
+                seq: *seq,
+            },
+            _ => meerkat_core::comms::SessionEventCursor::Earliest,
         }
     }
 
-    /// Treat everything `session_id` published through `tail` as credited:
+    /// Treat everything `session_id` allocated through `tail` as credited:
     /// its sequence space no longer matches the ledger's, so nothing at or
     /// below the tail may be credited again (an under-count, never an
     /// over-count).
     fn settle_through(&self, session_id: &meerkat_core::types::SessionId, tail: u64) {
-        self.lock().insert(session_id.clone(), tail);
+        let mut credited = self.lock();
+        let entry = credited.entry(session_id.clone()).or_insert((None, 0));
+        entry.1 = entry.1.max(tail);
+    }
+
+    /// Forget `session_id`'s position: the next read starts over in the
+    /// session's current sequence space.
+    fn forget(&self, session_id: &meerkat_core::types::SessionId) {
+        self.lock().remove(session_id);
     }
 }
 
-/// Credits the run completions a member's actor already published but the
+/// Credits the run terminals a member's actor already published but the
 /// identity health monitor has not credited yet, before every completion
 /// cursor read under a lease ([`crate::identity_first::runtime::PendingCompletionDrain`]).
 ///
 /// It replays the session's retained events after the ledger's high-water.
 /// Meerkat captures the replayed prefix atomically with publication, so
-/// every completion published before the read is in it; only that prefix is
-/// consumed (the subscription's live tail is left to the monitor).
+/// every terminal published before the read is in it; only that prefix is
+/// consumed (the subscription's live tail is left to the monitor). The
+/// caller holds the identity's completion-credit lock throughout.
 struct ReplayedCompletionDrain {
     session_service: Arc<dyn meerkat_mob::MobSessionService>,
     ledger: Arc<HealthCompletionLedger>,
@@ -2511,37 +2556,55 @@ struct ReplayedCompletionDrain {
 
 #[async_trait::async_trait]
 impl crate::identity_first::runtime::PendingCompletionDrain for ReplayedCompletionDrain {
-    async fn drain(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
+    async fn drain(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> crate::identity_first::runtime::PendingRunTerminals {
         use futures::FutureExt as _;
-        let cursor = self.ledger.resume_cursor(session_id);
-        let subscription = match self
-            .session_service
-            .subscribe_agent_session_events_from(session_id, cursor)
-            .await
-        {
-            Ok(subscription) => subscription,
-            Err(meerkat_core::comms::StreamError::CursorRejected {
-                reason: meerkat_core::comms::SessionEventCursorRejection::AheadOfTail { tail },
-                ..
-            }) => {
-                self.ledger.settle_through(session_id, tail);
-                return 0;
+        use meerkat_core::comms::{SessionEventCursorRejection, StreamError};
+        let mut terminals = crate::identity_first::runtime::PendingRunTerminals::default();
+        let mut cursor = self.ledger.resume_cursor(session_id);
+        let subscription = loop {
+            match self
+                .session_service
+                .subscribe_agent_session_events_from(session_id, cursor)
+                .await
+            {
+                Ok(subscription) => break subscription,
+                // A new sequence space: start over in it. What it holds
+                // happened after the space began and was never credited.
+                Err(StreamError::CursorRejected {
+                    reason: SessionEventCursorRejection::EpochMismatch { .. },
+                    ..
+                }) if cursor != meerkat_core::comms::SessionEventCursor::Earliest => {
+                    self.ledger.forget(session_id);
+                    cursor = meerkat_core::comms::SessionEventCursor::Earliest;
+                }
+                Err(StreamError::CursorRejected {
+                    reason: SessionEventCursorRejection::AheadOfTail { tail },
+                    ..
+                }) => {
+                    self.ledger.settle_through(session_id, tail);
+                    return terminals;
+                }
+                // No live actor serves the session here (a placed member, or
+                // one not materialized yet): nothing is retained to credit.
+                Err(_) => return terminals,
             }
-            // No live actor serves the session here (a placed member, or
-            // one not materialized yet): nothing is retained to credit.
-            Err(_) => return 0,
         };
+        let epoch = subscription.epoch;
         let mut stream = subscription.stream;
-        let mut completions = 0;
         while let Some(Some(envelope)) = stream.next().now_or_never() {
             // Claim every envelope so the high-water tracks the read
-            // position; only a claimed completion is credited.
-            let claimed = self.ledger.claim(session_id, envelope.seq);
-            if claimed && matches!(envelope.payload, AgentEvent::RunCompleted { .. }) {
-                completions += 1;
+            // position; only a claimed terminal is credited.
+            let claimed = self.ledger.claim(session_id, epoch, envelope.seq);
+            match envelope.payload {
+                AgentEvent::RunCompleted { .. } if claimed => terminals.completed += 1,
+                AgentEvent::RunFailed { .. } if claimed => terminals.failed += 1,
+                _ => {}
             }
         }
-        completions
+        terminals
     }
 }
 
@@ -2562,54 +2625,53 @@ impl crate::identity_first::runtime::PendingCompletionDrain for ReplayedCompleti
 /// first credits the completions the actor already published
 /// ([`ReplayedCompletionDrain`]), and the [`HealthCompletionLedger`] lets
 /// each envelope be credited once, by the drain or by the monitor's
-/// replaying stream. Returns whether this envelope credited a completion.
+/// replaying stream, claimed and credited under the identity's
+/// completion-credit lock. Returns whether this envelope credited a
+/// completion.
 async fn record_identity_turn_completion(
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     ledger: &HealthCompletionLedger,
     durable_identity: Option<&str>,
+    epoch: Option<meerkat_core::comms::SessionEventEpoch>,
     envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
 ) -> bool {
-    // Claim every envelope, not only terminals, so the ledger's high-water
-    // tracks the stream's position.
-    let claimed = envelope
-        .source_session_id()
-        .is_some_and(|session_id| ledger.claim(session_id, envelope.seq));
+    let claim = || {
+        envelope
+            .source_session_id()
+            .is_some_and(|session_id| ledger.claim(session_id, epoch, envelope.seq))
+    };
     let failed = match envelope.payload {
         AgentEvent::RunCompleted { .. } => false,
         AgentEvent::RunFailed { .. } => true,
-        _ => return false,
-    };
-    if !claimed {
-        return false;
-    }
-    let Some(durable_identity) = durable_identity else {
-        return false;
+        // Claim every envelope, not only terminals, so the ledger's
+        // high-water tracks the stream's position.
+        _ => {
+            claim();
+            return false;
+        }
     };
     let authority = identity_runtime
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let Some(authority) = authority else {
+    let identity = durable_identity.and_then(|label| {
+        crate::identity_first::AgentIdentity::parse(label)
+            .inspect_err(|error| {
+                tracing::debug!(
+                    identity = %label,
+                    error = %error,
+                    "mobkit identity health monitor: run completion carried an unparseable durable identity"
+                );
+            })
+            .ok()
+    });
+    let (Some(authority), Some(identity)) = (authority, identity) else {
+        claim();
         return false;
     };
-    let identity = match crate::identity_first::AgentIdentity::parse(durable_identity) {
-        Ok(identity) => identity,
-        Err(error) => {
-            tracing::debug!(
-                identity = %durable_identity,
-                error = %error,
-                "mobkit identity health monitor: run completion carried an unparseable durable identity"
-            );
-            return false;
-        }
-    };
-    if failed {
-        authority.record_turn_failed(&identity).await;
-        false
-    } else {
-        authority.record_turn_completed(&identity).await;
-        true
-    }
+    authority
+        .credit_observed_terminal(&identity, failed, claim)
+        .await
 }
 
 async fn trigger_identity_stream_repair(
@@ -2734,7 +2796,7 @@ async fn run_resilient_mob_agent_event_forwarder(
             Some(forwarded) = streams.next() => {
                 match forwarded {
                     ForwardedAgentEvent::Event(event) => {
-                        let (source, source_fence_token, role, envelope, _durable_identity) = *event;
+                        let (source, source_fence_token, role, envelope, _durable_identity, _epoch) = *event;
                         let attributed_event = AttributedEvent {
                             source,
                             source_fence_token,
@@ -2821,11 +2883,12 @@ async fn run_identity_stream_health_monitor(
             Some(forwarded) = streams.next() => {
                 match forwarded {
                     ForwardedAgentEvent::Event(event) => {
-                        let (_, _, _, envelope, durable_identity) = *event;
+                        let (_, _, _, envelope, durable_identity, epoch) = *event;
                         let _credited = record_identity_turn_completion(
                             &identity_runtime,
                             &completion_ledger,
                             durable_identity.as_deref(),
+                            epoch,
                             &envelope,
                         ).await;
                     }
@@ -3082,10 +3145,21 @@ async fn reconcile_agent_event_streams(
 
             let role = entry.role.clone();
 
+            // The health monitor replays only while a completion-cursor
+            // drain credits what happened before its attach; without one a
+            // replayed completion could satisfy a baseline read before it.
+            let replay = console
+                || identity_runtime.is_some_and(|slot| {
+                    slot.read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.has_pending_completion_drain())
+                });
             let subscription =
-                subscribe_agent_events_for_console_forwarder(handle, &identity, console).await;
+                subscribe_agent_events_for_console_forwarder(handle, &identity, console, replay)
+                    .await;
             match subscription {
-                Ok((stream, actor)) => {
+                Ok((stream, actor, epoch)) => {
                     subscribe_failures.remove(&tracked_key);
                     let forwarded = console.then(|| tracked.forwarded_for(&owner));
                     let attachment = attach_member_event_stream(
@@ -3094,6 +3168,7 @@ async fn reconcile_agent_event_streams(
                         role,
                         stream,
                         actor,
+                        epoch,
                         forwarded,
                     );
                     tracked.current.insert(tracked_key, attachment);
@@ -3187,10 +3262,12 @@ async fn subscribe_agent_events_for_console_forwarder(
     handle: &MobHandle,
     identity: &AgentIdentity,
     console: bool,
+    replay: bool,
 ) -> Result<
     (
         EventStream,
         Option<meerkat_session::LiveSessionActorWitness>,
+        Option<meerkat_core::comms::SessionEventEpoch>,
     ),
     meerkat_mob::MobError,
 > {
@@ -3204,13 +3281,16 @@ async fn subscribe_agent_events_for_console_forwarder(
     // from the earliest retained one covers a run that started before this
     // attach (a restored member's first run included); a gap beyond the
     // retained window arrives as meerkat's typed `StreamTruncated` marker.
-    let subscription = handle
-        .subscribe_agent_events_from(identity, meerkat_core::comms::SessionEventCursor::Earliest)
-        .await?;
+    let cursor = if replay {
+        meerkat_core::comms::SessionEventCursor::Earliest
+    } else {
+        meerkat_core::comms::SessionEventCursor::Live
+    };
+    let subscription = handle.subscribe_agent_events_from(identity, cursor).await?;
     // The identity health monitor does not hold successors back, so it
     // leaves the actor untracked (its departed streams are cut off instead).
     let actor = if console { subscription.actor } else { None };
-    Ok((subscription.stream, actor))
+    Ok((subscription.stream, actor, subscription.epoch))
 }
 
 /// Streaming subscription against the meerkat mob event ledger. Each
@@ -5121,7 +5201,7 @@ model = "gpt-5.5"
         let ForwardedAgentEvent::Event(event) = first else {
             panic!("attached stream closed before yielding the first run");
         };
-        let (_, _, _, envelope, _) = *event;
+        let (_, _, _, envelope, _, _) = *event;
         assert!(
             matches!(envelope.payload, AgentEvent::RunStarted { .. }),
             "the stream starts at the finished run's start, got {:?}",
@@ -5203,7 +5283,7 @@ model = "gpt-5.5"
         let ForwardedAgentEvent::Event(event) = first else {
             panic!("re-keyed stream closed");
         };
-        let (runtime_id, fence_token, _, envelope, _) = *event;
+        let (runtime_id, fence_token, _, envelope, _, _) = *event;
         assert!(matches!(envelope.payload, AgentEvent::RunStarted { .. }));
         assert_eq!(
             (runtime_id, fence_token),
@@ -5473,11 +5553,12 @@ model = "gpt-5.5"
         tokio::spawn(async move {
             while let Some(forwarded) = streams.next().await {
                 if let ForwardedAgentEvent::Event(event) = forwarded {
-                    let (_, _, _, envelope, durable_identity) = *event;
+                    let (_, _, _, envelope, durable_identity, epoch) = *event;
                     let _credited = record_identity_turn_completion(
                         &slot,
                         &ledger,
                         durable_identity.as_deref(),
+                        epoch,
                         &envelope,
                     )
                     .await;
@@ -5491,9 +5572,193 @@ model = "gpt-5.5"
 
     #[async_trait::async_trait]
     impl crate::identity_first::runtime::PendingCompletionDrain for NoPendingCompletions {
-        async fn drain(&self, _session_id: &meerkat_core::types::SessionId) -> u64 {
-            0
+        async fn drain(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> crate::identity_first::runtime::PendingRunTerminals {
+            crate::identity_first::runtime::PendingRunTerminals::default()
         }
+    }
+
+    #[test]
+    fn health_completion_ledger_claims_each_sequence_once_per_space() {
+        use meerkat_core::comms::{SessionEventCursor, SessionEventEpoch};
+        let ledger = HealthCompletionLedger::default();
+        let session = meerkat_core::types::SessionId::new();
+        let space = Some(SessionEventEpoch::new());
+        assert_eq!(ledger.resume_cursor(&session), SessionEventCursor::Earliest);
+        assert!(
+            !ledger.claim(&session, space, 0),
+            "gap markers are never claimed"
+        );
+        assert!(ledger.claim(&session, space, 1));
+        assert!(ledger.claim(&session, space, 3));
+        assert!(!ledger.claim(&session, space, 2), "below the high-water");
+        assert!(!ledger.claim(&session, space, 3), "claimed once");
+        assert_eq!(
+            ledger.resume_cursor(&session),
+            SessionEventCursor::After {
+                epoch: space.expect("epoch"),
+                seq: 3,
+            }
+        );
+        // A new sequence space (a placed member's host restart) restarts the
+        // high-water instead of refusing its first sequences.
+        let restarted = Some(SessionEventEpoch::new());
+        assert!(ledger.claim(&session, restarted, 1));
+        assert!(!ledger.claim(&session, restarted, 1));
+        ledger.settle_through(&session, 5);
+        assert!(
+            !ledger.claim(&session, restarted, 4),
+            "settled through the tail"
+        );
+        assert!(ledger.claim(&session, restarted, 6));
+        ledger.forget(&session);
+        assert_eq!(ledger.resume_cursor(&session), SessionEventCursor::Earliest);
+    }
+
+    /// The drain (under a cursor read) and the monitor's replaying stream
+    /// race over the same events while turns complete and cursor reads
+    /// keep draining: every turn is credited exactly once, and no read ever
+    /// runs ahead of the turns that actually completed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn identity_health_drain_and_monitor_race_credits_each_turn_once() {
+        const TURNS: u64 = 4;
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, ledger, identity) =
+            health_restart("identity-health-race", &temp).await;
+        let slot = Arc::new(std::sync::RwLock::new(Some(identity_runtime.clone())));
+        let handle = runtime.mob_handle();
+        let mut tracked = AttachedStreams::default();
+        let mut failures = HashMap::new();
+        let mut streams = SelectAll::new();
+        Box::pin(reconcile_agent_event_streams(
+            &handle,
+            &None,
+            &mut tracked,
+            &mut failures,
+            &mut streams,
+            Some(&slot),
+        ))
+        .await;
+        assert!(!tracked.current.is_empty(), "the monitor attached");
+        let before = identity_runtime.completion_cursor(&identity).await;
+        let monitor = drive_health_streams(streams, Arc::clone(&slot), Arc::clone(&ledger));
+        let committed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reader = {
+            let identity_runtime = identity_runtime.clone();
+            let identity = identity.clone();
+            let committed = Arc::clone(&committed);
+            tokio::spawn(async move {
+                let mut last = before;
+                loop {
+                    let cursor = identity_runtime.completion_cursor(&identity).await;
+                    assert!(cursor >= last, "the cursor never rewinds");
+                    // Turns run one at a time, so at most one completed turn
+                    // is not yet counted in `committed`.
+                    let done = committed.load(std::sync::atomic::Ordering::Acquire);
+                    assert!(
+                        cursor <= (0..=done).fold(before, |cursor, _| cursor.advanced()),
+                        "a read never runs ahead of completed turns"
+                    );
+                    last = cursor;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        for turn in 0..TURNS {
+            commit_restart_member_turn(&identity_runtime, &format!("race turn {turn}")).await;
+            committed.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        let expected = (0..TURNS).fold(before, |cursor, _| cursor.advanced());
+        identity_runtime
+            .wait_for_completion(
+                &identity,
+                (0..TURNS - 1).fold(before, |cursor, _| cursor.advanced()),
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("the last turn is credited");
+        assert_eq!(
+            identity_runtime.completion_cursor(&identity).await,
+            expected,
+            "each turn credited exactly once"
+        );
+        reader.abort();
+        assert!(
+            reader.await.err().is_some_and(|error| error.is_cancelled()),
+            "the reader's invariants held"
+        );
+        monitor.abort();
+        runtime.shutdown().await;
+    }
+
+    /// An identity lease rotation re-keys the member's binding: the monitor
+    /// cuts its previous stream off and opens a new one, which replays the
+    /// actor's retained events. The replay credits nothing twice, and the
+    /// next turn is counted once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn identity_health_lease_rotation_replay_credits_nothing_twice() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, ledger, identity) =
+            health_restart("identity-health-rotation", &temp).await;
+        commit_restart_member_turn(&identity_runtime, "before rotation").await;
+        let slot = Arc::new(std::sync::RwLock::new(Some(identity_runtime.clone())));
+        let handle = runtime.mob_handle();
+        let mut tracked = AttachedStreams::default();
+        let mut failures = HashMap::new();
+        let mut streams = SelectAll::new();
+        Box::pin(reconcile_agent_event_streams(
+            &handle,
+            &None,
+            &mut tracked,
+            &mut failures,
+            &mut streams,
+            Some(&slot),
+        ))
+        .await;
+        let (key, attachment) = tracked
+            .current
+            .drain()
+            .next()
+            .expect("the monitor attached");
+        // The same stream under the member's previous identity lease: the
+        // pass sees the binding re-keyed (a lease rotation).
+        let mut previous = key.clone();
+        previous.identity_fencing_token = key.identity_fencing_token.map(|token| token + 1_000);
+        tracked.current.insert(previous, attachment);
+        Box::pin(reconcile_agent_event_streams(
+            &handle,
+            &None,
+            &mut tracked,
+            &mut failures,
+            &mut streams,
+            Some(&slot),
+        ))
+        .await;
+        assert!(
+            tracked.current.contains_key(&key),
+            "a new stream serves the rotated lease"
+        );
+
+        let baseline = identity_runtime.completion_cursor(&identity).await;
+        let monitor = drive_health_streams(streams, Arc::clone(&slot), Arc::clone(&ledger));
+        assert!(
+            identity_runtime
+                .wait_for_completion(&identity, baseline, Duration::from_millis(300))
+                .await
+                .is_err(),
+            "neither the cut-off stream nor the new stream's replay credits a turn again"
+        );
+        commit_restart_member_turn(&identity_runtime, "after rotation").await;
+        let completed = identity_runtime
+            .wait_for_completion(&identity, baseline, Duration::from_secs(5))
+            .await
+            .expect("the next turn completes the wait");
+        assert_eq!(completed, baseline.advanced(), "counted exactly once");
+
+        monitor.abort();
+        runtime.shutdown().await;
     }
 
     /// The identity health monitor's window (the MobKit operator-method
@@ -5763,7 +6028,7 @@ model = "gpt-5.5"
             while !finished {
                 match self.next().await {
                     ForwardedAgentEvent::Event(event) => {
-                        let (source, source_fence_token, role, envelope, _) = *event;
+                        let (source, source_fence_token, role, envelope, _, _) = *event;
                         finished = done(&envelope.payload);
                         steps.push(ForwarderStep::Event(Box::new(envelope.clone())));
                         ingress
@@ -6405,6 +6670,7 @@ model = "gpt-5.5"
             Box::pin(futures::stream::empty()),
             None,
             None,
+            None,
         );
         let superseded_generation = superseded.generation;
         let serving = attach_member_event_stream(
@@ -6412,6 +6678,7 @@ model = "gpt-5.5"
             key.clone(),
             ProfileName::from("worker"),
             Box::pin(futures::stream::pending()),
+            None,
             None,
             None,
         );
@@ -6482,7 +6749,7 @@ model = "gpt-5.5"
         let ForwardedAgentEvent::Event(event) = forwarder.next().await else {
             panic!("the child stream yields its first run");
         };
-        let (runtime_id, _, _, envelope, _) = *event;
+        let (runtime_id, _, _, envelope, _, _) = *event;
         assert!(matches!(envelope.payload, AgentEvent::RunStarted { .. }));
         assert_eq!(envelope.seq, 1);
         assert!(
@@ -6576,6 +6843,7 @@ model = "gpt-5.5"
             entry.role.clone(),
             Box::pin(subscription.stream.chain(futures::stream::pending())),
             subscription.actor,
+            subscription.epoch,
             None,
         );
         let predecessor = attachment.generation;
@@ -6783,6 +7051,7 @@ model = "gpt-5.5"
             ProfileName::from("worker"),
             Box::pin(futures::stream::pending()),
             Some(actor),
+            None,
             None,
         );
         let generation = attachment.generation;

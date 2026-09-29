@@ -119,6 +119,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   arming) and its spec and session-service plumbing are removed.
   Session-service decorators forward meerkat's new
   `subscribe_session_events_from` and `subscribe_agent_session_events_from`.
+- Identity completion crediting is exactly once by construction. The health
+  monitor's stream and the completion-cursor drain claim each event's
+  sequence in a per-session ledger keyed by meerkat's sequence space
+  (`SessionEventEpoch`), so a placed member's host restart restarts the
+  high-water instead of refusing its first events. A terminal is claimed
+  and credited under the identity's completion-credit lock, which a cursor
+  read holds across its drain, so a read never sees a claim without its
+  credit. The drain credits failed runs too, so a failure-aware wait ends
+  typed. A runtime without a drain (no session service) keeps the monitor
+  on live-only subscriptions, since replay could credit a completion after a
+  baseline read.
+- `/agents/{id}/events` SSE replays the member actor's retained events on
+  connect (meerkat #1236), so a client that connects after a run started
+  still receives it from `run_started`. Replayed envelopes keep their event
+  ids.
+- A member event subscription whose member has no live session actor now
+  fails with meerkat's typed `MemberSessionNotLive` ("mob member '...' has no
+  live session actor for session ..."), no longer an internal "failed to
+  subscribe to agent events" error.
 - A successor actor for the same session now continues the session's
   meerkat event sequence instead of restarting at 1 (meerkat #1236), so the
   console's per-session `source_sequence` ordering places a successor's run
