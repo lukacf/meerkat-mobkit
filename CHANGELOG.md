@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `ConsoleSendRequest` gains `skill_refs: Vec<meerkat_core::skills::SkillRef>`
+  and `BridgeDelivery` gains `skill_references: Vec<SkillKey>` (see Added).
+  Struct literals must set them, usually to `Vec::new()`; the JSON field is
+  optional and omitted when empty.
+- `MobRuntimeError` gains `HostHumanInput(HostHumanInputError)`: a typed
+  refusal on the explicit host-human lane (a skill selection sent to an
+  externally bound member on the member-only console lane). Exhaustive
+  matches must add the arm.
+
 - `ContinuityRepairPolicy` loses `initial_backoff` and `max_backoff` and is
   `#[non_exhaustive]`: the continuity repair supervisor no longer runs on a
   timer (see Changed). Construct it with `ContinuityRepairPolicy::default()`.
@@ -180,6 +189,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- ConsoleSend (`POST /console/send`, `mobkit/console/send`, and the
+  multipart form) accepts typed `skill_refs` for the exact addressed member
+  (#486). The selection rides meerkat's fenced host-human admission
+  (`MobHandle::submit_host_human_input_with_options_bounded`), so the member
+  resolves it natively (`skills_resolved` / `skill_resolution_failed`,
+  durable `SkillContext`) with the same exact-target and delivery-identity
+  receipts as the content. A nonempty selection joins the idempotency
+  fingerprint (an empty one keeps the previous fingerprint): a same-key retry
+  with the same selection returns the original acceptance, and a changed
+  selection is `idempotency_conflict`. Remote and externally bound members
+  refuse a selection typed instead of delivering without it.
 - Typed per-member restore progress on the identity bootstrap status. During
   an eager restore pass each entry carries `restore`: `registered`,
   `resuming`, `minted`, `resumed`, or `broken` with the typed continuity

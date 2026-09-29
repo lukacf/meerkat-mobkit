@@ -9395,6 +9395,9 @@ impl MobBootstrapSpec {
 pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
+    /// A typed refusal on the explicit host-human lane (for example a skill
+    /// selection sent to a member that has no native carrier for it).
+    HostHumanInput(crate::identity_first::bridge::HostHumanInputError),
     InvalidConfig(String),
     /// A persistent mob storage path could not be proven to match the supplied
     /// composition. Raised before the mob actuates.
@@ -9406,6 +9409,7 @@ impl std::fmt::Display for MobRuntimeError {
         match self {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
+            Self::HostHumanInput(err) => write!(f, "{err}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
         }
@@ -11328,6 +11332,7 @@ pub(crate) async fn send_console_human_on_mob(
     handle: &MobHandle,
     member: &meerkat_mob::runtime::MobMemberListEntry,
     content: meerkat_core::ContentInput,
+    skill_references: &[meerkat_core::skills::SkillKey],
     handling_mode: meerkat_core::types::HandlingMode,
     accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
 ) -> Result<String, MobRuntimeError> {
@@ -11342,6 +11347,15 @@ pub(crate) async fn send_console_human_on_mob(
     )
     .await?;
     if status.external_member.is_some() {
+        // Remote work has no native member-turn skill carrier: refuse a
+        // selection instead of running the turn without it.
+        if !skill_references.is_empty() {
+            return Err(MobRuntimeError::HostHumanInput(
+                crate::identity_first::bridge::HostHumanInputError::Unsupported(
+                    "selected skills require a local session-backed member".to_string(),
+                ),
+            ));
+        }
         // Keep remote work transport semantics, but use the original binding:
         // a stale local snapshot must never become a send to a replacement peer.
         handle
@@ -11369,12 +11383,18 @@ pub(crate) async fn send_console_human_on_mob(
     // origin preserves support for console-addressable internal workers.
     let spec = meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal)
         .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+    let options = if skill_references.is_empty() {
+        meerkat_mob::MemberTurnOptions::new()
+    } else {
+        meerkat_mob::MemberTurnOptions::new().with_skill_references(skill_references.to_vec())
+    };
     handle
-        .submit_host_human_input_bounded(
+        .submit_host_human_input_with_options_bounded(
             runtime_id,
             fence_token,
             spec,
             handling_mode,
+            options,
             delivery,
             deadline.into_std(),
         )

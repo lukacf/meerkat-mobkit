@@ -217,6 +217,9 @@ struct SendRequest<'a> {
 struct ConsoleHumanSend<'a> {
     delivery_identity: &'a meerkat_mob::MobDeliveryIdentity,
     expected_session: Option<&'a str>,
+    /// Selected skills for this exact console turn; carried only on the
+    /// local host-human lane.
+    skill_references: &'a [meerkat_core::skills::SkillKey],
 }
 
 enum DeliveryPreparation {
@@ -8963,12 +8966,28 @@ impl IdentityRuntime {
     /// console reservation. HTTP replays return that original frame/status or
     /// typed unknown fate after failure; they never re-prepare changed memory.
     /// No replay cache (or eviction which could make an old key executable).
+    /// Whether a console send to `identity` can carry a native skill
+    /// selection: only a local session-backed member (no external binding,
+    /// no remote placement) has meerkat's host-human skill carrier. Read
+    /// from the durable spec, so a console send can refuse a selection
+    /// before it reserves an interaction.
+    pub(crate) async fn carries_console_skill_selection(&self, identity: &AgentIdentity) -> bool {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .is_some_and(|entry| {
+                !durable_spec_uses_external_binding(&entry.spec) && entry.spec.placement.is_none()
+            })
+    }
+
     pub(crate) async fn send_console_human_input_tracked(
         self: &Arc<Self>,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
+        skill_references: &[meerkat_core::skills::SkillKey],
         accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
     ) -> Result<FencingToken, IdentityRuntimeError> {
         let delivery_identity = meerkat_mob::MobDeliveryIdentity::new(
@@ -8984,6 +9003,7 @@ impl IdentityRuntime {
         let identity = identity.clone();
         let expected_alias = expected_alias.map(ToString::to_string);
         let content = content.clone();
+        let skill_references = skill_references.to_vec();
         let interaction_id = accepted.interaction_id.clone();
         let expected_session = accepted.session_id.clone();
         self.run_tracked_foreground(async move {
@@ -9000,6 +9020,7 @@ impl IdentityRuntime {
                         console_human: Some(ConsoleHumanSend {
                             delivery_identity: &delivery_identity,
                             expected_session: expected_session.as_deref(),
+                            skill_references: &skill_references,
                         }),
                     },
                 )
@@ -9175,6 +9196,20 @@ impl IdentityRuntime {
                 durable_spec_uses_external_binding(&entry.spec),
             )
         };
+        if !local_human
+            && console_human
+                .as_ref()
+                .is_some_and(|human| !human.skill_references.is_empty())
+        {
+            // An externally bound identity has no native member-turn skill
+            // carrier; refuse before delivery instead of running the turn
+            // without the selected skills.
+            return Err(IdentityRuntimeError::HostHumanInput(
+                super::bridge::HostHumanInputError::Unsupported(
+                    "selected skills require a local session-backed member".to_string(),
+                ),
+            ));
+        }
         if local_human
             && let Some(expected_session) = console_human
                 .as_ref()
@@ -9337,6 +9372,10 @@ impl IdentityRuntime {
                             delivery.delivery_identity = console_human
                                 .as_ref()
                                 .map(|human| human.delivery_identity.clone());
+                            delivery.skill_references = console_human
+                                .as_ref()
+                                .map(|human| human.skill_references.to_vec())
+                                .unwrap_or_default();
                             bridge
                                 .deliver_host_human_input(rid, session, delivery)
                                 .await

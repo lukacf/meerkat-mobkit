@@ -394,6 +394,27 @@ pub struct ConsoleSendRequest {
     /// `origin_kind` so the transcript labels the turn from data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_kind: Option<ConsoleTurnOrigin>,
+    /// Source-pinned skills selected for this exact turn, in the platform's
+    /// typed `skill_refs` wire shape (`{"kind": "structured", "source_uuid",
+    /// "skill_name"}`, as on meerkat `turn/start` and `mob/turn_start`). The
+    /// target member resolves them natively (typed `SkillsResolved` /
+    /// `SkillResolutionFailed` events and a durable `SkillContext`); MobKit
+    /// never renders them into the content. A nonempty selection is part of
+    /// the idempotency identity: a replay must repeat it, and a changed
+    /// selection under the same key is an idempotency conflict. Only local
+    /// session-backed members accept a selection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_refs: Vec<meerkat_core::skills::SkillRef>,
+}
+
+impl ConsoleSendRequest {
+    /// The canonical skill keys of [`Self::skill_refs`], in request order.
+    pub fn selected_skill_keys(&self) -> Vec<meerkat_core::skills::SkillKey> {
+        self.skill_refs
+            .iter()
+            .map(|skill| skill.key().clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
