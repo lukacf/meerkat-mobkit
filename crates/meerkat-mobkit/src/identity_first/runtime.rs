@@ -2384,6 +2384,17 @@ pub(crate) trait MemberSessionRotationObserver: Send + Sync {
     );
 }
 
+/// Run completions of a member's actor that already happened but are not
+/// counted yet: the identity health monitor's create-time capture of the
+/// actor, while it waits for adoption. [`IdentityRuntime::completion_cursor`]
+/// credits them before every read.
+#[async_trait::async_trait]
+pub(crate) trait PendingCompletionDrain: Send + Sync {
+    /// Consume the uncounted events of `session_id`'s capture and return how
+    /// many were run completions.
+    async fn drain(&self, session_id: &SessionId) -> u64;
+}
+
 /// The identity table, with a change signal: releasing a write lock wakes
 /// the completion waiters ([`IdentityRuntime::await_completion`]), which
 /// re-derive their cursor from the table (a lease incarnation change is an
@@ -2392,6 +2403,15 @@ pub(crate) trait MemberSessionRotationObserver: Send + Sync {
 struct IdentityEntries {
     table: RwLock<BTreeMap<AgentIdentity, IdentityEntry>>,
     changed: watch::Sender<()>,
+    /// Each identity's current lease fencing token, as of the last write.
+    /// A write that moves it (a lease acquired, rotated or released) wakes
+    /// the [`Self::lease_observer`].
+    lease_tokens: StdMutex<BTreeMap<AgentIdentity, u64>>,
+    /// Told (an epoch bump) whenever any identity's lease fencing token
+    /// changes. The identity health monitor attaches a member's stream only
+    /// once the member's lease exists, so this is its typed wake for that
+    /// moment ([`IdentityRuntime::install_lease_observer`]).
+    lease_observer: StdRwLock<Option<watch::Sender<u64>>>,
 }
 
 impl IdentityEntries {
@@ -2399,6 +2419,8 @@ impl IdentityEntries {
         Self {
             table: RwLock::new(BTreeMap::new()),
             changed: watch::channel(()).0,
+            lease_tokens: StdMutex::new(BTreeMap::new()),
+            lease_observer: StdRwLock::new(None),
         }
     }
 
@@ -2411,7 +2433,7 @@ impl IdentityEntries {
     async fn write(&self) -> IdentityEntriesWriteGuard<'_> {
         IdentityEntriesWriteGuard {
             guard: self.table.write().await,
-            changed: &self.changed,
+            entries: self,
         }
     }
 
@@ -2423,11 +2445,58 @@ impl IdentityEntries {
     fn subscribe(&self) -> watch::Receiver<()> {
         self.changed.subscribe()
     }
+
+    /// Compare the table's lease fencing tokens with the last published ones
+    /// and wake the lease observer when any moved.
+    fn publish_lease_tokens(&self, table: &BTreeMap<AgentIdentity, IdentityEntry>) {
+        let leased = || {
+            table.iter().filter_map(|(identity, entry)| {
+                entry
+                    .lease
+                    .as_ref()
+                    .map(|lease| (identity, lease.fencing_token.get()))
+            })
+        };
+        let moved = {
+            let mut published = self
+                .lease_tokens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Compared in place (both sides are identity-ordered); the map is
+            // rebuilt only when a lease actually moved.
+            let unchanged = leased().count() == published.len()
+                && leased().zip(published.iter()).all(
+                    |((identity, token), (published_identity, published_token))| {
+                        identity == published_identity && token == *published_token
+                    },
+                );
+            if !unchanged {
+                *published = leased()
+                    .map(|(identity, token)| (identity.clone(), token))
+                    .collect();
+            }
+            !unchanged
+        };
+        if moved {
+            self.wake_lease_observer();
+        }
+    }
+
+    fn wake_lease_observer(&self) {
+        if let Some(observer) = self
+            .lease_observer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            observer.send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+        }
+    }
 }
 
 struct IdentityEntriesWriteGuard<'a> {
     guard: tokio::sync::RwLockWriteGuard<'a, BTreeMap<AgentIdentity, IdentityEntry>>,
-    changed: &'a watch::Sender<()>,
+    entries: &'a IdentityEntries,
 }
 
 impl std::ops::Deref for IdentityEntriesWriteGuard<'_> {
@@ -2446,7 +2515,8 @@ impl std::ops::DerefMut for IdentityEntriesWriteGuard<'_> {
 
 impl Drop for IdentityEntriesWriteGuard<'_> {
     fn drop(&mut self) {
-        self.changed.send_replace(());
+        self.entries.publish_lease_tokens(&self.guard);
+        self.entries.changed.send_replace(());
     }
 }
 
@@ -2543,6 +2613,9 @@ pub struct IdentityRuntime {
     /// wait can end typed instead of running to its deadline. Retained for
     /// the process lifetime, like the completion cursors.
     run_failures: StdMutex<BTreeMap<AgentIdentity, u64>>,
+    /// Completions that happened but are not counted yet
+    /// ([`Self::install_pending_completion_drain`]).
+    pending_completion_drain: StdRwLock<Option<Arc<dyn PendingCompletionDrain>>>,
     /// Fired whenever a ticketed turn is admitted (which may evict another)
     /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
     /// polling the registry. Carries no state.
@@ -2972,6 +3045,7 @@ impl IdentityRuntime {
             turn_outcomes: Arc::default(),
             turn_outcome_changes: Arc::new(watch::channel(()).0),
             run_failures: StdMutex::new(BTreeMap::new()),
+            pending_completion_drain: StdRwLock::new(None),
             continuity_repair_triggers: watch::channel(ContinuityRepairWake::default()).0,
             continuity_repair_supervisors: AtomicUsize::new(0),
             embodiments_in_flight: watch::channel(0).0,
@@ -5399,6 +5473,19 @@ impl IdentityRuntime {
                 "tracked foreground identity operation terminated without a result".to_string(),
             )
         })?
+    }
+
+    /// Install the observer told (an epoch bump) whenever any identity's
+    /// lease fencing token changes, and bump it once so the observer
+    /// re-reads leases that predate the installation. The unified runtime
+    /// installs its identity health monitor's wake here.
+    pub(crate) fn install_lease_observer(&self, observer: watch::Sender<u64>) {
+        *self
+            .entries
+            .lease_observer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+        self.entries.wake_lease_observer();
     }
 
     pub(crate) fn close_foreground_operations(&self) {
@@ -9976,6 +10063,7 @@ impl IdentityRuntime {
         // deliberate and documented: on an identity receiving concurrent
         // traffic, another delivery's completion can also satisfy the wait.
         // Waiting too little beats the failure this replaces (waiting forever).
+        self.credit_pending_completions(identity).await;
         let completion_baseline = self.rebase_completion_cursor(identity, token);
         let (
             runtime_id,
@@ -10701,6 +10789,7 @@ impl IdentityRuntime {
         let mut token = self.ensure_active_lease(identity).await?;
         // Same pre-delivery baseline contract as the send path — see
         // `send_with_mode_and_interaction_with_expected_member_alias`.
+        self.credit_pending_completions(identity).await;
         let completion_baseline = self.rebase_completion_cursor(identity, token);
         let (
             is_durable,
@@ -14157,11 +14246,58 @@ impl IdentityRuntime {
     /// means anything. An identity that is gone (retired, deleted, or never
     /// registered) reports its last published cursor — retained precisely so
     /// this read cannot rewind.
+    ///
+    /// Credit before read: completions that already happened but are still
+    /// queued in an unadopted create-time capture are credited first, so the
+    /// read never precedes the credit of a completion that happened before it
+    /// (a baseline taken now can then never be satisfied by an older turn).
     pub async fn completion_cursor(&self, identity: &AgentIdentity) -> CompletionCursor {
         match self.registered_completion_epoch(identity).await {
-            Some(epoch) => self.rebase_completion_cursor(identity, epoch),
+            Some(epoch) => {
+                if epoch.get() != 0 {
+                    self.credit_pending_completions(identity).await;
+                }
+                self.rebase_completion_cursor(identity, epoch)
+            }
             None => self.retained_completion_cursor(identity),
         }
+    }
+
+    /// Credit the run completions of `identity`'s member that happened but
+    /// are not counted yet ([`PendingCompletionDrain`]). Only under a live
+    /// lease: a completion credited before any lease would be discarded by
+    /// the rebase onto the lease, while one credited under the lease is part
+    /// of every baseline taken from then on.
+    async fn credit_pending_completions(&self, identity: &AgentIdentity) {
+        let drain = self
+            .pending_completion_drain
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(drain) = drain else {
+            return;
+        };
+        let session_id = self.entries.read().await.get(identity).and_then(|entry| {
+            entry
+                .continuity
+                .as_ref()
+                .map(|record| record.session_id.clone())
+        });
+        let Some(session_id) = session_id else {
+            return;
+        };
+        for _ in 0..drain.drain(&session_id).await {
+            self.record_turn_completed(identity).await;
+        }
+    }
+
+    /// Install the source of completions that happened but are not counted
+    /// yet: the identity health monitor's unadopted create-time captures.
+    pub(crate) fn install_pending_completion_drain(&self, drain: Arc<dyn PendingCompletionDrain>) {
+        *self
+            .pending_completion_drain
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(drain);
     }
 
     /// Record that a turn completed for `identity`, advancing its cursor by
@@ -19026,6 +19162,98 @@ mod completion_wait_tests {
         assert!(matches!(completion, CompletionWait::ShuttingDown(_)));
         // An unknown ticket settles as Unknown at once, shutdown or not.
         assert!(matches!(turn, TurnWait::Settled(TurnOutcome::Unknown)));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lease_observer_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+
+    /// The identity health monitor's typed wake: the installed observer is
+    /// told when a lease lands or moves, and not for writes that leave every
+    /// lease where it was.
+    #[tokio::test]
+    async fn the_lease_observer_is_told_when_a_lease_lands_and_only_then()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "lease-observer-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let (observer, mut wake) = watch::channel(0_u64);
+        runtime.install_lease_observer(observer);
+        assert!(wake.has_changed()?, "installation wakes once");
+        wake.borrow_and_update();
+
+        let identity = AgentIdentity::parse("agent:leased")?;
+        let spec = DurableAgentSpec {
+            identity: identity.clone(),
+            profile: meerkat_mob::ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+            placement: None,
+        };
+        runtime
+            .register(spec.clone(), IdentityLifecycleState::Dormant, None, None)
+            .await;
+        assert!(!wake.has_changed()?, "no lease, no wake");
+
+        runtime
+            .register(
+                spec.clone(),
+                IdentityLifecycleState::Active,
+                None,
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(3),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+        assert!(wake.has_changed()?, "the lease landing wakes the observer");
+        wake.borrow_and_update();
+
+        runtime.record_turn_completed(&identity).await;
+        runtime.entries.notify();
+        // A table write that leaves every lease where it was.
+        runtime
+            .entries
+            .write()
+            .await
+            .get_mut(&identity)
+            .ok_or("registered")?
+            .checkpoint_version = CheckpointVersion::new(7);
+        assert!(
+            !wake.has_changed()?,
+            "a write that moves no lease does not wake"
+        );
+
+        runtime
+            .register(
+                spec,
+                IdentityLifecycleState::Active,
+                None,
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(4),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+        assert!(wake.has_changed()?, "a rotated lease wakes the observer");
         Ok(())
     }
 }

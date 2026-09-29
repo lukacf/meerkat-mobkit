@@ -400,6 +400,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The identity health monitor no longer misses the completion of a turn
+  that ran before it attached, so `wait_for_completion` on that turn's
+  baseline no longer times out (the operator-method seed-turn timeouts). The
+  monitor attaches a member only once its identity lease exists, and it used
+  to learn about the lease only from a later mob machine change or its 30 s
+  safety tick. It is now woken, typed, when any identity lease lands or
+  moves (`IdentityRuntime::install_lease_observer`). It also adopts its own
+  create-time capture of each actor's event stream (a second lane of the live
+  session event tap, independent of the console forwarder's), which predates
+  every run, so a turn completed between the lease landing and the attach is
+  counted exactly once, in order, instead of lost to the stream's lack of
+  replay. A completion that already happened is credited before the next
+  completion-cursor read (and before the adoption), so a baseline taken after
+  it can never be satisfied by it: the cursor under-counts at worst, never
+  over-counts. Captures of members the monitor will not attach (outside the
+  identity-first primary mob, Broken or retiring, no longer Active) are
+  dropped, captures are bounded by bytes (64 MiB) as well as envelopes, and
+  the health lane is armed only on identity-first runtimes. An identity lease
+  rotation cuts the monitor's previous ordinary subscription off instead of
+  counting its completions a second time.
+
 - A console send that fails now says why, in both queue and steer modes and
   on the multipart (attachment) door. Before, a refused or failed request
   (e.g. a 401 from an off-network browser with no console token) could leave

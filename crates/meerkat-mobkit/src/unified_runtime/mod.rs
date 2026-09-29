@@ -261,6 +261,14 @@ pub struct UnifiedRuntime {
     /// permanently capture `None`.
     implicit_delegate_identity_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    /// Woken (an epoch bump) whenever an identity lease changes in the
+    /// installed identity runtime; the identity health monitor's typed wake
+    /// for attaching a member whose lease just landed.
+    identity_lease_wake: tokio::sync::watch::Sender<u64>,
+    /// The identity health monitor's lane of the live session event tap,
+    /// armed only once an identity-first context is installed (nothing else
+    /// adopts its captures).
+    identity_health_tap: crate::live_session_event_tap::LiveSessionEventTap,
     identity_lease_renewal_task:
         tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedLeaseRenewalTask>>,
     identity_continuity_repair_task:
@@ -457,12 +465,15 @@ impl UnifiedRuntime {
         let metadata_table = Arc::new(RuntimeMetadataTable::new());
         let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
         let identity_runtime_authority = Arc::new(std::sync::RwLock::new(None));
+        let identity_lease_wake = tokio::sync::watch::channel(0_u64).0;
+        let identity_health_tap = live_event_tap.identity_health_lane();
         let mob_event_ingress = Some(Self::create_event_ingress(
             mob_runtime.handle(),
             mob_runtime.agent_mob_mcp_state(),
             mob_events_store.clone(),
             Arc::clone(&identity_runtime_authority),
             live_event_tap,
+            identity_lease_wake.subscribe(),
         ));
         let mob_events_task = Self::spawn_mob_events_subscriber(
             mob_runtime.handle(),
@@ -538,6 +549,8 @@ impl UnifiedRuntime {
             actor_loop_health,
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             implicit_delegate_identity_runtime: identity_runtime_authority,
+            identity_lease_wake,
+            identity_health_tap,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             retired_supervisor_cleanups: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
@@ -1163,6 +1176,20 @@ impl UnifiedRuntime {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
+        // After the authority is visible: the install itself wakes the
+        // monitor once, for leases that predate it.
+        context
+            .runtime
+            .install_lease_observer(self.identity_lease_wake.clone());
+        // Identity-first only: capture each new actor's stream for the health
+        // monitor from its first event, and let completion-cursor reads credit
+        // what such a capture already holds before they answer.
+        self.identity_health_tap.arm();
+        context
+            .runtime
+            .install_pending_completion_drain(Arc::new(HealthLaneCompletions(
+                self.identity_health_tap.clone(),
+            )));
         self.identity_first_context = Some(context);
         if let Some(projection) = self.console_projection.get() {
             projection.update_identity_authority("default", self.identity_runtime().cloned());
@@ -1667,6 +1694,7 @@ impl UnifiedRuntime {
             std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>,
         >,
         live_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
+        identity_lease_changes: tokio::sync::watch::Receiver<u64>,
     ) -> MobEventIngress {
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
@@ -1679,6 +1707,8 @@ impl UnifiedRuntime {
             mob_handle.clone(),
             agent_mob_mcp_state.clone(),
             identity_runtime,
+            live_event_tap.identity_health_lane(),
+            identity_lease_changes,
         ));
         let task = tokio::spawn(run_resilient_mob_agent_event_forwarder(
             mob_handle,
@@ -1892,11 +1922,19 @@ impl AttachedStreams {
 
     /// Stop serving a binding that left the roster. A stream of a known
     /// actor stays accounted for until it closes; an ordinary subscription's
-    /// actor is unknown, so it simply ages out.
-    fn depart(&mut self, key: &TrackedAgentEventStream) {
+    /// actor is unknown, so it simply ages out, unless `cut_unknown_actor`
+    /// asks to cut it off: the identity health monitor does, because an
+    /// identity lease rotation re-keys the binding, the monitor opens a fresh
+    /// subscription to the same actor, and the aging one would count every
+    /// completion a second time.
+    fn depart(&mut self, key: &TrackedAgentEventStream, cut_unknown_actor: bool) {
         let Some(attachment) = self.current.remove(key) else {
             return;
         };
+        if attachment.actor.is_none() && cut_unknown_actor {
+            attachment.abort.abort();
+            return;
+        }
         if let Some(actor) = attachment.actor.clone() {
             self.departed.insert(
                 attachment.generation,
@@ -2168,6 +2206,10 @@ struct ReconcileCadence {
     /// New create-time captures on the live session event tap (console
     /// forwarder only): adopting one must not wait for a backoff deadline.
     tap_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    /// Identity lease changes (identity health monitor only): the monitor
+    /// attaches a member only once its identity lease exists, and a lease
+    /// can land with no mob machine transition after it.
+    lease_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// Absolute deadline for the next safety reconcile, anchored at the last
     /// completed reconcile pass ([`Self::rebind`]). Persisting it here is
     /// load-bearing: the callers' outer `select!` drops and recreates the
@@ -2188,8 +2230,15 @@ impl ReconcileCadence {
                 .as_ref()
                 .map(|state| state.mob_set_changes()),
             tap_changes,
+            lease_changes: None,
             next_safety_deadline: tokio::time::Instant::now() + RECONCILE_SAFETY_INTERVAL,
         }
+    }
+
+    /// Also wake on identity lease changes.
+    fn with_lease_changes(mut self, lease_changes: tokio::sync::watch::Receiver<u64>) -> Self {
+        self.lease_changes = Some(lease_changes);
+        self
     }
 
     /// Rebind the watcher set to the exact handles the reconcile pass just
@@ -2226,6 +2275,7 @@ impl ReconcileCadence {
             machine_watchers,
             mob_set_changes,
             tap_changes,
+            lease_changes,
             ..
         } = self;
 
@@ -2265,12 +2315,23 @@ impl ReconcileCadence {
             }
         };
 
-        let (mob_set_closed, tap_closed) = tokio::select! {
-            () = machine_change => (false, false),
-            result = mob_set_change => (result.is_err(), false),
-            result = tap_change => (false, result.is_err()),
-            () = tokio::time::sleep_until(deadline) => (false, false),
+        let lease_change = async {
+            match lease_changes.as_mut() {
+                Some(rx) => rx.changed().await,
+                None => std::future::pending().await,
+            }
         };
+
+        let (mob_set_closed, tap_closed, lease_closed) = tokio::select! {
+            () = machine_change => (false, false, false),
+            result = mob_set_change => (result.is_err(), false, false),
+            result = tap_change => (false, result.is_err(), false),
+            result = lease_change => (false, false, result.is_err()),
+            () = tokio::time::sleep_until(deadline) => (false, false, false),
+        };
+        if lease_closed {
+            self.lease_changes = None;
+        }
         if mob_set_closed {
             // The dispatcher state is gone; a closed watch completes
             // immediately, so it must not stay selectable.
@@ -2336,6 +2397,90 @@ async fn current_identity_fencing_token(
         .map(|lease| lease.fencing_token.get())
 }
 
+/// Whether the identity health monitor may still attach a member it skips
+/// today for having no identity lease: only an identity-first member of the
+/// primary mob whose identity is neither Broken nor retiring can gain one.
+async fn health_capture_may_attach(
+    primary_mob_id: &str,
+    mob_id: &str,
+    durable_identity: Option<&str>,
+    identity_runtime: Option<
+        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    >,
+) -> bool {
+    if mob_id != primary_mob_id {
+        return false;
+    }
+    let Some(identity) =
+        durable_identity.and_then(|label| crate::identity_first::AgentIdentity::parse(label).ok())
+    else {
+        return false;
+    };
+    let Some(authority) = identity_runtime.and_then(|slot| {
+        slot.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }) else {
+        // No identity authority installed yet: it may still lease.
+        return true;
+    };
+    !matches!(
+        authority.status(&identity).await.map(|status| status.state),
+        Ok(crate::identity_first::IdentityLifecycleState::Broken
+            | crate::identity_first::IdentityLifecycleState::Retiring)
+            | Err(_)
+    )
+}
+
+/// Credit `completions` drained from a capture to `durable_identity`.
+async fn credit_drained_completions(
+    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    durable_identity: Option<&str>,
+    completions: u64,
+) {
+    if completions == 0 {
+        return;
+    }
+    let authority = identity_runtime
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let (Some(authority), Some(identity)) = (
+        authority,
+        durable_identity.and_then(|label| crate::identity_first::AgentIdentity::parse(label).ok()),
+    ) else {
+        return;
+    };
+    for _ in 0..completions {
+        authority.record_turn_completed(&identity).await;
+    }
+}
+
+/// The health monitor's adoption: credit what the capture already holds
+/// (under the capture's exclusive drain, so nothing is counted twice), then
+/// take the rest as the attached stream.
+async fn take_health_capture(
+    tap: &crate::live_session_event_tap::LiveSessionEventTap,
+    session_id: &meerkat_core::types::SessionId,
+    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    durable_identity: Option<&str>,
+) -> Option<crate::live_session_event_tap::AdoptedCapture> {
+    let completions = tap.drain_completions(session_id).await;
+    credit_drained_completions(identity_runtime, durable_identity, completions).await;
+    tap.take_live(session_id)
+}
+
+/// The identity health monitor's unadopted captures as the identity
+/// runtime's source of completions that happened but are not counted yet.
+struct HealthLaneCompletions(crate::live_session_event_tap::LiveSessionEventTap);
+
+#[async_trait::async_trait]
+impl crate::identity_first::runtime::PendingCompletionDrain for HealthLaneCompletions {
+    async fn drain(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
+        self.0.drain_completions(session_id).await
+    }
+}
+
 /// Advance an identity's completion cursor when meerkat reports that one of
 /// its turns finished.
 ///
@@ -2348,7 +2493,14 @@ async fn current_identity_fencing_token(
 ///
 /// Losing the subscription mid-turn means a missed completion, so the cursor
 /// under-counts rather than over-counts: a waiter times out instead of being
-/// told a turn finished that did not.
+/// told a turn finished that did not. A completion that happened before a
+/// cursor read is never credited after it: while the monitor's create-time
+/// capture of the actor waits for adoption, every cursor read (and the
+/// adoption itself) first credits what the capture already holds
+/// ([`crate::identity_first::runtime::PendingCompletionDrain`]), and each
+/// captured event is consumed exactly once. The one lag left is the
+/// monitor's own: a completion its attached stream has delivered but its task
+/// has not processed yet, which is bounded by one scheduling hop.
 async fn record_identity_turn_completion(
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     durable_identity: Option<&str>,
@@ -2571,11 +2723,31 @@ async fn run_identity_stream_health_monitor(
     handle: MobHandle,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    health_tap: crate::live_session_event_tap::LiveSessionEventTap,
+    lease_changes: tokio::sync::watch::Receiver<u64>,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = AttachedStreams::default();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, None);
+    // Two typed wakes beyond machine changes: a new create-time capture in
+    // this monitor's own tap lane, and an identity lease landing. A member is
+    // attached only once its lease exists; its capture, taken when its actor
+    // was created, predates every run, so the completion of a turn that ran
+    // before the attach is still read from it, once, in order (credited by
+    // the next cursor read or by the adoption, whichever comes first).
+    //
+    // Creates that bypass the tap (a plain `create_session`, the
+    // witness-less creates, a RunImmediately create) leave no capture; such a
+    // member is attached by an ordinary subscription as soon as the lease
+    // wake fires. A turn that completes between the lease landing and that
+    // subscription is missed, so the cursor under-counts (a waiter times
+    // out) and never over-counts. Routing those creates through the tap
+    // needs a witness slot meerkat does not hand the plain create, and a
+    // RunImmediately create has already run its first turn inside the create.
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state, Some(health_tap.changes()))
+        .with_lease_changes(lease_changes);
+    // Nothing adopts this lane's captures once the monitor ends.
+    let _disarm = crate::live_session_event_tap::DisarmOnDrop::new(health_tap.clone());
 
     let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
@@ -2584,7 +2756,7 @@ async fn run_identity_stream_health_monitor(
         &mut subscribe_failures,
         &mut streams,
         Some(&identity_runtime),
-        None,
+        Some(&health_tap),
     ))
     .await;
     cadence.rebind(&handles);
@@ -2601,8 +2773,9 @@ async fn run_identity_stream_health_monitor(
                             &envelope,
                         ).await;
                     }
-                    // The health monitor holds no captures, so it never
-                    // cuts a predecessor off.
+                    // A predecessor actor cut off after the drain deadline:
+                    // its unread completions are lost to the cursor, which
+                    // under-counts (a waiter times out) rather than guesses.
                     ForwardedAgentEvent::Abandoned { .. } => {}
                     ForwardedAgentEvent::Closed(tracked_key, generation) => {
                         if tracked.close(&tracked_key, generation) {
@@ -2624,7 +2797,7 @@ async fn run_identity_stream_health_monitor(
                             &mut subscribe_failures,
                             &mut streams,
                             Some(&identity_runtime),
-                            None,
+                            Some(&health_tap),
                         )).await;
                         cadence.rebind(&handles);
                     }
@@ -2638,7 +2811,7 @@ async fn run_identity_stream_health_monitor(
                     &mut subscribe_failures,
                     &mut streams,
                     Some(&identity_runtime),
-                    None,
+                    Some(&health_tap),
                 )).await;
                 cadence.rebind(&handles);
             }
@@ -2724,7 +2897,7 @@ async fn reconcile_agent_event_streams(
         .cloned()
         .collect();
     for tracked_key in departed {
-        tracked.depart(&tracked_key);
+        tracked.depart(&tracked_key, identity_runtime.is_some());
     }
     // Drop backoff bookkeeping for members that have left the roster so the
     // map can't grow without bound across the runtime's lifetime.
@@ -2747,6 +2920,24 @@ async fn reconcile_agent_event_streams(
             )
             .await;
             if identity_runtime.is_some() && identity_fencing_token.is_none() {
+                // The identity health monitor never tracks a member outside
+                // the identity-first primary mob; its create-time capture in
+                // the monitor's lane would never be adopted, so drop it. An
+                // identity member whose lease has not landed yet keeps its
+                // capture: the lease wake re-runs this pass and adopts it.
+                if let Some(tap) = live_event_tap
+                    && tap.holds_captures()
+                    && !health_capture_may_attach(
+                        &primary_mob_id,
+                        &mob_id,
+                        durable_identity.as_deref(),
+                        identity_runtime,
+                    )
+                    .await
+                    && let Some(session_id) = handle.resolve_bridge_session_id(&identity).await
+                {
+                    tap.discard(&session_id);
+                }
                 continue;
             }
             let tracked_key = TrackedAgentEventStream {
@@ -2785,6 +2976,16 @@ async fn reconcile_agent_event_streams(
             // their streams age out once their binding leaves the roster.
             if !forwarder_should_subscribe(entry.status) {
                 subscribe_failures.remove(&tracked_key);
+                // The health monitor will not attach a member that is no
+                // longer Active; drop its capture instead of holding it for
+                // the actor's lifetime.
+                if identity_runtime.is_some()
+                    && let Some(tap) = live_event_tap
+                    && tap.holds_captures()
+                    && let Some(session_id) = handle.resolve_bridge_session_id(&identity).await
+                {
+                    tap.discard(&session_id);
+                }
                 continue;
             }
 
@@ -2849,8 +3050,17 @@ async fn reconcile_agent_event_streams(
             // (the session stream has no replay). Adopt it ahead of any
             // backoff: the capture is typed by the session this binding is
             // bound to and the exact actor incarnation's liveness.
-            let adopted = match (live_event_tap, bound_session.as_ref()) {
-                (Some(tap), Some(session_id)) => tap.take_live(session_id),
+            let adopted = match (live_event_tap, bound_session.as_ref(), identity_runtime) {
+                (Some(tap), Some(session_id), Some(identity_runtime)) => {
+                    take_health_capture(
+                        tap,
+                        session_id,
+                        identity_runtime,
+                        tracked_key.durable_identity.as_deref(),
+                    )
+                    .await
+                }
+                (Some(tap), Some(session_id), None) => tap.take_live(session_id),
                 _ => None,
             };
 
@@ -2871,8 +3081,13 @@ async fn reconcile_agent_event_streams(
                 None => match subscribe_agent_events_for_console_forwarder(handle, &identity).await
                 {
                     Ok(stream) => {
-                        match capture_landed_while_subscribing(handle, live_event_tap, &tracked_key)
-                            .await
+                        match capture_landed_while_subscribing(
+                            handle,
+                            live_event_tap,
+                            &tracked_key,
+                            identity_runtime,
+                        )
+                        .await
                         {
                             LandedCapture::None => Ok((stream, None)),
                             LandedCapture::Adopted(capture) => {
@@ -3000,6 +3215,9 @@ async fn capture_landed_while_subscribing(
     handle: &MobHandle,
     live_event_tap: Option<&crate::live_session_event_tap::LiveSessionEventTap>,
     key: &TrackedAgentEventStream,
+    identity_runtime: Option<
+        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    >,
 ) -> LandedCapture {
     let Some(tap) = live_event_tap.filter(|tap| tap.holds_captures()) else {
         return LandedCapture::None;
@@ -3011,7 +3229,18 @@ async fn capture_landed_while_subscribing(
         return LandedCapture::None;
     }
     match observe_bound_session(handle, key).await {
-        Some(session_id) => match tap.take_live(&session_id) {
+        Some(session_id) => match match identity_runtime {
+            Some(identity_runtime) => {
+                take_health_capture(
+                    tap,
+                    &session_id,
+                    identity_runtime,
+                    key.durable_identity.as_deref(),
+                )
+                .await
+            }
+            None => tap.take_live(&session_id),
+        } {
             Some(capture) => LandedCapture::Adopted(capture),
             None => LandedCapture::None,
         },
@@ -5290,6 +5519,209 @@ model = "gpt-5.5"
         console_timeline_after_restart("console-tap-restart-archived", RestartShape::Retired).await;
     }
 
+    /// Boot twice against one durable store; the second boot's runtime has
+    /// its own event ingress stopped (so a test drives the health monitor)
+    /// and its identity-health lane armed, and is activated (the revived
+    /// member's actor is captured in that lane, and its lease lands).
+    async fn health_lane_restart(
+        mob_id: &str,
+        temp: &tempfile::TempDir,
+    ) -> (
+        UnifiedRuntime,
+        Arc<crate::identity_first::IdentityRuntime>,
+        crate::live_session_event_tap::LiveSessionEventTap,
+        crate::identity_first::AgentIdentity,
+    ) {
+        let mob_path = temp.path().join("mob.sqlite3");
+        let state_root = temp.path().join("state");
+        let (first, first_identity, _) =
+            boot_identity_first_persistent(mob_id, &mob_path, &state_root).await;
+        commit_restart_member_turn(&first_identity, "before restart").await;
+        first.shutdown().await;
+
+        let boot = boot_persistent_before_activation(mob_id, &mob_path, &state_root).await;
+        // The runtime's own forwarder and health monitor stop (disarming both
+        // lanes); the test drives the monitor.
+        let _ingress = boot.runtime.install_test_event_ingress().await;
+        let health = boot.tap.identity_health_lane();
+        health.arm();
+        let identity_runtime = boot.identity_runtime.clone();
+        let (runtime, _) = boot.activate().await;
+        let identity =
+            crate::identity_first::AgentIdentity::parse(RESTART_MEMBER).expect("identity");
+        assert!(
+            identity_runtime
+                .status(&identity)
+                .await
+                .expect("status")
+                .lease
+                .is_some(),
+            "the lease landed"
+        );
+        (runtime, identity_runtime, health, identity)
+    }
+
+    /// Drain the monitor's streams until one run completion went through,
+    /// crediting completions exactly as the monitor does.
+    async fn drive_health_until_a_completion(
+        streams: &mut SelectAll<TaggedAgentEventStream>,
+        slot: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    ) {
+        tokio::time::timeout(crate::test_wait::STRUCTURAL_BACKSTOP, async {
+            while let Some(forwarded) = streams.next().await {
+                if let ForwardedAgentEvent::Event(event) = forwarded {
+                    let (_, _, _, envelope, durable_identity) = *event;
+                    let completed = matches!(envelope.payload, AgentEvent::RunCompleted { .. });
+                    record_identity_turn_completion(slot, durable_identity.as_deref(), &envelope)
+                        .await;
+                    if completed {
+                        return;
+                    }
+                }
+            }
+            panic!("the monitor's streams ended");
+        })
+        .await
+        .expect("a run completion reaches the monitor");
+    }
+
+    /// The identity health monitor's window (the MobKit operator-method
+    /// seed-turn timeouts), and the late-replay over-count it must not
+    /// cause. A turn runs and completes while the monitor is not attached.
+    /// It is credited before the next completion-cursor read (credit before
+    /// read), so a baseline taken now already includes it; attaching later
+    /// credits nothing twice, and a wait on that baseline is satisfied only
+    /// by a newer turn, which the attached stream counts exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn identity_health_credits_a_window_turn_before_any_later_baseline() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, health, identity) =
+            health_lane_restart("identity-health-window", &temp).await;
+
+        let before = identity_runtime.completion_cursor(&identity).await;
+        // The window: a turn runs and completes with no monitor attached.
+        let session_id = commit_restart_member_turn(&identity_runtime, "in the window").await;
+        assert!(
+            health.holds_live(&session_id),
+            "the monitor's lane holds the revived actor's capture"
+        );
+        let baseline = identity_runtime.completion_cursor(&identity).await;
+        assert_eq!(
+            baseline,
+            before.advanced(),
+            "the read credited the window turn first, exactly once"
+        );
+
+        // The monitor attaches now: it adopts the rest of the capture.
+        let slot = Arc::new(std::sync::RwLock::new(Some(identity_runtime.clone())));
+        let handle = runtime.mob_handle();
+        let mut tracked = AttachedStreams::default();
+        let mut failures = HashMap::new();
+        let mut streams = SelectAll::new();
+        Box::pin(reconcile_agent_event_streams(
+            &handle,
+            &None,
+            &mut tracked,
+            &mut failures,
+            &mut streams,
+            Some(&slot),
+            Some(&health),
+        ))
+        .await;
+        assert!(
+            tracked
+                .current
+                .values()
+                .any(|attachment| attachment.actor.is_some()),
+            "the monitor attached through its capture"
+        );
+        assert!(!health.holds_live(&session_id));
+        assert_eq!(
+            identity_runtime.completion_cursor(&identity).await,
+            baseline,
+            "adoption credits nothing twice"
+        );
+        assert!(
+            identity_runtime
+                .wait_for_completion(&identity, baseline, Duration::from_millis(300))
+                .await
+                .is_err(),
+            "an older turn never satisfies a newer baseline"
+        );
+
+        // A newer turn is counted once, through the attached stream.
+        let turn = {
+            let identity_runtime = identity_runtime.clone();
+            tokio::spawn(async move {
+                commit_restart_member_turn(&identity_runtime, "after the attach").await
+            })
+        };
+        drive_health_until_a_completion(&mut streams, &slot).await;
+        turn.await.expect("turn task");
+        let completed = identity_runtime
+            .wait_for_completion(&identity, baseline, Duration::from_secs(5))
+            .await
+            .expect("the newer turn completes the wait");
+        assert_eq!(completed, baseline.advanced(), "counted exactly once");
+
+        runtime.shutdown().await;
+    }
+
+    /// The wiring: the real health monitor loop (its `ReconcileCadence`),
+    /// not a hand-driven reconcile, attaches a member because its lease wake
+    /// fired. The monitor starts with no identity authority installed, so its
+    /// first passes skip the member; installing the authority and its lease
+    /// observer is the only wake, far inside the 30 s safety tick.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_health_monitor_attaches_on_the_lease_wake() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, identity_runtime, health, identity) =
+            health_lane_restart("identity-health-wake", &temp).await;
+        let session_id = identity_runtime
+            .status(&identity)
+            .await
+            .expect("status")
+            .session_id
+            .expect("bound session");
+        assert!(health.holds_live(&session_id));
+
+        let slot = Arc::new(std::sync::RwLock::new(None));
+        let (lease_wake, lease_changes) = tokio::sync::watch::channel(0_u64);
+        let monitor = tokio::spawn(run_identity_stream_health_monitor(
+            runtime.mob_handle(),
+            None,
+            Arc::clone(&slot),
+            health.clone(),
+            lease_changes,
+        ));
+        // With no authority the monitor cannot attach.
+        tokio::task::yield_now().await;
+        assert!(health.holds_live(&session_id));
+
+        *slot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_runtime.clone());
+        identity_runtime.install_lease_observer(lease_wake);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while health.holds_live(&session_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the lease wake attached the monitor, well inside the safety tick");
+
+        // The attached real monitor counts a turn.
+        let baseline = identity_runtime.completion_cursor(&identity).await;
+        commit_restart_member_turn(&identity_runtime, "after the wake").await;
+        identity_runtime
+            .wait_for_completion(&identity, baseline, Duration::from_secs(10))
+            .await
+            .expect("the monitor counted the turn");
+
+        monitor.abort();
+        runtime.shutdown().await;
+    }
+
     async fn console_timeline_after_restart(mob_id: &str, shape: RestartShape) {
         let temp = tempfile::tempdir().expect("temp dir");
         let mob_path = temp.path().join("mob.sqlite3");
@@ -6456,7 +6888,7 @@ model = "gpt-5.5"
         let generation = attachment.generation;
         let mut tracked = AttachedStreams::default();
         tracked.current.insert(key.clone(), attachment);
-        tracked.depart(&key);
+        tracked.depart(&key, false);
 
         let now = tokio::time::Instant::now();
         assert!(!tracked.predecessor_draining(&owner, Some(&old_session), now));

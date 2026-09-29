@@ -49,7 +49,7 @@ use meerkat_core::service::InitialTurnPolicy;
 use meerkat_core::types::SessionId;
 use meerkat_mob::MobSessionService;
 use meerkat_session::{LiveSessionActorWitness, LiveSessionActorWitnessSlot};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Most envelopes one capture queues for its consumer. The console forwarder
 /// adopts on the tap's change signal, so a capture normally holds a handful
@@ -60,6 +60,14 @@ use tokio::sync::{mpsc, watch};
 /// the overflow as a typed `StreamTruncated` marker.
 pub(crate) const CAPTURE_QUEUE_CAPACITY: usize = 4096;
 
+/// Most bytes (serialized payload size) one capture queues ahead of its
+/// consumer. Envelopes can carry large tool results, so the envelope count
+/// alone does not bound memory; past this the pump stops reading exactly as
+/// on a full queue (the session broadcast then marks what it cannot hold as
+/// `StreamTruncated`). A single envelope larger than the budget still passes
+/// when nothing else is queued.
+pub(crate) const CAPTURE_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 type Envelope = EventEnvelope<AgentEvent>;
 
 /// Shared tap state. Cloning shares the same captures.
@@ -67,12 +75,24 @@ type Envelope = EventEnvelope<AgentEvent>;
 /// Unarmed taps capture nothing: only a runtime that also runs the console
 /// forwarder (which adopts captures) arms it, so MobRuntime-only embedders
 /// never buffer events nobody reads.
+///
+/// A tap carries two independent lanes over the same create-time captures:
+/// the console forwarder's (this handle) and the identity health monitor's
+/// ([`Self::identity_health_lane`]). Each lane has its own captures, arm flag
+/// and change signal, so each consumer adopts its own stream of every
+/// actor's events from its first one, and neither consumer's adoption or
+/// disarm affects the other.
 #[derive(Clone)]
 pub(crate) struct LiveSessionEventTap {
     state: Arc<TapState>,
+    /// The identity health monitor's lane, present on the root tap only; a
+    /// lane handle (from [`Self::identity_health_lane`]) has none.
+    health: Option<Arc<TapState>>,
 }
 
 struct TapState {
+    /// Who adopts this lane's captures, for the operator log.
+    consumer: &'static str,
     armed: AtomicBool,
     capacity: usize,
     captures: Mutex<HashMap<SessionId, Capture>>,
@@ -81,12 +101,51 @@ struct TapState {
     changes: watch::Sender<u64>,
 }
 
+impl TapState {
+    fn new(consumer: &'static str, capacity: usize) -> Self {
+        Self {
+            consumer,
+            armed: AtomicBool::new(false),
+            capacity,
+            captures: Mutex::new(HashMap::new()),
+            changes: watch::channel(0).0,
+        }
+    }
+}
+
 /// A capture waiting for adoption. Dropping it (superseded, swept, or
 /// revoked at adoption) closes its queue, which ends the pump.
 struct Capture {
     actor: LiveSessionActorWitness,
-    queue: mpsc::Receiver<Envelope>,
+    queue: mpsc::Receiver<Queued>,
     progress: watch::Receiver<CaptureProgress>,
+    /// Bytes queued ahead of the consumer ([`CAPTURE_QUEUE_MAX_BYTES`]).
+    budget: Arc<ByteBudget>,
+    /// Asks the pump to acknowledge once it has read everything the actor
+    /// emitted so far ([`LiveSessionEventTap::drain_completions`]).
+    barrier: mpsc::UnboundedSender<oneshot::Sender<()>>,
+}
+
+/// One queued envelope with the bytes it holds against the budget.
+type Queued = (Envelope, usize);
+
+/// A capture's byte budget, shared by its pump and its consumer.
+#[derive(Default)]
+struct ByteBudget {
+    used: std::sync::atomic::AtomicUsize,
+    /// Set once the capture is adopted: its consumer then drains promptly,
+    /// so the pump stops sizing envelopes.
+    adopted: AtomicBool,
+    freed: tokio::sync::Notify,
+}
+
+impl ByteBudget {
+    fn release(&self, bytes: usize) {
+        if bytes > 0 {
+            self.used.fetch_sub(bytes, Ordering::AcqRel);
+            self.freed.notify_one();
+        }
+    }
 }
 
 /// What a capture's pump has done so far, observable without consuming the
@@ -117,12 +176,18 @@ impl Default for LiveSessionEventTap {
 impl LiveSessionEventTap {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            state: Arc::new(TapState {
-                armed: AtomicBool::new(false),
-                capacity,
-                captures: Mutex::new(HashMap::new()),
-                changes: watch::channel(0).0,
-            }),
+            state: Arc::new(TapState::new("console forwarder", capacity)),
+            health: Some(Arc::new(TapState::new("identity health monitor", capacity))),
+        }
+    }
+
+    /// The identity health monitor's lane: a tap handle over the same
+    /// create-time captures with its own queues, arm flag and change signal.
+    /// A lane handle captures only into its own lane.
+    pub(crate) fn identity_health_lane(&self) -> Self {
+        Self {
+            state: Arc::clone(self.health.as_ref().unwrap_or(&self.state)),
+            health: None,
         }
     }
 
@@ -161,7 +226,17 @@ impl LiveSessionEventTap {
         id: &SessionId,
         initial_turn: InitialTurnPolicy,
     ) {
-        if !self.state.armed.load(Ordering::Acquire) {
+        let lanes: Vec<Self> = std::iter::once(Self {
+            state: Arc::clone(&self.state),
+            health: None,
+        })
+        .chain(self.health.iter().map(|health| Self {
+            state: Arc::clone(health),
+            health: None,
+        }))
+        .filter(|lane| lane.state.armed.load(Ordering::Acquire))
+        .collect();
+        if lanes.is_empty() {
             return;
         }
         match initial_turn {
@@ -172,7 +247,7 @@ impl LiveSessionEventTap {
                 tracing::warn!(
                     session_id = %id,
                     "live session event tap: eager create ran its first turn before capture; \
-                     the console forwarder keeps its ordinary subscription path"
+                     the capture's consumers keep their ordinary subscription paths"
                 );
                 return;
             }
@@ -183,21 +258,24 @@ impl LiveSessionEventTap {
         if actor.session_id() != id {
             return;
         }
-        let stream = match MobSessionService::subscribe_session_events(inner, id).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                tracing::debug!(
-                    session_id = %id,
-                    error = %error,
-                    "live session event tap: create-time subscription unavailable; \
-                     the console forwarder keeps its ordinary subscription path"
-                );
-                return;
-            }
-        };
-        // Fail closed inside `install`: if the incarnation was revoked while
-        // subscribing, the stream cannot be proven to be its own.
-        self.install(id, actor, stream);
+        for lane in lanes {
+            let stream = match MobSessionService::subscribe_session_events(inner, id).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::debug!(
+                        session_id = %id,
+                        consumer = lane.state.consumer,
+                        error = %error,
+                        "live session event tap: create-time subscription unavailable; \
+                         the consumer keeps its ordinary subscription path"
+                    );
+                    continue;
+                }
+            };
+            // Fail closed inside `install`: if the incarnation was revoked
+            // while subscribing, the stream cannot be proven to be its own.
+            lane.install(id, actor.clone(), stream);
+        }
     }
 
     /// Store a create-time subscription as the capture for `id`, unless its
@@ -209,7 +287,16 @@ impl LiveSessionEventTap {
         }
         let (queue_tx, queue) = mpsc::channel(self.state.capacity.max(1));
         let (progress_tx, progress) = watch::channel(CaptureProgress::default());
-        tokio::spawn(pump(id.clone(), stream, queue_tx, progress_tx));
+        let (barrier, barriers) = mpsc::unbounded_channel();
+        let budget = Arc::new(ByteBudget::default());
+        tokio::spawn(pump(
+            id.clone(),
+            stream,
+            queue_tx,
+            progress_tx,
+            Arc::clone(&budget),
+            barriers,
+        ));
         {
             let mut captures = self.lock_captures();
             captures.retain(|_, capture| capture.actor.is_live());
@@ -219,6 +306,8 @@ impl LiveSessionEventTap {
                     actor,
                     queue,
                     progress,
+                    budget,
+                    barrier,
                 },
             );
         }
@@ -245,6 +334,8 @@ impl LiveSessionEventTap {
             actor,
             queue,
             progress,
+            budget,
+            ..
         } = self.lock_captures().remove(id)?;
         if !actor.is_live() {
             return None;
@@ -252,13 +343,16 @@ impl LiveSessionEventTap {
         let progress = *progress.borrow();
         tracing::debug!(
             session_id = %id,
+            consumer = self.state.consumer,
             queued = progress.queued,
             saturated = progress.saturated,
             "live session event tap: capture adopted"
         );
-        let stream = futures::stream::unfold(queue, |mut queue| async move {
-            let envelope = queue.recv().await?;
-            Some((envelope, queue))
+        budget.adopted.store(true, Ordering::Release);
+        let stream = futures::stream::unfold((queue, budget), |(mut queue, budget)| async move {
+            let (envelope, bytes) = queue.recv().await?;
+            budget.release(bytes);
+            Some((envelope, (queue, budget)))
         });
         Some(AdoptedCapture {
             actor,
@@ -266,10 +360,64 @@ impl LiveSessionEventTap {
         })
     }
 
+    /// Credit-before-read for a capture still waiting for adoption: wait
+    /// until the pump has read everything its actor emitted so far, consume
+    /// every queued envelope, and return how many of them were run
+    /// completions. The identity health monitor's lane uses it so a
+    /// completion cursor read (a waiter's baseline) never precedes the credit
+    /// of a completion that already happened: every completion is consumed
+    /// exactly once, either here or by the adopted stream.
+    ///
+    /// The capture is held out of the lane while it drains (nothing adopts
+    /// or discards it meanwhile) and put back unless its actor was revoked.
+    pub(crate) async fn drain_completions(&self, id: &SessionId) -> u64 {
+        let Some(mut capture) = self.lock_captures().remove(id) else {
+            return 0;
+        };
+        let mut completions = 0_u64;
+        let mut count = |queued: Queued, budget: &ByteBudget| {
+            let (envelope, bytes) = queued;
+            budget.release(bytes);
+            u64::from(matches!(envelope.payload, AgentEvent::RunCompleted { .. }))
+        };
+        let (ack, mut acked) = oneshot::channel();
+        if capture.barrier.send(ack).is_ok() {
+            // Keep consuming while waiting: a pump parked on a full queue or
+            // an exhausted byte budget reaches the barrier only once the
+            // queue drains.
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut acked => break,
+                    queued = capture.queue.recv() => match queued {
+                        Some(queued) => completions += count(queued, &capture.budget),
+                        None => break,
+                    },
+                }
+            }
+        }
+        while let Ok(queued) = capture.queue.try_recv() {
+            completions += count(queued, &capture.budget);
+        }
+        if capture.actor.is_live() {
+            self.lock_captures().insert(id.clone(), capture);
+            self.state
+                .changes
+                .send_modify(|version| *version = version.wrapping_add(1));
+        }
+        completions
+    }
+
     /// Whether any capture is waiting to be adopted. Lets the forwarder skip
     /// the per-member session resolution when there is nothing to adopt.
     pub(crate) fn holds_captures(&self) -> bool {
         !self.lock_captures().is_empty()
+    }
+
+    /// Drop the capture for `id`, if any, ending its pump: its consumer will
+    /// never adopt it.
+    pub(crate) fn discard(&self, id: &SessionId) {
+        self.lock_captures().remove(id);
     }
 
     /// Drop captures whose actor incarnation was revoked, ending their pumps.
@@ -331,11 +479,15 @@ impl Drop for DisarmOnDrop {
 async fn pump(
     session_id: SessionId,
     mut stream: EventStream,
-    queue: mpsc::Sender<Envelope>,
+    queue: mpsc::Sender<Queued>,
     progress: watch::Sender<CaptureProgress>,
+    budget: Arc<ByteBudget>,
+    mut barriers: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
 ) {
     let mut saturations: u64 = 0;
     loop {
+        // Biased: a barrier is acknowledged only once the stream has nothing
+        // ready, i.e. the pump has read everything the actor emitted so far.
         let envelope = tokio::select! {
             biased;
             () = queue.closed() => return,
@@ -343,13 +495,37 @@ async fn pump(
                 Some(envelope) => envelope,
                 None => return,
             },
+            Some(ack) = barriers.recv() => {
+                let _ = ack.send(());
+                continue;
+            }
         };
-        let envelope = match queue.try_send(envelope) {
+        let bytes = if budget.adopted.load(Ordering::Acquire) {
+            0
+        } else {
+            serde_json::to_vec(&envelope.payload).map_or(0, |encoded| encoded.len())
+        };
+        // Byte budget: wait for the consumer while the queued bytes would
+        // exceed it (a lone oversized envelope still passes).
+        loop {
+            let freed = budget.freed.notified();
+            let used = budget.used.load(Ordering::Acquire);
+            if used == 0 || used.saturating_add(bytes) <= CAPTURE_QUEUE_MAX_BYTES {
+                break;
+            }
+            progress.send_modify(|progress| progress.saturated = true);
+            tokio::select! {
+                () = queue.closed() => return,
+                () = freed => {}
+            }
+        }
+        budget.used.fetch_add(bytes, Ordering::AcqRel);
+        let queued = match queue.try_send((envelope, bytes)) {
             Ok(()) => None,
             Err(mpsc::error::TrySendError::Closed(_)) => return,
-            Err(mpsc::error::TrySendError::Full(envelope)) => Some(envelope),
+            Err(mpsc::error::TrySendError::Full(queued)) => Some(queued),
         };
-        if let Some(envelope) = envelope {
+        if let Some(queued) = queued {
             saturations += 1;
             if saturations == 1 {
                 tracing::warn!(
@@ -366,12 +542,14 @@ async fn pump(
                 );
             }
             progress.send_modify(|progress| progress.saturated = true);
-            if queue.send(envelope).await.is_err() {
+            if queue.send(queued).await.is_err() {
                 return;
             }
-            progress.send_modify(|progress| progress.saturated = false);
         }
-        progress.send_modify(|progress| progress.queued += 1);
+        progress.send_modify(|progress| {
+            progress.saturated = false;
+            progress.queued += 1;
+        });
     }
 }
 
