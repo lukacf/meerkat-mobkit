@@ -449,6 +449,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   durable identity's roster row. It now resolves the row like the console
   path (`roster_member_id_for_supplied_id`), and so does
   `mobkit/stop_member_run`.
+- Each turn's WholeBlob projection into the continuity store now costs
+  O(delta) instead of O(document), in two ways.
+  - The committed document is no longer read back. `SessionStoreBackedRuntimeStore`
+    keeps the typed session a prepared boundary commits
+    (`PreparedRuntimeSessionCommit::committing_whole_blob_session`, meerkat
+    #1280) and binds it to the authority its commit returned. It projects
+    that session through `reuse_or_load_committed_whole_blob_snapshot`. The
+    ordinary turn therefore pays no full decode and no rewrite-graph
+    validation of the document it just wrote. A head that moved before the
+    projection, or a boundary without a typed WholeBlob document, still takes
+    the authoritative read.
+  - The durable body is no longer loaded to prove an append. After any
+    compaction, every append boundary used to materialize the whole durable
+    transcript just to learn that only the new turn was missing. The compact
+    durable head row (revision, rewrite generation, message count) now proves
+    that directly. Any other shape still reads the durable body and runs the
+    rewrite-chain provers as before.
+  - `prepared_append_boundaries_project_without_a_decode_or_graph_validation`
+    bounds per-turn projection at zero decodes, zero graph validations and
+    digest work proportional to the appended turns.
+    `a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read`
+    pins the fallback when the head moved.
 - A console send that fails now says why, in both queue and steer modes and
   on the multipart (attachment) door. Before, a refused or failed request
   (e.g. a 401 from an off-network browser with no console token) could leave

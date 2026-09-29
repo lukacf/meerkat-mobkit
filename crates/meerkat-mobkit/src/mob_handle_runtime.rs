@@ -2885,6 +2885,20 @@ impl SessionDocumentReadAbsorber {
     }
 }
 
+/// How a durable head row relates to the committed successor a WholeBlob
+/// boundary projects, as the compact head row alone proves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableHeadRelation {
+    /// Same rewrite generation, message count and transcript revision.
+    AtHead,
+    /// Same rewrite generation, and the head row's revision is the committed
+    /// transcript's prefix digest at the head's length, which is at least the
+    /// last rewrite's result: only trailing appends are missing.
+    CommittedAppendPrefix,
+    /// Nothing proved from the head row; the durable body decides.
+    Unproven,
+}
+
 /// RuntimeStore forwarding facade for identity-first apps with an external
 /// compatibility projection.
 ///
@@ -3031,21 +3045,25 @@ impl SessionStoreBackedRuntimeStore {
         })
     }
 
-    /// Whether the durable head row already records the committed session's
-    /// exact transcript: same rewrite generation, message count and content
-    /// digest.
+    /// How the durable head row relates to the committed successor, decided
+    /// from the compact head row alone (no durable body read).
     ///
-    /// Reads only the compact head row. A current-version head stores the
-    /// transcript content digest the current materialization computes
-    /// (`head_revision`, the value `transcript_revision()` re-derives); any
-    /// other head, or no head, answers `false` so the caller keeps the full
-    /// durable read. The committed digest is served from, or seeds, the
-    /// successor's retained midstate, so the projection's later head mint
-    /// does not hash the transcript again.
-    async fn durable_head_at_committed_head(
+    /// A current-version head stores the transcript content digest the
+    /// current materialization computes (`head_revision`, the value
+    /// `transcript_revision()` re-derives and `SessionHead::into_session`
+    /// verifies fail-closed on every load), its rewrite generation and its
+    /// message count. That is every fact the body-reading at-head and
+    /// append-prefix checks consult, so both are proved here without
+    /// materializing (and re-verifying) the whole durable transcript. Any
+    /// other head, or no head, is [`DurableHeadRelation::Unproven`] and the
+    /// caller keeps the full durable read. The committed digests are served
+    /// from, or seed, the successor's retained midstate and boundary ring, so
+    /// the projection's later head mint does not hash the transcript again.
+    async fn durable_head_relation(
         session_store: &Arc<dyn SessionStore>,
         successor: &meerkat_core::Session,
-    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        sealed: &meerkat_core::ValidatedTranscriptHistory,
+    ) -> Result<DurableHeadRelation, meerkat_runtime::store::RuntimeStoreError> {
         let Some(head) = Self::durable_head(
             session_store,
             successor.id(),
@@ -3053,27 +3071,60 @@ impl SessionStoreBackedRuntimeStore {
         )
         .await?
         else {
-            return Ok(false);
+            return Ok(DurableHeadRelation::Unproven);
         };
-        if head.version != meerkat_core::SESSION_VERSION
-            || head.message_count != successor.messages().len() as u64
-        {
-            return Ok(false);
+        if head.version != meerkat_core::SESSION_VERSION {
+            return Ok(DurableHeadRelation::Unproven);
         }
         let committed_generation = successor.transcript_rewrite_generation().map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                "committed rewrite generation before the durable at-head check: {e}"
+                "committed rewrite generation before the durable head check: {e}"
             ))
         })?;
+        // The digest alone cannot prove the durable row holds the last
+        // rewrite (see `durable_is_committed_append_prefix`): a generation
+        // mismatch is never proved from the head row.
         if head.rewrite_count != committed_generation {
-            return Ok(false);
+            return Ok(DurableHeadRelation::Unproven);
         }
-        let committed_revision = successor.transcript_revision().map_err(|e| {
-            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                "committed transcript revision before the durable at-head check: {e}"
-            ))
-        })?;
-        Ok(head.head_revision == committed_revision)
+        let committed_len = successor.messages().len() as u64;
+        if head.message_count == committed_len {
+            let committed_revision = successor.transcript_revision().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "committed transcript revision before the durable at-head check: {e}"
+                ))
+            })?;
+            return Ok(if head.head_revision == committed_revision {
+                DurableHeadRelation::AtHead
+            } else {
+                DurableHeadRelation::Unproven
+            });
+        }
+        // The ordinary append boundary: the head row is the committed
+        // transcript's own prefix past its last rewrite. Same proof as
+        // `durable_is_committed_append_prefix`, with the head row's count and
+        // revision standing in for the durable body's.
+        let Some(last) = sealed.last_commit() else {
+            return Ok(DurableHeadRelation::Unproven);
+        };
+        let Ok(durable_len) = usize::try_from(head.message_count) else {
+            return Ok(DurableHeadRelation::Unproven);
+        };
+        if durable_len < last.messages_after || head.message_count > committed_len {
+            return Ok(DurableHeadRelation::Unproven);
+        }
+        let committed_prefix = successor
+            .transcript_prefix_digest(durable_len)
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "committed transcript prefix digest before the durable head check: {e}"
+                ))
+            })?;
+        Ok(if committed_prefix == head.head_revision {
+            DurableHeadRelation::CommittedAppendPrefix
+        } else {
+            DurableHeadRelation::Unproven
+        })
     }
 
     /// The durable row's rewrite generation as its head row records it (see
@@ -3470,7 +3521,7 @@ impl SessionStoreBackedRuntimeStore {
             // reconciliation, same single-flight; the guard's adoption
             // branch owns the first-save shape. Runs under a lifecycle
             // terminal for the same reason as the durable-behind arm.
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
             mark_fresh();
             return Ok(());
@@ -3597,7 +3648,7 @@ impl SessionStoreBackedRuntimeStore {
                     "durable row matches committed order and revision but its persisted \
                      envelope differs; projecting for envelope currency"
                 );
-                self.project_committed_session_to_durable(runtime_id)
+                self.project_committed_session_to_durable(runtime_id, None)
                     .await?;
             }
             mark_fresh();
@@ -3631,7 +3682,7 @@ impl SessionStoreBackedRuntimeStore {
                 "durable row orders behind committed runtime authority; \
                  running the committed->durable reconciliation"
             );
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
             // The 2026-09-03 production boot regression spent 171 s in this
             // branch across 16 sessions with nothing at INFO about how long or
@@ -4104,6 +4155,7 @@ impl SessionStoreBackedRuntimeStore {
     async fn project_committed_session_to_durable(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        prepared: Option<meerkat_runtime::store::CommittedWholeBlobSnapshot>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         let Some(session_store) = self.session_store.as_ref() else {
             return Ok(());
@@ -4119,15 +4171,27 @@ impl SessionStoreBackedRuntimeStore {
         // Single-flight per runtime: the rewrite-replay walk below installs
         // each missing commit against the durable head its predecessor
         // step just advanced; two interleaved walks for one runtime would
-        // race those validations. The committed snapshot is re-read INSIDE
+        // race those validations. The committed snapshot is resolved INSIDE
         // the fence so a projection racing a newer commit converges toward
         // the newer committed state.
+        //
+        // `prepared` is the typed session this boundary itself committed,
+        // bound to the store authority its commit returned (no encode,
+        // decode or hash). meerkat serves it only while a fresh body-free
+        // authority read still equals that binding exactly; a head that
+        // moved (a newer commit landed first) takes the authoritative read
+        // and its full verification. Either way the projection sees the
+        // CURRENT committed state; the reuse only spares the ordinary turn
+        // an O(document) decode and rewrite-graph validation of the
+        // document it just wrote.
         let flight = self.projection_flight_for(runtime_id);
         let _flight = flight.lock().await;
-        let Some(snapshot) = self
-            .inner
-            .load_committed_whole_blob_snapshot(runtime_id)
-            .await?
+        let Some(snapshot) = meerkat_runtime::store::reuse_or_load_committed_whole_blob_snapshot(
+            self.inner.as_ref(),
+            runtime_id,
+            prepared,
+        )
+        .await?
         else {
             // Receipt-only boundary before any committed snapshot exists:
             // nothing durable to project yet.
@@ -4163,24 +4227,48 @@ impl SessionStoreBackedRuntimeStore {
         let carries_rewrites = sealed
             .as_ref()
             .is_some_and(|sealed| sealed.commit_count() != 0);
-        let durable_predecessor = if !carries_rewrites {
-            None
-        } else if Self::durable_head_at_committed_head(session_store, successor).await? {
-            tracing::debug!(
-                runtime_id = %runtime_id,
-                session_id = %successor.id(),
-                "durable head already at the committed head; skipping the durable \
-                 predecessor read and the rewrite-chain provers"
-            );
-            self.at_head_skips
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            None
-        } else {
-            session_store.load(successor.id()).await.map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                    "durable predecessor read before boundary projection: {e}"
-                ))
-            })?
+        let durable_predecessor = match sealed.as_ref() {
+            Some(sealed) if carries_rewrites => {
+                match Self::durable_head_relation(session_store, successor, sealed).await? {
+                    DurableHeadRelation::AtHead => {
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            "durable head already at the committed head; skipping the durable \
+                             predecessor read and the rewrite-chain provers"
+                        );
+                        self.at_head_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    }
+                    DurableHeadRelation::CommittedAppendPrefix => {
+                        // The per-turn steady state after any compaction: only
+                        // the trailing appends are missing, which the
+                        // projection save below lands as delta rows. Reading
+                        // the durable body here cost one O(document)
+                        // materialization per turn to learn exactly this.
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            committed_messages = successor.messages().len(),
+                            "durable head is the committed transcript's prefix past its last \
+                             rewrite; skipping the durable predecessor read and the \
+                             rewrite-chain provers"
+                        );
+                        self.append_prefix_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    }
+                    DurableHeadRelation::Unproven => {
+                        session_store.load(successor.id()).await.map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "durable predecessor read before boundary projection: {e}"
+                            ))
+                        })?
+                    }
+                }
+            }
+            _ => None,
         };
         // Durable rows proven (by the inverse-append admission below) to
         // extend the sealed commit parent carry their suffix through the
@@ -4633,7 +4721,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         result?;
-        self.project_committed_session_to_durable(runtime_id).await
+        self.project_committed_session_to_durable(runtime_id, None)
+            .await
     }
 
     async fn commit_prepared_session_boundary(
@@ -4644,6 +4733,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::PreparedRuntimeSessionCommitResult,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        // Retain the typed WholeBlob session this boundary commits BEFORE the
+        // request moves into the inner store: once the store has encoded it,
+        // the binding below proves the committed bytes are this session's
+        // encoding, so the projection needs no read-back. `None` (receipt-only,
+        // HeadCanonical, untyped, provisional promotion) keeps the read.
+        let committing = request.committing_whole_blob_session();
         self.note_session_scoped_write(runtime_id);
         let result = self
             .inner
@@ -4651,7 +4746,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         let result = result?;
-        self.project_committed_session_to_durable(runtime_id)
+        let prepared = committing
+            .as_ref()
+            .and_then(|committing| committing.bind_committed(&result));
+        self.project_committed_session_to_durable(runtime_id, prepared)
             .await?;
         Ok(result)
     }
@@ -4771,7 +4869,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             outcome,
             meerkat_runtime::store::WholeBlobSnapshotCasOutcome::Committed(_)
         ) {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(outcome)
@@ -4792,7 +4890,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         let authority = result?;
-        self.project_committed_session_to_durable(runtime_id)
+        self.project_committed_session_to_durable(runtime_id, None)
             .await?;
         Ok(authority)
     }
@@ -5067,7 +5165,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.note_session_scoped_write(runtime_id);
         result?;
         if committed_snapshot {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(())
@@ -5096,7 +5194,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         result?;
-        self.project_committed_session_to_durable(runtime_id).await
+        self.project_committed_session_to_durable(runtime_id, None)
+            .await
     }
 
     async fn load_input_states(
@@ -5271,7 +5370,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.note_session_scoped_write(runtime_id);
         let replaced = result?;
         if replaced {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(replaced)
@@ -16759,7 +16858,7 @@ comms = true
             Arc::clone(&session_store),
         ));
         store
-            .project_committed_session_to_durable(&runtime_id)
+            .project_committed_session_to_durable(&runtime_id, None)
             .await
             .unwrap_or_else(|error| {
                 panic!("append-then-rewrite reconciliation must converge: {error}")
@@ -18544,6 +18643,200 @@ comms = true
         );
     }
 
+    /// One prepared WholeBlob boundary committing `session` through the
+    /// facade, exactly as the runtime hands it over: a sealed typed carrier.
+    async fn commit_prepared_boundary_through(
+        store: &SessionStoreBackedRuntimeStore,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session: &Arc<meerkat_core::Session>,
+    ) -> meerkat_runtime::store::PreparedRuntimeSessionCommitResult {
+        let request = meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(session))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        meerkat_runtime::RuntimeStore::commit_prepared_session_boundary(store, runtime_id, request)
+            .await
+            .unwrap_or_else(|error| panic!("prepared boundary projection: {error}"))
+    }
+
+    /// The durable head row's message count and revision.
+    async fn durable_head_count_and_revision(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> (u64, String) {
+        let head = Arc::clone(session_store)
+            .as_incremental()
+            .unwrap_or_else(|| panic!("the continuity adapter exposes its head reads"))
+            .load_head(session_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row has a head"));
+        (head.message_count, head.head_revision)
+    }
+
+    /// The live session after one more turn, and the carrier the runtime
+    /// seals for that boundary. The runtime digests its live session at every
+    /// boundary (the boundary guards and receipt), so the carrier it clones
+    /// inherits the midstate and the previous boundary's prefix witness; the
+    /// fixture mirrors that instead of handing the projection a cold clone.
+    fn next_turn_carrier(
+        live: &mut meerkat_core::Session,
+        turn: usize,
+    ) -> Arc<meerkat_core::Session> {
+        live.push(large_turn(turn));
+        live.transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        Arc::new(live.clone())
+    }
+
+    /// Per-turn WholeBlob projection is O(delta) (meerkat #1280 seam). A
+    /// resumed member with a large compacted transcript commits one turn per
+    /// boundary. Each projection used to read the committed document back
+    /// (one full decode, which validates and replays the whole rewrite
+    /// graph) and then materialize the whole durable body to learn that only
+    /// the new turn was missing. Now the facade reuses the typed session its
+    /// own commit wrote, and the compact durable head row proves the append
+    /// boundary: no decode, no graph validation, no durable body read, and
+    /// the digest work is the appended turns, not the transcript.
+    #[tokio::test]
+    async fn prepared_append_boundaries_project_without_a_decode_or_graph_validation() {
+        const BOUNDARIES: u64 = 4;
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:prepared-append").await;
+        let store = SessionStoreBackedRuntimeStore::new(inner, Arc::clone(&session_store));
+        let mut live = committed;
+        for turn in 0..160 {
+            live.push(large_turn(turn));
+        }
+        live.transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let warm = Arc::new(live.clone());
+        commit_prepared_boundary_through(&store, &runtime_id, &warm).await;
+        let transcript_bytes = serde_json::to_vec(live.messages())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .len() as u64;
+        let turn_bytes = serde_json::to_vec(&large_turn(0))
+            .unwrap_or_else(|error| panic!("{error}"))
+            .len() as u64;
+
+        let append_skips_before = store.append_prefix_skip_count();
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let validations_before = meerkat_core::global_transcript_graph_validations();
+        let digest_before = meerkat_core::global_session_content_digest_bytes();
+        let mut last = warm;
+        for turn in 0..BOUNDARIES {
+            last = next_turn_carrier(&mut live, 1_000 + turn as usize);
+            commit_prepared_boundary_through(&store, &runtime_id, &last).await;
+        }
+        let decodes = meerkat_core::global_whole_blob_decodes() - decodes_before;
+        let validations = meerkat_core::global_transcript_graph_validations() - validations_before;
+        let hashed = meerkat_core::global_session_content_digest_bytes() - digest_before;
+
+        assert_eq!(
+            decodes, 0,
+            "{BOUNDARIES} prepared append boundaries decoded {decodes} WholeBlob documents; the \
+             projection read back the document its own commit wrote"
+        );
+        assert_eq!(
+            validations, 0,
+            "{BOUNDARIES} prepared append boundaries ran {validations} full transcript graph \
+             validations"
+        );
+        assert_eq!(
+            store.append_prefix_skip_count() - append_skips_before,
+            BOUNDARIES,
+            "the compact head row proves every ordinary append boundary"
+        );
+        assert_eq!(
+            store.chain_walk_count(),
+            0,
+            "no append boundary walks the chain"
+        );
+        // O(delta): the appended turns (hashed by the live boundary digest
+        // and by the projection's head mint), never the transcript.
+        let budget = BOUNDARIES * turn_bytes * 4;
+        assert!(
+            hashed <= budget,
+            "{BOUNDARIES} append boundaries hashed {hashed} content-digest bytes (budget {budget}, \
+             one turn {turn_bytes} bytes, transcript {transcript_bytes} bytes)"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, last.id()).await,
+            (
+                last.messages().len() as u64,
+                last.transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "every appended turn landed durably"
+        );
+    }
+
+    /// The reuse is guarded, never trusted: a snapshot bound at commit time
+    /// whose head has since moved (a newer boundary committed first) must not
+    /// be projected. The guard falls back to the authoritative read, which
+    /// decodes and verifies the CURRENT committed document, and the durable
+    /// row converges to that newer state rather than the stale binding.
+    #[tokio::test]
+    async fn a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:prepared-moved").await;
+        let store =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        let mut live = committed;
+        let stale = next_turn_carrier(&mut live, 0);
+        let request = meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(&stale))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let committing = request
+            .committing_whole_blob_session()
+            .unwrap_or_else(|| panic!("a sealed typed boundary carries its session"));
+        let result = inner
+            .commit_prepared_session_boundary(&runtime_id, request)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let stale_binding = committing
+            .bind_committed(&result)
+            .unwrap_or_else(|| panic!("the store committed exactly the stale carrier"));
+        // A newer boundary lands in the runtime store before the stale
+        // binding is projected.
+        let newer = next_turn_carrier(&mut live, 1);
+        inner
+            .commit_prepared_session_boundary(
+                &runtime_id,
+                meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+                    meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(
+                        &newer,
+                    ))
+                    .unwrap_or_else(|error| panic!("{error}")),
+                ),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        store
+            .project_committed_session_to_durable(&runtime_id, Some(stale_binding))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            meerkat_core::global_whole_blob_decodes() > decodes_before,
+            "a moved head must take the authoritative committed read, not the stale binding"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, newer.id()).await,
+            (
+                newer.messages().len() as u64,
+                newer
+                    .transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "the durable row converges to the current committed state, not the stale binding"
+        );
+    }
+
     /// HomeCore field report (MobKit 0.8.42, ~11.5k WARNs, ~3.6 s per pass
     /// across 16 identities): every boundary that appends rows after a
     /// compaction missed the at-head check, ran the rewrite-chain walk and
@@ -19333,7 +19626,7 @@ comms = true
             .fail_on_call
             .store(0, std::sync::atomic::Ordering::SeqCst);
         store
-            .project_committed_session_to_durable(&runtime_id)
+            .project_committed_session_to_durable(&runtime_id, None)
             .await
             .unwrap_or_else(|error| panic!("the exact retry must converge: {error}"));
         assert_eq!(
