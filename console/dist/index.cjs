@@ -5495,7 +5495,7 @@ function finishConsoleSendAttempt(attempt, result) {
   }
   return { ...attempt, state: result.state, lease: void 0, error: result.error, failureKind: result.kind };
 }
-var PRE_INGRESS_REFUSAL_STATUSES = /* @__PURE__ */ new Set([400, 404, 405, 413, 414, 415, 422, 429, 431]);
+var PRE_INGRESS_REFUSAL_STATUSES = /* @__PURE__ */ new Set([400, 404, 405, 413, 414, 415, 422, 431]);
 function classifyConsoleSendFailure(error) {
   const typed = error && typeof error === "object" ? error : {};
   const rpc2 = typed.rpcError ?? typed.responseRpcError;
@@ -5529,6 +5529,13 @@ function classifyConsoleSendFailure(error) {
       state: "definitely-rejected",
       kind: "rejected",
       message: `Send rejected: ${rpcMessage ?? detail ?? "invalid request"}. Nothing was sent.`
+    };
+  }
+  if (typed.name === "AbortError" && typed.transportFailure === void 0) {
+    return {
+      state: "outcome-unknown",
+      kind: "interrupted",
+      message: "The console was reloaded or switched while this send was in flight, so its answer was not received. It may have been accepted: check acceptance before retrying."
     };
   }
   if (typed.transportFailure === "timeout") {
@@ -5567,6 +5574,13 @@ function classifyConsoleSendFailure(error) {
       message: `Send failed: ${rpcMessage ?? detail}. The gateway may have recorded this attempt: check acceptance before retrying.`
     };
   }
+  if (status === 429) {
+    return {
+      state: "outcome-unknown",
+      kind: "rate_limited",
+      message: "The agent is not taking more input right now (HTTP 429). It may already have recorded this attempt: check acceptance before retrying."
+    };
+  }
   if (status !== void 0 && status >= 500) {
     return {
       state: "outcome-unknown",
@@ -5602,6 +5616,10 @@ function consoleSendFailureLabel(attempt) {
       return "Rejected";
     case "refused":
       return "Send failed";
+    case "rate_limited":
+      return "Gateway busy";
+    case "interrupted":
+      return "Interrupted";
     default:
       return attempt.state === "definitely-rejected" ? "Not accepted" : "Acceptance unknown";
   }
@@ -41988,6 +42006,25 @@ function browserLocalStorage() {
     return null;
   }
 }
+async function settleDetachedConsoleSendAttempt(namespace, identity, id, settle, removeWhenAccepted) {
+  const storage = browserLocalStorage();
+  if (!storage) return;
+  const key = consoleSendStorageKey(namespace, identity);
+  await withConsoleSendStorageLock(key, () => {
+    const loaded = loadConsoleSendAttempts(storage, namespace, identity);
+    if (loaded.kind !== "ready") return;
+    const current = loaded.attempts.find((attempt) => attempt.id === id);
+    if (!current?.envelopeJson || current.state === "accepted" || current.state === "draft") return;
+    const settled = settle(current);
+    const next = removeWhenAccepted && settled.state === "accepted" ? loaded.attempts.filter((attempt) => attempt.id !== id) : loaded.attempts.map((attempt) => attempt.id === id ? settled : attempt);
+    saveConsoleSendAttempts(storage, namespace, identity, next, loaded.attempts);
+  }).catch(() => {
+  });
+  try {
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  } catch {
+  }
+}
 function browserComposerStorage() {
   if (typeof window === "undefined") return null;
   try {
@@ -44211,8 +44248,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     };
     commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
+    const attemptNamespace = persistentSendScopeRef.current;
+    const optimisticTopologyFrameId = `optimistic-topology:${identity}:${Date.now()}`;
     commitLiveFrames([{
-      id: `optimistic-topology:${identity}:${Date.now()}`,
+      id: optimisticTopologyFrameId,
       event: "interaction_started",
       identity,
       interactionId: "",
@@ -44239,7 +44278,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         }
       )).accepted.value;
       if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) => finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }), true);
+        }
+        return false;
+      }
       if (pendingAttempt) {
         if (await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
           await setPendingStack(identity, (previous3) => previous3.filter((item) => item.id !== pendingAttempt.id));
@@ -44262,18 +44306,20 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
-      if (!lifetimeRef.current.active) return false;
+      const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) => finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
+        }
+        return false;
+      }
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url)
       );
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      if (attemptScope !== sendScopeRef.current) {
-        forceRender();
-        return false;
-      }
-      const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
+      commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
       if (pendingAttempt) {
         await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }) : item));
       } else {

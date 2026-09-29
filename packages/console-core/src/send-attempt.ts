@@ -38,6 +38,8 @@ export type ConsoleSendFailureKind =
   | "read_only"
   | "rejected"
   | "refused"
+  | "rate_limited"
+  | "interrupted"
   | "capability_unavailable"
   | "unreachable"
   | "timeout"
@@ -155,12 +157,15 @@ interface TypedSendError {
   transportFailure?: unknown;
   timeoutMs?: unknown;
   message?: unknown;
+  name?: unknown;
 }
 
 /** HTTP statuses the gateway (or a fronting proxy) answers before any
  * reservation: the request was refused as a request, so nothing was sent.
- * 408/409/5xx and everything unlisted stay unknown. */
-const PRE_INGRESS_REFUSAL_STATUSES = new Set([400, 404, 405, 413, 414, 415, 422, 429, 431]);
+ * 408/409/429/5xx and everything unlisted stay unknown (the console REST
+ * send answers 429 after its reservation, when the member's admission
+ * backlog is full). */
+const PRE_INGRESS_REFUSAL_STATUSES = new Set([400, 404, 405, 413, 414, 415, 422, 431]);
 
 /**
  * Classify a failed send into a typed state, kind and operator message.
@@ -196,6 +201,13 @@ export function classifyConsoleSendFailure(error: unknown): ConsoleSendFailure {
     return { state: "definitely-rejected", kind: "rejected",
       message: `Send rejected: ${rpcMessage ?? detail ?? "invalid request"}. Nothing was sent.` };
   }
+  // The console's own lifetime ended (a reload, remount or account switch)
+  // while the request was in flight: the answer was discarded, so the send
+  // may well have been accepted. Typed by the abort's DOMException name.
+  if (typed.name === "AbortError" && typed.transportFailure === undefined) {
+    return { state: "outcome-unknown", kind: "interrupted",
+      message: "The console was reloaded or switched while this send was in flight, so its answer was not received. It may have been accepted: check acceptance before retrying." };
+  }
   if (typed.transportFailure === "timeout") {
     const seconds = typeof typed.timeoutMs === "number" ? ` within ${Math.round(typed.timeoutMs / 1000)} s` : "";
     return { state: "outcome-unknown", kind: "timeout",
@@ -220,6 +232,10 @@ export function classifyConsoleSendFailure(error: unknown): ConsoleSendFailure {
   if (typed.rpcError && (rpcMessage || detail)) {
     return { state: "outcome-unknown", kind: "refused",
       message: `Send failed: ${rpcMessage ?? detail}. The gateway may have recorded this attempt: check acceptance before retrying.` };
+  }
+  if (status === 429) {
+    return { state: "outcome-unknown", kind: "rate_limited",
+      message: "The agent is not taking more input right now (HTTP 429). It may already have recorded this attempt: check acceptance before retrying." };
   }
   if (status !== undefined && status >= 500) {
     return { state: "outcome-unknown", kind: "gateway_error",
@@ -247,6 +263,8 @@ export function consoleSendFailureLabel(attempt: Pick<ConsoleSendAttempt, "state
     case "gateway_error": return "Gateway error";
     case "rejected": return "Rejected";
     case "refused": return "Send failed";
+    case "rate_limited": return "Gateway busy";
+    case "interrupted": return "Interrupted";
     default: return attempt.state === "definitely-rejected" ? "Not accepted" : "Acceptance unknown";
   }
 }

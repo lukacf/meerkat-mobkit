@@ -102,7 +102,8 @@ describe("typed send failures", () => {
     [{ rpcError: { code: -32000, data: { kind: "read_only" } } }, "definitely-rejected", "read_only", "Console read-only"],
     [{ rpcError: { code: -32602, message: "content must be non-empty" } }, "definitely-rejected", "rejected", "Rejected"],
     [{ rpcError: { code: -32001, message: "unknown identity domain:nope" } }, "outcome-unknown", "refused", "Send failed"],
-    [{ httpStatus: 429 }, "definitely-rejected", "rejected", "Rejected"],
+    [{ httpStatus: 429 }, "outcome-unknown", "rate_limited", "Gateway busy"],
+    [{ httpStatus: 413 }, "definitely-rejected", "rejected", "Rejected"],
     [Object.assign(new Error("console rpc timeout after 60 s"), { transportFailure: "timeout", timeoutMs: 60_000 }), "outcome-unknown", "timeout", "No response"],
     [Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" }), "outcome-unknown", "unreachable", "Gateway unreachable"],
     [Object.assign(new Error("non-JSON"), { transportFailure: "invalid_response", httpStatus: 200 }), "outcome-unknown", "invalid_response", "Unreadable response"],
@@ -110,6 +111,7 @@ describe("typed send failures", () => {
     [Object.assign(new Error("host human input refused"), { rpcError: { code: -32000, message: "host human input refused; inspect the typed reason before retrying" } }), "outcome-unknown", "refused", "Send failed"],
     [{ rpcError: { code: -32009, message: "idempotency key conflict: k", data: { kind: "idempotency_conflict" } } }, "outcome-unknown", "refused", "Send failed"],
     [new Error("lost response"), "outcome-unknown", "unknown", "Acceptance unknown"],
+    [Object.assign(new Error("Console authority lifetime ended"), { name: "AbortError" }), "outcome-unknown", "interrupted", "Interrupted"],
   ] as const)("classifies %o", (error, state, kind, label) => {
     const failure = classifyConsoleSendFailure(error);
     expect(failure.state).toBe(state);

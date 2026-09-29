@@ -571,6 +571,60 @@ describe("stock durable queue integration", () => {
     expect(savedAttempts()[0].state).toBe("outcome-unknown");
   });
 
+  it("names a refused attachment send on the multipart door and keeps the draft and files", async () => {
+    vi.stubGlobal("URL", class extends URL {
+      static createObjectURL = vi.fn(() => `blob:preview-${Math.random()}`);
+      static revokeObjectURL = vi.fn();
+    });
+    const send = vi.fn(async (_input: Parameters<MobKitConsoleTransport["send"]>[0]) => { throw unauthenticated(); });
+    const fake = transport(send); const experience = await fake.loadExperience();
+    fake.loadExperience = async () => ({ ...experience, agent_sidebar: { live_snapshot: { agents: [{ identity, member_id: identity, agent_id: identity, label: "Queue agent", kind: "member", state: "running", addressable: true, affordances: { can_send_message: true }, model_capabilities: { image_input: true } }] } } }) as never;
+    render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
+    const textarea = await screen.findByTestId(`chat-composer:${identity}`) as HTMLTextAreaElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "photo.png", { type: "image/png" });
+    fireEvent.drop(document.querySelector(".composer__shell")!, { dataTransfer: { files: [file], items: [], types: ["Files"], getData: () => "" } });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Remove attachment" })).toHaveLength(1));
+    await compose("look at this from off the home network");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0].attachments).toEqual([file]);
+    expect(await screen.findByTestId("console-action-error")).toHaveTextContent(
+      "Not authorized from this network (401). The gateway refused the request before accepting it, so nothing was sent.",
+    );
+    expect(textarea.value).toBe("look at this from off the home network");
+    expect(screen.getAllByRole("button", { name: "Remove attachment" })).toHaveLength(1);
+    expect(screen.queryByText("Awaiting acceptance")).toBeNull();
+  });
+
+  it.each(["refused", "accepted"] as const)("settles a send answered (%s) after the console was remounted instead of leaving it awaiting acceptance", async (outcome) => {
+    const scope = "runtime/realm/principal";
+    let settleOld!: { resolve: (value: never) => void; reject: (reason: unknown) => void };
+    const oldSend = vi.fn(() => new Promise<never>((resolve, reject) => { settleOld = { resolve, reject }; }));
+    const view = render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(oldSend)} />);
+    await compose("in flight across a transport replacement");
+    await waitFor(() => expect(oldSend).toHaveBeenCalledTimes(1));
+    expect(savedAttempts(scope)[0].state).toBe("attempting");
+    // A new transport remounts the console lifetime (and its controller).
+    const newSend = vi.fn(async (input) => ({ interaction_id: "new", identity: input.identity }));
+    view.rerender(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(newSend)} />);
+    await screen.findByText("Awaiting acceptance");
+    await act(async () => {
+      if (outcome === "refused") settleOld.reject(unauthenticated());
+      else settleOld.resolve({ interaction_id: "late-receipt", identity, input_frame_id: "late-frame" } as never);
+    });
+    if (outcome === "refused") {
+      await waitFor(() => expect(savedAttempts(scope)[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated" }));
+      expect(await screen.findByText("Not authorized")).toBeVisible();
+    } else {
+      // The ended lifetime discards the late answer (its transport scope is
+      // gone), so the attempt settles as a typed, reconcilable interruption.
+      await waitFor(() => expect(savedAttempts(scope)[0]).toMatchObject({ state: "outcome-unknown", failureKind: "interrupted" }));
+      expect(await screen.findByText("Interrupted")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Check acceptance" })).toBeEnabled();
+    }
+    expect(screen.queryByText("Awaiting acceptance")).toBeNull();
+    expect(newSend).not.toHaveBeenCalled();
+  });
+
   it("keeps the storage failure banner when saving a failed dispatched attempt fails", async () => {
     let rejectSend!: (reason: Error) => void;
     const send = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectSend = reject; }));

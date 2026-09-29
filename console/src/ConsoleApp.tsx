@@ -177,7 +177,7 @@ import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
-import { beginConsoleSendAttempt, classifyConsoleSendFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT, createConsoleSendAttempt, describeConsoleAcceptanceCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
+import { beginConsoleSendAttempt, classifyConsoleSendFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT, createConsoleSendAttempt, describeConsoleAcceptanceCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
 import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
 import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
 import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
@@ -438,6 +438,34 @@ function browserLocalStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/// Settle a saved send attempt in its own namespace after the view that
+/// dispatched it ended (remount) or moved to another principal's scope. Runs
+/// under the same storage lock and merge rules as every durable writer, then
+/// announces the key so a live view of that namespace reloads it.
+async function settleDetachedConsoleSendAttempt(
+  namespace: string,
+  identity: string,
+  id: string,
+  settle: (attempt: ConsoleSendAttempt) => ConsoleSendAttempt,
+  removeWhenAccepted: boolean,
+): Promise<void> {
+  const storage = browserLocalStorage();
+  if (!storage) return;
+  const key = consoleSendStorageKey(namespace, identity);
+  await withConsoleSendStorageLock(key, () => {
+    const loaded = loadConsoleSendAttempts(storage, namespace, identity);
+    if (loaded.kind !== "ready") return;
+    const current = loaded.attempts.find((attempt) => attempt.id === id);
+    if (!current?.envelopeJson || current.state === "accepted" || current.state === "draft") return;
+    const settled = settle(current);
+    const next = removeWhenAccepted && settled.state === "accepted"
+      ? loaded.attempts.filter((attempt) => attempt.id !== id)
+      : loaded.attempts.map((attempt) => attempt.id === id ? settled : attempt);
+    saveConsoleSendAttempts(storage, namespace, identity, next, loaded.attempts);
+  }).catch(() => { /* A live view recovers the lease to "Acceptance unknown". */ });
+  try { window.dispatchEvent(new StorageEvent("storage", { key })); } catch { /* No window. */ }
 }
 
 function browserComposerStorage(): Storage | null {
@@ -3399,8 +3427,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     // which we want anyway, but `currentPhase` would read undefined.
     commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
+    // The saved attempt lives in this namespace even if the scope or the
+    // console lifetime ends before the request settles.
+    const attemptNamespace = persistentSendScopeRef.current;
+    const optimisticTopologyFrameId = `optimistic-topology:${identity}:${Date.now()}`;
     commitLiveFrames([{
-      id: `optimistic-topology:${identity}:${Date.now()}`,
+      id: optimisticTopologyFrameId,
       event: "interaction_started",
       identity,
       interactionId: "",
@@ -3428,7 +3460,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         },
       )).accepted.value;
       if (!result.interaction_id?.trim() || !result.identity?.trim()) throw new Error("Server response did not prove acceptance for this destination.");
-      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) return false;
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current || dispatchController !== sendControllerRef.current) {
+        // The receipt is still proof for the saved attempt it answers:
+        // settle it in its own namespace so no later view shows it pending.
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) =>
+            finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }), true);
+        }
+        return false;
+      }
       if (pendingAttempt) {
         // Save acceptance before removing the row; if storage fails, retain the attempt.
         if (await setPendingStack(identity, (previous) => previous.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: "accepted", interactionId: result.interaction_id, inputFrameId: result.input_frame_id }) : item))) {
@@ -3458,9 +3498,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (!pendingStorageErrorRef.current[identity]) setActionError("");
       return true;
     } catch (submitError) {
-      if (!lifetimeRef.current.active) return false;
-      // Undo this send's optimistic busy/phase marks first. They were set by
-      // this attempt alone, so a failed request must never leave the agent
+      const failure: ConsoleSendFailure = submitError instanceof ConsoleCapabilityUnavailableError
+        ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` }
+        : classifyConsoleSendFailure(submitError);
+      // The console lifetime ended (a transport or base-URL change remounts
+      // it) or another principal's scope now owns the view: neither may
+      // touch the current view's rows. The saved attempt still belongs to
+      // its own namespace, so settle it there with the typed failure rather
+      // than leaving it "Awaiting acceptance" behind a dead request.
+      if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
+        if (pendingAttempt && attemptNamespace) {
+          await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) =>
+            finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
+        }
+        return false;
+      }
+      // Undo this send's optimistic busy/phase/topology marks. They were set
+      // by this attempt alone, so a failed request must never leave the agent
       // looking busy ("Agent busy" with a card that is not really pending).
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
         (url) => URL.revokeObjectURL(url),
@@ -3468,17 +3522,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      // A different principal's scope owns a different stack; its rows are
-      // not this attempt. A replaced controller (e.g. re-created on an auth
-      // or base-URL change) still leaves this scope's saved attempt ours to
-      // settle, so it is not left "Awaiting acceptance" behind a dead request.
-      if (attemptScope !== sendScopeRef.current) {
-        forceRender();
-        return false;
-      }
-      const failure: ConsoleSendFailure = submitError instanceof ConsoleCapabilityUnavailableError
-        ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` }
-        : classifyConsoleSendFailure(submitError);
+      commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
       if (pendingAttempt) {
         // The saved row owns recovery instructions. Persistence failures retain
         // their own banner instead of being overwritten by the transport error.
