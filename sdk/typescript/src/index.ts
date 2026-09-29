@@ -102,6 +102,9 @@ export type {
   JobSubscriptionOptions,
   MonitorStartOptions,
   TurnWarningType,
+  MemberRunStopContributor,
+  MemberRunStopReceipt,
+  MemberRuntimeState,
 } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------

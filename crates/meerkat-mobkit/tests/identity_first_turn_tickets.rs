@@ -2598,3 +2598,90 @@ async fn continuity_repair_request_reports_what_it_reached() {
     supervisor.abort();
     live.runtime.shutdown().await;
 }
+
+/// `mobkit/stop_member_run` addressed by the member's `rt:` runtime alias
+/// resolves the durable identity's roster row (the unified path used to key
+/// by the undecoded alias). A stale run id is `not_current` and names the
+/// live run; stopping that exact run returns `stopped` and ends the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_member_run_by_runtime_alias_stops_the_exact_live_run() {
+    let client = NamedReplyClient::default();
+    let release_alpha = client.hold("alpha");
+    let (runtime, ctx, _scratch) =
+        live_runtime(meerkat_mob::MobRuntimeMode::TurnDriven, &client).await;
+    let status = rpc(
+        &runtime,
+        &ctx,
+        "mobkit/status_identity",
+        json!({"identity": "keeper"}),
+    )
+    .await;
+    let alias = status["agent_runtime_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("keeper has a runtime alias: {status}"))
+        .to_string();
+    assert!(alias.starts_with("rt:"), "{alias}");
+
+    let dispatched = rpc(
+        &runtime,
+        &ctx,
+        "mobkit/dispatch",
+        json!({
+            "identity": "keeper",
+            "dispatch_input": {"content": "alpha", "origin": "system"},
+            "track_turn": true,
+        }),
+    )
+    .await;
+    let ticket = dispatched["turn"]["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the dispatch is tracked: {dispatched}"))
+        .to_string();
+    wait_for_model_call(&client, "alpha").await;
+
+    let stale = rpc(
+        &runtime,
+        &ctx,
+        "mobkit/stop_member_run",
+        json!({
+            "member_id": alias,
+            "run_id": "01936f8b-0000-7000-8000-000000000042",
+            "reason": "stale selection",
+        }),
+    )
+    .await;
+    assert_eq!(stale["receipt"]["outcome"], json!("not_current"), "{stale}");
+    let live_run = stale["receipt"]["current_run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the stale receipt names the live run: {stale}"))
+        .to_string();
+    assert_eq!(
+        client.calls_for("alpha"),
+        1,
+        "a stale stop never interrupts"
+    );
+
+    let stopped = rpc(
+        &runtime,
+        &ctx,
+        "mobkit/stop_member_run",
+        json!({"member_id": alias, "run_id": live_run, "reason": "user pressed stop"}),
+    )
+    .await;
+    assert_eq!(stopped["receipt"]["outcome"], json!("stopped"), "{stopped}");
+    assert_eq!(stopped["receipt"]["run_id"], json!(live_run));
+    let contributors = stopped["receipt"]["contributors"]
+        .as_array()
+        .expect("contributors");
+    assert!(!contributors.is_empty(), "{stopped}");
+    assert!(
+        contributors
+            .iter()
+            .all(|row| row["terminal"] == json!("cancelled")),
+        "{stopped}"
+    );
+    drop(release_alpha);
+    let outcome = await_turn(&runtime, &ctx, &ticket).await;
+    assert_ne!(outcome["state"], json!("completed"), "{outcome}");
+    assert_eq!(client.calls_for("alpha"), 1, "no successor provider call");
+}

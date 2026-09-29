@@ -220,6 +220,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `mobkit/stop_member_run` relays meerkat's run-fenced Stop
+  (`MobHandle::stop_member_run`, lukacf/meerkat#1279) on the unified RPC and
+  the console gateway. Params are `{ member_id, run_id, reason }`, and the
+  result is `{ member_id, receipt }`, with meerkat's typed receipt verbatim
+  (`stopped` with contributors, `not_current`, or `not_stoppable`). Read the
+  run id from the member's `run_started` event (`identity.run_id`).
+  - The member's runtime stops exactly that run and terminalizes every input
+    already bound to it, including durable steers that joined it.
+  - A stale run id is `not_current` and never interrupts newer work.
+  - Malformed params are `-32602`. The console authorizes the method like
+    `mobkit/force_cancel_member`.
+  - SDKs: Python `MobHandle.stop_member_run(member_id, run_id, reason=)`
+    returns the typed `MemberRunStopReceipt`. TypeScript
+    `MobHandle.stopMemberRun(memberId, runId, reason)` returns
+    `MemberRunStopReceipt`, with `not_stoppable.state` typed as
+    `MemberRuntimeState`. Both fail closed on a malformed receipt.
+  - Unknown members and host refusals keep meerkat's typed code and
+    structured data.
+  - Console: a member's chat header offers **Stop run** while the timeline
+    names an in-flight run (its `run_started` run id). It is gated like
+    Retire, and force-cancel is unchanged. The receipt is summarized in the
+    header: the cancelled inputs, "that run already ended", or the runtime
+    state that refused the stop.
 - ConsoleSend (`POST /console/send`, `mobkit/console/send`, and the
   multipart form) accepts typed `skill_refs` for the exact addressed member
   (#486). The selection rides meerkat's fenced host-human admission
@@ -421,6 +444,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rotation cuts the monitor's previous ordinary subscription off instead of
   counting its completions a second time.
 
+- `mobkit/force_cancel_member` on the unified RPC keyed an identity-resolved
+  member by the undecoded `rt:` runtime alias, so an alias call missed the
+  durable identity's roster row. It now resolves the row like the console
+  path (`roster_member_id_for_supplied_id`), and so does
+  `mobkit/stop_member_run`.
 - A console send that fails now says why, in both queue and steer modes and
   on the multipart (attachment) door. Before, a refused or failed request
   (e.g. a 401 from an off-network browser with no console token) could leave

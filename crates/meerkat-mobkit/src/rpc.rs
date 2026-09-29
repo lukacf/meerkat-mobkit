@@ -2016,6 +2016,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/identity/resolved_tools",
                 "mobkit/identity/routing_status",
                 "mobkit/force_cancel_member",
+                "mobkit/stop_member_run",
                 "mobkit/spawn_helper",
                 "mobkit/fork_helper",
                 "mobkit/attach_existing_session",
@@ -3500,6 +3501,15 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/force_cancel_member" => {
             mob_methods::handle_force_cancel_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
+        }
+        "mobkit/stop_member_run" => {
+            mob_methods::handle_stop_member_run(
                 runtime,
                 identity_ctx.map(|ctx| &ctx.runtime),
                 response_id,

@@ -2478,7 +2478,9 @@ pub(super) async fn handle_force_cancel_member(
                 && let Some(identity) = identity_rt.identity_for_member_mutation(&mid).await
             {
                 let handle = runtime.mob_handle();
-                let member_id = crate::member_comms_id::mob_member_id(&mid);
+                // Decode before keying: an `rt:` runtime alias names its durable
+                // identity's roster row, exactly as the console path resolves it.
+                let member_id = crate::member_comms_id::roster_member_id_for_supplied_id(&mid);
                 identity_rt
                     .run_member_alias_operation_tracked(&identity, &mid, move || async move {
                         handle
@@ -2525,6 +2527,140 @@ pub(super) async fn handle_force_cancel_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
+            }),
+        },
+    }
+}
+
+fn stop_member_run_invalid_params(response_id: Value, message: &str) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: format!("Invalid params: {message}"),
+            data: None,
+        }),
+    }
+}
+
+/// `mobkit/stop_member_run`: the run-fenced Stop of one exact member run
+/// (`MobHandle::stop_member_run`). The member's runtime stops `run_id` and
+/// terminalizes every input already bound to it, including durable steers
+/// that joined it, and the reply carries meerkat's typed receipt verbatim. A
+/// stale `run_id` is the `not_current` receipt, never an error.
+pub(super) async fn handle_stop_member_run(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    let Some(mid) = params
+        .get("member_id")
+        .and_then(Value::as_str)
+        .filter(|mid| !mid.is_empty())
+    else {
+        return stop_member_run_invalid_params(response_id, "member_id required");
+    };
+    // Resolve the member before validating the rest, like every sibling
+    // member verb: a stale runtime alias is reported as such.
+    let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
+    if let Some(response) =
+        stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone()).await
+    {
+        return response;
+    }
+    let Some(raw_run_id) = params.get("run_id").and_then(Value::as_str) else {
+        return stop_member_run_invalid_params(response_id, "run_id required");
+    };
+    let Some(reason) = params
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+    else {
+        return stop_member_run_invalid_params(response_id, "reason required");
+    };
+    let run_id = match uuid::Uuid::parse_str(raw_run_id) {
+        Ok(uuid) => meerkat_core::lifecycle::RunId::from_uuid(uuid),
+        Err(error) => {
+            return stop_member_run_invalid_params(
+                response_id,
+                &format!("run_id is not a UUID: {error}"),
+            );
+        }
+    };
+    let reason = reason.to_string();
+    // The meerkat verb's typed `MobError` is carried out of the identity
+    // operation intact, so unknown members and host refusals keep meerkat's
+    // typed code and structured data.
+    let result: Result<
+        Result<meerkat_contracts::WireRunStopReceipt, meerkat_mob::MobError>,
+        String,
+    > = if let Some(identity_rt) = identity_runtime
+        && let Some(identity) = identity_rt.identity_for_member_mutation(&mid).await
+    {
+        let handle = runtime.mob_handle();
+        // Decode before keying: an `rt:` runtime alias names its durable
+        // identity's roster row, exactly as the console path resolves it.
+        let member_id = crate::member_comms_id::roster_member_id_for_supplied_id(&mid);
+        identity_rt
+            .run_member_alias_operation_tracked(&identity, &mid, move || async move {
+                Ok(handle
+                    .stop_member_run(
+                        meerkat_mob::MobControlPrincipal::Owner,
+                        member_id,
+                        run_id,
+                        reason,
+                    )
+                    .await)
+            })
+            .await
+            .map_err(|error| error.to_string())
+    } else if crate::member_comms_id::is_reserved_generated_alias(&mid) {
+        Err(format!(
+            "generated member alias requires current identity authority: {mid}"
+        ))
+    } else {
+        Ok(runtime
+            .mob_handle()
+            .stop_member_run(
+                meerkat_mob::MobControlPrincipal::Owner,
+                crate::member_comms_id::mob_member_id(&mid),
+                run_id,
+                reason,
+            )
+            .await)
+    };
+    match result {
+        Ok(Ok(receipt)) => match serde_json::to_value(&receipt) {
+            Ok(receipt) => JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({"member_id": mid, "receipt": receipt})),
+                error: None,
+            },
+            Err(error) => JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32603,
+                    message: format!("failed to serialize run-stop receipt: {error}"),
+                    data: None,
+                }),
+            },
+        },
+        Ok(Err(mob_error)) => mob_declaration_error(response_id, &mob_error),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("stop_member_run failed: {err}"),
                 data: None,
             }),
         },
@@ -4750,7 +4886,10 @@ fn mirror_convergence(
 /// between rkat-rpc and the MobKit gateway must classify the same failure the
 /// same way, and these are the first typed-error responses in this module - the
 /// surrounding handlers hand-shape `-32000` with an ad-hoc `data.kind`.
-fn mob_declaration_error(response_id: Value, error: &meerkat_mob::MobError) -> JsonRpcResponse {
+pub(crate) fn mob_declaration_error(
+    response_id: Value,
+    error: &meerkat_mob::MobError,
+) -> JsonRpcResponse {
     let (code, data): (i64, Option<Value>) = match error.wire_detail() {
         Some(detail) => match detail.detail_value() {
             Ok(data) => (i64::from(detail.code().jsonrpc_code()), Some(data)),
