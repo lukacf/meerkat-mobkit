@@ -9569,7 +9569,14 @@ async fn console_member_peer_info(
     )
     .map_err(|error| format!("invalid member comms name: {error}"))?
     .to_string();
-    let address = format!("inproc://{comms_name}");
+    // A placed member reports its durable host address, never inproc.
+    let address = crate::runtime::cross_mob_control::member_peer_info_address(
+        &handle,
+        &member_id,
+        &comms_name,
+    )
+    .await
+    .map_err(|fault| format!("member {member_alias:?}: {fault}"))?;
     Ok(serde_json::json!({
         "member_id": member_alias,
         "mob_id": mob_id,

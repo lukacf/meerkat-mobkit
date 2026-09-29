@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `CrossMobError` gains `PlacedMemberUnavailable { member_id, mob_id, reason }`
+  for a placed member that has no usable endpoint (Broken, or none
+  registered); exhaustive matches must handle it.
 - `ConsoleSendRequest` gains `skill_refs: Vec<meerkat_core::skills::SkillRef>`
   and `BridgeDelivery` gains `skill_references: Vec<SkillKey>` (see Added).
   Struct literals must set them, usually to `Vec::new()`; the JSON field is
@@ -471,9 +474,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same-process wire and unwire paths all use it. A local member that must
   be installed on a placed member is described by its dialable
   (non-`inproc`) address or fails typed (`LocalMemberNotRemotelyAddressable`).
-  Readiness for a placed member is its committed edge: its peer directory
-  lives on its host. Endpoint query faults surface as errors instead of
-  "not addressable".
+  Readiness for a placed member is its committed edge naming the exact peer
+  (name and peer id) with no outstanding external route install reported by
+  meerkat's `route_installs()` (the host has acknowledged the trust row).
+  Endpoint query faults surface as errors instead of "not addressable".
+  Placement decides everywhere, from one `member_endpoint_status` snapshot
+  per side per operation: a placed member without a usable endpoint is
+  `PlacedMemberUnavailable`, never an `inproc://` fallback, and its endpoint
+  must be registered under its `MemberCommsName`. The same-process bilateral
+  paths skip inproc alias installation and treat a placed side's route as
+  satisfied by its committed edge, so they converge instead of rolling back.
+  Same-process cross-mob wiring resolves a peer mob member's dialable address
+  through that mob's own session service (registered with
+  `register_peer_runtime`). Unwire removes by edge name
+  (`PeerTarget::ExternalName`), so a down or Broken runtime no longer blocks
+  removal, and every same-process unwire failure is reported instead of
+  swallowed. `local_member_peer_info`, `mobkit/cross_mob/peer_info` (RPC,
+  used by the Python SDK) and the console peer-info read report a placed
+  member's durable host address instead of `inproc://`.
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
   at least twice at boot: the actor's generation-zero boundary and the
