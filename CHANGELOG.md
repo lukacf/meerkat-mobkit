@@ -406,6 +406,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Both production `RuntimeStore` decorators forward the new
   `load_committed_whole_blob_metadata` (#1255) instead of answering the trait
   default.
+- Identity-first members no longer wedge at their second auto-compaction when
+  two compactions rewrite a session to the same transcript (#488). Record-only
+  rewrites named the adopted continuity strand by the revision digest alone,
+  so a recurring revision re-targeted the strand it was rewriting. Its
+  immutable post-head rows refused the new base ("rewrite replay save at
+  generation 2 ... not a continuation of persisted revision strand:<rev>
+  seq:1"), the member went repair-blocked, and every later send was refused.
+  The fix is in meerkat-core (lukacf/meerkat#1271): the rewrite
+  validator mints the occurrence-named strand, shipped in meerkat 0.8.49. Strands already written under revision names
+  stay readable, and a member refused this way recovers on its next replay.
+  A regression test drives two identity-first members through `rpc_gateway
+  --persistent` with a demo LLM, whose identical summaries make every
+  compaction revision recur, to at least five adopted compactions each. It
+  asserts that every tracked turn completes, that the durable rewrite chain
+  is contiguous with a fresh strand per generation, and that the chain
+  restores and keeps accepting sends after a cold reboot.
 - Console voice readiness is fast and never a false "no". The server bounds
   a check at 4 s (below the console's 5 s request timeout) and, on expiry,
   logs the typed stage that was running with every stage's elapsed time, then
