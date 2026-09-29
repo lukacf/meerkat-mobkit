@@ -1558,6 +1558,18 @@ async fn console_send_identity_first(
             (identity, status)
         }
     };
+    // Refuse a selection the target cannot carry before anything is
+    // reserved, so the caller never sees an acceptance for a turn that will
+    // be refused at delivery.
+    if !request.skill_refs.is_empty()
+        && !identity_runtime
+            .carries_console_skill_selection(&identity)
+            .await
+    {
+        return Err(ConsoleSendError::InvalidRequest(
+            "selected skills require a local session-backed member".to_string(),
+        ));
+    }
     let session_id = status
         .session_id
         .as_ref()

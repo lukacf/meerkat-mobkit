@@ -2034,6 +2034,22 @@ impl MobKitConsoleAggregator {
 
         let content = content_input_from_value(&request.content)?;
         let handling_mode = parse_handling_mode(request.handling_mode.as_deref())?;
+        // A peer-only member has no local session and so no host-human skill
+        // carrier: refuse a selection before the interaction is reserved.
+        if !request.skill_refs.is_empty() {
+            let local_session = resolved
+                .handle
+                .get_member(&resolved.member.agent_identity)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|entry| entry.bridge_session_id().is_some());
+            if !local_session {
+                return Err(ConsoleSendError::InvalidRequest(
+                    "selected skills require a local session-backed member".to_string(),
+                ));
+            }
+        }
         assert_member_accepts_images(
             &resolved.handle,
             resolved.entry.runtime.session_service(),
@@ -8432,6 +8448,47 @@ fn runtime_registry_lock_error() -> ConsoleLogError {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::large_futures, clippy::panic)]
 mod tests {
+    /// Golden values: an empty skill selection must keep the exact
+    /// fingerprint recorded before skill selection existed, so replays of
+    /// sends persisted by older gateways still match. A nonempty selection
+    /// changes it, and so does reordering the selection.
+    #[test]
+    fn console_send_fingerprint_is_pinned_for_an_empty_selection() {
+        use meerkat_core::skills::{SkillKey, SkillName, SourceUuid};
+
+        let content = serde_json::json!("hello");
+        assert_eq!(
+            super::send_request_fingerprint("console:test", None, &content, "queue", &[]),
+            "34e67bf50e8d4ee4"
+        );
+        assert_eq!(
+            super::send_request_fingerprint(
+                "console:test",
+                Some(super::ConsoleTurnOrigin::Operator),
+                &content,
+                "queue",
+                &[],
+            ),
+            "b9f7d1acd0800a64"
+        );
+        let source = SourceUuid::parse("5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11").expect("uuid");
+        let a = SkillKey::new(source.clone(), SkillName::parse("alpha").expect("name"));
+        let b = SkillKey::new(source, SkillName::parse("beta").expect("name"));
+        let selected = super::send_request_fingerprint(
+            "console:test",
+            None,
+            &content,
+            "queue",
+            &[a.clone(), b.clone()],
+        );
+        assert_ne!(selected, "34e67bf50e8d4ee4");
+        assert_ne!(
+            selected,
+            super::send_request_fingerprint("console:test", None, &content, "queue", &[b, a]),
+            "the selection is order-sensitive"
+        );
+    }
+
     /// The initial-message tools must be a genuine subset of the crate-wide
     /// spawn vocabulary. Catches a typo, which would otherwise be a `continue`
     /// that silently never fires for any real tool.

@@ -8966,6 +8966,21 @@ impl IdentityRuntime {
     /// console reservation. HTTP replays return that original frame/status or
     /// typed unknown fate after failure; they never re-prepare changed memory.
     /// No replay cache (or eviction which could make an old key executable).
+    /// Whether a console send to `identity` can carry a native skill
+    /// selection: only a local session-backed member (no external binding,
+    /// no remote placement) has meerkat's host-human skill carrier. Read
+    /// from the durable spec, so a console send can refuse a selection
+    /// before it reserves an interaction.
+    pub(crate) async fn carries_console_skill_selection(&self, identity: &AgentIdentity) -> bool {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .is_some_and(|entry| {
+                !durable_spec_uses_external_binding(&entry.spec) && entry.spec.placement.is_none()
+            })
+    }
+
     pub(crate) async fn send_console_human_input_tracked(
         self: &Arc<Self>,
         identity: &AgentIdentity,

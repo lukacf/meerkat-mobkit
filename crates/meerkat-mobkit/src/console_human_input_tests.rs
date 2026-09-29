@@ -361,6 +361,22 @@ comms = true
             .unwrap();
     }
 
+    /// The ids and statuses of every `user_input` frame for `identity`.
+    async fn user_input_frames(&self, identity: &str) -> Vec<(String, ConsoleFrameStatus)> {
+        self.aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .frames
+            .into_iter()
+            .filter(|frame| frame.kind == "user_input")
+            .map(|frame| (frame.id, frame.status))
+            .collect()
+    }
+
     async fn history(&self) -> Vec<Message> {
         self.unified
             .mob_runtime()
@@ -1208,11 +1224,12 @@ async fn console_send_selected_skills_resolve_natively_and_replay_exactly() {
     );
     let calls_after_turn = requests.len();
 
+    let frames_before_replay = h.user_input_frames(&accepted.identity).await;
+
     // The response is lost; the caller replays the same send.
     let replay = h.send(request.clone()).await.unwrap();
     assert_eq!(replay.input_frame_id, accepted.input_frame_id);
     assert_eq!(replay.interaction_id, accepted.interaction_id);
-    assert_eq!(h.client.requests.lock().unwrap().len(), calls_after_turn);
 
     let changed = ConsoleSendRequest {
         skill_refs: vec![SkillRef::Structured(other)],
@@ -1222,6 +1239,22 @@ async fn console_send_selected_skills_resolve_natively_and_replay_exactly() {
         h.send(changed).await,
         Err(crate::console_aggregator::ConsoleSendError::IdempotencyConflict(_))
     ));
+
+    // Neither the replay nor the refused resend reserved or dispatched a new
+    // console input, and the original turn is still the only one: observing
+    // its completion again through the same delivery identity resolves to
+    // the committed turn without another provider call or SkillContext.
+    assert_eq!(
+        h.user_input_frames(&accepted.identity).await,
+        frames_before_replay,
+        "no new console input was reserved or dispatched"
+    );
+    h.finish_human_with_skills(&accepted, HUMAN, vec![chosen.clone()])
+        .await;
+    assert_eq!(
+        skill_context_rows(&h.history().await, &accepted.interaction_id).len(),
+        1
+    );
     assert_eq!(h.client.requests.lock().unwrap().len(), calls_after_turn);
     h.stop().await;
 }
@@ -1263,8 +1296,14 @@ async fn console_send_selected_skills_reach_a_member_only_worker() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0, key);
     assert!(rows[0].1.contains(SKILL_BODY));
+    let frames_before_replay = h.user_input_frames(&accepted.identity).await;
     let replay = h.aggregator.send(request).await.unwrap();
     assert_eq!(replay.input_frame_id, accepted.input_frame_id);
+    assert_eq!(
+        h.user_input_frames(&accepted.identity).await,
+        frames_before_replay,
+        "the replay reserved and dispatched nothing new"
+    );
     h.stop().await;
 }
 

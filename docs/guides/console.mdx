@@ -552,6 +552,16 @@ Identity-first status and inspect payloads use lowercase wire enums for addressa
     `-32009 idempotency_conflict`. A different identity or origin is a
     different send namespace, not a guaranteed replay.
 
+    `skill_refs` is optional: typed, source-pinned skills selected for this
+    turn (`[{"kind": "structured", "source_uuid": "...", "skill_name": "..."}]`,
+    the same shape as meerkat `turn/start`). The addressed member resolves
+    them natively and commits a durable `SkillContext`; the console never
+    renders skill bodies into the message. A nonempty selection is part of the
+    idempotent request: a replay must repeat the same selection in the same
+    order, and a changed selection under the same key is
+    `-32009 idempotency_conflict`. Only local session-backed members accept a
+    selection.
+
     The legacy `POST /console/send` route still exists for compatibility. New console clients should prefer JSON-RPC.
   </Step>
   <Step title="Receive response frames">

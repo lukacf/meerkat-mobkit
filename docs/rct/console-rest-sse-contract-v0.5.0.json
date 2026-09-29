@@ -168,9 +168,10 @@
           ],
           "optional_fields": [
             "handling_mode",
-            "origin_kind"
+            "origin_kind",
+            "skill_refs"
           ],
-          "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused. Missing-field HTTP extraction errors are distinct from JSON-RPC invalid-params responses."
+          "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused. Missing-field HTTP extraction errors are distinct from JSON-RPC invalid-params responses. skill_refs, when present, is a list of typed structured skill refs ({kind: structured, source_uuid, skill_name}); a nonempty selection is part of the idempotency fingerprint, so a replay must repeat the same selection in the same order."
         },
         "success": {
           "type_ref": "TYPE-023"
@@ -413,9 +414,10 @@
             ],
             "optional_fields": [
               "handling_mode",
-              "origin_kind"
+              "origin_kind",
+              "skill_refs"
             ],
-            "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused."
+            "validation": "origin and idempotency_key must be non-empty after trimming. origin_kind, when present, is one of operator, operator_probe, connector, scheduler, policy, flow, system; any other value is refused. skill_refs, when present, is a list of typed structured skill refs ({kind: structured, source_uuid, skill_name}); a nonempty selection is part of the idempotency fingerprint, so a replay must repeat the same selection in the same order."
           },
           "success": {
             "type_ref": "TYPE-023"
