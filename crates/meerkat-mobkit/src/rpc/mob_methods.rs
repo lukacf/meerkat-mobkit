@@ -2531,6 +2531,121 @@ pub(super) async fn handle_force_cancel_member(
     }
 }
 
+fn stop_member_run_invalid_params(response_id: Value, message: &str) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: format!("Invalid params: {message}"),
+            data: None,
+        }),
+    }
+}
+
+/// `mobkit/stop_member_run`: the run-fenced Stop of one exact member run
+/// (`MobHandle::stop_member_run`). The member's runtime stops `run_id` and
+/// terminalizes every input already bound to it, including durable steers
+/// that joined it, and the reply carries meerkat's typed receipt verbatim. A
+/// stale `run_id` is the `not_current` receipt, never an error.
+pub(super) async fn handle_stop_member_run(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    let Some(mid) = params
+        .get("member_id")
+        .and_then(Value::as_str)
+        .filter(|mid| !mid.is_empty())
+    else {
+        return stop_member_run_invalid_params(response_id, "member_id required");
+    };
+    let Some(raw_run_id) = params.get("run_id").and_then(Value::as_str) else {
+        return stop_member_run_invalid_params(response_id, "run_id required");
+    };
+    let Some(reason) = params
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+    else {
+        return stop_member_run_invalid_params(response_id, "reason required");
+    };
+    let run_id = match uuid::Uuid::parse_str(raw_run_id) {
+        Ok(uuid) => meerkat_core::lifecycle::RunId::from_uuid(uuid),
+        Err(error) => {
+            return stop_member_run_invalid_params(
+                response_id,
+                &format!("run_id is not a UUID: {error}"),
+            );
+        }
+    };
+    let reason = reason.to_string();
+    let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
+    if let Some(response) =
+        stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone()).await
+    {
+        return response;
+    }
+    let result = if let Some(identity_rt) = identity_runtime
+        && let Some(identity) = identity_rt.identity_for_member_mutation(&mid).await
+    {
+        let handle = runtime.mob_handle();
+        let member_id = crate::member_comms_id::mob_member_id(&mid);
+        identity_rt
+            .run_member_alias_operation_tracked(&identity, &mid, move || async move {
+                handle
+                    .stop_member_run(
+                        meerkat_mob::MobControlPrincipal::Owner,
+                        member_id,
+                        run_id,
+                        reason,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())
+    } else if crate::member_comms_id::is_reserved_generated_alias(&mid) {
+        Err(format!(
+            "generated member alias requires current identity authority: {mid}"
+        ))
+    } else {
+        runtime
+            .mob_handle()
+            .stop_member_run(
+                meerkat_mob::MobControlPrincipal::Owner,
+                crate::member_comms_id::mob_member_id(&mid),
+                run_id,
+                reason,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    };
+    match result
+        .and_then(|receipt| serde_json::to_value(&receipt).map_err(|error| error.to_string()))
+    {
+        Ok(receipt) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({"member_id": mid, "receipt": receipt})),
+            error: None,
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("stop_member_run failed: {err}"),
+                data: None,
+            }),
+        },
+    }
+}
+
 /// Parse the bounded-result request fields required by meerkat 0.8.22's
 /// exact helper contract. Presence is enforced here at the wire (-32602,
 /// mirroring the meerkat-rpc contract's required fields); value validation

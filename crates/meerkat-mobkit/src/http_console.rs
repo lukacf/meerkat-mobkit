@@ -2043,6 +2043,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/respawn_member"
             | "mobkit/reload_member"
             | "mobkit/force_cancel_member"
+            | "mobkit/stop_member_run"
             | "mobkit/cancel_flow"
             | "mobkit/collect_completed"
             | "mobkit/run_flow"
@@ -2462,6 +2463,7 @@ fn console_rpc_access_requirements(
         "mobkit/retire"
         | "mobkit/retire_member"
         | "mobkit/force_cancel_member"
+        | "mobkit/stop_member_run"
         | "mobkit/delete_identity" => one(ACTION_AGENT_RETIRE, target),
         "mobkit/respawn" | "mobkit/respawn_member" => one(ACTION_AGENT_RESPAWN, target),
         // Non-destructive cold reload: strictly less than a respawn (same
@@ -6005,6 +6007,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/respawn_member",
                     "mobkit/reload_member",
                     "mobkit/force_cancel_member",
+                    "mobkit/stop_member_run",
                     "mobkit/cancel_flow",
                     "mobkit/collect_completed",
                     "mobkit/run_flow",
@@ -8799,6 +8802,88 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(err) => {
                     internal_error(response_id, format!("force_cancel_member failed: {err}"))
                 }
+            }
+        }
+        "mobkit/stop_member_run" => {
+            // Run-fenced Stop of one exact member run: the member's runtime
+            // stops `run_id` and terminalizes every input already bound to it.
+            // A stale `run_id` is meerkat's typed `not_current` receipt.
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            let Some(raw_run_id) = request.params.get("run_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "run_id required");
+            };
+            let Some(reason) = request
+                .params
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+            else {
+                return invalid_params(response_id, "reason required");
+            };
+            let run_id = match uuid::Uuid::parse_str(raw_run_id) {
+                Ok(uuid) => meerkat_core::lifecycle::RunId::from_uuid(uuid),
+                Err(_) => return invalid_params(response_id, "run_id must be a UUID"),
+            };
+            let reason = reason.to_string();
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "stop_member_run",
+                identity_runtime.as_ref(),
+                &member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
+            let result = if let Some(identity_runtime_ref) = identity_runtime.as_ref()
+                && let Some(identity) = identity_runtime_ref
+                    .identity_for_member_mutation(&member_id)
+                    .await
+            {
+                let handle = runtime.handle();
+                let member_id_value =
+                    crate::member_comms_id::roster_member_id_for_supplied_id(&member_id);
+                identity_runtime_ref
+                    .run_member_alias_operation_tracked(&identity, &member_id, move || async move {
+                        handle
+                            .stop_member_run(
+                                meerkat_mob::MobControlPrincipal::Owner,
+                                member_id_value,
+                                run_id,
+                                reason,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+            } else if crate::member_comms_id::is_reserved_generated_alias(&member_id) {
+                Err(format!(
+                    "generated member alias requires current identity authority: {member_id}"
+                ))
+            } else {
+                runtime
+                    .handle()
+                    .stop_member_run(
+                        meerkat_mob::MobControlPrincipal::Owner,
+                        crate::member_comms_id::mob_member_id(&member_id),
+                        run_id,
+                        reason,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            match result.and_then(|receipt| {
+                serde_json::to_value(&receipt).map_err(|error| error.to_string())
+            }) {
+                Ok(receipt) => response_value(
+                    response_id,
+                    Some(serde_json::json!({ "member_id": member_id, "receipt": receipt })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("stop_member_run failed: {err}")),
             }
         }
         "mobkit/wait_ready" => {

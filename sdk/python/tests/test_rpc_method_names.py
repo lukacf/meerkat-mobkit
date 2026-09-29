@@ -941,6 +941,27 @@ async def test_force_cancel_member_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_stop_member_run_rpc_name_and_receipt():
+    receipt = {"outcome": "not_current", "run_id": "r-1", "current_run_id": "r-2"}
+    handle, calls = make_mock_mob_handle(
+        {"mobkit/stop_member_run": {"member_id": "w1", "receipt": receipt}}
+    )
+    result = await handle.stop_member_run("w1", "r-1", reason="stop")
+    assert calls[0][0] == "mobkit/stop_member_run"
+    assert calls[0][1] == {"member_id": "w1", "run_id": "r-1", "reason": "stop"}
+    assert result == receipt
+
+
+@pytest.mark.asyncio
+async def test_stop_member_run_rejects_a_malformed_receipt():
+    handle, _calls = make_mock_mob_handle(
+        {"mobkit/stop_member_run": {"member_id": "w1", "receipt": {"outcome": "?"}}}
+    )
+    with pytest.raises(ValueError):
+        await handle.stop_member_run("w1", "r-1", reason="stop")
+
+
+@pytest.mark.asyncio
 async def test_spawn_helper_rpc_name():
     handle, calls = make_mock_mob_handle({
         "mobkit/spawn_helper": {

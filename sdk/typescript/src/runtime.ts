@@ -2373,6 +2373,36 @@ export class MobHandle {
   }
 
   /**
+   * Stop one exact run of a member (meerkat's run-fenced Stop). The member's
+   * runtime stops `runId` and terminalizes every input already bound to it,
+   * including durable steers that joined the run. Resolves to meerkat's typed
+   * receipt: `outcome` is `stopped` (with `contributors`), `not_current` (the
+   * run is no longer current; nothing was touched), or `not_stoppable`.
+   */
+  async stopMemberRun(
+    memberId: string,
+    runId: string,
+    reason: string,
+  ): Promise<MemberRunStopReceipt> {
+    const raw = (await this._runtime._rpc("mobkit/stop_member_run", {
+      member_id: memberId,
+      run_id: runId,
+      reason,
+    })) as { receipt?: unknown };
+    const receipt = raw?.receipt as MemberRunStopReceipt | undefined;
+    if (
+      !receipt ||
+      typeof receipt !== "object" ||
+      (receipt.outcome !== "stopped" &&
+        receipt.outcome !== "not_current" &&
+        receipt.outcome !== "not_stoppable")
+    ) {
+      throw new Error(`invalid mobkit/stop_member_run receipt: ${JSON.stringify(raw)}`);
+    }
+    return receipt;
+  }
+
+  /**
    * Wait until all current mob members are startup-ready for orchestration.
    *
    * Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns
@@ -4103,3 +4133,24 @@ export class SseBridge {
     });
   }
 }
+
+/** One input that contributed to a stopped member run. */
+export interface MemberRunStopContributor {
+  input_id: string;
+  completion:
+    | "completed"
+    | "completed_without_result"
+    | "callback_pending"
+    | "cancelled"
+    | "abandoned"
+    | "abandoned_with_error"
+    | "completed_with_finalization_failure"
+    | "runtime_terminated";
+  terminal?: "completed" | "abandoned" | "superseded" | "coalesced" | "cancelled" | null;
+}
+
+/** meerkat's typed run-stop receipt, relayed verbatim by `mobkit/stop_member_run`. */
+export type MemberRunStopReceipt =
+  | { outcome: "stopped"; run_id: string; contributors: MemberRunStopContributor[] }
+  | { outcome: "not_current"; run_id: string; current_run_id?: string | null }
+  | { outcome: "not_stoppable"; run_id: string; state: string };

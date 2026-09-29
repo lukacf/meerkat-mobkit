@@ -220,6 +220,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `mobkit/stop_member_run` relays meerkat's run-fenced Stop
+  (`MobHandle::stop_member_run`, lukacf/meerkat#1279) on the unified RPC and
+  the console gateway. Params are `{ member_id, run_id, reason }`, and the
+  result is `{ member_id, receipt }`, with meerkat's typed receipt verbatim
+  (`stopped` with contributors, `not_current`, or `not_stoppable`). Read the
+  run id from the member's `run_started` event (`identity.run_id`).
+  - The member's runtime stops exactly that run and terminalizes every input
+    already bound to it, including durable steers that joined it.
+  - A stale run id is `not_current` and never interrupts newer work.
+  - Malformed params are `-32602`. The console authorizes the method like
+    `mobkit/force_cancel_member`.
+  - SDKs: Python `MobHandle.stop_member_run(member_id, run_id, reason=)` and
+    TypeScript `MobHandle.stopMemberRun(memberId, runId, reason)`, which
+    returns `MemberRunStopReceipt`. Both fail closed on a malformed receipt.
+  - The console UI has no stop control yet.
 - ConsoleSend (`POST /console/send`, `mobkit/console/send`, and the
   multipart form) accepts typed `skill_refs` for the exact addressed member
   (#486). The selection rides meerkat's fenced host-human admission
