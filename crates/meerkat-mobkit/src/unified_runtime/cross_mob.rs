@@ -187,6 +187,16 @@ pub enum CrossMobError {
         mob_id: String,
         reason: String,
     },
+    /// The placed member's edge is committed but its host has not yet
+    /// acknowledged the trust row: meerkat reports the external route install
+    /// outstanding. The edge is converging, not failed, and is not rolled
+    /// back; the route drains when the host is reachable again.
+    PlacedRouteInstallPending {
+        member_id: String,
+        mob_id: String,
+        peer_id: String,
+        host: String,
+    },
     /// The remote gateway answered `LookupMember` without a dialable comms
     /// address or transport pubkey for the target member, so no routable
     /// signed descriptor can be built for it.
@@ -234,6 +244,16 @@ impl std::fmt::Display for CrossMobError {
             } => write!(
                 f,
                 "placed member '{member_id}' in mob '{mob_id}' has no usable endpoint: {reason}"
+            ),
+            Self::PlacedRouteInstallPending {
+                member_id,
+                mob_id,
+                peer_id,
+                host,
+            } => write!(
+                f,
+                "placed member '{member_id}' in mob '{mob_id}' is wired to peer '{peer_id}', \
+                 but host '{host}' has not yet acknowledged the trust row (converging)"
             ),
             Self::LocalMemberNotRemotelyAddressable {
                 member_id,
@@ -652,12 +672,12 @@ async fn placed_member_edge_committed(
     handle: &MobHandle,
     member: &AgentIdentity,
     expected_peer: &MemberPeerInfo,
-) -> Result<Option<bool>, CrossMobError> {
-    if !member_plane(handle, member).await?.is_placed() {
+) -> Result<Option<PlacedEdgeReadiness>, CrossMobError> {
+    if !member_is_placed(handle, member).await? {
         return Ok(None);
     }
-    // The committed edge must name this exact peer (name AND peer id), not
-    // merely a peer of the same name.
+    // The committed edge must carry an external descriptor naming this exact
+    // peer (name AND peer id), not merely a peer of the same name.
     let committed = handle.get_member(member).await?.is_some_and(|entry| {
         entry
             .wired_to
@@ -665,17 +685,43 @@ async fn placed_member_edge_committed(
             .any(|identity| identity.as_str() == expected_peer.comms_name)
             && entry
                 .external_peer_descriptor(&expected_peer.comms_name)
-                .is_none_or(|descriptor| descriptor.peer_id.to_string() == expected_peer.peer_id)
+                .is_some_and(|descriptor| descriptor.peer_id.to_string() == expected_peer.peer_id)
     });
     if !committed {
-        return Ok(Some(false));
+        return Ok(Some(PlacedEdgeReadiness::NotCommitted));
     }
     let installs = handle.route_installs().await?;
-    Ok(Some(!external_route_install_outstanding(
-        &installs,
-        member,
-        &expected_peer.peer_id,
-    )))
+    Ok(Some(
+        match external_route_install_pending_host(&installs, member, &expected_peer.peer_id) {
+            Some(host) => PlacedEdgeReadiness::InstallPending { host },
+            None => PlacedEdgeReadiness::Ready,
+        },
+    ))
+}
+
+/// Readiness of a placed member's edge to one peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlacedEdgeReadiness {
+    /// Committed and acknowledged by the host.
+    Ready,
+    /// No committed edge naming this exact peer.
+    NotCommitted,
+    /// Committed; the host has not yet acknowledged the trust row.
+    InstallPending { host: String },
+}
+
+/// The host of an outstanding external route install for `member` ->
+/// `peer_id`, if meerkat still reports one (a typed `route_installs()` fact).
+fn external_route_install_pending_host(
+    installs: &meerkat_contracts::wire::MobRouteInstallsResult,
+    member: &AgentIdentity,
+    peer_id: &str,
+) -> Option<String> {
+    installs
+        .outstanding_external
+        .iter()
+        .find(|obligation| obligation.local == member.as_str() && obligation.peer_id == peer_id)
+        .map(|obligation| obligation.host.0.clone())
 }
 
 /// Whether meerkat still reports a host route install outstanding for the
@@ -697,8 +743,10 @@ async fn member_can_address_peer(
     local_member: &AgentIdentity,
     expected_peer: &MemberPeerInfo,
 ) -> Result<bool, CrossMobError> {
-    if let Some(ready) = placed_member_edge_committed(handle, local_member, expected_peer).await? {
-        return Ok(ready);
+    if let Some(readiness) =
+        placed_member_edge_committed(handle, local_member, expected_peer).await?
+    {
+        return Ok(readiness == PlacedEdgeReadiness::Ready);
     }
     let session_id = handle
         .resolve_bridge_session_id(local_member)
@@ -766,6 +814,34 @@ async fn wire_member_with_authority(
         },
     )
     .await
+}
+
+/// Whether `member` is placed, tolerating a placed member without a usable
+/// endpoint (Broken or restore-failed is still placed): used where only the
+/// placement matters, never an endpoint (alias bookkeeping, readiness gates).
+async fn member_is_placed(
+    handle: &MobHandle,
+    member: &AgentIdentity,
+) -> Result<bool, CrossMobError> {
+    plane_result_is_placed(crate::runtime::cross_mob_control::member_plane(handle, member).await)
+        .map_err(CrossMobError::Mob)
+}
+
+/// Pure placement verdict over a plane classification: `PlacedUnavailable`
+/// is placed; only a genuine query fault is an error.
+fn plane_result_is_placed(
+    result: Result<
+        crate::runtime::cross_mob_control::MemberPlane,
+        crate::runtime::cross_mob_control::MemberPlaneFault,
+    >,
+) -> Result<bool, meerkat_mob::MobError> {
+    match result {
+        Ok(plane) => Ok(plane.is_placed()),
+        Err(crate::runtime::cross_mob_control::MemberPlaneFault::PlacedUnavailable { .. }) => {
+            Ok(true)
+        }
+        Err(crate::runtime::cross_mob_control::MemberPlaneFault::Mob(error)) => Err(error),
+    }
 }
 
 /// How a target describes a member it installs, decided purely from the two
@@ -865,8 +941,7 @@ async fn any_side_placed(
     peer_handle: &MobHandle,
     peer: &AgentIdentity,
 ) -> Result<bool, CrossMobError> {
-    Ok(member_plane(local_handle, local).await?.is_placed()
-        || member_plane(peer_handle, peer).await?.is_placed())
+    Ok(member_is_placed(local_handle, local).await? || member_is_placed(peer_handle, peer).await?)
 }
 
 async fn wire_bilateral_transaction(
@@ -1026,6 +1101,36 @@ async fn wire_bilateral_transaction(
             "{error}; rollback failures: {}",
             rollback_failures.join("; ")
         )));
+    }
+    // A placed side whose edge is committed but whose host has not yet
+    // acknowledged the trust row is converging, not failed: report it typed
+    // and keep the edge (no rollback on every coordinator retry).
+    for (handle, mid, member_id, mob_id, expected) in [
+        (
+            &local_handle,
+            &local_mid,
+            &local_member_id,
+            &local_mob_id,
+            &peer_info,
+        ),
+        (
+            &peer_handle,
+            &peer_mid,
+            &peer_member_id,
+            &peer_mob_id,
+            &local_info,
+        ),
+    ] {
+        if let Some(PlacedEdgeReadiness::InstallPending { host }) =
+            placed_member_edge_committed(handle, mid, expected).await?
+        {
+            return Err(CrossMobError::PlacedRouteInstallPending {
+                member_id: member_id.clone(),
+                mob_id: mob_id.clone(),
+                peer_id: expected.peer_id.clone(),
+                host,
+            });
+        }
     }
     let readiness = async {
         let local_ready =
@@ -1234,6 +1339,30 @@ async fn roster_comms_peer_name(
     )?)
 }
 
+/// The name of `local`'s committed edge to member `remote_member_id` of mob
+/// `remote_mob_id`, found by the typed `MemberCommsName` components of the
+/// edges it is wired to (no string matching), when the peer is unreachable.
+async fn local_edge_name_for_remote(
+    local_handle: &MobHandle,
+    local: &AgentIdentity,
+    remote_mob_id: &str,
+    remote_member_id: &str,
+) -> Result<Option<meerkat_core::comms::PeerName>, CrossMobError> {
+    let Some(entry) = local_handle.get_member(local).await? else {
+        return Ok(None);
+    };
+    let remote_member = crate::member_comms_id::mob_member_id_str(remote_member_id);
+    let matched = entry.wired_to.iter().find(|identity| {
+        identity
+            .as_str()
+            .parse::<meerkat_core::MemberCommsName>()
+            .is_ok_and(|name| name.mob_id() == remote_mob_id && name.member() == remote_member)
+    });
+    matched
+        .map(|identity| peer_name(identity.as_str()))
+        .transpose()
+}
+
 fn peer_name(comms_name: &str) -> Result<meerkat_core::comms::PeerName, CrossMobError> {
     meerkat_core::comms::PeerName::new(comms_name.to_string()).map_err(|error| {
         CrossMobError::PeerSpec(format!("invalid peer name {comms_name:?}: {error}"))
@@ -1389,9 +1518,6 @@ async fn unwire_cross_mob_transaction(
 ) -> Result<(), CrossMobError> {
     let local_handle = local_runtime.handle();
     let mut first_error = None;
-    let local_info = member_peer_info(&local_handle, &local_mid, &local_mob_id)
-        .await
-        .ok();
     match remote {
         LocalOrRemote::Local(remote_authority) => {
             let remote_handle = remote_authority.handle;
@@ -1435,54 +1561,79 @@ async fn unwire_cross_mob_transaction(
             }
         }
         LocalOrRemote::Remote(proxy) => {
-            if let Ok(remote_info) = proxy.lookup_member(&remote_member_id).await
-                && let Ok(spec) =
-                    build_remote_member_spec(&remote_info, &remote_member_id, &remote_mob_id)
-                && let Err(error) = mutate_member_unchecked(
-                    local_handle.clone(),
-                    &local_member_id,
-                    PeerTarget::External(spec),
-                    false,
+            // Local half: remove by edge name. The name comes from the peer
+            // gateway's lookup, or, when the peer is unreachable, from the
+            // local member's own committed edge whose typed comms name
+            // names that mob and member. Every failure is reported.
+            let remote_name = match proxy.lookup_member(&remote_member_id).await {
+                Ok(remote_info) => peer_name(&remote_info.comms_name),
+                Err(lookup_error) => match local_edge_name_for_remote(
+                    &local_handle,
+                    &local_mid,
+                    &remote_mob_id,
+                    &remote_member_id,
                 )
                 .await
-            {
-                first_error = Some(error);
-            }
-            if let Some(local_info) = &local_info {
-                // The far side removes trust rows by descriptor, so the
-                // unwire request needs the same dialable address + member
-                // pubkey the wire installed; its strict handler rejects
-                // inproc:// either way.
-                match member_comms_advertised_address(&local_runtime, &local_handle, &local_mid)
-                    .await
                 {
-                    Err(error) => {
-                        if first_error.is_none() {
-                            first_error = Some(error);
-                        }
+                    Ok(Some(name)) => Ok(name),
+                    Ok(None) => Err(CrossMobError::Remote(lookup_error)),
+                    Err(error) => Err(error),
+                },
+            };
+            match remote_name {
+                Ok(name) => {
+                    if let Err(error) = mutate_member_unchecked(
+                        local_handle.clone(),
+                        &local_member_id,
+                        PeerTarget::ExternalName(name),
+                        false,
+                    )
+                    .await
+                    {
+                        first_error.get_or_insert(error);
                     }
-                    Ok(Some(local_address)) if !local_address.starts_with("inproc://") => {
-                        if let Err(error) = proxy
-                            .unwire_remote(
-                                &remote_member_id,
-                                &local_address,
-                                &local_info.comms_name,
-                                &local_info.peer_id,
-                                Some(local_info.pubkey_b64.clone()),
-                            )
-                            .await
-                            && first_error.is_none()
-                        {
-                            first_error = Some(CrossMobError::Remote(error));
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+            // Far half: the peer gateway removes its trust row by the
+            // descriptor the wire installed (its strict handler rejects
+            // inproc://), so it needs the local member's dialable address and
+            // key. Missing material is reported, never skipped silently.
+            match member_peer_info(&local_handle, &local_mid, &local_mob_id).await {
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+                Ok(local_info) => {
+                    match member_comms_advertised_address(&local_runtime, &local_handle, &local_mid)
+                        .await
+                    {
+                        Err(error) => {
+                            first_error.get_or_insert(error);
                         }
-                    }
-                    Ok(other) => {
-                        if first_error.is_none() {
-                            first_error = Some(CrossMobError::LocalMemberNotRemotelyAddressable {
-                                member_id: local_member_id.clone(),
-                                mob_id: local_mob_id.clone(),
-                                advertised: other,
-                            });
+                        Ok(Some(local_address)) if !local_address.starts_with("inproc://") => {
+                            if let Err(error) = proxy
+                                .unwire_remote(
+                                    &remote_member_id,
+                                    &local_address,
+                                    &local_info.comms_name,
+                                    &local_info.peer_id,
+                                    Some(local_info.pubkey_b64.clone()),
+                                )
+                                .await
+                            {
+                                first_error.get_or_insert(CrossMobError::Remote(error));
+                            }
+                        }
+                        Ok(other) => {
+                            first_error.get_or_insert(
+                                CrossMobError::LocalMemberNotRemotelyAddressable {
+                                    member_id: local_member_id.clone(),
+                                    mob_id: local_mob_id.clone(),
+                                    advertised: other,
+                                },
+                            );
                         }
                     }
                 }
@@ -1709,6 +1860,17 @@ impl UnifiedRuntime {
                 session_service: None,
             },
         );
+    }
+
+    /// Test probe: whether the registered same-process peer mob carries its
+    /// session service (so its members' dialable addresses resolve).
+    #[cfg(test)]
+    pub(crate) async fn peer_mob_carries_session_service(&self, mob_id: &str) -> bool {
+        self.peer_mob_handles
+            .read()
+            .await
+            .get(mob_id)
+            .is_some_and(|authority| authority.session_service.is_some())
     }
 
     /// Register all authority needed for direct same-process cross-mob calls.
@@ -2667,10 +2829,10 @@ impl UnifiedRuntime {
         local_member: &AgentIdentity,
         expected_peer: &MemberPeerInfo,
     ) -> Result<bool, CrossMobError> {
-        if let Some(ready) =
+        if let Some(readiness) =
             placed_member_edge_committed(handle, local_member, expected_peer).await?
         {
-            return Ok(ready);
+            return Ok(readiness == PlacedEdgeReadiness::Ready);
         }
         let session_id = handle
             .resolve_bridge_session_id(local_member)
@@ -3062,19 +3224,71 @@ mod tests {
     #[test]
     fn placed_readiness_waits_for_its_outstanding_external_route_install() {
         let installs = installs_with_external("b2", "peer-x");
-        assert!(external_route_install_outstanding(
-            &installs,
-            &AgentIdentity::from("b2"),
-            "peer-x"
-        ));
-        assert!(
-            !external_route_install_outstanding(&installs, &AgentIdentity::from("b2"), "peer-y"),
+        assert_eq!(
+            external_route_install_pending_host(&installs, &AgentIdentity::from("b2"), "peer-x"),
+            Some("host-a".to_string())
+        );
+        assert_eq!(
+            external_route_install_pending_host(&installs, &AgentIdentity::from("b2"), "peer-y"),
+            None,
             "another peer's install does not gate this edge"
         );
-        assert!(
-            !external_route_install_outstanding(&installs, &AgentIdentity::from("c3"), "peer-x"),
+        assert_eq!(
+            external_route_install_pending_host(&installs, &AgentIdentity::from("c3"), "peer-x"),
+            None,
             "another member's install does not gate this edge"
         );
+    }
+
+    #[test]
+    fn a_broken_placed_member_is_still_placed_for_alias_bookkeeping() {
+        use crate::runtime::cross_mob_control::{MemberPlane, MemberPlaneFault};
+        assert!(
+            plane_result_is_placed(Err(MemberPlaneFault::PlacedUnavailable {
+                reason: "member is Broken".to_string(),
+            }))
+            .expect("placed-but-unavailable is a verdict, not a fault"),
+            "a Broken placed side skips inproc aliases, so its unwire can succeed"
+        );
+        assert!(!plane_result_is_placed(Ok(MemberPlane::Local)).expect("local"));
+        assert!(
+            plane_result_is_placed(Ok(placed_plane("tcp://placed-host.test:4200")))
+                .expect("placed")
+        );
+        assert!(
+            plane_result_is_placed(Err(MemberPlaneFault::Mob(meerkat_mob::MobError::Internal(
+                "query fault".to_string()
+            ))))
+            .is_err(),
+            "only a genuine query fault is an error"
+        );
+    }
+
+    #[test]
+    fn peer_info_reports_a_placed_members_durable_address() {
+        use crate::runtime::cross_mob_control::{MemberPlane, peer_info_address_for};
+        assert_eq!(
+            peer_info_address_for(&placed_plane("tcp://placed-host.test:4200"), "m/w/b2"),
+            "tcp://placed-host.test:4200"
+        );
+        assert_eq!(
+            peer_info_address_for(&MemberPlane::Local, "m/w/alice"),
+            "inproc://m/w/alice"
+        );
+    }
+
+    #[test]
+    fn lookup_reports_a_placed_member_without_endpoint_typed() {
+        use crate::runtime::cross_mob_control::{MemberPlaneFault, lookup_address_fault};
+        let (code, message) = lookup_address_fault(MemberPlaneFault::PlacedUnavailable {
+            reason: "member is Broken".to_string(),
+        });
+        assert_eq!(code, "placed_member_unavailable");
+        assert!(message.contains("member is Broken"));
+        let (code, _) = lookup_address_fault(MemberPlaneFault::Mob(
+            meerkat_mob::MobError::Internal("query fault".to_string()),
+        ));
+        assert_eq!(code, "mob_error");
     }
 
     #[test]
@@ -3083,11 +3297,10 @@ mod tests {
             serde_json::from_str(r#"{"outstanding":[],"complete":true}"#)
                 .expect("the pre-external projection shape still decodes");
         assert!(installs.outstanding_external.is_empty());
-        assert!(!external_route_install_outstanding(
-            &installs,
-            &AgentIdentity::from("b2"),
-            "peer-x"
-        ));
+        assert_eq!(
+            external_route_install_pending_host(&installs, &AgentIdentity::from("b2"), "peer-x"),
+            None
+        );
     }
 
     const TEST_PEER_ID: &str = "00000000-0000-4000-8000-000000000001";

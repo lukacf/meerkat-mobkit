@@ -11,7 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `CrossMobError` gains `PlacedMemberUnavailable { member_id, mob_id, reason }`
   for a placed member that has no usable endpoint (Broken, or none
-  registered); exhaustive matches must handle it.
+  registered), and `PlacedRouteInstallPending { member_id, mob_id, peer_id,
+  host }` for a committed placed edge whose host has not yet acknowledged
+  the trust row (converging, not rolled back); exhaustive matches must
+  handle them.
 - `ConsoleSendRequest` gains `skill_refs: Vec<meerkat_core::skills::SkillRef>`
   and `BridgeDelivery` gains `skill_references: Vec<SkillKey>` (see Added).
   Struct literals must set them, usually to `Vec::new()`; the JSON field is
@@ -478,8 +481,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (name and peer id) with no outstanding external route install reported by
   meerkat's `route_installs()` (the host has acknowledged the trust row).
   Endpoint query faults surface as errors instead of "not addressable".
-  Placement decides everywhere, from one `member_endpoint_status` snapshot
-  per side per operation: a placed member without a usable endpoint is
+  Placement decides everywhere (each descriptor decision uses one
+  `member_endpoint_status` snapshot per side): a placed member without a usable endpoint is
   `PlacedMemberUnavailable`, never an `inproc://` fallback, and its endpoint
   must be registered under its `MemberCommsName`. The same-process bilateral
   paths skip inproc alias installation and treat a placed side's route as
@@ -488,8 +491,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   through that mob's own session service (registered with
   `register_peer_runtime`). Unwire removes by edge name
   (`PeerTarget::ExternalName`), so a down or Broken runtime no longer blocks
-  removal, and every same-process unwire failure is reported instead of
-  swallowed. `local_member_peer_info`, `mobkit/cross_mob/peer_info` (RPC,
+  removal (a Broken placed side is still treated as placed), on the
+  same-process and cross-process paths alike (the cross-process local half
+  finds the edge by its typed `MemberCommsName` when the peer is
+  unreachable), and every unwire failure is reported instead of swallowed.
+  A committed placed edge whose host has not yet acknowledged the trust row
+  is reported as `PlacedRouteInstallPending` and kept, instead of being
+  rolled back on every coordinator retry; readiness requires the committed
+  edge's external descriptor to name the exact peer id. `local_member_peer_info`, `mobkit/cross_mob/peer_info` (RPC,
   used by the Python SDK) and the console peer-info read report a placed
   member's durable host address instead of `inproc://`.
 - Cold boot no longer re-verifies unchanged transcripts in the durable

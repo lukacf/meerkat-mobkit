@@ -7128,6 +7128,40 @@ shell = true
         Ok(())
     }
 
+    /// `register_peer_runtime` carries the peer mob's session service, so a
+    /// same-process cross-mob wire resolves the peer member's dialable
+    /// address from that mob (a legacy `register_peer_mob` handle carries
+    /// none).
+    #[tokio::test]
+    async fn registered_peer_runtime_carries_its_session_service()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-peer-runtime-session-service".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let mob_id = runtime.mob_id();
+        runtime
+            .register_peer_mob(&mob_id, runtime.mob_handle())
+            .await;
+        assert!(!runtime.peer_mob_carries_session_service(&mob_id).await);
+        runtime.register_peer_runtime(&runtime).await;
+        assert!(runtime.peer_mob_carries_session_service(&mob_id).await);
+        runtime.shutdown().await;
+        Ok(())
+    }
+
     /// `_system` is the reserved runtime-plane console identity: the
     /// aggregator exempts it from the roster-visibility gate and identity
     /// namespacing (memory.* sink attribution), so a member spawned under

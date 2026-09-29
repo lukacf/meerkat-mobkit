@@ -2310,10 +2310,29 @@ pub(crate) async fn member_peer_info_address(
     member: &meerkat_mob::ids::AgentIdentity,
     comms_name: &str,
 ) -> Result<String, MemberPlaneFault> {
-    Ok(match member_plane(handle, member).await? {
+    Ok(peer_info_address_for(
+        &member_plane(handle, member).await?,
+        comms_name,
+    ))
+}
+
+/// Pure peer-info address choice: a placed member's durable host address,
+/// otherwise the in-process route.
+pub(crate) fn peer_info_address_for(plane: &MemberPlane, comms_name: &str) -> String {
+    match plane {
         MemberPlane::Placed(descriptor) => descriptor.address.to_string(),
         MemberPlane::Local => format!("inproc://{comms_name}"),
-    })
+    }
+}
+
+/// The typed LookupMember error for a plane fault.
+pub(crate) fn lookup_address_fault(fault: MemberPlaneFault) -> (String, String) {
+    match fault {
+        MemberPlaneFault::PlacedUnavailable { .. } => {
+            ("placed_member_unavailable".to_string(), fault.to_string())
+        }
+        MemberPlaneFault::Mob(error) => ("mob_error".to_string(), error.to_string()),
+    }
 }
 
 pub(crate) async fn handle_lookup_member_raw(
@@ -2370,12 +2389,7 @@ pub(crate) async fn handle_lookup_member_raw(
     // runtime, or a placed member's host-acknowledged durable endpoint.
     let advertised_address = member_dialable_address(handle, session_service, &mid)
         .await
-        .map_err(|fault| match fault {
-            MemberPlaneFault::PlacedUnavailable { .. } => {
-                ("placed_member_unavailable".to_string(), fault.to_string())
-            }
-            MemberPlaneFault::Mob(error) => ("mob_error".to_string(), error.to_string()),
-        })?;
+        .map_err(lookup_address_fault)?;
     Ok(ControlResponse::Member {
         peer_id,
         comms_name,
