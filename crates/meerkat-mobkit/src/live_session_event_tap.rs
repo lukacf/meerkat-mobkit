@@ -375,7 +375,7 @@ impl LiveSessionEventTap {
             return 0;
         };
         let mut completions = 0_u64;
-        let mut count = |queued: Queued, budget: &ByteBudget| {
+        let count = |queued: Queued, budget: &ByteBudget| {
             let (envelope, bytes) = queued;
             budget.release(bytes);
             u64::from(matches!(envelope.payload, AgentEvent::RunCompleted { .. }))

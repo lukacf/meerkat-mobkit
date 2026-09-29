@@ -724,19 +724,6 @@ fn external_route_install_pending_host(
         .map(|obligation| obligation.host.0.clone())
 }
 
-/// Whether meerkat still reports a host route install outstanding for the
-/// external edge `member` -> `peer_id` (a typed `route_installs()` fact).
-fn external_route_install_outstanding(
-    installs: &meerkat_contracts::wire::MobRouteInstallsResult,
-    member: &AgentIdentity,
-    peer_id: &str,
-) -> bool {
-    installs
-        .outstanding_external
-        .iter()
-        .any(|obligation| obligation.local == member.as_str() && obligation.peer_id == peer_id)
-}
-
 async fn member_can_address_peer(
     mob_runtime: &crate::MobRuntime,
     handle: &MobHandle,
