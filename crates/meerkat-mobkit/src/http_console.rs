@@ -1606,6 +1606,7 @@ async fn console_send_identity_first(
                 expected_alias,
                 &content,
                 handling_mode,
+                &request.selected_skill_keys(),
                 &accepted,
             )
             .await;
@@ -1660,6 +1661,7 @@ async fn console_send_identity_first(
     let dispatch_events = console_events.cloned();
     let dispatch_identity = identity.clone();
     let dispatch_content = content.clone();
+    let dispatch_skill_references = request.selected_skill_keys();
     let dispatch_origin = request.origin.clone();
     let dispatch_accepted = accepted.clone();
     let dispatch_expected_alias =
@@ -1681,6 +1683,7 @@ async fn console_send_identity_first(
                 dispatch_expected_alias.as_deref(),
                 &dispatch_content,
                 handling_mode,
+                &dispatch_skill_references,
                 &dispatch_accepted,
             )
             .await;
@@ -16130,6 +16133,7 @@ comms = true
                 idempotency_key: "idem-1".to_string(),
                 handling_mode: None,
                 origin_kind: None,
+                skill_refs: Vec::new(),
             },
         )
         .await?;
@@ -16223,6 +16227,7 @@ comms = true
             idempotency_key: "idem-probe".to_string(),
             handling_mode: None,
             origin_kind: Some(crate::console_aggregator::ConsoleTurnOrigin::OperatorProbe),
+            skill_refs: Vec::new(),
         };
         let accepted =
             console_send_identity_first(&aggregator, runtime.clone(), Some(&events), probe.clone())
@@ -16322,6 +16327,7 @@ comms = true
                 idempotency_key: "member-only-idem-1".to_string(),
                 handling_mode: None,
                 origin_kind: None,
+                skill_refs: Vec::new(),
             },
         )
         .await?;
@@ -16409,6 +16415,7 @@ comms = true
                     idempotency_key: "idem-slow-bridge".to_string(),
                     handling_mode: None,
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
             ),
         )
@@ -16502,6 +16509,7 @@ comms = true
                     idempotency_key: "idem-slow-steer-bridge".to_string(),
                     handling_mode: Some("steer".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
             ),
         )
@@ -16585,6 +16593,7 @@ comms = true
             idempotency_key: "idem-replay".to_string(),
             handling_mode: None,
             origin_kind: None,
+            skill_refs: Vec::new(),
         };
         let first = console_send_identity_first(
             &aggregator,
@@ -16733,6 +16742,7 @@ comms = true
                 idempotency_key: "idem-steer-bridge".to_string(),
                 handling_mode: Some("steer".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             },
         )
         .await?;

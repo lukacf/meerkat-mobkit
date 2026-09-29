@@ -1943,6 +1943,9 @@ struct InternalBridgeWork<'a> {
     delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
     /// The leased local session, present only on the explicit human lane.
     host_human_session: Option<&'a meerkat_core::SessionId>,
+    /// Selected skills for the explicit human lane, resolved natively by
+    /// the target member. Empty on every other lane.
+    skill_references: &'a [meerkat_core::skills::SkillKey],
 }
 
 /// Which lane a submission runs in.
@@ -2071,16 +2074,26 @@ async fn submit_internal_bridge_work(
                 "host human input requires a stable delivery identity".to_string(),
             ))
         })?;
+        // Selected skills ride the same fenced admission as the content, so
+        // they reach exactly this member and join the runtime's replay
+        // identity for the delivery.
+        let options = if work.skill_references.is_empty() {
+            meerkat_mob::MemberTurnOptions::new()
+        } else {
+            meerkat_mob::MemberTurnOptions::new()
+                .with_skill_references(work.skill_references.to_vec())
+        };
         let result = match mode {
             BridgeSubmitMode::AdmissionOnly => deadline
                 .bound(
                     "deliver.submit_host_human_input",
                     member_id,
-                    handle.submit_host_human_input_bounded(
+                    handle.submit_host_human_input_with_options_bounded(
                         entry.agent_runtime_id,
                         entry.fence_token,
                         spec,
                         handling_mode,
+                        options,
                         delivery_identity,
                         deadline.deadline.into_std(),
                     ),
@@ -2091,11 +2104,12 @@ async fn submit_internal_bridge_work(
                 .bound(
                     "deliver.start_host_human_input",
                     member_id,
-                    handle.start_host_human_input_bounded(
+                    handle.start_host_human_input_with_options_bounded(
                         entry.agent_runtime_id,
                         entry.fence_token,
                         spec,
                         handling_mode,
+                        options,
                         delivery_identity,
                         deadline.deadline.into_std(),
                     ),
@@ -2525,6 +2539,11 @@ pub struct BridgeDelivery {
     pub interaction_id: Option<String>,
     /// Internal-lane dedup identity (see the struct docs).
     pub delivery_identity: Option<meerkat_mob::MobDeliveryIdentity>,
+    /// Selected skills for this exact turn. Only the explicit local
+    /// host-human lane carries them (as native member-turn skill
+    /// references); every other lane refuses a nonempty selection typed
+    /// instead of delivering the turn without it.
+    pub skill_references: Vec<meerkat_core::skills::SkillKey>,
 }
 
 impl BridgeDelivery {
@@ -2536,6 +2555,7 @@ impl BridgeDelivery {
             injected_context: Vec::new(),
             interaction_id: None,
             delivery_identity: None,
+            skill_references: Vec::new(),
         }
     }
 }
@@ -6433,6 +6453,12 @@ impl MobSessionBridge {
         let injected_context = delivery.injected_context.as_slice();
         let interaction_id = delivery.interaction_id.as_deref();
         let delivery_identity = delivery.delivery_identity.as_ref();
+        let skill_references = delivery.skill_references.as_slice();
+        if !skill_references.is_empty() && host_human_session.is_none() {
+            return Err(BridgeAdmissionError::InvalidInput(
+                "selected skills are carried only on the local host-human lane".to_string(),
+            ));
+        }
         let mid = self.member_id_for_runtime_id(runtime_id).await?;
         // One admission budget for the whole attempt, shared by every actor
         // round trip below: the serialized hops must not each cost a budget.
@@ -6494,6 +6520,7 @@ impl MobSessionBridge {
                 interaction_id,
                 delivery_identity,
                 host_human_session,
+                skill_references,
             },
             handling_mode,
             &deadline,
@@ -6557,6 +6584,7 @@ impl MobSessionBridge {
                         interaction_id,
                         delivery_identity,
                         host_human_session,
+                        skill_references,
                     },
                     handling_mode,
                     &deadline,

@@ -11297,6 +11297,7 @@ pub(crate) async fn send_console_human_on_mob(
     handle: &MobHandle,
     member: &meerkat_mob::runtime::MobMemberListEntry,
     content: meerkat_core::ContentInput,
+    skill_references: &[meerkat_core::skills::SkillKey],
     handling_mode: meerkat_core::types::HandlingMode,
     accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
 ) -> Result<String, MobRuntimeError> {
@@ -11311,6 +11312,13 @@ pub(crate) async fn send_console_human_on_mob(
     )
     .await?;
     if status.external_member.is_some() {
+        // Remote work has no native member-turn skill carrier: refuse a
+        // selection instead of running the turn without it.
+        if !skill_references.is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "selected skills require a local session-backed member",
+            ));
+        }
         // Keep remote work transport semantics, but use the original binding:
         // a stale local snapshot must never become a send to a replacement peer.
         handle
@@ -11338,12 +11346,18 @@ pub(crate) async fn send_console_human_on_mob(
     // origin preserves support for console-addressable internal workers.
     let spec = meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal)
         .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+    let options = if skill_references.is_empty() {
+        meerkat_mob::MemberTurnOptions::new()
+    } else {
+        meerkat_mob::MemberTurnOptions::new().with_skill_references(skill_references.to_vec())
+    };
     handle
-        .submit_host_human_input_bounded(
+        .submit_host_human_input_with_options_bounded(
             runtime_id,
             fence_token,
             spec,
             handling_mode,
+            options,
             delivery,
             deadline.into_std(),
         )

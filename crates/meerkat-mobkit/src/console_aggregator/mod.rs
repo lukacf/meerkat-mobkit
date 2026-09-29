@@ -2059,6 +2059,7 @@ impl MobKitConsoleAggregator {
             request.origin_kind,
             &request.content,
             &handling_mode_value,
+            &request.selected_skill_keys(),
         );
         if let Some(existing) = self
             .inner
@@ -2079,7 +2080,9 @@ impl MobKitConsoleAggregator {
                         .and_then(Value::as_str)
                         == Some(handling_mode_value.as_str())
                     && existing.payload.get("origin_kind").and_then(Value::as_str)
-                        == request.origin_kind.map(ConsoleTurnOrigin::as_str);
+                        == request.origin_kind.map(ConsoleTurnOrigin::as_str)
+                    && request.skill_refs.is_empty()
+                    && existing.payload.get("skill_refs").is_none();
             if !same_request {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
@@ -2194,7 +2197,7 @@ impl MobKitConsoleAggregator {
         spawn_console_send_dispatch(
             self.inner.clone(),
             (resolved, host_policy),
-            content,
+            (content, request.selected_skill_keys()),
             handling_mode,
             dispatching,
             outcome.frame,
@@ -2234,6 +2237,7 @@ impl MobKitConsoleAggregator {
             request.origin_kind,
             &request.content,
             &handling_mode_value,
+            &request.selected_skill_keys(),
         );
         if let Some(existing) = self
             .inner
@@ -2254,7 +2258,9 @@ impl MobKitConsoleAggregator {
                         .and_then(Value::as_str)
                         == Some(handling_mode_value.as_str())
                     && existing.payload.get("origin_kind").and_then(Value::as_str)
-                        == request.origin_kind.map(ConsoleTurnOrigin::as_str);
+                        == request.origin_kind.map(ConsoleTurnOrigin::as_str)
+                    && request.skill_refs.is_empty()
+                    && existing.payload.get("skill_refs").is_none();
             if !same_request {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
@@ -3620,6 +3626,7 @@ async fn member_sources_for_entry_with_hidden(
 async fn dispatch_message_to_resolved_member(
     resolved: &ResolvedConsoleMember,
     content: ContentInput,
+    skill_references: &[meerkat_core::skills::SkillKey],
     handling_mode: meerkat_core::types::HandlingMode,
     accepted: &ConsoleInteractionAccepted,
 ) -> Result<String, ConsoleSendError> {
@@ -3634,6 +3641,7 @@ async fn dispatch_message_to_resolved_member(
                 Some(&resolved.runtime_identity),
                 &content,
                 handling_mode,
+                skill_references,
                 accepted,
             )
             .await
@@ -3652,6 +3660,7 @@ async fn dispatch_message_to_resolved_member(
         &resolved.handle,
         &resolved.member,
         content,
+        skill_references,
         handling_mode,
         accepted,
     )
@@ -3671,17 +3680,19 @@ async fn dispatch_message_to_resolved_member(
 fn spawn_console_send_dispatch(
     inner: Arc<AggregatorInner>,
     producer: (ResolvedConsoleMember, Arc<dyn ConsoleVisibilityPolicy>),
-    content: ContentInput,
+    turn: (ContentInput, Vec<meerkat_core::skills::SkillKey>),
     handling_mode: meerkat_core::types::HandlingMode,
     dispatching: SendState,
     user_frame: ConsoleFrame,
     interaction_id: String,
 ) {
     let (resolved, host_policy) = producer;
+    let (content, skill_references) = turn;
     tokio::spawn(async move {
         match dispatch_message_to_resolved_member(
             &resolved,
             content,
+            &skill_references,
             handling_mode,
             &accepted_from_frame(&user_frame),
         )
@@ -8329,15 +8340,23 @@ fn send_request_fingerprint(
     origin_kind: Option<ConsoleTurnOrigin>,
     content: &Value,
     handling_mode: &str,
+    skill_references: &[meerkat_core::skills::SkillKey],
 ) -> String {
     let content_json = serde_json::to_string(content).unwrap_or_default();
-    match origin_kind {
-        None => hash_short(&format!("{origin}\n{handling_mode}\n{content_json}")),
-        Some(kind) => hash_short(&format!(
+    let base = match origin_kind {
+        None => format!("{origin}\n{handling_mode}\n{content_json}"),
+        Some(kind) => format!(
             "{origin}\n{}\n{handling_mode}\n{content_json}",
             kind.as_str()
-        )),
+        ),
+    };
+    // An empty selection keeps the pre-selection fingerprint, so replays of
+    // sends recorded before skill selection existed still match.
+    if skill_references.is_empty() {
+        return hash_short(&base);
     }
+    let skills_json = serde_json::to_string(skill_references).unwrap_or_default();
+    hash_short(&format!("{base}\nskills\n{skills_json}"))
 }
 
 /// The `user_input` frame payload for a console send. `origin_kind` is
@@ -8351,6 +8370,14 @@ fn user_input_payload(request: &ConsoleSendRequest, handling_mode: &str) -> Valu
     });
     if let (Some(kind), Some(object)) = (request.origin_kind, payload.as_object_mut()) {
         object.insert("origin_kind".to_string(), Value::from(kind.as_str()));
+    }
+    if !request.skill_refs.is_empty()
+        && let (Ok(skills), Some(object)) = (
+            serde_json::to_value(&request.skill_refs),
+            payload.as_object_mut(),
+        )
+    {
+        object.insert("skill_refs".to_string(), skills);
     }
     payload
 }
@@ -9750,6 +9777,7 @@ comms = true
                 idempotency_key: "dispatch-mirroring-1".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect("console send accepted");
@@ -9881,6 +9909,7 @@ comms = true
                 idempotency_key: "scheduled-mirroring-1".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect("console send accepted");
@@ -10417,6 +10446,7 @@ comms = true
                     idempotency_key: "rt-shadow-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -10436,6 +10466,7 @@ comms = true
                 idempotency_key: "rt-shadow-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect_err(
@@ -11380,6 +11411,7 @@ comms = true
                     idempotency_key: "member-hidden-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -11397,6 +11429,7 @@ comms = true
                 idempotency_key: "member-hidden-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect_err("member-hidden live alias must not receive sends");
@@ -11578,6 +11611,7 @@ comms = true
                 idempotency_key: "stale-durable-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect_err("stale durable binding must not send to the wrong live member");
@@ -11596,6 +11630,7 @@ comms = true
                     idempotency_key: "stale-durable-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -11745,6 +11780,7 @@ comms = true
                     idempotency_key: "session-rebind-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -11917,6 +11953,7 @@ comms = true
                     idempotency_key: "session-read-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -12046,6 +12083,7 @@ comms = true
                 idempotency_key: "wrong-projection-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await
             .expect_err("wrong projected live identity must not send as unknown");
@@ -12064,6 +12102,7 @@ comms = true
                     idempotency_key: "wrong-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -12217,6 +12256,7 @@ comms = true
                     idempotency_key: "hidden-wrong-projection-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -12608,6 +12648,7 @@ comms = true
                 idempotency_key: "respawn-bound-generation-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             })
             .await?;
         assert_eq!(accepted.session_id, Some(bound_session_id.to_string()));
@@ -12765,6 +12806,7 @@ comms = true
                     idempotency_key: "duplicate-live-alias-durable-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -12871,6 +12913,7 @@ comms = true
                     idempotency_key: "visible-after-hidden-reserve".to_string(),
                     handling_mode: Some("queue".to_string()),
                     origin_kind: None,
+                    skill_refs: Vec::new(),
                 },
                 None,
             )
@@ -13199,6 +13242,7 @@ comms = true
             idempotency_key: "send-secret".into(),
             handling_mode: Some("queue".into()),
             origin_kind: None,
+            skill_refs: Vec::new(),
         };
         view.reserve_identity_first_interaction(request.clone(), None)
             .await
@@ -14480,6 +14524,7 @@ comms = true
                 idempotency_key: "nonblocking-send".to_string(),
                 handling_mode: Some("queue".to_string()),
                 origin_kind: None,
+                skill_refs: Vec::new(),
             }),
         )
         .await
