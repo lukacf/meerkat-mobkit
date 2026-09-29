@@ -474,6 +474,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- MobKit's two `MobSessionService` wrappers (`delegate_mob_session_service!`
+  and `AfterCreateMobSessionService`) forward meerkat 0.8.49's
+  `append_system_notice_under_runtime_turn_boundary`. The trait default
+  refuses, so interrupted-run notices stayed owed behind the wrappers
+  instead of being recorded in the transcript without a model turn.
+- The bundled adaptive layer-decision schema is regenerated from meerkat
+  0.8.49's canonical `layer_decision_schema()`, which adds the
+  `between_tools` thinking mode.
+- The voice readiness body-read test gets a positive control that meerkat
+  0.8.49's verified-body cache cannot answer: a direct read of the member's
+  committed body through the counting store. The open path's full validation
+  may now be served from that cache, so it no longer proved the counter
+  works.
 - The identity health monitor no longer misses the completion of a turn
   that ran before it attached, so `wait_for_completion` on that turn's
   baseline no longer times out (the operator-method seed-turn timeouts). The
