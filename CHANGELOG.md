@@ -59,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `PeerTopologySuperseded { attempts }` (see Fixed): a managed-topology wiring
   call that exceeds its budget, and a topology plan that stayed stale across
   its bounded replans. The enum is public and not `#[non_exhaustive]`, so
-  exhaustive matches must add both arms.
+  exhaustive matches must add both arms. `PeerWiringTimedOut.operation` can
+  also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
 
 ### Storage and wire compatibility
 
@@ -91,6 +92,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- Behaviour: queue-mode sends and dispatches return their admission receipt
+  before the target's peer neighbourhood is hydrated. A send to an
+  already-Active member no longer builds its Dormant peers or reconciles
+  managed edges before admission. A woken member's first turn can reach only
+  peers that were already Active; Dormant peers are built and wired right
+  after admission.
+- Behaviour: topology reconcile and topology mutations no longer take
+  identity lifecycle locks, so a lifecycle operation (reset, retire, alias
+  rebind) can run concurrently with wiring. The commit revalidates bindings
+  and replans instead of serializing.
+- Behaviour (console): a failed send is classified from typed transport
+  facts. 401, 403, read-only, -32602 and listed pre-ingress statuses are
+  definite rejections ("Retry same attempt"). Unreachable, timeout, 429, 5xx,
+  non-JSON answers, interrupted and other typed refusals stay reconcilable
+  ("Check acceptance"), each with its named reason. A saved attempt answered
+  after its console view ended is settled in its own storage namespace
+  instead of staying "Awaiting acceptance".
 
 - The continuity repair supervisor is event-driven. It used to retry Broken
   identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
@@ -386,8 +405,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   authorized from this network (401)", with the same treatment for 403,
   read-only, invalid params and listed pre-ingress statuses. Each of these
   is a definite rejection with "Retry same attempt", and the saved message
-  is kept. Unreachable, timeout, 5xx, unreadable answers and other typed
-  refusals stay reconcilable, each with its named reason. The row shows the
+  is kept. Unreachable, timeout, 429 (the REST send answers it after
+  reservation), 5xx, unreadable answers, a send interrupted by a console
+  reload, and other typed refusals stay reconcilable, each with its named
+  reason. A saved attempt answered after its console view ended is settled
+  in its own storage namespace, and a failed send also removes its
+  optimistic topology frame. The row shows the
   typed label and message instead of hiding them under "Details", and the
   optimistic busy mark is cleared on every failure. "Check acceptance" now
   reports its own typed outcome on the row: could not check (401,
@@ -395,39 +418,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   multipart) carries `error.data.kind: "unauthenticated"` and
   `http_status: 401`, and the JSON-RPC code stays `-32600`.
 
-- A queued console message to a busy member is admitted at once instead of
-  sitting on "Awaiting acceptance". The identity-first console dispatch ran
-  the ordinary-send peer hydration before admission. That hydration
-  serializes on the process-global topology guard, the managed-peer
-  reconcile lock and every topology identity's lifecycle lock, and awaits
-  unbounded mob wiring and member builds under them. So while the member
-  was mid-turn (e.g. a tool call riding the 125 s callback deadline), the
-  message never reached meerkat: no `SubmitWork`, no runtime input row, and
-  no failure either. Console human input, queue and steer alike, now skips
-  the pre-admission hydration. Admission waits only on the identity's own
-  lifecycle lock, its lease, the bounded recall and the bounded bridge
-  admission. meerkat then queues the input behind the running turn and the
-  frame reaches `Delivered`. The peer neighbourhood is hydrated in a
-  runtime-tracked background task after admission.
-
-- Every queue-mode send and dispatch (`send_*`, `dispatch*`, including the
-  ones the RPC gateway and SDK `dispatch` use) is now admitted before any peer
-  topology work, not only console input. Admission waits only on the target's
-  own embodiment (a Dormant target is still materialized, but without the
-  topology reconcile), its lifecycle lock, alias validation, its lease, the
-  bounded recall and the bounded bridge admission. Peer hydration (peer
-  builds plus the managed-edge reconcile) runs after admission, detached and
-  runtime-tracked when the runtime's owning `Arc` is known. The managed
-  topology reconcile and topology edge mutations no longer hold every
-  topology identity's lifecycle lock across mob wiring calls. They plan
-  against one snapshot of the endpoints' runtime bindings, run the wiring
-  calls with no lifecycle lock held (each call bounded, settling as
-  `IdentityRuntimeError::PeerWiringTimedOut` instead of parking), and commit
-  under the involved endpoints' lifecycle locks only if no binding moved. A
-  reset or respawn during the wiring makes the plan stale: nothing is
-  committed and the reconcile replans, up to three times, then settles as
-  `PeerTopologySuperseded`. A wedged wiring call or peer build can therefore
-  no longer block admission to any identity, queue or steer.
+- Queued input to a busy member is admitted at once instead of waiting
+  behind peer-topology work. Every queue-mode send and dispatch went through
+  the ordinary-send peer hydration before admission: console input, the
+  `send_*` and `dispatch*` lanes, and the RPC gateway and SDK `dispatch`
+  that use them. That hydration serializes on the process-global topology
+  guard, the managed-peer reconcile lock and every topology identity's
+  lifecycle lock, and awaits unbounded mob wiring and member builds (host
+  callbacks bounded only by the 130 s callback wire deadline) under them. So
+  slow or wedged topology work held back the admission receipt, including
+  for a member mid-turn. Now:
+  - For an already-Active target, admission waits only on its lifecycle
+    lock, alias validation, its lease, the bounded recall and the bounded
+    bridge admission. meerkat queues the input behind the running turn.
+  - A send that wakes a Dormant or retired target first reconciles that
+    target's own managed edges (only edges touching it, bounded), so the
+    woken member's first turn can reach its peers. A failure there is logged
+    and retried after admission, never a refused message.
+  - Peer hydration (peer builds plus the managed-edge reconcile) runs after
+    admission. It is detached and runtime-tracked when the runtime's owning
+    `Arc` is known. Concurrent post-admission hydrations for one target merge
+    into one.
+  - The managed topology reconcile and topology edge mutations no longer
+    hold lifecycle locks across mob wiring calls. They plan against one
+    snapshot of the endpoints' runtime bindings, run the wiring calls with no
+    lifecycle lock held, and commit the managed-edge bookkeeping under the
+    entries read lock, only if no binding moved.
+  - Each wiring call is bounded and settles as
+    `IdentityRuntimeError::PeerWiringTimedOut` instead of parking.
+  - A reset or respawn during the wiring, or a wiring refusal while an
+    endpoint's binding moved, makes the plan stale. Nothing is committed and
+    the reconcile replans, up to three times, then settles as
+    `PeerTopologySuperseded`.
+  - A wire or unwire whose reply timed out may still land, so its edge is
+    recorded as unsettled. The next reconcile adopts it, rewires it or
+    unwires it.
+  A wedged wiring call or peer build therefore no longer blocks admission to
+  any other identity, queue or steer.
 
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
