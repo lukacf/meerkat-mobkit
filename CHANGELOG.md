@@ -466,9 +466,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     durable head row (revision, rewrite generation, message count) now proves
     that directly. Any other shape still reads the durable body and runs the
     rewrite-chain provers as before.
+  - A verbatim re-commit is no longer decoded. The startup compaction
+    refresh re-commits the committed bytes through `commit_session_snapshot`,
+    which carries no typed session. Each runtime now keeps a small typed
+    projection receipt: the committed WholeBlob authority it projected and
+    the durable head's CAS token. No Session is retained. The receipt is
+    recorded only once the durable head row is re-proved to carry the
+    committed transcript. The resume's freshness probe records it when it
+    proves the row current, and hands its already-decoded snapshot to its
+    own projections. While the committed row digest and the durable head
+    token are both unchanged, the projection answers from two body-free
+    reads. Either one moving takes the full path.
   - `prepared_append_boundaries_project_without_a_decode_or_graph_validation`
-    bounds per-turn projection at zero decodes, zero graph validations and
-    digest work proportional to the appended turns.
+    bounds per-turn projection at zero decodes, zero graph validations, zero
+    durable body loads (a new counter) and digest work proportional to the
+    appended turns. `the_startup_compaction_refresh_projects_without_a_decode`
+    pins the refresh at zero decodes and zero durable body loads, and
+    `a_moved_durable_head_voids_the_projection_receipt` pins the fallback.
     `a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read`
     pins the fallback when the head moved.
 - A console send that fails now says why, in both queue and steer modes and

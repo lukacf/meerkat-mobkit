@@ -2979,6 +2979,36 @@ struct SessionStoreBackedRuntimeStore {
     /// Inverse-append and durable-behind prover invocations (each is
     /// O(commits x transcript); durable-behind replays the graph per commit).
     rewrite_prover_runs: std::sync::atomic::AtomicU64,
+    /// PER-RUNTIME proof of the last state this facade saw projected: the
+    /// committed WholeBlob authority and the durable head row it left behind
+    /// (see [`ProjectionReceipt`]). No Session is retained. Bounded by the
+    /// runtimes this process projects, like [`Self::freshened`].
+    projection_receipts: std::sync::Mutex<std::collections::HashMap<String, ProjectionReceipt>>,
+    /// Projections answered from [`Self::projection_receipts`]: the committed
+    /// row digest and the durable head token were both unchanged, so there
+    /// was nothing to project and nothing was decoded.
+    receipt_skips: std::sync::atomic::AtomicU64,
+    /// Durable session BODY materializations (`SessionStore::load`) the
+    /// projection and the freshness probe paid. The head-row proofs exist to
+    /// keep ordinary boundaries at zero.
+    durable_body_loads: std::sync::atomic::AtomicU64,
+}
+
+/// The last state one runtime's projection is known to have produced.
+///
+/// `authority` is the committed WholeBlob identity the projection projected
+/// (its row digest names the exact committed bytes); `durable_head_token` is
+/// the CAS token of the durable head row afterwards, which binds every fact
+/// the head carries (transcript revision and count, rewrite generation and
+/// prefix, envelope metadata). While a fresh body-free authority read still
+/// names the same row digest and the durable head still carries the same
+/// token, the committed document and the durable row are both exactly what
+/// they were when they were proved current, so projecting again would write
+/// nothing. Either fact moving sends the projection down its full path.
+#[derive(Debug, Clone)]
+struct ProjectionReceipt {
+    authority: meerkat_runtime::store::WholeBlobStoreAuthority,
+    durable_head_token: String,
 }
 
 impl SessionStoreBackedRuntimeStore {
@@ -3020,6 +3050,138 @@ impl SessionStoreBackedRuntimeStore {
     pub fn rewrite_prover_run_count(&self) -> u64 {
         self.rewrite_prover_runs
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Projections answered from a projection receipt (see `receipt_skips`).
+    #[cfg(test)]
+    pub fn receipt_skip_count(&self) -> u64 {
+        self.receipt_skips
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Durable session body materializations (see `durable_body_loads`).
+    #[cfg(test)]
+    pub fn durable_body_load_count(&self) -> u64 {
+        self.durable_body_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The durable head row's CAS token, or `None` when the store has no
+    /// head row (no incremental channel, or no row yet).
+    async fn durable_head_token(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<String>, meerkat_runtime::store::RuntimeStoreError> {
+        let Some(head) =
+            Self::durable_head(session_store, session_id, "projection receipt").await?
+        else {
+            return Ok(None);
+        };
+        meerkat_core::session_store::session_head_cas_token(&head)
+            .map(Some)
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable head token for the projection receipt: {e}"
+                ))
+            })
+    }
+
+    /// Record that `authority`'s committed document (`committed`) is what
+    /// the durable row now carries (the projection just landed it, or the
+    /// freshness probe proved it).
+    ///
+    /// The receipt is only as good as that claim, so it is re-proved here
+    /// from the durable head row rather than assumed from a returned save: a
+    /// projection write the adapter absorbed (a superseded session, a reset
+    /// window) returns without writing. Only a current-version head whose
+    /// rewrite generation, message count and transcript revision equal the
+    /// committed document's is receipted; anything else (including no head
+    /// row at all) drops the runtime's receipt, and the next projection takes
+    /// its full path.
+    async fn record_projection_receipt(
+        &self,
+        session_store: &Arc<dyn SessionStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        authority: &meerkat_runtime::store::WholeBlobStoreAuthority,
+        committed: &meerkat_core::Session,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let head = Self::durable_head(session_store, committed.id(), "projection receipt").await?;
+        let token = match head {
+            Some(head)
+                if head.version == meerkat_core::SESSION_VERSION
+                    && head.message_count == committed.messages().len() as u64
+                    && committed
+                        .transcript_rewrite_generation()
+                        .is_ok_and(|generation| generation == head.rewrite_count)
+                    && committed
+                        .transcript_revision()
+                        .is_ok_and(|revision| revision == head.head_revision) =>
+            {
+                Some(
+                    meerkat_core::session_store::session_head_cas_token(&head).map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                            "durable head token for the projection receipt: {e}"
+                        ))
+                    })?,
+                )
+            }
+            _ => None,
+        };
+        let mut receipts = self
+            .projection_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match token {
+            Some(durable_head_token) => {
+                receipts.insert(
+                    runtime_id.0.clone(),
+                    ProjectionReceipt {
+                        authority: authority.clone(),
+                        durable_head_token,
+                    },
+                );
+            }
+            None => {
+                receipts.remove(runtime_id.0.as_str());
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this runtime's receipt still proves the durable row current
+    /// for the committed state, from two body-free reads: the committed
+    /// WholeBlob authority (same session, same row digest, i.e. the exact
+    /// bytes that were projected) and the durable head token.
+    async fn projection_receipt_holds(
+        &self,
+        session_store: &Arc<dyn SessionStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        let Some(receipt) = self
+            .projection_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(runtime_id.0.as_str())
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .inner
+            .load_whole_blob_store_authority(runtime_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if current.session_id() != receipt.authority.session_id()
+            || current.blob_sha256() != receipt.authority.blob_sha256()
+        {
+            return Ok(false);
+        }
+        Ok(
+            Self::durable_head_token(session_store, receipt.authority.session_id()).await?
+                == Some(receipt.durable_head_token),
+        )
     }
 
     /// The durable row's rewrite generation as its head row records it.
@@ -3208,6 +3370,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3227,6 +3392,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3250,6 +3418,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3508,6 +3679,8 @@ impl SessionStoreBackedRuntimeStore {
             mark_fresh();
             return Ok(());
         };
+        self.durable_body_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let durable = session_store.load(&session_id).await.map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                 "durable session read for runtime-authority freshness probe: {e}"
@@ -3521,7 +3694,7 @@ impl SessionStoreBackedRuntimeStore {
             // reconciliation, same single-flight; the guard's adoption
             // branch owns the first-save shape. Runs under a lifecycle
             // terminal for the same reason as the durable-behind arm.
-            self.project_committed_session_to_durable(runtime_id, None)
+            self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                 .await?;
             mark_fresh();
             return Ok(());
@@ -3648,8 +3821,20 @@ impl SessionStoreBackedRuntimeStore {
                     "durable row matches committed order and revision but its persisted \
                      envelope differs; projecting for envelope currency"
                 );
-                self.project_committed_session_to_durable(runtime_id, None)
+                self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                     .await?;
+            } else {
+                // Proved current: the committed document is exactly what the
+                // durable row carries. Receipt it, so a verbatim re-commit of
+                // these bytes (the startup compaction refresh) projects from
+                // two body-free reads instead of a decode.
+                self.record_projection_receipt(
+                    session_store,
+                    runtime_id,
+                    committed.authority(),
+                    committed.session(),
+                )
+                .await?;
             }
             mark_fresh();
             return Ok(());
@@ -3682,7 +3867,7 @@ impl SessionStoreBackedRuntimeStore {
                 "durable row orders behind committed runtime authority; \
                  running the committed->durable reconciliation"
             );
-            self.project_committed_session_to_durable(runtime_id, None)
+            self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                 .await?;
             // The 2026-09-03 production boot regression spent 171 s in this
             // branch across 16 sessions with nothing at INFO about how long or
@@ -4186,6 +4371,24 @@ impl SessionStoreBackedRuntimeStore {
         // document it just wrote.
         let flight = self.projection_flight_for(runtime_id);
         let _flight = flight.lock().await;
+        // A boundary without a typed carrier (the startup compaction
+        // refresh re-commits the committed bytes verbatim) would otherwise
+        // decode the committed document only to find the durable row already
+        // carries it. The receipt answers that from two body-free reads.
+        if prepared.is_none()
+            && self
+                .projection_receipt_holds(session_store, runtime_id)
+                .await?
+        {
+            tracing::debug!(
+                runtime_id = %runtime_id,
+                "committed row digest and durable head unchanged since they were proved \
+                 current; nothing to project"
+            );
+            self.receipt_skips
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
         let Some(snapshot) = meerkat_runtime::store::reuse_or_load_committed_whole_blob_snapshot(
             self.inner.as_ref(),
             runtime_id,
@@ -4260,6 +4463,8 @@ impl SessionStoreBackedRuntimeStore {
                         None
                     }
                     DurableHeadRelation::Unproven => {
+                        self.durable_body_loads
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         session_store.load(successor.id()).await.map_err(|e| {
                             meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
                                 "durable predecessor read before boundary projection: {e}"
@@ -4630,6 +4835,20 @@ impl SessionStoreBackedRuntimeStore {
                  re-seeded at the rebased state (compacted head plus preserved \
                  suffix)"
             );
+            // The committed authority just moved to the rebased document; the
+            // snapshot's authority no longer names it.
+            self.projection_receipts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(runtime_id.0.as_str());
+        } else {
+            self.record_projection_receipt(
+                session_store,
+                runtime_id,
+                snapshot.authority(),
+                projected_document,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -18444,18 +18663,30 @@ comms = true
         }
         commit_boundary_through(&store, &runtime_id, &committed).await;
         let at_head_before = store.at_head_skip_count();
+        let receipt_before = store.receipt_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
 
         let (hashed, transcript_bytes) =
             digest_bytes_for_unchanged_boundaries(&store, &runtime_id, &committed, BOUNDARIES)
                 .await;
 
-        // The at-head counter cannot tell the head-row fast path from the
-        // previous body-materializing at-head arm (both increment it once per
-        // boundary); only the byte budget below distinguishes them.
+        // Each re-commit of the same bytes is answered from the projection
+        // receipt the first boundary recorded (committed row digest and
+        // durable head token unchanged), before the at-head arm is reached.
         assert_eq!(
-            store.at_head_skip_count() - at_head_before,
+            store.receipt_skip_count() - receipt_before,
             BOUNDARIES,
-            "every unchanged boundary proves the durable head current"
+            "every unchanged boundary is proved current from the projection receipt"
+        );
+        assert_eq!(
+            store.at_head_skip_count(),
+            at_head_before,
+            "a receipted boundary never reaches the at-head arm"
+        );
+        assert_eq!(
+            store.durable_body_load_count(),
+            durable_loads_before,
+            "no unchanged boundary materializes the durable body"
         );
         assert_eq!(
             store.chain_walk_count(),
@@ -18721,6 +18952,7 @@ comms = true
             .len() as u64;
 
         let append_skips_before = store.append_prefix_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
         let decodes_before = meerkat_core::global_whole_blob_decodes();
         let validations_before = meerkat_core::global_transcript_graph_validations();
         let digest_before = meerkat_core::global_session_content_digest_bytes();
@@ -18747,6 +18979,11 @@ comms = true
             store.append_prefix_skip_count() - append_skips_before,
             BOUNDARIES,
             "the compact head row proves every ordinary append boundary"
+        );
+        assert_eq!(
+            store.durable_body_load_count() - durable_loads_before,
+            0,
+            "no append boundary materializes the durable body"
         );
         assert_eq!(
             store.chain_walk_count(),
@@ -18834,6 +19071,155 @@ comms = true
                     .unwrap_or_else(|error| panic!("{error}"))
             ),
             "the durable row converges to the current committed state, not the stale binding"
+        );
+    }
+
+    /// The committed WholeBlob bytes exactly as the store serves them raw,
+    /// which is what the startup compaction refresh re-commits verbatim.
+    async fn committed_raw_bytes(
+        inner: &Arc<dyn meerkat_runtime::RuntimeStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Arc<Vec<u8>> {
+        meerkat_runtime::store::RuntimeSessionAuthorityOps::load_committed_whole_blob_bytes(
+            inner.session_authority_ops(),
+            runtime_id,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("a committed WholeBlob row"))
+        .0
+    }
+
+    /// A fresh facade over an existing compacted member, as at cold boot:
+    /// the resume's freshness probe proves the durable row current.
+    async fn booted_facade(
+        dir: &std::path::Path,
+        identity: &str,
+    ) -> (
+        SessionStoreBackedRuntimeStore,
+        Arc<dyn SessionStore>,
+        Arc<dyn meerkat_runtime::RuntimeStore>,
+        meerkat_core::Session,
+        meerkat_runtime::LogicalRuntimeId,
+    ) {
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir, identity).await;
+        let store =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_session_boundary_authority(&store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("resume freshness probe: {error}"));
+        (store, session_store, inner, committed, runtime_id)
+    }
+
+    /// The startup compaction refresh re-commits the committed WholeBlob
+    /// bytes verbatim through `commit_session_snapshot`, which carries no
+    /// typed session. Its projection used to decode the committed document
+    /// (full rewrite-graph validation) only to find the durable row already
+    /// carried it. The resume's freshness probe proved the durable row
+    /// current and receipted that; the refresh's projection now answers from
+    /// the committed row digest and the durable head token: no decode, no
+    /// durable body read, nothing written.
+    #[tokio::test]
+    async fn the_startup_compaction_refresh_projects_without_a_decode() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (store, session_store, inner, committed, runtime_id) =
+            booted_facade(dir.path(), "domain:refresh-receipt").await;
+        let head_before = durable_head_count_and_revision(&session_store, committed.id()).await;
+        let bytes = committed_raw_bytes(&inner, &runtime_id).await;
+        let skips_before = store.receipt_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let validations_before = meerkat_core::global_transcript_graph_validations();
+
+        meerkat_runtime::RuntimeStore::commit_session_snapshot(
+            &store,
+            &runtime_id,
+            meerkat_runtime::store::SerializedSessionSnapshot {
+                session_snapshot: bytes,
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("refresh: {error}"));
+
+        assert_eq!(
+            store.receipt_skip_count() - skips_before,
+            1,
+            "the refresh projection is answered from the receipt"
+        );
+        assert_eq!(
+            store.durable_body_load_count() - durable_loads_before,
+            0,
+            "the refresh projection reads no durable body"
+        );
+        assert_eq!(
+            meerkat_core::global_whole_blob_decodes() - decodes_before,
+            0,
+            "the byte-identical refresh decodes nothing (meerkat reaffirms it, and MobKit's \
+             projection answers from the receipt)"
+        );
+        assert_eq!(
+            meerkat_core::global_transcript_graph_validations() - validations_before,
+            0,
+            "the refresh runs no graph validation"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id()).await,
+            head_before,
+            "the durable row is untouched"
+        );
+    }
+
+    /// The receipt proves nothing once the durable row moves. Here a writer
+    /// outside the facade appends to the durable row after the resume
+    /// receipted it; the refresh of the unchanged committed bytes must take
+    /// the full projection, which converges the durable row back to the
+    /// committed authority instead of trusting the stale receipt.
+    #[tokio::test]
+    async fn a_moved_durable_head_voids_the_projection_receipt() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (store, session_store, inner, committed, runtime_id) =
+            booted_facade(dir.path(), "domain:refresh-moved").await;
+        let mut ahead = committed.clone();
+        ahead.push(large_turn(0));
+        session_store
+            .save_authoritative_projection(&ahead)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id())
+                .await
+                .0,
+            ahead.messages().len() as u64,
+            "precondition: the durable head moved"
+        );
+        let bytes = committed_raw_bytes(&inner, &runtime_id).await;
+        let skips_before = store.receipt_skip_count();
+
+        meerkat_runtime::RuntimeStore::commit_session_snapshot(
+            &store,
+            &runtime_id,
+            meerkat_runtime::store::SerializedSessionSnapshot {
+                session_snapshot: bytes,
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("refresh: {error}"));
+
+        assert_eq!(
+            store.receipt_skip_count(),
+            skips_before,
+            "a moved durable head must not be answered from the receipt"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id()).await,
+            (
+                committed.messages().len() as u64,
+                committed
+                    .transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "the full projection converges the durable row to the committed authority"
         );
     }
 
