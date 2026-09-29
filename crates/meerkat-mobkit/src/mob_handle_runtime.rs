@@ -18290,10 +18290,13 @@ comms = true
             digest_bytes_for_unchanged_boundaries(&store, &runtime_id, &committed, BOUNDARIES)
                 .await;
 
+        // The at-head counter cannot tell the head-row fast path from the
+        // previous body-materializing at-head arm (both increment it once per
+        // boundary); only the byte budget below distinguishes them.
         assert_eq!(
             store.at_head_skip_count() - at_head_before,
             BOUNDARIES,
-            "every unchanged boundary proves the durable head current from the head row"
+            "every unchanged boundary proves the durable head current"
         );
         assert_eq!(
             store.chain_walk_count(),
@@ -18306,6 +18309,89 @@ comms = true
             "{BOUNDARIES} unchanged boundaries hashed {hashed} content-digest bytes for a \
              {transcript_bytes}-byte transcript (budget {budget}); a projection re-verified the \
              durable body or re-digested the committed transcript"
+        );
+    }
+
+    /// The head-row fast path must not mistake a durable head for "at the
+    /// committed head" when only the transcript revision matches. The durable
+    /// row sits at rewrite generation N with content C. The committed session
+    /// rewrote C's last message away and back, landing on exactly C at
+    /// generation N+2. The revision and message count match, but the
+    /// generation does not; without the generation guard the provers would
+    /// be skipped and the durable head would stay behind the committed graph
+    /// (the graph-ahead-of-head wedge). The chain walk must run and install
+    /// the missing rewrites.
+    #[tokio::test]
+    async fn a_matching_revision_at_a_newer_generation_still_takes_the_chain_walk() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:revision-generation").await;
+        let durable_generation = durable_head_rewrite_count(&session_store, committed.id()).await;
+        // Two rewrites of C's last message: away to D, then back to C. The
+        // result is C again at generation N+2 (meerkat refuses a single
+        // rewrite that leaves the revision unchanged).
+        let mut restored = committed.clone();
+        let last = restored.messages().len() - 1;
+        let original_last = restored.messages()[last].clone();
+        for (replacement, key) in [
+            (
+                meerkat_core::Message::User(meerkat_core::types::UserMessage::text(
+                    "temporarily rewritten",
+                )),
+                "revision-generation-away",
+            ),
+            (original_last, "revision-generation-back"),
+        ] {
+            let parent_revision = restored
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}"));
+            restored
+                .commit_transcript_rewrite(
+                    meerkat_core::TranscriptRewriteSelection::MessageRange {
+                        start: last,
+                        end: last + 1,
+                    },
+                    vec![replacement],
+                    meerkat_core::TranscriptRewriteReason::new("rewrite away and back"),
+                    Some(key.to_string()),
+                    Some(parent_revision),
+                )
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        assert_eq!(
+            restored
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            committed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "precondition: the rewrite lands back on the durable transcript revision"
+        );
+        let restored_generation = restored
+            .transcript_rewrite_generation()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            restored_generation,
+            durable_generation + 2,
+            "precondition: the committed session is two rewrite generations ahead"
+        );
+
+        let store = SessionStoreBackedRuntimeStore::new(inner, Arc::clone(&session_store));
+        commit_boundary_through(&store, &runtime_id, &restored).await;
+
+        assert_eq!(
+            store.at_head_skip_count(),
+            0,
+            "a revision match at a different generation is not at the committed head"
+        );
+        assert!(
+            store.chain_walk_count() > 0,
+            "the newer generation must take the rewrite-chain walk"
+        );
+        assert_eq!(
+            durable_head_rewrite_count(&session_store, committed.id()).await,
+            restored_generation,
+            "the chain walk installs the missing rewrite generation durably"
         );
     }
 
