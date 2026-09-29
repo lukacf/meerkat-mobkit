@@ -2472,8 +2472,21 @@ struct HealthCompletionLedger {
 #[derive(Default)]
 struct SessionCreditLedger {
     /// The newest space observed; the drain resumes in it.
-    current: Option<Option<meerkat_core::comms::SessionEventEpoch>>,
+    current: ResumeSpace,
     high_water: HashMap<Option<meerkat_core::comms::SessionEventEpoch>, u64>,
+}
+
+/// The sequence space a session's drain resumes in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ResumeSpace {
+    /// Nothing claimed yet: read from the earliest retained event.
+    #[default]
+    Unclaimed,
+    /// The newest space claimed in is unnamed (a live-only source): no
+    /// cursor can resume in it.
+    Unnamed,
+    /// Resume after this space's high-water.
+    Named(meerkat_core::comms::SessionEventEpoch),
 }
 
 impl HealthCompletionLedger {
@@ -2502,7 +2515,10 @@ impl HealthCompletionLedger {
         let session = sessions.entry(session_id.clone()).or_default();
         if !session.high_water.contains_key(&epoch) {
             // A space not seen before is the newest one.
-            session.current = Some(epoch);
+            session.current = match epoch {
+                Some(epoch) => ResumeSpace::Named(epoch),
+                None => ResumeSpace::Unnamed,
+            };
         }
         let high_water = session.high_water.entry(epoch).or_default();
         if seq <= *high_water {
@@ -2523,7 +2539,7 @@ impl HealthCompletionLedger {
             return meerkat_core::comms::SessionEventCursor::Earliest;
         };
         match session.current {
-            Some(Some(epoch)) => meerkat_core::comms::SessionEventCursor::After {
+            ResumeSpace::Named(epoch) => meerkat_core::comms::SessionEventCursor::After {
                 epoch,
                 seq: session.high_water.get(&Some(epoch)).copied().unwrap_or(0),
             },
@@ -5650,7 +5666,8 @@ model = "gpt-5.5"
         use meerkat_core::comms::{SessionEventCursor, SessionEventEpoch};
         let ledger = HealthCompletionLedger::default();
         let session = meerkat_core::types::SessionId::new();
-        let space = Some(SessionEventEpoch::new());
+        let space_epoch = SessionEventEpoch::new();
+        let space = Some(space_epoch);
         assert_eq!(ledger.resume_cursor(&session), SessionEventCursor::Earliest);
         assert!(
             !ledger.claim(&session, space, 0),
@@ -5663,20 +5680,21 @@ model = "gpt-5.5"
         assert_eq!(
             ledger.resume_cursor(&session),
             SessionEventCursor::After {
-                epoch: space.expect("epoch"),
+                epoch: space_epoch,
                 seq: 3,
             }
         );
         // A new sequence space (a placed member's host restart) starts its
         // own high-water instead of refusing its first sequences, and becomes
         // the space the drain resumes in.
-        let restarted = Some(SessionEventEpoch::new());
+        let restarted_epoch = SessionEventEpoch::new();
+        let restarted = Some(restarted_epoch);
         assert!(ledger.claim(&session, restarted, 1));
         assert!(!ledger.claim(&session, restarted, 1));
         assert_eq!(
             ledger.resume_cursor(&session),
             SessionEventCursor::After {
-                epoch: restarted.expect("epoch"),
+                epoch: restarted_epoch,
                 seq: 1,
             }
         );
@@ -5694,7 +5712,7 @@ model = "gpt-5.5"
         assert_eq!(
             ledger.resume_cursor(&session),
             SessionEventCursor::After {
-                epoch: restarted.expect("epoch"),
+                epoch: restarted_epoch,
                 seq: 1,
             }
         );
