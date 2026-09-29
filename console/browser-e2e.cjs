@@ -128,6 +128,24 @@ async function clickLoadOlderHistory(pane) {
       const button = pane.getByRole("button", { name: "Load older history" });
       await button.waitFor({ state: "visible", timeout: 30_000 });
       await button.scrollIntoViewIfNeeded();
+      // Revealing the button scrolls the transcript, but the scroll
+      // controller only leaves "following the live edge" when the native
+      // scroll event is delivered, which is asynchronous (and slow under
+      // load). A synthetic click has no pointerdown to switch it earlier, so
+      // clicking first lets the older page prepend while the pane still
+      // follows the end, and it re-pins to the bottom. When the reveal moved
+      // the transcript away from its end, wait for the pane's own published
+      // away-from-end state (its "Jump to latest" control) before clicking.
+      const awayFromEnd = await pane.locator(".conv__body").evaluate((node) =>
+        node.scrollHeight - node.clientHeight - node.scrollTop > 2);
+      if (awayFromEnd) {
+        await pane.getByRole("button", { name: "Jump to latest" }).waitFor({ state: "visible", timeout: 10_000 });
+        // Reaching the top can itself request the older page (the pane
+        // auto-loads there), which renames or removes this button. That load
+        // was requested after the pane left the live edge, so it is the
+        // demand the caller wants; clicking again is only needed otherwise.
+        if (!(await button.isVisible()) || !(await button.isEnabled())) return;
+      }
       await button.evaluate((node) => node.click());
       return;
     } catch (error) {

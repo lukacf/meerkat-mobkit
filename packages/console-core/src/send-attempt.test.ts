@@ -105,7 +105,7 @@ describe("typed send failures", () => {
     [{ httpStatus: 429 }, "outcome-unknown", "rate_limited", "Gateway busy"],
     [{ httpStatus: 413 }, "definitely-rejected", "rejected", "Rejected"],
     [Object.assign(new Error("console rpc timeout after 60 s"), { transportFailure: "timeout", timeoutMs: 60_000 }), "outcome-unknown", "timeout", "No response"],
-    [Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" }), "outcome-unknown", "unreachable", "Gateway unreachable"],
+    [Object.assign(new TypeError("Failed to fetch"), { transportFailure: "connection_failed" }), "outcome-unknown", "connection_failed", "Acceptance unknown"],
     [Object.assign(new Error("non-JSON"), { transportFailure: "invalid_response", httpStatus: 200 }), "outcome-unknown", "invalid_response", "Unreadable response"],
     [{ httpStatus: 502 }, "outcome-unknown", "gateway_error", "Gateway error"],
     [Object.assign(new Error("host human input refused"), { rpcError: { code: -32000, message: "host human input refused; inspect the typed reason before retrying" } }), "outcome-unknown", "refused", "Send failed"],
@@ -142,8 +142,8 @@ describe("typed send failures", () => {
       kind: "unauthenticated",
       message: "Could not check acceptance: not authorized from this network (401). The saved message is unchanged and was not resent.",
     });
-    expect(describeConsoleAcceptanceCheckFailure(Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" })).message)
-      .toBe("Could not check acceptance: gateway unreachable. The saved message is unchanged and was not resent.");
+    expect(describeConsoleAcceptanceCheckFailure(Object.assign(new TypeError("Failed to fetch"), { transportFailure: "connection_failed" })).message)
+      .toBe("Could not check acceptance: the connection failed before the gateway answered. The saved message is unchanged and was not resent.");
     expect(describeConsoleAcceptanceCheckFailure(Object.assign(new Error("boom"), { httpStatus: 500 })).message)
       .toBe("Could not check acceptance (HTTP 500): boom. The saved message is unchanged and was not resent.");
     expect(CONSOLE_ACCEPTANCE_NO_RECEIPT.kind).toBe("no_receipt");
