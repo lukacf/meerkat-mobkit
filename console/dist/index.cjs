@@ -44307,19 +44307,22 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       return true;
     } catch (submitError) {
       const failure = submitError instanceof ConsoleCapabilityUnavailableError2 ? { state: "definitely-rejected", kind: "capability_unavailable", message: `${errorMessage(submitError)}. Nothing was sent.` } : classifyConsoleSendFailure(submitError);
+      if (lifetimeRef.current.active) {
+        optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
+          (url) => URL.revokeObjectURL(url)
+        );
+        delete optimisticUserByPanelKeyRef.current[panelKey];
+        commitPanelPhase(panelKey, null);
+        identityBusyRef.current[identity] = false;
+        commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+      }
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
         if (pendingAttempt && attemptNamespace) {
           await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) => finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
         }
+        if (lifetimeRef.current.active) forceRender();
         return false;
       }
-      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
-        (url) => URL.revokeObjectURL(url)
-      );
-      delete optimisticUserByPanelKeyRef.current[panelKey];
-      commitPanelPhase(panelKey, null);
-      identityBusyRef.current[identity] = false;
-      commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
       if (pendingAttempt) {
         await setPendingStack(identity, (previous3) => previous3.map((item) => item.id === pendingAttempt.id ? finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }) : item));
       } else {

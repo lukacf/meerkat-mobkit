@@ -3506,23 +3506,28 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // touch the current view's rows. The saved attempt still belongs to
       // its own namespace, so settle it there with the typed failure rather
       // than leaving it "Awaiting acceptance" behind a dead request.
+      // Undo this send's optimistic busy/phase/topology marks first, in any
+      // scope: they were set by this attempt alone on this live view, so a
+      // failed request must never leave the agent looking busy ("Agent
+      // busy", later sends diverted into the queue). Only a dead lifetime
+      // has no view left to undo.
+      if (lifetimeRef.current.active) {
+        optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
+          (url) => URL.revokeObjectURL(url),
+        );
+        delete optimisticUserByPanelKeyRef.current[panelKey];
+        commitPanelPhase(panelKey, null);
+        identityBusyRef.current[identity] = false;
+        commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
+      }
       if (!lifetimeRef.current.active || attemptScope !== sendScopeRef.current) {
         if (pendingAttempt && attemptNamespace) {
           await settleDetachedConsoleSendAttempt(attemptNamespace, identity, pendingAttempt.id, (item) =>
             finishConsoleSendAttempt(item, { state: failure.state, error: failure.message, kind: failure.kind }), false);
         }
+        if (lifetimeRef.current.active) forceRender();
         return false;
       }
-      // Undo this send's optimistic busy/phase/topology marks. They were set
-      // by this attempt alone, so a failed request must never leave the agent
-      // looking busy ("Agent busy" with a card that is not really pending).
-      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
-        (url) => URL.revokeObjectURL(url),
-      );
-      delete optimisticUserByPanelKeyRef.current[panelKey];
-      commitPanelPhase(panelKey, null);
-      identityBusyRef.current[identity] = false;
-      commitLiveFrames(liveFramesRef.current.filter((frame) => frame.id !== optimisticTopologyFrameId));
       if (pendingAttempt) {
         // The saved row owns recovery instructions. Persistence failures retain
         // their own banner instead of being overwritten by the transport error.
