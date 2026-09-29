@@ -233,7 +233,7 @@ async function fetchWithConsoleTimeout(
     // fetch itself failing (DNS, refused, reset, offline, CORS): no HTTP
     // response exists, so the gateway could not be reached or did not answer.
     if (!signal?.aborted && error && typeof error === "object") {
-      (error as ConsoleTransportFailure).transportFailure = "unreachable";
+      (error as ConsoleTransportFailure).transportFailure = "connection_failed";
     }
     throw error;
   } finally {
@@ -244,7 +244,10 @@ async function fetchWithConsoleTimeout(
 /** Typed failure of the console fetch layer. Set only where the failure is
  * observed (timer, fetch rejection, non-JSON body, HTTP status), never parsed
  * back out of a message. */
-export type ConsoleTransportFailureKind = "timeout" | "unreachable" | "invalid_response";
+/** `connection_failed`: the fetch rejected with no HTTP response. The
+ * browser cannot tell a gateway it never reached from a response lost after
+ * the gateway handled the request, so this never implies "not sent". */
+export type ConsoleTransportFailureKind = "timeout" | "connection_failed" | "invalid_response";
 export interface ConsoleTransportFailure extends Error {
   httpStatus?: number;
   transportFailure?: ConsoleTransportFailureKind;

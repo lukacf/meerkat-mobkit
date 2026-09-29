@@ -919,8 +919,8 @@ test("transport failures are typed and stay reconcilable", async () => {
         assert.ok(error instanceof TypeError, "the fetch error itself is kept");
         const failure = classifyConsoleSendFailure(error);
         assert.equal(failure.state, "outcome-unknown");
-        assert.equal(failure.kind, "unreachable");
-        assert.match(failure.message, /^Gateway unreachable \(Failed to fetch\)\./);
+        assert.equal(failure.kind, "connection_failed");
+        assert.match(failure.message, /^The connection failed before the gateway answered \(Failed to fetch\)\. The message may already have been accepted/);
         return true;
       },
     );

@@ -542,21 +542,21 @@ describe("stock durable queue integration", () => {
     expect(JSON.parse(saved[0].envelopeJson).handling_mode).toBe("steer");
   });
 
-  it("shows an unreachable gateway as a typed, reconcilable outcome", async () => {
-    const send = vi.fn(async () => { throw Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" }); });
+  it("shows a connection failure (e.g. a lost acknowledgement) as acceptance unknown, never as not sent", async () => {
+    const send = vi.fn(async () => { throw Object.assign(new TypeError("Failed to fetch"), { transportFailure: "connection_failed" }); });
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
     await compose("sent while the tunnel was down");
     const row = await screen.findByTestId(/^pending-item:/);
-    await waitFor(() => expect(within(row).getByText("Gateway unreachable")).toBeVisible());
-    expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent(/^Gateway unreachable \(Failed to fetch\)\. The console could not confirm whether the message arrived/);
+    await waitFor(() => expect(within(row).getByText("Acceptance unknown")).toBeVisible());
+    expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent(/^The connection failed before the gateway answered \(Failed to fetch\)\. The message may already have been accepted/);
     expect(within(row).getByRole("button", { name: "Check acceptance" })).toBeEnabled();
     expect(within(row).queryByRole("button", { name: "Retry same attempt" })).toBeNull();
-    expect(savedAttempts()[0]).toMatchObject({ state: "outcome-unknown", failureKind: "unreachable" });
+    expect(savedAttempts()[0]).toMatchObject({ state: "outcome-unknown", failureKind: "connection_failed" });
     expect(screen.getByText("Agent idle")).toBeVisible();
   });
 
   it("reports a failed acceptance check as a typed state on the row", async () => {
-    const send = vi.fn(async () => { throw Object.assign(new TypeError("Failed to fetch"), { transportFailure: "unreachable" }); });
+    const send = vi.fn(async () => { throw Object.assign(new TypeError("Failed to fetch"), { transportFailure: "connection_failed" }); });
     const fake = transport(send);
     fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] }) as never;
     fake.executeCommand = vi.fn(async () => { throw unauthenticated(); });

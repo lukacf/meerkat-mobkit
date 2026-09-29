@@ -5557,11 +5557,11 @@ function classifyConsoleSendFailure(error) {
       message: `No response from the gateway${seconds}. It may still have accepted the message: check acceptance before retrying.`
     };
   }
-  if (typed.transportFailure === "unreachable") {
+  if (typed.transportFailure === "connection_failed") {
     return {
       state: "outcome-unknown",
-      kind: "unreachable",
-      message: `Gateway unreachable${detail ? ` (${detail})` : ""}. The console could not confirm whether the message arrived: check acceptance once the connection is back.`
+      kind: "connection_failed",
+      message: `The connection failed before the gateway answered${detail ? ` (${detail})` : ""}. The message may already have been accepted: check acceptance before retrying.`
     };
   }
   if (typed.transportFailure === "invalid_response") {
@@ -5615,8 +5615,8 @@ function consoleSendFailureLabel(attempt) {
       return "Console read-only";
     case "capability_unavailable":
       return "Send unavailable";
-    case "unreachable":
-      return "Gateway unreachable";
+    case "connection_failed":
+      return "Acceptance unknown";
     case "timeout":
       return "No response";
     case "invalid_response":
@@ -5660,8 +5660,8 @@ function describeConsoleAcceptanceCheckFailure(error) {
       return { kind: failure.kind, message: `Could not check acceptance: not authorized from this network (401). ${unchanged}` };
     case "access_denied":
       return { kind: failure.kind, message: `Could not check acceptance: not allowed to read this agent's timeline (403). ${unchanged}` };
-    case "unreachable":
-      return { kind: failure.kind, message: `Could not check acceptance: gateway unreachable. ${unchanged}` };
+    case "connection_failed":
+      return { kind: failure.kind, message: `Could not check acceptance: the connection failed before the gateway answered. ${unchanged}` };
     case "timeout":
       return { kind: failure.kind, message: `Could not check acceptance: no response from the gateway. ${unchanged}` };
     default: {
@@ -29349,7 +29349,7 @@ async function fetchWithConsoleTimeout(input, init, label, timeoutMs = DEFAULT_C
       throw failure;
     }
     if (!signal?.aborted && error && typeof error === "object") {
-      error.transportFailure = "unreachable";
+      error.transportFailure = "connection_failed";
     }
     throw error;
   } finally {

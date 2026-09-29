@@ -160,8 +160,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and replans instead of serializing.
 - Behaviour (console): a failed send is classified from typed transport
   facts. 401, 403, read-only, -32602 and listed pre-ingress statuses are
-  definite rejections ("Retry same attempt"). Unreachable, timeout, 429, 5xx,
-  non-JSON answers, interrupted and other typed refusals stay reconcilable
+  definite rejections ("Retry same attempt"). A connection failure (no HTTP
+  answer, e.g. a lost acknowledgement, shown as "Acceptance unknown"),
+  timeout, 429, 5xx, non-JSON answers, interrupted and other typed refusals
+  stay reconcilable
   ("Check acceptance"), each with its named reason. A saved attempt answered
   after its console view ended is settled in its own storage namespace
   instead of staying "Awaiting acceptance".
@@ -539,11 +541,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   agent shown as busy. Every other failure collapsed into a generic
   "Acceptance unknown". The console now classifies failures from typed
   transport facts: HTTP status, JSON-RPC code or `data.kind`, and the fetch
-  layer's timeout, unreachable or non-JSON marker. A 401 is shown as "Not
+  layer's timeout, connection-failed or non-JSON marker. A 401 is shown as "Not
   authorized from this network (401)", with the same treatment for 403,
   read-only, invalid params and listed pre-ingress statuses. Each of these
   is a definite rejection with "Retry same attempt", and the saved message
-  is kept. Unreachable, timeout, 429 (the REST send answers it after
+  is kept. A connection failure (the browser cannot tell an unreachable
+  gateway from a lost acknowledgement, so it reads "Acceptance unknown"),
+  timeout, 429 (the REST send answers it after
   reservation), 5xx, unreadable answers, a send interrupted by a console
   reload, and other typed refusals stay reconcilable, each with its named
   reason. A saved attempt answered after its console view ended is settled
@@ -551,8 +555,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   optimistic topology frame. The row shows the
   typed label and message instead of hiding them under "Details", and the
   optimistic busy mark is cleared on every failure. "Check acceptance" now
-  reports its own typed outcome on the row: could not check (401,
-  unreachable, ...) or no receipt. The gateway's console RPC 401 (JSON and
+  reports its own typed outcome on the row: could not check (401, a failed
+  connection, ...) or no receipt. The gateway's console RPC 401 (JSON and
   multipart) carries `error.data.kind: "unauthenticated"` and
   `http_status: 401`, and the JSON-RPC code stays `-32600`.
 
