@@ -33,6 +33,9 @@ id = "member-run-stop-{}"
 [profiles.worker]
 model = "gpt-5.5"
 external_addressable = true
+
+[profiles.worker.tools]
+comms = true
 "#,
         NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )

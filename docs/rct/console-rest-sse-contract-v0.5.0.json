@@ -656,6 +656,39 @@
             }
           ]
         },
+        "mobkit/stop_member_run": {
+          "policy_error_refs": [
+            "#/surfaces/rpc/policy_errors/read_only",
+            "#/surfaces/rpc/policy_errors/access_denied"
+          ],
+          "request": {
+            "required_fields": [
+              "member_id",
+              "run_id",
+              "reason"
+            ],
+            "note": "run_id is the member run's UUID from its run_started event (identity.run_id). A stale run_id is the typed not_current receipt, never an interrupt."
+          },
+          "success": {
+            "body": "member_run_stop_result",
+            "required_fields": [
+              "member_id",
+              "receipt"
+            ],
+            "note": "receipt is meerkat's WireRunStopReceipt, tagged by outcome: stopped { run_id, contributors }, not_current { run_id, current_run_id? } or not_stoppable { run_id, state }."
+          },
+          "errors": [
+            {
+              "codes": [
+                -32001,
+                -32004,
+                -32602,
+                -32000
+              ],
+              "note": "Mob refusals (unknown member, unsupported member mode, host refusal) carry meerkat's typed code and structured data."
+            }
+          ]
+        },
         "mobkit/routing/routes/list": {
           "policy_error_refs": [
             "#/surfaces/rpc/policy_errors/access_denied"
