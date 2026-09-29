@@ -606,9 +606,17 @@ fn head_canonical_shape(
     let prev_count = usize::try_from(stored.message_count)
         .map_err(|_| meerkat_store::SessionStoreError::Corrupted(session.id().clone()))?;
     if live.len() >= prev_count {
-        let prefix = session
-            .transcript_prefix_digest(prev_count)
-            .map_err(meerkat_store::SessionStoreError::from)?;
+        // When nothing was appended the stored prefix IS the whole
+        // transcript. Its full content digest is byte-identical to the
+        // prefix digest at that length, and unlike an unwitnessed prefix
+        // digest it seeds the session's retained midstate, so the successor
+        // head minted from this session does not hash the transcript again.
+        let prefix = if live.len() == prev_count {
+            session.transcript_content_digest()
+        } else {
+            session.transcript_prefix_digest(prev_count)
+        }
+        .map_err(meerkat_store::SessionStoreError::from)?;
         if prefix == stored.head_revision {
             return Ok(HeadCanonicalShape::PlainAppend);
         }

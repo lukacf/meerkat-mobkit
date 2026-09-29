@@ -349,6 +349,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Cold boot no longer re-verifies unchanged transcripts in the durable
+  projection (#487). Each resumed member re-commits its unchanged transcript
+  at least twice at boot: the actor's generation-zero boundary and the
+  compaction-outbox checkpoint. `SessionStoreBackedRuntimeStore` projected
+  each commit by materializing and re-verifying the whole durable
+  transcript, then digesting the committed transcript twice more. It now
+  reads the durable body only when a rewrite-carrying successor needs the
+  rewrite-chain provers, and proves "already at the committed head" from the
+  compact head row (revision, generation, message count). When nothing was
+  appended, the head shape check takes the full content digest, which seeds
+  the digest the successor head mint then reuses. Measured through the
+  shipped `rpc_gateway --persistent` identity-first composition on meerkat
+  0.8.47, `mobkit/init` hashed 11.79x the durable transcript bytes before
+  and 7.86x after (11.95x to 8.03x at about 4 MB). The two
+  `unchanged_boundaries_over_*_hash_the_transcript_once` tests bound a
+  projection of an unchanged transcript at one digest.
+
 - Console voice readiness is fast and never a false "no". The server bounds
   a check at 4 s (below the console's 5 s request timeout) and, on expiry,
   logs the typed stage that was running with every stage's elapsed time, then
