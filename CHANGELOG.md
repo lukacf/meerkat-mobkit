@@ -449,6 +449,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   durable identity's roster row. It now resolves the row like the console
   path (`roster_member_id_for_supplied_id`), and so does
   `mobkit/stop_member_run`.
+- Each turn's WholeBlob projection into the continuity store now costs
+  O(delta) instead of O(document), in two ways.
+  - The committed document is no longer read back. `SessionStoreBackedRuntimeStore`
+    keeps the typed session a prepared boundary commits
+    (`PreparedRuntimeSessionCommit::committing_whole_blob_session`, meerkat
+    #1280) and binds it to the authority its commit returned. It projects
+    that session through `reuse_or_load_committed_whole_blob_snapshot`. The
+    ordinary turn therefore pays no full decode and no rewrite-graph
+    validation of the document it just wrote. A head that moved before the
+    projection, or a boundary without a typed WholeBlob document, still takes
+    the authoritative read.
+  - The durable body is no longer loaded to prove an append. After any
+    compaction, every append boundary used to materialize the whole durable
+    transcript just to learn that only the new turn was missing. The compact
+    durable head row (revision, rewrite generation, message count) now proves
+    that directly. Any other shape still reads the durable body and runs the
+    rewrite-chain provers as before.
+  - A verbatim re-commit is no longer decoded. The startup compaction
+    refresh re-commits the committed bytes through `commit_session_snapshot`,
+    which carries no typed session. Each runtime now keeps a small typed
+    projection receipt: the committed WholeBlob authority it projected and
+    the durable head's CAS token. No Session is retained. The receipt is
+    recorded only once the durable head row is re-proved to carry the
+    committed transcript. The resume's freshness probe records it when it
+    proves the row current, and hands its already-decoded snapshot to its
+    own projections. While the committed row digest and the durable head
+    token are both unchanged, the projection answers from two body-free
+    reads. Either one moving takes the full path.
+  - `prepared_append_boundaries_project_without_a_decode_or_graph_validation`
+    bounds per-turn projection at zero decodes, zero graph validations, zero
+    durable body loads (a new counter) and digest work proportional to the
+    appended turns. `the_startup_compaction_refresh_projects_without_a_decode`
+    pins the refresh at zero decodes and zero durable body loads, and
+    `a_moved_durable_head_voids_the_projection_receipt` pins the fallback.
+    `a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read`
+    pins the fallback when the head moved.
 - A console send that fails now says why, in both queue and steer modes and
   on the multipart (attachment) door. Before, a refused or failed request
   (e.g. a 401 from an off-network browser with no console token) could leave
