@@ -432,7 +432,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     lock, alias validation, its lease, the bounded recall and the bounded
     bridge admission. meerkat queues the input behind the running turn.
   - A send that wakes a Dormant or retired target first reconciles that
-    target's own managed edges (only edges touching it, bounded), so the
+    target's own managed edges (only edges touching it, under one 30 s
+    end-to-end budget, and skipped if a concurrent wake already activated
+    it), so the
     woken member's first turn can reach its peers. A failure there is logged
     and retried after admission, never a refused message.
   - Peer hydration (peer builds plus the managed-edge reconcile) runs after
@@ -450,9 +452,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     endpoint's binding moved, makes the plan stale. Nothing is committed and
     the reconcile replans, up to three times, then settles as
     `PeerTopologySuperseded`.
-  - A wire or unwire whose reply timed out may still land, so its edge is
-    recorded as unsettled. The next reconcile adopts it, rewires it or
-    unwires it.
+  - A wire or unwire whose reply timed out may still be queued in the mob
+    actor, where inspection cannot see it, so its edge is recorded as
+    unsettled. A reconcile settles it only with an ordered command that
+    succeeded after it: an idempotent wire if still desired, a tolerant
+    unwire if not, whatever inspection reports.
   A wedged wiring call or peer build therefore no longer blocks admission to
   any other identity, queue or steer.
 
