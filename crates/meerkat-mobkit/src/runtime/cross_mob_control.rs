@@ -2208,6 +2208,39 @@ async fn handle_lookup_member(
     }
 }
 
+/// Where a member can be dialed across processes.
+///
+/// A member with a live comms runtime in this process answers with the
+/// address that runtime advertises (`tcp://host:port` with the real bound
+/// port, `uds:///path`, or `inproc://name` for members without a socket
+/// transport, which remote callers reject). A placed member has no comms
+/// runtime here: its host-acknowledged durable endpoint
+/// ([`meerkat_mob::MobMemberEndpointOwner::Host`]) is the only address it can
+/// be reached at. A local member without a live runtime answers `None`: its
+/// registered address may be stale, and its live runtime is the authority.
+/// A faulted endpoint query is an error, never `None`.
+pub(crate) async fn member_dialable_address(
+    handle: &meerkat_mob::MobHandle,
+    session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
+    member: &meerkat_mob::ids::AgentIdentity,
+) -> Result<Option<String>, meerkat_mob::MobError> {
+    if let Some(service) = session_service
+        && let Some(session_id) = handle.resolve_bridge_session_id(member).await
+        && let Some(comms) = service.comms_runtime(&session_id).await
+    {
+        return Ok(comms.advertised_address());
+    }
+    Ok(handle
+        .member_peer_endpoint(member)
+        .await?
+        .and_then(|endpoint| match endpoint.owner {
+            meerkat_mob::MobMemberEndpointOwner::Host => {
+                Some(endpoint.descriptor.address.to_string())
+            }
+            _ => None,
+        }))
+}
+
 async fn handle_lookup_member_raw(
     handle: &meerkat_mob::MobHandle,
     session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
@@ -2258,16 +2291,11 @@ async fn handle_lookup_member_raw(
         }
     };
     let pubkey_b64 = entry.transport_public_key().map(str::to_string);
-    // The member's dialable envelope-listener address lives on its live
-    // comms runtime, not in the roster; resolve it through the session
-    // service when the control handler was given one.
-    let mut advertised_address = None;
-    if let Some(service) = session_service
-        && let Some(session_id) = handle.resolve_bridge_session_id(&mid).await
-        && let Some(comms) = service.comms_runtime(&session_id).await
-    {
-        advertised_address = comms.advertised_address();
-    }
+    // The member's dialable envelope-listener address: its live local comms
+    // runtime, or a placed member's host-acknowledged durable endpoint.
+    let advertised_address = member_dialable_address(handle, session_service, &mid)
+        .await
+        .map_err(|err| ("mob_error".to_string(), err.to_string()))?;
     Ok(ControlResponse::Member {
         peer_id,
         comms_name,

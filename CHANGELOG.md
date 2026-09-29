@@ -460,6 +460,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   A wedged wiring call or peer build therefore no longer blocks admission to
   any other identity, queue or steer.
 
+- Cross-mob wiring and `LookupMember` address a placed (host-owned) member
+  at its real remote endpoint (meerkat #1269). The member's dialable address
+  used to be resolved only through a comms runtime in this process, so a
+  placed member reported none, and the same-process bilateral paths built
+  `inproc://` descriptors for it. One `member_dialable_address` helper now
+  answers from the live local runtime, or from the placed member's durable
+  host-acknowledged endpoint (`MobHandle::member_peer_endpoint`, owner
+  `Host`). `LookupMember`, cross-process wire and unwire, and the
+  same-process wire and unwire paths all use it. A local member that must
+  be installed on a placed member is described by its dialable
+  (non-`inproc`) address or fails typed (`LocalMemberNotRemotelyAddressable`).
+  Readiness for a placed member is its committed edge: its peer directory
+  lives on its host. Endpoint query faults surface as errors instead of
+  "not addressable".
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
   at least twice at boot: the actor's generation-zero boundary and the

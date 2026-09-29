@@ -529,19 +529,23 @@ async fn member_peer_info(
     })
 }
 
-/// The member's live comms-listener address as its runtime advertises it
-/// (`tcp://host:port` with the real bound port when configured with port
-/// 0), or `None` when the member has no comms runtime. `inproc://...`
-/// comes back as-is; remote-wire callers reject it fail-closed.
+/// The member's dialable comms address: its live comms runtime's advertised
+/// address (`tcp://host:port` with the real bound port when configured with
+/// port 0), or a placed member's host-acknowledged durable endpoint address.
+/// `None` when neither exists. `inproc://...` comes back as-is; remote-wire
+/// callers reject it fail-closed. A faulted endpoint query is an error.
 async fn member_comms_advertised_address(
     mob_runtime: &crate::MobRuntime,
     handle: &MobHandle,
     member: &AgentIdentity,
-) -> Option<String> {
-    let session_id = handle.resolve_bridge_session_id(member).await?;
-    let service = mob_runtime.session_service()?;
-    let comms = service.comms_runtime(&session_id).await?;
-    comms.advertised_address()
+) -> Result<Option<String>, CrossMobError> {
+    crate::runtime::cross_mob_control::member_dialable_address(
+        handle,
+        mob_runtime.session_service(),
+        member,
+    )
+    .await
+    .map_err(CrossMobError::Mob)
 }
 
 /// Build the descriptor for a remote member from the facts its gateway
@@ -585,12 +589,39 @@ fn build_remote_member_spec(
     build_external_peer_spec(&info.comms_name, &info.peer_id, address, Some(pubkey))
 }
 
+/// Readiness of a PLACED member's edge to `expected_peer`, or `None` for a
+/// member whose comms runtime is local (probe its live directory instead).
+///
+/// A placed member's peer directory lives on its host, not in this process.
+/// meerkat commits a placed member's edge only after the host acknowledged
+/// the trust install, so the committed roster edge is the canonical
+/// readiness fact; nothing here falls back to an `inproc` probe.
+async fn placed_member_edge_committed(
+    handle: &MobHandle,
+    member: &AgentIdentity,
+    expected_peer: &MemberPeerInfo,
+) -> Result<Option<bool>, CrossMobError> {
+    if placed_member_endpoint(handle, member).await?.is_none() {
+        return Ok(None);
+    }
+    let entry = handle.get_member(member).await?;
+    Ok(Some(entry.is_some_and(|entry| {
+        entry
+            .wired_to
+            .iter()
+            .any(|identity| identity.as_str() == expected_peer.comms_name)
+    })))
+}
+
 async fn member_can_address_peer(
     mob_runtime: &crate::MobRuntime,
     handle: &MobHandle,
     local_member: &AgentIdentity,
     expected_peer: &MemberPeerInfo,
 ) -> Result<bool, CrossMobError> {
+    if let Some(ready) = placed_member_edge_committed(handle, local_member, expected_peer).await? {
+        return Ok(ready);
+    }
     let session_id = handle
         .resolve_bridge_session_id(local_member)
         .await
@@ -659,6 +690,73 @@ async fn wire_member_with_authority(
     .await
 }
 
+/// A placed member's durable host-acknowledged endpoint, or `None` for a
+/// member whose runtime is local to its mob's process.
+async fn placed_member_endpoint(
+    handle: &MobHandle,
+    member: &AgentIdentity,
+) -> Result<Option<TrustedPeerDescriptor>, CrossMobError> {
+    Ok(handle
+        .member_peer_endpoint(member)
+        .await?
+        .and_then(|endpoint| match endpoint.owner {
+            meerkat_mob::MobMemberEndpointOwner::Host => Some(endpoint.descriptor),
+            _ => None,
+        }))
+}
+
+/// The descriptor `target` installs for `member`.
+///
+/// A placed member is only reachable at its host-acknowledged endpoint (real
+/// remote transport, address and key), never at `inproc://`. When the
+/// TARGET is placed, its runtime lives on a remote host, so a local member
+/// must be described by its dialable (non-`inproc`) address or the wire fails
+/// typed. Only when both runtimes share this process does the
+/// `same_process_transport` descriptor apply.
+async fn install_descriptor_for(
+    member_handle: &MobHandle,
+    member_sessions: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
+    member: &AgentIdentity,
+    info: &MemberPeerInfo,
+    same_process_transport: &MobTransport,
+    target_handle: &MobHandle,
+    target: &AgentIdentity,
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    if let Some(host_endpoint) = placed_member_endpoint(member_handle, member).await? {
+        return Ok(host_endpoint);
+    }
+    if placed_member_endpoint(target_handle, target)
+        .await?
+        .is_some()
+    {
+        let address = crate::runtime::cross_mob_control::member_dialable_address(
+            member_handle,
+            member_sessions,
+            member,
+        )
+        .await?;
+        return match address {
+            Some(address) if !address.starts_with("inproc://") => build_external_peer_spec(
+                &info.comms_name,
+                &info.peer_id,
+                &address,
+                Some(info.pubkey),
+            ),
+            other => Err(CrossMobError::LocalMemberNotRemotelyAddressable {
+                member_id: member.to_string(),
+                mob_id: member_handle.mob_id().to_string(),
+                advertised: other,
+            }),
+        };
+    }
+    build_peer_spec(
+        &info.comms_name,
+        &info.peer_id,
+        same_process_transport,
+        Some(info.pubkey),
+    )
+}
+
 async fn wire_bilateral_transaction(
     local_runtime: crate::MobRuntime,
     peer_runtime: crate::MobRuntime,
@@ -673,18 +771,26 @@ async fn wire_bilateral_transaction(
     let peer_mid = crate::member_comms_id::mob_member_id(&peer_member_id);
     let local_info = member_peer_info(&local_handle, &local_mid, &local_mob_id).await?;
     let peer_info = member_peer_info(&peer_handle, &peer_mid, &peer_mob_id).await?;
-    let peer_spec = build_peer_spec(
-        &peer_info.comms_name,
-        &peer_info.peer_id,
+    let peer_spec = install_descriptor_for(
+        &peer_handle,
+        peer_runtime.session_service(),
+        &peer_mid,
+        &peer_info,
         &MobTransport::Inproc,
-        Some(peer_info.pubkey),
-    )?;
-    let local_spec = build_peer_spec(
-        &local_info.comms_name,
-        &local_info.peer_id,
+        &local_handle,
+        &local_mid,
+    )
+    .await?;
+    let local_spec = install_descriptor_for(
+        &local_handle,
+        local_runtime.session_service(),
+        &local_mid,
+        &local_info,
         &MobTransport::Inproc,
-        Some(local_info.pubkey),
-    )?;
+        &peer_handle,
+        &peer_mid,
+    )
+    .await?;
     let local_member = local_handle.get_member(&local_mid).await?.ok_or_else(|| {
         CrossMobError::MemberNotFound {
             member_id: local_member_id.clone(),
@@ -859,18 +965,26 @@ async fn unwire_bilateral_transaction(
     let peer_mid = crate::member_comms_id::mob_member_id(&peer_member_id);
     let local_info = member_peer_info(&local_handle, &local_mid, &local_mob_id).await?;
     let peer_info = member_peer_info(&peer_handle, &peer_mid, &peer_mob_id).await?;
-    let peer_spec = build_peer_spec(
-        &peer_info.comms_name,
-        &peer_info.peer_id,
+    let peer_spec = install_descriptor_for(
+        &peer_handle,
+        peer_runtime.session_service(),
+        &peer_mid,
+        &peer_info,
         &MobTransport::Inproc,
-        Some(peer_info.pubkey),
-    )?;
-    let local_spec = build_peer_spec(
-        &local_info.comms_name,
-        &local_info.peer_id,
+        &local_handle,
+        &local_mid,
+    )
+    .await?;
+    let local_spec = install_descriptor_for(
+        &local_handle,
+        local_runtime.session_service(),
+        &local_mid,
+        &local_info,
         &MobTransport::Inproc,
-        Some(local_info.pubkey),
-    )?;
+        &peer_handle,
+        &peer_mid,
+    )
+    .await?;
     let local_member = local_handle.get_member(&local_mid).await?.ok_or_else(|| {
         CrossMobError::MemberNotFound {
             member_id: local_member_id.clone(),
@@ -964,22 +1078,30 @@ async fn wire_cross_mob_transaction(
             let remote_handle = remote_authority.handle;
             let remote_mid = crate::member_comms_id::mob_member_id(&remote_member_id);
             let remote_info = member_peer_info(&remote_handle, &remote_mid, &remote_mob_id).await?;
-            let remote_spec = build_peer_spec(
-                &remote_info.comms_name,
-                &remote_info.peer_id,
+            let remote_spec = install_descriptor_for(
+                &remote_handle,
+                None,
+                &remote_mid,
+                &remote_info,
                 &entry.transport,
-                Some(remote_info.pubkey),
-            )?;
-            let local_spec = build_peer_spec(
-                &local_info.comms_name,
-                &local_info.peer_id,
+                &local_handle,
+                &local_mid,
+            )
+            .await?;
+            let local_spec = install_descriptor_for(
+                &local_handle,
+                local_runtime.session_service(),
+                &local_mid,
+                &local_info,
                 &MobTransport::Inproc,
-                Some(local_info.pubkey),
-            )?;
+                &remote_handle,
+                &remote_mid,
+            )
+            .await?;
             mutate_member_unchecked(
                 local_handle.clone(),
                 &local_member_id,
-                PeerTarget::External(remote_spec),
+                PeerTarget::External(remote_spec.clone()),
                 true,
             )
             .await?;
@@ -991,20 +1113,13 @@ async fn wire_cross_mob_transaction(
             )
             .await
             {
-                if let Ok(rollback_spec) = build_peer_spec(
-                    &remote_info.comms_name,
-                    &remote_info.peer_id,
-                    &entry.transport,
-                    Some(remote_info.pubkey),
-                ) {
-                    let _ = mutate_member_unchecked(
-                        local_handle,
-                        &local_member_id,
-                        PeerTarget::External(rollback_spec),
-                        false,
-                    )
-                    .await;
-                }
+                let _ = mutate_member_unchecked(
+                    local_handle,
+                    &local_member_id,
+                    PeerTarget::External(remote_spec),
+                    false,
+                )
+                .await;
                 return Err(error);
             }
             Ok(())
@@ -1016,7 +1131,7 @@ async fn wire_cross_mob_transaction(
             // deliver an envelope across processes. Failing here leaves
             // both rosters untouched.
             let local_address =
-                member_comms_advertised_address(&local_runtime, &local_handle, &local_mid).await;
+                member_comms_advertised_address(&local_runtime, &local_handle, &local_mid).await?;
             let local_address = match local_address {
                 Some(address) if !address.starts_with("inproc://") => address,
                 other => {
@@ -1090,14 +1205,18 @@ async fn unwire_cross_mob_transaction(
             let remote_mid = crate::member_comms_id::mob_member_id(&remote_member_id);
             if let Ok(remote_info) =
                 member_peer_info(&remote_handle, &remote_mid, &remote_mob_id).await
-                && let Ok(spec) = build_peer_spec(
-                    &remote_info.comms_name,
-                    &remote_info.peer_id,
+                && let Ok(spec) = install_descriptor_for(
+                    &remote_handle,
+                    None,
+                    &remote_mid,
+                    &remote_info,
                     &entry.transport,
-                    Some(remote_info.pubkey),
+                    &local_handle,
+                    &local_mid,
                 )
+                .await
                 && let Err(error) = mutate_member_unchecked(
-                    local_handle,
+                    local_handle.clone(),
                     &local_member_id,
                     PeerTarget::External(spec),
                     false,
@@ -1107,12 +1226,16 @@ async fn unwire_cross_mob_transaction(
                 first_error = Some(error);
             }
             if let Some(local_info) = &local_info
-                && let Ok(spec) = build_peer_spec(
-                    &local_info.comms_name,
-                    &local_info.peer_id,
+                && let Ok(spec) = install_descriptor_for(
+                    &local_handle,
+                    local_runtime.session_service(),
+                    &local_mid,
+                    local_info,
                     &MobTransport::Inproc,
-                    Some(local_info.pubkey),
+                    &remote_handle,
+                    &remote_mid,
                 )
+                .await
                 && let Err(error) = mutate_member_unchecked(
                     remote_handle,
                     &remote_member_id,
@@ -1147,7 +1270,12 @@ async fn unwire_cross_mob_transaction(
                 match member_comms_advertised_address(&local_runtime, &local_handle, &local_mid)
                     .await
                 {
-                    Some(local_address) if !local_address.starts_with("inproc://") => {
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Ok(Some(local_address)) if !local_address.starts_with("inproc://") => {
                         if let Err(error) = proxy
                             .unwire_remote(
                                 &remote_member_id,
@@ -1162,7 +1290,7 @@ async fn unwire_cross_mob_transaction(
                             first_error = Some(CrossMobError::Remote(error));
                         }
                     }
-                    other => {
+                    Ok(other) => {
                         if first_error.is_none() {
                             first_error = Some(CrossMobError::LocalMemberNotRemotelyAddressable {
                                 member_id: local_member_id.clone(),
@@ -2333,6 +2461,11 @@ impl UnifiedRuntime {
         local_member: &AgentIdentity,
         expected_peer: &MemberPeerInfo,
     ) -> Result<bool, CrossMobError> {
+        if let Some(ready) =
+            placed_member_edge_committed(handle, local_member, expected_peer).await?
+        {
+            return Ok(ready);
+        }
         let session_id = handle
             .resolve_bridge_session_id(local_member)
             .await
