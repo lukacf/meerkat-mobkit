@@ -369,6 +369,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A queued console message to a busy member is admitted at once instead of
+  sitting on "Awaiting acceptance". The identity-first console dispatch ran
+  the ordinary-send peer hydration before admission. That hydration
+  serializes on the process-global topology guard, the managed-peer
+  reconcile lock and every topology identity's lifecycle lock, and awaits
+  unbounded mob wiring and member builds under them. So while the member
+  was mid-turn (e.g. a tool call riding the 125 s callback deadline), the
+  message never reached meerkat: no `SubmitWork`, no runtime input row, and
+  no failure either. Console human input, queue and steer alike, now skips
+  the pre-admission hydration. Admission waits only on the identity's own
+  lifecycle lock, its lease, the bounded recall and the bounded bridge
+  admission. meerkat then queues the input behind the running turn and the
+  frame reaches `Delivered`. The peer neighbourhood is hydrated in a
+  runtime-tracked background task after admission.
+
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
   at least twice at boot: the actor's generation-zero boundary and the

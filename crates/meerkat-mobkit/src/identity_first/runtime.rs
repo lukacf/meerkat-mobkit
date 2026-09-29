@@ -9006,28 +9006,65 @@ impl IdentityRuntime {
         let skill_references = skill_references.to_vec();
         let interaction_id = accepted.interaction_id.clone();
         let expected_session = accepted.session_id.clone();
-        self.run_tracked_foreground(async move {
-            runtime
-                .send_core(
-                    &identity,
-                    SendRequest {
-                        expected_alias: expected_alias.as_deref(),
-                        content: &content,
-                        system_prompt: None,
-                        handling_mode,
-                        interaction_id: Some(&interaction_id),
-                        commit_mode: SendCommitMode::Ingress,
-                        console_human: Some(ConsoleHumanSend {
-                            delivery_identity: &delivery_identity,
-                            expected_session: expected_session.as_deref(),
-                            skill_references: &skill_references,
-                        }),
-                    },
-                )
+        let hydration_identity = identity.clone();
+        let token = self
+            .run_tracked_foreground(async move {
+                runtime
+                    .send_core(
+                        &identity,
+                        SendRequest {
+                            expected_alias: expected_alias.as_deref(),
+                            content: &content,
+                            system_prompt: None,
+                            handling_mode,
+                            interaction_id: Some(&interaction_id),
+                            commit_mode: SendCommitMode::Ingress,
+                            console_human: Some(ConsoleHumanSend {
+                                delivery_identity: &delivery_identity,
+                                expected_session: expected_session.as_deref(),
+                                skill_references: &skill_references,
+                            }),
+                        },
+                    )
+                    .await
+                    .map(|outcome| outcome.token)
+            })
+            .await?;
+        if handling_mode != HandlingMode::Steer {
+            self.spawn_post_admission_peer_hydration(hydration_identity);
+        }
+        Ok(token)
+    }
+
+    /// Hydrate an identity's reachable peer neighbourhood AFTER its console
+    /// input was admitted. `send_core` skips the pre-admission hydration for
+    /// console human input so admission never waits behind topology
+    /// reconcile; this keeps the neighbourhood converging for the turn the
+    /// input starts. Detached from the caller (the admission receipt is
+    /// already the answer) but tracked by the runtime, so shutdown still
+    /// joins it at its own commit/rollback boundary. Best effort: a failure
+    /// is logged, exactly like the materialization warnings it wraps.
+    fn spawn_post_admission_peer_hydration(self: &Arc<Self>, identity: AgentIdentity) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let hydrator = Arc::clone(&runtime);
+            let owner = identity.clone();
+            if let Err(error) = runtime
+                .run_tracked_foreground(async move {
+                    hydrator
+                        .materialize_reachable_peers(&owner)
+                        .await
+                        .map(|_| ())
+                })
                 .await
-                .map(|outcome| outcome.token)
-        })
-        .await
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    %error,
+                    "console input was admitted; post-admission peer hydration failed"
+                );
+            }
+        });
     }
 
     /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
@@ -9130,7 +9167,17 @@ impl IdentityRuntime {
         // active turn. Ordinary sends may hydrate the reachable topology first,
         // but a steer must reach the current session boundary before the tool
         // turn resumes; background/full-fleet materialization owns the peers.
-        if handling_mode != HandlingMode::Steer {
+        //
+        // Console human input never hydrates before admission, in either
+        // mode. Hydration serializes on the process-global topology guard, the
+        // managed-peer reconcile lock and every topology identity's lifecycle
+        // lock, and awaits unbounded mob wiring and member builds under them.
+        // A queued operator message must get meerkat's durable admission
+        // receipt at once, even while the member is mid-turn (meerkat queues
+        // it behind the running turn), so it cannot wait behind any of that.
+        // Its owner hydrates the neighbourhood after admission instead (see
+        // `send_console_human_input_tracked`).
+        if handling_mode != HandlingMode::Steer && console_human.is_none() {
             if let Some(expected_alias) = expected_alias {
                 let lifecycle_lock = self.lifecycle_lock_for(identity).await;
                 let _lifecycle_guard = lifecycle_lock.lock().await;
