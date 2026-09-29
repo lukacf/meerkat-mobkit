@@ -8808,9 +8808,24 @@ async fn handle_console_runtime_rpc_with_visibility(
             // Run-fenced Stop of one exact member run: the member's runtime
             // stops `run_id` and terminalizes every input already bound to it.
             // A stale `run_id` is meerkat's typed `not_current` receipt.
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+            let Some(member_id) = request
+                .params
+                .get("member_id")
+                .and_then(Value::as_str)
+                .filter(|member_id| !member_id.is_empty())
+            else {
                 return invalid_params(response_id, "member_id required");
             };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "stop_member_run",
+                identity_runtime.as_ref(),
+                &member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             let Some(raw_run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
@@ -8827,17 +8842,10 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(_) => return invalid_params(response_id, "run_id must be a UUID"),
             };
             let reason = reason.to_string();
-            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
-            if let Some(error) = stale_runtime_alias_json_rpc_error(
-                "stop_member_run",
-                identity_runtime.as_ref(),
-                &member_id,
-            )
-            .await
-            {
-                return response_value(response_id, None, Some(error));
-            }
-            let result = if let Some(identity_runtime_ref) = identity_runtime.as_ref()
+            let result: Result<
+                Result<meerkat_contracts::WireRunStopReceipt, meerkat_mob::MobError>,
+                String,
+            > = if let Some(identity_runtime_ref) = identity_runtime.as_ref()
                 && let Some(identity) = identity_runtime_ref
                     .identity_for_member_mutation(&member_id)
                     .await
@@ -8847,15 +8855,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                     crate::member_comms_id::roster_member_id_for_supplied_id(&member_id);
                 identity_runtime_ref
                     .run_member_alias_operation_tracked(&identity, &member_id, move || async move {
-                        handle
+                        Ok(handle
                             .stop_member_run(
                                 meerkat_mob::MobControlPrincipal::Owner,
                                 member_id_value,
                                 run_id,
                                 reason,
                             )
-                            .await
-                            .map_err(|error| error.to_string())
+                            .await)
                     })
                     .await
                     .map_err(|error| error.to_string())
@@ -8864,7 +8871,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "generated member alias requires current identity authority: {member_id}"
                 ))
             } else {
-                runtime
+                Ok(runtime
                     .handle()
                     .stop_member_run(
                         meerkat_mob::MobControlPrincipal::Owner,
@@ -8872,17 +8879,28 @@ async fn handle_console_runtime_rpc_with_visibility(
                         run_id,
                         reason,
                     )
-                    .await
-                    .map_err(|error| error.to_string())
+                    .await)
             };
-            match result.and_then(|receipt| {
-                serde_json::to_value(&receipt).map_err(|error| error.to_string())
-            }) {
-                Ok(receipt) => response_value(
-                    response_id,
-                    Some(serde_json::json!({ "member_id": member_id, "receipt": receipt })),
-                    None,
-                ),
+            match result {
+                Ok(Ok(receipt)) => match serde_json::to_value(&receipt) {
+                    Ok(receipt) => response_value(
+                        response_id,
+                        Some(serde_json::json!({ "member_id": member_id, "receipt": receipt })),
+                        None,
+                    ),
+                    Err(err) => internal_error(
+                        response_id,
+                        format!("failed to serialize run-stop receipt: {err}"),
+                    ),
+                },
+                // meerkat's typed code and structured data, the same rendering
+                // the unified RPC path uses.
+                Ok(Err(mob_error)) => serde_json::to_value(
+                    crate::rpc::mob_methods::mob_declaration_error(response_id.clone(), &mob_error),
+                )
+                .unwrap_or_else(|err| {
+                    internal_error(response_id, format!("stop_member_run failed: {err}"))
+                }),
                 Err(err) => internal_error(response_id, format!("stop_member_run failed: {err}")),
             }
         }
@@ -15947,6 +15965,7 @@ comms = true
             "mobkit/respawn_member",
             "mobkit/reload_member",
             "mobkit/force_cancel_member",
+            "mobkit/stop_member_run",
         ] {
             let param_name = if method == "mobkit/identity/resolved_tools" {
                 "identity"
@@ -15963,7 +15982,14 @@ comms = true
                 Some(identity_runtime.clone()),
                 None,
                 None,
-                rpc_request_with_params(method, json!({ param_name: "rt:review:singleton:0" })),
+                rpc_request_with_params(method, {
+                    let mut params = json!({ param_name: "rt:review:singleton:0" });
+                    if method == "mobkit/stop_member_run" {
+                        params["run_id"] = json!("01936f8b-0000-7000-8000-000000000042");
+                        params["reason"] = json!("stale alias stop");
+                    }
+                    params
+                }),
                 true,
             ))
             .await;
