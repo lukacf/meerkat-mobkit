@@ -698,7 +698,8 @@ mod tests {
     /// retained window again, a gap marker carries no id, and a connection
     /// without `Last-Event-ID` replays from the earliest retained event.
     #[tokio::test]
-    async fn agent_sse_ids_are_sequence_positions_and_a_reconnect_resumes_after_them() {
+    async fn agent_sse_ids_are_sequence_positions_and_a_reconnect_resumes_after_them()
+    -> Result<(), String> {
         use axum::body::Body;
         use axum::http::Request;
         use meerkat_core::comms::{SessionEventCursor, SessionEventEpoch};
@@ -750,8 +751,8 @@ mod tests {
         let read_ids = |response: axum::response::Response| async move {
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
-                .expect("sse body");
-            let text = String::from_utf8(body.to_vec()).expect("utf8 sse body");
+                .map_err(|error| error.to_string())?;
+            let text = String::from_utf8(body.to_vec()).map_err(|error| error.to_string())?;
             let frames: Vec<Option<String>> = text
                 .split("\n\n")
                 .filter(|frame| frame.contains("data:"))
@@ -762,7 +763,7 @@ mod tests {
                         .map(|id| id.trim().to_string())
                 })
                 .collect();
-            frames
+            Ok::<_, String>(frames)
         };
 
         let first = app
@@ -771,12 +772,12 @@ mod tests {
                 Request::builder()
                     .uri("/agents/worker-1/events")
                     .body(Body::empty())
-                    .expect("request"),
+                    .map_err(|error| error.to_string())?,
             )
             .await
-            .expect("response");
+            .map_err(|error| error.to_string())?;
         assert_eq!(
-            read_ids(first).await,
+            read_ids(first).await?,
             vec![None, Some(format!("{epoch}:3")), Some(format!("{epoch}:4")),],
             "the gap marker carries no id; events carry their sequence position"
         );
@@ -788,22 +789,22 @@ mod tests {
                     .uri("/agents/worker-1/events")
                     .header("last-event-id", format!("{epoch}:4"))
                     .body(Body::empty())
-                    .expect("request"),
+                    .map_err(|error| error.to_string())?,
             )
             .await
-            .expect("response");
-        let _ = read_ids(reconnect).await;
+            .map_err(|error| error.to_string())?;
+        read_ids(reconnect).await?;
         let malformed = app
             .oneshot(
                 Request::builder()
                     .uri("/agents/worker-1/events")
                     .header("last-event-id", "worker-1:7")
                     .body(Body::empty())
-                    .expect("request"),
+                    .map_err(|error| error.to_string())?,
             )
             .await
-            .expect("response");
-        let _ = read_ids(malformed).await;
+            .map_err(|error| error.to_string())?;
+        read_ids(malformed).await?;
         assert_eq!(
             *cursors
                 .lock()
@@ -815,6 +816,7 @@ mod tests {
             ],
             "a reconnect resumes after its Last-Event-ID; anything else replays from the earliest"
         );
+        Ok(())
     }
 
     #[test]
