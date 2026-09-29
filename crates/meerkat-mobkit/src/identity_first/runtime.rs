@@ -10731,7 +10731,10 @@ impl IdentityRuntime {
                  (non-destructive; continuity generation does not advance)"
             );
             return Ok(MemberReloadOutcome {
-                reloaded: reload.disposition == MemberReloadDisposition::Discarded,
+                reloaded: matches!(
+                    reload.disposition,
+                    MemberReloadDisposition::Discarded | MemberReloadDisposition::Reattached
+                ),
                 disposition: reload.disposition,
                 session_id: Some(before.session_id),
                 generation: Some(before.generation),
@@ -10881,6 +10884,7 @@ impl IdentityRuntime {
                 MemberReloadDisposition::Discarded => ReloadAttemptOutcome::Discarded,
                 MemberReloadDisposition::NotDegraded => ReloadAttemptOutcome::NotDegraded,
                 MemberReloadDisposition::NotCurrent => ReloadAttemptOutcome::NotCurrent,
+                MemberReloadDisposition::Reattached => ReloadAttemptOutcome::Reattached,
             },
             detail: None,
             data: None,

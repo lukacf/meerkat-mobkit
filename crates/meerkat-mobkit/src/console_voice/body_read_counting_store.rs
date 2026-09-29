@@ -100,6 +100,19 @@ impl RuntimeStore for BodyReadCountingRuntimeStore {
             .await
     }
 
+    /// The metadata read loads the committed document's bytes (meerkat
+    /// #1255 decodes only its metadata), so it is a body read too.
+    async fn load_committed_whole_blob_metadata(
+        &self,
+        runtime_id: &LogicalRuntimeId,
+    ) -> Result<Option<meerkat_runtime::CommittedWholeBlobMetadata>, RuntimeStoreError> {
+        self.body_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await
+    }
+
     async fn commit_prepared_whole_blob_snapshot_cas(
         &self,
         runtime_id: &LogicalRuntimeId,

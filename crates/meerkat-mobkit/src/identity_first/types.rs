@@ -1570,6 +1570,10 @@ pub enum MemberReloadDisposition {
     /// dormant or uninitialized). Nothing was done; the next send
     /// materializes lazily.
     NotCurrent,
+    /// The registration had lost its runtime attachment (a teardown whose
+    /// unregister never completed); the reload completed the pending
+    /// unregister and re-attached the same durable session.
+    Reattached,
 }
 
 /// Result of `mobkit/reload_member` / `IdentityRuntime::reload_member`.
@@ -1636,6 +1640,9 @@ pub enum ReloadAttemptOutcome {
     Discarded,
     NotDegraded,
     NotCurrent,
+    /// The registration had lost its runtime attachment and was re-attached
+    /// to the same durable session.
+    Reattached,
     /// meerkat refused: store not healthy yet; registration retained.
     Refused,
     /// meerkat's bounded reload timed out at `detail` (the stage).

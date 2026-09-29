@@ -65,6 +65,15 @@ fn durable_snapshot_is_typed_absent(error: &meerkat_mob::MobError) -> bool {
     )
 }
 
+/// Whether a delivery failure is stale runtime state the deliver path repairs
+/// (resume onto the same durable session, re-admitting queued inputs) before
+/// retrying. Typed carriers are matched on the variant; the text classes
+/// below cover meerkat refusals that are not typed yet.
+fn is_repairable_bridge_delivery(error: &BridgeError) -> bool {
+    matches!(error, BridgeError::MemberRuntimeDetached { .. })
+        || is_repairable_bridge_delivery_error(&error.to_string())
+}
+
 fn is_repairable_bridge_delivery_error(error: &str) -> bool {
     is_missing_event_injector_error(error)
         || is_missing_bridge_session_snapshot_error(error)
@@ -137,6 +146,18 @@ fn classify_submit_mob_error(
             BridgeError::AdmissionBacklogFull {
                 identity: member_id,
                 depth,
+            }
+        }
+        // meerkat (#1248): the member's session has no committed runtime
+        // attachment. Typed, so the deliver path routes it into the resume
+        // repair on the variant, never on its text.
+        error @ meerkat_mob::MobError::MemberRuntimeDetached { .. } => {
+            let meerkat_mob::MobError::MemberRuntimeDetached { session_id, .. } = &error else {
+                unreachable!("matched above")
+            };
+            BridgeError::MemberRuntimeDetached {
+                session_id: session_id.clone(),
+                detail: error.to_string(),
             }
         }
         // A reply deadline can expire after runtime admission has started.
@@ -311,6 +332,12 @@ fn bridge_member_reload(outcome: meerkat_mob::MemberReloadOutcome) -> BridgeMemb
         }
         meerkat_mob::MemberReloadDisposition::NotCurrent => {
             super::types::MemberReloadDisposition::NotCurrent
+        }
+        // meerkat (#1248): the registration had lost its runtime attachment;
+        // the reload completed the pending unregister and re-attached the
+        // same session. A real replacement of the live registration.
+        meerkat_mob::MemberReloadDisposition::Reattached => {
+            super::types::MemberReloadDisposition::Reattached
         }
     };
     BridgeMemberReload {
@@ -718,6 +745,16 @@ pub enum BridgeError {
         /// Deliveries already parked behind the member's in-flight admission.
         depth: usize,
     },
+    /// meerkat refused dispatch because the member's session has no committed
+    /// runtime attachment (typed `MobError::MemberRuntimeDetached`, for
+    /// example a runtime-loop teardown whose unregister never completed).
+    /// Repairable stale runtime state: the deliver path resume-repairs the
+    /// member onto the same durable session, re-admitting its queued inputs,
+    /// and retries. `detail` is meerkat's rendering.
+    MemberRuntimeDetached {
+        session_id: meerkat_core::types::SessionId,
+        detail: String,
+    },
     /// meerkat 0.8.34 REFUSED a member registration reload because the durable
     /// resume authority is still unreadable: the store is not healthy yet.
     /// The degraded registration and live shell are retained and the next
@@ -859,6 +896,9 @@ impl std::fmt::Display for BridgeError {
                  registration requires a registration-authorized cold reload \
                  (mobkit/reload_member; non-destructive, same session and generation): {reason}"
             ),
+            Self::MemberRuntimeDetached { detail, .. } => {
+                write!(f, "session bridge mob error: {detail}")
+            }
             Self::AdmissionBacklogFull { identity, depth } => write!(
                 f,
                 "session bridge delivery to member {identity} refused: the member's admission \
@@ -1089,6 +1129,9 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::HostHumanInput(error) => Self::HostHumanInput(error),
             BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
             BridgeError::Mob(detail) => Self::Mob(detail),
+            // Reached only where the deliver path did not repair it (for
+            // example host human input); the text is meerkat's rendering.
+            BridgeError::MemberRuntimeDetached { detail, .. } => Self::Mob(detail),
             BridgeError::UnsupportedForMode {
                 identity,
                 mode,
@@ -6525,10 +6568,7 @@ impl MobSessionBridge {
             // delivered: hand it up typed so a tracked delivery can fall back
             // to the ingress lane; never repair, never `Mob(String)`.
             Err(err @ BridgeError::UnsupportedForMode { .. }) => return Err(err.into()),
-            Err(err)
-                if host_human_session.is_none()
-                    && is_repairable_bridge_delivery_error(&err.to_string()) =>
-            {
+            Err(err) if host_human_session.is_none() && is_repairable_bridge_delivery(&err) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
                     error = %err,
@@ -9121,6 +9161,40 @@ mod tests {
             }
             other => panic!("expected ReloadRequired, got {other:?}"),
         }
+    }
+
+    /// meerkat #1248: a member whose session lost its runtime attachment is
+    /// refused typed. It classifies from the variant into the repairable
+    /// class (resume repair onto the same durable session, queued inputs
+    /// carried), whatever the rendering says.
+    #[tokio::test]
+    async fn typed_member_runtime_detached_is_repairable_from_the_variant() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let session_id = meerkat_core::types::SessionId::new();
+        let classified = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberRuntimeDetached {
+                session_id: session_id.clone(),
+                detachment: meerkat_mob::error::MemberRuntimeDetachment::UnregisterFailed,
+            },
+            &deadline,
+        );
+        match &classified {
+            BridgeError::MemberRuntimeDetached {
+                session_id: classified_session,
+                ..
+            } => assert_eq!(classified_session, &session_id),
+            other => panic!("expected MemberRuntimeDetached, got {other:?}"),
+        }
+        assert!(is_repairable_bridge_delivery(&classified));
+        assert!(
+            !is_repairable_bridge_delivery_error(&classified.to_string()),
+            "the class comes from the variant, not the text"
+        );
+        assert!(!is_reload_required_bridge_delivery_error(
+            &classified.to_string()
+        ));
     }
 
     #[test]

@@ -742,10 +742,15 @@ impl PreBuildMobSessionService {
         SessionError,
     > {
         (self.hook)(&mut req).await?;
+        // Only a typed Resume continues a persisted session; a Mint carrier
+        // (a spawn's pre-assigned id, meerkat #1225) has nothing to load.
         let resume_id = req
             .build
             .as_ref()
             .filter(|build| build.initial_tool_filter.is_none())
+            .filter(|build| {
+                build.session_build_intent() == meerkat_core::service::SessionBuildIntent::Resume
+            })
             .and_then(|build| build.resume_session.as_ref())
             .map(|session| session.id().clone());
         let persisted_resume = match resume_id {
@@ -4716,6 +4721,32 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         }
         self.inner
             .load_committed_whole_blob_snapshot(runtime_id)
+            .await
+    }
+
+    /// Same authority minting as [`Self::load_committed_whole_blob_snapshot`]:
+    /// the metadata read is a view of the same committed document.
+    async fn load_committed_whole_blob_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::CommittedWholeBlobMetadata>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
+        if let Some(metadata) = self
+            .inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await?
+        {
+            return Ok(Some(metadata));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
+        self.inner
+            .load_committed_whole_blob_metadata(runtime_id)
             .await
     }
 
@@ -17363,10 +17394,19 @@ comms = true
             Arc::clone(&inner),
             Arc::clone(&adapter) as Arc<dyn SessionStore>,
         ));
-        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
-            .await
-            .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
-            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        let committed =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
+                .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        // meerkat #1255: the decorator forwards the metadata-only read of the
+        // same committed row (never the trait default), with its authority.
+        let metadata =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_metadata(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"))
+                .unwrap_or_else(|| panic!("the committed metadata must be readable"));
+        assert_eq!(metadata.authority(), committed.authority());
 
         let successor_revision = successor
             .transcript_revision()

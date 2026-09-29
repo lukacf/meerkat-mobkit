@@ -375,6 +375,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   forced refresh still read
   (`unsettled_recovery_refresh_does_not_reread_an_unchanged_document`).
 
+- Meerkat 0.8.49 typed shapes are handled. A member reload that re-attached
+  a registration left without a runtime attachment (`Reattached`, #1248)
+  reports the `reattached` disposition with `reloaded: true`. A delivery
+  refused with the typed `MemberRuntimeDetached` is resume-repaired onto the
+  same durable session on the variant, carrying queued input. The build
+  callback sends `resume_session_id` only for a typed Resume (#1225): a
+  spawn's pre-assigned id rides as `session_id` with
+  `session_build_intent: "mint"`, and standing instructions apply on a mint.
+  Both production `RuntimeStore` decorators forward the new
+  `load_committed_whole_blob_metadata` (#1255) instead of answering the trait
+  default.
 - Console voice readiness is fast and never a false "no". The server bounds
   a check at 4 s (below the console's 5 s request timeout) and, on expiry,
   logs the typed stage that was running with every stage's elapsed time, then
