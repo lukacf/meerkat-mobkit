@@ -1487,6 +1487,113 @@ async fn assistant_identity_pending_refresh_retries_unchanged_head_through_disco
     Ok(())
 }
 
+/// Boot-time staged-turn shape (HomeCore, 0.8.45: a 453 s first turn after a
+/// cold boot, 6-7 minutes of it staged). A member whose turn is staged or
+/// running is not idle, so its recovery refresh stays unsettled and the
+/// member stays on the retry list. Every 5 s discovery pass used to re-read
+/// the member's whole session document even though nothing durable changed.
+/// An unsettled pass over an unchanged durable write epoch now skips that
+/// read. The pass that observes the member settled still reads, and so does
+/// any pass after a durable write.
+#[tokio::test]
+async fn unsettled_recovery_refresh_does_not_reread_an_unchanged_document() -> ConsoleLogResult<()>
+{
+    let (_temp, runtime, service) =
+        super::tests::build_stress_runtime_with_write_epochs(1, Duration::ZERO, true).await;
+    let store = Arc::new(InMemoryConsoleLogStore::new());
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let mut entry = super::tests::runtime_entry_for_test(RUNTIME, &runtime);
+    entry.identity_namespace.clear();
+    let member = runtime
+        .mob_handle()
+        .list_members_observation_snapshot()
+        .await
+        .into_iter()
+        .next()
+        .ok_or("fixture member missing")?;
+    let record = identity_record_for_member(&entry, &runtime.mob_handle(), &member)
+        .await
+        .ok_or("fixture identity missing")?;
+    let session_id = record.session_id.clone().ok_or("fixture session missing")?;
+    assert!(
+        entry
+            .runtime
+            .session_document_write_epoch(&session_id)
+            .is_some(),
+        "precondition: the fixture composes the durable write-epoch witness"
+    );
+    aggregator
+        .inner
+        .runtimes
+        .write()
+        .map_err(|_| std::io::Error::other("runtime fixture lock"))?
+        .insert(RUNTIME.into(), entry.clone());
+    let target = SessionBackfillTarget {
+        assistant_refresh: assistant_history_refresh::AssistantHistoryRefreshReason::Recovery,
+        provenance: None,
+        entry: entry.clone(),
+        record: record.clone(),
+        session_id: session_id.clone(),
+    };
+    let retry_key = (
+        entry.registration_id,
+        RUNTIME.to_string(),
+        record.identity.clone(),
+        session_id.clone(),
+    );
+    let pass = |gate: assistant_history_refresh::AssistantHistoryRefreshGate| {
+        backfill_one_session_history_with_refresh_observer(
+            aggregator.inner.clone(),
+            target.clone(),
+            false,
+            move |_, _, _, _| Box::pin(std::future::ready(gate)),
+        )
+    };
+
+    let reads = service.read_calls();
+    service.script_history([super::tests::ScriptedHistoryRead {
+        page: Some(history_page(&session_id, &[])?),
+        gate: None,
+    }]);
+    pass(assistant_history_refresh::AssistantHistoryRefreshGate::Pending).await?;
+    assert_eq!(
+        service.read_calls(),
+        reads + 1,
+        "the first unsettled pass reads the current document"
+    );
+
+    for _ in 0..3 {
+        pass(assistant_history_refresh::AssistantHistoryRefreshGate::Pending).await?;
+    }
+    assert_eq!(
+        service.read_calls(),
+        reads + 1,
+        "unsettled passes over an unchanged write epoch must not re-read the whole document"
+    );
+    assert!(
+        aggregator
+            .inner
+            .assistant_history_retries
+            .lock()
+            .map_err(|_| std::io::Error::other("fixture retry lock"))?
+            .contains(&retry_key),
+        "a skipped unsettled pass keeps the member on the retry list"
+    );
+
+    service.script_history([super::tests::ScriptedHistoryRead {
+        page: Some(history_page(&session_id, &[])?),
+        gate: None,
+    }]);
+    pass(assistant_history_refresh::AssistantHistoryRefreshGate::Settled).await?;
+    assert_eq!(
+        service.read_calls(),
+        reads + 2,
+        "the pass that observes the member settled still performs its read"
+    );
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
 #[test]
 fn assistant_identity_history_refreshes_after_extraction_compaction_and_truncation() {
     for kind in [

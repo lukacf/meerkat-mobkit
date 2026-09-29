@@ -170,6 +170,12 @@ struct AggregatorInner {
     /// row write, on a fully idle gateway. Entries are dropped with their
     /// runtime; a missing entry or an epoch-less runtime always reads.
     session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Per-session durable write epoch at which an UNSETTLED assistant
+    /// refresh (the member was not yet idle) last completed its full history
+    /// read. An unsettled pass restores positive frames only, so a later
+    /// unsettled pass over the same epoch has nothing to add and skips the
+    /// full-document read; a settled pass always reads.
+    session_pending_read_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
     member_provenance: std::sync::Mutex<MemberProvenanceCache>,
     member_provenance_searches: std::sync::Mutex<MemberProvenanceSearchCache>,
     notice_observations: std::sync::Mutex<NoticeObservationCache>,
@@ -662,6 +668,7 @@ impl MobKitConsoleAggregator {
                     options.max_concurrent_session_backfills,
                 )),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_pending_read_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
@@ -738,6 +745,7 @@ impl MobKitConsoleAggregator {
                 opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: owner.session_backfill_permits.clone(),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_pending_read_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
@@ -900,6 +908,11 @@ impl MobKitConsoleAggregator {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|key, _| !key.starts_with(&prefix));
+            self.inner
+                .session_pending_read_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|key, _| !key.starts_with(&prefix));
         }
         // Re-registering a key replaces its live-projection task: signal the
         // old one before spawning the new (otherwise both would project).
@@ -1033,6 +1046,11 @@ impl MobKitConsoleAggregator {
             let prefix = format!("{runtime_key}:session-history:");
             self.inner
                 .session_backfill_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|key, _| !key.starts_with(&prefix));
+            self.inner
+                .session_pending_read_epochs
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|key, _| !key.starts_with(&prefix));
@@ -5449,6 +5467,10 @@ where
     // Only a failure-free pass may admit the pre-read epoch: recording it on
     // a failure would suppress retries until the next durable write.
     let mut completed_cleanly = true;
+    // A failure is distinct from an unsettled refresh: only a failure-free
+    // unsettled pass may record its read epoch below.
+    let mut backfill_failed = false;
+    let mut unsettled_refresh = false;
     loop {
         if !runtime_entry_is_current(&inner, &entry) {
             return Ok(());
@@ -5477,6 +5499,7 @@ where
             assistant_history_refresh::AssistantHistoryRefreshGate::Pending
         ) {
             completed_cleanly = false;
+            unsettled_refresh = true;
         }
         cache_notice_observation(
             &inner,
@@ -5509,6 +5532,28 @@ where
                 .await;
             continue;
         }
+        // An unsettled refresh (the member is not idle yet, e.g. a staged or
+        // running turn) can only restore positive frames. When the last
+        // failure-free unsettled pass already read this exact durable write
+        // epoch, re-reading the whole document every discovery tick adds
+        // nothing: skip it and leave the retry armed, so the pass that
+        // observes the member settled still performs its read. An explicit
+        // forced refresh always reads.
+        if !force_refresh
+            && matches!(
+                assistant_refresh_gate,
+                assistant_history_refresh::AssistantHistoryRefreshGate::Pending
+            )
+            && let Some(epoch) = write_epoch
+            && inner
+                .session_pending_read_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&watermark_runtime_key)
+                == Some(&epoch)
+        {
+            break;
+        }
         let page = match entry
             .runtime
             .read_session_history(&session_id, 0, None)
@@ -5527,6 +5572,7 @@ where
                 )
                 .await?;
                 completed_cleanly = false;
+                backfill_failed = true;
                 break;
             }
         };
@@ -5542,6 +5588,7 @@ where
             )
             .await?;
             completed_cleanly = false;
+            backfill_failed = true;
             break;
         };
         if !runtime_entry_is_current(&inner, &entry) {
@@ -5731,6 +5778,7 @@ where
                 )
                 .await?;
                 completed_cleanly = false;
+                backfill_failed = true;
                 break;
             }
         };
@@ -5750,6 +5798,7 @@ where
             )
             .await?;
             completed_cleanly = false;
+            backfill_failed = true;
             break;
         };
         if messages.is_empty() {
@@ -5832,6 +5881,26 @@ where
             .unwrap_or(false);
         if !has_more || messages.len() < SESSION_HISTORY_PAGE_LIMIT {
             break;
+        }
+    }
+    if !completed_cleanly
+        && unsettled_refresh
+        && !backfill_failed
+        && let Some(epoch) = write_epoch
+    {
+        let registrations = inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?;
+        if registrations
+            .get(&entry.runtime_key)
+            .is_some_and(|current| current.registration_id == entry.registration_id)
+        {
+            inner
+                .session_pending_read_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(watermark_runtime_key.clone(), epoch);
         }
     }
     if completed_cleanly && let Some(epoch) = write_epoch {
@@ -9917,6 +9986,22 @@ comms = true
         Arc<UnifiedRuntime>,
         DelayedHistorySessionService,
     ) {
+        build_stress_runtime_with_write_epochs(member_count, history_delay, false).await
+    }
+
+    /// [`build_stress_runtime`], optionally composed with a durable
+    /// write-epoch witness (as both gateways compose it). Nothing in the
+    /// fixture writes through the witnessed store, so every observed epoch
+    /// stays unchanged for the whole test.
+    pub(super) async fn build_stress_runtime_with_write_epochs(
+        member_count: usize,
+        history_delay: Duration,
+        write_epochs: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<UnifiedRuntime>,
+        DelayedHistorySessionService,
+    ) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let session_path = temp_dir.path().join("sessions");
         std::fs::create_dir_all(&session_path).expect("session path");
@@ -9943,7 +10028,7 @@ comms = true
             unique_console_mob_id("console-aggregator-stress-test")
         ))
         .expect("definition parses");
-        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -9951,6 +10036,13 @@ comms = true
                     meerkat_core::Provider::OpenAI,
                 ))),
             });
+        if write_epochs {
+            let (_witnessed_store, epochs) =
+                crate::mob_handle_runtime::epoch_tracking_runtime_store(Arc::new(
+                    meerkat_runtime::InMemoryRuntimeStore::new(),
+                ));
+            spec = spec.with_session_write_epochs(&epochs);
+        }
         let runtime = Arc::new(
             UnifiedRuntime::bootstrap(
                 spec,
