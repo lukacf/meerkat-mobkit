@@ -196,9 +196,56 @@ pub type AgentEventSubscribeFuture =
 
 pub type AgentEventSubscribeFn = Arc<dyn Fn(String) -> AgentEventSubscribeFuture + Send + Sync>;
 
+/// A per-agent subscription that starts at a typed cursor and names the
+/// sequence space of its envelopes (`None` for a live-only source).
+pub(crate) struct AgentEventReplay {
+    pub(crate) epoch: Option<meerkat_core::comms::SessionEventEpoch>,
+    pub(crate) stream: EventStream,
+}
+
+pub(crate) type AgentEventReplaySubscribeFuture =
+    Pin<Box<dyn Future<Output = Result<AgentEventReplay, MobRuntimeError>> + Send>>;
+
+/// Replay-capable per-agent subscription, used by the unified runtime so the
+/// stream resumes from an SSE `Last-Event-ID`.
+pub(crate) type AgentEventReplaySubscribeFn = Arc<
+    dyn Fn(String, meerkat_core::comms::SessionEventCursor) -> AgentEventReplaySubscribeFuture
+        + Send
+        + Sync,
+>;
+
+/// A live-only subscribe function as a replay-capable one: it ignores the
+/// cursor and names no sequence space, so frame ids stay connection-local.
+fn live_only_agent_subscribe(subscribe_fn: AgentEventSubscribeFn) -> AgentEventReplaySubscribeFn {
+    Arc::new(move |agent_id, _cursor| {
+        let subscribe_fn = Arc::clone(&subscribe_fn);
+        Box::pin(async move {
+            Ok(AgentEventReplay {
+                epoch: None,
+                stream: subscribe_fn(agent_id).await?,
+            })
+        })
+    })
+}
+
+/// The cursor an agent SSE connection resumes from: after the
+/// `{epoch}:{seq}` its `Last-Event-ID` names, else the actor's earliest
+/// retained event.
+fn agent_sse_resume_cursor(headers: &HeaderMap) -> meerkat_core::comms::SessionEventCursor {
+    headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().rsplit_once(':'))
+        .and_then(|(epoch, seq)| Some((epoch.parse().ok()?, seq.parse().ok()?)))
+        .map_or(
+            meerkat_core::comms::SessionEventCursor::Earliest,
+            |(epoch, seq)| meerkat_core::comms::SessionEventCursor::After { epoch, seq },
+        )
+}
+
 #[derive(Clone)]
 struct AgentSseState {
-    subscribe_fn: AgentEventSubscribeFn,
+    subscribe_fn: AgentEventReplaySubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
@@ -222,7 +269,7 @@ pub fn agent_events_sse_router_with_access(
     access: Option<AccessController>,
 ) -> Router {
     agent_events_sse_router_with_access_and_priming(
-        subscribe_fn,
+        live_only_agent_subscribe(subscribe_fn),
         decisions,
         access,
         None,
@@ -231,7 +278,7 @@ pub fn agent_events_sse_router_with_access(
 }
 
 pub(crate) fn agent_events_sse_router_with_access_and_priming(
-    subscribe_fn: AgentEventSubscribeFn,
+    subscribe_fn: AgentEventReplaySubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
     prime_runtime: Option<MobRuntime>,
@@ -296,7 +343,10 @@ async fn agent_events_sse_handler(
         return Err(sse_access_denied(ACTION_AGENT_VIEW));
     }
 
-    let event_stream = (state.subscribe_fn)(agent_id.clone())
+    let AgentEventReplay {
+        epoch,
+        stream: event_stream,
+    } = (state.subscribe_fn)(agent_id.clone(), agent_sse_resume_cursor(&headers))
         .await
         .map_err(map_runtime_error)?;
     let visibility_policy = state.visibility_policy;
@@ -317,12 +367,19 @@ async fn agent_events_sse_handler(
             };
             let payload = serde_json::to_string(&payload)
                 .unwrap_or_else(|_| "{}".to_string());
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .id(format!("{agent_id}:{seq}"))
-                    .event(event_name)
-                    .data(payload),
-            );
+            // A replay-capable source ids frames by their place in the
+            // member's sequence space, so a reconnect resumes after the last
+            // one received. A typed gap marker has no place of its own and
+            // carries no id, leaving the client's last event id unchanged.
+            let id = match epoch {
+                Some(epoch) => (envelope.seq != 0).then(|| format!("{epoch}:{}", envelope.seq)),
+                None => Some(format!("{agent_id}:{seq}")),
+            };
+            let event = Event::default().event(event_name).data(payload);
+            yield Ok::<Event, Infallible>(match id {
+                Some(id) => event.id(id),
+                None => event,
+            });
             seq += 1;
         }
     };
@@ -634,6 +691,130 @@ mod tests {
         fn redact_payload(&self, _frame: &NewConsoleFrame) -> Option<Value> {
             Some(json!({"redacted": true}))
         }
+    }
+
+    /// Agent SSE frames carry `{epoch}:{seq}` ids; a reconnect with
+    /// `Last-Event-ID` resumes after that position instead of replaying the
+    /// retained window again, a gap marker carries no id, and a connection
+    /// without `Last-Event-ID` replays from the earliest retained event.
+    #[tokio::test]
+    async fn agent_sse_ids_are_sequence_positions_and_a_reconnect_resumes_after_them() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use meerkat_core::comms::{SessionEventCursor, SessionEventEpoch};
+        use tower::ServiceExt;
+
+        let epoch = SessionEventEpoch::new();
+        let cursors: Arc<std::sync::Mutex<Vec<SessionEventCursor>>> = Arc::default();
+        let recorded = Arc::clone(&cursors);
+        let subscribe: AgentEventReplaySubscribeFn = Arc::new(move |_agent_id, cursor| {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(cursor);
+            Box::pin(async move {
+                let text = |seq: u64| {
+                    meerkat_core::event::EventEnvelope::new(
+                        "worker-1",
+                        seq,
+                        None,
+                        AgentEvent::TextDelta {
+                            delta: format!("delta {seq}"),
+                            assistant_message_id: None,
+                        },
+                    )
+                };
+                let gap = meerkat_core::event::EventEnvelope::new(
+                    "worker-1",
+                    0,
+                    None,
+                    AgentEvent::StreamTruncated {
+                        reason: meerkat_core::event::StreamTruncationReason::StreamLagged {
+                            dropped: 2,
+                        },
+                    },
+                );
+                Ok(AgentEventReplay {
+                    epoch: Some(epoch),
+                    stream: Box::pin(futures::stream::iter(vec![gap, text(3), text(4)])),
+                })
+            })
+        });
+        let app = agent_events_sse_router_with_access_and_priming(
+            subscribe,
+            None,
+            None,
+            None,
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        let read_ids = |response: axum::response::Response| async move {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("sse body");
+            let text = String::from_utf8(body.to_vec()).expect("utf8 sse body");
+            let frames: Vec<Option<String>> = text
+                .split("\n\n")
+                .filter(|frame| frame.contains("data:"))
+                .map(|frame| {
+                    frame
+                        .lines()
+                        .find_map(|line| line.strip_prefix("id:"))
+                        .map(|id| id.trim().to_string())
+                })
+                .collect();
+            frames
+        };
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/agents/worker-1/events")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            read_ids(first).await,
+            vec![None, Some(format!("{epoch}:3")), Some(format!("{epoch}:4")),],
+            "the gap marker carries no id; events carry their sequence position"
+        );
+
+        let reconnect = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/agents/worker-1/events")
+                    .header("last-event-id", format!("{epoch}:4"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let _ = read_ids(reconnect).await;
+        let malformed = app
+            .oneshot(
+                Request::builder()
+                    .uri("/agents/worker-1/events")
+                    .header("last-event-id", "worker-1:7")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let _ = read_ids(malformed).await;
+        assert_eq!(
+            *cursors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                SessionEventCursor::Earliest,
+                SessionEventCursor::After { epoch, seq: 4 },
+                SessionEventCursor::Earliest,
+            ],
+            "a reconnect resumes after its Last-Event-ID; anything else replays from the earliest"
+        );
     }
 
     #[test]

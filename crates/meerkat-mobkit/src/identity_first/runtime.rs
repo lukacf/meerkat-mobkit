@@ -2385,14 +2385,23 @@ pub(crate) trait MemberSessionRotationObserver: Send + Sync {
 }
 
 /// Run completions of a member's actor that already happened but are not
-/// counted yet: the identity health monitor's create-time capture of the
-/// actor, while it waits for adoption. [`IdentityRuntime::completion_cursor`]
+/// counted yet: the session's events that meerkat retains past the point the
+/// identity health monitor credited. [`IdentityRuntime::completion_cursor`]
 /// credits them before every read.
 #[async_trait::async_trait]
 pub(crate) trait PendingCompletionDrain: Send + Sync {
-    /// Consume the uncounted events of `session_id`'s capture and return how
-    /// many were run completions.
-    async fn drain(&self, session_id: &SessionId) -> u64;
+    /// Consume the uncounted events of `session_id` published so far and
+    /// return the run terminals among them.
+    async fn drain(&self, session_id: &SessionId) -> PendingRunTerminals;
+}
+
+/// Run terminals a [`PendingCompletionDrain`] consumed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PendingRunTerminals {
+    /// Completed runs.
+    pub(crate) completed: u64,
+    /// Failed (or cancelled) runs.
+    pub(crate) failed: u64,
 }
 
 /// The identity table, with a change signal: releasing a write lock wakes
@@ -2616,6 +2625,16 @@ pub struct IdentityRuntime {
     /// Completions that happened but are not counted yet
     /// ([`Self::install_pending_completion_drain`]).
     pending_completion_drain: StdRwLock<Option<Arc<dyn PendingCompletionDrain>>>,
+    /// Per-identity serialization of completion credit: an observed run
+    /// terminal is claimed and credited under it, and a cursor read drains
+    /// and reads under it, so a read never sees a terminal claimed but not
+    /// yet credited.
+    completion_credit_locks:
+        StdMutex<BTreeMap<AgentIdentity, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    /// Whether a completion drain was installed when the lease observer was
+    /// (the first lease-woken attach may replay only with one).
+    #[cfg(test)]
+    lease_observer_saw_drain: std::sync::atomic::AtomicBool,
     /// Fired whenever a ticketed turn is admitted (which may evict another)
     /// or settles, so [`Self::wait_for_turn`] waits on the change instead of
     /// polling the registry. Carries no state.
@@ -3046,6 +3065,9 @@ impl IdentityRuntime {
             turn_outcome_changes: Arc::new(watch::channel(()).0),
             run_failures: StdMutex::new(BTreeMap::new()),
             pending_completion_drain: StdRwLock::new(None),
+            completion_credit_locks: StdMutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            lease_observer_saw_drain: std::sync::atomic::AtomicBool::new(false),
             continuity_repair_triggers: watch::channel(ContinuityRepairWake::default()).0,
             continuity_repair_supervisors: AtomicUsize::new(0),
             embodiments_in_flight: watch::channel(0).0,
@@ -5480,6 +5502,9 @@ impl IdentityRuntime {
     /// re-reads leases that predate the installation. The unified runtime
     /// installs its identity health monitor's wake here.
     pub(crate) fn install_lease_observer(&self, observer: watch::Sender<u64>) {
+        #[cfg(test)]
+        self.lease_observer_saw_drain
+            .store(self.has_pending_completion_drain(), Ordering::Release);
         *self
             .entries
             .lease_observer
@@ -10063,8 +10088,7 @@ impl IdentityRuntime {
         // deliberate and documented: on an identity receiving concurrent
         // traffic, another delivery's completion can also satisfy the wait.
         // Waiting too little beats the failure this replaces (waiting forever).
-        self.credit_pending_completions(identity).await;
-        let completion_baseline = self.rebase_completion_cursor(identity, token);
+        let completion_baseline = self.credited_completion_cursor(identity, token).await;
         let (
             runtime_id,
             memory_session_key,
@@ -10789,8 +10813,7 @@ impl IdentityRuntime {
         let mut token = self.ensure_active_lease(identity).await?;
         // Same pre-delivery baseline contract as the send path — see
         // `send_with_mode_and_interaction_with_expected_member_alias`.
-        self.credit_pending_completions(identity).await;
-        let completion_baseline = self.rebase_completion_cursor(identity, token);
+        let completion_baseline = self.credited_completion_cursor(identity, token).await;
         let (
             is_durable,
             runtime_id,
@@ -14248,16 +14271,17 @@ impl IdentityRuntime {
     /// this read cannot rewind.
     ///
     /// Credit before read: completions that already happened but are still
-    /// queued in an unadopted create-time capture are credited first, so the
+    /// uncounted in the session's retained events are credited first, so the
     /// read never precedes the credit of a completion that happened before it
     /// (a baseline taken now can then never be satisfied by an older turn).
     pub async fn completion_cursor(&self, identity: &AgentIdentity) -> CompletionCursor {
         match self.registered_completion_epoch(identity).await {
             Some(epoch) => {
                 if epoch.get() != 0 {
-                    self.credit_pending_completions(identity).await;
+                    self.credited_completion_cursor(identity, epoch).await
+                } else {
+                    self.rebase_completion_cursor(identity, epoch)
                 }
-                self.rebase_completion_cursor(identity, epoch)
             }
             None => self.retained_completion_cursor(identity),
         }
@@ -14286,13 +14310,85 @@ impl IdentityRuntime {
         let Some(session_id) = session_id else {
             return;
         };
-        for _ in 0..drain.drain(&session_id).await {
+        let terminals = drain.drain(&session_id).await;
+        for _ in 0..terminals.completed {
             self.record_turn_completed(identity).await;
+        }
+        for _ in 0..terminals.failed {
+            self.record_turn_failed(identity).await;
         }
     }
 
+    fn completion_credit_lock(&self, identity: &AgentIdentity) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .completion_credit_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(identity).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(identity.clone(), Arc::downgrade(&lock));
+        lock
+    }
+
+    /// Credit what already happened, then read the cursor under `epoch`, both
+    /// under the identity's completion-credit lock: no terminal is claimed
+    /// but not yet credited while the read happens.
+    async fn credited_completion_cursor(
+        &self,
+        identity: &AgentIdentity,
+        epoch: FencingToken,
+    ) -> CompletionCursor {
+        let lock = self.completion_credit_lock(identity);
+        let _credit = lock.lock().await;
+        self.credit_pending_completions(identity).await;
+        self.rebase_completion_cursor(identity, epoch)
+    }
+
+    /// Credit one observed run terminal of `identity` if `claim` admits it,
+    /// claiming and crediting under the identity's completion-credit lock so
+    /// a concurrent cursor read sees either neither or both. Returns whether
+    /// a completion was credited.
+    pub(crate) async fn credit_observed_terminal(
+        &self,
+        identity: &AgentIdentity,
+        failed: bool,
+        claim: impl FnOnce() -> bool,
+    ) -> bool {
+        let lock = self.completion_credit_lock(identity);
+        let _credit = lock.lock().await;
+        if !claim() {
+            return false;
+        }
+        if failed {
+            self.record_turn_failed(identity).await;
+            false
+        } else {
+            self.record_turn_completed(identity).await;
+            true
+        }
+    }
+
+    /// Whether a completion drain was installed before the lease observer.
+    #[cfg(test)]
+    pub(crate) fn lease_observer_installed_after_drain(&self) -> bool {
+        self.lease_observer_saw_drain.load(Ordering::Acquire)
+    }
+
+    /// Whether a completion-cursor drain is installed
+    /// ([`Self::install_pending_completion_drain`]).
+    pub(crate) fn has_pending_completion_drain(&self) -> bool {
+        self.pending_completion_drain
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
     /// Install the source of completions that happened but are not counted
-    /// yet: the identity health monitor's unadopted create-time captures.
+    /// yet: meerkat's retained session events past the health monitor's
+    /// credited position.
     pub(crate) fn install_pending_completion_drain(&self, drain: Arc<dyn PendingCompletionDrain>) {
         *self
             .pending_completion_drain
@@ -14407,6 +14503,10 @@ impl IdentityRuntime {
         // read and the wait still wakes it.
         let mut changes = self.entries.subscribe();
         let mut shutdown = self.foreground_cancel.subscribe();
+        // Credit what already happened before taking the failure baseline: a
+        // failure that preceded this wait but is credited by its first read
+        // must not end the wait as its own failure.
+        let _ = self.completion_cursor(identity).await;
         let failures_at_start = self.run_failure_count(identity);
         let registered_at_start = self.entries.read().await.contains_key(identity);
         loop {

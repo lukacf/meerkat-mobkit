@@ -99,6 +99,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The console forwarder and the identity health monitor no longer need
+  MobKit's create-time live event tap (meerkat #1236). Meerkat 0.8.49
+  retains each session actor's recent events and replays them on
+  `MobHandle::subscribe_agent_events_from(identity,
+  SessionEventCursor::Earliest)`, so both attach whenever they reconcile and
+  still read a run that started before they attached, including a restored
+  member's first run after a gateway restart, from `run_started`. A gap
+  beyond meerkat's 1024-envelope window arrives as meerkat's typed
+  `StreamTruncated(StreamLagged)` marker. The console subscription names the
+  exact actor incarnation for every local member, so a revoked predecessor's
+  stream still drains (bounded by the drain deadline) before its successor
+  attaches, now also for members the tap never captured (eager creates, and
+  creates outside the witness-bearing routes). Replayed envelopes an earlier
+  stream of the same member already forwarded are not repeated. The
+  completion-cursor drain replays the session's retained events past the
+  health monitor's credited position instead of draining an unadopted
+  capture. The tap module (both lanes, capture queues, pumps, byte bounds,
+  arming) and its spec and session-service plumbing are removed.
+  Session-service decorators forward meerkat's new
+  `subscribe_session_events_from` and `subscribe_agent_session_events_from`.
+- Identity completion crediting is exactly once by construction. The health
+  monitor's stream and the completion-cursor drain claim each event's
+  sequence in a per-session ledger with a high-water per meerkat sequence
+  space (`SessionEventEpoch`): a placed member's host restart starts a fresh
+  high-water instead of refusing its first events, and a late stream of an
+  older space re-attaching claims nothing it already credited. A terminal is claimed
+  and credited under the identity's completion-credit lock, which a cursor
+  read holds across its drain, so a read never sees a claim without its
+  credit. The drain credits failed runs too, so a failure-aware wait ends
+  typed. A runtime without a drain (no session service) keeps the monitor
+  on live-only subscriptions, since replay could credit a completion after a
+  baseline read.
+- `/agents/{id}/events` SSE replays the member actor's retained events on a
+  connection without `Last-Event-ID` (meerkat #1236), so a client that
+  connects after a run started still receives it from `run_started`. Event
+  ids are now `<epoch>:<seq>` positions in the member's event sequence
+  instead of connection-local `<agent_id>:<n>` counters, and an
+  `EventSource` reconnect resumes right after its `Last-Event-ID` instead of
+  replaying the window again. A `stream_truncated` gap event carries no id.
+  Routers built with the public `agent_events_sse_router*` constructors from
+  a live-only subscribe function keep the old ids and do not replay.
+- A member event subscription whose member has no live session actor now
+  fails with meerkat's typed `MemberSessionNotLive` ("mob member '...' has no
+  live session actor for session ..."), no longer an internal "failed to
+  subscribe to agent events" error.
+- A successor actor for the same session now continues the session's
+  meerkat event sequence instead of restarting at 1 (meerkat #1236), so the
+  console's per-session `source_sequence` ordering places a successor's run
+  after its predecessor's.
 - Behaviour: queue-mode sends and dispatches return their admission receipt
   before the target's peer neighbourhood is hydrated. A send to an
   already-Active member no longer builds its Dormant peers or reconciles
@@ -429,20 +478,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   monitor attaches a member only once its identity lease exists, and it used
   to learn about the lease only from a later mob machine change or its 30 s
   safety tick. It is now woken, typed, when any identity lease lands or
-  moves (`IdentityRuntime::install_lease_observer`). It also adopts its own
-  create-time capture of each actor's event stream (a second lane of the live
-  session event tap, independent of the console forwarder's), which predates
-  every run, so a turn completed between the lease landing and the attach is
-  counted exactly once, in order, instead of lost to the stream's lack of
-  replay. A completion that already happened is credited before the next
-  completion-cursor read (and before the adoption), so a baseline taken after
-  it can never be satisfied by it: the cursor under-counts at worst, never
-  over-counts. Captures of members the monitor will not attach (outside the
-  identity-first primary mob, Broken or retiring, no longer Active) are
-  dropped, captures are bounded by bytes (64 MiB) as well as envelopes, and
-  the health lane is armed only on identity-first runtimes. An identity lease
-  rotation cuts the monitor's previous ordinary subscription off instead of
-  counting its completions a second time.
+  moves (`IdentityRuntime::install_lease_observer`). Its subscription
+  replays the actor's retained events from the first (meerkat #1236), so a
+  turn completed between the lease landing and the attach is counted exactly
+  once, in order. A completion that already happened is credited before the
+  next completion-cursor read, replayed from meerkat's retained session
+  events, so a baseline taken after it can never be satisfied by it: the
+  cursor under-counts at worst, never over-counts. A per-session completion
+  ledger, with a high-water per sequence space, lets the monitor's stream and
+  a cursor read's drain each credit an event at most once between them, even
+  when a stream of an older space re-attaches. An identity lease rotation cuts the
+  monitor's previous ordinary subscription off instead of counting its
+  completions a second time.
 
 - `mobkit/force_cancel_member` on the unified RPC keyed an identity-resolved
   member by the undecoded `rt:` runtime alias, so an alias call missed the
