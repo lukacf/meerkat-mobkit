@@ -245,7 +245,8 @@ pub use storage_doctor::{
 };
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
-    StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,
+    StorageResolutionError, StorageSlotDurability, StorageSlotSummary,
+    probe_session_store_incremental,
 };
 pub use storage_layout::{
     DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,
