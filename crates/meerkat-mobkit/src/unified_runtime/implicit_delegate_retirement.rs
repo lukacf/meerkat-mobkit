@@ -82,7 +82,7 @@ async fn run_implicit_delegate_retirement(
             }
             let members = handle.list_members_observation_snapshot().await;
             #[cfg(test)]
-            tests::pause_after_member_snapshot(mob_id.as_str()).await;
+            tests::pause_after_member_snapshot(mob_id.as_str(), &members).await;
             for member in members {
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
@@ -2544,9 +2544,51 @@ comms = true
         runtime.shutdown().await;
     }
 
+    /// Wait until `member`'s run is open (typed member status), re-reading
+    /// only after one of its events or a machine-state change; both are
+    /// subscribed before the first read. The deadline only bounds a broken
+    /// fixture and fails with a clear message.
+    async fn await_member_run_open(handle: &meerkat_mob::MobHandle, member: &AgentIdentity) {
+        use futures::StreamExt as _;
+        let mut events = handle
+            .subscribe_agent_events(member)
+            .await
+            .expect("subscribe to the member's events");
+        let mut changes = handle.machine_state_changes();
+        let open = async {
+            while !handle
+                .member_status(member)
+                .await
+                .ok()
+                .and_then(|status| status.progress)
+                .is_some_and(|progress| progress.run_state == meerkat_mob::MemberRunState::RunOpen)
+            {
+                tokio::select! {
+                    event = events.next() => assert!(
+                        event.is_some(),
+                        "the member's event stream ended before its run opened"
+                    ),
+                    changed = changes.changed() => assert!(
+                        changed.is_ok(),
+                        "the mob actor stopped before the member's run opened"
+                    ),
+                }
+            }
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(30), open)
+                .await
+                .is_ok(),
+            "the member's run did not open within 30 s"
+        );
+    }
+
+    /// One sweep pass's member snapshot: each member's identity and status.
+    type SweepSnapshot = Vec<(AgentIdentity, MobMemberStatus)>;
+
     /// Holds sweep passes over one mob right after their member snapshot.
     struct SweepPause {
-        reached: tokio::sync::mpsc::UnboundedSender<()>,
+        reached: tokio::sync::mpsc::UnboundedSender<SweepSnapshot>,
         release: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>>,
     }
 
@@ -2554,8 +2596,12 @@ comms = true
         std::sync::Mutex::new(BTreeMap::new());
 
     /// Called by the sweep once it has taken `mob_id`'s member snapshot: when
-    /// a test paused that mob, report the pass and wait for its release.
-    pub(super) async fn pause_after_member_snapshot(mob_id: &str) {
+    /// a test paused that mob, report the pass with the snapshot it took and
+    /// wait for its release.
+    pub(super) async fn pause_after_member_snapshot(
+        mob_id: &str,
+        members: &[meerkat_mob::runtime::MobMemberListEntry],
+    ) {
         let pause = SWEEP_PAUSES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2564,19 +2610,23 @@ comms = true
         let Some((reached, release)) = pause else {
             return;
         };
-        if reached.send(()).is_ok() {
+        let snapshot = members
+            .iter()
+            .map(|member| (member.agent_identity.clone(), member.status))
+            .collect();
+        if reached.send(snapshot).is_ok() {
             let _ = release.lock().await.recv().await;
         }
     }
 
     /// Hold every sweep pass over `mob_id` right after its member snapshot:
-    /// each pass reports on the returned receiver and waits for one release
-    /// on the returned sender. [`unpause_sweep`] plus dropping the sender
-    /// lets passes run freely again.
+    /// each pass reports its snapshot on the returned receiver and waits for
+    /// one release on the returned sender. [`unpause_sweep`] plus dropping the
+    /// sender lets passes run freely again.
     fn pause_sweep(
         mob_id: &str,
     ) -> (
-        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedReceiver<SweepSnapshot>,
         tokio::sync::mpsc::UnboundedSender<()>,
     ) {
         let (reached, reached_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2653,23 +2703,29 @@ comms = true
         let d = AgentIdentity::from("d");
         seat_turn_driven(&handle, "c").await;
 
-        // C forks D, whose turn holds; a respawn of D is admitted and waits
-        // out meerkat's cooperative grace (about 2s) with the predecessor
-        // retiring.
+        // C forks D, whose turn holds. The fork returns once D's turn input is
+        // admitted, not once its run is open: a retire that finds the input
+        // still queued has no run to cancel, the queued turn then opens and
+        // holds, and the retire cannot reach its turn-finalization boundary.
+        // Wait for D's run to be open (typed status) before the respawn.
         let _run = fork_held_child(&handle, &c, &d).await;
+        await_member_run_open(&handle, &d).await;
         let predecessor = handle
             .get_member(&d)
             .await
             .expect("roster read")
             .expect("d is seated")
             .agent_runtime_id;
+        // A respawn of D is admitted and waits out meerkat's cooperative
+        // grace (about 2s) with the predecessor retiring.
         let (mut reached, release) = pause_sweep(MOB_ID);
+        let mut changes = handle.machine_state_changes();
         let respawn = tokio::spawn({
             let handle = handle.clone();
             let d = d.clone();
             async move { handle.respawn(d, None).await }
         });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        let retiring = async {
             while !handle
                 .list_members_including_retiring()
                 .await
@@ -2678,24 +2734,33 @@ comms = true
                     member.agent_identity == d && member.status == MobMemberStatus::Retiring
                 })
             {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                assert!(
+                    changes.changed().await.is_ok(),
+                    "the mob actor stopped before d's predecessor was retiring"
+                );
             }
-        })
-        .await
-        .expect("d's predecessor is retiring");
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(30), retiring)
+                .await
+                .is_ok(),
+            "d's predecessor did not start retiring within 30 s of the respawn"
+        );
 
-        // Passes already held took their snapshot before D was seen retiring:
-        // let them go (they found D live and left C alone). The next pass
-        // takes its snapshot with the predecessor retiring. While it is held,
-        // the respawn seats the successor, and C falls due at once.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        while reached.try_recv().is_ok() {
-            release.send(()).expect("release an earlier pass");
+        // Every pass reports the snapshot it took. Release the passes whose
+        // snapshot found D live (they leave C alone) and hold the first whose
+        // snapshot shows the predecessor retiring. While it is held, the
+        // respawn seats the successor, and C falls due at once.
+        loop {
+            let snapshot = reached.recv().await.expect("a sweep pass");
+            if snapshot
+                .iter()
+                .any(|(member, status)| member == &d && *status == MobMemberStatus::Retiring)
+            {
+                break;
+            }
+            release.send(()).expect("release a pass that found d live");
         }
-        reached
-            .recv()
-            .await
-            .expect("a pass after d was seen retiring");
         assert!(
             !respawn.is_finished(),
             "the respawn must still be retiring d when the held pass takes its snapshot"
@@ -2714,11 +2779,16 @@ comms = true
         overrides
             .set(MOB_ID, "c", DelegateIdleRetireOverride::Seconds(0))
             .await;
+
+        // The held pass resumes, then later passes run. A pass retires inline,
+        // so the next pass reaching the pause proves the previous one finished
+        // every decision it made: the held pass and two full passes after it.
+        for _ in 0..3 {
+            release.send(()).expect("release the held pass");
+            reached.recv().await.expect("the next sweep pass");
+        }
         unpause_sweep(MOB_ID);
         drop(release);
-
-        // The held pass resumes, then later passes run.
-        tokio::time::sleep(Duration::from_millis(2_500)).await;
         assert!(
             is_live(&handle, "d").await,
             "d's successor was killed by retiring c"
