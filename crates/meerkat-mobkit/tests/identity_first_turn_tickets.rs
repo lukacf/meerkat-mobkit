@@ -2458,8 +2458,8 @@ async fn wait_for_completion_ends_typed_on_failure_broken_retire_and_delete() {
     assert_eq!(result["outcome"], "retiring", "{result}");
 
     // Deleted. Deletion marks the identity Retiring before it leaves the
-    // table, so the wait ends at that first step, typed. (`identity_gone`
-    // covers an entry removed without one; see the runtime unit test.)
+    // table; a waiter woken at that step ends `retiring`, one woken after the
+    // removal ends `identity_gone`. Both are typed ends of a delete.
     let doomed = register_bound(&identity_runtime, "doomed", &session).await;
     let baseline = identity_runtime.completion_cursor(&doomed).await;
     let result = wait_racing(&live, &ctx, params("doomed", baseline), async {
@@ -2469,7 +2469,13 @@ async fn wait_for_completion_ends_typed_on_failure_broken_retire_and_delete() {
             .expect("delete identity");
     })
     .await;
-    assert_eq!(result["outcome"], "retiring", "{result}");
+    assert!(
+        matches!(
+            result["outcome"].as_str(),
+            Some("retiring" | "identity_gone")
+        ),
+        "{result}"
+    );
     live.runtime.shutdown().await;
 }
 
