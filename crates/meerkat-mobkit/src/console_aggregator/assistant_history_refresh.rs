@@ -69,7 +69,16 @@ impl AssistantHistoryRefreshReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AssistantHistoryRefreshGate {
     PositiveOnly,
+    /// Fresh typed observation says the member is not settled for this
+    /// session yet (a run is open, input is uncommitted, or another session is
+    /// current). The member's own run and commit events re-drive it.
     Pending,
+    /// No fresh typed status: the bounded status read did not answer (its
+    /// deadline elapsed or it failed) or carried no run state, or the run
+    /// state itself is unknown. Treated like `Pending`, but an idle member
+    /// emits no event of its own that would re-drive it, so the backfill arms
+    /// a re-drive on the next typed change.
+    StatusUnknown,
     Settled,
 }
 
@@ -94,6 +103,19 @@ pub(super) fn admit_runtime_refresh(
     }
 }
 
+/// One bounded read of the member's typed status for the refresh gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MemberStatusRead {
+    /// Fresh typed status: the member's current session and run state.
+    Observed(String, MemberRunState),
+    /// No member owns the exact session, or it has no current session: an
+    /// observation that the member is not settled for this session.
+    NotBound,
+    /// The read did not answer (its deadline elapsed or it failed) or carried
+    /// no run state: nothing was observed.
+    NoAnswer,
+}
+
 /// Call after capturing the console prefix and before reading current history.
 /// Even a terminal trigger checks current runtime progress: another run may
 /// have started before its queued backfill acquired the projection lock.
@@ -111,7 +133,9 @@ pub(super) async fn observe(
         session_id,
         || async {
             tokio::time::timeout_at(deadline, async {
-                let expected_session = meerkat_core::SessionId::parse(session_id).ok()?;
+                let Ok(expected_session) = meerkat_core::SessionId::parse(session_id) else {
+                    return MemberStatusRead::NotBound;
+                };
                 let primary = entry.runtime.handle();
                 let (handle, member) = if primary.resolve_bridge_session_id(&member).await
                     == Some(expected_session.clone())
@@ -139,27 +163,36 @@ pub(super) async fn observe(
                             continue;
                         }
                         if owner.is_some() {
-                            return None;
+                            return MemberStatusRead::NotBound;
                         }
                         owner = Some((resolved.handle, resolved.member.agent_identity));
                     }
-                    owner?
+                    let Some(owner) = owner else {
+                        return MemberStatusRead::NotBound;
+                    };
+                    owner
                 };
                 // The binding only routes the observation. Fresh typed status
                 // must still prove that this exact session is idle.
-                let status = crate::member_status_observation::observe_member_status_until(
+                let Ok(status) = crate::member_status_observation::observe_member_status_until(
                     &handle, &member, deadline,
                 )
                 .await
-                .ok()?;
-                Some((
-                    status.current_session_id?.to_string(),
-                    status.progress?.run_state,
-                ))
+                else {
+                    return MemberStatusRead::NoAnswer;
+                };
+                let Some(current_session) = status.current_session_id else {
+                    return MemberStatusRead::NotBound;
+                };
+                match status.progress {
+                    Some(progress) => {
+                        MemberStatusRead::Observed(current_session.to_string(), progress.run_state)
+                    }
+                    None => MemberStatusRead::NoAnswer,
+                }
             })
             .await
-            .ok()
-            .flatten()
+            .unwrap_or(MemberStatusRead::NoAnswer)
         },
         || async {
             tokio::time::timeout_at(deadline, entry.runtime.session_commit_pending(session_id))
@@ -179,15 +212,21 @@ async fn observe_with<StatusRead, StatusFuture, CommitRead, CommitFuture>(
 ) -> AssistantHistoryRefreshGate
 where
     StatusRead: FnOnce() -> StatusFuture,
-    StatusFuture: Future<Output = Option<(String, MemberRunState)>>,
+    StatusFuture: Future<Output = MemberStatusRead>,
     CommitRead: FnOnce() -> CommitFuture,
     CommitFuture: Future<Output = Option<bool>>,
 {
     if !requested {
         return AssistantHistoryRefreshGate::PositiveOnly;
     }
-    let Some((current_session, MemberRunState::Idle)) = read_status().await else {
-        return AssistantHistoryRefreshGate::Pending;
+    let current_session = match read_status().await {
+        MemberStatusRead::Observed(current_session, MemberRunState::Idle) => current_session,
+        MemberStatusRead::Observed(_, MemberRunState::RunOpen) | MemberStatusRead::NotBound => {
+            return AssistantHistoryRefreshGate::Pending;
+        }
+        MemberStatusRead::Observed(_, MemberRunState::Unknown) | MemberStatusRead::NoAnswer => {
+            return AssistantHistoryRefreshGate::StatusUnknown;
+        }
     };
     if current_session != session_id || read_commit().await != Some(false) {
         return AssistantHistoryRefreshGate::Pending;
@@ -294,7 +333,10 @@ mod tests {
             "session-a",
             || {
                 calls.borrow_mut().push("status");
-                ready(Some(("session-a".into(), MemberRunState::Idle)))
+                ready(MemberStatusRead::Observed(
+                    "session-a".into(),
+                    MemberRunState::Idle,
+                ))
             },
             || {
                 calls.borrow_mut().push("commit");
@@ -470,11 +512,29 @@ realm_profile = "worker"
 
     #[tokio::test]
     async fn active_successor_unknown_or_replaced_session_never_authorizes_absence() {
-        for status in [
-            None,
-            Some(("session-a".into(), MemberRunState::RunOpen)),
-            Some(("session-a".into(), MemberRunState::Unknown)),
-            Some(("session-b".into(), MemberRunState::Idle)),
+        // No fresh typed observation is `StatusUnknown` (re-driven on the
+        // next typed change); an observed non-settled member is `Pending`.
+        for (status, expected) in [
+            (
+                MemberStatusRead::NoAnswer,
+                AssistantHistoryRefreshGate::StatusUnknown,
+            ),
+            (
+                MemberStatusRead::NotBound,
+                AssistantHistoryRefreshGate::Pending,
+            ),
+            (
+                MemberStatusRead::Observed("session-a".into(), MemberRunState::RunOpen),
+                AssistantHistoryRefreshGate::Pending,
+            ),
+            (
+                MemberStatusRead::Observed("session-a".into(), MemberRunState::Unknown),
+                AssistantHistoryRefreshGate::StatusUnknown,
+            ),
+            (
+                MemberStatusRead::Observed("session-b".into(), MemberRunState::Idle),
+                AssistantHistoryRefreshGate::Pending,
+            ),
         ] {
             let calls = RefCell::new(Vec::new());
             let gate = observe_with(
@@ -490,7 +550,7 @@ realm_profile = "worker"
                 },
             )
             .await;
-            assert_eq!(gate, AssistantHistoryRefreshGate::Pending);
+            assert_eq!(gate, expected);
             assert_eq!(*calls.borrow(), ["status"]);
         }
     }
@@ -504,7 +564,10 @@ realm_profile = "worker"
                 "session-a",
                 || {
                     calls.borrow_mut().push("status");
-                    ready(Some(("session-a".into(), MemberRunState::Idle)))
+                    ready(MemberStatusRead::Observed(
+                        "session-a".into(),
+                        MemberRunState::Idle,
+                    ))
                 },
                 || {
                     calls.borrow_mut().push("commit");

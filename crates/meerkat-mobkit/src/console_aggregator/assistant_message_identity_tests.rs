@@ -1610,3 +1610,229 @@ fn assistant_identity_history_refreshes_after_extraction_compaction_and_truncati
         );
     }
 }
+
+/// Wait until the assistant-history refresh gate reads `Settled` for the
+/// member, re-reading only after one of its events or a machine-state change
+/// (both subscribed before the first read). The deadline only bounds a broken
+/// fixture and fails with a clear message.
+#[allow(clippy::panic)]
+async fn await_refresh_gate_settled(
+    handle: &MobHandle,
+    member: &AgentIdentity,
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+    session_id: &str,
+) {
+    use futures::StreamExt as _;
+    let mut member_events = handle
+        .subscribe_agent_events(member)
+        .await
+        .unwrap_or_else(|error| panic!("subscribe to the fixture member's events: {error}"));
+    let mut changes = handle.machine_state_changes();
+    let settled = async {
+        while assistant_history_refresh::observe(entry, record, session_id, true).await
+            != assistant_history_refresh::AssistantHistoryRefreshGate::Settled
+        {
+            tokio::select! {
+                event = member_events.next() => assert!(
+                    event.is_some(),
+                    "the fixture member's event stream ended before its refresh gate settled"
+                ),
+                changed = changes.changed() => assert!(
+                    changed.is_ok(),
+                    "the mob actor stopped before the fixture member's refresh gate settled"
+                ),
+            }
+        }
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_secs(30), settled)
+            .await
+            .is_ok(),
+        "the fixture member's refresh gate did not settle within 30 s"
+    );
+}
+
+/// A recovery refresh whose gate read found no fresh typed status
+/// (`StatusUnknown`: the bounded status read did not answer, as under
+/// contention) while the member is idle stays on the retry list, and the
+/// member's next typed change, not a discovery tick, re-drives it to
+/// publication. The runtime is registered directly, so no discovery loop
+/// runs: the re-drive is the only path that can publish.
+#[tokio::test]
+async fn status_unknown_refresh_is_redriven_by_the_next_typed_change_not_a_tick()
+-> ConsoleLogResult<()> {
+    let (_temp, runtime, service) = super::tests::build_stress_runtime(0, Duration::ZERO).await;
+    // No initial message: no kickoff run, so the member is idle once seated.
+    runtime
+        .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "agent-0".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await?;
+    let store = Arc::new(InMemoryConsoleLogStore::new());
+    let aggregator = MobKitConsoleAggregator::new(store.clone());
+    let mut entry = super::tests::runtime_entry_for_test(RUNTIME, &runtime);
+    entry.identity_namespace.clear();
+    let member = runtime
+        .mob_handle()
+        .list_members_observation_snapshot()
+        .await
+        .into_iter()
+        .next()
+        .ok_or("fixture member missing")?;
+    let record = identity_record_for_member(&entry, &runtime.mob_handle(), &member)
+        .await
+        .ok_or("fixture identity missing")?;
+    let session_id = record.session_id.clone().ok_or("fixture session missing")?;
+    aggregator
+        .inner
+        .runtimes
+        .write()
+        .map_err(|_| std::io::Error::other("runtime fixture lock"))?
+        .insert(RUNTIME.into(), entry.clone());
+    let retry_key = (
+        entry.registration_id,
+        RUNTIME.to_string(),
+        record.identity.clone(),
+        session_id.clone(),
+    );
+    let target = SessionBackfillTarget {
+        assistant_refresh: assistant_history_refresh::AssistantHistoryRefreshReason::Recovery,
+        provenance: None,
+        entry: entry.clone(),
+        record: record.clone(),
+        session_id: session_id.clone(),
+    };
+    // The seated member's session input commits just after spawn. Wait for
+    // the real gate to read `Settled` first, so the only later typed change is
+    // the one this test makes.
+    await_refresh_gate_settled(
+        &runtime.mob_handle(),
+        &member.agent_identity,
+        &entry,
+        &record,
+        &session_id,
+    )
+    .await;
+    let snapshots = || async {
+        store
+            .query_frames(ConsoleTimelineQuery::default())
+            .await
+            .map(|rows| {
+                rows.frames
+                    .into_iter()
+                    .filter(|frame| frame.kind == "assistant_history_snapshot")
+                    .collect::<Vec<_>>()
+            })
+    };
+    // The unsettled pass and every re-driven pass each read the document.
+    let pages = (0..24)
+        .map(|_| {
+            history_page(&session_id, &[MESSAGE_A]).map(|page| super::tests::ScriptedHistoryRead {
+                page: Some(page),
+                gate: None,
+            })
+        })
+        .collect::<ConsoleLogResult<Vec<_>>>()?;
+    service.script_history(pages);
+
+    backfill_one_session_history_with_refresh_observer(
+        aggregator.inner.clone(),
+        target,
+        false,
+        |_, _, _, _| {
+            Box::pin(std::future::ready(
+                assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown,
+            ))
+        },
+    )
+    .await?;
+    assert!(
+        snapshots().await?.is_empty(),
+        "an unsettled refresh publishes no assistant snapshot"
+    );
+    assert!(
+        aggregator
+            .inner
+            .assistant_history_retries
+            .lock()
+            .map_err(|_| std::io::Error::other("fixture retry lock"))?
+            .contains(&retry_key),
+        "the status-unknown member stays on the retry list"
+    );
+    // Each typed change runs the armed re-drive. Its pass reads the real
+    // gate: when that status read also fails to answer (as it may under
+    // heavy load) the pass re-arms for the next typed change instead of
+    // publishing, so the test makes another change until one re-driven pass
+    // observes the member settled. No discovery loop runs here.
+    let mut published = Vec::new();
+    for seat in 1..=20 {
+        let mut redrives = std::mem::take(
+            &mut *aggregator
+                .inner
+                .status_unknown_redrive_tasks
+                .lock()
+                .map_err(|_| std::io::Error::other("fixture re-drive lock"))?,
+        );
+        assert_eq!(
+            redrives.len(),
+            1,
+            "exactly one re-drive is armed for the retry key before typed change {seat}"
+        );
+        let redrive = redrives.remove(0);
+        if seat == 1 {
+            assert!(
+                !redrive.is_finished(),
+                "the re-drive waits for a typed change instead of firing at once"
+            );
+        }
+        // The next typed change: another member is seated (a roster mutation
+        // publishes machine state).
+        runtime
+            .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                format!("agent-{seat}"),
+                None,
+                None,
+                None,
+            ))
+            .await?;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(30), redrive)
+                .await
+                .map_err(|_| std::io::Error::other(
+                    "the re-drive did not complete within 30 s of the typed change"
+                ))?
+                .is_ok(),
+            "the re-drive task completed"
+        );
+        published = snapshots().await?;
+        if !published.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        published.len(),
+        1,
+        "a typed change re-drove the retry to publication"
+    );
+    assert_eq!(
+        published[0].payload["assistant_message_ids"],
+        json!([MESSAGE_A])
+    );
+    assert!(
+        !aggregator
+            .inner
+            .status_unknown_redrives
+            .lock()
+            .map_err(|_| std::io::Error::other("fixture re-drive lock"))?
+            .contains(&retry_key),
+        "a fired re-drive releases its key"
+    );
+    runtime.mob_handle().stop().await?;
+    Ok(())
+}

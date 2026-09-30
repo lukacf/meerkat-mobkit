@@ -182,6 +182,13 @@ struct AggregatorInner {
     // Retry intent is independent of the bounded projection cache. It grants
     // no absence authority; every retry rechecks fresh runtime observations.
     assistant_history_retries: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
+    /// Retry keys with an armed status-unknown re-drive (one waiter per key):
+    /// an idle member whose status read did not answer emits no event of its
+    /// own, so its next typed change re-drives the retained retry instead of
+    /// only the discovery tick.
+    status_unknown_redrives: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
+    #[cfg(test)]
+    status_unknown_redrive_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -677,6 +684,9 @@ impl MobKitConsoleAggregator {
                     MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
                 ),
                 assistant_history_retries: std::sync::Mutex::new(BTreeSet::new()),
+                status_unknown_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                status_unknown_redrive_tasks: std::sync::Mutex::new(Vec::new()),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -754,6 +764,9 @@ impl MobKitConsoleAggregator {
                     MemberProvenanceSearchCache::new(MEMBER_PROVENANCE_CACHE_LIMIT),
                 ),
                 assistant_history_retries: std::sync::Mutex::new(BTreeSet::new()),
+                status_unknown_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                status_unknown_redrive_tasks: std::sync::Mutex::new(Vec::new()),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -883,6 +896,11 @@ impl MobKitConsoleAggregator {
             .retain(|(key, _, _), _| key != &runtime_key);
         self.inner
             .assistant_history_retries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, key, _, _)| key != &runtime_key);
+        self.inner
+            .status_unknown_redrives
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(_, key, _, _)| key != &runtime_key);
@@ -1021,6 +1039,11 @@ impl MobKitConsoleAggregator {
             .retain(|(key, _, _), _| key != runtime_key);
         self.inner
             .assistant_history_retries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, key, _, _)| key != runtime_key);
+        self.inner
+            .status_unknown_redrives
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(_, key, _, _)| key != runtime_key);
@@ -5544,9 +5567,26 @@ where
         if matches!(
             assistant_refresh_gate,
             assistant_history_refresh::AssistantHistoryRefreshGate::Pending
+                | assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
         ) {
             completed_cleanly = false;
             unsettled_refresh = true;
+        }
+        if assistant_refresh_gate
+            == assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
+            && runtime_entry_is_current(&inner, &entry)
+        {
+            arm_status_unknown_redrive(
+                &inner,
+                assistant_retry_key.clone(),
+                SessionBackfillTarget {
+                    assistant_refresh: AssistantHistoryRefreshReason::PositiveOnly,
+                    provenance: None,
+                    entry: entry.clone(),
+                    record: record.clone(),
+                    session_id: session_id.clone(),
+                },
+            );
         }
         cache_notice_observation(
             &inner,
@@ -5590,6 +5630,7 @@ where
             && matches!(
                 assistant_refresh_gate,
                 assistant_history_refresh::AssistantHistoryRefreshGate::Pending
+                    | assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
             )
             && let Some(epoch) = write_epoch
             && inner
@@ -6100,6 +6141,78 @@ fn spawn_session_history_backfill_target(
             );
         }
     });
+}
+
+/// Re-drive a retained assistant-history retry whose gate read found no fresh
+/// typed status (`StatusUnknown`): the bounded status read did not answer, for
+/// example under contention, while the member may already be idle. An idle
+/// member emits no run or commit event of its own, so without this only the
+/// discovery tick would retry it. One waiter per retry key wakes on the
+/// member's next event or the primary mob's next machine-state change and
+/// runs one targeted backfill; the retained retry key makes that pass request
+/// the assistant refresh again. The discovery loop stays the backup (a
+/// member outside the primary mob, or a mob with no further activity).
+fn arm_status_unknown_redrive(
+    inner: &Arc<AggregatorInner>,
+    retry_key: (uuid::Uuid, String, String, String),
+    target: SessionBackfillTarget,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    if !inner
+        .status_unknown_redrives
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(retry_key.clone())
+    {
+        return;
+    }
+    let handle = target.entry.runtime.handle();
+    let member =
+        crate::member_comms_id::roster_member_id_for_supplied_id(&target.record.runtime_member_id);
+    let mut changes = handle.machine_state_changes();
+    // The cloned receiver starts from the handle's last-seen version: consume
+    // the change it has not seen yet, so only a change after this arm wakes
+    // the waiter (otherwise a persisting unknown status would re-drive
+    // back-to-back instead of on the next typed change).
+    let _ = futures::FutureExt::now_or_never(changes.changed());
+    let redrive_inner = Arc::clone(inner);
+    let task = tokio::spawn(async move {
+        use futures::StreamExt as _;
+        let woke = match handle.subscribe_agent_events(&member).await {
+            Ok(mut events) => tokio::select! {
+                event = events.next() => event.is_some(),
+                changed = changes.changed() => changed.is_ok(),
+            },
+            // Not a member of the primary mob (or not live there): the mob's
+            // own changes still wake it.
+            Err(_) => changes.changed().await.is_ok(),
+        };
+        redrive_inner
+            .status_unknown_redrives
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&retry_key);
+        if woke
+            && runtime_entry_is_current(&redrive_inner, &target.entry)
+            && let Err(error) =
+                run_targeted_session_history_backfill(redrive_inner, target, false).await
+        {
+            tracing::warn!(
+                error = %error,
+                "console status-unknown assistant-history re-drive failed"
+            );
+        }
+    });
+    #[cfg(test)]
+    inner
+        .status_unknown_redrive_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(task);
+    #[cfg(not(test))]
+    drop(task);
 }
 
 async fn run_targeted_session_history_backfill(
