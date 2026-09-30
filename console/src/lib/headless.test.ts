@@ -403,6 +403,7 @@ test("headless command execution models lifecycle, routing, and gating commands 
     CONSOLE_RPC_METHODS.retireIdentity,
     CONSOLE_RPC_METHODS.respawnIdentity,
     CONSOLE_RPC_METHODS.resetIdentity,
+    CONSOLE_RPC_METHODS.stopMemberRun,
     CONSOLE_RPC_METHODS.routingRoutesList,
     CONSOLE_RPC_METHODS.deliveryHistory,
     CONSOLE_RPC_METHODS.gatingPending,
@@ -416,6 +417,7 @@ test("headless command execution models lifecycle, routing, and gating commands 
     CONSOLE_COMMAND_NAMES.retireIdentity,
     CONSOLE_COMMAND_NAMES.respawnIdentity,
     CONSOLE_COMMAND_NAMES.resetIdentity,
+    CONSOLE_COMMAND_NAMES.stopMemberRun,
   ]) {
     assert.equal((await controller.commands.execute({
       command,

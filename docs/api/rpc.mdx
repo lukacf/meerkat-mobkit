@@ -639,6 +639,39 @@ HTTP 409 on the REST form). Changing the target or origin can create a
 distinct send. Member respawn does not clear the key, but this does not
 promise replay after the deduplication records or runtime are lost.
 
+`skill_refs` is optional: typed, source-pinned skills selected for this exact
+turn, in the same shape as meerkat `turn/start`:
+
+```json
+{
+  "identity": "identity:luka",
+  "content": "Draft the weekly update.",
+  "origin": "console:panel-1",
+  "idempotency_key": "panel-1:turn-2",
+  "skill_refs": [
+    {
+      "kind": "structured",
+      "source_uuid": "dc256086-0d2f-4f61-a307-320d4148107f",
+      "skill_name": "house-style"
+    }
+  ]
+}
+```
+
+The selection travels with the turn to the addressed member through the same
+fenced host-human admission as the content. The member's own skill engine
+resolves it: the turn emits the typed `skills_resolved` or
+`skill_resolution_failed` event and commits a durable `SkillContext` block.
+MobKit never renders skill bodies into the content. A member without a skill
+engine fails the turn with the typed `no_skill_engine` reason before any
+provider call. A nonempty selection is part of the replay scope: a retry must
+repeat the same selection in the same order to return the original acceptance,
+and a changed or reordered selection under the same key is `-32009`
+(`idempotency_conflict`). Remote or
+externally bound members cannot carry a selection and refuse it typed instead
+of delivering the turn without it. Untyped skill strings are refused as invalid
+params.
+
 ### `mobkit/blob/upload`
 
 Upload one image through `POST /console/rpc/multipart`. Send a JSON-RPC

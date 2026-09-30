@@ -2016,6 +2016,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/identity/resolved_tools",
                 "mobkit/identity/routing_status",
                 "mobkit/force_cancel_member",
+                "mobkit/stop_member_run",
                 "mobkit/spawn_helper",
                 "mobkit/fork_helper",
                 "mobkit/attach_existing_session",
@@ -3500,6 +3501,15 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/force_cancel_member" => {
             mob_methods::handle_force_cancel_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
+        }
+        "mobkit/stop_member_run" => {
+            mob_methods::handle_stop_member_run(
                 runtime,
                 identity_ctx.map(|ctx| &ctx.runtime),
                 response_id,
@@ -7072,6 +7082,96 @@ shell = true
             binding: None,
             placement: None,
         }
+    }
+
+    /// A control handler composed without session-service access resolves
+    /// no dialable address for a member whose runtime is local: it reports
+    /// none rather than inventing one, while the member's peer id and
+    /// transport key are still published.
+    #[tokio::test]
+    async fn lookup_member_without_session_service_reports_no_address_for_a_local_member()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-lookup-no-session-service".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        Box::pin(runtime.spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "lookup-local".to_string(),
+            None,
+            Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+            None,
+        )))
+        .await
+        .map_err(|error| error.to_string())?;
+        let response = crate::runtime::cross_mob_control::handle_lookup_member_raw(
+            &runtime.mob_handle(),
+            None,
+            "lookup-local",
+        )
+        .await
+        .map_err(|(code, message)| format!("{code}: {message}"))?;
+        match response {
+            crate::runtime::cross_mob_control::ControlResponse::Member {
+                advertised_address,
+                pubkey_b64,
+                ..
+            } => {
+                assert_eq!(advertised_address, None);
+                assert!(pubkey_b64.is_some(), "the member's key is still published");
+            }
+            other => {
+                return Err(format!("expected a Member response, got {other:?}").into());
+            }
+        }
+        runtime.shutdown().await;
+        Ok(())
+    }
+
+    /// `register_peer_runtime` carries the peer mob's session service, so a
+    /// same-process cross-mob wire resolves the peer member's dialable
+    /// address from that mob (a legacy `register_peer_mob` handle carries
+    /// none).
+    #[tokio::test]
+    async fn registered_peer_runtime_carries_its_session_service()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-peer-runtime-session-service".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let mob_id = runtime.mob_id();
+        runtime
+            .register_peer_mob(&mob_id, runtime.mob_handle())
+            .await;
+        assert!(!runtime.peer_mob_carries_session_service(&mob_id).await);
+        runtime.register_peer_runtime(&runtime).await;
+        assert!(runtime.peer_mob_carries_session_service(&mob_id).await);
+        runtime.shutdown().await;
+        Ok(())
     }
 
     /// `_system` is the reserved runtime-plane console identity: the

@@ -609,15 +609,6 @@ struct PreBuildMobSessionService {
     /// double-decorate. The slot is late-bound: compositions fill it when
     /// the memory stack attaches.
     dispatch_taint: Option<crate::memory::dispatch_taint::DispatchTaintSlot>,
-    /// Create-time capture of each witness-bearing create's live event
-    /// stream for the console forwarder (`crate::live_session_event_tap`).
-    /// Present on exactly one layer, so re-wraps never open a second
-    /// receiver per create, and that layer is the innermost MobKit one (the
-    /// stock constructors' pre-build-hook layer, else the base wrapper
-    /// `MobBootstrapSpec::new` installs over the caller's service): the tap
-    /// must see the initial-turn policy after every hook that could change
-    /// it.
-    live_event_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
     /// Installed only on the persistent runtime-backed path: absorbs the
@@ -742,10 +733,15 @@ impl PreBuildMobSessionService {
         SessionError,
     > {
         (self.hook)(&mut req).await?;
+        // Only a typed Resume continues a persisted session; a Mint carrier
+        // (a spawn's pre-assigned id, meerkat #1225) has nothing to load.
         let resume_id = req
             .build
             .as_ref()
             .filter(|build| build.initial_tool_filter.is_none())
+            .filter(|build| {
+                build.session_build_intent() == meerkat_core::service::SessionBuildIntent::Resume
+            })
             .and_then(|build| build.resume_session.as_ref())
             .map(|session| session.id().clone());
         let persisted_resume = match resume_id {
@@ -2880,6 +2876,20 @@ impl SessionDocumentReadAbsorber {
     }
 }
 
+/// How a durable head row relates to the committed successor a WholeBlob
+/// boundary projects, as the compact head row alone proves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableHeadRelation {
+    /// Same rewrite generation, message count and transcript revision.
+    AtHead,
+    /// Same rewrite generation, and the head row's revision is the committed
+    /// transcript's prefix digest at the head's length, which is at least the
+    /// last rewrite's result: only trailing appends are missing.
+    CommittedAppendPrefix,
+    /// Nothing proved from the head row; the durable body decides.
+    Unproven,
+}
+
 /// RuntimeStore forwarding facade for identity-first apps with an external
 /// compatibility projection.
 ///
@@ -2960,6 +2970,36 @@ struct SessionStoreBackedRuntimeStore {
     /// Inverse-append and durable-behind prover invocations (each is
     /// O(commits x transcript); durable-behind replays the graph per commit).
     rewrite_prover_runs: std::sync::atomic::AtomicU64,
+    /// PER-RUNTIME proof of the last state this facade saw projected: the
+    /// committed WholeBlob authority and the durable head row it left behind
+    /// (see [`ProjectionReceipt`]). No Session is retained. Bounded by the
+    /// runtimes this process projects, like [`Self::freshened`].
+    projection_receipts: std::sync::Mutex<std::collections::HashMap<String, ProjectionReceipt>>,
+    /// Projections answered from [`Self::projection_receipts`]: the committed
+    /// row digest and the durable head token were both unchanged, so there
+    /// was nothing to project and nothing was decoded.
+    receipt_skips: std::sync::atomic::AtomicU64,
+    /// Durable session BODY materializations (`SessionStore::load`) the
+    /// projection and the freshness probe paid. The head-row proofs exist to
+    /// keep ordinary boundaries at zero.
+    durable_body_loads: std::sync::atomic::AtomicU64,
+}
+
+/// The last state one runtime's projection is known to have produced.
+///
+/// `authority` is the committed WholeBlob identity the projection projected
+/// (its row digest names the exact committed bytes); `durable_head_token` is
+/// the CAS token of the durable head row afterwards, which binds every fact
+/// the head carries (transcript revision and count, rewrite generation and
+/// prefix, envelope metadata). While a fresh body-free authority read still
+/// names the same row digest and the durable head still carries the same
+/// token, the committed document and the durable row are both exactly what
+/// they were when they were proved current, so projecting again would write
+/// nothing. Either fact moving sends the projection down its full path.
+#[derive(Debug, Clone)]
+struct ProjectionReceipt {
+    authority: meerkat_runtime::store::WholeBlobStoreAuthority,
+    durable_head_token: String,
 }
 
 impl SessionStoreBackedRuntimeStore {
@@ -3003,6 +3043,138 @@ impl SessionStoreBackedRuntimeStore {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Projections answered from a projection receipt (see `receipt_skips`).
+    #[cfg(test)]
+    pub fn receipt_skip_count(&self) -> u64 {
+        self.receipt_skips
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Durable session body materializations (see `durable_body_loads`).
+    #[cfg(test)]
+    pub fn durable_body_load_count(&self) -> u64 {
+        self.durable_body_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The durable head row's CAS token, or `None` when the store has no
+    /// head row (no incremental channel, or no row yet).
+    async fn durable_head_token(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<String>, meerkat_runtime::store::RuntimeStoreError> {
+        let Some(head) =
+            Self::durable_head(session_store, session_id, "projection receipt").await?
+        else {
+            return Ok(None);
+        };
+        meerkat_core::session_store::session_head_cas_token(&head)
+            .map(Some)
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable head token for the projection receipt: {e}"
+                ))
+            })
+    }
+
+    /// Record that `authority`'s committed document (`committed`) is what
+    /// the durable row now carries (the projection just landed it, or the
+    /// freshness probe proved it).
+    ///
+    /// The receipt is only as good as that claim, so it is re-proved here
+    /// from the durable head row rather than assumed from a returned save: a
+    /// projection write the adapter absorbed (a superseded session, a reset
+    /// window) returns without writing. Only a current-version head whose
+    /// rewrite generation, message count and transcript revision equal the
+    /// committed document's is receipted; anything else (including no head
+    /// row at all) drops the runtime's receipt, and the next projection takes
+    /// its full path.
+    async fn record_projection_receipt(
+        &self,
+        session_store: &Arc<dyn SessionStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        authority: &meerkat_runtime::store::WholeBlobStoreAuthority,
+        committed: &meerkat_core::Session,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let head = Self::durable_head(session_store, committed.id(), "projection receipt").await?;
+        let token = match head {
+            Some(head)
+                if head.version == meerkat_core::SESSION_VERSION
+                    && head.message_count == committed.messages().len() as u64
+                    && committed
+                        .transcript_rewrite_generation()
+                        .is_ok_and(|generation| generation == head.rewrite_count)
+                    && committed
+                        .transcript_revision()
+                        .is_ok_and(|revision| revision == head.head_revision) =>
+            {
+                Some(
+                    meerkat_core::session_store::session_head_cas_token(&head).map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                            "durable head token for the projection receipt: {e}"
+                        ))
+                    })?,
+                )
+            }
+            _ => None,
+        };
+        let mut receipts = self
+            .projection_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match token {
+            Some(durable_head_token) => {
+                receipts.insert(
+                    runtime_id.0.clone(),
+                    ProjectionReceipt {
+                        authority: authority.clone(),
+                        durable_head_token,
+                    },
+                );
+            }
+            None => {
+                receipts.remove(runtime_id.0.as_str());
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this runtime's receipt still proves the durable row current
+    /// for the committed state, from two body-free reads: the committed
+    /// WholeBlob authority (same session, same row digest, i.e. the exact
+    /// bytes that were projected) and the durable head token.
+    async fn projection_receipt_holds(
+        &self,
+        session_store: &Arc<dyn SessionStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        let Some(receipt) = self
+            .projection_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(runtime_id.0.as_str())
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .inner
+            .load_whole_blob_store_authority(runtime_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if current.session_id() != receipt.authority.session_id()
+            || current.blob_sha256() != receipt.authority.blob_sha256()
+        {
+            return Ok(false);
+        }
+        Ok(
+            Self::durable_head_token(session_store, receipt.authority.session_id()).await?
+                == Some(receipt.durable_head_token),
+        )
+    }
+
     /// The durable row's rewrite generation as its head row records it.
     /// `SessionHead::rewrite_count` advances 1:1 with each adopted commit
     /// (meerkat-core `session_store.rs`, head CAS). `None` when the store has
@@ -3026,21 +3198,25 @@ impl SessionStoreBackedRuntimeStore {
         })
     }
 
-    /// Whether the durable head row already records the committed session's
-    /// exact transcript: same rewrite generation, message count and content
-    /// digest.
+    /// How the durable head row relates to the committed successor, decided
+    /// from the compact head row alone (no durable body read).
     ///
-    /// Reads only the compact head row. A current-version head stores the
-    /// transcript content digest the current materialization computes
-    /// (`head_revision`, the value `transcript_revision()` re-derives); any
-    /// other head, or no head, answers `false` so the caller keeps the full
-    /// durable read. The committed digest is served from, or seeds, the
-    /// successor's retained midstate, so the projection's later head mint
-    /// does not hash the transcript again.
-    async fn durable_head_at_committed_head(
+    /// A current-version head stores the transcript content digest the
+    /// current materialization computes (`head_revision`, the value
+    /// `transcript_revision()` re-derives and `SessionHead::into_session`
+    /// verifies fail-closed on every load), its rewrite generation and its
+    /// message count. That is every fact the body-reading at-head and
+    /// append-prefix checks consult, so both are proved here without
+    /// materializing (and re-verifying) the whole durable transcript. Any
+    /// other head, or no head, is [`DurableHeadRelation::Unproven`] and the
+    /// caller keeps the full durable read. The committed digests are served
+    /// from, or seed, the successor's retained midstate and boundary ring, so
+    /// the projection's later head mint does not hash the transcript again.
+    async fn durable_head_relation(
         session_store: &Arc<dyn SessionStore>,
         successor: &meerkat_core::Session,
-    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        sealed: &meerkat_core::ValidatedTranscriptHistory,
+    ) -> Result<DurableHeadRelation, meerkat_runtime::store::RuntimeStoreError> {
         let Some(head) = Self::durable_head(
             session_store,
             successor.id(),
@@ -3048,27 +3224,60 @@ impl SessionStoreBackedRuntimeStore {
         )
         .await?
         else {
-            return Ok(false);
+            return Ok(DurableHeadRelation::Unproven);
         };
-        if head.version != meerkat_core::SESSION_VERSION
-            || head.message_count != successor.messages().len() as u64
-        {
-            return Ok(false);
+        if head.version != meerkat_core::SESSION_VERSION {
+            return Ok(DurableHeadRelation::Unproven);
         }
         let committed_generation = successor.transcript_rewrite_generation().map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                "committed rewrite generation before the durable at-head check: {e}"
+                "committed rewrite generation before the durable head check: {e}"
             ))
         })?;
+        // The digest alone cannot prove the durable row holds the last
+        // rewrite (see `durable_is_committed_append_prefix`): a generation
+        // mismatch is never proved from the head row.
         if head.rewrite_count != committed_generation {
-            return Ok(false);
+            return Ok(DurableHeadRelation::Unproven);
         }
-        let committed_revision = successor.transcript_revision().map_err(|e| {
-            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                "committed transcript revision before the durable at-head check: {e}"
-            ))
-        })?;
-        Ok(head.head_revision == committed_revision)
+        let committed_len = successor.messages().len() as u64;
+        if head.message_count == committed_len {
+            let committed_revision = successor.transcript_revision().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "committed transcript revision before the durable at-head check: {e}"
+                ))
+            })?;
+            return Ok(if head.head_revision == committed_revision {
+                DurableHeadRelation::AtHead
+            } else {
+                DurableHeadRelation::Unproven
+            });
+        }
+        // The ordinary append boundary: the head row is the committed
+        // transcript's own prefix past its last rewrite. Same proof as
+        // `durable_is_committed_append_prefix`, with the head row's count and
+        // revision standing in for the durable body's.
+        let Some(last) = sealed.last_commit() else {
+            return Ok(DurableHeadRelation::Unproven);
+        };
+        let Ok(durable_len) = usize::try_from(head.message_count) else {
+            return Ok(DurableHeadRelation::Unproven);
+        };
+        if durable_len < last.messages_after || head.message_count > committed_len {
+            return Ok(DurableHeadRelation::Unproven);
+        }
+        let committed_prefix = successor
+            .transcript_prefix_digest(durable_len)
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "committed transcript prefix digest before the durable head check: {e}"
+                ))
+            })?;
+        Ok(if committed_prefix == head.head_revision {
+            DurableHeadRelation::CommittedAppendPrefix
+        } else {
+            DurableHeadRelation::Unproven
+        })
     }
 
     /// The durable row's rewrite generation as its head row records it (see
@@ -3152,6 +3361,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3171,6 +3383,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3194,6 +3409,9 @@ impl SessionStoreBackedRuntimeStore {
             at_head_skips: std::sync::atomic::AtomicU64::new(0),
             append_prefix_skips: std::sync::atomic::AtomicU64::new(0),
             rewrite_prover_runs: std::sync::atomic::AtomicU64::new(0),
+            projection_receipts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            receipt_skips: std::sync::atomic::AtomicU64::new(0),
+            durable_body_loads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3452,6 +3670,8 @@ impl SessionStoreBackedRuntimeStore {
             mark_fresh();
             return Ok(());
         };
+        self.durable_body_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let durable = session_store.load(&session_id).await.map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                 "durable session read for runtime-authority freshness probe: {e}"
@@ -3465,7 +3685,7 @@ impl SessionStoreBackedRuntimeStore {
             // reconciliation, same single-flight; the guard's adoption
             // branch owns the first-save shape. Runs under a lifecycle
             // terminal for the same reason as the durable-behind arm.
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                 .await?;
             mark_fresh();
             return Ok(());
@@ -3592,8 +3812,20 @@ impl SessionStoreBackedRuntimeStore {
                     "durable row matches committed order and revision but its persisted \
                      envelope differs; projecting for envelope currency"
                 );
-                self.project_committed_session_to_durable(runtime_id)
+                self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                     .await?;
+            } else {
+                // Proved current: the committed document is exactly what the
+                // durable row carries. Receipt it, so a verbatim re-commit of
+                // these bytes (the startup compaction refresh) projects from
+                // two body-free reads instead of a decode.
+                self.record_projection_receipt(
+                    session_store,
+                    runtime_id,
+                    committed.authority(),
+                    committed.session(),
+                )
+                .await?;
             }
             mark_fresh();
             return Ok(());
@@ -3626,7 +3858,7 @@ impl SessionStoreBackedRuntimeStore {
                 "durable row orders behind committed runtime authority; \
                  running the committed->durable reconciliation"
             );
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, Some(committed.clone()))
                 .await?;
             // The 2026-09-03 production boot regression spent 171 s in this
             // branch across 16 sessions with nothing at INFO about how long or
@@ -4099,6 +4331,7 @@ impl SessionStoreBackedRuntimeStore {
     async fn project_committed_session_to_durable(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        prepared: Option<meerkat_runtime::store::CommittedWholeBlobSnapshot>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         let Some(session_store) = self.session_store.as_ref() else {
             return Ok(());
@@ -4114,15 +4347,45 @@ impl SessionStoreBackedRuntimeStore {
         // Single-flight per runtime: the rewrite-replay walk below installs
         // each missing commit against the durable head its predecessor
         // step just advanced; two interleaved walks for one runtime would
-        // race those validations. The committed snapshot is re-read INSIDE
+        // race those validations. The committed snapshot is resolved INSIDE
         // the fence so a projection racing a newer commit converges toward
         // the newer committed state.
+        //
+        // `prepared` is the typed session this boundary itself committed,
+        // bound to the store authority its commit returned (no encode,
+        // decode or hash). meerkat serves it only while a fresh body-free
+        // authority read still equals that binding exactly; a head that
+        // moved (a newer commit landed first) takes the authoritative read
+        // and its full verification. Either way the projection sees the
+        // CURRENT committed state; the reuse only spares the ordinary turn
+        // an O(document) decode and rewrite-graph validation of the
+        // document it just wrote.
         let flight = self.projection_flight_for(runtime_id);
         let _flight = flight.lock().await;
-        let Some(snapshot) = self
-            .inner
-            .load_committed_whole_blob_snapshot(runtime_id)
-            .await?
+        // A boundary without a typed carrier (the startup compaction
+        // refresh re-commits the committed bytes verbatim) would otherwise
+        // decode the committed document only to find the durable row already
+        // carries it. The receipt answers that from two body-free reads.
+        if prepared.is_none()
+            && self
+                .projection_receipt_holds(session_store, runtime_id)
+                .await?
+        {
+            tracing::debug!(
+                runtime_id = %runtime_id,
+                "committed row digest and durable head unchanged since they were proved \
+                 current; nothing to project"
+            );
+            self.receipt_skips
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+        let Some(snapshot) = meerkat_runtime::store::reuse_or_load_committed_whole_blob_snapshot(
+            self.inner.as_ref(),
+            runtime_id,
+            prepared,
+        )
+        .await?
         else {
             // Receipt-only boundary before any committed snapshot exists:
             // nothing durable to project yet.
@@ -4158,24 +4421,50 @@ impl SessionStoreBackedRuntimeStore {
         let carries_rewrites = sealed
             .as_ref()
             .is_some_and(|sealed| sealed.commit_count() != 0);
-        let durable_predecessor = if !carries_rewrites {
-            None
-        } else if Self::durable_head_at_committed_head(session_store, successor).await? {
-            tracing::debug!(
-                runtime_id = %runtime_id,
-                session_id = %successor.id(),
-                "durable head already at the committed head; skipping the durable \
-                 predecessor read and the rewrite-chain provers"
-            );
-            self.at_head_skips
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            None
-        } else {
-            session_store.load(successor.id()).await.map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                    "durable predecessor read before boundary projection: {e}"
-                ))
-            })?
+        let durable_predecessor = match sealed.as_ref() {
+            Some(sealed) if carries_rewrites => {
+                match Self::durable_head_relation(session_store, successor, sealed).await? {
+                    DurableHeadRelation::AtHead => {
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            "durable head already at the committed head; skipping the durable \
+                             predecessor read and the rewrite-chain provers"
+                        );
+                        self.at_head_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    }
+                    DurableHeadRelation::CommittedAppendPrefix => {
+                        // The per-turn steady state after any compaction: only
+                        // the trailing appends are missing, which the
+                        // projection save below lands as delta rows. Reading
+                        // the durable body here cost one O(document)
+                        // materialization per turn to learn exactly this.
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            committed_messages = successor.messages().len(),
+                            "durable head is the committed transcript's prefix past its last \
+                             rewrite; skipping the durable predecessor read and the \
+                             rewrite-chain provers"
+                        );
+                        self.append_prefix_skips
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    }
+                    DurableHeadRelation::Unproven => {
+                        self.durable_body_loads
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        session_store.load(successor.id()).await.map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "durable predecessor read before boundary projection: {e}"
+                            ))
+                        })?
+                    }
+                }
+            }
+            _ => None,
         };
         // Durable rows proven (by the inverse-append admission below) to
         // extend the sealed commit parent carry their suffix through the
@@ -4537,6 +4826,20 @@ impl SessionStoreBackedRuntimeStore {
                  re-seeded at the rebased state (compacted head plus preserved \
                  suffix)"
             );
+            // The committed authority just moved to the rebased document; the
+            // snapshot's authority no longer names it.
+            self.projection_receipts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(runtime_id.0.as_str());
+        } else {
+            self.record_projection_receipt(
+                session_store,
+                runtime_id,
+                snapshot.authority(),
+                projected_document,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -4628,7 +4931,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         result?;
-        self.project_committed_session_to_durable(runtime_id).await
+        self.project_committed_session_to_durable(runtime_id, None)
+            .await
     }
 
     async fn commit_prepared_session_boundary(
@@ -4639,6 +4943,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::PreparedRuntimeSessionCommitResult,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        // Retain the typed WholeBlob session this boundary commits BEFORE the
+        // request moves into the inner store: once the store has encoded it,
+        // the binding below proves the committed bytes are this session's
+        // encoding, so the projection needs no read-back. `None` (receipt-only,
+        // HeadCanonical, untyped, provisional promotion) keeps the read.
+        let committing = request.committing_whole_blob_session();
         self.note_session_scoped_write(runtime_id);
         let result = self
             .inner
@@ -4646,7 +4956,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         let result = result?;
-        self.project_committed_session_to_durable(runtime_id)
+        let prepared = committing
+            .as_ref()
+            .and_then(|committing| committing.bind_committed(&result));
+        self.project_committed_session_to_durable(runtime_id, prepared)
             .await?;
         Ok(result)
     }
@@ -4719,6 +5032,32 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    /// Same authority minting as [`Self::load_committed_whole_blob_snapshot`]:
+    /// the metadata read is a view of the same committed document.
+    async fn load_committed_whole_blob_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::CommittedWholeBlobMetadata>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
+        if let Some(metadata) = self
+            .inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await?
+        {
+            return Ok(Some(metadata));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
+        self.inner
+            .load_committed_whole_blob_metadata(runtime_id)
+            .await
+    }
+
     async fn commit_prepared_whole_blob_snapshot_cas(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -4740,7 +5079,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             outcome,
             meerkat_runtime::store::WholeBlobSnapshotCasOutcome::Committed(_)
         ) {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(outcome)
@@ -4761,7 +5100,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         let authority = result?;
-        self.project_committed_session_to_durable(runtime_id)
+        self.project_committed_session_to_durable(runtime_id, None)
             .await?;
         Ok(authority)
     }
@@ -5036,7 +5375,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.note_session_scoped_write(runtime_id);
         result?;
         if committed_snapshot {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(())
@@ -5065,7 +5404,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await;
         self.note_session_scoped_write(runtime_id);
         result?;
-        self.project_committed_session_to_durable(runtime_id).await
+        self.project_committed_session_to_durable(runtime_id, None)
+            .await
     }
 
     async fn load_input_states(
@@ -5240,7 +5580,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.note_session_scoped_write(runtime_id);
         let replaced = result?;
         if replaced {
-            self.project_committed_session_to_durable(runtime_id)
+            self.project_committed_session_to_durable(runtime_id, None)
                 .await?;
         }
         Ok(replaced)
@@ -5874,6 +6214,21 @@ macro_rules! delegate_mob_session_service {
                 )
                 .await
             }
+            async fn subscribe_session_events_from(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                cursor: meerkat_core::comms::SessionEventCursor,
+            ) -> Result<
+                meerkat_core::comms::SessionEventSubscription,
+                meerkat_core::comms::StreamError,
+            > {
+                meerkat_core::service::SessionService::subscribe_session_events_from(
+                    self.inner.as_ref(),
+                    id,
+                    cursor,
+                )
+                .await
+            }
             async fn record_live_terminal_error(
                 &self,
                 id: &meerkat_core::types::SessionId,
@@ -5985,6 +6340,20 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::SessionId,
             ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
                 self.inner.observe_member_status_view(session_id).await
+            }
+
+            // Forwarded exactly: the inner persistent service records the
+            // interrupted-run notice in the durable transcript without a turn.
+            // The trait default refuses, so behind this wrapper the notice
+            // would stay owed instead of being recorded.
+            async fn append_system_notice_under_runtime_turn_boundary(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                record: meerkat_core::types::SystemNoticeRecord,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .append_system_notice_under_runtime_turn_boundary(session_id, record)
+                    .await
             }
 
             // Forwarded exactly: the inner service observes the durable
@@ -6142,10 +6511,6 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
-                // The tap's layer is the innermost MobKit layer, so this is
-                // the policy the inner service executes: the tap only covers
-                // creates that defer their initial turn.
-                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
@@ -6154,18 +6519,6 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
-                // For a deferred create no run of this actor can start yet
-                // (the caller still holds its turn boundary), so the console
-                // forwarder can adopt a stream that misses nothing.
-                if let Some(tap) = self.live_event_tap.as_ref() {
-                    tap.capture(
-                        self.inner.as_ref(),
-                        actor_witness_slot,
-                        &result.session_id,
-                        initial_turn,
-                    )
-                    .await;
-                }
                 Ok(self
                     .complete_create(result, context, capability_context)
                     .await)
@@ -6200,7 +6553,6 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context, capability_context) =
                     self.prepare_create_request(req).await?;
-                let initial_turn = req.initial_turn;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
@@ -6210,16 +6562,6 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
-                // Same create-time capture as the actor-witness create above.
-                if let Some(tap) = self.live_event_tap.as_ref() {
-                    tap.capture(
-                        self.inner.as_ref(),
-                        actor_witness_slot,
-                        &result.session_id,
-                        initial_turn,
-                    )
-                    .await;
-                }
                 Ok(self
                     .complete_create(result, context, capability_context)
                     .await)
@@ -6437,6 +6779,19 @@ macro_rules! delegate_mob_session_service {
                 meerkat_mob::MobSessionService::subscribe_session_events(
                     self.inner.as_ref(),
                     session_id,
+                )
+                .await
+            }
+            async fn subscribe_agent_session_events_from(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                cursor: meerkat_core::comms::SessionEventCursor,
+            ) -> Result<meerkat_mob::AgentEventSubscription, meerkat_core::comms::StreamError>
+            {
+                meerkat_mob::MobSessionService::subscribe_agent_session_events_from(
+                    self.inner.as_ref(),
+                    session_id,
+                    cursor,
                 )
                 .await
             }
@@ -6996,6 +7351,19 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         meerkat_core::service::SessionService::subscribe_session_events(self.inner.as_ref(), id)
             .await
     }
+    async fn subscribe_session_events_from(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        cursor: meerkat_core::comms::SessionEventCursor,
+    ) -> Result<meerkat_core::comms::SessionEventSubscription, meerkat_core::comms::StreamError>
+    {
+        meerkat_core::service::SessionService::subscribe_session_events_from(
+            self.inner.as_ref(),
+            id,
+            cursor,
+        )
+        .await
+    }
     async fn record_live_terminal_error(
         &self,
         id: &meerkat_core::types::SessionId,
@@ -7105,6 +7473,18 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::SessionId,
     ) -> Result<meerkat_mob::MemberStatusSessionView, SessionError> {
         self.inner.observe_member_status_view(session_id).await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: the typed
+    // system-notice append the runtime uses for interrupted-run notices.
+    async fn append_system_notice_under_runtime_turn_boundary(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        record: meerkat_core::types::SystemNoticeRecord,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .append_system_notice_under_runtime_turn_boundary(session_id, record)
+            .await
     }
 
     // Forwarded exactly, as in `delegate_mob_session_service!`: the body-free
@@ -7467,6 +7847,18 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
         meerkat_mob::MobSessionService::subscribe_session_events(self.inner.as_ref(), session_id)
             .await
+    }
+    async fn subscribe_agent_session_events_from(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        cursor: meerkat_core::comms::SessionEventCursor,
+    ) -> Result<meerkat_mob::AgentEventSubscription, meerkat_core::comms::StreamError> {
+        meerkat_mob::MobSessionService::subscribe_agent_session_events_from(
+            self.inner.as_ref(),
+            session_id,
+            cursor,
+        )
+        .await
     }
     async fn archive_with_mob_lifecycle_authority(
         &self,
@@ -7845,9 +8237,6 @@ pub struct MobBootstrapSpec {
     /// session-service wrapper `Self::new` installs; see
     /// [`Self::dispatch_taint_slot`].
     pub(crate) dispatch_taint_slot: crate::memory::dispatch_taint::DispatchTaintSlot,
-    /// Create-time live event capture carried by the base session-service
-    /// wrapper `Self::new` installs; see [`Self::live_session_event_tap`].
-    pub(crate) live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -7859,56 +8248,16 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
-        // The base layer wraps the caller's service directly, so it is the
-        // innermost MobKit layer and owns the create-time live event tap.
-        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
-        Self::compose(
-            definition,
-            storage,
-            session_service,
-            live_session_event_tap.clone(),
-            Some(live_session_event_tap),
-        )
-    }
-
-    /// [`Self::new`] over a service whose innermost MobKit layer already
-    /// carries `live_session_event_tap`: the stock constructors put it on
-    /// their pre-build-hook layer, the one wrapping the concrete session
-    /// service, so the tap reads the initial-turn policy of the request that
-    /// service actually executes, after every hook that could rewrite it.
-    fn over_tapped_service(
-        definition: MobDefinition,
-        storage: MobStorage,
-        session_service: Arc<dyn MobSessionService>,
-        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
-    ) -> Self {
-        Self::compose(
-            definition,
-            storage,
-            session_service,
-            live_session_event_tap,
-            None,
-        )
-    }
-
-    fn compose(
-        definition: MobDefinition,
-        storage: MobStorage,
-        session_service: Arc<dyn MobSessionService>,
-        live_session_event_tap: crate::live_session_event_tap::LiveSessionEventTap,
-        base_layer_tap: Option<crate::live_session_event_tap::LiveSessionEventTap>,
-    ) -> Self {
         // Every spec construction path funnels through here (the stock
-        // constructors call `Self::over_tapped_service` with their wrapped
-        // service), so this is the ONE layer that carries the dispatch-time
-        // taint slot: each member create passes it exactly once, and later
-        // `with_*` re-wraps never double-decorate.
+        // constructors call `Self::new` with their wrapped service), so this
+        // is the ONE layer that carries the dispatch-time taint slot: each
+        // member create passes it exactly once, and later `with_*` re-wraps
+        // never double-decorate.
         let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: Some(dispatch_taint_slot.clone()),
-            live_event_tap: base_layer_tap,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -7951,7 +8300,6 @@ impl MobBootstrapSpec {
             runtime_authority_prewarm: None,
             committed_boundary_recoverer: None,
             dispatch_taint_slot,
-            live_session_event_tap,
             _ephemeral_dir: None,
         }
     }
@@ -7963,16 +8311,6 @@ impl MobBootstrapSpec {
     /// [`crate::SessionTaintTracker`]; unfilled it costs nothing.
     pub fn dispatch_taint_slot(&self) -> crate::memory::dispatch_taint::DispatchTaintSlot {
         self.dispatch_taint_slot.clone()
-    }
-
-    /// The create-time live event tap every member session create built from
-    /// this spec feeds (see `crate::live_session_event_tap`). Unarmed it
-    /// captures nothing; the unified runtime arms it before preparing the mob
-    /// and hands it to the console forwarder that adopts its captures.
-    pub(crate) fn live_session_event_tap(
-        &self,
-    ) -> crate::live_session_event_tap::LiveSessionEventTap {
-        self.live_session_event_tap.clone()
     }
 
     /// Record the composition-time storage durability resolution for a spec
@@ -8198,7 +8536,6 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
             session_read_absorber: None,
@@ -8242,7 +8579,6 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -8290,7 +8626,6 @@ impl MobBootstrapSpec {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -8454,12 +8789,10 @@ impl MobBootstrapSpec {
         } else {
             after_create_hook
         };
-        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
@@ -8469,8 +8802,7 @@ impl MobBootstrapSpec {
         // service: child mobs are built on the tools' session service, so
         // they get every layer member creates get (the gateway's
         // `with_agent_mob_tools` order).
-        let mut spec =
-            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -8914,12 +9246,10 @@ impl MobBootstrapSpec {
         > = concrete_session_service.clone();
         let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
-        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook,
             // ONE machine for the whole spec. Without the override the
             // wrapped service answers `runtime_adapter()` with the persistent
@@ -8939,8 +9269,7 @@ impl MobBootstrapSpec {
         // service: child mobs are built on the tools' session service, so
         // they get every layer member creates get (the gateway's
         // `with_agent_mob_tools` order).
-        let mut spec =
-            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9251,12 +9580,10 @@ impl MobBootstrapSpec {
                 }
             })
         });
-        let live_session_event_tap = crate::live_session_event_tap::LiveSessionEventTap::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             dispatch_taint: None,
-            live_event_tap: Some(live_session_event_tap.clone()),
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
@@ -9266,8 +9593,7 @@ impl MobBootstrapSpec {
         // service: child mobs are built on the tools' session service, so
         // they get every layer member creates get (the gateway's
         // `with_agent_mob_tools` order).
-        let mut spec =
-            Self::over_tapped_service(definition, storage, session_service, live_session_event_tap);
+        let mut spec = Self::new(definition, storage, session_service);
         let (
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
@@ -9364,6 +9690,9 @@ impl MobBootstrapSpec {
 pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
+    /// A typed refusal on the explicit host-human lane (for example a skill
+    /// selection sent to a member that has no native carrier for it).
+    HostHumanInput(crate::identity_first::bridge::HostHumanInputError),
     InvalidConfig(String),
     /// A persistent mob storage path could not be proven to match the supplied
     /// composition. Raised before the mob actuates.
@@ -9375,6 +9704,7 @@ impl std::fmt::Display for MobRuntimeError {
         match self {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
+            Self::HostHumanInput(err) => write!(f, "{err}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
         }
@@ -11297,6 +11627,7 @@ pub(crate) async fn send_console_human_on_mob(
     handle: &MobHandle,
     member: &meerkat_mob::runtime::MobMemberListEntry,
     content: meerkat_core::ContentInput,
+    skill_references: &[meerkat_core::skills::SkillKey],
     handling_mode: meerkat_core::types::HandlingMode,
     accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
 ) -> Result<String, MobRuntimeError> {
@@ -11311,6 +11642,15 @@ pub(crate) async fn send_console_human_on_mob(
     )
     .await?;
     if status.external_member.is_some() {
+        // Remote work has no native member-turn skill carrier: refuse a
+        // selection instead of running the turn without it.
+        if !skill_references.is_empty() {
+            return Err(MobRuntimeError::HostHumanInput(
+                crate::identity_first::bridge::HostHumanInputError::Unsupported(
+                    "selected skills require a local session-backed member".to_string(),
+                ),
+            ));
+        }
         // Keep remote work transport semantics, but use the original binding:
         // a stale local snapshot must never become a send to a replacement peer.
         handle
@@ -11338,12 +11678,18 @@ pub(crate) async fn send_console_human_on_mob(
     // origin preserves support for console-addressable internal workers.
     let spec = meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal)
         .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+    let options = if skill_references.is_empty() {
+        meerkat_mob::MemberTurnOptions::new()
+    } else {
+        meerkat_mob::MemberTurnOptions::new().with_skill_references(skill_references.to_vec())
+    };
     handle
-        .submit_host_human_input_bounded(
+        .submit_host_human_input_with_options_bounded(
             runtime_id,
             fence_token,
             spec,
             handling_mode,
+            options,
             delivery,
             deadline.into_std(),
         )
@@ -13223,7 +13569,6 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -13276,7 +13621,6 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -13322,7 +13666,6 @@ shell = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -14201,7 +14544,6 @@ realm_profile = "worker-v2"
             inner,
             hook,
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -14720,7 +15062,6 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -15383,7 +15724,6 @@ comms = true
                         inner: probe.clone(),
                         hook: Arc::new(|_| panic!("starting a turn must not run a pre-build hook")),
                         dispatch_taint: None,
-                        live_event_tap: None,
                         after_create_hook: None,
                         runtime_adapter_override: None,
                         session_read_absorber: None,
@@ -15486,7 +15826,6 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::clone(&machine)),
             session_read_absorber: None,
@@ -15538,7 +15877,6 @@ comms = true
             inner: probe.clone(),
             hook: Arc::new(|_| panic!("live commit must not invoke a build hook")),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15620,7 +15958,6 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15657,7 +15994,6 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15702,7 +16038,6 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15876,7 +16211,6 @@ comms = true
             inner: Arc::clone(&inner),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -15934,7 +16268,6 @@ comms = true
             inner,
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -16067,7 +16400,6 @@ comms = true
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
             dispatch_taint: None,
-            live_event_tap: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -16708,7 +17040,7 @@ comms = true
             Arc::clone(&session_store),
         ));
         store
-            .project_committed_session_to_durable(&runtime_id)
+            .project_committed_session_to_durable(&runtime_id, None)
             .await
             .unwrap_or_else(|error| {
                 panic!("append-then-rewrite reconciliation must converge: {error}")
@@ -17363,10 +17695,19 @@ comms = true
             Arc::clone(&inner),
             Arc::clone(&adapter) as Arc<dyn SessionStore>,
         ));
-        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
-            .await
-            .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
-            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        let committed =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
+                .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        // meerkat #1255: the decorator forwards the metadata-only read of the
+        // same committed row (never the trait default), with its authority.
+        let metadata =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_metadata(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"))
+                .unwrap_or_else(|| panic!("the committed metadata must be readable"));
+        assert_eq!(metadata.authority(), committed.authority());
 
         let successor_revision = successor
             .transcript_revision()
@@ -18285,18 +18626,30 @@ comms = true
         }
         commit_boundary_through(&store, &runtime_id, &committed).await;
         let at_head_before = store.at_head_skip_count();
+        let receipt_before = store.receipt_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
 
         let (hashed, transcript_bytes) =
             digest_bytes_for_unchanged_boundaries(&store, &runtime_id, &committed, BOUNDARIES)
                 .await;
 
-        // The at-head counter cannot tell the head-row fast path from the
-        // previous body-materializing at-head arm (both increment it once per
-        // boundary); only the byte budget below distinguishes them.
+        // Each re-commit of the same bytes is answered from the projection
+        // receipt the first boundary recorded (committed row digest and
+        // durable head token unchanged), before the at-head arm is reached.
         assert_eq!(
-            store.at_head_skip_count() - at_head_before,
+            store.receipt_skip_count() - receipt_before,
             BOUNDARIES,
-            "every unchanged boundary proves the durable head current"
+            "every unchanged boundary is proved current from the projection receipt"
+        );
+        assert_eq!(
+            store.at_head_skip_count(),
+            at_head_before,
+            "a receipted boundary never reaches the at-head arm"
+        );
+        assert_eq!(
+            store.durable_body_load_count(),
+            durable_loads_before,
+            "no unchanged boundary materializes the durable body"
         );
         assert_eq!(
             store.chain_walk_count(),
@@ -18481,6 +18834,355 @@ comms = true
                 .transcript_revision()
                 .unwrap_or_else(|error| panic!("{error}")),
             "the durable row stays at the committed transcript"
+        );
+    }
+
+    /// One prepared WholeBlob boundary committing `session` through the
+    /// facade, exactly as the runtime hands it over: a sealed typed carrier.
+    async fn commit_prepared_boundary_through(
+        store: &SessionStoreBackedRuntimeStore,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session: &Arc<meerkat_core::Session>,
+    ) -> meerkat_runtime::store::PreparedRuntimeSessionCommitResult {
+        let request = meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(session))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        meerkat_runtime::RuntimeStore::commit_prepared_session_boundary(store, runtime_id, request)
+            .await
+            .unwrap_or_else(|error| panic!("prepared boundary projection: {error}"))
+    }
+
+    /// The durable head row's message count and revision.
+    async fn durable_head_count_and_revision(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> (u64, String) {
+        let head = Arc::clone(session_store)
+            .as_incremental()
+            .unwrap_or_else(|| panic!("the continuity adapter exposes its head reads"))
+            .load_head(session_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row has a head"));
+        (head.message_count, head.head_revision)
+    }
+
+    /// The live session after one more turn, and the carrier the runtime
+    /// seals for that boundary. The runtime digests its live session at every
+    /// boundary (the boundary guards and receipt), so the carrier it clones
+    /// inherits the midstate and the previous boundary's prefix witness; the
+    /// fixture mirrors that instead of handing the projection a cold clone.
+    fn next_turn_carrier(
+        live: &mut meerkat_core::Session,
+        turn: usize,
+    ) -> Arc<meerkat_core::Session> {
+        live.push(large_turn(turn));
+        live.transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        Arc::new(live.clone())
+    }
+
+    /// Per-turn WholeBlob projection is O(delta) (meerkat #1280 seam). A
+    /// resumed member with a large compacted transcript commits one turn per
+    /// boundary. Each projection used to read the committed document back
+    /// (one full decode, which validates and replays the whole rewrite
+    /// graph) and then materialize the whole durable body to learn that only
+    /// the new turn was missing. Now the facade reuses the typed session its
+    /// own commit wrote, and the compact durable head row proves the append
+    /// boundary: no decode, no graph validation, no durable body read, and
+    /// the digest work is the appended turns, not the transcript.
+    #[tokio::test]
+    async fn prepared_append_boundaries_project_without_a_decode_or_graph_validation() {
+        const BOUNDARIES: u64 = 4;
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:prepared-append").await;
+        let store = SessionStoreBackedRuntimeStore::new(inner, Arc::clone(&session_store));
+        let mut live = committed;
+        for turn in 0..160 {
+            live.push(large_turn(turn));
+        }
+        live.transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let warm = Arc::new(live.clone());
+        commit_prepared_boundary_through(&store, &runtime_id, &warm).await;
+        let transcript_bytes = serde_json::to_vec(live.messages())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .len() as u64;
+        let turn_bytes = serde_json::to_vec(&large_turn(0))
+            .unwrap_or_else(|error| panic!("{error}"))
+            .len() as u64;
+
+        let append_skips_before = store.append_prefix_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let validations_before = meerkat_core::global_transcript_graph_validations();
+        let digest_before = meerkat_core::global_session_content_digest_bytes();
+        let mut last = warm;
+        for turn in 0..BOUNDARIES {
+            last = next_turn_carrier(&mut live, 1_000 + turn as usize);
+            commit_prepared_boundary_through(&store, &runtime_id, &last).await;
+        }
+        let decodes = meerkat_core::global_whole_blob_decodes() - decodes_before;
+        let validations = meerkat_core::global_transcript_graph_validations() - validations_before;
+        let hashed = meerkat_core::global_session_content_digest_bytes() - digest_before;
+
+        assert_eq!(
+            decodes, 0,
+            "{BOUNDARIES} prepared append boundaries decoded {decodes} WholeBlob documents; the \
+             projection read back the document its own commit wrote"
+        );
+        assert_eq!(
+            validations, 0,
+            "{BOUNDARIES} prepared append boundaries ran {validations} full transcript graph \
+             validations"
+        );
+        assert_eq!(
+            store.append_prefix_skip_count() - append_skips_before,
+            BOUNDARIES,
+            "the compact head row proves every ordinary append boundary"
+        );
+        assert_eq!(
+            store.durable_body_load_count() - durable_loads_before,
+            0,
+            "no append boundary materializes the durable body"
+        );
+        assert_eq!(
+            store.chain_walk_count(),
+            0,
+            "no append boundary walks the chain"
+        );
+        // O(delta): the appended turns (hashed by the live boundary digest
+        // and by the projection's head mint), never the transcript.
+        let budget = BOUNDARIES * turn_bytes * 4;
+        assert!(
+            hashed <= budget,
+            "{BOUNDARIES} append boundaries hashed {hashed} content-digest bytes (budget {budget}, \
+             one turn {turn_bytes} bytes, transcript {transcript_bytes} bytes)"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, last.id()).await,
+            (
+                last.messages().len() as u64,
+                last.transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "every appended turn landed durably"
+        );
+    }
+
+    /// The reuse is guarded, never trusted: a snapshot bound at commit time
+    /// whose head has since moved (a newer boundary committed first) must not
+    /// be projected. The guard falls back to the authoritative read, which
+    /// decodes and verifies the CURRENT committed document, and the durable
+    /// row converges to that newer state rather than the stale binding.
+    #[tokio::test]
+    async fn a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir.path(), "domain:prepared-moved").await;
+        let store =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        let mut live = committed;
+        let stale = next_turn_carrier(&mut live, 0);
+        let request = meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(&stale))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let committing = request
+            .committing_whole_blob_session()
+            .unwrap_or_else(|| panic!("a sealed typed boundary carries its session"));
+        let result = inner
+            .commit_prepared_session_boundary(&runtime_id, request)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let stale_binding = committing
+            .bind_committed(&result)
+            .unwrap_or_else(|| panic!("the store committed exactly the stale carrier"));
+        // A newer boundary lands in the runtime store before the stale
+        // binding is projected.
+        let newer = next_turn_carrier(&mut live, 1);
+        inner
+            .commit_prepared_session_boundary(
+                &runtime_id,
+                meerkat_runtime::store::PreparedRuntimeSessionCommit::snapshot_only(
+                    meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::clone(
+                        &newer,
+                    ))
+                    .unwrap_or_else(|error| panic!("{error}")),
+                ),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        store
+            .project_committed_session_to_durable(&runtime_id, Some(stale_binding))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            meerkat_core::global_whole_blob_decodes() > decodes_before,
+            "a moved head must take the authoritative committed read, not the stale binding"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, newer.id()).await,
+            (
+                newer.messages().len() as u64,
+                newer
+                    .transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "the durable row converges to the current committed state, not the stale binding"
+        );
+    }
+
+    /// The committed WholeBlob bytes exactly as the store serves them raw,
+    /// which is what the startup compaction refresh re-commits verbatim.
+    async fn committed_raw_bytes(
+        inner: &Arc<dyn meerkat_runtime::RuntimeStore>,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Arc<Vec<u8>> {
+        meerkat_runtime::store::RuntimeSessionAuthorityOps::load_committed_whole_blob_bytes(
+            inner.session_authority_ops(),
+            runtime_id,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("a committed WholeBlob row"))
+        .0
+    }
+
+    /// A fresh facade over an existing compacted member, as at cold boot:
+    /// the resume's freshness probe proves the durable row current.
+    async fn booted_facade(
+        dir: &std::path::Path,
+        identity: &str,
+    ) -> (
+        SessionStoreBackedRuntimeStore,
+        Arc<dyn SessionStore>,
+        Arc<dyn meerkat_runtime::RuntimeStore>,
+        meerkat_core::Session,
+        meerkat_runtime::LogicalRuntimeId,
+    ) {
+        let (session_store, inner, committed, runtime_id) =
+            land_compacted_continuity_row(dir, identity).await;
+        let store =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_session_boundary_authority(&store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("resume freshness probe: {error}"));
+        (store, session_store, inner, committed, runtime_id)
+    }
+
+    /// The startup compaction refresh re-commits the committed WholeBlob
+    /// bytes verbatim through `commit_session_snapshot`, which carries no
+    /// typed session. Its projection used to decode the committed document
+    /// (full rewrite-graph validation) only to find the durable row already
+    /// carried it. The resume's freshness probe proved the durable row
+    /// current and receipted that; the refresh's projection now answers from
+    /// the committed row digest and the durable head token: no decode, no
+    /// durable body read, nothing written.
+    #[tokio::test]
+    async fn the_startup_compaction_refresh_projects_without_a_decode() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (store, session_store, inner, committed, runtime_id) =
+            booted_facade(dir.path(), "domain:refresh-receipt").await;
+        let head_before = durable_head_count_and_revision(&session_store, committed.id()).await;
+        let bytes = committed_raw_bytes(&inner, &runtime_id).await;
+        let skips_before = store.receipt_skip_count();
+        let durable_loads_before = store.durable_body_load_count();
+        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let validations_before = meerkat_core::global_transcript_graph_validations();
+
+        meerkat_runtime::RuntimeStore::commit_session_snapshot(
+            &store,
+            &runtime_id,
+            meerkat_runtime::store::SerializedSessionSnapshot {
+                session_snapshot: bytes,
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("refresh: {error}"));
+
+        assert_eq!(
+            store.receipt_skip_count() - skips_before,
+            1,
+            "the refresh projection is answered from the receipt"
+        );
+        assert_eq!(
+            store.durable_body_load_count() - durable_loads_before,
+            0,
+            "the refresh projection reads no durable body"
+        );
+        assert_eq!(
+            meerkat_core::global_whole_blob_decodes() - decodes_before,
+            0,
+            "the byte-identical refresh decodes nothing (meerkat reaffirms it, and MobKit's \
+             projection answers from the receipt)"
+        );
+        assert_eq!(
+            meerkat_core::global_transcript_graph_validations() - validations_before,
+            0,
+            "the refresh runs no graph validation"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id()).await,
+            head_before,
+            "the durable row is untouched"
+        );
+    }
+
+    /// The receipt proves nothing once the durable row moves. Here a writer
+    /// outside the facade appends to the durable row after the resume
+    /// receipted it; the refresh of the unchanged committed bytes must take
+    /// the full projection, which converges the durable row back to the
+    /// committed authority instead of trusting the stale receipt.
+    #[tokio::test]
+    async fn a_moved_durable_head_voids_the_projection_receipt() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (store, session_store, inner, committed, runtime_id) =
+            booted_facade(dir.path(), "domain:refresh-moved").await;
+        let mut ahead = committed.clone();
+        ahead.push(large_turn(0));
+        session_store
+            .save_authoritative_projection(&ahead)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id())
+                .await
+                .0,
+            ahead.messages().len() as u64,
+            "precondition: the durable head moved"
+        );
+        let bytes = committed_raw_bytes(&inner, &runtime_id).await;
+        let skips_before = store.receipt_skip_count();
+
+        meerkat_runtime::RuntimeStore::commit_session_snapshot(
+            &store,
+            &runtime_id,
+            meerkat_runtime::store::SerializedSessionSnapshot {
+                session_snapshot: bytes,
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("refresh: {error}"));
+
+        assert_eq!(
+            store.receipt_skip_count(),
+            skips_before,
+            "a moved durable head must not be answered from the receipt"
+        );
+        assert_eq!(
+            durable_head_count_and_revision(&session_store, committed.id()).await,
+            (
+                committed.messages().len() as u64,
+                committed
+                    .transcript_revision()
+                    .unwrap_or_else(|error| panic!("{error}"))
+            ),
+            "the full projection converges the durable row to the committed authority"
         );
     }
 
@@ -19273,7 +19975,7 @@ comms = true
             .fail_on_call
             .store(0, std::sync::atomic::Ordering::SeqCst);
         store
-            .project_committed_session_to_durable(&runtime_id)
+            .project_committed_session_to_durable(&runtime_id, None)
             .await
             .unwrap_or_else(|error| panic!("the exact retry must converge: {error}"));
         assert_eq!(

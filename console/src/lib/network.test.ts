@@ -841,3 +841,137 @@ test("subscribeTimelineEvents reconnects from the last delivered cursor after st
     globalThis.fetch = originalFetch;
   }
 });
+
+import { classifyConsoleSendFailure } from "../../../packages/console-core/src/send-attempt";
+
+// The typed 401 body the gateway answers on both console send doors
+// (crates/meerkat-mobkit tests/console_route_auth.rs pins the server side).
+const UNAUTHENTICATED_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  id: null,
+  error: {
+    code: -32600,
+    message: "unauthorized: console rpc requires a valid auth token",
+    data: { kind: "unauthenticated", http_status: 401 },
+  },
+});
+
+test("an unauthenticated console send is a typed rejection on the JSON and multipart doors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(UNAUTHENTICATED_BODY, {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+  try {
+    for (const send of [
+      () => sendConsole("http://127.0.0.1:7000", "domain:calendar", "hello", "console:p", "idem-401", "queue", 60_000),
+      () => sendConsoleMultipart(
+        "http://127.0.0.1:7000", "domain:calendar", "hello",
+        [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+        "console:p", "idem-401-mp", "steer", 60_000,
+      ),
+    ]) {
+      await assert.rejects(send(), (error: unknown) => {
+        const typed = error as { httpStatus?: number; responseRpcError?: { data?: { kind?: string } } };
+        assert.equal(typed.httpStatus, 401);
+        assert.equal(typed.responseRpcError?.data?.kind, "unauthenticated");
+        const failure = classifyConsoleSendFailure(error);
+        assert.equal(failure.state, "definitely-rejected");
+        assert.equal(failure.kind, "unauthenticated");
+        assert.match(failure.message, /^Not authorized from this network \(401\)\./);
+        return true;
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a proxy's bare 401 or 403 page is still a typed rejection", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [status, kind] of [[401, "unauthenticated"], [403, "access_denied"]] as const) {
+      globalThis.fetch = (async () => new Response("<html>denied</html>", {
+        status, headers: { "content-type": "text/html" },
+      })) as typeof fetch;
+      await assert.rejects(
+        sendConsole("http://127.0.0.1:7000", "domain:calendar", "hi", "console:p", `idem-${status}`, "queue", 60_000),
+        (error: unknown) => {
+          const failure = classifyConsoleSendFailure(error);
+          assert.equal(failure.state, "definitely-rejected");
+          assert.equal(failure.kind, kind);
+          return true;
+        },
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("transport failures are typed and stay reconcilable", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch;
+    await assert.rejects(
+      sendConsole("http://127.0.0.1:7000", "domain:calendar", "hi", "console:p", "idem-down", "queue", 60_000),
+      (error: unknown) => {
+        assert.ok(error instanceof TypeError, "the fetch error itself is kept");
+        const failure = classifyConsoleSendFailure(error);
+        assert.equal(failure.state, "outcome-unknown");
+        assert.equal(failure.kind, "connection_failed");
+        assert.match(failure.message, /^The connection failed before the gateway answered \(Failed to fetch\)\. The message may already have been accepted/);
+        return true;
+      },
+    );
+
+    globalThis.fetch = (async () => new Response("<html>login</html>", {
+      status: 200, headers: { "content-type": "text/html" },
+    })) as typeof fetch;
+    await assert.rejects(
+      sendConsole("http://127.0.0.1:7000", "domain:calendar", "hi", "console:p", "idem-html", "queue", 60_000),
+      (error: unknown) => {
+        const failure = classifyConsoleSendFailure(error);
+        assert.equal(failure.state, "outcome-unknown");
+        assert.equal(failure.kind, "invalid_response");
+        assert.match(failure.message, /non-JSON response \(HTTP 200, text\/html\)/);
+        return true;
+      },
+    );
+
+    globalThis.fetch = (async () => new Response("bad gateway", { status: 502 })) as typeof fetch;
+    await assert.rejects(
+      sendConsoleMultipart(
+        "http://127.0.0.1:7000", "domain:calendar", "hi",
+        [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+        "console:p", "idem-502", "queue", 60_000,
+      ),
+      (error: unknown) => {
+        const failure = classifyConsoleSendFailure(error);
+        assert.equal(failure.state, "outcome-unknown");
+        assert.equal(failure.kind, "gateway_error");
+        assert.match(failure.message, /^Gateway error \(HTTP 502\)\./);
+        return true;
+      },
+    );
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      jsonrpc: "2.0", id: 1, error: { code: -32030, message: "access denied: agent.send", data: { kind: "access_denied" } },
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    await assert.rejects(
+      sendConsoleMultipart(
+        "http://127.0.0.1:7000", "domain:calendar", "hi",
+        [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+        "console:p", "idem-denied", "queue", 60_000,
+      ),
+      (error: unknown) => {
+        const failure = classifyConsoleSendFailure(error);
+        assert.equal(failure.state, "definitely-rejected", "multipart refusals are typed like JSON ones");
+        assert.equal(failure.kind, "access_denied");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

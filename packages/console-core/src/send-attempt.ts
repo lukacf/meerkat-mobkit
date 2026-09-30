@@ -24,7 +24,33 @@ export interface ConsoleSendAttempt {
   envelopeJson?: string;
   lease?: { owner: string; expiresAt: number };
   error?: string;
+  /** Typed reason for a settled failure; `error` is its rendered message. */
+  failureKind?: ConsoleSendFailureKind;
   accepted?: { interactionId: string; inputFrameId?: string };
+}
+
+/** Why a send attempt did not produce an acceptance receipt. Classified from
+ * typed transport facts (HTTP status, JSON-RPC code or `data.kind`, fetch
+ * layer failure kind), never from message text. */
+export type ConsoleSendFailureKind =
+  | "unauthenticated"
+  | "access_denied"
+  | "read_only"
+  | "rejected"
+  | "refused"
+  | "rate_limited"
+  | "interrupted"
+  | "capability_unavailable"
+  | "connection_failed"
+  | "timeout"
+  | "invalid_response"
+  | "gateway_error"
+  | "unknown";
+export interface ConsoleSendFailure {
+  state: "definitely-rejected" | "outcome-unknown";
+  kind: ConsoleSendFailureKind;
+  /** Operator-facing sentence naming the reason and what to do next. */
+  message: string;
 }
 const nonemptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
@@ -50,6 +76,10 @@ export function validateConsoleSendAttempt(value: ConsoleSendAttempt): void {
     throw new Error("The saved send attempt is invalid or uses an unsupported version.");
   }
   if ((value.error !== undefined && typeof value.error !== "string") ||
+    // An unrecognized kind (a newer tab's vocabulary) renders with the
+    // state's generic label rather than blocking the whole saved queue.
+    (value.failureKind !== undefined && (!nonemptyString(value.failureKind) ||
+      (value.state !== "definitely-rejected" && value.state !== "outcome-unknown"))) ||
     (value.lease !== undefined && (!value.lease || !nonemptyString(value.lease.owner) || !Number.isFinite(value.lease.expiresAt))) ||
     (value.state === "attempting" && !value.lease) || (value.state !== "attempting" && value.lease !== undefined) ||
     (value.state === "accepted" && (!value.accepted || !nonemptyString(value.accepted.interactionId) ||
@@ -91,7 +121,7 @@ export function beginConsoleSendAttempt(
     throw new Error("An attempted message cannot change handling mode.");
   }
   return { ...attempt, state: "attempting", envelopeJson: attempt.envelopeJson ?? JSON.stringify(envelope),
-    lease: { owner: options.owner, expiresAt: options.now + 15_000 }, error: undefined };
+    lease: { owner: options.owner, expiresAt: options.now + 15_000 }, error: undefined, failureKind: undefined };
 }
 
 /** Expiring a browser lease never proves that the server did not accept a send. */
@@ -106,24 +136,140 @@ export function recoverConsoleSendAttempt(attempt: ConsoleSendAttempt, now: numb
 
 export function finishConsoleSendAttempt(attempt: ConsoleSendAttempt, result:
   | { state: "accepted"; interactionId: string; inputFrameId?: string }
-  | { state: "definitely-rejected" | "outcome-unknown"; error: string },
+  | { state: "definitely-rejected" | "outcome-unknown"; error: string; kind?: ConsoleSendFailureKind },
 ): ConsoleSendAttempt {
   validateConsoleSendAttempt(attempt);
   if (attempt.state === "accepted") return attempt;
   if (!attempt.envelopeJson) throw new Error("A draft has not been dispatched.");
   if (result.state === "accepted") {
     if (!nonemptyString(result.interactionId) || (result.inputFrameId !== undefined && !nonemptyString(result.inputFrameId))) throw new Error("Server response did not prove acceptance.");
-    return { ...attempt, state: "accepted", lease: undefined, error: undefined,
+    return { ...attempt, state: "accepted", lease: undefined, error: undefined, failureKind: undefined,
       accepted: { interactionId: result.interactionId, inputFrameId: result.inputFrameId } };
   }
-  return { ...attempt, state: result.state, lease: undefined, error: result.error };
+  return { ...attempt, state: result.state, lease: undefined, error: result.error, failureKind: result.kind };
+}
+
+type TypedRpcError = { code?: unknown; message?: unknown; data?: { kind?: unknown } | null };
+interface TypedSendError {
+  rpcError?: TypedRpcError;
+  responseRpcError?: TypedRpcError;
+  httpStatus?: unknown;
+  transportFailure?: unknown;
+  timeoutMs?: unknown;
+  message?: unknown;
+  name?: unknown;
+}
+
+/** HTTP statuses the gateway (or a fronting proxy) answers before any
+ * reservation: the request was refused as a request, so nothing was sent.
+ * 408/409/429/5xx and everything unlisted stay unknown (the console REST
+ * send answers 429 after its reservation, when the member's admission
+ * backlog is full). */
+const PRE_INGRESS_REFUSAL_STATUSES = new Set([400, 404, 405, 413, 414, 415, 422, 431]);
+
+/**
+ * Classify a failed send into a typed state, kind and operator message.
+ *
+ * Only a refusal that proves the request never reached dispatch is
+ * `definitely-rejected`: a 401 or typed `unauthenticated` refusal, a 403 or
+ * typed `access_denied`, a typed read-only refusal, invalid params (-32602),
+ * or a listed pre-ingress HTTP status. Network loss, timeouts, 5xx,
+ * non-JSON answers and conflicts are `outcome-unknown`: the server may have
+ * reserved the message, so the attempt keeps its envelope for reconciliation.
+ */
+export function classifyConsoleSendFailure(error: unknown): ConsoleSendFailure {
+  const typed = (error && typeof error === "object" ? error : {}) as TypedSendError;
+  const rpc = typed.rpcError ?? typed.responseRpcError;
+  const rpcKind = typeof rpc?.data?.kind === "string" ? rpc.data.kind : undefined;
+  const rpcMessage = typeof rpc?.message === "string" && rpc.message.trim() ? rpc.message.trim() : undefined;
+  const status = typeof typed.httpStatus === "number" ? typed.httpStatus : undefined;
+  const detail = error instanceof Error && error.message.trim() ? error.message.trim()
+    : typeof typed.message === "string" && typed.message.trim() ? typed.message.trim() : undefined;
+  if (rpcKind === "unauthenticated" || status === 401) {
+    return { state: "definitely-rejected", kind: "unauthenticated",
+      message: "Not authorized from this network (401). The gateway refused the request before accepting it, so nothing was sent. Sign in or connect from a trusted network, then retry." };
+  }
+  if (rpcKind === "access_denied" || rpc?.code === -32030 || status === 403) {
+    return { state: "definitely-rejected", kind: "access_denied",
+      message: `Not allowed to send to this agent (403)${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.` };
+  }
+  if (rpcKind === "read_only") {
+    return { state: "definitely-rejected", kind: "read_only",
+      message: "The console is read-only. Nothing was sent." };
+  }
+  if (rpc?.code === -32602) {
+    return { state: "definitely-rejected", kind: "rejected",
+      message: `Send rejected: ${rpcMessage ?? detail ?? "invalid request"}. Nothing was sent.` };
+  }
+  // The console's own lifetime ended (a reload, remount or account switch)
+  // while the request was in flight: the answer was discarded, so the send
+  // may well have been accepted. Typed by the abort's DOMException name.
+  if (typed.name === "AbortError" && typed.transportFailure === undefined) {
+    return { state: "outcome-unknown", kind: "interrupted",
+      message: "The console was reloaded or switched while this send was in flight, so its answer was not received. It may have been accepted: check acceptance before retrying." };
+  }
+  if (typed.transportFailure === "timeout") {
+    const seconds = typeof typed.timeoutMs === "number" ? ` within ${Math.round(typed.timeoutMs / 1000)} s` : "";
+    return { state: "outcome-unknown", kind: "timeout",
+      message: `No response from the gateway${seconds}. It may still have accepted the message: check acceptance before retrying.` };
+  }
+  // No HTTP response at all. The browser cannot distinguish a gateway it
+  // never reached from an acknowledgement lost after the gateway accepted the
+  // message, so this is "acceptance unknown", never "not sent".
+  if (typed.transportFailure === "connection_failed") {
+    return { state: "outcome-unknown", kind: "connection_failed",
+      message: `The connection failed before the gateway answered${detail ? ` (${detail})` : ""}. The message may already have been accepted: check acceptance before retrying.` };
+  }
+  if (typed.transportFailure === "invalid_response") {
+    return { state: "outcome-unknown", kind: "invalid_response",
+      message: `${detail ?? "The gateway returned an unreadable response"}. Something between the console and the gateway answered instead of it: check acceptance before retrying.` };
+  }
+  if (status !== undefined && PRE_INGRESS_REFUSAL_STATUSES.has(status)) {
+    return { state: "definitely-rejected", kind: "rejected",
+      message: `Send rejected by the gateway (HTTP ${status})${rpcMessage ? `: ${rpcMessage}` : ""}. Nothing was sent.` };
+  }
+  // The gateway answered the send with a typed JSON-RPC error that does not
+  // prove pre-reservation refusal (e.g. a steer that was reserved and then
+  // refused by the member, or an idempotency conflict): name the reason, but
+  // keep the attempt reconcilable.
+  if (typed.rpcError && (rpcMessage || detail)) {
+    return { state: "outcome-unknown", kind: "refused",
+      message: `Send failed: ${rpcMessage ?? detail}. The gateway may have recorded this attempt: check acceptance before retrying.` };
+  }
+  if (status === 429) {
+    return { state: "outcome-unknown", kind: "rate_limited",
+      message: "The agent is not taking more input right now (HTTP 429). It may already have recorded this attempt: check acceptance before retrying." };
+  }
+  if (status !== undefined && status >= 500) {
+    return { state: "outcome-unknown", kind: "gateway_error",
+      message: `Gateway error (HTTP ${status}). The console could not confirm acceptance: check acceptance before retrying.` };
+  }
+  return { state: "outcome-unknown", kind: "unknown",
+    message: `The console could not confirm acceptance${detail ? `: ${detail}` : ""}. Check acceptance before retrying.` };
 }
 
 /** Only structured pre-ingress rejection is proof. Network errors and conflicts are unknown. */
 export function consoleSendFailureState(error: unknown): "definitely-rejected" | "outcome-unknown" {
-  const rpc = (error as { rpcError?: { code?: unknown; data?: { kind?: unknown } } })?.rpcError;
-  return rpc?.code === -32602 || rpc?.data?.kind === "access_denied"
-    ? "definitely-rejected" : "outcome-unknown";
+  return classifyConsoleSendFailure(error).state;
+}
+
+/** Short row label for a settled attempt, from its typed failure kind. */
+export function consoleSendFailureLabel(attempt: Pick<ConsoleSendAttempt, "state" | "failureKind">): string {
+  switch (attempt.failureKind) {
+    case "unauthenticated": return "Not authorized";
+    case "access_denied": return "Not allowed";
+    case "read_only": return "Console read-only";
+    case "capability_unavailable": return "Send unavailable";
+    case "connection_failed": return "Acceptance unknown";
+    case "timeout": return "No response";
+    case "invalid_response": return "Unreadable response";
+    case "gateway_error": return "Gateway error";
+    case "rejected": return "Rejected";
+    case "refused": return "Send failed";
+    case "rate_limited": return "Gateway busy";
+    case "interrupted": return "Interrupted";
+    default: return attempt.state === "definitely-rejected" ? "Not accepted" : "Acceptance unknown";
+  }
 }
 
 function sameFrozenContent(actual: unknown, expected: ConsoleFrozenSendEnvelope["content"]): boolean {
@@ -147,4 +293,37 @@ export function reconcileConsoleSendReceipt(attempt: ConsoleSendAttempt, frame: 
     payload.idempotency_key !== envelope.idempotency_key || payload.handling_mode !== envelope.handling_mode ||
     !sameFrozenContent(payload.content, envelope.content)) return null;
   return finishConsoleSendAttempt(attempt, { state: "accepted", interactionId: frame.interactionId, inputFrameId: frame.id });
+}
+
+/** Typed outcome of an explicit "Check acceptance" that did not find a
+ * receipt. A failed check never changes the attempt's own state: it proves
+ * nothing about the send, and the saved message is never resent by it. */
+export interface ConsoleAcceptanceCheckResult {
+  kind: ConsoleSendFailureKind | "no_receipt";
+  message: string;
+}
+
+export const CONSOLE_ACCEPTANCE_NO_RECEIPT: ConsoleAcceptanceCheckResult = {
+  kind: "no_receipt",
+  message: "No acceptance receipt: this agent's timeline has no record of this message. It remains saved and will not be resent automatically.",
+};
+
+export function describeConsoleAcceptanceCheckFailure(error: unknown): ConsoleAcceptanceCheckResult {
+  const failure = classifyConsoleSendFailure(error);
+  const unchanged = "The saved message is unchanged and was not resent.";
+  switch (failure.kind) {
+    case "unauthenticated":
+      return { kind: failure.kind, message: `Could not check acceptance: not authorized from this network (401). ${unchanged}` };
+    case "access_denied":
+      return { kind: failure.kind, message: `Could not check acceptance: not allowed to read this agent's timeline (403). ${unchanged}` };
+    case "connection_failed":
+      return { kind: failure.kind, message: `Could not check acceptance: the connection failed before the gateway answered. ${unchanged}` };
+    case "timeout":
+      return { kind: failure.kind, message: `Could not check acceptance: no response from the gateway. ${unchanged}` };
+    default: {
+      const status = (error as { httpStatus?: unknown } | null)?.httpStatus;
+      const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "the check failed";
+      return { kind: failure.kind, message: `Could not check acceptance${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${detail}. ${unchanged}` };
+    }
+  }
 }

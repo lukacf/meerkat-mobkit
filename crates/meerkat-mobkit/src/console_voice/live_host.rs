@@ -713,6 +713,9 @@ pub(crate) mod tests {
         config: Config,
         /// Whole-blob session body reads through the runtime store.
         body_reads: Arc<AtomicUsize>,
+        /// The counting runtime store the service and machine read through,
+        /// for tests that read a member's body directly.
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
         /// What the scripted stuck-tool client observed.
         stuck_tool: Arc<StuckToolProbe>,
     }
@@ -885,7 +888,7 @@ pub(crate) mod tests {
                 builder,
                 16,
                 store,
-                runtime_store,
+                runtime_store.clone(),
                 blobs,
             ));
             let definition = meerkat_mob::MobDefinition::from_toml(&format!(
@@ -986,6 +989,7 @@ pub(crate) mod tests {
                 factory,
                 config,
                 body_reads,
+                runtime_store,
                 stuck_tool: stuck_tool_probe,
             }
         }
@@ -1051,8 +1055,9 @@ pub(crate) mod tests {
 
     /// meerkat 0.8.47: readiness observes the durable source body-free and
     /// actor-free. With a ~20 MB whole-blob member, 50 polls read the body
-    /// zero times and stay fast; the full open-path validation, as a
-    /// positive control, does read it.
+    /// zero times and stay fast. The positive control reads the member's
+    /// body straight from the counting store, which the session service's
+    /// verified-body cache (meerkat 0.8.49) cannot answer.
     #[tokio::test]
     async fn readiness_reads_no_body_of_a_large_whole_blob_member_across_fifty_polls() {
         const BODY_BYTES: usize = 20 * 1024 * 1024;
@@ -1117,8 +1122,10 @@ pub(crate) mod tests {
             p99 < Duration::from_millis(100),
             "p99 readiness {p99:?} over {POLLS} polls (all: {samples:?})"
         );
-        // Positive control: the open path's full validation loads the body,
-        // so the counter would have seen a readiness body read.
+        // The open path's full validation still accepts the member. Since
+        // meerkat 0.8.49 the session service may answer its body load from
+        // the verified body it cached when the content was saved, so it no
+        // longer proves the counter works.
         handle
             .member(&member)
             .await
@@ -1126,9 +1133,32 @@ pub(crate) mod tests {
             .validate_live_durable_source_availability()
             .await
             .expect("full durable validation");
+        // Positive control: read this member's committed body straight from
+        // the store the service and machine share, the read a readiness
+        // body load would make on a cache miss. The counter must see it, so
+        // the zero above is a measurement and not a disconnected counter.
+        let before_control = fixture.body_reads.load(Ordering::SeqCst);
+        let committed = fixture
+            .runtime_store
+            .load_committed_whole_blob_snapshot(&meerkat_runtime::LogicalRuntimeId::for_session(
+                &session,
+            ))
+            .await
+            .expect("direct committed body read")
+            .expect("the member has a committed whole-blob body");
         assert!(
-            fixture.body_reads.load(Ordering::SeqCst) > before,
-            "the counting store observes whole-blob body reads"
+            committed.session().messages().iter().any(|message| match message {
+                meerkat_core::types::Message::User(user) => user.content.iter().any(|block| {
+                    matches!(block, meerkat_core::types::ContentBlock::Text { text } if text.len() >= BODY_BYTES)
+                }),
+                _ => false,
+            }),
+            "the directly read body is the member's ~20 MB body"
+        );
+        assert_eq!(
+            fixture.body_reads.load(Ordering::SeqCst),
+            before_control + 1,
+            "the counting store observes a whole-blob body read"
         );
         controller.shutdown().await.expect("voice shutdown");
         fixture.runtime.shutdown().await;

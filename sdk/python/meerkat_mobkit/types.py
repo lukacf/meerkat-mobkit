@@ -818,7 +818,9 @@ class MemberReloadResult:
 
     ``disposition`` is ``"discarded"`` (the live registration was replaced by
     a re-materialization of the SAME durable session), ``"not_degraded"`` (a
-    success no-op; only produced once meerkat exposes durability state) or
+    success no-op; only produced once meerkat exposes durability state),
+    ``"reattached"`` (the registration had lost its runtime attachment and was
+    re-attached to the same durable session) or
     ``"not_current"`` (nothing live to reload). ``session_id`` and
     ``generation`` are the identity's binding AFTER the reload; a reload never
     advances the generation. Tolerate future disposition strings.
@@ -864,7 +866,7 @@ class MemberHealth:
     last_delivery_error: dict[str, Any] | None
     durability: Any | None
     bootstrap_state: str | None = None
-    #: ``{"outcome": "discarded" | "not_degraded" | "not_current" | "refused" |
+    #: ``{"outcome": "discarded" | "reattached" | "not_degraded" | "not_current" | "refused" |
     #: "timed_out" | "failed", "detail"?, "at_unix_ms"}`` for the most recent
     #: reload attempt; ``refused`` carries meerkat's reason (store not healthy).
     last_reload: dict[str, Any] | None = None
@@ -2341,3 +2343,81 @@ class WorkGraphEventEntry:
             at=str(data.get("at", "")),
             payload=data.get("payload"),
         )
+
+
+_RUN_STOP_OUTCOMES = ("stopped", "not_current", "not_stoppable")
+
+
+@dataclass(frozen=True)
+class MemberRunStopContributor:
+    """One input that contributed to a stopped member run.
+
+    ``completion`` is the completion class meerkat delivered (a cancelled
+    joined steer reports ``runtime_terminated``); ``terminal`` is the
+    committed input terminal class (``cancelled`` for a stopped run's inputs),
+    ``None`` only when no store retains the row.
+    """
+
+    input_id: str
+    completion: str
+    terminal: str | None
+
+
+@dataclass(frozen=True)
+class MemberRunStopReceipt:
+    """meerkat's typed run-stop receipt, relayed by ``mobkit/stop_member_run``.
+
+    ``outcome`` is ``stopped`` (``contributors`` lists every input bound to the
+    run), ``not_current`` (the run is no longer current; nothing was touched,
+    ``current_run_id`` names the live run if any), or ``not_stoppable`` (a
+    runtime stop or teardown owns the run; ``state`` is its runtime state).
+    """
+
+    outcome: str
+    run_id: str
+    contributors: tuple[MemberRunStopContributor, ...] = ()
+    current_run_id: str | None = None
+    state: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Any) -> MemberRunStopReceipt:
+        if not isinstance(data, dict):
+            raise ValueError(f"run-stop receipt must be an object: {data!r}")
+        outcome = data.get("outcome")
+        run_id = data.get("run_id")
+        if outcome not in _RUN_STOP_OUTCOMES or not isinstance(run_id, str):
+            raise ValueError(f"invalid run-stop receipt: {data!r}")
+        contributors: list[MemberRunStopContributor] = []
+        state = data.get("state")
+        current = data.get("current_run_id")
+        if outcome == "stopped":
+            rows = data.get("contributors")
+            if not isinstance(rows, list):
+                raise ValueError(f"stopped receipt needs contributors: {data!r}")
+            for row in rows:
+                if (
+                    not isinstance(row, dict)
+                    or not isinstance(row.get("input_id"), str)
+                    or not isinstance(row.get("completion"), str)
+                ):
+                    raise ValueError(f"malformed run-stop contributor: {row!r}")
+                terminal = row.get("terminal")
+                contributors.append(
+                    MemberRunStopContributor(
+                        input_id=row["input_id"],
+                        completion=row["completion"],
+                        terminal=terminal if isinstance(terminal, str) else None,
+                    )
+                )
+        elif outcome == "not_stoppable" and not isinstance(state, str):
+            raise ValueError(f"not_stoppable receipt needs a state: {data!r}")
+        elif outcome == "not_current" and current is not None and not isinstance(current, str):
+            raise ValueError(f"current_run_id must be a string: {data!r}")
+        return cls(
+            outcome=outcome,
+            run_id=run_id,
+            contributors=tuple(contributors),
+            current_run_id=current if isinstance(current, str) else None,
+            state=state if isinstance(state, str) else None,
+        )
+

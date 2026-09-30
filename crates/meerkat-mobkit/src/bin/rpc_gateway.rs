@@ -3422,6 +3422,67 @@ actions = ["agent.view"]
     /// Fork lineage is not caller-mintable: a `callback/build_agent` response
     /// naming `fork_source` neither sets it on an ordinary build nor alters a
     /// fork's, while the rest of the response still applies.
+    /// meerkat #1225: a spawn seats its pre-assigned session id as a typed
+    /// Mint carrier. The build callback must not present it as a resume
+    /// (`resume_session_id` stays null, the id still rides as `session_id`,
+    /// `session_build_intent` says `mint`), and standing instructions the host
+    /// returns are applied, as on any mint. A typed Resume keeps both.
+    #[tokio::test]
+    async fn a_pre_assigned_mint_is_not_a_resume() {
+        let minted_id = meerkat_core::types::SessionId::new();
+        let mut mint = meerkat_core::service::SessionBuildOptions::default();
+        mint.mint_session_with_id(minted_id.clone());
+        let mint_req = callback_test_request(Some(mint));
+        let options = callback_build_agent_options(&mint_req, "build-test");
+        assert!(options["resume_session_id"].is_null(), "{options}");
+        assert_eq!(options["session_id"], minted_id.to_string());
+        assert_eq!(options["session_build_intent"], "mint");
+
+        let mut resume = meerkat_core::service::SessionBuildOptions::default();
+        let resumed_session = meerkat_core::Session::new();
+        let resumed_id = resumed_session.id().to_string();
+        resume.resume_existing_session(resumed_session);
+        let resume_req = callback_test_request(Some(resume));
+        let options = callback_build_agent_options(&resume_req, "build-test");
+        assert_eq!(options["resume_session_id"], resumed_id.as_str());
+        assert_eq!(options["session_build_intent"], "resume");
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (stdout_tx, _stdout_rx) = mpsc::channel(1);
+        let builder = StdioCallbackAgentBuilder {
+            inner: FactoryAgentBuilder::new(AgentFactory::new(tmp.path()), Config::default()),
+            bridge: StdioCallbackBridge::new(stdout_tx),
+            has_session_builder: true,
+            session_store: None,
+            detached_jobs: None,
+        };
+        let response = json!({"additional_instructions": ["be terse"]});
+        let applied = builder
+            .apply_build_agent_response(&mint_req, &response, "b")
+            .await
+            .expect("response applies");
+        assert_eq!(
+            applied
+                .build
+                .as_ref()
+                .and_then(|b| b.additional_instructions.clone()),
+            Some(vec!["be terse".to_string()]),
+            "a Mint carrier honors standing instructions"
+        );
+        let applied = builder
+            .apply_build_agent_response(&resume_req, &response, "b")
+            .await
+            .expect("response applies");
+        assert_eq!(
+            applied
+                .build
+                .as_ref()
+                .and_then(|b| b.additional_instructions.clone()),
+            None,
+            "a resume inherits persisted prompt state"
+        );
+    }
+
     #[tokio::test]
     async fn a_build_response_cannot_set_or_alter_fork_lineage() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -11007,11 +11068,31 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
     // platform state from its own continuity store. `session_id` keeps its
     // label-sourced semantics but falls back to the resumed session's id,
     // which is the identity the older restore-path complaint was missing.
-    let resume_session_id = req
+    //
+    // Meerkat types which one a carried session is (#1225): a spawn seats a
+    // pre-assigned id as an empty Mint carrier, a resume carries the session
+    // it continues. `resume_session_id` is sent on Resume only, so a host
+    // never mistakes a fresh member's pre-assigned id for a resume and skips
+    // its standing instructions; the carried id still rides as `session_id`.
+    let carried_session_id = req
         .build
         .as_ref()
         .and_then(|b| b.resume_session.as_ref())
         .map(|s| s.id().to_string());
+    let session_build_intent = req
+        .build
+        .as_ref()
+        .map_or(meerkat_core::service::SessionBuildIntent::Mint, |b| {
+            b.session_build_intent()
+        });
+    let resume_session_id = match session_build_intent {
+        meerkat_core::service::SessionBuildIntent::Resume => carried_session_id.clone(),
+        _ => None,
+    };
+    let session_build_intent = match session_build_intent {
+        meerkat_core::service::SessionBuildIntent::Resume => "resume",
+        _ => "mint",
+    };
     // Fork lineage (`SessionBuildOptions::fork_source`): set by the mob
     // runtime alone, on the build that seats a durable fork with its source's
     // build inheritance and on every later rebuild of that member; absent for
@@ -11031,7 +11112,7 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
         "session_id": labels
             .as_ref()
             .and_then(|l| l.get("session_id").cloned())
-            .or_else(|| resume_session_id.clone()),
+            .or_else(|| carried_session_id.clone()),
         "profile_name": profile_name,
         "model": &req.model,
         "prompt": &req.prompt,
@@ -11039,6 +11120,7 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
         "app_context": req.build.as_ref()
             .and_then(|b| b.app_context.as_ref()),
         "resume_session_id": resume_session_id,
+        "session_build_intent": session_build_intent,
         "fork_source": fork_source,
         "fork_source_identity": fork_source_identity,
     })
@@ -11083,11 +11165,12 @@ impl StdioCallbackAgentBuilder {
         // (build.resume_session already loaded) or be requested by
         // the Python response (resume_session_id, applied further
         // down) - both shapes must suppress the fold.
-        let resumed = modified_req
-            .build
-            .as_ref()
-            .and_then(|b| b.resume_session.as_ref())
-            .is_some()
+        // A spawn-level Mint carrier (the pre-assigned id of a fresh
+        // member) is not a resume: meerkat types it (#1225).
+        let spawn_resumed = modified_req.build.as_ref().is_some_and(|b| {
+            b.session_build_intent() == meerkat_core::service::SessionBuildIntent::Resume
+        });
+        let resumed = spawn_resumed
             || result
                 .get("resume_session_id")
                 .and_then(|v| v.as_str())
@@ -11151,10 +11234,16 @@ impl StdioCallbackAgentBuilder {
                         "callback/build_agent: invalid resume_session_id: {resume_id}"
                     )))
                 })?;
-                // Validate against any spawn-level resume already set.
+                // Validate against any spawn-level RESUME already set. A Mint
+                // carrier holds only a pre-assigned id; a host resume replaces
+                // it with the loaded session.
                 if let Some(existing) = modified_req
                     .build
                     .as_ref()
+                    .filter(|b| {
+                        b.session_build_intent()
+                            == meerkat_core::service::SessionBuildIntent::Resume
+                    })
                     .and_then(|b| b.resume_session.as_ref())
                 {
                     if existing.id() != &sid {
@@ -11179,7 +11268,7 @@ impl StdioCallbackAgentBuilder {
                     let build = modified_req.build.get_or_insert_with(|| {
                         meerkat_core::service::SessionBuildOptions::default()
                     });
-                    build.resume_session = Some(session);
+                    build.resume_existing_session(session);
                 }
             } else {
                 return Err(SessionError::Agent(agent_tool_error(

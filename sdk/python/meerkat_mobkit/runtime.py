@@ -70,6 +70,7 @@ from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
 from .types import (
+    MemberRunStopReceipt,
     AgentMemoryForgetResult,
     AgentMemoryManifestResult,
     AgentMemoryRecallResult,
@@ -3806,6 +3807,24 @@ class MobHandle:
     async def force_cancel_member(self, member_id: str) -> None:
         """Force-cancel a running member immediately."""
         await self._runtime._rpc("mobkit/force_cancel_member", {"member_id": member_id})
+
+    async def stop_member_run(
+        self, member_id: str, run_id: str, *, reason: str
+    ) -> MemberRunStopReceipt:
+        """Stop one exact run of a member (meerkat's run-fenced Stop).
+
+        The member's runtime stops ``run_id`` and terminalizes every input
+        already bound to it, including durable steers that joined the run.
+        Returns the typed :class:`MemberRunStopReceipt` (``stopped`` with
+        contributors, ``not_current``, or ``not_stoppable``). Raises
+        ``ValueError`` on a malformed receipt.
+        """
+        raw = await self._runtime._rpc(
+            "mobkit/stop_member_run",
+            {"member_id": member_id, "run_id": run_id, "reason": reason},
+        )
+        receipt = raw.get("receipt") if isinstance(raw, dict) else None
+        return MemberRunStopReceipt.from_dict(receipt)
 
     # -----------------------------------------------------------------
     # Helper convenience

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `CrossMobError` gains `PlacedMemberUnavailable { member_id, mob_id, reason }`
+  for a placed member that has no usable endpoint (Broken, or none
+  registered), and `PlacedRouteInstallPending { member_id, mob_id, peer_id,
+  host }` for a committed placed edge whose host has not yet acknowledged
+  the trust row (converging, not rolled back); exhaustive matches must
+  handle them.
+- `ConsoleSendRequest` gains `skill_refs: Vec<meerkat_core::skills::SkillRef>`
+  and `BridgeDelivery` gains `skill_references: Vec<SkillKey>` (see Added).
+  Struct literals must set them, usually to `Vec::new()`; the JSON field is
+  optional and omitted when empty.
+- `MobRuntimeError` gains `HostHumanInput(HostHumanInputError)`: a typed
+  refusal on the explicit host-human lane (a skill selection sent to an
+  externally bound member on the member-only console lane). Exhaustive
+  matches must add the arm.
+
 - `ContinuityRepairPolicy` loses `initial_backoff` and `max_backoff` and is
   `#[non_exhaustive]`: the continuity repair supervisor no longer runs on a
   timer (see Changed). Construct it with `ContinuityRepairPolicy::default()`.
@@ -46,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionBridge` implementations and test doubles) must set it, usually to
   `None`.
 
+- `IdentityRuntimeError` gains `PeerWiringTimedOut { operation, waited }` and
+  `PeerTopologySuperseded { attempts }` (see Fixed): a managed-topology wiring
+  call that exceeds its budget, and a topology plan that stayed stale across
+  its bounded replans. The enum is public and not `#[non_exhaustive]`, so
+  exhaustive matches must add both arms. `PeerWiringTimedOut.operation` can
+  also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
+
 ### Storage and wire compatibility
 
 - `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
@@ -76,6 +98,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `storageNamespace` values continue to take precedence.
 
 ### Changed
+
+- The console forwarder and the identity health monitor no longer need
+  MobKit's create-time live event tap (meerkat #1236). Meerkat 0.8.49
+  retains each session actor's recent events and replays them on
+  `MobHandle::subscribe_agent_events_from(identity,
+  SessionEventCursor::Earliest)`, so both attach whenever they reconcile and
+  still read a run that started before they attached, including a restored
+  member's first run after a gateway restart, from `run_started`. A gap
+  beyond meerkat's 1024-envelope window arrives as meerkat's typed
+  `StreamTruncated(StreamLagged)` marker. The console subscription names the
+  exact actor incarnation for every local member, so a revoked predecessor's
+  stream still drains (bounded by the drain deadline) before its successor
+  attaches, now also for members the tap never captured (eager creates, and
+  creates outside the witness-bearing routes). Replayed envelopes an earlier
+  stream of the same member already forwarded are not repeated. The
+  completion-cursor drain replays the session's retained events past the
+  health monitor's credited position instead of draining an unadopted
+  capture. The tap module (both lanes, capture queues, pumps, byte bounds,
+  arming) and its spec and session-service plumbing are removed.
+  Session-service decorators forward meerkat's new
+  `subscribe_session_events_from` and `subscribe_agent_session_events_from`.
+- Identity completion crediting is exactly once by construction. The health
+  monitor's stream and the completion-cursor drain claim each event's
+  sequence in a per-session ledger with a high-water per meerkat sequence
+  space (`SessionEventEpoch`): a placed member's host restart starts a fresh
+  high-water instead of refusing its first events, and a late stream of an
+  older space re-attaching claims nothing it already credited. A terminal is claimed
+  and credited under the identity's completion-credit lock, which a cursor
+  read holds across its drain, so a read never sees a claim without its
+  credit. The drain credits failed runs too, so a failure-aware wait ends
+  typed. A runtime without a drain (no session service) keeps the monitor
+  on live-only subscriptions, since replay could credit a completion after a
+  baseline read.
+- `/agents/{id}/events` SSE replays the member actor's retained events on a
+  connection without `Last-Event-ID` (meerkat #1236), so a client that
+  connects after a run started still receives it from `run_started`. Event
+  ids are now `<epoch>:<seq>` positions in the member's event sequence
+  instead of connection-local `<agent_id>:<n>` counters, and an
+  `EventSource` reconnect resumes right after its `Last-Event-ID` instead of
+  replaying the window again. A `stream_truncated` gap event carries no id.
+  Routers built with the public `agent_events_sse_router*` constructors from
+  a live-only subscribe function keep the old ids and do not replay.
+- A member event subscription whose member has no live session actor now
+  fails with meerkat's typed `MemberSessionNotLive` ("mob member '...' has no
+  live session actor for session ..."), no longer an internal "failed to
+  subscribe to agent events" error.
+- A successor actor for the same session now continues the session's
+  meerkat event sequence instead of restarting at 1 (meerkat #1236), so the
+  console's per-session `source_sequence` ordering places a successor's run
+  after its predecessor's.
+- Behaviour: queue-mode sends and dispatches return their admission receipt
+  before the target's peer neighbourhood is hydrated. A send to an
+  already-Active member no longer builds its Dormant peers or reconciles
+  managed edges before admission. A woken member's first turn can reach only
+  peers that were already Active; Dormant peers are built and wired right
+  after admission.
+- Behaviour: topology reconcile and topology mutations no longer take
+  identity lifecycle locks, so a lifecycle operation (reset, retire, alias
+  rebind) can run concurrently with wiring. The commit revalidates bindings
+  and replans instead of serializing.
+- Behaviour (console): a failed send is classified from typed transport
+  facts. 401, 403, read-only, -32602 and listed pre-ingress statuses are
+  definite rejections ("Retry same attempt"). A connection failure (no HTTP
+  answer, e.g. a lost acknowledgement, shown as "Acceptance unknown"),
+  timeout, 429, 5xx, non-JSON answers, interrupted and other typed refusals
+  stay reconcilable
+  ("Check acceptance"), each with its named reason. A saved attempt answered
+  after its console view ended is settled in its own storage namespace
+  instead of staying "Awaiting acceptance".
 
 - The continuity repair supervisor is event-driven. It used to retry Broken
   identities on a doubling timer (30 s, capped at 10 min), so a reseed boot
@@ -180,6 +271,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `mobkit/stop_member_run` relays meerkat's run-fenced Stop
+  (`MobHandle::stop_member_run`, lukacf/meerkat#1279) on the unified RPC and
+  the console gateway. Params are `{ member_id, run_id, reason }`, and the
+  result is `{ member_id, receipt }`, with meerkat's typed receipt verbatim
+  (`stopped` with contributors, `not_current`, or `not_stoppable`). Read the
+  run id from the member's `run_started` event (`identity.run_id`).
+  - The member's runtime stops exactly that run and terminalizes every input
+    already bound to it, including durable steers that joined it.
+  - A stale run id is `not_current` and never interrupts newer work.
+  - Malformed params are `-32602`. The console authorizes the method like
+    `mobkit/force_cancel_member`.
+  - SDKs: Python `MobHandle.stop_member_run(member_id, run_id, reason=)`
+    returns the typed `MemberRunStopReceipt`. TypeScript
+    `MobHandle.stopMemberRun(memberId, runId, reason)` returns
+    `MemberRunStopReceipt`, with `not_stoppable.state` typed as
+    `MemberRuntimeState`. Both fail closed on a malformed receipt.
+  - Unknown members and host refusals keep meerkat's typed code and
+    structured data.
+  - Console: a member's chat header offers **Stop run** while the timeline
+    names an in-flight run (its `run_started` run id). It is gated like
+    Retire, and force-cancel is unchanged. The receipt is summarized in the
+    header: the cancelled inputs, "that run already ended", or the runtime
+    state that refused the stop.
+- ConsoleSend (`POST /console/send`, `mobkit/console/send`, and the
+  multipart form) accepts typed `skill_refs` for the exact addressed member
+  (#486). The selection rides meerkat's fenced host-human admission
+  (`MobHandle::submit_host_human_input_with_options_bounded`), so the member
+  resolves it natively (`skills_resolved` / `skill_resolution_failed`,
+  durable `SkillContext`) with the same exact-target and delivery-identity
+  receipts as the content. A nonempty selection joins the idempotency
+  fingerprint (an empty one keeps the previous fingerprint): a same-key retry
+  with the same selection returns the original acceptance, and a changed
+  selection is `idempotency_conflict`. Remote and externally bound members
+  refuse a selection typed instead of delivering without it.
 - Typed per-member restore progress on the identity bootstrap status. During
   an eager restore pass each entry carries `restore`: `registered`,
   `resuming`, `minted`, `resumed`, or `broken` with the typed continuity
@@ -349,6 +474,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- MobKit's two `MobSessionService` wrappers (`delegate_mob_session_service!`
+  and `AfterCreateMobSessionService`) forward meerkat 0.8.49's
+  `append_system_notice_under_runtime_turn_boundary`. The trait default
+  refuses, so interrupted-run notices stayed owed behind the wrappers
+  instead of being recorded in the transcript without a model turn.
+- The bundled adaptive layer-decision schema is regenerated from meerkat
+  0.8.49's canonical `layer_decision_schema()`, which adds the
+  `between_tools` thinking mode.
+- The voice readiness body-read test gets a positive control that meerkat
+  0.8.49's verified-body cache cannot answer: a direct read of the member's
+  committed body through the counting store. The open path's full validation
+  may now be served from that cache, so it no longer proved the counter
+  works.
+- The identity health monitor no longer misses the completion of a turn
+  that ran before it attached, so `wait_for_completion` on that turn's
+  baseline no longer times out (the operator-method seed-turn timeouts). The
+  monitor attaches a member only once its identity lease exists, and it used
+  to learn about the lease only from a later mob machine change or its 30 s
+  safety tick. It is now woken, typed, when any identity lease lands or
+  moves (`IdentityRuntime::install_lease_observer`). Its subscription
+  replays the actor's retained events from the first (meerkat #1236), so a
+  turn completed between the lease landing and the attach is counted exactly
+  once, in order. A completion that already happened is credited before the
+  next completion-cursor read, replayed from meerkat's retained session
+  events, so a baseline taken after it can never be satisfied by it: the
+  cursor under-counts at worst, never over-counts. A per-session completion
+  ledger, with a high-water per sequence space, lets the monitor's stream and
+  a cursor read's drain each credit an event at most once between them, even
+  when a stream of an older space re-attaches. An identity lease rotation cuts the
+  monitor's previous ordinary subscription off instead of counting its
+  completions a second time.
+
+- `mobkit/force_cancel_member` on the unified RPC keyed an identity-resolved
+  member by the undecoded `rt:` runtime alias, so an alias call missed the
+  durable identity's roster row. It now resolves the row like the console
+  path (`roster_member_id_for_supplied_id`), and so does
+  `mobkit/stop_member_run`.
+- Each turn's WholeBlob projection into the continuity store now costs
+  O(delta) instead of O(document), in two ways.
+  - The committed document is no longer read back. `SessionStoreBackedRuntimeStore`
+    keeps the typed session a prepared boundary commits
+    (`PreparedRuntimeSessionCommit::committing_whole_blob_session`, meerkat
+    #1280) and binds it to the authority its commit returned. It projects
+    that session through `reuse_or_load_committed_whole_blob_snapshot`. The
+    ordinary turn therefore pays no full decode and no rewrite-graph
+    validation of the document it just wrote. A head that moved before the
+    projection, or a boundary without a typed WholeBlob document, still takes
+    the authoritative read.
+  - The durable body is no longer loaded to prove an append. After any
+    compaction, every append boundary used to materialize the whole durable
+    transcript just to learn that only the new turn was missing. The compact
+    durable head row (revision, rewrite generation, message count) now proves
+    that directly. Any other shape still reads the durable body and runs the
+    rewrite-chain provers as before.
+  - A verbatim re-commit is no longer decoded. The startup compaction
+    refresh re-commits the committed bytes through `commit_session_snapshot`,
+    which carries no typed session. Each runtime now keeps a small typed
+    projection receipt: the committed WholeBlob authority it projected and
+    the durable head's CAS token. No Session is retained. The receipt is
+    recorded only once the durable head row is re-proved to carry the
+    committed transcript. The resume's freshness probe records it when it
+    proves the row current, and hands its already-decoded snapshot to its
+    own projections. While the committed row digest and the durable head
+    token are both unchanged, the projection answers from two body-free
+    reads. Either one moving takes the full path.
+  - `prepared_append_boundaries_project_without_a_decode_or_graph_validation`
+    bounds per-turn projection at zero decodes, zero graph validations, zero
+    durable body loads (a new counter) and digest work proportional to the
+    appended turns. `the_startup_compaction_refresh_projects_without_a_decode`
+    pins the refresh at zero decodes and zero durable body loads, and
+    `a_moved_durable_head_voids_the_projection_receipt` pins the fallback.
+    `a_prepared_snapshot_whose_head_moved_falls_back_to_the_committed_read`
+    pins the fallback when the head moved.
+- A console send that fails now says why, in both queue and steer modes and
+  on the multipart (attachment) door. Before, a refused or failed request
+  (e.g. a 401 from an off-network browser with no console token) could leave
+  the queued row on "Awaiting acceptance / Waiting for confirmation" with the
+  agent shown as busy. Every other failure collapsed into a generic
+  "Acceptance unknown". The console now classifies failures from typed
+  transport facts: HTTP status, JSON-RPC code or `data.kind`, and the fetch
+  layer's timeout, connection-failed or non-JSON marker. A 401 is shown as "Not
+  authorized from this network (401)", with the same treatment for 403,
+  read-only, invalid params and listed pre-ingress statuses. Each of these
+  is a definite rejection with "Retry same attempt", and the saved message
+  is kept. A connection failure (the browser cannot tell an unreachable
+  gateway from a lost acknowledgement, so it reads "Acceptance unknown"),
+  timeout, 429 (the REST send answers it after
+  reservation), 5xx, unreadable answers, a send interrupted by a console
+  reload, and other typed refusals stay reconcilable, each with its named
+  reason. A saved attempt answered after its console view ended is settled
+  in its own storage namespace, and a failed send also removes its
+  optimistic topology frame. The row shows the
+  typed label and message instead of hiding them under "Details", and the
+  optimistic busy mark is cleared on every failure. "Check acceptance" now
+  reports its own typed outcome on the row: could not check (401, a failed
+  connection, ...) or no receipt. The gateway's console RPC 401 (JSON and
+  multipart) carries `error.data.kind: "unauthenticated"` and
+  `http_status: 401`, and the JSON-RPC code stays `-32600`.
+
+- Queued input to a busy member is admitted at once instead of waiting
+  behind peer-topology work. Every queue-mode send and dispatch went through
+  the ordinary-send peer hydration before admission: console input, the
+  `send_*` and `dispatch*` lanes, and the RPC gateway and SDK `dispatch`
+  that use them. That hydration serializes on the process-global topology
+  guard, the managed-peer reconcile lock and every topology identity's
+  lifecycle lock, and awaits unbounded mob wiring and member builds (host
+  callbacks bounded only by the 130 s callback wire deadline) under them. So
+  slow or wedged topology work held back the admission receipt, including
+  for a member mid-turn. Now:
+  - For an already-Active target, admission waits only on its lifecycle
+    lock, alias validation, its lease, the bounded recall and the bounded
+    bridge admission. meerkat queues the input behind the running turn.
+  - A send that wakes a Dormant or retired target first reconciles that
+    target's own managed edges (only edges touching it, under one 30 s
+    end-to-end budget, and skipped if a concurrent wake already activated
+    it), so the
+    woken member's first turn can reach its peers. A failure there is logged
+    and retried after admission, never a refused message.
+  - Peer hydration (peer builds plus the managed-edge reconcile) runs after
+    admission. It is detached and runtime-tracked when the runtime's owning
+    `Arc` is known. Concurrent post-admission hydrations for one target merge
+    into one.
+  - The managed topology reconcile and topology edge mutations no longer
+    hold lifecycle locks across mob wiring calls. They plan against one
+    snapshot of the endpoints' runtime bindings, run the wiring calls with no
+    lifecycle lock held, and commit the managed-edge bookkeeping under the
+    entries read lock, only if no binding moved.
+  - Each wiring call is bounded and settles as
+    `IdentityRuntimeError::PeerWiringTimedOut` instead of parking.
+  - A reset or respawn during the wiring, or a wiring refusal while an
+    endpoint's binding moved, makes the plan stale. Nothing is committed and
+    the reconcile replans, up to three times, then settles as
+    `PeerTopologySuperseded`.
+  - A wire or unwire whose reply timed out may still be queued in the mob
+    actor, where inspection cannot see it, so its edge is recorded as
+    unsettled. A reconcile settles it only with an ordered command that
+    succeeded after it: an idempotent wire if still desired, a tolerant
+    unwire if not, whatever inspection reports.
+  A wedged wiring call or peer build therefore no longer blocks admission to
+  any other identity, queue or steer.
+
+- Cross-mob wiring and `LookupMember` address a placed (host-owned) member
+  at its real remote endpoint (meerkat #1269). The member's dialable address
+  used to be resolved only through a comms runtime in this process, so a
+  placed member reported none, and the same-process bilateral paths built
+  `inproc://` descriptors for it. One `member_dialable_address` helper now
+  answers from the live local runtime, or from the placed member's durable
+  host-acknowledged endpoint (`MobHandle::member_peer_endpoint`, owner
+  `Host`). `LookupMember`, cross-process wire and unwire, and the
+  same-process wire and unwire paths all use it. A local member that must
+  be installed on a placed member is described by its dialable
+  (non-`inproc`) address or fails typed (`LocalMemberNotRemotelyAddressable`).
+  Readiness for a placed member is its committed edge naming the exact peer
+  (name and peer id) with no outstanding external route install reported by
+  meerkat's `route_installs()` (the host has acknowledged the trust row).
+  Endpoint query faults surface as errors instead of "not addressable".
+  Placement decides everywhere (each descriptor decision uses one
+  `member_endpoint_status` snapshot per side): a placed member without a usable endpoint is
+  `PlacedMemberUnavailable`, never an `inproc://` fallback, and its endpoint
+  must be registered under its `MemberCommsName`. The same-process bilateral
+  paths skip inproc alias installation and treat a placed side's route as
+  satisfied by its committed edge, so they converge instead of rolling back.
+  Same-process cross-mob wiring resolves a peer mob member's dialable address
+  through that mob's own session service (registered with
+  `register_peer_runtime`). Unwire removes by edge name
+  (`PeerTarget::ExternalName`), so a down or Broken runtime no longer blocks
+  removal (a Broken placed side is still treated as placed), on the
+  same-process and cross-process paths alike (the cross-process local half
+  finds the edge by its typed `MemberCommsName` when the peer is
+  unreachable), and every unwire failure is reported instead of swallowed.
+  A committed placed edge whose host has not yet acknowledged the trust row
+  is reported as `PlacedRouteInstallPending` and kept, instead of being
+  rolled back on every coordinator retry; readiness requires the committed
+  edge's external descriptor to name the exact peer id. `local_member_peer_info`, `mobkit/cross_mob/peer_info` (RPC,
+  used by the Python SDK) and the console peer-info read report a placed
+  member's durable host address instead of `inproc://`.
 - Cold boot no longer re-verifies unchanged transcripts in the durable
   projection (#487). Each resumed member re-commits its unchanged transcript
   at least twice at boot: the actor's generation-zero boundary and the
@@ -375,6 +676,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   forced refresh still read
   (`unsettled_recovery_refresh_does_not_reread_an_unchanged_document`).
 
+- Meerkat 0.8.49 typed shapes are handled. A member reload that re-attached
+  a registration left without a runtime attachment (`Reattached`, #1248)
+  reports the `reattached` disposition with `reloaded: true`. A delivery
+  refused with the typed `MemberRuntimeDetached` is resume-repaired onto the
+  same durable session on the variant, carrying queued input. The build
+  callback sends `resume_session_id` only for a typed Resume (#1225): a
+  spawn's pre-assigned id rides as `session_id` with
+  `session_build_intent: "mint"`, and standing instructions apply on a mint.
+  Both production `RuntimeStore` decorators forward the new
+  `load_committed_whole_blob_metadata` (#1255) instead of answering the trait
+  default.
+- Identity-first members no longer wedge at their second auto-compaction when
+  two compactions rewrite a session to the same transcript (#488). Record-only
+  rewrites named the adopted continuity strand by the revision digest alone,
+  so a recurring revision re-targeted the strand it was rewriting. Its
+  immutable post-head rows refused the new base ("rewrite replay save at
+  generation 2 ... not a continuation of persisted revision strand:<rev>
+  seq:1"), the member went repair-blocked, and every later send was refused.
+  The fix is in meerkat-core (lukacf/meerkat#1271): the rewrite
+  validator mints the occurrence-named strand, shipped in meerkat 0.8.49. Strands already written under revision names
+  stay readable, and a member refused this way recovers on its next replay.
+  A regression test drives two identity-first members through `rpc_gateway
+  --persistent` with a demo LLM, whose identical summaries make every
+  compaction revision recur, to at least five adopted compactions each. It
+  asserts that every tracked turn completes, that the durable rewrite chain
+  is contiguous with a fresh strand per generation, and that the chain
+  restores and keeps accepting sends after a cold reboot.
 - Console voice readiness is fast and never a false "no". The server bounds
   a check at 4 s (below the console's 5 s request timeout) and, on expiry,
   logs the typed stage that was running with every stage's elapsed time, then

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest};
+use meerkat_core::skills::{SkillKey, SkillName, SkillRef, SourceUuid};
 use meerkat_core::types::{HandlingMode, TranscriptUserRole};
 use meerkat_core::{ContentInput, Message, Provider, SessionId};
 use meerkat_mob::{MobDefinition, MobDeliveryIdentity, WorkOrigin, WorkSpec};
@@ -94,9 +95,21 @@ impl Harness {
     }
 
     async fn with_kickoff(budget: Duration, kickoff: bool) -> Self {
+        Self::build(budget, kickoff, None).await
+    }
+
+    async fn with_meerkat_config(config: meerkat::Config) -> Self {
+        Self::build(WAIT, false, Some(config)).await
+    }
+
+    async fn build(budget: Duration, kickoff: bool, config: Option<meerkat::Config>) -> Self {
         let state = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let client = RecordingClient::new();
-        let unified = UnifiedRuntimeBuilder::default()
+        let builder = match config {
+            Some(config) => UnifiedRuntimeBuilder::default().meerkat_config(config),
+            None => UnifiedRuntimeBuilder::default(),
+        };
+        let unified = builder
             .definition(
                 MobDefinition::from_toml(&format!(
                     r#"
@@ -211,6 +224,7 @@ comms = true
             idempotency_key: key.to_string(),
             handling_mode: None,
             origin_kind: None,
+            skill_refs: Vec::new(),
         }
     }
 
@@ -306,6 +320,61 @@ comms = true
             .await
             .unwrap()
             .unwrap();
+    }
+
+    /// Observe the exact console turn to completion by replaying its
+    /// delivery identity with the SAME selected skills (a changed selection
+    /// would be an idempotency conflict, not a replay).
+    async fn finish_human_with_skills(
+        &self,
+        accepted: &ConsoleInteractionAccepted,
+        content: &str,
+        skills: Vec<SkillKey>,
+    ) {
+        self.wait_status(accepted, ConsoleFrameStatus::Delivered)
+            .await;
+        let handle = self.unified.mob_handle();
+        let member = handle
+            .get_member(&crate::member_comms_id::mob_member_id(&accepted.identity))
+            .await
+            .unwrap()
+            .unwrap();
+        let interaction = accepted.interaction_id.parse::<uuid::Uuid>().unwrap();
+        let spec = WorkSpec::new(content, WorkOrigin::Internal)
+            .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+        let turn = handle
+            .start_host_human_input_with_options_bounded(
+                member.agent_runtime_id,
+                member.fence_token,
+                spec,
+                HandlingMode::Queue,
+                meerkat_mob::MemberTurnOptions::new().with_skill_references(skills),
+                MobDeliveryIdentity::new(&accepted.input_frame_id, interaction.to_string())
+                    .unwrap(),
+                std::time::Instant::now() + WAIT,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(WAIT, turn.wait())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    /// The ids and statuses of every `user_input` frame for `identity`.
+    async fn user_input_frames(&self, identity: &str) -> Vec<(String, ConsoleFrameStatus)> {
+        self.aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .frames
+            .into_iter()
+            .filter(|frame| frame.kind == "user_input")
+            .map(|frame| (frame.id, frame.status))
+            .collect()
     }
 
     async fn history(&self) -> Vec<Message> {
@@ -994,6 +1063,7 @@ async fn console_human_reset_refuses_old_prepared_session_and_old_worker_fence()
             &h.unified.mob_handle(),
             &old_member,
             HUMAN.into(),
+            &[],
             HandlingMode::Queue,
             &accepted,
         )
@@ -1012,5 +1082,412 @@ async fn console_human_reset_refuses_old_prepared_session_and_old_worker_fence()
             .iter()
             .any(|message| matches!(message, Message::User(user) if user.text_content() == HUMAN))
     );
+    h.stop().await;
+}
+
+const SKILL_BODY: &str = "Answer in the chosen house style: numbered, terse, no hedging.";
+const OTHER_SKILL_BODY: &str = "Answer in the other house style: long prose with caveats.";
+
+/// A meerkat config whose skill engine serves two filesystem repositories,
+/// each holding a skill named `house-style` with a different body. Returns
+/// the config and the (chosen, other) source-pinned keys.
+fn house_style_skill_config(root: &std::path::Path) -> (meerkat::Config, SkillKey, SkillKey) {
+    let name = SkillName::parse("house-style").unwrap();
+    let mut config = meerkat::Config::default();
+    let mut keys = Vec::new();
+    for (index, (source, body)) in [
+        ("5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11", SKILL_BODY),
+        ("9e4d2a10-7b3c-4c8e-a1f5-6d2b0c9e8f77", OTHER_SKILL_BODY),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let source_uuid = SourceUuid::parse(source).unwrap();
+        let repository = root.join(format!("skills-{index}"));
+        let skill_dir = repository.join(name.as_str());
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: fixture skill\n---\n{body}\n"),
+        )
+        .unwrap();
+        config
+            .skills
+            .repositories
+            .push(meerkat_core::skills_config::SkillRepositoryConfig {
+                name: format!("fixture-skills-{index}"),
+                source_uuid: source_uuid.clone(),
+                transport: meerkat_core::skills_config::SkillRepoTransport::Filesystem {
+                    path: repository.to_string_lossy().into_owned(),
+                },
+            });
+        keys.push(SkillKey::new(source_uuid, name.clone()));
+    }
+    let other = keys.pop().unwrap();
+    let chosen = keys.pop().unwrap();
+    (config, chosen, other)
+}
+
+/// The durable `SkillContext` rows committed for one console interaction.
+fn skill_context_rows(messages: &[Message], interaction_id: &str) -> Vec<(SkillKey, String)> {
+    let interaction =
+        meerkat_core::interaction::InteractionId(interaction_id.parse::<uuid::Uuid>().unwrap());
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::User(user) if user.identity.interaction_id == Some(interaction) => Some(user),
+            _ => None,
+        })
+        .flat_map(|user| user.content.iter())
+        .filter_map(|block| match block {
+            meerkat_core::types::ContentBlock::SkillContext { skill_key, text } => {
+                Some((skill_key.clone(), text.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// ConsoleSend carries a source-pinned selection to the exact direct target.
+/// Two sources host a skill with the same name; the key picks exactly one.
+/// The member resolves it natively (typed `SkillsResolved`, durable
+/// `SkillContext`, the selected body and only that body in the provider
+/// request). The response is then lost and the send replayed: the replay
+/// returns the original acceptance with no second provider call. A resend
+/// under the same request key with a changed selection is a fingerprint
+/// conflict.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_resolve_natively_and_replay_exactly() {
+    use futures::StreamExt;
+
+    let skills = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let (config, chosen, other) = house_style_skill_config(skills.path());
+    let h = Harness::with_meerkat_config(config).await;
+    let mut events = h
+        .unified
+        .mob_handle()
+        .subscribe_agent_events(&crate::member_comms_id::mob_member_id(h.identity.as_str()))
+        .await
+        .unwrap();
+    let request = ConsoleSendRequest {
+        skill_refs: vec![SkillRef::Structured(chosen.clone())],
+        ..h.request("selected-skill", HUMAN)
+    };
+    let accepted = h.send(request.clone()).await.unwrap();
+    h.finish_human_with_skills(&accepted, HUMAN, vec![chosen.clone()])
+        .await;
+
+    let mut resolved = Vec::new();
+    tokio::time::timeout(WAIT, async {
+        while let Some(envelope) = events.next().await {
+            match envelope.payload {
+                meerkat_core::AgentEvent::SkillsResolved { skills, .. } => resolved.push(skills),
+                meerkat_core::AgentEvent::SkillResolutionFailed { reason, .. } => {
+                    panic!("selected skill must resolve, got {reason}")
+                }
+                // The member's own bootstrap turn may still be draining
+                // from this subscription; the selected turn ends at the
+                // first completion after its activation.
+                meerkat_core::AgentEvent::RunCompleted { .. } if !resolved.is_empty() => break,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the selected turn's events arrive");
+    assert_eq!(
+        resolved,
+        vec![vec![chosen.clone()]],
+        "one native activation"
+    );
+
+    let rows = skill_context_rows(&h.history().await, &accepted.interaction_id);
+    assert_eq!(rows.len(), 1, "exactly one durable SkillContext");
+    assert_eq!(rows[0].0, chosen);
+    assert!(rows[0].1.contains(SKILL_BODY), "native rendered skill body");
+    let requests = h.client.requests.lock().unwrap().clone();
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::to_string(&request.messages).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|body| body.contains(SKILL_BODY))
+            .count(),
+        1,
+        "exactly one provider call carries the selected body"
+    );
+    assert!(
+        bodies.iter().all(|body| !body.contains(OTHER_SKILL_BODY)),
+        "the same-name skill is never selected"
+    );
+    let calls_after_turn = requests.len();
+
+    let frames_before_replay = h.user_input_frames(&accepted.identity).await;
+
+    // The response is lost; the caller replays the same send.
+    let replay = h.send(request.clone()).await.unwrap();
+    assert_eq!(replay.input_frame_id, accepted.input_frame_id);
+    assert_eq!(replay.interaction_id, accepted.interaction_id);
+
+    let changed = ConsoleSendRequest {
+        skill_refs: vec![SkillRef::Structured(other)],
+        ..request
+    };
+    assert!(matches!(
+        h.send(changed).await,
+        Err(crate::console_aggregator::ConsoleSendError::IdempotencyConflict(_))
+    ));
+
+    // Neither the replay nor the refused resend reserved or dispatched a new
+    // console input, and the original turn is still the only one: observing
+    // its completion again through the same delivery identity resolves to
+    // the committed turn without another provider call or SkillContext.
+    assert_eq!(
+        h.user_input_frames(&accepted.identity).await,
+        frames_before_replay,
+        "no new console input was reserved or dispatched"
+    );
+    h.finish_human_with_skills(&accepted, HUMAN, vec![chosen.clone()])
+        .await;
+    assert_eq!(
+        skill_context_rows(&h.history().await, &accepted.interaction_id).len(),
+        1
+    );
+    assert_eq!(h.client.requests.lock().unwrap().len(), calls_after_turn);
+    h.stop().await;
+}
+
+/// The member-only lane (a worker without an identity-first record) carries
+/// the same selection through the same fenced host-human seam.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_reach_a_member_only_worker() {
+    let skills = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let (config, key, _) = house_style_skill_config(skills.path());
+    let h = Harness::with_meerkat_config(config).await;
+    h.unified
+        .mob_handle()
+        .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
+            "human".to_string(),
+            "worker".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    let request = ConsoleSendRequest {
+        identity: "worker".to_string(),
+        skill_refs: vec![SkillRef::Structured(key.clone())],
+        ..h.request("worker-skill", HUMAN)
+    };
+    let accepted = h.aggregator.send(request.clone()).await.unwrap();
+    h.finish_human_with_skills(&accepted, HUMAN, vec![key.clone()])
+        .await;
+    let messages = h
+        .unified
+        .mob_runtime()
+        .read_session_history(accepted.session_id.as_deref().unwrap(), 0, None)
+        .await
+        .unwrap()
+        .messages;
+    let rows = skill_context_rows(&messages, &accepted.interaction_id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, key);
+    assert!(rows[0].1.contains(SKILL_BODY));
+    let frames_before_replay = h.user_input_frames(&accepted.identity).await;
+    let replay = h.aggregator.send(request).await.unwrap();
+    assert_eq!(replay.input_frame_id, accepted.input_frame_id);
+    assert_eq!(
+        h.user_input_frames(&accepted.identity).await,
+        frames_before_replay,
+        "the replay reserved and dispatched nothing new"
+    );
+    h.stop().await;
+}
+
+#[test]
+fn console_send_request_skill_refs_are_typed_and_optional() {
+    let bare: ConsoleSendRequest = serde_json::from_value(json!({
+        "identity": "human",
+        "content": "hello",
+        "origin": "console",
+        "idempotency_key": "k",
+    }))
+    .unwrap();
+    assert!(bare.skill_refs.is_empty());
+    assert!(
+        serde_json::to_value(&bare)
+            .unwrap()
+            .get("skill_refs")
+            .is_none()
+    );
+
+    let typed: ConsoleSendRequest = serde_json::from_value(json!({
+        "identity": "human",
+        "content": "hello",
+        "origin": "console",
+        "idempotency_key": "k",
+        "skill_refs": [{
+            "kind": "structured",
+            "source_uuid": "5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11",
+            "skill_name": "house-style",
+        }],
+    }))
+    .unwrap();
+    assert_eq!(
+        typed.selected_skill_keys(),
+        vec![SkillKey::new(
+            SourceUuid::parse("5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11").unwrap(),
+            SkillName::parse("house-style").unwrap(),
+        )]
+    );
+
+    assert!(
+        serde_json::from_value::<ConsoleSendRequest>(json!({
+            "identity": "human",
+            "content": "hello",
+            "origin": "console",
+            "idempotency_key": "k",
+            "skill_refs": ["house-style"],
+        }))
+        .is_err(),
+        "untyped legacy skill strings are refused, not folded"
+    );
+}
+
+fn dormant_spec(identity: &str) -> DurableAgentSpec {
+    DurableAgentSpec {
+        identity: AgentIdentity::parse(identity).unwrap(),
+        profile: "human".into(),
+        addressability: AgentAddressability::Addressable,
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::AutonomousHost),
+        backend: None,
+        binding: None,
+        placement: None,
+    }
+}
+
+fn selected_skill() -> SkillRef {
+    SkillRef::Structured(SkillKey::new(
+        SourceUuid::parse("5b0c7c2e-4c61-4f2d-9d0e-2f5a8c6b1e11").unwrap(),
+        SkillName::parse("house-style").unwrap(),
+    ))
+}
+
+/// An identity-first target without a native host-human skill carrier (an
+/// external backend, or a remote placement) refuses a nonempty selection
+/// typed BEFORE the interaction is reserved: no reservation, no frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_refused_before_reservation_for_external_or_placed_identity() {
+    let h = Harness::new(WAIT).await;
+    let mut external = dormant_spec("external-target");
+    external.backend = Some(meerkat_mob::MobBackendKind::External);
+    let mut placed = dormant_spec("placed-target");
+    placed.placement = Some(meerkat_contracts::WireHostRef("remote-host".to_string()));
+    for spec in [external, placed] {
+        let identity = spec.identity.to_string();
+        h.identity_runtime
+            .register(spec, IdentityLifecycleState::Dormant, None, None)
+            .await;
+        let request = ConsoleSendRequest {
+            identity: identity.clone(),
+            skill_refs: vec![selected_skill()],
+            ..h.request("refused-selection", HUMAN)
+        };
+        let refusal = h.send(request).await;
+        assert!(
+            matches!(
+                &refusal,
+                Err(crate::console_aggregator::ConsoleSendError::InvalidRequest(
+                    _
+                ))
+            ),
+            "{identity}: {refusal:?}"
+        );
+        let frames = h
+            .aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .frames;
+        assert!(
+            frames.is_empty(),
+            "{identity}: nothing was reserved: {frames:?}"
+        );
+    }
+    h.stop().await;
+}
+
+/// On the member-only lane, meerkat's host-human admission is the refusal
+/// point for targets the roster cannot classify cheaply (remote placement,
+/// external backends). A typed admission refusal of a selection-carrying
+/// send surfaces typed on the console: the input frame is `delivery_failed`
+/// and the failure frame carries `data.kind = "host_human_input_unsupported"`.
+/// The refusal here is meerkat's refusal of a host-human Steer during an
+/// unresolved kickoff, which travels the same admission and mapping path.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_send_selected_skills_member_lane_admission_refusal_surfaces_typed() {
+    let h = Harness::new(WAIT).await;
+    let calls_before = h.client.requests.lock().unwrap().len();
+    h.client.gate.send_replace(false);
+    h.unified
+        .mob_handle()
+        .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
+            "human".to_string(),
+            "worker".to_string(),
+            Some("worker kickoff".into()),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        while h.client.requests.lock().unwrap().len() <= calls_before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the worker kickoff reaches the provider");
+    let request = ConsoleSendRequest {
+        identity: "worker".to_string(),
+        handling_mode: Some("steer".to_string()),
+        skill_refs: vec![selected_skill()],
+        ..h.request("member-lane-refusal", HUMAN)
+    };
+    let accepted = h.aggregator.send(request).await.unwrap();
+    h.wait_status(&accepted, ConsoleFrameStatus::DeliveryFailed)
+        .await;
+    let frames = h
+        .aggregator
+        .query_timeline(ConsoleTimelineQuery {
+            identity: Some(accepted.identity.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .frames;
+    let failure = frames
+        .iter()
+        .find(|frame| {
+            frame.kind == "message_delivery_failed"
+                && frame.parent_frame_id.as_deref() == Some(accepted.input_frame_id.as_str())
+        })
+        .expect("a typed delivery failure frame");
+    assert_eq!(
+        failure.payload["data"]["kind"], "host_human_input_unsupported",
+        "{:?}",
+        failure.payload
+    );
+    h.client.gate.send_replace(true);
     h.stop().await;
 }
