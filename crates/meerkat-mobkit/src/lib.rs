@@ -7,6 +7,9 @@
 
 pub(crate) mod identity_control_target;
 pub mod identity_first;
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod test_process_isolation;
 
 pub mod access;
 pub mod actor_loop_health;
