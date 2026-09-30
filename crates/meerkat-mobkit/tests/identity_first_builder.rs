@@ -4281,16 +4281,21 @@ async fn builder_storage_provider_full_build_over_disk_bundle() {
         .expect("provider-backed build records the storage census");
     assert!(
         storage.slots.iter().any(|slot| {
-            slot.declaration.domain == "schedule"
+            slot.durability.domain() == "schedule"
                 && slot.backend.contains("storage provider 'disk'")
-                && slot.declaration.resolution == meerkat_core::DurabilityResolution::Persistent
+                && slot
+                    .durability
+                    .declaration()
+                    .expect("declared slot")
+                    .resolution
+                    == meerkat_core::DurabilityResolution::Persistent
         }),
         "the provider's schedule declaration must be census-visible verbatim, got: {:?}",
         storage.slots
     );
     assert!(
         storage.slots.iter().any(|slot| {
-            slot.declaration.domain == "sessions"
+            slot.durability.domain() == "sessions"
                 && slot.backend.contains("ContinuitySessionStoreAdapter")
         }),
         "sessions must ride the provider's continuity store, got: {:?}",
@@ -4309,7 +4314,7 @@ async fn builder_storage_provider_full_build_over_disk_bundle() {
             storage
                 .slots
                 .iter()
-                .any(|slot| slot.declaration.domain == domain),
+                .any(|slot| slot.durability.domain() == domain),
             "provider-declared domain '{domain}' must be census-visible, got: {:?}",
             storage.slots
         );
@@ -4319,7 +4324,7 @@ async fn builder_storage_provider_full_build_over_disk_bundle() {
     // realm is materialized under the state dir.
     assert!(
         storage.slots.iter().any(|slot| {
-            slot.declaration.domain == "runtime" && slot.backend.contains("SqliteRuntimeStore")
+            slot.durability.domain() == "runtime" && slot.backend.contains("SqliteRuntimeStore")
         }),
         "the disk bundle keeps the local runtime store, got: {:?}",
         storage.slots
@@ -4470,12 +4475,16 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
         storage
             .slots
             .iter()
-            .find(|slot| slot.declaration.domain == domain)
+            .find(|slot| slot.durability.domain() == domain)
             .unwrap_or_else(|| panic!("{domain} slot missing: {:?}", storage.slots))
     };
     let schedule = slot("schedule");
     assert_eq!(
-        schedule.declaration.resolution,
+        schedule
+            .durability
+            .declaration()
+            .expect("declared slot")
+            .resolution,
         meerkat_core::DurabilityResolution::DeclaredEphemeral,
         "the provider's explicitly-ephemeral schedule declaration must flow verbatim"
     );

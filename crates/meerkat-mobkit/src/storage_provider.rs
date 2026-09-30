@@ -256,7 +256,7 @@ impl ProviderMeerkatStores {
         declaration: &DurabilityDeclaration,
     ) -> crate::storage_health::StorageSlotSummary {
         crate::storage_health::StorageSlotSummary {
-            declaration: declaration.clone(),
+            durability: crate::storage_health::StorageSlotDurability::Declared(declaration.clone()),
             backend: format!("storage provider '{}'", self.provider_name),
             detail: Some(
                 "meerkat-level slot from the composite provider's realm bundle".to_string(),
@@ -708,7 +708,7 @@ mod tests {
             DurabilityResolution::DeclaredEphemeral
         );
         let runtime_slot = stores.runtime_slot_summary();
-        assert_eq!(runtime_slot.declaration.domain, "runtime");
+        assert_eq!(runtime_slot.durability.domain(), "runtime");
         assert!(runtime_slot.backend.contains("stub-remote"));
         let manifest_path = ctx
             .state_dir
