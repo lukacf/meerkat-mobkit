@@ -18629,6 +18629,13 @@ comms = true
     /// (3x) and, without rewrites, a second committed digest (4x).
     #[tokio::test]
     async fn unchanged_boundaries_over_a_compacted_row_hash_the_transcript_once() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "unchanged_boundaries_over_a_compacted_row_hash_the_transcript_once",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 3;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (session_store, inner, mut committed, runtime_id) =
@@ -18766,6 +18773,13 @@ comms = true
     /// seeds the midstate the head mint reuses.
     #[tokio::test]
     async fn unchanged_boundaries_over_a_plain_row_hash_the_transcript_once() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "unchanged_boundaries_over_a_plain_row_hash_the_transcript_once",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 3;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
@@ -18907,6 +18921,13 @@ comms = true
     /// the digest work is the appended turns, not the transcript.
     #[tokio::test]
     async fn prepared_append_boundaries_project_without_a_decode_or_graph_validation() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "prepared_append_boundaries_project_without_a_decode_or_graph_validation",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 4;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (session_store, inner, committed, runtime_id) =
@@ -18929,7 +18950,8 @@ comms = true
 
         let append_skips_before = store.append_prefix_skip_count();
         let durable_loads_before = store.durable_body_load_count();
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let session_id = live.id().clone();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(&session_id);
         let validations_before = meerkat_core::global_transcript_graph_validations();
         let digest_before = meerkat_core::global_session_content_digest_bytes();
         let mut last = warm;
@@ -18937,7 +18959,7 @@ comms = true
             last = next_turn_carrier(&mut live, 1_000 + turn as usize);
             commit_prepared_boundary_through(&store, &runtime_id, &last).await;
         }
-        let decodes = meerkat_core::global_whole_blob_decodes() - decodes_before;
+        let decodes = meerkat_core::whole_blob_decodes_of_session(&session_id) - decodes_before;
         let validations = meerkat_core::global_transcript_graph_validations() - validations_before;
         let hashed = meerkat_core::global_session_content_digest_bytes() - digest_before;
 
@@ -19029,13 +19051,13 @@ comms = true
             .await
             .unwrap_or_else(|error| panic!("{error}"));
 
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(newer.id());
         store
             .project_committed_session_to_durable(&runtime_id, Some(stale_binding))
             .await
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(
-            meerkat_core::global_whole_blob_decodes() > decodes_before,
+            meerkat_core::whole_blob_decodes_of_session(newer.id()) > decodes_before,
             "a moved head must take the authoritative committed read, not the stale binding"
         );
         assert_eq!(
@@ -19098,6 +19120,13 @@ comms = true
     /// durable body read, nothing written.
     #[tokio::test]
     async fn the_startup_compaction_refresh_projects_without_a_decode() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "the_startup_compaction_refresh_projects_without_a_decode",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (store, session_store, inner, committed, runtime_id) =
             booted_facade(dir.path(), "domain:refresh-receipt").await;
@@ -19105,7 +19134,7 @@ comms = true
         let bytes = committed_raw_bytes(&inner, &runtime_id).await;
         let skips_before = store.receipt_skip_count();
         let durable_loads_before = store.durable_body_load_count();
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(committed.id());
         let validations_before = meerkat_core::global_transcript_graph_validations();
 
         meerkat_runtime::RuntimeStore::commit_session_snapshot(
@@ -19129,7 +19158,7 @@ comms = true
             "the refresh projection reads no durable body"
         );
         assert_eq!(
-            meerkat_core::global_whole_blob_decodes() - decodes_before,
+            meerkat_core::whole_blob_decodes_of_session(committed.id()) - decodes_before,
             0,
             "the byte-identical refresh decodes nothing (meerkat reaffirms it, and MobKit's \
              projection answers from the receipt)"

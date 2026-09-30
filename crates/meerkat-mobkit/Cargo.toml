@@ -186,3 +186,7 @@ meerkat-mob = { version = "=0.8.49", features = ["schema"] }
 # tests (tests/gateway_live.rs) can observe the exact channel identity handed
 # to the provider lane without a provider socket or credential.
 meerkat = { version = "=0.8.49", features = ["test-realtime-fixtures"] }
+# `test-support` (test-only) exposes meerkat-core's per-session WholeBlob
+# decode counter, so decode assertions attribute decodes to the test's own
+# session instead of the process-wide count every parallel test moves.
+meerkat-core = { version = "=0.8.49", features = ["test-support"] }
