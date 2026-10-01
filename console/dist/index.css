@@ -10314,9 +10314,14 @@ svg[data-svg=fit],
   min-width: 0;
   min-height: 0;
   position: relative;
-  container-type: inline-size;
   overflow: hidden;
   background: var(--bg-elev-1);
+}
+.conv__head-frame {
+  container-type: inline-size;
+  flex: none;
+  position: relative;
+  z-index: 30;
 }
 .conv__head {
   padding: 14px 24px 12px;
@@ -10524,7 +10529,7 @@ svg[data-svg=fit],
   position: absolute;
   left: 28px;
   top: 50%;
-  width: min(320px, calc(100cqw - 72px));
+  width: min(320px, calc(var(--conv-pane-inline-size, 100vw) - 72px));
   min-height: 0;
   padding: 10px 12px;
   border-radius: 12px;
@@ -11070,9 +11075,14 @@ svg[data-svg=fit],
   border-radius: var(--r-md);
   background: var(--bg-elev-2);
   padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: block;
+}
+.composer__shell > * + * {
+  margin-top: 8px;
+}
+.composer__input {
+  contain: strict;
+  height: calc(3em + 4px);
 }
 .composer__shell:focus-within {
   border-color: var(--line-strong);
@@ -11115,14 +11125,16 @@ svg[data-svg=fit],
   cursor: pointer;
 }
 .composer textarea {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
+  height: 100%;
   border: none;
   background: transparent;
   color: var(--ink);
   font: inherit;
   resize: none;
   outline: none;
-  min-height: 38px;
   line-height: 1.5;
 }
 .composer textarea::placeholder {
