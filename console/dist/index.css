@@ -10455,21 +10455,6 @@ svg[data-svg=fit],
   visibility: hidden;
 }
 .conv-turn-rail__list {
-  position: relative;
-}
-.conv-turn-rail__list::before {
-  content: "";
-  position: absolute;
-  top: -6px;
-  bottom: -6px;
-  left: -5px;
-  width: 16px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklch, var(--ink) 9%, transparent);
-  background: color-mix(in oklch, var(--ink) 3%, transparent);
-  pointer-events: none;
-}
-.conv-turn-rail__list {
   display: grid;
   gap: 3px;
   margin: 0;
