@@ -148,6 +148,23 @@ _OBSERVATION_RETRY_MAX_SECONDS = 2.0
 # response timeout or a closed stdout as RuntimeError and a dead subprocess as
 # an RPC error.
 _OBSERVATION_FAILURES = (RpcError, TransportError, NotConnectedError, RuntimeError)
+# ``turn_unavailable`` codes for a delivery that a ticket-capable gateway
+# could have tracked on a trackable member, so a missing ticket is a
+# refusal to report rather than a structural property of the member: the
+# runtime refused tracking for the member's live mode, or a deduplicated
+# re-dispatch ran untracked on a new session. Every other delivered code
+# (``autonomous_host``, ``externally_bound``, ``host_human_input``,
+# ``bridge_cannot_report_output``, future codes) and a gateway without
+# tickets are structural: the default waits identity-wide, non-attributed.
+_TRACKING_EXPECTED_UNTRACKED_CODES = frozenset({"runtime_refused", "session_rotated"})
+
+
+def _validate_attribution_options(wait: dict[str, Any]) -> None:
+    if wait.get("require_attribution") and wait.get("allow_identity_wide_fallback"):
+        raise ValueError(
+            "require_attribution=True and allow_identity_wide_fallback=True "
+            "contradict each other; pass at most one"
+        )
 
 
 def _next_request_id(method: str) -> str:
@@ -1492,45 +1509,70 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
         allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
     ) -> str | None:
-        """Send, then wait for the turn that send started and return ITS output.
+        """Send, then wait for the turn that send started and return its output.
 
-        The send is tracked by ticket (``track_turn=True``), so the wait is
-        per-admission: another delivery to this identity cannot satisfy it,
-        and the output comes from this turn's own committed run result.
-        Returns the turn's text, or ``None`` when it committed none. Text cut
-        at the gateway's bound emits
-        :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`; a turn
-        that completed without output of its own returns ``None`` with
-        :class:`~meerkat_mobkit.errors.TurnOutputUnavailableWarning` (use
-        :meth:`wait_for_turn` for the typed result).
+        Returns the text of :meth:`send_and_wait_outcome`; use that method for
+        the typed :class:`~meerkat_mobkit.AwaitedTurn`, which says whether the
+        text is attributed to this send. The contract:
+
+        - Tracked (a ``turn_driven`` member): the send carries a turn ticket
+          and the wait is per-admission, so another delivery to this identity
+          cannot satisfy it and the text is this turn's own committed output
+          (``None`` when it committed none). Text cut at the gateway's bound
+          emits :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`; a
+          turn that completed without output of its own returns ``None`` with
+          :class:`~meerkat_mobkit.errors.TurnOutputUnavailableWarning`.
+        - Structurally untrackable (an ``autonomous_host`` member, the
+          default mode; an externally bound member; host human input; a bridge
+          that cannot report output; a gateway predating turn tickets): the
+          call waits on the identity-wide completion cursor, as before, and
+          emits :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning`.
+          That text is NOT attributed: another delivery's turn may have
+          produced it (``AwaitedTurn.attributed`` is ``False``).
+        - Trackable but untracked (the runtime refused tracking for the
+          member's live mode, ``runtime_refused``; a deduplicated re-dispatch
+          ran untracked on a new session, ``session_rotated``): raises
+          :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableError`, unless
+          ``allow_identity_wide_fallback=True`` opts into the non-attributed
+          wait.
+        - ``require_attribution=True`` raises
+          :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableError` in
+          every untracked case instead of waiting identity-wide.
 
         The send happens exactly once; nothing here ever resends. Every
         failure after admission carries the send result as ``admission``:
-
-        - No turn ticket (an ``autonomous_host`` member, an externally bound
-          member, an older gateway): raises
-          :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableError`.
-        - The exact-ticket wait failed for a transport or RPC reason: it is
-          retried, for that ticket only, until ``timeout``; then
-          :class:`~meerkat_mobkit.errors.PostAdmissionObservationError`
-          (with ``ticket``).
-        - The turn failed or is unknown: ``TurnFailedError`` /
-          ``TurnUnknownError``; still pending at ``timeout``:
-          :class:`~meerkat_mobkit.errors.TurnWaitTimeoutError` (a
-          ``TimeoutError``).
-
-        ``allow_identity_wide_fallback=True`` restores the legacy behaviour
-        for an untracked turn: wait on the identity-wide completion cursor,
-        emitting :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning`.
-        That wait is NOT attributing: another delivery's completion (a peer
-        message, a scheduled turn) can satisfy it, and the returned text is
-        the session's latest output, not necessarily this send's.
+        a transport or RPC failure of the exact-ticket wait is retried, for
+        that ticket only, until ``timeout`` and then raises
+        :class:`~meerkat_mobkit.errors.PostAdmissionObservationError` (with
+        ``ticket``); ``TurnFailedError`` / ``TurnUnknownError`` /
+        ``WaitEndedError`` carry it; a turn still pending at ``timeout``
+        raises :class:`~meerkat_mobkit.errors.TurnWaitTimeoutError` (a
+        ``TimeoutError``).
         """
-        result = await self.send(content, track_turn=True)
-        return await self._wait_for_ticket_or_admission(
-            result, "send", timeout=timeout, poll_interval=poll_interval,
+        return (await self._send_outcome(
+            content, timeout=timeout, poll_interval=poll_interval,
             allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
+        )).text
+
+    async def send_and_wait_outcome(
+        self,
+        content: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`send_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn` (``text``, ``attributed``,
+        ``admission``, ``ticket``, ``output_status``, ``untracked_code``)."""
+        return await self._send_outcome(
+            content, timeout=timeout, poll_interval=poll_interval,
+            allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
         )
 
     async def dispatch_and_wait(
@@ -1540,14 +1582,32 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
         allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
     ) -> str | None:
-        """Dispatch, then wait for the turn it started and return ITS output
-        (per-admission, with the same failure contract and opt-in as
-        :meth:`send_and_wait`)."""
-        result = await self.dispatch(dispatch_input, track_turn=True)
-        return await self._wait_for_ticket_or_admission(
-            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+        """Dispatch, then wait for the turn it started and return its output
+        (the contract of :meth:`send_and_wait`; the typed form is
+        :meth:`dispatch_and_wait_outcome`)."""
+        return (await self._dispatch_outcome(
+            dispatch_input, timeout=timeout, poll_interval=poll_interval,
             allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
+        )).text
+
+    async def dispatch_and_wait_outcome(
+        self,
+        dispatch_input: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`dispatch_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn`."""
+        return await self._dispatch_outcome(
+            dispatch_input, timeout=timeout, poll_interval=poll_interval,
+            allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
         )
 
     async def dispatch_text_and_wait(
@@ -1560,19 +1620,71 @@ class IdentityAgentHandle:
         timeout: float = 90,
         poll_interval: float = 0.5,
         allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
     ) -> str | None:
-        """:meth:`dispatch_text` plus the per-admission wait, in one call
-        (same failure contract and opt-in as :meth:`send_and_wait`)."""
+        """:meth:`dispatch_text` plus the wait, in one call (the contract of
+        :meth:`send_and_wait`; the typed form is
+        :meth:`dispatch_text_and_wait_outcome`)."""
+        return (await self._dispatch_text_outcome(
+            text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key, timeout=timeout,
+            poll_interval=poll_interval,
+            allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
+        )).text
+
+    async def dispatch_text_and_wait_outcome(
+        self,
+        text: str,
+        *,
+        origin: str = "system",
+        correlation_id: str | None = None,
+        idempotency_key: str | None = None,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        allow_identity_wide_fallback: bool = False,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`dispatch_text_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn`."""
+        return await self._dispatch_text_outcome(
+            text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key, timeout=timeout,
+            poll_interval=poll_interval,
+            allow_identity_wide_fallback=allow_identity_wide_fallback,
+            require_attribution=require_attribution,
+        )
+
+    # Each public method reaches the warning through exactly one of these
+    # helpers, so the warnings point at the caller's line.
+
+    async def _send_outcome(self, content: Any, **wait: Any) -> Any:
+        _validate_attribution_options(wait)
+        result = await self.send(content, track_turn=True)
+        return await self._await_admitted(result, "send", **wait)
+
+    async def _dispatch_outcome(self, dispatch_input: Any, **wait: Any) -> Any:
+        _validate_attribution_options(wait)
+        result = await self.dispatch(dispatch_input, track_turn=True)
+        return await self._await_admitted(result, "dispatch", **wait)
+
+    async def _dispatch_text_outcome(
+        self,
+        text: str,
+        *,
+        origin: str,
+        correlation_id: str | None,
+        idempotency_key: str | None,
+        **wait: Any,
+    ) -> Any:
+        _validate_attribution_options(wait)
         result = await self.dispatch_text(
             text, origin=origin, correlation_id=correlation_id,
             idempotency_key=idempotency_key, track_turn=True,
         )
-        return await self._wait_for_ticket_or_admission(
-            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
-            allow_identity_wide_fallback=allow_identity_wide_fallback,
-        )
+        return await self._await_admitted(result, "dispatch", **wait)
 
-    async def _wait_for_ticket_or_admission(
+    async def _await_admitted(
         self,
         result: Any,
         operation: str,
@@ -1580,13 +1692,25 @@ class IdentityAgentHandle:
         timeout: float,
         poll_interval: float,
         allow_identity_wide_fallback: bool,
-    ) -> str | None:
+        require_attribution: bool,
+    ) -> Any:
+        """Wait for an admitted delivery and say whether the result is its own.
+
+        Warnings raised here are attributed four frames up: this method, the
+        ``_*_outcome`` helper, the public method, then the caller."""
+        from .identity_first_models import AwaitedTurn
         ticket = getattr(result, "turn_ticket", None)
         if ticket is not None:
             turn = await self._observe_admitted_turn(
                 result, ticket, operation, timeout=timeout, poll_interval=poll_interval,
             )
-            return self._text_of_turn(turn, operation)
+            return AwaitedTurn(
+                text=self._text_of_turn(turn, operation, stacklevel=5),
+                attributed=True,
+                admission=result,
+                ticket=ticket,
+                output_status=turn.output_status,
+            )
         from .errors import (
             TurnNotDeliveredError,
             TurnTrackingUnavailableError,
@@ -1601,7 +1725,8 @@ class IdentityAgentHandle:
             raise refused
         code = unavailable.code if unavailable is not None else None
         reason = unavailable.reason if unavailable is not None else None
-        if not allow_identity_wide_fallback:
+        tracking_expected = code in _TRACKING_EXPECTED_UNTRACKED_CODES
+        if require_attribution or (tracking_expected and not allow_identity_wide_fallback):
             raise TurnTrackingUnavailableError(
                 self._identity, operation, result, code, reason,
             )
@@ -1614,12 +1739,12 @@ class IdentityAgentHandle:
             f"{operation} for identity {self._identity!r} could not track its "
             f"own turn ({detail}); waiting on the identity-wide completion "
             "cursor instead, which another delivery's completion can also "
-            "satisfy",
+            "satisfy, so the result is not attributed to this delivery",
             TurnTrackingUnavailableWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
         try:
-            return await self._wait_for_admission(
+            text = await self._wait_for_admission(
                 result, operation, timeout=timeout, poll_interval=poll_interval,
             )
         # The cursor path raises its own typed RuntimeErrors (no baseline, a
@@ -1630,6 +1755,9 @@ class IdentityAgentHandle:
             raise PostAdmissionObservationError(
                 self._identity, operation, result, None, attempts=1,
             ) from err
+        return AwaitedTurn(
+            text=text, attributed=False, admission=result, untracked_code=code,
+        )
 
     async def _observe_admitted_turn(
         self,
@@ -1689,7 +1817,9 @@ class IdentityAgentHandle:
                 )
                 await asyncio.sleep(backoff)
 
-    def _text_of_turn(self, turn: Any, operation: str) -> str | None:
+    def _text_of_turn(
+        self, turn: Any, operation: str, *, stacklevel: int = 4,
+    ) -> str | None:
         """The ``*_and_wait`` return value for a completed turn: its text, or
         ``None`` when it committed none. Truncated text and "no output of its
         own" are never returned silently: each emits a typed warning."""
@@ -1701,7 +1831,7 @@ class IdentityAgentHandle:
                     f"{operation} for identity {self._identity!r}: turn "
                     f"{turn.ticket} returned text cut at the gateway's bound",
                     TurnOutputTruncatedWarning,
-                    stacklevel=4,
+                    stacklevel=stacklevel,
                 )
             return turn.output
         if turn.output_status is TurnOutputStatus.EMPTY:
@@ -1712,7 +1842,7 @@ class IdentityAgentHandle:
             f"({turn.output_status.value if turn.output_status else 'unknown'}); "
             "returning None",
             TurnOutputUnavailableWarning,
-            stacklevel=4,
+            stacklevel=stacklevel,
         )
         return None
 

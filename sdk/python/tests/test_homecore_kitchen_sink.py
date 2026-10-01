@@ -34,11 +34,7 @@ from meerkat_mobkit.identity_first_models import (
     DurableAgentSpec,
     ManagedPeerEdge,
 )
-from meerkat_mobkit.errors import (
-    RpcError,
-    TurnTrackingUnavailableError,
-    TurnTrackingUnavailableWarning,
-)
+from meerkat_mobkit.errors import RpcError, TurnTrackingUnavailableWarning
 
 # ---------------------------------------------------------------------------
 # Environment / skip helpers
@@ -1424,11 +1420,10 @@ async def test_kitchen_sdk_rejects_cursor_fallback_even_with_matching_output(mon
         pytest.fail("an untracked send must fail before any history comparison")
 
     monkeypatch.setitem(globals(), "_read_timeline_page", read_page)
-    with pytest.raises(TurnTrackingUnavailableError) as raised:
+    with pytest.raises(TurnTrackingUnavailableWarning):
         await _send_sdk_and_verify(
             object(), handle, "identity:luka", "luka-session", "Unique SDK input", timeout=60,
         )
-    assert raised.value.admission.completion_baseline is not None
     assert transport.params_of("mobkit/send")[0]["track_turn"] is True
     assert transport.params_of("mobkit/inspect_identity") == []
     assert transport.params_of("mobkit/turn_result") == []

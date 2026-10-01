@@ -40,9 +40,12 @@ import {
   RpcError,
   StorageResolutionError,
   TransportError,
+  PostAdmissionObservationError,
   TurnFailedError,
   TurnNotDeliveredError,
+  TurnTrackingUnavailableError,
   TurnUnknownError,
+  TurnWaitTimeoutError,
   WaitEndedError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
@@ -237,6 +240,7 @@ import {
   type EventQuery,
   type IdentityStatus,
   type IdentityInspection,
+  type AwaitedTurn,
   type SendResult,
   type DispatchResult,
   type TurnResult,
@@ -293,6 +297,58 @@ const JSONRPC_METHOD_NOT_FOUND = -32601;
  * up.
  */
 const SERVER_WAIT_TRANSPORT_HEADROOM_MS = 5_000;
+// Backoff between exact-ticket observation retries after an admitted
+// delivery's wait failed for a transport or RPC reason; bounded by the
+// caller's remaining deadline.
+const OBSERVATION_RETRY_INITIAL_MS = 100;
+const OBSERVATION_RETRY_MAX_MS = 2_000;
+// `turnUnavailable` codes for a delivery that a ticket-capable gateway could
+// have tracked on a trackable member, so a missing ticket is a refusal to
+// report rather than a structural property of the member: the runtime
+// refused tracking for the member's live mode, or a deduplicated re-dispatch
+// ran untracked on a new session. Every other delivered code
+// (`autonomous_host`, `externally_bound`, `host_human_input`,
+// `bridge_cannot_report_output`, future codes) and a gateway without tickets
+// are structural: the default waits identity-wide, non-attributed.
+const TRACKING_EXPECTED_UNTRACKED_CODES: ReadonlySet<string> = new Set([
+  "runtime_refused",
+  "session_rotated",
+]);
+
+/** Options for the `*AndWait` and `*AndWaitOutcome` helpers. */
+export interface AndWaitOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  /**
+   * On a trackable member whose turn could not be tracked
+   * (`runtime_refused`, `session_rotated`), wait on the identity-wide
+   * completion cursor (non-attributed) instead of throwing.
+   */
+  allowIdentityWideFallback?: boolean;
+  /** Throw `TurnTrackingUnavailableError` in every untracked case. */
+  requireAttribution?: boolean;
+}
+
+function validateAttributionOptions(options: AndWaitOptions): void {
+  if (options.requireAttribution === true && options.allowIdentityWideFallback === true) {
+    throw new Error(
+      "requireAttribution and allowIdentityWideFallback contradict each " +
+        "other; pass at most one",
+    );
+  }
+}
+
+/** A turn outcome thrown while waiting: it carries the admission. */
+function isTurnOutcomeError(
+  err: unknown,
+): err is TurnFailedError | TurnUnknownError | WaitEndedError | TurnWaitTimeoutError {
+  return (
+    err instanceof TurnFailedError ||
+    err instanceof TurnUnknownError ||
+    err instanceof WaitEndedError ||
+    err instanceof TurnWaitTimeoutError
+  );
+}
 
 function extractMobStructuralEvents(raw: unknown): MobStructuralEvent[] {
   let events: unknown = raw;
@@ -1478,79 +1534,212 @@ export class MobKitRuntime {
   }
 
   /**
-   * Send, then wait for the turn that send started and return ITS output.
+   * Send, then wait for the turn that send started and resolve its output.
    *
-   * The send is tracked by ticket, so the wait is per-admission: another
-   * delivery to this identity cannot satisfy it. Resolves the turn's text,
-   * or `null` when it committed none. Text cut at the gateway's bound emits
-   * a `TurnOutputTruncatedWarning`; a turn that completed without output of
-   * its own resolves `null` with a `TurnOutputUnavailableWarning` (use
-   * {@link waitForTurn} for the typed result).
+   * Resolves the text of {@link sendAndWaitOutcome}; use that method for the
+   * typed {@link AwaitedTurn}, which says whether the text is attributed to
+   * this send. The contract:
    *
-   * When the gateway cannot track the turn (an `autonomous_host` member, an
-   * externally bound member, an older gateway), the send is still delivered
-   * exactly once and this falls back to the identity-wide cursor wait,
-   * emitting a `TurnTrackingUnavailableWarning` with the typed reason.
-   * Warnings are Node process warnings (`process.on("warning")`, whose
-   * `name` is the warning type).
+   * - Tracked (a `turn_driven` member): the send carries a turn ticket and
+   *   the wait is per-admission, so another delivery to this identity cannot
+   *   satisfy it and the text is this turn's own committed output (`null`
+   *   when it committed none). Text cut at the gateway's bound emits a
+   *   `TurnOutputTruncatedWarning`; a turn that completed without output of
+   *   its own resolves `null` with a `TurnOutputUnavailableWarning`.
+   * - Structurally untrackable (an `autonomous_host` member, the default
+   *   mode; an externally bound member; host human input; a bridge that
+   *   cannot report output; a gateway predating turn tickets): the call waits
+   *   on the identity-wide completion cursor, as before, and emits a
+   *   `TurnTrackingUnavailableWarning`. That text is NOT attributed: another
+   *   delivery's turn may have produced it (`AwaitedTurn.attributed` is
+   *   `false`).
+   * - Trackable but untracked (`runtime_refused`, `session_rotated`): throws
+   *   `TurnTrackingUnavailableError`, unless `allowIdentityWideFallback`
+   *   opts into the non-attributed wait.
+   * - `requireAttribution: true` throws `TurnTrackingUnavailableError` in
+   *   every untracked case.
+   *
+   * The send happens exactly once; nothing here ever resends. Every failure
+   * after admission carries the send result as `admission`: a transport or
+   * RPC failure of the exact-ticket wait is retried, for that ticket only,
+   * until `timeoutMs` and then throws `PostAdmissionObservationError` (with
+   * `ticket`); `TurnFailedError`, `TurnUnknownError`, `WaitEndedError` and
+   * `TurnWaitTimeoutError` carry it. Warnings are Node process warnings
+   * (`process.on("warning")`, whose `name` is the warning type).
    */
   async sendAndWait(
     identity: string,
     content: string | DispatchContentBlock[],
-    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+    options: AndWaitOptions = {},
   ): Promise<string | null> {
+    return (await this.sendAndWaitOutcome(identity, content, options)).text;
+  }
+
+  /** {@link sendAndWait}, resolving the typed {@link AwaitedTurn}. */
+  async sendAndWaitOutcome(
+    identity: string,
+    content: string | DispatchContentBlock[],
+    options: AndWaitOptions = {},
+  ): Promise<AwaitedTurn> {
+    validateAttributionOptions(options);
     const result = await this.send(identity, content, { trackTurn: true });
-    return this._waitForTicketOrAdmission(identity, result, "send", options);
+    return this._awaitAdmitted(identity, result, "send", options);
   }
 
   /**
-   * Dispatch, then wait for the turn it started and return ITS output
-   * (per-admission, as {@link sendAndWait}).
+   * Dispatch, then wait for the turn it started and resolve its output (the
+   * contract of {@link sendAndWait}; the typed form is
+   * {@link dispatchAndWaitOutcome}).
    */
   async dispatchAndWait(
     identity: string,
     input: DispatchInput,
-    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+    options: AndWaitOptions = {},
   ): Promise<string | null> {
-    const result = await this.dispatch(identity, input, { trackTurn: true });
-    return this._waitForTicketOrAdmission(identity, result, "dispatch", options);
+    return (await this.dispatchAndWaitOutcome(identity, input, options)).text;
   }
 
-  private async _waitForTicketOrAdmission(
+  /** {@link dispatchAndWait}, resolving the typed {@link AwaitedTurn}. */
+  async dispatchAndWaitOutcome(
+    identity: string,
+    input: DispatchInput,
+    options: AndWaitOptions = {},
+  ): Promise<AwaitedTurn> {
+    validateAttributionOptions(options);
+    const result = await this.dispatch(identity, input, { trackTurn: true });
+    return this._awaitAdmitted(identity, result, "dispatch", options);
+  }
+
+  private async _awaitAdmitted(
     identity: string,
     result: SendResult | DispatchResult,
     operation: string,
-    options: { timeoutMs?: number; pollIntervalMs?: number },
-  ): Promise<string | null> {
+    options: AndWaitOptions,
+  ): Promise<AwaitedTurn> {
     if (result.turnTicket != null) {
-      const turn = await this.waitForTurn(identity, result.turnTicket, options);
-      return textOfTurn(identity, turn, operation);
+      const ticket = result.turnTicket;
+      const turn = await this._observeAdmittedTurn(
+        identity,
+        result,
+        ticket,
+        operation,
+        options,
+      );
+      return {
+        text: textOfTurn(identity, turn, operation),
+        attributed: true,
+        admission: result,
+        ticket,
+        outputStatus: turn.outputStatus,
+        untrackedCode: null,
+      };
     }
     const unavailable = result.turnUnavailable;
     if (unavailable != null && !unavailable.delivered) {
-      throw new TurnNotDeliveredError(
+      const refused = new TurnNotDeliveredError(
         identity,
         operation,
         unavailable.code,
         unavailable.reason,
       );
+      refused.admission = result;
+      throw refused;
     }
-    const reason =
-      unavailable != null
-        ? `${unavailable.code}: ${unavailable.reason}`
+    const code = unavailable?.code ?? null;
+    const reason = unavailable?.reason ?? null;
+    const trackingExpected =
+      code !== null && TRACKING_EXPECTED_UNTRACKED_CODES.has(code);
+    if (
+      options.requireAttribution === true ||
+      (trackingExpected && options.allowIdentityWideFallback !== true)
+    ) {
+      throw new TurnTrackingUnavailableError(identity, operation, result, code, reason);
+    }
+    const detail =
+      code !== null
+        ? `${code}: ${reason}`
         : "the gateway returned no turn ticket (it predates turn tickets)";
     emitTurnWarning(
       "TurnTrackingUnavailableWarning",
       `${operation} for identity ${identity} could not track its own turn ` +
-        `(${reason}); waiting on the identity-wide completion cursor ` +
-        `instead, which another delivery's completion can also satisfy`,
+        `(${detail}); waiting on the identity-wide completion cursor ` +
+        `instead, which another delivery's completion can also satisfy, so ` +
+        `the result is not attributed to this delivery`,
     );
-    return this._waitForAdmission(
-      identity,
-      result.completionBaseline,
-      operation,
-      options,
-    );
+    let text: string | null;
+    try {
+      text = await this._waitForAdmission(
+        identity,
+        result.completionBaseline,
+        operation,
+        options,
+      );
+    } catch (err) {
+      // The cursor path throws its own typed errors (no baseline, a
+      // superseded incarnation, a live alias, the deadline), so only RPC and
+      // transport failures are observation failures here.
+      if (isRpcError(err) || err instanceof TransportError || err instanceof NotConnectedError) {
+        throw new PostAdmissionObservationError(identity, operation, result, null, 1, err);
+      }
+      throw err;
+    }
+    return {
+      text,
+      attributed: false,
+      admission: result,
+      ticket: null,
+      outputStatus: null,
+      untrackedCode: code,
+    };
+  }
+
+  /**
+   * Wait for an admitted delivery's own turn, by its ticket only. A
+   * transport or RPC failure of the wait retries the same exact-ticket
+   * observation, with bounded backoff, until the caller's deadline; the
+   * delivery is never repeated. The turn's typed outcomes (failed, unknown,
+   * wait ended, still pending at the deadline) are thrown with the admission
+   * attached.
+   */
+  private async _observeAdmittedTurn(
+    identity: string,
+    result: SendResult | DispatchResult,
+    ticket: string,
+    operation: string,
+    options: AndWaitOptions,
+  ): Promise<TurnResult> {
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    const deadline = Date.now() + timeoutMs;
+    for (let attempts = 1; ; attempts += 1) {
+      try {
+        return await this.waitForTurn(identity, ticket, {
+          timeoutMs: Math.max(0, deadline - Date.now()),
+          pollIntervalMs: options.pollIntervalMs,
+        });
+      } catch (err) {
+        if (isTurnOutcomeError(err)) {
+          err.admission = result;
+          throw err;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw new PostAdmissionObservationError(
+            identity,
+            operation,
+            result,
+            ticket,
+            attempts,
+            err,
+          );
+        }
+        const backoff = Math.min(
+          OBSERVATION_RETRY_INITIAL_MS * 2 ** Math.min(attempts - 1, 5),
+          OBSERVATION_RETRY_MAX_MS,
+          remaining,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
   }
 
   private async _waitForAdmission(
@@ -1675,10 +1864,7 @@ function settledTurn(
   if (result.state === "unknown") {
     throw new TurnUnknownError(identity, ticket);
   }
-  throw new Error(
-    `turn ${ticket} of identity ${identity} did not complete within ` +
-      `${timeoutMs}ms`,
-  );
+  throw new TurnWaitTimeoutError(identity, ticket, timeoutMs);
 }
 
 // -- MobHandle ------------------------------------------------------------

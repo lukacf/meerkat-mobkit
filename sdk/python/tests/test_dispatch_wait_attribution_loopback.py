@@ -33,7 +33,7 @@ from meerkat_mobkit.errors import (
     TurnUnknownError,
     TurnWaitTimeoutError,
 )
-from meerkat_mobkit.identity_first_models import DispatchResult
+from meerkat_mobkit.identity_first_models import AwaitedTurn, DispatchResult
 from meerkat_mobkit.runtime import MobKitRuntime
 
 _IDENTITY = "keeper"
@@ -247,22 +247,51 @@ async def test_an_unrelated_peer_completion_does_not_satisfy_the_wait(tmp_path):
     })
     runtime = await _runtime(stand_in)
     try:
-        output = await runtime.agent(_IDENTITY).dispatch_text_and_wait(
+        outcome = await runtime.agent(_IDENTITY).dispatch_text_and_wait_outcome(
             "process the incident", timeout=20,
         )
     finally:
         await runtime.shutdown()
 
-    assert output == "own reply"
+    assert (outcome.text, outcome.attributed, outcome.ticket) == ("own reply", True, _TICKET)
     assert len(stand_in.calls("mobkit/wait_for_turn")) == 3
     assert not [r for r in stand_in.requests() if r["method"] in _IDENTITY_WIDE]
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-async def test_a_no_ticket_admission_raises_tracking_unavailable(tmp_path):
+async def test_the_default_mode_waits_identity_wide_typed_as_not_attributed(tmp_path):
+    """``autonomous_host`` (the default member mode) returns no ticket by
+    construction. The call still waits, so upgrading breaks nothing, but the
+    typed outcome says the text is not attributed (here it is the peer's) and
+    the warning says so too."""
     stand_in = _StandIn(tmp_path, {
         "mobkit/dispatch": [{"result": _admitted(None, unavailable="autonomous_host")}],
+        **_PEER_COMPLETED,
+    })
+    runtime = await _runtime(stand_in)
+    try:
+        with pytest.warns(TurnTrackingUnavailableWarning, match="not attributed"):
+            outcome = await runtime.agent(_IDENTITY).dispatch_text_and_wait_outcome(
+                "process the incident", timeout=5,
+            )
+    finally:
+        await runtime.shutdown()
+
+    assert isinstance(outcome, AwaitedTurn)
+    assert (outcome.text, outcome.attributed, outcome.ticket) == ("peer reply", False, None)
+    assert outcome.untracked_code == "autonomous_host"
+    assert isinstance(outcome.admission, DispatchResult)
+    assert len(stand_in.calls("mobkit/dispatch")) == 1
+    assert stand_in.calls("mobkit/wait_for_completion")
+    assert stand_in.calls("mobkit/wait_for_turn") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_missing_ticket_on_a_trackable_member_raises_tracking_unavailable(tmp_path):
+    stand_in = _StandIn(tmp_path, {
+        "mobkit/dispatch": [{"result": _admitted(None, unavailable="runtime_refused")}],
         **_PEER_COMPLETED,
     })
     runtime = await _runtime(stand_in)
@@ -277,7 +306,7 @@ async def test_a_no_ticket_admission_raises_tracking_unavailable(tmp_path):
     error = raised.value
     assert isinstance(error.admission, DispatchResult)
     assert error.admission.turn_ticket is None
-    assert (error.code, error.reason) == ("autonomous_host", "because autonomous_host")
+    assert (error.code, error.reason) == ("runtime_refused", "because runtime_refused")
     assert len(stand_in.calls("mobkit/dispatch")) == 1
     assert not [r for r in stand_in.requests() if r["method"] in _IDENTITY_WIDE]
     assert stand_in.calls("mobkit/wait_for_turn") == []
@@ -285,16 +314,36 @@ async def test_a_no_ticket_admission_raises_tracking_unavailable(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-async def test_the_identity_wide_wait_needs_an_explicit_opt_in(tmp_path):
-    """With the opt-in the legacy cursor wait runs, warns, and returns the
-    session's latest output, which here is the peer's: it does not attribute."""
+async def test_require_attribution_raises_on_the_default_mode(tmp_path):
     stand_in = _StandIn(tmp_path, {
         "mobkit/dispatch": [{"result": _admitted(None, unavailable="autonomous_host")}],
         **_PEER_COMPLETED,
     })
     runtime = await _runtime(stand_in)
     try:
-        with pytest.warns(TurnTrackingUnavailableWarning, match="autonomous_host"):
+        with pytest.raises(TurnTrackingUnavailableError) as raised:
+            await runtime.agent(_IDENTITY).dispatch_text_and_wait(
+                "process the incident", timeout=5, require_attribution=True,
+            )
+    finally:
+        await runtime.shutdown()
+
+    assert raised.value.code == "autonomous_host"
+    assert isinstance(raised.value.admission, DispatchResult)
+    assert len(stand_in.calls("mobkit/dispatch")) == 1
+    assert not [r for r in stand_in.requests() if r["method"] in _IDENTITY_WIDE]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_trackable_member_can_opt_into_the_non_attributed_wait(tmp_path):
+    stand_in = _StandIn(tmp_path, {
+        "mobkit/dispatch": [{"result": _admitted(None, unavailable="runtime_refused")}],
+        **_PEER_COMPLETED,
+    })
+    runtime = await _runtime(stand_in)
+    try:
+        with pytest.warns(TurnTrackingUnavailableWarning, match="runtime_refused"):
             output = await runtime.agent(_IDENTITY).dispatch_text_and_wait(
                 "process the incident", timeout=5, allow_identity_wide_fallback=True,
             )
@@ -303,7 +352,6 @@ async def test_the_identity_wide_wait_needs_an_explicit_opt_in(tmp_path):
 
     assert output == "peer reply"
     assert len(stand_in.calls("mobkit/dispatch")) == 1
-    assert stand_in.calls("mobkit/wait_for_completion")
 
 
 @pytest.mark.asyncio

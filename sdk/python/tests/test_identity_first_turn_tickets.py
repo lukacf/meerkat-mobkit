@@ -27,6 +27,7 @@ from meerkat_mobkit.errors import (
     TurnUnknownError,
 )
 from meerkat_mobkit.identity_first_models import (
+    AwaitedTurn,
     CompletionCursor,
     DispatchInput,
     DispatchResult,
@@ -440,70 +441,32 @@ class TestWaitForTurn:
             )
 
 
-class TestExplicitFallback:
+class TestAttributionByCause:
+    """Untracked deliveries split by cause: a structurally untrackable member
+    (or a gateway without tickets) keeps the identity-wide wait, typed as
+    non-attributed and warned; a trackable member whose ticket is missing
+    raises. Nothing is silent and nothing is resent."""
+
     @pytest.mark.asyncio
-    async def test_an_old_gateway_raises_typed_with_the_admission_by_default(self):
-        """A gateway that predates turn tickets returns no ``turn``: the call
-        raises instead of silently waiting on the identity-wide cursor, and
-        the error carries the admitted send so nothing is redispatched."""
+    async def test_a_tracked_outcome_is_attributed(self):
         transport = TicketTransport(
-            sends=[_sent(None, turns=0)],
-            inspections=[_inspection("latest reply", turns=1)],
+            sends=[_sent("t-own")], turn_results={"t-own": [_completed("own reply")]},
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", TurnTrackingUnavailableWarning)
-            with pytest.raises(TurnTrackingUnavailableError) as raised:
-                await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        outcome = await handle.send_and_wait_outcome("alpha", timeout=5, poll_interval=0.001)
 
-        assert isinstance(raised.value, MobKitError)
-        assert isinstance(raised.value.admission, SendResult)
-        assert raised.value.admission.completion_baseline == CompletionCursor(epoch=3, turns=0)
-        assert (raised.value.code, raised.value.reason) == (None, None)
-        assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
-        assert transport.params_of("mobkit/wait_for_completion") == []
-        assert transport.params_of("mobkit/completion_cursor") == []
-        assert transport.params_of("mobkit/inspect_identity") == []
+        assert isinstance(outcome, AwaitedTurn)
+        assert (outcome.text, outcome.attributed, outcome.ticket) == ("own reply", True, "t-own")
+        assert outcome.output_status is TurnOutputStatus.TEXT
+        assert isinstance(outcome.admission, SendResult)
+        assert outcome.untracked_code is None
 
     @pytest.mark.asyncio
-    async def test_an_untrackable_turn_raises_naming_the_reason(self):
-        transport = TicketTransport(
-            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
-            inspections=[_inspection("latest reply", turns=1)],
-        )
-        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
-
-        with pytest.raises(TurnTrackingUnavailableError, match="autonomous_host") as raised:
-            await handle.dispatch_text_and_wait("alpha", timeout=5, poll_interval=0.001)
-
-        assert isinstance(raised.value.admission, DispatchResult)
-        assert raised.value.code == "autonomous_host"
-        assert raised.value.reason == "because autonomous_host"
-        assert len(transport.params_of("mobkit/dispatch")) == 1, "delivered exactly once"
-        assert transport.params_of("mobkit/inspect_identity") == []
-
-    @pytest.mark.asyncio
-    async def test_the_identity_wide_wait_is_an_explicit_opt_in_with_a_warning(self):
-        """The legacy cursor wait survives only on request, and still warns
-        that it does not attribute the completion it returns."""
-        transport = TicketTransport(
-            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
-            inspections=[_inspection("latest reply", turns=1)],
-        )
-        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
-
-        with pytest.warns(TurnTrackingUnavailableWarning, match="autonomous_host"):
-            output = await handle.send_and_wait(
-                "alpha", timeout=5, poll_interval=0.001,
-                allow_identity_wide_fallback=True,
-            )
-        assert output == "latest reply"
-        assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
-        assert transport.params_of("mobkit/turn_result") == []
-
-    @pytest.mark.asyncio
-    async def test_an_old_gateway_opt_in_falls_back_with_a_warning(self):
+    async def test_an_old_gateway_waits_identity_wide_typed_as_not_attributed(self):
+        """A gateway that predates turn tickets returns no ``turn``: the
+        default still waits on the identity-wide cursor, warns, and types the
+        result as not attributed to this send."""
         transport = TicketTransport(
             sends=[_sent(None, turns=0)],
             inspections=[_inspection("latest reply", turns=1)],
@@ -511,11 +474,117 @@ class TestExplicitFallback:
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
         with pytest.warns(TurnTrackingUnavailableWarning, match="predates turn tickets"):
-            output = await handle.dispatch_and_wait(
+            outcome = await handle.send_and_wait_outcome("alpha", timeout=5, poll_interval=0.001)
+
+        assert (outcome.text, outcome.attributed, outcome.ticket) == ("latest reply", False, None)
+        assert outcome.untracked_code is None
+        assert isinstance(outcome.admission, SendResult)
+        assert transport.params_of("mobkit/turn_result") == []
+
+    @pytest.mark.asyncio
+    async def test_the_default_mode_keeps_the_plain_text_api_working(self):
+        """``autonomous_host`` is the default member mode and structurally
+        untrackable: ``*_and_wait`` keeps returning text there (warned), so an
+        upgrade does not break existing callers."""
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.warns(TurnTrackingUnavailableWarning, match="not attributed"):
+            output = await handle.dispatch_text_and_wait("alpha", timeout=5, poll_interval=0.001)
+
+        assert output == "latest reply"
+        assert len(transport.params_of("mobkit/dispatch")) == 1, "delivered exactly once"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "code", ["autonomous_host", "externally_bound", "host_human_input",
+                 "bridge_cannot_report_output", "a_future_code"],
+    )
+    async def test_structural_codes_wait_identity_wide_not_attributed(self, code):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable=code)],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.warns(TurnTrackingUnavailableWarning, match=code):
+            outcome = await handle.dispatch_and_wait_outcome(
                 DispatchInput(content="alpha", origin="system"), timeout=5, poll_interval=0.001,
+            )
+        assert outcome.attributed is False
+        assert outcome.untracked_code == code
+        assert isinstance(outcome.admission, DispatchResult)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", ["runtime_refused", "session_rotated"])
+    async def test_a_missing_ticket_on_a_trackable_member_raises_with_admission(self, code):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable=code)],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", TurnTrackingUnavailableWarning)
+            with pytest.raises(TurnTrackingUnavailableError, match=code) as raised:
+                await handle.dispatch_text_and_wait("alpha", timeout=5, poll_interval=0.001)
+
+        assert isinstance(raised.value, MobKitError)
+        assert isinstance(raised.value.admission, DispatchResult)
+        assert (raised.value.code, raised.value.reason) == (code, f"because {code}")
+        assert len(transport.params_of("mobkit/dispatch")) == 1, "delivered exactly once"
+        assert transport.params_of("mobkit/wait_for_completion") == []
+        assert transport.params_of("mobkit/inspect_identity") == []
+
+    @pytest.mark.asyncio
+    async def test_a_trackable_member_can_opt_into_the_identity_wide_wait(self):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable="runtime_refused")],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.warns(TurnTrackingUnavailableWarning, match="runtime_refused"):
+            outcome = await handle.send_and_wait_outcome(
+                "alpha", timeout=5, poll_interval=0.001,
                 allow_identity_wide_fallback=True,
             )
-        assert output == "latest reply"
+        assert (outcome.text, outcome.attributed) == ("latest reply", False)
+        assert outcome.untracked_code == "runtime_refused"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unavailable", ["autonomous_host", None])
+    async def test_require_attribution_raises_in_every_untracked_case(self, unavailable):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable=unavailable)],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", TurnTrackingUnavailableWarning)
+            with pytest.raises(TurnTrackingUnavailableError) as raised:
+                await handle.send_and_wait(
+                    "alpha", timeout=5, poll_interval=0.001, require_attribution=True,
+                )
+        assert raised.value.code == unavailable
+        assert isinstance(raised.value.admission, SendResult)
+        assert len(transport.params_of("mobkit/send")) == 1
+        assert transport.params_of("mobkit/inspect_identity") == []
+
+    @pytest.mark.asyncio
+    async def test_contradictory_options_are_refused_before_sending(self):
+        transport = TicketTransport(sends=[_sent("t-own")])
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.raises(ValueError, match="contradict"):
+            await handle.send_and_wait(
+                "alpha", require_attribution=True, allow_identity_wide_fallback=True,
+            )
+        assert transport.params_of("mobkit/send") == []
 
     @pytest.mark.asyncio
     async def test_an_undelivered_send_raises_instead_of_waiting(self):

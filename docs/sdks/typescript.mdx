@@ -53,6 +53,31 @@ The recommended completion barrier is a tracked delivery plus its ticket:
 true })` followed by `waitForTurn(identity, result.turnTicket)`. It reads only
 the ticket ledger and returns that turn's own output.
 
+`sendAndWaitOutcome` and `dispatchAndWaitOutcome` resolve the typed
+`AwaitedTurn` (`text`, `attributed`, `admission`, `ticket`, `outputStatus`,
+`untrackedCode`); `sendAndWait` / `dispatchAndWait` resolve its `text`. When
+the delivery returns no ticket the behaviour depends on why
+(`turnUnavailable.code`):
+
+- Structurally untrackable (`autonomous_host`, the default mode;
+  `externally_bound`, `host_human_input`, `bridge_cannot_report_output`; a
+  gateway predating turn tickets; future codes): the call waits on the
+  identity-wide completion cursor with a `TurnTrackingUnavailableWarning`,
+  and `attributed` is `false` because another delivery's turn may have
+  produced the text.
+- Trackable but untracked (`runtime_refused`, `session_rotated`): throws
+  `TurnTrackingUnavailableError` carrying `admission`, unless
+  `allowIdentityWideFallback: true`.
+- `requireAttribution: true` throws `TurnTrackingUnavailableError` in every
+  untracked case.
+
+The delivery is never repeated. A transport or RPC failure of the
+exact-ticket wait is retried for that ticket only until `timeoutMs`, then
+throws `PostAdmissionObservationError` with `admission`, `ticket` and the
+last failure as `cause`. `TurnFailedError`, `TurnUnknownError`,
+`WaitEndedError` and `TurnWaitTimeoutError` (a turn still pending at the
+deadline) carry `admission` when an `*AndWait` call throws them.
+
 `waitForCompletion(identity, baseline)` and `waitUntilReady(identities)` are
 identity-wide: any completion on the identity satisfies them.
 

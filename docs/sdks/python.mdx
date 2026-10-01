@@ -169,9 +169,9 @@ await triage.dispatch_text("School closed", origin="connector")   # Any identity
 # another delivery to the identity (a peer message, a scheduled turn, a fork
 # completion wake) cannot satisfy the wait. On an autonomous_host member (the
 # default mode) the send is still delivered once, but the turn cannot be
-# tracked, so the call raises TurnTrackingUnavailableError carrying the send
-# result as `admission` (do not resend). Opt into the non-attributing
-# identity-wide wait with allow_identity_wide_fallback=True.
+# tracked: the call waits identity-wide with a TurnTrackingUnavailableWarning,
+# and send_and_wait_outcome(...).attributed is False (the text may be another
+# turn's). require_attribution=True raises instead.
 answer = await luka.send_and_wait("Hello", timeout=90)
 
 # The same, in two steps: track the turn, then wait on its ticket.
@@ -213,15 +213,30 @@ ticket the gateway does not know (for example after a gateway restart) raises
 `None` with `TurnOutputUnavailableWarning`. `wait_for_turn` returns the typed
 `TurnResult` (`output_status`, `output`, `output_truncated`) instead.
 
+`send_and_wait_outcome`, `dispatch_and_wait_outcome` and
+`dispatch_text_and_wait_outcome` take the same arguments and return the typed
+`AwaitedTurn`: `text`, `attributed` (whether the text provably belongs to this
+delivery's turn), `admission`, `ticket`, `output_status` and `untracked_code`.
+The plain methods return its `text`.
+
 The delivery happens exactly once and the call never resends. Every failure
 after admission carries the send/dispatch result as `admission`, so the
 caller keeps the receipt instead of redispatching the work:
 
-- No turn ticket: `TurnTrackingUnavailableError` (with `code` and `reason`,
-  below). Pass `allow_identity_wide_fallback=True` to wait on the
-  identity-wide completion cursor instead; that legacy wait emits
-  `TurnTrackingUnavailableWarning` and does not attribute: another delivery's
-  completion can satisfy it, and the returned text is the session's latest.
+- No turn ticket, by cause (`turn_unavailable.code`, below):
+  - Structurally untrackable (`autonomous_host`, the default mode;
+    `externally_bound`, `host_human_input`, `bridge_cannot_report_output`; a
+    gateway that predates turn tickets; future codes): the call waits on the
+    identity-wide completion cursor, emitting
+    `TurnTrackingUnavailableWarning`. That result is NOT attributed: another
+    delivery's completion can satisfy the wait, and the text is the session's
+    latest output.
+  - Trackable but untracked (`runtime_refused`, `session_rotated`):
+    `TurnTrackingUnavailableError` with `code` and `reason`.
+    `allow_identity_wide_fallback=True` waits non-attributed instead.
+  - `require_attribution=True` raises `TurnTrackingUnavailableError` in every
+    untracked case (it cannot be combined with
+    `allow_identity_wide_fallback`).
 - The exact-ticket wait fails for a transport or RPC reason (for example
   `observation_lane_saturated`): only that ticket's observation is retried,
   with bounded backoff, until `timeout`; then

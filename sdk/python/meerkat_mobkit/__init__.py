@@ -57,6 +57,7 @@ from .jobs import (
 from .identity_first_models import (
     AgentBuildContext,
     AgentBuildDraft,
+    AwaitedTurn,
     CompletionCursor,
     CompletionProgress,
     ConsoleIdentityRecord,
@@ -292,6 +293,7 @@ __all__ = [
     "DurableAgentSpec",
     "ExternalToolDef",
     # Turn-completion identity
+    "AwaitedTurn",
     "CompletionCursor",
     "CompletionProgress",
     "TurnOutputStatus",

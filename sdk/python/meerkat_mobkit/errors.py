@@ -358,17 +358,18 @@ class TurnNotDeliveredError(MobKitError):
 
 
 class TurnTrackingUnavailableError(MobKitError):
-    """A ``*_and_wait`` delivery was ADMITTED, but the gateway returned no
-    turn ticket, so its own turn cannot be observed (an ``autonomous_host``
-    member, an externally bound member, or a gateway predating turn tickets).
+    """A ``*_and_wait`` delivery was ADMITTED, but its own turn cannot be
+    observed and the call will not wait identity-wide: the member is
+    trackable but the delivery came back untracked (``runtime_refused``,
+    ``session_rotated``), or the caller passed ``require_attribution=True``.
 
     The work was handed to the identity and will run, or already ran: keep
     ``admission`` (the full send/dispatch result) and do not redispatch it.
     ``code`` and ``reason`` carry the typed ``turn_unavailable`` reason, or
     are ``None`` when the gateway returned no reason at all.
 
-    Pass ``allow_identity_wide_fallback=True`` to opt into the legacy
-    identity-wide completion wait instead. That wait does NOT attribute the
+    On a trackable member, ``allow_identity_wide_fallback=True`` waits on the
+    identity-wide completion cursor instead. That wait does NOT attribute the
     completion it returns: another delivery's turn (a peer message, a
     scheduled turn) can satisfy it."""
 
@@ -477,8 +478,10 @@ class TurnOutputUnavailableWarning(RuntimeWarning):
 
 
 class TurnTrackingUnavailableWarning(RuntimeWarning):
-    """A ``*_and_wait`` call made with ``allow_identity_wide_fallback=True``
-    could not track its own turn and fell back to the identity-wide
-    completion cursor, which another delivery's completion can also satisfy
-    (so the returned output is not request-correlated). Without that opt-in
-    the call raises :class:`TurnTrackingUnavailableError` instead."""
+    """A ``*_and_wait`` call could not track its own turn and waited on the
+    identity-wide completion cursor, which another delivery's completion can
+    also satisfy, so the returned output is not attributed to the delivery
+    (``AwaitedTurn.attributed`` is ``False``). That is the default for a
+    structurally untrackable member (``autonomous_host``, the default mode)
+    or a gateway without tickets; ``require_attribution=True`` raises
+    :class:`TurnTrackingUnavailableError` instead."""
