@@ -578,10 +578,69 @@ function sameSource(a: ConversationEntrySource | undefined, b: ConversationEntry
   return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
 }
 
+/// Flattened rows per transcript entry. Entries keep their object identity
+/// while unchanged (see deriveTimelineEntries), so a re-render reuses rows.
+const flattenedRows = new WeakMap<ConversationTimelineEntry, { options: ConversationEntrySourceOptions["resolvePeerLabel"]; rows: Msg[] }>();
+
+function entryRows(entry: ConversationTimelineEntry, options: ConversationEntrySourceOptions): Msg[] {
+  const cached = flattenedRows.get(entry);
+  if (cached && cached.options === options.resolvePeerLabel) return cached.rows;
+  const rows = conversationPresentationRows([entry]).flatMap((row) => flattenEntry(row, options));
+  flattenedRows.set(entry, { options: options.resolvePeerLabel, rows });
+  return rows;
+}
+
+/// Chat rows plus, per row, the range of entry indexes it was built from.
+interface ChatMessagesState {
+  entries: ConversationTimelineEntry[];
+  resolvePeerLabel: ConversationEntrySourceOptions["resolvePeerLabel"];
+  messages: Msg[];
+  spans: Array<{ start: number; end: number }>;
+}
+
 function buildChatMessages(
   entries: ConversationTimelineEntry[],
   options: ConversationEntrySourceOptions = {},
 ): Msg[] {
+  return extendChatMessages(null, entries, options).messages;
+}
+
+/// Build rows for `entries`, reusing `previous` rows built from the unchanged
+/// leading entries. Every pass below looks only at the previous row or at
+/// rows of one entry, so rebuilding from a row boundary that no later entry
+/// can merge into gives exactly the full build.
+function extendChatMessages(
+  previous: ChatMessagesState | null,
+  entries: ConversationTimelineEntry[],
+  options: ConversationEntrySourceOptions = {},
+): ChatMessagesState {
+  let startEntry = 0;
+  let cut = 0;
+  if (previous && previous.resolvePeerLabel === options.resolvePeerLabel) {
+    let same = 0;
+    const limit = Math.min(entries.length, previous.entries.length);
+    while (same < limit && entries[same] === previous.entries[same]) same += 1;
+    if (same === entries.length && same === previous.entries.length) return previous;
+    startEntry = Math.max(0, same - 1);
+    cut = previous.spans.findIndex((span) => span.end >= startEntry);
+    if (cut < 0) cut = previous.messages.length;
+    // A kept row must hold only earlier entries and must not be a tool group,
+    // which the next row could merge into.
+    while (cut > 0 && (previous.messages[cut - 1].kind === "tool" || previous.spans[cut - 1].end >= startEntry)) {
+      cut -= 1;
+      startEntry = Math.min(startEntry, previous.spans[cut].start);
+    }
+    // Run durations attach by entry id; a reused id must see every row again.
+    if (cut > 0) {
+      const rebuiltIds = new Set(entries.slice(startEntry).map((entry) => entry.id));
+      for (let index = 0; index < cut && cut > 0; index += 1) {
+        if (rebuiltIds.has(previous.messages[index].sourceEntryId ?? "")) cut = 0;
+      }
+      if (cut === 0) startEntry = 0;
+    }
+  }
+  const merged: Msg[] = previous && cut > 0 ? previous.messages.slice(0, cut) : [];
+  const spans = previous && cut > 0 ? previous.spans.slice(0, cut) : [];
   // Defensive cross-entry merge: the adapter already groups
   // consecutive same-name tool calls into one entry, but the
   // merge breaks if a non-tool entry slips between adjacent tool
@@ -589,76 +648,78 @@ function buildChatMessages(
   // bubble). Walk the flattened message list and fold neighbouring
   // tool messages whose blocks all share the same tool `name` —
   // and, for peer tools, the same direction.
-  const flat = conversationPresentationRows(entries).flatMap((entry) => flattenEntry(entry, options));
-  const merged: Msg[] = [];
-  for (const m of flat) {
-    const last = merged[merged.length - 1];
-    const lastBlocks = last?.blocks;
-    const mBlocks = m.blocks;
-    const sameName = !!(
-      last
-      && last.interactionId === m.interactionId
-      && last.kind === "tool"
-      && m.kind === "tool"
-      && Array.isArray(lastBlocks) && lastBlocks.length > 0
-      && Array.isArray(mBlocks) && mBlocks.length > 0
-      && lastBlocks.every((b) => b.type === "tool-call")
-      && mBlocks.every((b) => b.type === "tool-call")
-      && lastBlocks[0].type === "tool-call"
-      && mBlocks[0].type === "tool-call"
-      && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-      && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-    );
-    const peerCompatible = !sameName
-      ? false
-      : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
-        ? true
-        : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
-          === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
-    if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
-      last.blocks = [...lastBlocks, ...mBlocks];
-      last.id = `${last.id}+${m.id}`;
-    } else {
-      const canDedupeAdjacent =
-        last?.id === m.id && (
-          (m.kind === "user" && last.kind === "user")
-          || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
-        );
-      if (last && canDedupeAdjacent) {
-        const lastSignature = textSignatureForMsg(last);
-        const nextSignature = textSignatureForMsg(m);
-        if (lastSignature && lastSignature === nextSignature) {
-          continue;
+  for (let entryIndex = startEntry; entryIndex < entries.length; entryIndex += 1) {
+    for (const m of entryRows(entries[entryIndex], options)) {
+      const last = merged[merged.length - 1];
+      const lastBlocks = last?.blocks;
+      const mBlocks = m.blocks;
+      const sameName = !!(
+        last
+        && last.interactionId === m.interactionId
+        && last.kind === "tool"
+        && m.kind === "tool"
+        && Array.isArray(lastBlocks) && lastBlocks.length > 0
+        && Array.isArray(mBlocks) && mBlocks.length > 0
+        && lastBlocks.every((b) => b.type === "tool-call")
+        && mBlocks.every((b) => b.type === "tool-call")
+        && lastBlocks[0].type === "tool-call"
+        && mBlocks[0].type === "tool-call"
+        && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+        && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+      );
+      const peerCompatible = !sameName
+        ? false
+        : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
+          ? true
+          : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
+            === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
+      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+        last.blocks = [...lastBlocks, ...mBlocks];
+        last.id = `${last.id}+${m.id}`;
+        spans[spans.length - 1].end = entryIndex;
+      } else {
+        const canDedupeAdjacent =
+          last?.id === m.id && (
+            (m.kind === "user" && last.kind === "user")
+            || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
+          );
+        if (last && canDedupeAdjacent) {
+          const lastSignature = textSignatureForMsg(last);
+          const nextSignature = textSignatureForMsg(m);
+          if (lastSignature && lastSignature === nextSignature) {
+            continue;
+          }
         }
+        merged.push({ ...m });
+        spans.push({ start: entryIndex, end: entryIndex });
       }
-      merged.push({ ...m });
     }
   }
   // One header per owned run of assistant output. Another interaction or
   // run starts a reply even when the same assistant is still speaking.
-  for (let index = 1; index < merged.length; index += 1) {
+  for (let index = Math.max(1, cut); index < merged.length; index += 1) {
     const message = merged[index];
-    const previous = merged[index - 1];
+    const previousRow = merged[index - 1];
     if (
       message.showHeader
       && message.source?.kind === "assistant"
-      && previous.kind !== "user"
-      && sameSource(previous.source, message.source)
-      && previous.interactionId === message.interactionId
-      && previous.runId === message.runId
-      && previous.dayKey === message.dayKey
+      && previousRow.kind !== "user"
+      && sameSource(previousRow.source, message.source)
+      && previousRow.interactionId === message.interactionId
+      && previousRow.runId === message.runId
+      && previousRow.dayKey === message.dayKey
     ) {
       merged[index] = { ...message, showHeader: false };
     }
   }
-  const durations = new Map(entries.flatMap((entry) => (
+  const durations = new Map(entries.slice(startEntry).flatMap((entry) => (
     entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number"
       && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0
       ? [[entry.id, entry.runDurationMs] as const] : []
   )));
   // A streamed row is stamped when its first text arrives. Only the host's
   // completed-run evidence can supply a duration, once at the final text row.
-  for (let index = merged.length - 1; index >= 0; index -= 1) {
+  for (let index = merged.length - 1; index >= cut; index -= 1) {
     const message = merged[index];
     const duration = durations.get(message.sourceEntryId || "");
     if (duration === undefined || message.kind !== "agent"
@@ -671,11 +732,26 @@ function buildChatMessages(
       workedForCopyText: `Worked for ${workedFor}`,
     };
   }
-  return merged;
+  return { entries: entries.slice(), resolvePeerLabel: options.resolvePeerLabel, messages: merged, spans };
+}
+
+/// Reuse the previous turn object while its rows are the same row objects.
+function internTurns(next: ChatTurn[], previous: readonly ChatTurn[]): ChatTurn[] {
+  if (previous.length === 0) return next;
+  const byId = new Map(previous.map((turn) => [turn.id, turn]));
+  return next.map((turn) => {
+    const prior = byId.get(turn.id);
+    return prior
+      && prior.messages.length === turn.messages.length
+      && prior.messages.every((message, index) => message === turn.messages[index])
+      ? prior
+      : turn;
+  });
 }
 
 export const __chatPaneTest = {
   buildChatMessages,
+  extendChatMessages,
   buildChatTurns,
   chatTurnPreview,
   isScaffoldUserText,
@@ -1076,6 +1152,76 @@ const MessageRow = React.memo(function MessageRow({
 /// The scrolling transcript. Memoised so composer keystrokes, which re-render
 /// the owning ChatPane, never touch a transcript row: only a change in the
 /// turns, phase, history state, or the stable handlers reaches it.
+/// One mounted turn. Memoised on referentially stable inputs, so a streamed
+/// token re-renders only the turn that holds the streaming row.
+const TranscriptTurn = React.memo(function TranscriptTurn({
+  turn,
+  turnIndex,
+  identity,
+  previousDay,
+  dayLabelNow,
+  suppressWorkedId,
+  workGraphActions,
+  markdownUrlPolicy,
+  approvalSnapshot,
+  onApprovalDecision,
+  conversationId,
+  approvalInteractionIds,
+}: {
+  turn: ChatTurn;
+  turnIndex: number;
+  identity: string;
+  previousDay: string | null;
+  dayLabelNow: Date;
+  suppressWorkedId: string | null;
+  workGraphActions: WorkGraphCardActions | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
+  approvalSnapshot?: ConversationApprovalProps["approvalSnapshot"];
+  onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
+  conversationId?: string;
+  approvalInteractionIds: string[];
+}) {
+  countRender("TranscriptTurn");
+  // Day separators: before the first mounted row and at every local
+  // calendar-day change, so a bare HH:MM is never ambiguous.
+  let day = previousDay;
+  const daySeparator = (message: Msg): React.ReactNode => {
+    const next = message.dayKey ?? null;
+    if (!next || next === day) return null;
+    day = next;
+    const label = transcriptDayLabel(next, dayLabelNow);
+    return (
+      <div
+        aria-label={label}
+        className="conv__day"
+        data-testid={`chat-day:${identity}:${next}`}
+        key={`day:${next}:${message.renderKey ?? message.id}`}
+        role="separator"
+      >
+        <span>{label}</span>
+      </div>
+    );
+  };
+  return (
+    <div
+      aria-label={`Turn ${turnIndex + 1}`}
+      className="conv-turn"
+      data-chat-turn-index={turnIndex}
+      data-conversation-turn-id={turn.id}
+      data-testid={`chat-turn:${identity}:${turnIndex}`}
+    >
+      {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
+        const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
+          {daySeparator(m)}
+          <MessageRow message={m} suppressWorked={m.id === suppressWorkedId} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+        </React.Fragment>);
+        return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
+      })}
+      <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractionIds} />
+    </div>
+  );
+});
+
 const TranscriptView = React.memo(function TranscriptView({
   identity,
   agentLabel,
@@ -1124,8 +1270,34 @@ const TranscriptView = React.memo(function TranscriptView({
     () => (windowStart > 0 ? turns.slice(windowStart) : turns),
     [turns, windowStart],
   );
-  const approvalInteractions = React.useMemo(() => approvalInteractionIdsByTurn(windowedTurns.map((turn) =>
-    turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []))), [windowedTurns]);
+  // Per-turn inputs kept referentially stable so unchanged turns skip render.
+  const approvalIdsRef = React.useRef(new Map<string, string[]>());
+  const approvalInteractions = React.useMemo(() => {
+    const next = approvalInteractionIdsByTurn(windowedTurns.map((turn) =>
+      turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])));
+    const interned = new Map<string, string[]>();
+    const result = next.map((ids, offset) => {
+      const turnId = windowedTurns[offset].id;
+      const prior = approvalIdsRef.current.get(turnId);
+      const stable = prior && prior.length === ids.length && prior.every((id, index) => id === ids[index]) ? prior : ids;
+      interned.set(turnId, stable);
+      return stable;
+    });
+    approvalIdsRef.current = interned;
+    return result;
+  }, [windowedTurns]);
+  // Day separators sit before the first mounted row and at every local
+  // calendar-day change; each turn needs the day its predecessor ended on.
+  const previousDays = React.useMemo(() => {
+    let day: string | null = null;
+    return windowedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+  }, [windowedTurns]);
+  const todayKey = transcriptDayKey(new Date().toISOString());
+  const dayLabelNow = React.useMemo(() => new Date(), [todayKey]);
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
@@ -1177,51 +1349,23 @@ const TranscriptView = React.memo(function TranscriptView({
           <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
         </div>
       )}
-      {(() => {
-        // Day separators: before the first mounted row and at every local
-        // calendar-day change, so a bare HH:MM is never ambiguous.
-        let previousDay: string | null = null;
-        const now = new Date();
-        const daySeparator = (message: Msg): React.ReactNode => {
-          const day = message.dayKey ?? null;
-          if (!day || day === previousDay) return null;
-          previousDay = day;
-          const label = transcriptDayLabel(day, now);
-          return (
-            <div
-              aria-label={label}
-              className="conv__day"
-              data-testid={`chat-day:${identity}:${day}`}
-              key={`day:${day}:${message.renderKey ?? message.id}`}
-              role="separator"
-            >
-              <span>{label}</span>
-            </div>
-          );
-        };
-        return windowedTurns.map((turn, offset) => {
-        const turnIndex = windowStart + offset;
-        return (
-        <div
-          aria-label={`Turn ${turnIndex + 1}`}
-          className="conv-turn"
-          data-chat-turn-index={turnIndex}
-          data-conversation-turn-id={turn.id}
-          data-testid={`chat-turn:${identity}:${turnIndex}`}
+      {windowedTurns.map((turn, offset) => (
+        <TranscriptTurn
           key={turn.id}
-        >
-          {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
-            const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
-              {daySeparator(m)}
-              <MessageRow message={m} suppressWorked={Boolean(phase && m.id === lastAgentMessageId)} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
-            </React.Fragment>);
-            return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
-          })}
-          <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractions[offset]} />
-        </div>
-        );
-      });
-      })()}
+          turn={turn}
+          turnIndex={windowStart + offset}
+          identity={identity}
+          previousDay={previousDays[offset]}
+          dayLabelNow={dayLabelNow}
+          suppressWorkedId={phase ? lastAgentMessageId : null}
+          workGraphActions={workGraphActions}
+          markdownUrlPolicy={markdownUrlPolicy}
+          approvalSnapshot={approvalSnapshot}
+          onApprovalDecision={onApprovalDecision}
+          conversationId={conversationId}
+          approvalInteractionIds={approvalInteractions[offset]}
+        />
+      ))}
       <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} />
       {liveSpeech && liveSpeech.length > 0 && (
         <div
@@ -1322,6 +1466,10 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
   }, [externalValue]);
   return (
     <>
+      {/* A fixed-size, strictly contained block: the textarea's per-keystroke
+          layout stops here instead of re-laying out the transcript beside it.
+          It must not be a flex item, which can never be a relayout boundary. */}
+      <div className="composer__input">
       <textarea
         placeholder={
           readOnly
@@ -1344,6 +1492,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
         rows={2}
         data-testid={`chat-composer:${identity}`}
       />
+      </div>
       <div className="composer__row">
         <span className="composer__chip mono">{agentRole || "agent"}</span>
         <span className="composer__spacer" />
@@ -1497,10 +1646,36 @@ export function ChatPane({
     () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
     [entries, liveSpeech, activeVoiceScope],
   );
-  const messages = React.useMemo(() => buildChatMessages(entries, {
-    resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
-  }), [entries, peerLabels]);
-  const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
+  // Hosts may pass a fresh decision handler every render; every mounted turn
+  // receives it, so forward through a stable function to keep turns memoised.
+  const onApprovalDecisionRef = React.useRef(onApprovalDecision);
+  onApprovalDecisionRef.current = onApprovalDecision;
+  const stableApprovalDecision = React.useCallback<NonNullable<ChatPaneProps["onApprovalDecision"]>>(
+    (pendingId, action) => onApprovalDecisionRef.current?.(pendingId, action),
+    [],
+  );
+  const presentationLabels = React.useMemo(
+    () => displayLabels ?? { peers: peerLabels ?? undefined },
+    [displayLabels, peerLabels],
+  );
+  const resolvePeerLabel = React.useMemo(
+    () => (peerLabels ? (alias: string) => peerLabels.get(alias) ?? null : null),
+    [peerLabels],
+  );
+  // Rows and turns are rebuilt only from the first changed entry, and keep
+  // their object identity otherwise, so a streamed token re-renders one row.
+  const chatMessagesRef = React.useRef<ChatMessagesState | null>(null);
+  const messages = React.useMemo(() => {
+    const next = extendChatMessages(chatMessagesRef.current, entries, { resolvePeerLabel });
+    chatMessagesRef.current = next;
+    return next.messages;
+  }, [entries, resolvePeerLabel]);
+  const turnsRef = React.useRef<ChatTurn[]>([]);
+  const turns = React.useMemo(() => {
+    const next = internTurns(buildChatTurns(messages), turnsRef.current);
+    turnsRef.current = next;
+    return next;
+  }, [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.
   const [revealedFrom, setRevealedFrom] = React.useState<
@@ -1588,9 +1763,16 @@ export function ChatPane({
       return;
     }
 
-    const turnNodes = Array.from(
-      body.querySelectorAll<HTMLElement>("[data-chat-turn-index]"),
-    );
+    // Turns are the body's own children, stacked top to bottom, so their
+    // geometry is monotonic: binary-search the visible band and the target
+    // line instead of selector-scanning and measuring every mounted turn
+    // after each streamed token.
+    const turnNodes: HTMLElement[] = [];
+    for (const child of Array.from(body.children)) {
+      if (child instanceof HTMLElement && Number.isFinite(Number(child.dataset.chatTurnIndex ?? NaN))) {
+        turnNodes.push(child);
+      }
+    }
     if (turnNodes.length === 0) {
       setVisibleTurnIndexes([]);
       return;
@@ -1600,20 +1782,32 @@ export function ChatPane({
     const visibleTop = bodyRect.top;
     const visibleBottom = bodyRect.bottom;
     const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
-    let nextIndex = 0;
+    const rects = new Map<number, DOMRect>();
+    const rectAt = (position: number) => {
+      let rect = rects.get(position);
+      if (!rect) {
+        rect = turnNodes[position].getBoundingClientRect();
+        rects.set(position, rect);
+      }
+      return rect;
+    };
+    const firstWhere = (predicate: (position: number) => boolean) => {
+      let lo = 0;
+      let hi = turnNodes.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (predicate(mid)) hi = mid;
+        else lo = mid + 1;
+      }
+      return lo;
+    };
+    const indexAt = (position: number) => Number(turnNodes[position].dataset.chatTurnIndex);
+    const afterTarget = firstWhere((position) => rectAt(position).top > targetY);
+    const nextIndex = afterTarget > 0 ? indexAt(afterTarget - 1) : 0;
     const nextVisibleIndexes: number[] = [];
-    for (const turnNode of turnNodes) {
-      const rawIndex = Number(turnNode.dataset.chatTurnIndex);
-      if (!Number.isFinite(rawIndex)) {
-        continue;
-      }
-      const turnRect = turnNode.getBoundingClientRect();
-      if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
-        nextVisibleIndexes.push(rawIndex);
-      }
-      if (turnRect.top <= targetY) {
-        nextIndex = rawIndex;
-      }
+    for (let position = firstWhere((at) => rectAt(at).bottom >= visibleTop); position < turnNodes.length; position += 1) {
+      if (rectAt(position).top > visibleBottom) break;
+      nextVisibleIndexes.push(indexAt(position));
     }
     const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
     setVisibleTurnIndexes((current) => {
@@ -1707,6 +1901,9 @@ export function ChatPane({
       nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
       // The latest control has a permanent lower gutter, even while hidden.
       nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
+      // Turn previews cap their width to the pane. The pane is deliberately
+      // not a size container (see .conv__head-frame), so publish its width.
+      nav.style.setProperty("--conv-pane-inline-size", `${paneBounds.width}px`);
     };
     const observer = new ResizeObserver((entries) => {
       measureBand();
@@ -1964,8 +2161,9 @@ export function ChatPane({
   };
 
   return (
-    <ConversationPresentationProvider labels={displayLabels ?? { peers: peerLabels ?? undefined }} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
+    <ConversationPresentationProvider labels={presentationLabels} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
     <div className="conv" data-testid={`chat-pane:${identity}`}>
+      <div className="conv__head-frame">
       <div className={`conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`}>
         <div className="conv__avatar">{initial}</div>
         <div className="conv__target">
@@ -1988,6 +2186,7 @@ export function ChatPane({
             </button>
           ))}
         </div>
+      </div>
       </div>
       {runStopNotice ? (
         <div className="conv__notice" role="status" data-testid={`run-stop-notice:${identity}`}>
@@ -2014,7 +2213,7 @@ export function ChatPane({
         markdownUrlPolicy={markdownUrlPolicy}
         conversationId={conversationId}
         approvalSnapshot={approvalSnapshot}
-        onApprovalDecision={onApprovalDecision}
+        onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
       />
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}

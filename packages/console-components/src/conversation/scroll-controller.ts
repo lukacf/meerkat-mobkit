@@ -120,6 +120,17 @@ export function useConversationScrollController(options: ConversationScrollContr
     const viewport = optionsRef.current.viewportRef.current;
     const session = sessionRef.current;
     if (!viewport || !session) return;
+    // Row geometry forces layout and reads every mounted row. Following the
+    // live edge needs none of it, and this runs on every commit, so measure
+    // only on the paths that use rows.
+    if (session.mode === "following-end" && !session.pendingSubmittedRow) {
+      writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
+      // Leaving the live edge (scroll, wheel, key, selection, jump) captures
+      // its own anchor, so none is kept while following.
+      session.anchor = null;
+      publish(false);
+      return;
+    }
     let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
       const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
@@ -349,8 +360,14 @@ export function useConversationScrollController(options: ConversationScrollContr
       else viewport.querySelectorAll(ROW_SELECTOR).forEach((row) => resize?.observe(row));
     };
     observeRows();
+    // Re-observing every row is a scan of the whole transcript; streamed
+    // text mutates nodes inside a row, so only rows entering or leaving the
+    // DOM require it.
+    const touchesRows = (nodes: NodeList) => Array.from(nodes).some((node) => node instanceof Element
+      && (node.matches(ROW_SELECTOR) || node.querySelector(ROW_SELECTOR) !== null));
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record) => record.type === "childList")) observeRows();
+      if (records.some((record) => record.type === "childList"
+        && (touchesRows(record.addedNodes) || touchesRows(record.removedNodes)))) observeRows();
       notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });

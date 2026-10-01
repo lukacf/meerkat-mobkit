@@ -42,22 +42,32 @@ function richBlockHasVisibleContent(block: unknown): boolean {
   return false;
 }
 
+// Sanitized form per entry (null when nothing is visible). An entry whose
+// blocks are all visible is returned as is, so unchanged entries keep their
+// identity from render to render and memoised rows downstream can bail out.
+const sanitizedEntries = new WeakMap<ConversationTimelineEntry, ConversationTimelineEntry | null>();
+
+function sanitizeConversationEntry(entry: ConversationTimelineEntry): ConversationTimelineEntry | null {
+  if (entry.kind !== "message") return entry;
+  if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
+    const blocks = entry.blocks.filter(richBlockHasVisibleContent);
+    if (!blocks.length) return null;
+    return blocks.length === entry.blocks.length ? entry : { ...entry, blocks };
+  }
+  return entry.text && entry.text.trim().length > 0 ? entry : null;
+}
+
 export function sanitizeConversationEntries(
   entries: ConversationTimelineEntry[],
 ): ConversationTimelineEntry[] {
   const sanitized: ConversationTimelineEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind !== "message") {
-      sanitized.push(entry);
-      continue;
+    let result = sanitizedEntries.get(entry);
+    if (result === undefined) {
+      result = sanitizeConversationEntry(entry);
+      sanitizedEntries.set(entry, result);
     }
-    if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
-      const blocks = entry.blocks.filter(richBlockHasVisibleContent);
-      if (!blocks.length) continue;
-      sanitized.push({ ...entry, blocks });
-      continue;
-    }
-    if (entry.text && entry.text.trim().length > 0) sanitized.push(entry);
+    if (result) sanitized.push(result);
   }
   return sanitized;
 }

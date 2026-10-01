@@ -27,27 +27,42 @@ function typedToolIds(frame: ConsoleFrame): string[] {
 
 /** Presentation segments do not replace the canonical entry or its source ID.
  * A saved assistant message bundles blocks that arrived as separate live rows. */
+/** Typed tool ownership across the source frames, read by
+ * `assistantPresentationEntries`. Callers that render repeatedly over a
+ * growing frame list build it once and extend it per new frame. */
+export interface AssistantToolOwnership {
+  scopedLiveTools: Set<string>;
+  canonicalOwners: Map<string, Set<string>>;
+}
+
+export function assistantToolOwnership(frames: Iterable<ConsoleFrame> = []): AssistantToolOwnership {
+  const ownership: AssistantToolOwnership = { scopedLiveTools: new Set(), canonicalOwners: new Map() };
+  for (const frame of frames) extendAssistantToolOwnership(ownership, frame);
+  return ownership;
+}
+
+export function extendAssistantToolOwnership(ownership: AssistantToolOwnership, frame: ConsoleFrame): void {
+  const scope = toolScope(frame);
+  if (!scope) return;
+  for (const id of typedToolIds(frame)) {
+    const key = JSON.stringify([...scope, id]);
+    if (frame.sourceKind !== "session_history") ownership.scopedLiveTools.add(key);
+    else if (["assistant_message", "text_complete"].includes(frame.event)) {
+      const owners = ownership.canonicalOwners.get(key) ?? new Set<string>();
+      owners.add(frame.id);
+      ownership.canonicalOwners.set(key, owners);
+    }
+  }
+}
+
 export function assistantPresentationEntries(
   entries: ConversationTimelineEntry[],
   occurrenceKeys: ReadonlyMap<string, string | undefined>,
   sourceFrames: ReadonlyMap<string, ConsoleFrame> = new Map(),
+  ownership: AssistantToolOwnership = assistantToolOwnership(sourceFrames.values()),
 ): ConversationTimelineEntry[] {
   const ordinals = new Map<string, Map<string, number>>();
-  const scopedLiveTools = new Set<string>();
-  const canonicalOwners = new Map<string, Set<string>>();
-  for (const frame of sourceFrames.values()) {
-    const scope = toolScope(frame);
-    if (!scope) continue;
-    for (const id of typedToolIds(frame)) {
-      const key = JSON.stringify([...scope, id]);
-      if (frame.sourceKind !== "session_history") scopedLiveTools.add(key);
-      else if (["assistant_message", "text_complete"].includes(frame.event)) {
-        const owners = canonicalOwners.get(key) ?? new Set<string>();
-        owners.add(frame.id);
-        canonicalOwners.set(key, owners);
-      }
-    }
-  }
+  const { scopedLiveTools, canonicalOwners } = ownership;
   return entries.map(entry => {
     const occurrence = entry.kind === "message" && entry.identity.role === "assistant"
       ? occurrenceKeys.get(entry.id) : undefined;

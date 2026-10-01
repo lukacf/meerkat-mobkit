@@ -53,6 +53,7 @@ import {
   createUserEntry,
   createWorkGraphHydrationGate,
   appendOptimisticConversationEntry,
+  deriveTimelineEntries,
   framesContainWorkGraphCards,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
@@ -61,6 +62,7 @@ import {
   systemNoticeClearsBusyState,
   type MobKitDockTarget,
   type OptimisticUserMessage,
+  type TimelineDerivation,
 } from "./lib/adapters";
 import { errorMessage, jsonRpcErrorCode } from "./lib/errors";
 import { createSingleFlight } from "./lib/single-flight";
@@ -584,6 +586,20 @@ const REFRESH_TRIGGER_EVENTS = new Set([
   "tool_execution_completed",
   "server_tool_content",
 ]);
+/// Periodic experience refreshes rebuild every agent record. Keep unchanged
+/// records (and the list, when nothing changed) so the roster, transcripts
+/// and panels memoised on them do not re-render or re-derive.
+function internAgents(current: ConsoleAgent[], next: ConsoleAgent[]): ConsoleAgent[] {
+  const byKey = new Map(current.map((agent) => [JSON.stringify(agent), agent]));
+  let changed = next.length !== current.length;
+  const interned = next.map((agent, index) => {
+    const prior = byKey.get(JSON.stringify(agent));
+    if (!prior || prior !== current[index]) changed = true;
+    return prior ?? agent;
+  });
+  return changed ? interned : current;
+}
+
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input",
   "interaction_started",
@@ -755,6 +771,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     return labels;
   }, [agents]);
+  const chatDisplayLabels = React.useMemo(() => ({ peers: peerLabels }), [peerLabels]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>(
     {},
   );
@@ -1674,6 +1691,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         agent: ConsoleAgent | null;
         sortedFrames: ConsoleFrame[];
         conversationEntries: ConversationTimelineEntry[];
+        derivation: TimelineDerivation;
+        agentKey: string;
       }
     >
   >({});
@@ -1684,18 +1703,78 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   ): { sortedFrames: ConsoleFrame[]; conversationEntries: ConversationTimelineEntry[] } {
     const log = getOrCreateLog(identity);
     const cached = derivedTranscriptRef.current[identity];
+    // Roster refreshes replace agent objects without changing them; the
+    // derivation reads only the agent's plain fields, so key on its content
+    // and keep the object the cached derivation was built with.
+    const agentKey = agent ? JSON.stringify(agent) : "";
+    if (cached && cached.agentKey === agentKey) agent = cached.agent;
     if (cached && cached.version === log.version && cached.agent === agent) {
       return cached;
     }
     const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panelId);
-    const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
+    // Continues the previous derivation when only streamed text arrived, so a
+    // token costs O(token) instead of a pass over the whole identity log.
+    const derivation = deriveTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
       blobBaseUrl: baseUrl,
-    });
-    const next = { version: log.version, agent, sortedFrames, conversationEntries };
+    }, cached?.derivation);
+    const conversationEntries = derivation.entries;
+    const next = { version: log.version, agent, sortedFrames, conversationEntries, derivation, agentKey };
     derivedTranscriptRef.current[identity] = next;
     return next;
+  }
+
+  // Both scan the whole identity log; recompute only when it changed (or,
+  // for the phase, when its local or server inputs did), not every render.
+  const panelPhaseRef = React.useRef<Record<string, {
+    frames: ConsoleFrame[];
+    serverPhase: unknown;
+    phase: ReturnType<typeof resolvePanelResponsePhase>;
+  }>>({});
+  function panelPhaseFor(
+    panelKey: string,
+    sortedFrames: ConsoleFrame[],
+    inputs: Omit<Parameters<typeof resolvePanelResponsePhase>[0], "frames">,
+  ): ReturnType<typeof resolvePanelResponsePhase> {
+    // A local phase wins outright (resolvePanelResponsePhase's first branch).
+    if (inputs.hasLocalPhase) return inputs.localPhase ?? null;
+    const cached = panelPhaseRef.current[panelKey];
+    if (cached && cached.serverPhase === inputs.serverPhase && sortedFrames.length >= cached.frames.length) {
+      let same = true;
+      for (let i = 0; i < cached.frames.length && same; i++) same = sortedFrames[i] === cached.frames[i];
+      if (same) {
+        let phase = cached.phase;
+        let extendable = true;
+        for (let i = cached.frames.length; i < sortedFrames.length && extendable; i++) {
+          const frame = sortedFrames[i];
+          // Live text only: each one sets "generating", and none changes
+          // which earlier frames settled history covers.
+          extendable = frame.event === "text_delta" && frame.sourceKind !== "session_history";
+          if (extendable) phase = "generating";
+        }
+        if (extendable) {
+          if (sortedFrames.length !== cached.frames.length) {
+            panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase };
+          }
+          return phase;
+        }
+      }
+    }
+    const phase = resolvePanelResponsePhase({
+      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+      ...inputs,
+    });
+    panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase };
+    return phase;
+  }
+  const activeRunIdRef = React.useRef<Record<string, { version: number; runId: string | null }>>({});
+  function activeRunIdFor(identity: string, version: number, sortedFrames: ConsoleFrame[]): string | null {
+    const cached = activeRunIdRef.current[identity];
+    if (cached && cached.version === version) return cached.runId;
+    const runId = activeRunIdFromFrames(sortedFrames);
+    activeRunIdRef.current[identity] = { version, runId };
+    return runId;
   }
 
   function framesVisibleInPanel(
@@ -2243,7 +2322,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         : [];
       const nextAgents = normalizeAgents(experienceJson, loadedModules);
       setExperience(experienceJson);
-      setAgents(nextAgents);
+      setAgents((current) => internAgents(current, nextAgents));
       setActiveActivityPresetId(
         (c) =>
           c ||
@@ -4457,8 +4536,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       panelKey,
     );
     const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
-    const phase = resolvePanelResponsePhase({
-      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+    const phase = panelPhaseFor(panelKey, sortedFrames, {
       localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
       hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null,
@@ -4473,7 +4551,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       agent?.affordances?.can_retire === true;
     // Offered only while the timeline names the in-flight run, and with the
     // same authority as force-cancel (the gateway authorizes it as retire).
-    const activeRunId = activeRunIdFromFrames(sortedFrames);
+    const activeRunId = activeRunIdFor(identity, identityLog.version, sortedFrames);
     const canStopRun =
       !consoleReadOnly && agent?.affordances?.can_retire === true && activeRunId !== null;
 
@@ -4550,7 +4628,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         agent={agent}
         markdownUrlPolicy={markdownUrlPolicy}
         headerVariant="compact"
-        displayLabels={{ peers: peerLabels }}
+        displayLabels={chatDisplayLabels}
         approvalSnapshot={activeApprovals}
         onApprovalDecision={onGatingDecision}
         peerLabels={peerLabels}

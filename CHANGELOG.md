@@ -534,6 +534,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: typing in the chat composer no longer lags with a long history,
+  idle or while a reply streams. In Chromium against the real gateway with
+  300 turns mounted (nested iframe, as OB3 embeds it), keystroke-to-next-paint
+  p95 drops from 18-20 ms to 4-5 ms; with a full 5000-event identity log and
+  a reply streaming it drops from 97-269 ms to 20-25 ms. Each keystroke
+  re-laid out every mounted transcript row: the textarea was a flex item,
+  which Blink never treats as a relayout boundary, and the pane root was a
+  size container, which re-lays out its whole subtree on every pass. The
+  composer input now sits in a fixed-size, strictly contained block and the
+  compact-header query container wraps only the header. While a reply
+  streamed, every token re-derived the whole identity log (about 30 ms at
+  5000 events), re-parsed every history snapshot's growing id list, rebuilt
+  every row and re-scanned the log for the panel phase, and the scroll
+  controller and turn rail measured every mounted row. Transcript derivation
+  now continues incrementally for appended live text (proven equal to a full
+  derivation over every adapter suite and a fuzz corpus); unchanged entries,
+  rows and turns keep their identity so only the streaming turn re-renders;
+  the panel phase extends incrementally; and geometry is read only where it
+  is used. Periodic experience refreshes no longer replace unchanged agent
+  records, which re-derived every docked transcript each time.
+  `npm run perf:typing:browser` drives Chromium in CI and fails on
+  runner-independent work counts (layout objects per idle keystroke, full
+  derivations and turn renders per streamed token), reporting wall-clock
+  p95 as advisory; the jsdom benchmark could not see layout or paint.
+
 - Console: panel data refreshes no longer pile up on a slow server. Every
   tool or lifecycle event from any agent refreshed the roster and every
   docked panel kind, including panels in hidden tabs, with no limit on

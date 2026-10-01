@@ -66,7 +66,9 @@ export function ConversationPresentationProvider({ labels, viewportKey, autoFold
       oldAuthority.current = viewportKey?.authority;
     }
   }, [viewportKey?.authority]);
-  return <PresentationContext.Provider value={{ labels, disclosures, autoFold }}>{children}</PresentationContext.Provider>;
+  // A fresh value object would re-render every consumer row on every render.
+  const value = useMemo(() => ({ labels, disclosures, autoFold }), [labels, disclosures, autoFold]);
+  return <PresentationContext.Provider value={value}>{children}</PresentationContext.Provider>;
 }
 export function useConversationDisplayLabels() { return useContext(PresentationContext)?.labels; }
 

@@ -639,23 +639,27 @@ function typedToolIds(frame) {
     return (block.block_type ?? block.type) === "tool_use" && typeof data2.id === "string" && data2.id.trim() ? [data2.id] : [];
   });
 }
-function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /* @__PURE__ */ new Map()) {
-  const ordinals = /* @__PURE__ */ new Map();
-  const scopedLiveTools = /* @__PURE__ */ new Set();
-  const canonicalOwners = /* @__PURE__ */ new Map();
-  for (const frame of sourceFrames.values()) {
-    const scope = toolScope(frame);
-    if (!scope) continue;
-    for (const id of typedToolIds(frame)) {
-      const key = JSON.stringify([...scope, id]);
-      if (frame.sourceKind !== "session_history") scopedLiveTools.add(key);
-      else if (["assistant_message", "text_complete"].includes(frame.event)) {
-        const owners = canonicalOwners.get(key) ?? /* @__PURE__ */ new Set();
-        owners.add(frame.id);
-        canonicalOwners.set(key, owners);
-      }
+function assistantToolOwnership(frames = []) {
+  const ownership = { scopedLiveTools: /* @__PURE__ */ new Set(), canonicalOwners: /* @__PURE__ */ new Map() };
+  for (const frame of frames) extendAssistantToolOwnership(ownership, frame);
+  return ownership;
+}
+function extendAssistantToolOwnership(ownership, frame) {
+  const scope = toolScope(frame);
+  if (!scope) return;
+  for (const id of typedToolIds(frame)) {
+    const key = JSON.stringify([...scope, id]);
+    if (frame.sourceKind !== "session_history") ownership.scopedLiveTools.add(key);
+    else if (["assistant_message", "text_complete"].includes(frame.event)) {
+      const owners = ownership.canonicalOwners.get(key) ?? /* @__PURE__ */ new Set();
+      owners.add(frame.id);
+      ownership.canonicalOwners.set(key, owners);
     }
   }
+}
+function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /* @__PURE__ */ new Map(), ownership = assistantToolOwnership(sourceFrames.values())) {
+  const ordinals = /* @__PURE__ */ new Map();
+  const { scopedLiveTools, canonicalOwners } = ownership;
   return entries.map((entry) => {
     const occurrence = entry.kind === "message" && entry.identity.role === "assistant" ? occurrenceKeys.get(entry.id) : void 0;
     if (entry.kind !== "message" || entry.identity.role !== "assistant") return entry;
@@ -738,7 +742,33 @@ function assistantMessageCursorSequence(value) {
   const sequence = BigInt(value.slice(8));
   return sequence <= 18446744073709551615n ? sequence : void 0;
 }
+var snapshotMemo = /* @__PURE__ */ new WeakMap();
 function assistantHistorySnapshot(frame) {
+  if (frame.event !== "assistant_history_snapshot") return void 0;
+  const data = frame.data && typeof frame.data === "object" && !Array.isArray(frame.data) ? frame.data : void 0;
+  const ids = data?.assistant_message_ids;
+  const idCount = Array.isArray(ids) ? ids.length : -1;
+  const memo2 = snapshotMemo.get(frame);
+  if (memo2 && memo2.event === frame.event && memo2.sourceKind === frame.sourceKind && memo2.sessionId === frame.sessionId && memo2.cursor === frame.cursor && memo2.data === frame.data && memo2.ids === ids && memo2.idCount === idCount && memo2.observedThrough === data?.observed_through && memo2.dataSessionId === data?.session_id && memo2.complete === data?.complete) {
+    return memo2.snapshot;
+  }
+  const snapshot = parseAssistantHistorySnapshot(frame);
+  snapshotMemo.set(frame, {
+    event: frame.event,
+    sourceKind: frame.sourceKind,
+    sessionId: frame.sessionId,
+    cursor: frame.cursor,
+    data: frame.data,
+    ids,
+    idCount,
+    observedThrough: data?.observed_through,
+    dataSessionId: data?.session_id,
+    complete: data?.complete,
+    snapshot
+  });
+  return snapshot;
+}
+function parseAssistantHistorySnapshot(frame) {
   if (frame.event !== "assistant_history_snapshot" || frame.sourceKind !== "session_history" || typeof frame.sessionId !== "string" || !frame.sessionId.trim() || !frame.data || typeof frame.data !== "object" || Array.isArray(frame.data)) return void 0;
   const data = frame.data;
   const cursor = assistantMessageCursorSequence(frame.cursor);
@@ -5948,7 +5978,8 @@ function ConversationPresentationProvider({ labels: labels2, viewportKey, autoFo
       oldAuthority.current = viewportKey?.authority;
     }
   }, [viewportKey?.authority]);
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(PresentationContext.Provider, { value: { labels: labels2, disclosures, autoFold }, children });
+  const value = (0, import_react3.useMemo)(() => ({ labels: labels2, disclosures, autoFold }), [labels2, disclosures, autoFold]);
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(PresentationContext.Provider, { value, children });
 }
 function useConversationDisplayLabels() {
   return (0, import_react3.useContext)(PresentationContext)?.labels;
@@ -6100,6 +6131,12 @@ function useConversationScrollController(options) {
     const viewport = optionsRef.current.viewportRef.current;
     const session = sessionRef.current;
     if (!viewport || !session) return;
+    if (session.mode === "following-end" && !session.pendingSubmittedRow) {
+      writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
+      session.anchor = null;
+      publish(false);
+      return;
+    }
     let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
       const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
@@ -6306,8 +6343,9 @@ function useConversationScrollController(options) {
       else viewport.querySelectorAll(ROW_SELECTOR).forEach((row) => resize?.observe(row));
     };
     observeRows();
+    const touchesRows = (nodes) => Array.from(nodes).some((node2) => node2 instanceof Element && (node2.matches(ROW_SELECTOR) || node2.querySelector(ROW_SELECTOR) !== null));
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record5) => record5.type === "childList")) observeRows();
+      if (records.some((record5) => record5.type === "childList" && (touchesRows(record5.addedNodes) || touchesRows(record5.removedNodes)))) observeRows();
       notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
@@ -25733,24 +25771,28 @@ function transcriptSourceOrder(left, right) {
   const a = cursorSeq(left.cursor), b = cursorSeq(right.cursor);
   return a !== null && b !== null && a !== b ? a - b : null;
 }
-function sortFramesForTranscript(frames) {
-  const interactionStartMs = /* @__PURE__ */ new Map();
-  for (const frame of frames) {
-    const interactionId = frame.interactionId?.trim();
-    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    if (!interactionId) continue;
-    const current = interactionStartMs.get(interactionId);
-    if (current === void 0 || timestampMs < current) {
-      interactionStartMs.set(interactionId, timestampMs);
-    }
+function noteInteractionStart(interactionStartMs, frame) {
+  const interactionId = frame.interactionId?.trim();
+  const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+  if (!interactionId) return;
+  const current = interactionStartMs.get(interactionId);
+  if (current === void 0 || timestampMs < current) {
+    interactionStartMs.set(interactionId, timestampMs);
   }
+}
+function transcriptFrameTime(interactionStartMs, frame) {
+  if (typeof frame.timestampMs === "number") return frame.timestampMs;
+  const interactionId = frame.interactionId?.trim() || "";
+  return (interactionId ? interactionStartMs.get(interactionId) : void 0) ?? Number.MAX_SAFE_INTEGER;
+}
+function transcriptFrameComparator(interactionStartMs) {
   const transcriptGroupTimestamp = (frame) => {
     const interactionId = frame.interactionId?.trim() || "";
     const ownTimestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
     if (!interactionId) return ownTimestamp;
     return interactionStartMs.get(interactionId) ?? ownTimestamp;
   };
-  return frames.map((frame, index2) => ({ frame, index: index2 })).sort((left, right) => {
+  return (left, right) => {
     const leftInteraction = left.frame.interactionId?.trim() || "";
     const rightInteraction = right.frame.interactionId?.trim() || "";
     const leftGroupTs = transcriptGroupTimestamp(left.frame);
@@ -25782,7 +25824,12 @@ function sortFramesForTranscript(frames) {
       return leftCursor - rightCursor;
     }
     return left.index - right.index;
-  }).map(({ frame }) => frame);
+  };
+}
+function sortFramesForTranscript(frames) {
+  const interactionStartMs = /* @__PURE__ */ new Map();
+  for (const frame of frames) noteInteractionStart(interactionStartMs, frame);
+  return frames.map((frame, index2) => ({ frame, index: index2 })).sort(transcriptFrameComparator(interactionStartMs)).map(({ frame }) => frame);
 }
 var HIDDEN_EVENTS2 = /* @__PURE__ */ new Set([
   "subscribed",
@@ -28472,17 +28519,17 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
     ...blocks.length > 0 ? { blocks } : { text: text8 }
   };
 }
-function attachCompletedRunDurations(entries, frames) {
-  const ownerKey = (frame) => {
-    if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
-    return JSON.stringify([
-      frame.runtimeKey || "",
-      frame.identity || "",
-      frame.sessionId,
-      frame.runId,
-      frame.interactionId || ""
-    ]);
-  };
+function runOwnerKey(frame) {
+  if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
+  return JSON.stringify([
+    frame.runtimeKey || "",
+    frame.identity || "",
+    frame.sessionId,
+    frame.runId,
+    frame.interactionId || ""
+  ]);
+}
+function completedRunTimings(frames) {
   const timings = /* @__PURE__ */ new Map();
   const framesById = new Map(frames.map((frame) => [frame.id, frame]));
   for (const frame of frames) {
@@ -28491,7 +28538,7 @@ function attachCompletedRunDurations(entries, frames) {
     const started = frame.event === "run_started";
     const completed = (frame.event === "run_completed" || frame.event === "interaction_complete" && (data.type === "run_completed" || data.source_event_type === "run_completed")) && data.extraction_required !== true && !isSteerDeliveryTerminalFrame(frame);
     if (!started && !completed) continue;
-    const key = ownerKey(frame);
+    const key = runOwnerKey(frame);
     if (!key) continue;
     const timing = timings.get(key) || { invalid: false };
     const time = frame.timestampMs;
@@ -28500,25 +28547,179 @@ function attachCompletedRunDurations(entries, frames) {
     else timing[field] = time;
     timings.set(key, timing);
   }
+  return { timings, framesById };
+}
+function completedRunDurations(entries, { timings, framesById }) {
+  const durations = /* @__PURE__ */ new Map();
   const assigned = /* @__PURE__ */ new Set();
   for (let index2 = entries.length - 1; index2 >= 0; index2 -= 1) {
     const entry = entries[index2];
-    if (entry.kind !== "message" || describeConversationEntrySource(entry).kind !== "assistant") continue;
-    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
-    if (!conversationEntryVisibleText(textEntry).trim()) continue;
+    if (entry.kind !== "message" || !entry.runId) continue;
     const frame = framesById.get(entry.id);
-    if (!frame || !entry.runId || entry.runId !== frame.runId) continue;
-    const key = ownerKey(frame);
+    if (!frame || entry.runId !== frame.runId) continue;
+    const key = runOwnerKey(frame);
     if (!key || assigned.has(key)) continue;
     const timing = timings.get(key);
     if (!timing || timing.invalid || timing.start === void 0 || timing.end === void 0 || timing.end < timing.start) continue;
-    entry.runDurationMs = timing.end - timing.start;
+    if (describeConversationEntrySource(entry).kind !== "assistant") continue;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) continue;
+    durations.set(entry, timing.end - timing.start);
     assigned.add(key);
   }
+  return durations;
 }
 function mapFramesToTimelineEntries2(agent, frames, options = {}) {
+  return deriveTimelineEntries(agent, frames, options).entries;
+}
+var timelineDerivationStats = { full: 0, extended: 0 };
+function deriveTimelineEntries(agent, frames, options = {}, previous3) {
+  const extended = previous3?.resume ? extendTimelineDerivation(previous3, agent, frames, options) : null;
+  const next = extended ?? fullTimelineDerivation(agent, frames, options);
+  if (extended) timelineDerivationStats.extended += 1;
+  else timelineDerivationStats.full += 1;
+  if (!previous3) return next;
+  const entries = internEntries(next.entries, previous3.entries);
+  next.resume?.fold.adoptRender(entries);
+  return { entries, resume: next.resume };
+}
+function fullTimelineDerivation(agent, frames, options) {
+  const fold = createTimelineFold(agent, frames, options);
+  for (let i = 0; i < fold.orderedLength(); i++) fold.step(i);
+  const resume = {
+    agent,
+    options: { ...options },
+    fold,
+    frames: frames.slice(),
+    interactionStartMs: /* @__PURE__ */ new Map(),
+    maxCursor: -1,
+    maxSourceSequence: /* @__PURE__ */ new Map(),
+    canonicalMessageKeys: /* @__PURE__ */ new Set(),
+    legacyHistoryOwners: /* @__PURE__ */ new Set(),
+    compactionOpen: false
+  };
+  const openCompactions = [];
+  const contextsConflict2 = (left, right) => ["runtimeKey", "identity", "sessionId"].some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
+  for (const frame of fold.sortedFrames) {
+    if (frame.sourceKind === "session_history") continue;
+    if (frame.event === "compaction_started") openCompactions.push(frame);
+    if (frame.event === "compaction_completed" || frame.event === "compaction_failed") {
+      for (let i = openCompactions.length - 1; i >= 0; i--) {
+        if (!contextsConflict2(openCompactions[i], frame)) openCompactions.splice(i, 1);
+      }
+    }
+  }
+  resume.compactionOpen = openCompactions.length > 0;
+  for (const frame of frames) {
+    noteInteractionStart(resume.interactionStartMs, frame);
+    const cursor = cursorSeq(frame.cursor);
+    if (cursor !== null && cursor > resume.maxCursor) resume.maxCursor = cursor;
+    const scope = scopeOf(frame);
+    const sequence = sourceSequence(frame);
+    if (scope && sequence !== void 0) {
+      resume.maxSourceSequence.set(scope, Math.max(sequence, resume.maxSourceSequence.get(scope) ?? -1));
+    }
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey && isCanonicalAssistantMessage(frame)) resume.canonicalMessageKeys.add(messageKey);
+    if (frame.sourceKind === "session_history" && !hasAssistantMessageIdCarrier(frame)) {
+      resume.legacyHistoryOwners.add(assistantOwnerKey(frame));
+    }
+  }
+  return { entries: fold.finish(), resume };
+}
+function sameTimelineOptions(left, right) {
+  return Boolean(left.renderInteractionStartsAsUser) === Boolean(right.renderInteractionStartsAsUser) && left.renderTextDeltas !== false === (right.renderTextDeltas !== false) && Boolean(left.suppressEmbeddedRunStartedPrompt) === Boolean(right.suppressEmbeddedRunStartedPrompt) && left.blobBaseUrl === right.blobBaseUrl && (left.textMode ?? "markdown") === (right.textMode ?? "markdown");
+}
+function extendTimelineDerivation(previous3, agent, frames, options) {
+  const resume = previous3.resume;
+  if (resume.agent !== agent || !sameTimelineOptions(resume.options, options)) return null;
+  const folded = resume.frames;
+  if (frames.length <= folded.length) return null;
+  for (let i = 0; i < folded.length; i++) if (frames[i] !== folded[i]) return null;
+  if (resume.fold.reasoningOpen()) return null;
+  const appended = frames.slice(folded.length);
+  const interactionStartMs = new Map(resume.interactionStartMs);
+  const maxSourceSequence = new Map(resume.maxSourceSequence);
+  let maxCursor = resume.maxCursor;
+  const compare = options.renderInteractionStartsAsUser ? transcriptFrameComparator(interactionStartMs) : null;
+  const sorted = resume.fold.sortedFrames;
+  for (let j = 0; j < appended.length; j++) {
+    const frame = appended[j];
+    if (frame.event !== "text_delta" || options.renderTextDeltas === false || frame.sourceKind === "session_history" || isRealtimeHistoryMessage(frame) || typeof frame.timestampMs !== "number") return null;
+    const cursor = cursorSeq(frame.cursor);
+    if (cursor === null || cursor <= maxCursor) return null;
+    maxCursor = cursor;
+    const scope = scopeOf(frame);
+    const sequence = sourceSequence(frame);
+    if (scope && sequence !== void 0) {
+      if (sequence <= (maxSourceSequence.get(scope) ?? -1)) return null;
+      maxSourceSequence.set(scope, sequence);
+    }
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey && resume.canonicalMessageKeys.has(messageKey)) return null;
+    if (!hasAssistantMessageIdCarrier(frame)) {
+      if (resume.compactionOpen) return null;
+      if (resume.legacyHistoryOwners.has(assistantOwnerKey(frame))) return null;
+    }
+    if (compare) {
+      const interactionId = frame.interactionId?.trim();
+      const start2 = interactionId ? interactionStartMs.get(interactionId) : void 0;
+      if (start2 !== void 0 && frame.timestampMs < start2) return null;
+      noteInteractionStart(interactionStartMs, frame);
+      const time = frame.timestampMs;
+      const candidate = { frame, index: 1 };
+      for (let k = sorted.length - 1; k >= 0; k--) {
+        const prior = sorted[k];
+        if (transcriptFrameTime(interactionStartMs, prior) < time) break;
+        if (compare({ frame: prior, index: 0 }, candidate) >= 0) return null;
+      }
+      for (let k = 0; k < j; k++) {
+        if (compare({ frame: appended[k], index: 0 }, candidate) >= 0) return null;
+      }
+    }
+  }
+  const fold = resume.fold;
+  const end = fold.append(appended);
+  for (let i = end - appended.length; i < end; i++) fold.step(i);
+  previous3.resume = null;
+  return {
+    entries: fold.finish(),
+    resume: { ...resume, frames: frames.slice(), interactionStartMs, maxCursor, maxSourceSequence }
+  };
+}
+function internEntries(next, previous3) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const entry of previous3) byId.set(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`, entry);
+  return next.map((entry) => {
+    const prior = byId.get(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`);
+    return prior && structurallyEqual(prior, entry) ? prior : entry;
+  });
+}
+function structurallyEqual(left, right) {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return typeof left === "number" && typeof right === "number" && Number.isNaN(left) && Number.isNaN(right);
+  }
+  if (Array.isArray(left)) {
+    if (!Array.isArray(right) || left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (!structurallyEqual(left[i], right[i])) return false;
+    return true;
+  }
+  if (Array.isArray(right)) return false;
+  const leftProto = Object.getPrototypeOf(left);
+  if (leftProto !== Object.getPrototypeOf(right) || leftProto !== Object.prototype && leftProto !== null) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+    if (!structurallyEqual(left[key], right[key])) return false;
+  }
+  return true;
+}
+function createTimelineFold(agent, frames, options) {
   const textMode = options.textMode ?? "markdown";
-  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames)));
+  const sortedFrames = options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames.slice();
+  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(sortedFrames)));
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map((frame) => frame.id));
   const entries = [];
@@ -28662,10 +28863,9 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     if (!activeReasoning.scoped) openReasoning.delete(activeReasoning.scope);
     activeReasoning = void 0;
   }
-  function flushPendingText(final = true) {
-    if (!pendingText) return;
+  function pendingTextEntry(final) {
     const blocks = messageTextBlocks(pendingText, textMode, !final);
-    entries.push({
+    return {
       kind: "message",
       id: pendingId,
       identity: agentIdentity(agent),
@@ -28675,12 +28875,16 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       ...streamedOwner?.runId ? { runId: streamedOwner.runId } : {},
       ...pendingCreatedAt ? { createdAt: pendingCreatedAt } : {},
       ...blocks.length > 0 ? { blocks } : { text: pendingText }
-    });
+    };
+  }
+  function flushPendingText(final = true) {
+    if (!pendingText) return;
+    entries.push(pendingTextEntry(final));
     pendingText = "";
     pendingId = "";
     pendingCreatedAt = void 0;
   }
-  for (let i = 0; i < orderedFrames.length; i++) {
+  function step(i) {
     const frame = orderedFrames[i];
     const entryId = frame.id || `${frame.event || "frame"}:${i}`;
     if (frame.runId?.trim() && frame.sourceKind !== "session_history" && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out" || frame.event === "turn_completed" || frame.event === "turn_started")) {
@@ -28689,7 +28893,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     }
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
-      if (!delta) continue;
+      if (!delta) return;
       const { scope } = reasoningScope(frame);
       if (activeReasoning?.scope !== scope) flushPendingReasoning(true);
       flushPendingText();
@@ -28697,7 +28901,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       state.block.text += delta;
       delete state.block.final;
       activeReasoning = state;
-      continue;
+      return;
     }
     if (frame.event === "reasoning_complete") {
       const { scope } = reasoningScope(frame);
@@ -28712,11 +28916,11 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         openReasoning.delete(scope);
         if (activeReasoning === state) activeReasoning = void 0;
       }
-      continue;
+      return;
     }
     if (frame.event === "text_delta") {
       if (options.renderTextDeltas === false) {
-        continue;
+        return;
       }
       flushPendingReasoning(true);
       if (!sameTextStreamOwner(streamedOwner, frame)) {
@@ -28725,7 +28929,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         streamedOwner = frame;
       }
       const delta = assistantHistory.deltaOverrides.get(frame.id) ?? summarizeFrameData(frame.data);
-      if (!delta) continue;
+      if (!delta) return;
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
@@ -28733,7 +28937,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       pendingText += delta;
       forgetCompletedStream(frame);
       appendOwnedStream(frame, delta);
-      continue;
+      return;
     }
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
       flushPendingReasoning(true);
@@ -28744,25 +28948,25 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
         const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) {
-          continue;
+          return;
         }
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
       }
-      continue;
+      return;
     }
     if (isCouncilToolFrame(frame)) {
       const councilCard = councilEntryFromFrame(frame, agentIdentity(agent), councilArgs);
       if (councilCard) {
-        if (emittedCouncilIds.has(councilCard.councilId)) continue;
+        if (emittedCouncilIds.has(councilCard.councilId)) return;
         emittedCouncilIds.add(councilCard.councilId);
         flushPendingReasoning(true);
         flushPendingText();
         entries.push(councilCard);
-        continue;
+        return;
       }
       const councilRecord = frame.data && typeof frame.data === "object" ? frame.data : null;
-      if (!councilRecord || councilRecord.result === void 0) continue;
+      if (!councilRecord || councilRecord.result === void 0) return;
     }
     if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) {
       const workGraphCards = workGraphEntriesByAnchor.get(i);
@@ -28773,10 +28977,10 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           entries.push(card);
         }
       }
-      if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
+      if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT || cardToolCallIds.has(parseToolCallId(frame) || "")) return;
     }
     const toolCallId = parseToolCallId(frame);
-    if (canonicalToolCounterparts.has(frame)) continue;
+    if (canonicalToolCounterparts.has(frame)) return;
     if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content") && !emittedToolCalls.has(toolCallId)) {
       flushPendingReasoning(true);
       flushPendingText();
@@ -28802,7 +29006,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         }
         emittedToolCalls.add(toolCallId);
       }
-      continue;
+      return;
     }
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
       flushPendingReasoning(true);
@@ -28820,7 +29024,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
       }
-      continue;
+      return;
     }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingReasoning(true);
@@ -28844,7 +29048,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       }
       const failureEntry = renderUserDeliveryFailureEntry(frame, entryId);
       if (failureEntry) entries.push(failureEntry);
-      continue;
+      return;
     }
     if (frame.event === "run_started") {
       flushPendingReasoning(true);
@@ -28868,14 +29072,14 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           }
           entries.push(promptEntry);
         }
-        continue;
+        return;
       }
     }
     if (frame.event === "system_notice") {
       flushPendingReasoning(true);
       flushPendingText();
       if (shouldSuppressDuplicateCommsNotice(frame, emittedCommsNotices)) {
-        continue;
+        return;
       }
       const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
         blobBaseUrl: options.blobBaseUrl,
@@ -28894,11 +29098,11 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       if (noticeEntry) {
         entries.push(noticeEntry);
       }
-      continue;
+      return;
     }
     if (frame.sourceKind === "session_history" && (frame.event === "assistant_message" || frame.event === "text_complete" || frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed")) {
       const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
-      if (suppressAssistantText && !historyHasAssistantSiblings(frame)) continue;
+      if (suppressAssistantText && !historyHasAssistantSiblings(frame)) return;
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
         suppressAssistantText,
         consumeDuplicateReasoningBlock: (text8) => assistantHistory.consumeReasoning(frame, text8),
@@ -28921,19 +29125,19 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         historyEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || void 0;
         if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries, realtimeHistoryIds)) {
-          continue;
+          return;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
         entries.push(historyEntry);
       }
-      continue;
+      return;
     }
     if (!frame.runId?.trim() && frame.event === "text_complete") {
       flushPendingReasoning(true);
       if (frame.sourceKind !== "session_history") {
         const text8 = terminalFrameVisibleText(frame).trim();
         if (text8 && pendingText && sameTextStreamOwner(streamedOwner, frame) && normalizeComparableText(pendingText) === normalizeComparableText(text8)) {
-          continue;
+          return;
         }
         const duplicateTerminalFollows = text8 && orderedFrames.slice(i + 1).some((later) => {
           if (later.event !== "interaction_complete" && later.event !== "run_completed") {
@@ -28945,7 +29149,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           return normalizeComparableText(terminalFrameVisibleText(later)) === normalizeComparableText(text8);
         });
         if (duplicateTerminalFollows) {
-          continue;
+          return;
         }
       }
     }
@@ -28962,24 +29166,24 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         terminalEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || void 0;
         if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries, realtimeHistoryIds)) {
-          continue;
+          return;
         }
         entries.push(terminalEntry);
       }
-      continue;
+      return;
     }
     if (HIDDEN_EVENTS2.has(frame.event)) {
-      continue;
+      return;
     }
     flushPendingReasoning(true);
     flushPendingText();
     const peerEntry = renderPeerEntry(frame, entryId);
     if (peerEntry) {
       entries.push(peerEntry);
-      continue;
+      return;
     }
     if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
-      continue;
+      return;
     }
     if (frame.event.startsWith("memory.")) {
       entries.push({
@@ -28993,7 +29197,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
           frame.data && typeof frame.data === "object" ? frame.data : {}
         )
       });
-      continue;
+      return;
     }
     const runtimeEvent = runtimeEventFromFrame(frame.event, frame.data);
     entries.push({
@@ -29006,21 +29210,67 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       runtimeEvent
     });
   }
-  flushPendingReasoning(false);
-  flushPendingText(false);
-  attachCompletedRunDurations(entries, frames);
-  const renderKeys = new Map(orderedFrames.filter((frame) => frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete").map((frame) => [frame.id, assistantMessageRenderKey(frame)]));
-  const userRenderKeys = new Map(orderedFrames.map((frame) => [frame.id, userMessageRenderKey(frame)]));
-  return assistantPresentationEntries(entries.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim()).map((entry) => {
-    if (entry.kind !== "message") return entry;
-    if (entry.identity.role === "user") {
-      const userKey = userRenderKeys.get(entry.id);
-      if (userKey) entry = { ...entry, renderKey: userKey };
+  const renderKeys = /* @__PURE__ */ new Map();
+  const userRenderKeys = /* @__PURE__ */ new Map();
+  const framesById = /* @__PURE__ */ new Map();
+  const indexRenderKeys = (frame) => {
+    if (frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete") {
+      renderKeys.set(frame.id, assistantMessageRenderKey(frame));
     }
-    if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
-    let textIndex = 0;
-    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
-  }), renderKeys, new Map(orderedFrames.map((frame) => [frame.id, frame])));
+    userRenderKeys.set(frame.id, userMessageRenderKey(frame));
+    framesById.set(frame.id, frame);
+  };
+  orderedFrames.forEach(indexRenderKeys);
+  const runTimings = completedRunTimings(frames);
+  const toolOwnership = assistantToolOwnership(framesById.values());
+  let lastRender = null;
+  function finish() {
+    const rendered = pendingText ? [...entries, pendingTextEntry(false)] : entries;
+    const durations = completedRunDurations(rendered, runTimings);
+    const visible = rendered.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim());
+    const visibleDurations = visible.map((entry) => durations.get(entry));
+    const output = assistantPresentationEntries(visible.map((entry) => {
+      if (entry.kind !== "message") return entry;
+      const runDurationMs = durations.get(entry);
+      if (runDurationMs !== void 0) entry = { ...entry, runDurationMs };
+      if (entry.identity.role === "user") {
+        const userKey = userRenderKeys.get(entry.id);
+        if (userKey) entry = { ...entry, renderKey: userKey };
+      }
+      if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
+      let textIndex = 0;
+      return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
+    }), renderKeys, framesById, toolOwnership);
+    const previous3 = lastRender;
+    if (previous3) {
+      for (let i = 0; i < output.length && i < previous3.output.length; i++) {
+        if (visible[i] !== previous3.visible[i] || visibleDurations[i] !== previous3.durations[i]) break;
+        output[i] = previous3.output[i];
+      }
+    }
+    lastRender = { visible, durations: visibleDurations, output };
+    return output;
+  }
+  return {
+    sortedFrames,
+    orderedLength: () => orderedFrames.length,
+    step,
+    finish,
+    append(appended) {
+      for (const frame of appended) {
+        orderedFrames.push(frame);
+        sortedFrames.push(frame);
+        indexRenderKeys(frame);
+        runTimings.framesById.set(frame.id, frame);
+        extendAssistantToolOwnership(toolOwnership, frame);
+      }
+      return orderedFrames.length;
+    },
+    reasoningOpen: () => activeReasoning !== void 0,
+    adoptRender(adopted) {
+      if (lastRender && lastRender.output.length === adopted.length) lastRender.output = adopted;
+    }
+  };
 }
 var LOCAL_COMPOSER_ORIGIN = { sendOrigin: "console", originKind: "operator" };
 function createUserEntry2(message, images = [], options = {}) {
@@ -29135,20 +29385,25 @@ function richBlockHasVisibleContent(block) {
     return true;
   return false;
 }
+var sanitizedEntries = /* @__PURE__ */ new WeakMap();
+function sanitizeConversationEntry(entry) {
+  if (entry.kind !== "message") return entry;
+  if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
+    const blocks = entry.blocks.filter(richBlockHasVisibleContent);
+    if (!blocks.length) return null;
+    return blocks.length === entry.blocks.length ? entry : { ...entry, blocks };
+  }
+  return entry.text && entry.text.trim().length > 0 ? entry : null;
+}
 function sanitizeConversationEntries(entries) {
   const sanitized = [];
   for (const entry of entries) {
-    if (entry.kind !== "message") {
-      sanitized.push(entry);
-      continue;
+    let result = sanitizedEntries.get(entry);
+    if (result === void 0) {
+      result = sanitizeConversationEntry(entry);
+      sanitizedEntries.set(entry, result);
     }
-    if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
-      const blocks = entry.blocks.filter(richBlockHasVisibleContent);
-      if (!blocks.length) continue;
-      sanitized.push({ ...entry, blocks });
-      continue;
-    }
-    if (entry.text && entry.text.trim().length > 0) sanitized.push(entry);
+    if (result) sanitized.push(result);
   }
   return sanitized;
 }
@@ -38318,39 +38573,73 @@ function uncommittedLiveSpeech(entries, liveSpeech, scope) {
 function sameSource(a, b) {
   return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
 }
-function buildChatMessages(entries, options = {}) {
-  const flat = conversationPresentationRows(entries).flatMap((entry) => flattenEntry(entry, options));
-  const merged = [];
-  for (const m of flat) {
-    const last = merged[merged.length - 1];
-    const lastBlocks = last?.blocks;
-    const mBlocks = m.blocks;
-    const sameName = !!(last && last.interactionId === m.interactionId && last.kind === "tool" && m.kind === "tool" && Array.isArray(lastBlocks) && lastBlocks.length > 0 && Array.isArray(mBlocks) && mBlocks.length > 0 && lastBlocks.every((b) => b.type === "tool-call") && mBlocks.every((b) => b.type === "tool-call") && lastBlocks[0].type === "tool-call" && mBlocks[0].type === "tool-call" && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name) && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name));
-    const peerCompatible = !sameName ? false : !mBlocks[0].peerTarget ? true : Boolean(lastBlocks[0].peerIncoming) === Boolean(mBlocks[0].peerIncoming);
-    if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
-      last.blocks = [...lastBlocks, ...mBlocks];
-      last.id = `${last.id}+${m.id}`;
-    } else {
-      const canDedupeAdjacent = last?.id === m.id && (m.kind === "user" && last.kind === "user" || m.kind === "agent" && last.kind === "agent" && last.who === m.who);
-      if (last && canDedupeAdjacent) {
-        const lastSignature = textSignatureForMsg(last);
-        const nextSignature = textSignatureForMsg(m);
-        if (lastSignature && lastSignature === nextSignature) {
-          continue;
-        }
+var flattenedRows = /* @__PURE__ */ new WeakMap();
+function entryRows(entry, options) {
+  const cached = flattenedRows.get(entry);
+  if (cached && cached.options === options.resolvePeerLabel) return cached.rows;
+  const rows = conversationPresentationRows([entry]).flatMap((row) => flattenEntry(row, options));
+  flattenedRows.set(entry, { options: options.resolvePeerLabel, rows });
+  return rows;
+}
+function extendChatMessages(previous3, entries, options = {}) {
+  let startEntry = 0;
+  let cut = 0;
+  if (previous3 && previous3.resolvePeerLabel === options.resolvePeerLabel) {
+    let same = 0;
+    const limit = Math.min(entries.length, previous3.entries.length);
+    while (same < limit && entries[same] === previous3.entries[same]) same += 1;
+    if (same === entries.length && same === previous3.entries.length) return previous3;
+    startEntry = Math.max(0, same - 1);
+    cut = previous3.spans.findIndex((span) => span.end >= startEntry);
+    if (cut < 0) cut = previous3.messages.length;
+    while (cut > 0 && (previous3.messages[cut - 1].kind === "tool" || previous3.spans[cut - 1].end >= startEntry)) {
+      cut -= 1;
+      startEntry = Math.min(startEntry, previous3.spans[cut].start);
+    }
+    if (cut > 0) {
+      const rebuiltIds = new Set(entries.slice(startEntry).map((entry) => entry.id));
+      for (let index2 = 0; index2 < cut && cut > 0; index2 += 1) {
+        if (rebuiltIds.has(previous3.messages[index2].sourceEntryId ?? "")) cut = 0;
       }
-      merged.push({ ...m });
+      if (cut === 0) startEntry = 0;
     }
   }
-  for (let index2 = 1; index2 < merged.length; index2 += 1) {
+  const merged = previous3 && cut > 0 ? previous3.messages.slice(0, cut) : [];
+  const spans = previous3 && cut > 0 ? previous3.spans.slice(0, cut) : [];
+  for (let entryIndex = startEntry; entryIndex < entries.length; entryIndex += 1) {
+    for (const m of entryRows(entries[entryIndex], options)) {
+      const last = merged[merged.length - 1];
+      const lastBlocks = last?.blocks;
+      const mBlocks = m.blocks;
+      const sameName = !!(last && last.interactionId === m.interactionId && last.kind === "tool" && m.kind === "tool" && Array.isArray(lastBlocks) && lastBlocks.length > 0 && Array.isArray(mBlocks) && mBlocks.length > 0 && lastBlocks.every((b) => b.type === "tool-call") && mBlocks.every((b) => b.type === "tool-call") && lastBlocks[0].type === "tool-call" && mBlocks[0].type === "tool-call" && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name) && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name));
+      const peerCompatible = !sameName ? false : !mBlocks[0].peerTarget ? true : Boolean(lastBlocks[0].peerIncoming) === Boolean(mBlocks[0].peerIncoming);
+      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+        last.blocks = [...lastBlocks, ...mBlocks];
+        last.id = `${last.id}+${m.id}`;
+        spans[spans.length - 1].end = entryIndex;
+      } else {
+        const canDedupeAdjacent = last?.id === m.id && (m.kind === "user" && last.kind === "user" || m.kind === "agent" && last.kind === "agent" && last.who === m.who);
+        if (last && canDedupeAdjacent) {
+          const lastSignature = textSignatureForMsg(last);
+          const nextSignature = textSignatureForMsg(m);
+          if (lastSignature && lastSignature === nextSignature) {
+            continue;
+          }
+        }
+        merged.push({ ...m });
+        spans.push({ start: entryIndex, end: entryIndex });
+      }
+    }
+  }
+  for (let index2 = Math.max(1, cut); index2 < merged.length; index2 += 1) {
     const message = merged[index2];
-    const previous3 = merged[index2 - 1];
-    if (message.showHeader && message.source?.kind === "assistant" && previous3.kind !== "user" && sameSource(previous3.source, message.source) && previous3.interactionId === message.interactionId && previous3.runId === message.runId && previous3.dayKey === message.dayKey) {
+    const previousRow = merged[index2 - 1];
+    if (message.showHeader && message.source?.kind === "assistant" && previousRow.kind !== "user" && sameSource(previousRow.source, message.source) && previousRow.interactionId === message.interactionId && previousRow.runId === message.runId && previousRow.dayKey === message.dayKey) {
       merged[index2] = { ...message, showHeader: false };
     }
   }
-  const durations = new Map(entries.flatMap((entry) => entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number" && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0 ? [[entry.id, entry.runDurationMs]] : []));
-  for (let index2 = merged.length - 1; index2 >= 0; index2 -= 1) {
+  const durations = new Map(entries.slice(startEntry).flatMap((entry) => entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number" && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0 ? [[entry.id, entry.runDurationMs]] : []));
+  for (let index2 = merged.length - 1; index2 >= cut; index2 -= 1) {
     const message = merged[index2];
     const duration = durations.get(message.sourceEntryId || "");
     if (duration === void 0 || message.kind !== "agent" || message.source?.kind !== "assistant" || !msgHasTextualPayload(message)) continue;
@@ -38362,7 +38651,15 @@ function buildChatMessages(entries, options = {}) {
       workedForCopyText: `Worked for ${workedFor}`
     };
   }
-  return merged;
+  return { entries: entries.slice(), resolvePeerLabel: options.resolvePeerLabel, messages: merged, spans };
+}
+function internTurns(next, previous3) {
+  if (previous3.length === 0) return next;
+  const byId = new Map(previous3.map((turn) => [turn.id, turn]));
+  return next.map((turn) => {
+    const prior = byId.get(turn.id);
+    return prior && prior.messages.length === turn.messages.length && prior.messages.every((message, index2) => message === turn.messages[index2]) ? prior : turn;
+  });
 }
 function collectImageTransferPayload(data) {
   const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
@@ -38649,6 +38946,60 @@ var MessageRow = import_react40.default.memo(function MessageRow2({
     ] })
   ] });
 }, messageRowPropsEqual);
+var TranscriptTurn = import_react40.default.memo(function TranscriptTurn2({
+  turn,
+  turnIndex,
+  identity,
+  previousDay,
+  dayLabelNow,
+  suppressWorkedId,
+  workGraphActions,
+  markdownUrlPolicy,
+  approvalSnapshot,
+  onApprovalDecision,
+  conversationId,
+  approvalInteractionIds
+}) {
+  countRender("TranscriptTurn");
+  let day = previousDay;
+  const daySeparator = (message) => {
+    const next = message.dayKey ?? null;
+    if (!next || next === day) return null;
+    day = next;
+    const label = transcriptDayLabel(next, dayLabelNow);
+    return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+      "div",
+      {
+        "aria-label": label,
+        className: "conv__day",
+        "data-testid": `chat-day:${identity}:${next}`,
+        role: "separator",
+        children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: label })
+      },
+      `day:${next}:${message.renderKey ?? message.id}`
+    );
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+    "div",
+    {
+      "aria-label": `Turn ${turnIndex + 1}`,
+      className: "conv-turn",
+      "data-chat-turn-index": turnIndex,
+      "data-conversation-turn-id": turn.id,
+      "data-testid": `chat-turn:${identity}:${turnIndex}`,
+      children: [
+        groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : void 0).map((run) => {
+          const rows = run.rows.map((m) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_react40.default.Fragment, { children: [
+            daySeparator(m),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(MessageRow, { message: m, suppressWorked: m.id === suppressWorkedId, workGraphActions, markdownUrlPolicy })
+          ] }, m.scrollRowId ?? m.id));
+          return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(import_react40.default.Fragment, { children: run.tools.length >= 2 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: rows }) : rows }, run.rows[0].scrollRowId ?? run.rows[0].id);
+        }),
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractionIds })
+      ]
+    }
+  );
+});
 var TranscriptView = import_react40.default.memo(function TranscriptView2({
   identity,
   agentLabel,
@@ -38676,7 +39027,30 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
     () => windowStart > 0 ? turns.slice(windowStart) : turns,
     [turns, windowStart]
   );
-  const approvalInteractions = import_react40.default.useMemo(() => approvalInteractionIdsByTurn(windowedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []))), [windowedTurns]);
+  const approvalIdsRef = import_react40.default.useRef(/* @__PURE__ */ new Map());
+  const approvalInteractions = import_react40.default.useMemo(() => {
+    const next = approvalInteractionIdsByTurn(windowedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])));
+    const interned = /* @__PURE__ */ new Map();
+    const result = next.map((ids, offset) => {
+      const turnId = windowedTurns[offset].id;
+      const prior = approvalIdsRef.current.get(turnId);
+      const stable = prior && prior.length === ids.length && prior.every((id, index2) => id === ids[index2]) ? prior : ids;
+      interned.set(turnId, stable);
+      return stable;
+    });
+    approvalIdsRef.current = interned;
+    return result;
+  }, [windowedTurns]);
+  const previousDays = import_react40.default.useMemo(() => {
+    let day = null;
+    return windowedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+  }, [windowedTurns]);
+  const todayKey = transcriptDayKey((/* @__PURE__ */ new Date()).toISOString());
+  const dayLabelNow = import_react40.default.useMemo(() => /* @__PURE__ */ new Date(), [todayKey]);
   const getTranscriptText = import_react40.default.useCallback(() => transcriptCopyText(messages), [messages]);
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__body", onScroll, ref: bodyRef, tabIndex: 0, "aria-label": "Conversation transcript", children: [
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
@@ -38728,51 +39102,24 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
       agentLabel,
       "."
     ] }) }) }),
-    (() => {
-      let previousDay = null;
-      const now = /* @__PURE__ */ new Date();
-      const daySeparator = (message) => {
-        const day = message.dayKey ?? null;
-        if (!day || day === previousDay) return null;
-        previousDay = day;
-        const label = transcriptDayLabel(day, now);
-        return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-          "div",
-          {
-            "aria-label": label,
-            className: "conv__day",
-            "data-testid": `chat-day:${identity}:${day}`,
-            role: "separator",
-            children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: label })
-          },
-          `day:${day}:${message.renderKey ?? message.id}`
-        );
-      };
-      return windowedTurns.map((turn, offset) => {
-        const turnIndex = windowStart + offset;
-        return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
-          "div",
-          {
-            "aria-label": `Turn ${turnIndex + 1}`,
-            className: "conv-turn",
-            "data-chat-turn-index": turnIndex,
-            "data-conversation-turn-id": turn.id,
-            "data-testid": `chat-turn:${identity}:${turnIndex}`,
-            children: [
-              groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : void 0).map((run) => {
-                const rows = run.rows.map((m) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_react40.default.Fragment, { children: [
-                  daySeparator(m),
-                  /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(MessageRow, { message: m, suppressWorked: Boolean(phase2 && m.id === lastAgentMessageId), workGraphActions, markdownUrlPolicy })
-                ] }, m.scrollRowId ?? m.id));
-                return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(import_react40.default.Fragment, { children: run.tools.length >= 2 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: rows }) : rows }, run.rows[0].scrollRowId ?? run.rows[0].id);
-              }),
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractions[offset] })
-            ]
-          },
-          turn.id
-        );
-      });
-    })(),
+    windowedTurns.map((turn, offset) => /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+      TranscriptTurn,
+      {
+        turn,
+        turnIndex: windowStart + offset,
+        identity,
+        previousDay: previousDays[offset],
+        dayLabelNow,
+        suppressWorkedId: phase2 ? lastAgentMessageId : null,
+        workGraphActions,
+        markdownUrlPolicy,
+        approvalSnapshot,
+        onApprovalDecision,
+        conversationId,
+        approvalInteractionIds: approvalInteractions[offset]
+      },
+      turn.id
+    )),
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId }),
     liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       "div",
@@ -38846,7 +39193,7 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
     setValue(externalValue.value);
   }, [externalValue]);
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "composer__input", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       "textarea",
       {
         placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
@@ -38867,7 +39214,7 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
         rows: 2,
         "data-testid": `chat-composer:${identity}`
       }
-    ),
+    ) }),
     /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer__row", children: [
       /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "composer__chip mono", children: agentRole || "agent" }),
       /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "composer__spacer" }),
@@ -39007,10 +39354,32 @@ function ChatPane({
     () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
     [entries, liveSpeech, activeVoiceScope]
   );
-  const messages = import_react40.default.useMemo(() => buildChatMessages(entries, {
-    resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null
-  }), [entries, peerLabels]);
-  const turns = import_react40.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const onApprovalDecisionRef = import_react40.default.useRef(onApprovalDecision);
+  onApprovalDecisionRef.current = onApprovalDecision;
+  const stableApprovalDecision = import_react40.default.useCallback(
+    (pendingId, action) => onApprovalDecisionRef.current?.(pendingId, action),
+    []
+  );
+  const presentationLabels = import_react40.default.useMemo(
+    () => displayLabels ?? { peers: peerLabels ?? void 0 },
+    [displayLabels, peerLabels]
+  );
+  const resolvePeerLabel = import_react40.default.useMemo(
+    () => peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
+    [peerLabels]
+  );
+  const chatMessagesRef = import_react40.default.useRef(null);
+  const messages = import_react40.default.useMemo(() => {
+    const next = extendChatMessages(chatMessagesRef.current, entries, { resolvePeerLabel });
+    chatMessagesRef.current = next;
+    return next.messages;
+  }, [entries, resolvePeerLabel]);
+  const turnsRef = import_react40.default.useRef([]);
+  const turns = import_react40.default.useMemo(() => {
+    const next = internTurns(buildChatTurns(messages), turnsRef.current);
+    turnsRef.current = next;
+    return next;
+  }, [messages]);
   const [revealedFrom, setRevealedFrom] = import_react40.default.useState(null);
   const windowAnchor = revealedFrom && revealedFrom.identity === identity ? revealedFrom : null;
   const turnIndexById = import_react40.default.useMemo(() => {
@@ -39081,9 +39450,12 @@ function ChatPane({
       setVisibleTurnIndexes([]);
       return;
     }
-    const turnNodes = Array.from(
-      body.querySelectorAll("[data-chat-turn-index]")
-    );
+    const turnNodes = [];
+    for (const child of Array.from(body.children)) {
+      if (child instanceof HTMLElement && Number.isFinite(Number(child.dataset.chatTurnIndex ?? NaN))) {
+        turnNodes.push(child);
+      }
+    }
     if (turnNodes.length === 0) {
       setVisibleTurnIndexes([]);
       return;
@@ -39092,20 +39464,32 @@ function ChatPane({
     const visibleTop = bodyRect.top;
     const visibleBottom = bodyRect.bottom;
     const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
-    let nextIndex = 0;
+    const rects = /* @__PURE__ */ new Map();
+    const rectAt = (position3) => {
+      let rect = rects.get(position3);
+      if (!rect) {
+        rect = turnNodes[position3].getBoundingClientRect();
+        rects.set(position3, rect);
+      }
+      return rect;
+    };
+    const firstWhere = (predicate) => {
+      let lo = 0;
+      let hi = turnNodes.length;
+      while (lo < hi) {
+        const mid = lo + hi >>> 1;
+        if (predicate(mid)) hi = mid;
+        else lo = mid + 1;
+      }
+      return lo;
+    };
+    const indexAt = (position3) => Number(turnNodes[position3].dataset.chatTurnIndex);
+    const afterTarget = firstWhere((position3) => rectAt(position3).top > targetY);
+    const nextIndex = afterTarget > 0 ? indexAt(afterTarget - 1) : 0;
     const nextVisibleIndexes = [];
-    for (const turnNode of turnNodes) {
-      const rawIndex = Number(turnNode.dataset.chatTurnIndex);
-      if (!Number.isFinite(rawIndex)) {
-        continue;
-      }
-      const turnRect = turnNode.getBoundingClientRect();
-      if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
-        nextVisibleIndexes.push(rawIndex);
-      }
-      if (turnRect.top <= targetY) {
-        nextIndex = rawIndex;
-      }
+    for (let position3 = firstWhere((at) => rectAt(at).bottom >= visibleTop); position3 < turnNodes.length; position3 += 1) {
+      if (rectAt(position3).top > visibleBottom) break;
+      nextVisibleIndexes.push(indexAt(position3));
     }
     const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
     setVisibleTurnIndexes((current) => {
@@ -39190,6 +39574,7 @@ function ChatPane({
       const bodyBounds = body.getBoundingClientRect();
       nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
       nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
+      nav.style.setProperty("--conv-pane-inline-size", `${paneBounds.width}px`);
     };
     const observer = new ResizeObserver((entries2) => {
       measureBand();
@@ -39425,8 +39810,8 @@ function ChatPane({
       publishDraft();
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationPresentationProvider, { labels: displayLabels ?? { peers: peerLabels ?? void 0 }, viewportKey, autoFold: scroll.mode === "following-end", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: `conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationPresentationProvider, { labels: presentationLabels, viewportKey, autoFold: scroll.mode === "following-end", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__head-frame", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: `conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__avatar", children: initial }),
       /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__target", children: [
         /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__title", title: identity, children: agentLabel }),
@@ -39456,7 +39841,7 @@ function ChatPane({
         },
         action.id
       )) })
-    ] }),
+    ] }) }),
     runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__notice", role: "status", "data-testid": `run-stop-notice:${identity}`, children: runStopNotice }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       TranscriptView,
@@ -39480,7 +39865,7 @@ function ChatPane({
         markdownUrlPolicy,
         conversationId,
         approvalSnapshot,
-        onApprovalDecision
+        onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0
       }
     ),
     turnRail,
@@ -42226,6 +42611,16 @@ var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed",
   "server_tool_content"
 ]);
+function internAgents(current, next) {
+  const byKey = new Map(current.map((agent) => [JSON.stringify(agent), agent]));
+  let changed = next.length !== current.length;
+  const interned = next.map((agent, index2) => {
+    const prior = byKey.get(JSON.stringify(agent));
+    if (!prior || prior !== current[index2]) changed = true;
+    return prior ?? agent;
+  });
+  return changed ? interned : current;
+}
 var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "user_input",
   "interaction_started",
@@ -42392,6 +42787,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     return labels2;
   }, [agents]);
+  const chatDisplayLabels = import_react45.default.useMemo(() => ({ peers: peerLabels }), [peerLabels]);
   const [draftByKey, setDraftByKey] = import_react45.default.useState(
     {}
   );
@@ -43056,18 +43452,59 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function derivedTranscriptFor(identity, panelId, agent) {
     const log = getOrCreateLog(identity);
     const cached = derivedTranscriptRef.current[identity];
+    const agentKey = agent ? JSON.stringify(agent) : "";
+    if (cached && cached.agentKey === agentKey) agent = cached.agent;
     if (cached && cached.version === log.version && cached.agent === agent) {
       return cached;
     }
     const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panelId);
-    const conversationEntries = mapFramesToTimelineEntries2(agent, sortedFrames, {
+    const derivation = deriveTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
       blobBaseUrl: baseUrl
-    });
-    const next = { version: log.version, agent, sortedFrames, conversationEntries };
+    }, cached?.derivation);
+    const conversationEntries = derivation.entries;
+    const next = { version: log.version, agent, sortedFrames, conversationEntries, derivation, agentKey };
     derivedTranscriptRef.current[identity] = next;
     return next;
+  }
+  const panelPhaseRef = import_react45.default.useRef({});
+  function panelPhaseFor(panelKey, sortedFrames, inputs) {
+    if (inputs.hasLocalPhase) return inputs.localPhase ?? null;
+    const cached = panelPhaseRef.current[panelKey];
+    if (cached && cached.serverPhase === inputs.serverPhase && sortedFrames.length >= cached.frames.length) {
+      let same = true;
+      for (let i = 0; i < cached.frames.length && same; i++) same = sortedFrames[i] === cached.frames[i];
+      if (same) {
+        let phase3 = cached.phase;
+        let extendable = true;
+        for (let i = cached.frames.length; i < sortedFrames.length && extendable; i++) {
+          const frame = sortedFrames[i];
+          extendable = frame.event === "text_delta" && frame.sourceKind !== "session_history";
+          if (extendable) phase3 = "generating";
+        }
+        if (extendable) {
+          if (sortedFrames.length !== cached.frames.length) {
+            panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase: phase3 };
+          }
+          return phase3;
+        }
+      }
+    }
+    const phase2 = resolvePanelResponsePhase({
+      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+      ...inputs
+    });
+    panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase: phase2 };
+    return phase2;
+  }
+  const activeRunIdRef = import_react45.default.useRef({});
+  function activeRunIdFor(identity, version, sortedFrames) {
+    const cached = activeRunIdRef.current[identity];
+    if (cached && cached.version === version) return cached.runId;
+    const runId = activeRunIdFromFrames(sortedFrames);
+    activeRunIdRef.current[identity] = { version, runId };
+    return runId;
   }
   function framesVisibleInPanel(frames, panelId) {
     void panelId;
@@ -43503,7 +43940,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
       const nextAgents = normalizeAgents(experienceJson, loadedModules);
       setExperience(experienceJson);
-      setAgents(nextAgents);
+      setAgents((current) => internAgents(current, nextAgents));
       setActiveActivityPresetId(
         (c) => c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all"
       );
@@ -45180,15 +45617,14 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       panelKey
     );
     const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
-    const phase2 = resolvePanelResponsePhase({
-      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+    const phase2 = panelPhaseFor(panelKey, sortedFrames, {
       localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
       hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null
     });
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
-    const activeRunId = activeRunIdFromFrames(sortedFrames);
+    const activeRunId = activeRunIdFor(identity, identityLog.version, sortedFrames);
     const canStopRun = !consoleReadOnly && agent?.affordances?.can_retire === true && activeRunId !== null;
     const stackItems = getPendingStack(identity);
     let hasLegacyQueue = false;
@@ -45272,7 +45708,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         agent,
         markdownUrlPolicy,
         headerVariant: "compact",
-        displayLabels: { peers: peerLabels },
+        displayLabels: chatDisplayLabels,
         approvalSnapshot: activeApprovals,
         onApprovalDecision: onGatingDecision,
         peerLabels,

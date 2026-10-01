@@ -11,6 +11,13 @@
  * derivation, coalesced event frames). The timings are printed for the PR
  * body; only the render-count ceilings and a generous time bound are asserted
  * so the test stays deterministic on slow CI runners.
+ *
+ * This is not a latency measurement. jsdom does no style recalculation,
+ * layout or paint, and these frames are not the gateway's, so it passed
+ * while real typing lagged by a full transcript layout per keystroke and a
+ * full transcript re-derivation per streamed token. Keystroke-to-next-paint
+ * latency is gated by `npm run perf:typing:browser` (typing-lag-browser.cjs),
+ * which drives the production build in Chromium.
  */
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react";
