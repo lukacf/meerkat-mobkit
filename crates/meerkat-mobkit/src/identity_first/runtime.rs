@@ -1587,6 +1587,12 @@ impl IdentityFirstRuntimeContext {
         roster: &[DurableAgentSpec],
         origin: RestorePassOrigin,
     ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        // The whole pass is one embodiment burst, held until its settle
+        // trigger below is sent: a deferred repair pass waiting for zero in
+        // flight then consumes every trigger the pass raised, instead of
+        // starting in a gap between members (or before `RestorePassSettled`)
+        // and running once more on the late trigger.
+        let _burst = self.runtime.enter_embodiment_burst();
         let result = self.apply_roster_pass(generation, roster).await;
         // A settled pass released every store writer it held, so a Broken
         // identity's retry can now succeed. The supervisor's own passes do not
@@ -2290,9 +2296,10 @@ impl Drop for ContinuityRepairSupervising {
     }
 }
 
-/// Counts one embodiment in flight for its lifetime (including a cancelled
-/// one), publishing the count so the repair supervisor can wait for zero.
-struct EmbodimentInFlight<'a>(&'a watch::Sender<usize>);
+/// Counts one embodiment, or one embodiment burst (a restore pass, a
+/// background warm), in flight for its lifetime (including a cancelled one),
+/// publishing the count so the repair supervisor can wait for zero.
+pub(super) struct EmbodimentInFlight<'a>(&'a watch::Sender<usize>);
 
 impl<'a> EmbodimentInFlight<'a> {
     fn enter(count: &'a watch::Sender<usize>) -> Self {
@@ -2645,8 +2652,9 @@ pub struct IdentityRuntime {
     continuity_repair_triggers: watch::Sender<ContinuityRepairWake>,
     /// Running continuity repair supervisors ([`ContinuityRepairSupervising`]).
     continuity_repair_supervisors: AtomicUsize,
-    /// Embodiments (resumes and fresh mints) in flight, published so the
-    /// repair supervisor waits for zero instead of contending with them.
+    /// Embodiments (resumes and fresh mints) and embodiment bursts (restore
+    /// passes, background warms) in flight, published so the repair
+    /// supervisor waits for zero instead of contending with them.
     embodiments_in_flight: watch::Sender<usize>,
     /// Member inspections shared per runtime incarnation ([`Self::inspect`]).
     inspections: StdMutex<BTreeMap<AgentRuntimeId, SharedInspection>>,
@@ -3495,6 +3503,9 @@ impl IdentityRuntime {
         let runtime = Arc::clone(self);
         let (cancel, task_cancel) = watch::channel(false);
         let task = tokio::spawn(async move {
+            // The warm is one embodiment burst: the repair supervisor defers
+            // until all of it settled and then runs one pass.
+            let _burst = runtime.enter_embodiment_burst();
             stream::iter(identities.into_iter().map(|identity| {
                 let runtime = Arc::clone(&runtime);
                 let mut cancel = task_cancel.clone();
@@ -7829,6 +7840,8 @@ impl IdentityRuntime {
         AgentIdentity,
         Result<ContinuityRecord, IdentityRuntimeError>,
     )> {
+        // One embodiment burst (see [`Self::enter_embodiment_burst`]).
+        let _burst = self.enter_embodiment_burst();
         let identities = self.registered_identities().await;
         stream::iter(identities.into_iter().map(|identity| async move {
             let result = self.materialize(&identity).await;
@@ -7845,6 +7858,8 @@ impl IdentityRuntime {
     /// and surfaced through logs/error hooks rather than aborting unrelated
     /// members.
     pub async fn materialize_all(&self) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
+        // One embodiment burst (see [`Self::enter_embodiment_burst`]).
+        let _burst = self.enter_embodiment_burst();
         let identities = self.registered_identities().await;
         let records = stream::iter(identities.into_iter().map(|identity| async move {
             self.best_effort_materialize_identity(identity, None, "materialize_all")
@@ -14178,6 +14193,13 @@ impl IdentityRuntime {
 
     fn subscribe_continuity_repair_triggers(&self) -> watch::Receiver<ContinuityRepairWake> {
         self.continuity_repair_triggers.subscribe()
+    }
+
+    /// Hold one embodiment burst in flight (a restore pass, a background
+    /// warm). Between two members of a burst no single embodiment may be in
+    /// flight; the burst keeps the count above zero until it settled.
+    pub(super) fn enter_embodiment_burst(&self) -> EmbodimentInFlight<'_> {
+        EmbodimentInFlight::enter(&self.embodiments_in_flight)
     }
 
     /// Wait until no embodiment is in flight; `false` when the supervisor
