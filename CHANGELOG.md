@@ -115,6 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Console: the chat turn-navigation rail no longer draws a gray capsule track
+  behind its ticks; the ticks stand on their own.
+
 - The console forwarder and the identity health monitor no longer need
   MobKit's create-time live event tap (meerkat #1236). Meerkat 0.8.49
   retains each session actor's recent events and replays them on
