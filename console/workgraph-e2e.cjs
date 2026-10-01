@@ -20,30 +20,15 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { setTimeout: sleep } = require("node:timers/promises");
-const net = require("node:net");
 const { chromium } = require("playwright");
 const { exampleBackendSpec } = require("./example-backend.cjs");
+const { LOOPBACK_ANY_PORT, awaitFixtureReady } = require("./fixture-ready.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const screenshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "workgraph-e2e-"));
 
 // ── Harness plumbing (matches browser-e2e.cjs) ──────────────────────────
 
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("failed to reserve port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => (error ? reject(error) : resolve(port)));
-    });
-  });
-}
 
 async function waitForHttpOk(url, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs;
@@ -318,9 +303,6 @@ async function runBrowserChecks(page, baseUrl, seeded) {
 // ── Main ─────────────────────────────────────────────────────────────────
 
 async function main() {
-  const port = await reservePort();
-  const addr = `127.0.0.1:${port}`;
-  const baseUrl = `http://${addr}`;
   const backendSpec = exampleBackendSpec(repoRoot, "workgraph_console_reference");
   const backend = spawn(
     backendSpec.command,
@@ -332,7 +314,7 @@ async function main() {
         // Guards the known rustc incremental-build ICE (same as the CI
         // flow-editor job).
         CARGO_INCREMENTAL: "0",
-        MOBKIT_WORKGRAPH_E2E_ADDR: addr,
+        MOBKIT_WORKGRAPH_E2E_ADDR: LOOPBACK_ANY_PORT,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -342,7 +324,12 @@ async function main() {
 
   let browser = null;
   let page = null;
+  let baseUrl;
   try {
+    ({ baseUrl } = await awaitFixtureReady(backend, {
+      label: "workgraph e2e fixture",
+      timeoutMs: backendSpec.prebuilt ? 60_000 : 240_000,
+    }));
     await waitForHttpOk(`${baseUrl}/healthz`);
     await waitForHttpOk(`${baseUrl}/console`);
     const seeded = await seedWorkGraph(baseUrl);

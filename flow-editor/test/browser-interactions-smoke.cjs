@@ -8,13 +8,14 @@ const { spawn } = require("node:child_process");
 const { chromium } = require("playwright");
 
 const { resolveFlowEditorBinary } = require("./flow-editor-binary.cjs");
+const { LOOPBACK_ANY_PORT, awaitFixtureReady } = require("../../console/fixture-ready.cjs");
 
 const repoRoot = path.join(__dirname, "..", "..");
 const binary = resolveFlowEditorBinary();
-const port = Number(process.env.MOBKIT_FLOW_EDITOR_INTERACTIONS_PORT || 4197);
-const addr = `127.0.0.1:${port}`;
-const baseUrl = process.env.MOBKIT_FLOW_EDITOR_INTERACTIONS_URL || `http://${addr}`;
-const shouldSpawn = !process.env.MOBKIT_FLOW_EDITOR_INTERACTIONS_URL;
+// A spawned editor binds port 0 and announces the bound address; a fixed
+// port collides with anything else on the host using it.
+let baseUrl = process.env.MOBKIT_FLOW_EDITOR_INTERACTIONS_URL;
+const shouldSpawn = !baseUrl;
 
 function waitForReady(url, child) {
   const deadline = Date.now() + 20_000;
@@ -89,10 +90,11 @@ async function chooseFirstGraphMember(page) {
 
 async function main() {
   let server = null;
+  let serverReady = null;
   let draftDir = null;
   if (shouldSpawn) {
     draftDir = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-flow-editor-interactions."));
-    server = spawn(binary, ["--listen", addr], {
+    server = spawn(binary, ["--listen", LOOPBACK_ANY_PORT], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -100,6 +102,10 @@ async function main() {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Listen for the ready line from the spawn on: output is not replayed
+    // for a listener attached after the browser launch below.
+    serverReady = awaitFixtureReady(server, { label: "mobkit_flow_editor", timeoutMs: 60_000 });
+    serverReady.catch(() => {}); // Awaited (and reported) inside the try below.
     server.stdout.on("data", (chunk) => process.stdout.write(chunk));
     server.stderr.on("data", (chunk) => process.stderr.write(chunk));
   }
@@ -113,6 +119,7 @@ async function main() {
   page.on("pageerror", (error) => consoleMessages.push(error.message || String(error)));
 
   try {
+    if (serverReady) ({ baseUrl } = await serverReady);
     await waitForReady(`${baseUrl}/flow-editor`, server);
     await page.goto(`${baseUrl}/flow-editor?cache_bust=browser-interactions-smoke`, {
       waitUntil: "domcontentloaded",

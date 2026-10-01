@@ -7,6 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { setTimeout: delay } = require("node:timers/promises");
 const { exampleBackendSpec } = require("./example-backend.cjs");
+const { LOOPBACK_ANY_PORT, awaitFixtureReady } = require("./fixture-ready.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -16,13 +17,6 @@ async function listen(server) {
     server.listen(0, "127.0.0.1", resolve);
   });
   return server.address().port;
-}
-
-async function reservePort() {
-  const server = http.createServer();
-  const port = await listen(server);
-  await new Promise(resolve => server.close(resolve));
-  return port;
 }
 
 async function eventually(probe, label, timeout = 20_000) {
@@ -50,12 +44,10 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
     ["/console/assets/console-app.js", "console-app.js", "application/javascript"],
     ["/console/assets/console-app.css", "console-app.css", "text/css"],
   ].map(async ([url, file, contentType]) => [url, { bytes: await fs.readFile(path.join(__dirname, "dist", file)), contentType }])));
-  const backendPort = await reservePort();
-  const backendUrl = `http://127.0.0.1:${backendPort}`;
   const spec = exampleBackendSpec(repoRoot, "console_acceptance_fixture");
   const child = spawn(spec.command, spec.args, {
     cwd: repoRoot,
-    env: { ...process.env, MOBKIT_FIXTURE_ADDR: `127.0.0.1:${backendPort}`, MOBKIT_FIXTURE_MODE: mode,
+    env: { ...process.env, MOBKIT_FIXTURE_ADDR: LOOPBACK_ANY_PORT, MOBKIT_FIXTURE_MODE: mode,
       MOBKIT_FIXTURE_LIVE_IMAGES: liveImages ? "1" : "0", MOBKIT_FIXTURE_LIVE_MODEL: liveModel ? "1" : "0",
       MOBKIT_FIXTURE_ROUTINE_TOOLS: routineTools ? "1" : "0",
       ...(stateDir ? { MOBKIT_FIXTURE_STATE: stateDir } : {}) },
@@ -63,7 +55,11 @@ async function startFixture({ mode = "member", stateDir, liveImages = false, liv
   });
   let logs = "";
   for (const output of [child.stdout, child.stderr]) output.on("data", chunk => { logs = (logs + chunk).slice(-30_000); });
+  let backendUrl;
   try {
+    ({ baseUrl: backendUrl } = await awaitFixtureReady(child, {
+      label: `acceptance fixture (${mode})`, timeoutMs: spec.prebuilt ? 30_000 : 300_000,
+    }));
     await eventually(async () => {
       if (child.exitCode !== null) return true;
       return (await fetch(`${backendUrl}/healthz`)).ok;

@@ -534,6 +534,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console and example acceptance fixtures no longer race other processes for
+  their port. Harnesses reserved a free port, closed it and handed the number
+  to the fixture, which bound it later; anything on the host could take it in
+  between (CI saw `AddrInUse`, OS error 98, at console fixture startup).
+  Fixtures and the flow editor now bind the port-0 address the harness passes
+  and print `MOBKIT_FIXTURE_READY {"addr":"..."}` with the address they
+  actually bound, which the harnesses (`console/fixture-ready.cjs` and the
+  example scripts) wait for. The flow editor smokes no longer use fixed
+  ports, and the Python reference flow hands uvicorn an already-listening
+  socket. A source guard fails if a harness reintroduces a reserve-then-bind
+  helper.
+
 - Console: typing in the chat composer no longer lags with a long history,
   idle or while a reply streams. In Chromium against the real gateway with
   300 turns mounted (nested iframe, as OB3 embeds it), keystroke-to-next-paint
