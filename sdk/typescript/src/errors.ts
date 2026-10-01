@@ -19,8 +19,8 @@
 
 /** Base exception for all MobKit SDK errors. */
 export class MobKitError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "MobKitError";
   }
 }
@@ -262,6 +262,8 @@ export class TurnFailedError extends MobKitError {
   readonly identity: string;
   readonly ticket: string;
   readonly reason: string;
+  /** The send/dispatch result when an `*AndWait` call threw this, else `null`. */
+  admission: unknown = null;
 
   constructor(identity: string, ticket: string, reason: string) {
     super(`turn ${ticket} of identity ${identity} failed: ${reason}`);
@@ -286,6 +288,8 @@ export class TurnFailedError extends MobKitError {
 export class WaitEndedError extends MobKitError {
   readonly identity: string;
   readonly outcome: string;
+  /** The send/dispatch result when an `*AndWait` call threw this, else `null`. */
+  admission: unknown = null;
 
   constructor(identity: string, outcome: string, detail = "") {
     const message = `wait on identity ${identity} ended: ${outcome}`;
@@ -299,6 +303,12 @@ export class WaitEndedError extends MobKitError {
 export class TurnUnknownError extends MobKitError {
   readonly identity: string;
   readonly ticket: string;
+  /**
+   * The send/dispatch result when an `*AndWait` call threw this after its
+   * delivery was admitted, else `null`: do not redispatch the delivery
+   * because its ticket is no longer known.
+   */
+  admission: unknown = null;
 
   constructor(identity: string, ticket: string) {
     super(
@@ -322,6 +332,8 @@ export class TurnNotDeliveredError extends MobKitError {
   readonly operation: string;
   readonly code: string;
   readonly reason: string;
+  /** The send/dispatch result that reported it, when an `*AndWait` call threw this. */
+  admission: unknown = null;
 
   constructor(identity: string, operation: string, code: string, reason: string) {
     super(
@@ -333,6 +345,113 @@ export class TurnNotDeliveredError extends MobKitError {
     this.operation = operation;
     this.code = code;
     this.reason = reason;
+  }
+}
+
+/**
+ * An `*AndWait` call made with `requireAttribution: true` could not track its
+ * delivery's own turn, so it refused to wait identity-wide.
+ *
+ * The delivery was ADMITTED: the work was handed to the identity and will
+ * run, or already ran. Keep `admission` (the full send/dispatch result) and
+ * do not redispatch it. `code` and `reason` carry the typed `turnUnavailable`
+ * reason (`autonomous_host`, `runtime_refused`, ...), or are `null` when the
+ * gateway predates turn tickets. Without `requireAttribution` the call waits
+ * identity-wide instead and resolves a non-attributed result.
+ */
+export class TurnTrackingUnavailableError extends MobKitError {
+  readonly identity: string;
+  readonly operation: string;
+  readonly admission: unknown;
+  readonly code: string | null;
+  readonly reason: string | null;
+
+  constructor(
+    identity: string,
+    operation: string,
+    admission: unknown,
+    code: string | null,
+    reason: string | null,
+  ) {
+    const detail = code !== null ? `${code}: ${reason}` : "no turn ticket returned";
+    super(
+      `${operation} for identity ${identity} was admitted but its turn ` +
+        `cannot be tracked (${detail}); the admission result is retained, ` +
+        `do not redispatch`,
+    );
+    this.name = "TurnTrackingUnavailableError";
+    this.identity = identity;
+    this.operation = operation;
+    this.admission = admission;
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Observing an ADMITTED delivery's turn failed for a transport or RPC reason
+ * (the gateway did not answer the wait), and retrying that exact observation
+ * ran out of the caller's deadline.
+ *
+ * The turn may still run, or may already have completed. `admission` is the
+ * full send/dispatch result and `ticket` names the turn (`null` only on the
+ * identity-wide wait). Read the turn later with `waitForTurn(ticket)` or
+ * `turnResult(ticket)`; never redispatch the business work because of this
+ * error. `cause` is the last observation failure and `attempts` counts
+ * observation tries.
+ */
+export class PostAdmissionObservationError extends MobKitError {
+  readonly identity: string;
+  readonly operation: string;
+  readonly admission: unknown;
+  readonly ticket: string | null;
+  readonly attempts: number;
+
+  constructor(
+    identity: string,
+    operation: string,
+    admission: unknown,
+    ticket: string | null,
+    attempts: number,
+    cause: unknown,
+  ) {
+    const turn = ticket !== null ? `turn ${ticket}` : "its turn";
+    super(
+      `${operation} for identity ${identity} was admitted, but observing ` +
+        `${turn} failed after ${attempts} attempt(s); the admission result is ` +
+        `retained, do not redispatch`,
+      { cause },
+    );
+    this.name = "PostAdmissionObservationError";
+    this.identity = identity;
+    this.operation = operation;
+    this.admission = admission;
+    this.ticket = ticket;
+    this.attempts = attempts;
+  }
+}
+
+/**
+ * A ticketed turn did not settle by the caller's deadline. From an
+ * `*AndWait` call it carries `admission` (the send/dispatch result) so the
+ * turn can be read later instead of redispatched.
+ */
+export class TurnWaitTimeoutError extends MobKitError {
+  readonly identity: string;
+  readonly ticket: string;
+  readonly timeoutMs: number;
+  /** The send/dispatch result when an `*AndWait` call threw this, else `null`. */
+  admission: unknown = null;
+
+  constructor(identity: string, ticket: string, timeoutMs: number) {
+    super(
+      `turn ${ticket} of identity ${identity} did not complete within ` +
+        `${timeoutMs}ms`,
+    );
+    this.name = "TurnWaitTimeoutError";
+    this.identity = identity;
+    this.ticket = ticket;
+    this.timeoutMs = timeoutMs;
   }
 }
 

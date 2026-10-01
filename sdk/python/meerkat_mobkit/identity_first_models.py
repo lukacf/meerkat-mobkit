@@ -1242,6 +1242,29 @@ class TurnResult:
 
 
 @dataclass(frozen=True)
+class AwaitedTurn:
+    """What a ``*_and_wait_outcome`` call observed after its delivery.
+
+    ``attributed`` says whether ``text`` provably belongs to THIS delivery's
+    turn. ``True``: the turn was tracked by ``ticket`` and ``text`` is its own
+    committed output (``output_status`` says how; ``None`` text means it
+    committed none). ``False``: the delivery could not be tracked
+    (``untracked_code`` is the gateway's ``turn_unavailable.code``, ``None``
+    for a gateway predating turn tickets), so the call waited on the
+    identity-wide completion cursor and ``text`` is the session's latest
+    output, which another delivery's turn (a peer message, a scheduled turn)
+    may have produced. ``admission`` is always the send/dispatch result.
+    """
+
+    text: str | None
+    attributed: bool
+    admission: Any
+    ticket: str | None = None
+    output_status: TurnOutputStatus | None = None
+    untracked_code: str | None = None
+
+
+@dataclass(frozen=True)
 class IdentityInspection:
     """Rich inspection of an identity's current execution state."""
 

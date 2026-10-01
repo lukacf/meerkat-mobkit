@@ -115,6 +115,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
+  another turn's output as attributed and never lose an admitted delivery.
+  Any other peer's or scheduled turn can satisfy the identity-wide wait used
+  for an untracked delivery, and an observation error after a successful
+  admission (for example `observation_lane_saturated`) discarded the
+  `DispatchResult`, inviting callers to redispatch business work.
+  - An untracked delivery (any delivered `turn_unavailable.code`, including
+    `autonomous_host`, the default mode, or a gateway predating turn
+    tickets) keeps the identity-wide wait and its
+    `TurnTrackingUnavailableWarning`, now naming the code, and the typed
+    outcome says the result is not attributed. Nothing raises by default
+    that did not before; `require_attribution` opts into raising (see
+    Added).
+  - A transport or RPC failure of the exact-ticket wait retries only that
+    ticket's observation, with bounded backoff, until the caller's deadline,
+    then raises `PostAdmissionObservationError` with `admission`, `ticket`
+    and the last failure as its cause. The delivery is never repeated.
+  - Every error these calls raise after admission keeps its type and carries
+    the exact `admission` (and `ticket`, `None`/`null` when untracked):
+    `TurnFailedError`, `TurnUnknownError`, `WaitEndedError`,
+    `TurnNotDeliveredError`, the identity-wide wait's missing-baseline,
+    superseded-incarnation and live-alias errors, a raw persistent-transport
+    timeout or closed-process error, and in Python a caller's
+    `asyncio.CancelledError` (the same instance, re-raised). A turn still
+    pending at the deadline raises `TurnWaitTimeoutError` (a Python
+    `TimeoutError`); the Python identity-wide deadline raises it too.
+  - The server-side `mobkit/wait_for_turn` stays the primary wait; only the
+    exact-ticket `mobkit/turn_result` poll remains as the fallback for
+    gateways without it.
 - Console: the chat turn-navigation rail no longer draws a gray capsule track
   behind its ticks; the ticks stand on their own.
 
@@ -289,6 +318,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
+  `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
+  and `sendAndWaitOutcome` / `dispatchAndWaitOutcome` (TypeScript) return
+  `AwaitedTurn` with `text`, `attributed` (whether the text provably belongs
+  to this delivery's turn), `admission`, `ticket`, `output_status` and
+  `untracked_code`. The plain `*_and_wait` methods return its text.
+- `require_attribution=True` (Python) / `requireAttribution: true`
+  (TypeScript) on the wait helpers raises `TurnTrackingUnavailableError` in
+  every untracked case instead of waiting identity-wide.
+- Error types `TurnTrackingUnavailableError`, `PostAdmissionObservationError`
+  and `TurnWaitTimeoutError` in both SDKs.
 
 - `mobkit/stop_member_run` relays meerkat's run-fenced Stop
   (`MobHandle::stop_member_run`, lukacf/meerkat#1279) on the unified RPC and

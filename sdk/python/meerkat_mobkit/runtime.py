@@ -138,8 +138,33 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 # Transport allowance beyond a server-side wait's own deadline, so the
 # gateway's typed answer at the deadline arrives before the transport gives up.
 _SERVER_WAIT_TRANSPORT_HEADROOM_SECONDS = 5.0
+# Backoff between exact-ticket observation retries after an admitted
+# delivery's wait failed for a transport or RPC reason; bounded by the
+# caller's remaining deadline.
+_OBSERVATION_RETRY_INITIAL_SECONDS = 0.1
+_OBSERVATION_RETRY_MAX_SECONDS = 2.0
+# Failures of the observation itself, as opposed to the turn's typed outcome
+# (failed, unknown, wait ended, deadline). The persistent transport reports a
+# response timeout or a closed stdout as RuntimeError and a dead subprocess as
+# an RPC error.
+_OBSERVATION_FAILURES = (RpcError, TransportError, NotConnectedError, RuntimeError)
 
 
+def _attach_admission(error: BaseException, admission: Any, ticket: str | None) -> None:
+    """Record the admitted delivery on a failure raised after admission.
+
+    The error keeps its type and is re-raised by the caller unchanged; only
+    ``admission`` and ``ticket`` are added where not already set, so a caller
+    can keep the receipt instead of redispatching the work."""
+    try:
+        if getattr(error, "admission", None) is None:
+            error.admission = admission  # type: ignore[attr-defined]
+        if getattr(error, "ticket", None) is None:
+            error.ticket = ticket  # type: ignore[attr-defined]
+    except AttributeError:
+        # An exception type with __slots__ cannot carry the receipt; it still
+        # propagates unchanged.
+        pass
 def _next_request_id(method: str) -> str:
     return f"{method}:{next(_request_counter)}"
 
@@ -1481,29 +1506,66 @@ class IdentityAgentHandle:
         *,
         timeout: float = 90,
         poll_interval: float = 0.5,
+        require_attribution: bool = False,
     ) -> str | None:
-        """Send, then wait for the turn that send started and return ITS output.
+        """Send, then wait for the turn that send started and return its output.
 
-        The send is tracked by ticket (``track_turn=True``), so the wait is
-        per-admission: another delivery to this identity cannot satisfy it,
-        and the output comes from this turn's own committed run result.
-        Returns the turn's text, or ``None`` when it committed none. Text cut
-        at the gateway's bound emits
-        :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`; a turn
-        that completed without output of its own returns ``None`` with
-        :class:`~meerkat_mobkit.errors.TurnOutputUnavailableWarning` (use
-        :meth:`wait_for_turn` for the typed result).
+        Returns the text of :meth:`send_and_wait_outcome`; use that method for
+        the typed :class:`~meerkat_mobkit.AwaitedTurn`, which says whether the
+        text is attributed to this send. The contract:
 
-        When the gateway cannot track the turn (an ``autonomous_host`` member,
-        an externally bound member, an older gateway), the send is still
-        delivered exactly once and this falls back to the identity-wide cursor
-        wait, emitting
-        :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning` with
-        the typed reason.
+        - Tracked (a ``turn_driven`` member): the send carries a turn ticket
+          and the wait is per-admission, so another delivery to this identity
+          cannot satisfy it and the text is this turn's own committed output
+          (``None`` when it committed none). Text cut at the gateway's bound
+          emits :class:`~meerkat_mobkit.errors.TurnOutputTruncatedWarning`; a
+          turn that completed without output of its own returns ``None`` with
+          :class:`~meerkat_mobkit.errors.TurnOutputUnavailableWarning`.
+        - Untracked (an ``autonomous_host`` member, the default mode; an
+          externally bound member; host human input; a bridge that cannot
+          report output; ``runtime_refused``; ``session_rotated``; a gateway
+          predating turn tickets): the call waits on the identity-wide
+          completion cursor, as before, and emits
+          :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableWarning`
+          naming the ``turn_unavailable`` code. That text is NOT attributed:
+          another delivery's turn may have produced it
+          (``AwaitedTurn.attributed`` is ``False`` and
+          ``AwaitedTurn.untracked_code`` carries the code).
+        - ``require_attribution=True`` raises
+          :class:`~meerkat_mobkit.errors.TurnTrackingUnavailableError` in
+          every untracked case instead of waiting identity-wide.
+        - ``not_delivered`` (nothing ran) raises
+          :class:`~meerkat_mobkit.errors.TurnNotDeliveredError`.
+
+        The send happens exactly once; nothing here ever resends. Every
+        failure after admission carries the send result as ``admission``:
+        a transport or RPC failure of the exact-ticket wait is retried, for
+        that ticket only, until ``timeout`` and then raises
+        :class:`~meerkat_mobkit.errors.PostAdmissionObservationError` (with
+        ``ticket``); ``TurnFailedError`` / ``TurnUnknownError`` /
+        ``WaitEndedError`` carry it; a turn still pending at ``timeout``
+        raises :class:`~meerkat_mobkit.errors.TurnWaitTimeoutError` (a
+        ``TimeoutError``).
         """
-        result = await self.send(content, track_turn=True)
-        return await self._wait_for_ticket_or_admission(
-            result, "send", timeout=timeout, poll_interval=poll_interval,
+        return (await self._send_outcome(
+            content, timeout=timeout, poll_interval=poll_interval,
+            require_attribution=require_attribution,
+        )).text
+
+    async def send_and_wait_outcome(
+        self,
+        content: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`send_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn` (``text``, ``attributed``,
+        ``admission``, ``ticket``, ``output_status``, ``untracked_code``)."""
+        return await self._send_outcome(
+            content, timeout=timeout, poll_interval=poll_interval,
+            require_attribution=require_attribution,
         )
 
     async def dispatch_and_wait(
@@ -1512,12 +1574,29 @@ class IdentityAgentHandle:
         *,
         timeout: float = 90,
         poll_interval: float = 0.5,
+        require_attribution: bool = False,
     ) -> str | None:
-        """Dispatch, then wait for the turn it started and return ITS output
-        (per-admission, as :meth:`send_and_wait`)."""
-        result = await self.dispatch(dispatch_input, track_turn=True)
-        return await self._wait_for_ticket_or_admission(
-            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+        """Dispatch, then wait for the turn it started and return its output
+        (the contract of :meth:`send_and_wait`; the typed form is
+        :meth:`dispatch_and_wait_outcome`)."""
+        return (await self._dispatch_outcome(
+            dispatch_input, timeout=timeout, poll_interval=poll_interval,
+            require_attribution=require_attribution,
+        )).text
+
+    async def dispatch_and_wait_outcome(
+        self,
+        dispatch_input: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`dispatch_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn`."""
+        return await self._dispatch_outcome(
+            dispatch_input, timeout=timeout, poll_interval=poll_interval,
+            require_attribution=require_attribution,
         )
 
     async def dispatch_text_and_wait(
@@ -1529,54 +1608,228 @@ class IdentityAgentHandle:
         idempotency_key: str | None = None,
         timeout: float = 90,
         poll_interval: float = 0.5,
+        require_attribution: bool = False,
     ) -> str | None:
-        """:meth:`dispatch_text` plus the per-admission wait, in one call."""
+        """:meth:`dispatch_text` plus the wait, in one call (the contract of
+        :meth:`send_and_wait`; the typed form is
+        :meth:`dispatch_text_and_wait_outcome`)."""
+        return (await self._dispatch_text_outcome(
+            text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key, timeout=timeout,
+            poll_interval=poll_interval,
+            require_attribution=require_attribution,
+        )).text
+
+    async def dispatch_text_and_wait_outcome(
+        self,
+        text: str,
+        *,
+        origin: str = "system",
+        correlation_id: str | None = None,
+        idempotency_key: str | None = None,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+        require_attribution: bool = False,
+    ) -> Any:
+        """:meth:`dispatch_text_and_wait`, returning the typed
+        :class:`~meerkat_mobkit.AwaitedTurn`."""
+        return await self._dispatch_text_outcome(
+            text, origin=origin, correlation_id=correlation_id,
+            idempotency_key=idempotency_key, timeout=timeout,
+            poll_interval=poll_interval,
+            require_attribution=require_attribution,
+        )
+
+    # Each public method reaches the warning through exactly one of these
+    # helpers, so the warnings point at the caller's line.
+
+    async def _send_outcome(self, content: Any, **wait: Any) -> Any:
+        result = await self.send(content, track_turn=True)
+        return await self._await_admitted(result, "send", **wait)
+
+    async def _dispatch_outcome(self, dispatch_input: Any, **wait: Any) -> Any:
+        result = await self.dispatch(dispatch_input, track_turn=True)
+        return await self._await_admitted(result, "dispatch", **wait)
+
+    async def _dispatch_text_outcome(
+        self,
+        text: str,
+        *,
+        origin: str,
+        correlation_id: str | None,
+        idempotency_key: str | None,
+        **wait: Any,
+    ) -> Any:
         result = await self.dispatch_text(
             text, origin=origin, correlation_id=correlation_id,
             idempotency_key=idempotency_key, track_turn=True,
         )
-        return await self._wait_for_ticket_or_admission(
-            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
-        )
+        return await self._await_admitted(result, "dispatch", **wait)
 
-    async def _wait_for_ticket_or_admission(
+    async def _await_admitted(
         self,
         result: Any,
         operation: str,
         *,
         timeout: float,
         poll_interval: float,
-    ) -> str | None:
+        require_attribution: bool,
+    ) -> Any:
+        """Wait for an admitted delivery and say whether the result is its own.
+
+        Warnings raised here are attributed four frames up: this method, the
+        ``_*_outcome`` helper, the public method, then the caller."""
+        from .identity_first_models import AwaitedTurn
         ticket = getattr(result, "turn_ticket", None)
         if ticket is not None:
-            turn = await self.wait_for_turn(
-                ticket, timeout=timeout, poll_interval=poll_interval,
+            turn = await self._observe_admitted_turn(
+                result, ticket, operation, timeout=timeout, poll_interval=poll_interval,
             )
-            return self._text_of_turn(turn, operation)
-        from .errors import TurnNotDeliveredError, TurnTrackingUnavailableWarning
+            return AwaitedTurn(
+                text=self._text_of_turn(turn, operation, stacklevel=5),
+                attributed=True,
+                admission=result,
+                ticket=ticket,
+                output_status=turn.output_status,
+            )
+        from .errors import (
+            TurnNotDeliveredError,
+            TurnTrackingUnavailableError,
+            TurnTrackingUnavailableWarning,
+        )
         unavailable = getattr(result, "turn_unavailable", None)
         if unavailable is not None and not unavailable.delivered:
-            raise TurnNotDeliveredError(
+            refused = TurnNotDeliveredError(
                 self._identity, operation, unavailable.code, unavailable.reason,
             )
-        reason = (
-            f"{unavailable.code}: {unavailable.reason}"
-            if unavailable is not None
+            refused.admission = result
+            raise refused
+        code = unavailable.code if unavailable is not None else None
+        reason = unavailable.reason if unavailable is not None else None
+        if require_attribution:
+            raise TurnTrackingUnavailableError(
+                self._identity, operation, result, code, reason,
+            )
+        detail = (
+            f"{code}: {reason}"
+            if code is not None
             else "the gateway returned no turn ticket (it predates turn tickets)"
         )
         warnings.warn(
             f"{operation} for identity {self._identity!r} could not track its "
-            f"own turn ({reason}); waiting on the identity-wide completion "
+            f"own turn ({detail}); waiting on the identity-wide completion "
             "cursor instead, which another delivery's completion can also "
-            "satisfy",
+            "satisfy, so the result is not attributed to this delivery",
             TurnTrackingUnavailableWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
-        return await self._wait_for_admission(
-            result, operation, timeout=timeout, poll_interval=poll_interval,
+        from .errors import PostAdmissionObservationError, TurnWaitTimeoutError
+        try:
+            text = await self._wait_for_admission(
+                result, operation, timeout=timeout, poll_interval=poll_interval,
+            )
+        # RPC and transport failures are observation failures. The cursor
+        # path's own errors (a wait that ended, no baseline, a superseded
+        # incarnation, a live alias, the persistent transport's plain
+        # RuntimeError on a response timeout or closed stdout) and caller
+        # cancellation keep their type and semantics; each still carries the
+        # admission, with no ticket, so the caller never redispatches.
+        except (RpcError, TransportError, NotConnectedError) as err:
+            raise PostAdmissionObservationError(
+                self._identity, operation, result, None, attempts=1,
+            ) from err
+        except TimeoutError as expired:
+            raise TurnWaitTimeoutError(
+                self._identity, None, timeout, result,
+            ) from expired
+        except BaseException as failure:
+            _attach_admission(failure, result, None)
+            raise
+        return AwaitedTurn(
+            text=text, attributed=False, admission=result, untracked_code=code,
         )
 
-    def _text_of_turn(self, turn: Any, operation: str) -> str | None:
+    async def _observe_admitted_turn(
+        self,
+        result: Any,
+        ticket: str,
+        operation: str,
+        *,
+        timeout: float,
+        poll_interval: float,
+    ) -> Any:
+        """Wait for an admitted delivery's own turn, by its ticket only.
+
+        A transport or RPC failure of the wait retries the same exact-ticket
+        observation, with bounded backoff, until the caller's deadline; the
+        delivery is never repeated. The turn's typed outcomes (failed,
+        unknown, wait ended, still pending at the deadline) are raised with
+        the admission result attached."""
+        deadline = time.monotonic() + timeout
+        try:
+            return await self._observe_admitted_turn_loop(
+                result, ticket, operation, deadline, timeout, poll_interval,
+            )
+        # Caller cancellation (during the wait or a retry backoff) and any
+        # unexpected failure keep their type and propagate unchanged, with
+        # the admission and ticket attached. Typed outcomes already carry it.
+        except BaseException as failure:
+            _attach_admission(failure, result, ticket)
+            raise
+
+    async def _observe_admitted_turn_loop(
+        self,
+        result: Any,
+        ticket: str,
+        operation: str,
+        deadline: float,
+        timeout: float,
+        poll_interval: float,
+    ) -> Any:
+        from .errors import (
+            PostAdmissionObservationError,
+            TurnFailedError,
+            TurnUnknownError,
+            TurnWaitTimeoutError,
+            WaitEndedError,
+        )
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                return await self.wait_for_turn(
+                    ticket,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                    poll_interval=poll_interval,
+                )
+            except (TurnFailedError, TurnUnknownError, WaitEndedError) as outcome:
+                outcome.admission = result
+                raise
+            except TimeoutError as expired:
+                raise TurnWaitTimeoutError(
+                    self._identity, ticket, timeout, result,
+                ) from expired
+            except _OBSERVATION_FAILURES as failure:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PostAdmissionObservationError(
+                        self._identity, operation, result, ticket, attempts=attempts,
+                    ) from failure
+                _log.debug(
+                    "%s for identity %r: observing admitted turn %s failed "
+                    "(attempt %d), retrying the exact-ticket wait: %s",
+                    operation, self._identity, ticket, attempts, failure,
+                )
+                backoff = min(
+                    _OBSERVATION_RETRY_INITIAL_SECONDS * (2 ** min(attempts - 1, 5)),
+                    _OBSERVATION_RETRY_MAX_SECONDS,
+                    remaining,
+                )
+                await asyncio.sleep(backoff)
+
+    def _text_of_turn(
+        self, turn: Any, operation: str, *, stacklevel: int = 4,
+    ) -> str | None:
         """The ``*_and_wait`` return value for a completed turn: its text, or
         ``None`` when it committed none. Truncated text and "no output of its
         own" are never returned silently: each emits a typed warning."""
@@ -1588,7 +1841,7 @@ class IdentityAgentHandle:
                     f"{operation} for identity {self._identity!r}: turn "
                     f"{turn.ticket} returned text cut at the gateway's bound",
                     TurnOutputTruncatedWarning,
-                    stacklevel=4,
+                    stacklevel=stacklevel,
                 )
             return turn.output
         if turn.output_status is TurnOutputStatus.EMPTY:
@@ -1599,7 +1852,7 @@ class IdentityAgentHandle:
             f"({turn.output_status.value if turn.output_status else 'unknown'}); "
             "returning None",
             TurnOutputUnavailableWarning,
-            stacklevel=4,
+            stacklevel=stacklevel,
         )
         return None
 

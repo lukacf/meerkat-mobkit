@@ -185,10 +185,11 @@ luka = rt.agent("identity:luka")
 # On turn_driven members (runtime_mode = "turn_driven"), send_and_wait /
 # dispatch_and_wait wait for the turn they started, by its turn ticket, and
 # return that turn's own output. On autonomous_host members (the default
-# mode) the delivery still happens once, but the call falls back to the
-# identity-wide wait with a TurnTrackingUnavailableWarning, and another
-# delivery can satisfy it. Never wait by comparing output text: an agent may
-# answer the same thing twice.
+# mode) the delivery still happens once, but the turn cannot be tracked: the
+# call waits identity-wide with a TurnTrackingUnavailableWarning, and
+# dispatch_text_and_wait_outcome(...).attributed is False because another
+# delivery can satisfy that wait. Never wait by comparing output text: an
+# agent may answer the same thing twice.
 output = await triage.dispatch_text_and_wait(
     "New event from connector", origin="connector", timeout=60,
 )

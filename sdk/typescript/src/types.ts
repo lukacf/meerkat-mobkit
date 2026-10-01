@@ -3071,6 +3071,28 @@ const TURN_OUTPUT_STATUSES: readonly TurnOutputStatus[] = [
  * `mobkit/turn_result`: one ticketed turn's state and its OWN output, from
  * that turn's committed run result (never the session's latest text).
  */
+/**
+ * What an `*AndWaitOutcome` call observed after its delivery.
+ *
+ * `attributed` says whether `text` provably belongs to THIS delivery's turn.
+ * `true`: the turn was tracked by `ticket` and `text` is its own committed
+ * output (`outputStatus` says how; `null` text means it committed none).
+ * `false`: the delivery could not be tracked (`untrackedCode` is the
+ * gateway's `turnUnavailable.code`, `null` for a gateway predating turn
+ * tickets), so the call waited on the identity-wide completion cursor and
+ * `text` is the session's latest output, which another delivery's turn (a
+ * peer message, a scheduled turn) may have produced. `admission` is always
+ * the send/dispatch result.
+ */
+export interface AwaitedTurn {
+  text: string | null;
+  attributed: boolean;
+  admission: SendResult | DispatchResult;
+  ticket: string | null;
+  outputStatus: TurnOutputStatus | null;
+  untrackedCode: string | null;
+}
+
 export interface TurnResult {
   readonly identity: string;
   readonly ticket: string;

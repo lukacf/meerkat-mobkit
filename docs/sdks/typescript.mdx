@@ -53,6 +53,28 @@ The recommended completion barrier is a tracked delivery plus its ticket:
 true })` followed by `waitForTurn(identity, result.turnTicket)`. It reads only
 the ticket ledger and returns that turn's own output.
 
+`sendAndWaitOutcome` and `dispatchAndWaitOutcome` resolve the typed
+`AwaitedTurn` (`text`, `attributed`, `admission`, `ticket`, `outputStatus`,
+`untrackedCode`); `sendAndWait` / `dispatchAndWait` resolve its `text`. When
+the delivery returns no ticket (any delivered `turnUnavailable.code`, such
+as `autonomous_host`, the default mode, or a gateway predating turn tickets),
+the call waits on the identity-wide completion cursor with a
+`TurnTrackingUnavailableWarning` naming the code: `attributed` is `false`
+because another delivery's turn may have produced the text, and
+`untrackedCode` carries the code. `requireAttribution: true` throws
+`TurnTrackingUnavailableError` (carrying `admission`) in every untracked case
+instead. `not_delivered` (nothing ran) throws `TurnNotDeliveredError`.
+
+The delivery is never repeated. A transport or RPC failure of the
+exact-ticket wait is retried for that ticket only until `timeoutMs`, then
+throws `PostAdmissionObservationError` with `admission`, `ticket` and the
+last failure as `cause`. Every error an `*AndWait` call throws after
+admission keeps its type and carries `admission` (and `ticket`, `null` when
+untracked): `TurnFailedError`, `TurnUnknownError`, `WaitEndedError`,
+`TurnWaitTimeoutError` (a turn still pending at the deadline), and on the
+identity-wide wait its deadline, missing-baseline and superseded-incarnation
+errors and a raw transport error.
+
 `waitForCompletion(identity, baseline)` and `waitUntilReady(identities)` are
 identity-wide: any completion on the identity satisfies them.
 
