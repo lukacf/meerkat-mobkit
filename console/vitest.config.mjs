@@ -85,6 +85,7 @@ export default defineConfig({
       "console/src/lib/use-voice-controller.test.tsx",
       "console/src/panels/VoiceBar.test.tsx",
       "console/src/perf/typing-lag.bench.test.tsx",
+      "console/src/lib/panel-refresh.test.tsx",
       "console/src/lib/identity-log.test.ts",
       "packages/console-core/src/dock.test.ts",
       "packages/console-components/src/conversation/council-card.test.tsx",
