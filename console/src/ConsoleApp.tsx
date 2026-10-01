@@ -209,6 +209,8 @@ interface ConsoleAppProps {
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
 type AccessPanelData = {
+  scope: string;
+  loading: boolean;
   status: ConsoleAccessStatus | null;
   config: ConsoleAccessConfig | null;
   error: string | null;
@@ -776,6 +778,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     audit: [],
   });
   const [accessData, setAccessData] = React.useState<AccessPanelData>({
+    scope: "", loading: false,
     status: null,
     config: null,
     error: null,
@@ -2551,28 +2554,46 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
 
+  const accessScope = JSON.stringify([baseUrl, storageNamespace, experience?.runtime_id, experience?.access?.subject]);
+  const accessScopeRef = React.useRef(accessScope);
+  accessScopeRef.current = accessScope;
+  const accessRefreshVersion = React.useRef(0);
+  const visibleAccessData = accessData.scope === accessScope ? accessData : null;
+  React.useEffect(() => {
+    accessRefreshVersion.current += 1;
+    setAccessData({ scope: accessScope, loading: false, status: null, config: null, error: null });
+  }, [accessScope, experience?.access?.can_administer]);
   const refreshAccessData = React.useCallback(async () => {
+    if (accessScope !== accessScopeRef.current) return;
+    const version = ++accessRefreshVersion.current;
+    const isCurrent = () => version === accessRefreshVersion.current && accessScope === accessScopeRef.current;
     const accessTarget = controlWorkbenchTarget("access");
+    setAccessData(current => ({
+      scope: accessScope, loading: true, error: null,
+      status: current.scope === accessScope ? current.status : null,
+      config: current.scope === accessScope ? current.config : null,
+    }));
+    let status: ConsoleAccessStatus | null = null;
     try {
-      const status =
-        ((await executeHeadlessCommand(
-          CONSOLE_COMMAND_NAMES.accessStatus,
-          accessTarget,
-        )) as ConsoleAccessStatus | null) || null;
+      status = ((await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.accessStatus, accessTarget)) as ConsoleAccessStatus | null) || null;
+      if (!isCurrent()) return;
       let config: ConsoleAccessConfig | null = null;
       if (status?.available && status?.can_administer) {
-        const result = (await executeHeadlessCommand(
-          CONSOLE_COMMAND_NAMES.getAccessConfig,
-          accessTarget,
-        )) as { config?: ConsoleAccessConfig } | null;
+        const result = (await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.getAccessConfig, accessTarget)) as { config?: ConsoleAccessConfig; revision?: number } | null;
         config = result?.config || null;
+        if (result?.revision !== undefined) status = { ...status, revision: result.revision };
       }
-      setAccessData({ status, config, error: null });
+      if (isCurrent()) setAccessData({ scope: accessScope, loading: false, status, config, error: null });
     } catch (err) {
-      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      if (!isCurrent()) return;
+      const failure = classifyConsoleSendFailure(err);
+      const forbidden = failure.kind === "access_denied" || failure.kind === "unauthenticated";
+      setAccessData(current => ({ ...current, loading: false, error: errorMessage(err),
+        ...(forbidden ? { status: null, config: null } : {}),
+      }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl]);
+  }, [baseUrl, accessScope]);
 
   const refreshMemoryData = React.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
@@ -2906,18 +2927,27 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         | typeof CONSOLE_COMMAND_NAMES.deleteAccessGroup,
       params: Record<string, unknown>,
     ) => {
+      if (accessData.scope !== accessScope || accessData.loading || accessData.error
+          || accessData.status?.available !== true || accessData.status.can_administer !== true
+          || experience?.access?.can_administer !== true || frontendReadOnly
+          || experience?.console_policy?.read_only === true) return false;
+      let mutationError: string | null = null;
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
-        setAccessData((current) => ({ ...current, error: null }));
       } catch (err) {
-        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+        mutationError = errorMessage(err);
       }
+      if (accessScope !== accessScopeRef.current) return false;
       await refreshAccessData();
-      // Enforcement may have changed what this caller can see.
+      if (accessScope !== accessScopeRef.current) return false;
       await loadExperience().catch(() => {});
+      if (mutationError && accessScope === accessScopeRef.current) {
+        setAccessData(current => ({ ...current, error: mutationError }));
+      }
+      return mutationError === null;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, refreshAccessData, loadExperience],
+    [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only],
   );
 
   const refreshTopologyData = React.useCallback(async () => {
@@ -4919,9 +4949,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (target.kind === "access")
       return (
         <AccessPanel
-          status={accessData.status}
-          config={accessData.config}
-          error={accessData.error}
+          key={accessScope}
+          status={experience?.access?.can_administer === true ? visibleAccessData?.status ?? null : null}
+          config={visibleAccessData?.config ?? null}
+          error={visibleAccessData?.error}
+          loading={visibleAccessData?.loading ?? true}
           readOnly={frontendReadOnly || experience?.console_policy?.read_only === true}
           agents={agents.map((agent) => ({
             identity: agent.identity || agent.member_id,
@@ -4929,41 +4961,34 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           }))}
           onRefresh={() => void refreshAccessData()}
           onSetEnabled={(enabled) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
           }
           onSaveAdmins={(admins) => {
             const config = {
               ...(accessData.config || {}),
               admins,
             };
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
+            return runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
           }}
           onUpsertRule={(rule) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
           }
           onDeleteRule={(id) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
           }
           onSaveGroup={(name, group) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
           }
           onDeleteGroup={(name) =>
-            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
+            runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
           }
-          onPreview={async (subject, action, identity) => {
-            try {
-              return (
-                ((await executeHeadlessCommand(
-                  CONSOLE_COMMAND_NAMES.previewAccess,
-                  controlWorkbenchTarget("access"),
-                  identity ? { subject, action, identity } : { subject, action },
-                )) as AccessPreviewResult | null) || null
-              );
-            } catch (err) {
-              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
-              return null;
-            }
-          }}
+          onPreview={async (subject, action, identity) =>
+            ((await executeHeadlessCommand(
+              CONSOLE_COMMAND_NAMES.previewAccess,
+              controlWorkbenchTarget("access"),
+              identity ? { subject, action, identity } : { subject, action },
+            )) as AccessPreviewResult | null) || null
+          }
         />
       );
     if (target.kind === "memory")

@@ -2678,3 +2678,26 @@ span.cc-conversation-turn-preview__file-icon::after {
   font-size: 13px;
   line-height: 1.6;
 }
+
+.cc-operation-feedback {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--_cc-border-soft);
+  border-left: 3px solid var(--_cc-warning);
+  border-radius: var(--_cc-radius-md);
+  background: var(--_cc-surface-soft);
+  color: var(--_cc-foreground);
+  font-size: var(--_cc-text-sm);
+}
+.cc-operation-feedback[data-feedback-kind="audit-unavailable"] {
+  border-left-color: var(--_cc-negative);
+}
+.cc-operation-feedback__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+.cc-operation-feedback p { margin: 6px 0 0; line-height: 1.5; }
+.cc-operation-feedback__reference {
+  display: block;
+  margin-top: 7px;
+  color: var(--_cc-foreground-muted);
+  font-size: var(--_cc-text-xs);
+  overflow-wrap: anywhere;
+}

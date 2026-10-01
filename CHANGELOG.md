@@ -319,6 +319,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The console renders typed operation refusals and outcome-audit failures as
+  distinct, safe notices while preserving the actual tool result.
+
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
   and `sendAndWaitOutcome` / `dispatchAndWaitOutcome` (TypeScript) return
@@ -541,6 +544,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behaviour is unchanged and nothing is replayed. TypeScript: a tracked
   `WaitEndedError` now carries the top-level `ticket` as well as `admission`.
   The docs name the one exception: a thrown value that cannot carry fields.
+
+- Console access uses the server's action catalog and current administrator
+  state. Stale previews and mutation responses cannot replace another account's
+  state; failed saves retain the draft, and typed refusal details stay private
+  in both current and reconstructed conversation history.
 
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,
