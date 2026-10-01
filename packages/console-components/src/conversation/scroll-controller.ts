@@ -58,7 +58,9 @@ type Session = {
   requestedAnchor: string | null;
   awaitingAnchor: boolean;
   missingAnchor: boolean;
-  reveal?: { controller: AbortController; timer: number | null; frame: number | null };
+  /// `confirmed` holds the content version at which the host reported the
+  /// row available; the row is expected in the next content commit.
+  reveal?: { controller: AbortController; timer: number | null; frame: number | null; confirmed?: { version: unknown } };
 };
 
 function cancelReveal(session: Session): void {
@@ -160,7 +162,7 @@ export function useConversationScrollController(options: ConversationScrollContr
       if (!found && session.requestedAnchor !== anchor.rowId) {
         session.requestedAnchor = anchor.rowId;
         cancelReveal(session);
-        const reveal = { controller: new AbortController(), timer: null as number | null, frame: null as number | null };
+        const reveal: NonNullable<Session["reveal"]> = { controller: new AbortController(), timer: null, frame: null };
         session.reveal = reveal;
         const isCurrent = () => sessionRef.current === session && session.reveal === reveal && !reveal.controller.signal.aborted;
         const finish = () => {
@@ -179,8 +181,13 @@ export function useConversationScrollController(options: ConversationScrollContr
               reveal.timer = window.setTimeout(finish, Number.isFinite(timeout) ? Math.max(1, Math.min(timeout!, 60_000)) : 15_000);
               Promise.resolve(result).then((available) => {
                 if (!isCurrent()) return;
-                if (available) reveal.frame = window.requestAnimationFrame(finish);
-                else finish();
+                if (!available) { finish(); return; }
+                // The host has the row; its DOM arrives with its next content
+                // commit, which can land after the next animation frame.
+                // Restore when the row mounts, and give up only if a newer
+                // commit still lacks it (or the timeout above expires).
+                reveal.confirmed = { version: optionsRef.current.contentVersion };
+                applyLayoutRef.current();
               }, finish);
             }
           } else cancelReveal(session);
@@ -188,7 +195,9 @@ export function useConversationScrollController(options: ConversationScrollContr
           cancelReveal(session);
         }
       }
-      if (!found && session.awaitingAnchor) {
+      const promisedCommitLacksRow = !found && session.reveal?.confirmed !== undefined
+        && session.reveal.confirmed.version !== optionsRef.current.contentVersion;
+      if (!found && session.awaitingAnchor && !promisedCommitLacksRow) {
         // Publishing can render again before the host reveal lands. Keep the
         // requested anchor until the host has mounted the promised row.
         publish(false);

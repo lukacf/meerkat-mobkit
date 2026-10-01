@@ -303,6 +303,40 @@ describe("conversation scroll intent", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
   });
+  test("a confirmed reveal waits for the row to mount, even if a frame passes before the host's rows commit", async () => {
+    vi.useFakeTimers();
+    const key = { authority: "identity-seed-commit-race", identity: "agent", conversation: "one", pane: "left" };
+    const view = render(<Harness viewportKey={key} />);
+    userScroll(screen.getByTestId("viewport"), 225);
+    view.rerender(<Harness viewportKey={{ ...key, identity: "other", conversation: "other" }}
+      rows={baseRows.map(row => ({ ...row, id: `other-${row.id}` }))} />);
+    let completeSeed!: (available: boolean) => void;
+    const reveal = vi.fn(() => new Promise<boolean>(resolve => { completeSeed = resolve; }));
+    view.rerender(<Harness viewportKey={key} rows={[]} revealAnchor={reveal} />);
+    const viewport = screen.getByTestId("viewport");
+    // The host has the row in its own frames and says so, but its rows reach
+    // the DOM only on its next commit, after an animation frame has passed.
+    await act(async () => { completeSeed(true); await Promise.resolve(); vi.advanceTimersByTime(40); });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring earlier position");
+    view.rerender(<Harness viewportKey={key} rows={baseRows} revealAnchor={reveal} />);
+    expect(viewport.querySelector('[data-conversation-row-id="row-2"]')!.getBoundingClientRect().top).toBe(-25);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+  test("a confirmed reveal whose next content commit lacks the row reports it unavailable", async () => {
+    vi.useFakeTimers();
+    const key = { authority: "identity-seed-commit-missing", identity: "agent", conversation: "one", pane: "left" };
+    const view = render(<Harness viewportKey={key} />);
+    userScroll(screen.getByTestId("viewport"), 225);
+    view.unmount();
+    let completeSeed!: (available: boolean) => void;
+    const reveal = () => new Promise<boolean>(resolve => { completeSeed = resolve; });
+    const next = render(<Harness viewportKey={key} rows={[]} revealAnchor={reveal} />);
+    await act(async () => { completeSeed(true); await Promise.resolve(); });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring earlier position");
+    next.rerender(<Harness viewportKey={key} rows={baseRows.slice(5)} revealAnchor={reveal} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Earlier position is unavailable");
+  });
   test("reports an empty exhausted seed unavailable only after the host completes its query", async () => {
     vi.useFakeTimers();
     const key = { authority: "identity-seed-exhausted", identity: "agent", conversation: "one", pane: "left" };

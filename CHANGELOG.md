@@ -577,6 +577,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   into one trailing refresh, and only panels in the active tab refresh
   (hidden tabs refresh when shown). Other requests stay at p95 45-55 ms.
 
+- Console: returning to a conversation restores the remembered reading
+  position even when the host's history arrives after the next frame. A
+  host's asynchronous `revealAnchor(true)` was followed by one re-check on
+  the next animation frame; when the host's rows committed later than that,
+  the controller declared the position unavailable, replaced the anchor and
+  left the view at the top of the transcript ("Earlier position is
+  unavailable"). A confirmed reveal now restores when the row actually
+  mounts and reports the position unavailable only if a newer content commit
+  still lacks it, or on the existing timeout.
+
 - `*_and_wait` / `*AndWait` custody follow-up. Python: an SDK warning raised
   after admission (the untracked-wait, truncated-output or no-own-output
   warning) that a caller escalated with `filterwarnings("error")` now carries
