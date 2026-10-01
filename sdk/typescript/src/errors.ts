@@ -349,15 +349,15 @@ export class TurnNotDeliveredError extends MobKitError {
 }
 
 /**
- * An `*AndWait` delivery was ADMITTED, but its turn cannot be tracked and
- * the call will not wait identity-wide: the member is trackable but the
- * gateway refused or lost the ticket (`runtime_refused`, `session_rotated`),
- * or the caller passed `requireAttribution: true`.
+ * An `*AndWait` call made with `requireAttribution: true` could not track its
+ * delivery's own turn, so it refused to wait identity-wide.
  *
- * The work was handed to the identity and will run, or already ran: keep
- * `admission` (the full send/dispatch result) and do not redispatch it.
- * `code` and `reason` carry the typed `turnUnavailable` reason, or are `null`
- * when the gateway returned none.
+ * The delivery was ADMITTED: the work was handed to the identity and will
+ * run, or already ran. Keep `admission` (the full send/dispatch result) and
+ * do not redispatch it. `code` and `reason` carry the typed `turnUnavailable`
+ * reason (`autonomous_host`, `runtime_refused`, ...), or are `null` when the
+ * gateway predates turn tickets. Without `requireAttribution` the call waits
+ * identity-wide instead and resolves a non-attributed result.
  */
 export class TurnTrackingUnavailableError extends MobKitError {
   readonly identity: string;

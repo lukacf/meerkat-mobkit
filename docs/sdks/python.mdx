@@ -223,20 +223,14 @@ The delivery happens exactly once and the call never resends. Every failure
 after admission carries the send/dispatch result as `admission`, so the
 caller keeps the receipt instead of redispatching the work:
 
-- No turn ticket, by cause (`turn_unavailable.code`, below):
-  - Structurally untrackable (`autonomous_host`, the default mode;
-    `externally_bound`, `host_human_input`, `bridge_cannot_report_output`; a
-    gateway that predates turn tickets; future codes): the call waits on the
-    identity-wide completion cursor, emitting
-    `TurnTrackingUnavailableWarning`. That result is NOT attributed: another
-    delivery's completion can satisfy the wait, and the text is the session's
-    latest output.
-  - Trackable but untracked (`runtime_refused`, `session_rotated`):
-    `TurnTrackingUnavailableError` with `code` and `reason`.
-    `allow_identity_wide_fallback=True` waits non-attributed instead.
-  - `require_attribution=True` raises `TurnTrackingUnavailableError` in every
-    untracked case (it cannot be combined with
-    `allow_identity_wide_fallback`).
+- No turn ticket (any delivered `turn_unavailable.code`, below, or a gateway
+  that predates turn tickets): the call waits on the identity-wide completion
+  cursor and emits `TurnTrackingUnavailableWarning` naming the code. That
+  result is NOT attributed: another delivery's completion can satisfy the
+  wait, and the text is the session's latest output. The outcome's
+  `attributed` is `False` and `untracked_code` carries the code.
+  `require_attribution=True` raises `TurnTrackingUnavailableError` (with
+  `code` and `reason`) in every untracked case instead.
 - The exact-ticket wait fails for a transport or RPC reason (for example
   `observation_lane_saturated`): only that ticket's observation is retried,
   with bounded backoff, until `timeout`; then

@@ -78,18 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exhaustive matches must add both arms. `PeerWiringTimedOut.operation` can
   also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
 
-### Breaking (Python and TypeScript SDKs, narrow)
-
-- `send_and_wait` / `dispatch_and_wait` / `dispatch_text_and_wait` (Python)
-  and `sendAndWait` / `dispatchAndWait` (TypeScript) now throw
-  `TurnTrackingUnavailableError` (carrying the admission result) instead of
-  silently waiting identity-wide when a trackable member's delivery comes back
-  untracked with `turn_unavailable.code` `runtime_refused` or
-  `session_rotated`. Pass `allow_identity_wide_fallback=True` /
-  `allowIdentityWideFallback: true` to keep the old wait. The default
-  `autonomous_host` mode, the other structural codes and gateways without
-  tickets are unaffected: they still wait identity-wide.
-
 ### Storage and wire compatibility
 
 - Storage census slots add `resolution: "unverified"` when a bare injected
@@ -133,13 +121,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for an untracked delivery, and an observation error after a successful
   admission (for example `observation_lane_saturated`) discarded the
   `DispatchResult`, inviting callers to redispatch business work.
-  - Untracked deliveries split by cause. A structurally untrackable member
-    (`autonomous_host`, the default mode; `externally_bound`,
-    `host_human_input`, `bridge_cannot_report_output`; a gateway predating
-    turn tickets) keeps the identity-wide wait and its
-    `TurnTrackingUnavailableWarning`, and the typed outcome now says the
-    result is not attributed. A trackable member whose ticket is missing
-    raises (see Breaking).
+  - An untracked delivery (any delivered `turn_unavailable.code`, including
+    `autonomous_host`, the default mode, or a gateway predating turn
+    tickets) keeps the identity-wide wait and its
+    `TurnTrackingUnavailableWarning`, now naming the code, and the typed
+    outcome says the result is not attributed. Nothing raises by default
+    that did not before; `require_attribution` opts into raising (see
+    Added).
   - A transport or RPC failure of the exact-ticket wait retries only that
     ticket's observation, with bounded backoff, until the caller's deadline,
     then raises `PostAdmissionObservationError` with `admission`, `ticket`

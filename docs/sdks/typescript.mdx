@@ -56,20 +56,14 @@ the ticket ledger and returns that turn's own output.
 `sendAndWaitOutcome` and `dispatchAndWaitOutcome` resolve the typed
 `AwaitedTurn` (`text`, `attributed`, `admission`, `ticket`, `outputStatus`,
 `untrackedCode`); `sendAndWait` / `dispatchAndWait` resolve its `text`. When
-the delivery returns no ticket the behaviour depends on why
-(`turnUnavailable.code`):
-
-- Structurally untrackable (`autonomous_host`, the default mode;
-  `externally_bound`, `host_human_input`, `bridge_cannot_report_output`; a
-  gateway predating turn tickets; future codes): the call waits on the
-  identity-wide completion cursor with a `TurnTrackingUnavailableWarning`,
-  and `attributed` is `false` because another delivery's turn may have
-  produced the text.
-- Trackable but untracked (`runtime_refused`, `session_rotated`): throws
-  `TurnTrackingUnavailableError` carrying `admission`, unless
-  `allowIdentityWideFallback: true`.
-- `requireAttribution: true` throws `TurnTrackingUnavailableError` in every
-  untracked case.
+the delivery returns no ticket (any delivered `turnUnavailable.code`, such
+as `autonomous_host`, the default mode, or a gateway predating turn tickets),
+the call waits on the identity-wide completion cursor with a
+`TurnTrackingUnavailableWarning` naming the code: `attributed` is `false`
+because another delivery's turn may have produced the text, and
+`untrackedCode` carries the code. `requireAttribution: true` throws
+`TurnTrackingUnavailableError` (carrying `admission`) in every untracked case
+instead. `not_delivered` (nothing ran) throws `TurnNotDeliveredError`.
 
 The delivery is never repeated. A transport or RPC failure of the
 exact-ticket wait is retried for that ticket only until `timeoutMs`, then

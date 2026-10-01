@@ -4,11 +4,11 @@
  *
  * The incident (MobKit 0.8.42): an admitted dispatch's wait failed with
  * `observation_lane_saturated`, and the admission result was only a local
- * variable, inviting callers to redispatch business work. Untracked
- * deliveries now split by cause: a structurally untrackable member (the
- * default `autonomous_host` mode, or a gateway without tickets) keeps the
- * identity-wide wait, typed as non-attributed and warned; a trackable member
- * whose ticket is missing throws. Every failure after admission carries it.
+ * variable, inviting callers to redispatch business work. An untracked
+ * delivery never throws by default: it keeps the identity-wide wait, typed
+ * as non-attributed with its `turnUnavailable` code and warned; only
+ * `requireAttribution` throws, for every code. Every failure after admission
+ * carries the admission.
  */
 
 import { describe, it } from "node:test";
@@ -161,7 +161,7 @@ async function withWarnings<T>(run: () => Promise<T>): Promise<{ value: T; warni
   }
 }
 
-describe("attribution by cause", () => {
+describe("attribution", () => {
   it("a tracked outcome is attributed", async () => {
     const { rt } = await makeRuntime({ sends: [admitted(TICKET)], waitForTurn: [own("own reply")] });
 
@@ -175,8 +175,14 @@ describe("attribution by cause", () => {
     assert.equal(outcome.admission.turnTicket, TICKET);
   });
 
-  for (const code of ["autonomous_host", "externally_bound", "a_future_code"]) {
-    it(`structural ${code} waits identity-wide, typed as not attributed`, async () => {
+  for (const code of [
+    "autonomous_host",
+    "externally_bound",
+    "runtime_refused",
+    "session_rotated",
+    "a_future_code",
+  ]) {
+    it(`untracked ${code} waits identity-wide, typed as not attributed`, async () => {
       const { rt, count } = await makeRuntime({ sends: [admitted(null, code)] });
 
       const { value: outcome, warnings } = await withWarnings(() =>
@@ -201,38 +207,7 @@ describe("attribution by cause", () => {
     assert.match(warnings[0] ?? "", /predates turn tickets/);
   });
 
-  for (const code of ["runtime_refused", "session_rotated"]) {
-    it(`a missing ticket on a trackable member (${code}) throws with the admission`, async () => {
-      const { rt, count, identityWide } = await makeRuntime({ sends: [admitted(null, code)] });
-
-      await assert.rejects(
-        rt.dispatchAndWait("keeper", { content: "alpha", origin: "system" }, FAST),
-        (error) => {
-          assert.ok(error instanceof TurnTrackingUnavailableError);
-          assert.ok(error instanceof MobKitError);
-          assert.equal(error.code, code);
-          assert.equal(error.reason, `because ${code}`);
-          assert.equal((error.admission as { turnTicket: unknown }).turnTicket, null);
-          return true;
-        },
-      );
-      assert.equal(count("mobkit/dispatch"), 1);
-      assert.equal(identityWide(), 0);
-    });
-  }
-
-  it("a trackable member can opt into the non-attributed wait", async () => {
-    const { rt } = await makeRuntime({ sends: [admitted(null, "runtime_refused")] });
-
-    const { value: outcome } = await withWarnings(() =>
-      rt.sendAndWaitOutcome("keeper", "alpha", { ...FAST, allowIdentityWideFallback: true }),
-    );
-
-    assert.equal(outcome.attributed, false);
-    assert.equal(outcome.untrackedCode, "runtime_refused");
-  });
-
-  for (const code of ["autonomous_host", null]) {
+  for (const code of ["autonomous_host", "runtime_refused", null]) {
     it(`requireAttribution throws when untracked (${code ?? "old gateway"})`, async () => {
       const { rt, count, identityWide } = await makeRuntime({ sends: [admitted(null, code)] });
 
@@ -249,15 +224,6 @@ describe("attribution by cause", () => {
     });
   }
 
-  it("contradictory options are refused before sending", async () => {
-    const { rt, count } = await makeRuntime({ sends: [admitted(TICKET)] });
-
-    await assert.rejects(
-      rt.sendAndWait("keeper", "alpha", { requireAttribution: true, allowIdentityWideFallback: true }),
-      /contradict/,
-    );
-    assert.equal(count("mobkit/send"), 0);
-  });
 });
 
 describe("post-admission observation", () => {

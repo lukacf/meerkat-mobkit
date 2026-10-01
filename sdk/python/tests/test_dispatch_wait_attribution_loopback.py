@@ -289,27 +289,25 @@ async def test_the_default_mode_waits_identity_wide_typed_as_not_attributed(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-async def test_a_missing_ticket_on_a_trackable_member_raises_tracking_unavailable(tmp_path):
+async def test_runtime_refused_also_waits_non_attributed_by_default(tmp_path):
+    """No untracked case raises by default, so callers that worked before
+    keep working; the code rides on the outcome and in the warning."""
     stand_in = _StandIn(tmp_path, {
         "mobkit/dispatch": [{"result": _admitted(None, unavailable="runtime_refused")}],
         **_PEER_COMPLETED,
     })
     runtime = await _runtime(stand_in)
     try:
-        with pytest.raises(TurnTrackingUnavailableError) as raised:
-            await runtime.agent(_IDENTITY).dispatch_text_and_wait(
+        with pytest.warns(TurnTrackingUnavailableWarning, match="runtime_refused"):
+            outcome = await runtime.agent(_IDENTITY).dispatch_text_and_wait_outcome(
                 "process the incident", timeout=5,
             )
     finally:
         await runtime.shutdown()
 
-    error = raised.value
-    assert isinstance(error.admission, DispatchResult)
-    assert error.admission.turn_ticket is None
-    assert (error.code, error.reason) == ("runtime_refused", "because runtime_refused")
+    assert (outcome.text, outcome.attributed) == ("peer reply", False)
+    assert outcome.untracked_code == "runtime_refused"
     assert len(stand_in.calls("mobkit/dispatch")) == 1
-    assert not [r for r in stand_in.requests() if r["method"] in _IDENTITY_WIDE]
-    assert stand_in.calls("mobkit/wait_for_turn") == []
 
 
 @pytest.mark.asyncio
@@ -332,26 +330,6 @@ async def test_require_attribution_raises_on_the_default_mode(tmp_path):
     assert isinstance(raised.value.admission, DispatchResult)
     assert len(stand_in.calls("mobkit/dispatch")) == 1
     assert not [r for r in stand_in.requests() if r["method"] in _IDENTITY_WIDE]
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-async def test_a_trackable_member_can_opt_into_the_non_attributed_wait(tmp_path):
-    stand_in = _StandIn(tmp_path, {
-        "mobkit/dispatch": [{"result": _admitted(None, unavailable="runtime_refused")}],
-        **_PEER_COMPLETED,
-    })
-    runtime = await _runtime(stand_in)
-    try:
-        with pytest.warns(TurnTrackingUnavailableWarning, match="runtime_refused"):
-            output = await runtime.agent(_IDENTITY).dispatch_text_and_wait(
-                "process the incident", timeout=5, allow_identity_wide_fallback=True,
-            )
-    finally:
-        await runtime.shutdown()
-
-    assert output == "peer reply"
-    assert len(stand_in.calls("mobkit/dispatch")) == 1
 
 
 @pytest.mark.asyncio

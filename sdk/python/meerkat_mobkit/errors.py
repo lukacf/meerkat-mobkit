@@ -358,20 +358,16 @@ class TurnNotDeliveredError(MobKitError):
 
 
 class TurnTrackingUnavailableError(MobKitError):
-    """A ``*_and_wait`` delivery was ADMITTED, but its own turn cannot be
-    observed and the call will not wait identity-wide: the member is
-    trackable but the delivery came back untracked (``runtime_refused``,
-    ``session_rotated``), or the caller passed ``require_attribution=True``.
+    """A ``*_and_wait`` call made with ``require_attribution=True`` could not
+    track its delivery's own turn, so it refused to wait identity-wide.
 
-    The work was handed to the identity and will run, or already ran: keep
-    ``admission`` (the full send/dispatch result) and do not redispatch it.
-    ``code`` and ``reason`` carry the typed ``turn_unavailable`` reason, or
-    are ``None`` when the gateway returned no reason at all.
-
-    On a trackable member, ``allow_identity_wide_fallback=True`` waits on the
-    identity-wide completion cursor instead. That wait does NOT attribute the
-    completion it returns: another delivery's turn (a peer message, a
-    scheduled turn) can satisfy it."""
+    The delivery was ADMITTED: the work was handed to the identity and will
+    run, or already ran. Keep ``admission`` (the full send/dispatch result)
+    and do not redispatch it. ``code`` and ``reason`` carry the typed
+    ``turn_unavailable`` reason (``autonomous_host``, ``runtime_refused``,
+    ...), or are ``None`` when the gateway predates turn tickets. Without
+    ``require_attribution`` the call waits identity-wide instead and returns
+    a non-attributed result."""
 
     def __init__(
         self,
@@ -481,7 +477,8 @@ class TurnTrackingUnavailableWarning(RuntimeWarning):
     """A ``*_and_wait`` call could not track its own turn and waited on the
     identity-wide completion cursor, which another delivery's completion can
     also satisfy, so the returned output is not attributed to the delivery
-    (``AwaitedTurn.attributed`` is ``False``). That is the default for a
-    structurally untrackable member (``autonomous_host``, the default mode)
-    or a gateway without tickets; ``require_attribution=True`` raises
-    :class:`TurnTrackingUnavailableError` instead."""
+    (``AwaitedTurn.attributed`` is ``False``; ``untracked_code`` carries the
+    ``turn_unavailable`` code named in the message). That is the default for
+    every untracked delivery (``autonomous_host``, the default mode, among
+    others) and for a gateway without tickets; ``require_attribution=True``
+    raises :class:`TurnTrackingUnavailableError` instead."""
