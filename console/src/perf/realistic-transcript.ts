@@ -324,9 +324,9 @@ export class RealisticTimeline {
   }
 
   /** Live frames of a new streamed reply, in arrival order, with fresh cursors. */
-  streamReply(text: string, chunkChars: number): WireFrame[] {
+  streamReply(text: string, chunkChars: number, startMs?: number): WireFrame[] {
     const i = this.turns + 1_000;
-    const t0 = BASE_MS + i * TURN_SPACING_MS;
+    const t0 = startMs ?? BASE_MS + i * TURN_SPACING_MS;
     const rid = runId(i);
     const mid = messageId(i, 0);
     const frames: WireFrame[] = [];
@@ -380,6 +380,8 @@ export class FixedTimeline {
   }
 
   streamReply(text: string, chunkChars: number): WireFrame[] {
-    return this.live.streamReply(text, chunkChars);
+    // A live reply is newer than everything already in the log.
+    const latest = this.frames.reduce((max, frame) => Math.max(max, Number(frame.timestamp_ms) || 0), 0);
+    return this.live.streamReply(text, chunkChars, latest + 60_000);
   }
 }

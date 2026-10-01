@@ -4787,6 +4787,10 @@ interface TimelineResume {
   compactionOpen: boolean;
 }
 
+/// Full versus continued derivations, read by the real-browser benchmark as
+/// a runner-independent measure of per-token transcript work.
+export const timelineDerivationStats = { full: 0, extended: 0 };
+
 export function deriveTimelineEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
@@ -4795,6 +4799,8 @@ export function deriveTimelineEntries(
 ): TimelineDerivation {
   const extended = previous?.resume ? extendTimelineDerivation(previous, agent, frames, options) : null;
   const next = extended ?? fullTimelineDerivation(agent, frames, options);
+  if (extended) timelineDerivationStats.extended += 1;
+  else timelineDerivationStats.full += 1;
   if (!previous) return next;
   const entries = internEntries(next.entries, previous.entries);
   // The fold reuses its last render for unchanged entries next time; give it

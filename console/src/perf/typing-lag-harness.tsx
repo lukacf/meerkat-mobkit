@@ -14,6 +14,7 @@ import { createRoot } from "react-dom/client";
 
 import { ConsoleApp } from "../ConsoleApp";
 import type { MobKitConsoleTransport } from "../lib/headless";
+import * as adapters from "../lib/adapters";
 import { parseSseFrames } from "../lib/network";
 import type { ConsoleFrame } from "../types";
 import { assistantReply, FixedTimeline, RealisticTimeline, type WireFrame } from "./realistic-transcript";
@@ -119,6 +120,10 @@ declare global {
       push(frame: ConsoleFrame): void;
       /** Stream a long reply as real-shaped text_delta frames, one every `everyMs`. */
       streamReply(everyMs: number, chunkChars?: number): () => void;
+      /** Live frames delivered by streamReply so far. */
+      streamed: number;
+      /** Full and continued transcript derivations (absent on older trees). */
+      derivations(): { full: number; extended: number } | null;
     };
   }
 }
@@ -129,6 +134,11 @@ window.__perf = {
   turns: TURNS,
   frames: timeline.frameCount,
   push: (frame) => live?.(frame),
+  streamed: 0,
+  derivations: () => {
+    const stats = (adapters as unknown as { timelineDerivationStats?: { full: number; extended: number } }).timelineDerivationStats;
+    return stats ? { ...stats } : null;
+  },
   streamReply: (everyMs, chunkChars = 12) => {
     const text = Array.from({ length: 30 }, (_, i) => assistantReply(i)).join("\n\n");
     const frames = timeline.streamReply(text, chunkChars);
@@ -136,6 +146,7 @@ window.__perf = {
     const timer = window.setInterval(() => {
       const frame = frames[index++];
       if (!frame) return window.clearInterval(timer);
+      window.__perf.streamed += 1;
       for (const parsed of toConsoleFrames([frame])) live?.(parsed);
     }, everyMs);
     return () => window.clearInterval(timer);

@@ -23,7 +23,9 @@
 //        [--scenarios idle,streaming] [--budget-p95 idle=16,streaming=40]
 //        [--trace] [--profile]
 //        [--src ../other-tree/console] [--no-fill] [--json out.json]
-//        [--session flowforensics|path/to/session.json]
+//        [--session flowforensics|path/to/session.json] [--expand]
+//        [--max-layout-objects 500] [--max-full-derivations-per-token 0.1]
+//        [--max-turn-renders-per-token 2] [--enforce-timing]
 
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
@@ -48,6 +50,12 @@ const SCENARIOS = String(arg("scenarios", "idle,streaming")).split(",");
 const TRACE = Boolean(arg("trace", false));
 // p95 budget in ms, one number for every scenario or per scenario
 // ("idle=16,streaming=40"). MOBKIT_TYPING_LAG_BUDGET overrides the flag.
+// Wall-clock budgets vary with the runner, so by default they are reported,
+// not enforced; MOBKIT_TYPING_LAG_ENFORCE_TIMING=1 or --enforce-timing makes
+// them failures (local perf work). Structural limits always fail.
+const ENFORCE_TIMING = process.env.MOBKIT_TYPING_LAG_ENFORCE_TIMING === "1" || Boolean(arg("enforce-timing", false));
+const MAX_FULL_DERIVATIONS_PER_TOKEN = arg("max-full-derivations-per-token", null) === null ? null : Number(arg("max-full-derivations-per-token"));
+const MAX_TURN_RENDERS_PER_TOKEN = arg("max-turn-renders-per-token", null) === null ? null : Number(arg("max-turn-renders-per-token"));
 const BUDGET_SPEC = process.env.MOBKIT_TYPING_LAG_BUDGET || arg("budget-p95", null);
 const BUDGET_P95 = BUDGET_SPEC === null || BUDGET_SPEC === true ? null : parseBudget(String(BUDGET_SPEC));
 
@@ -142,6 +150,8 @@ function serve() {
 // keydown-to-after-next-frame probe for composer keystrokes. Trace markers
 // (console.timeStamp) bracket each keystroke window for --trace.
 function installProbe() {
+  // Sink for the console's countRender() calls (a no-op without it).
+  globalThis.__consoleRenderCounts = {};
   window.__lag = { probe: [], events: [], longtasks: [], index: 0 };
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
@@ -277,6 +287,32 @@ async function fillHistory(page) {
   }
 }
 
+// Deterministic work counters: renders by component, transcript
+// derivations, and streamed tokens delivered.
+function workCounters(page) {
+  return page.evaluate(() => ({
+    renders: { ...(globalThis.__consoleRenderCounts || {}) },
+    derivations: window.__perf?.derivations?.() ?? null,
+    streamed: window.__perf?.streamed ?? 0,
+  }));
+}
+
+function workDelta(before, after, keystrokes) {
+  const renders = (name) => (after.renders[name] || 0) - (before.renders[name] || 0);
+  const tokens = after.streamed - before.streamed;
+  const per = (value, n) => (n > 0 ? value / n : 0);
+  const full = after.derivations && before.derivations ? after.derivations.full - before.derivations.full : null;
+  return {
+    tokens,
+    fullDerivations: full,
+    fullDerivationsPerToken: full === null ? null : per(full, tokens),
+    turnRendersPerToken: per(renders("TranscriptTurn"), tokens),
+    rowRendersPerToken: per(renders("MessageRow"), tokens),
+    transcriptRendersPerKeystroke: per(renders("TranscriptView"), keystrokes),
+    rowRendersPerKeystroke: per(renders("MessageRow"), keystrokes),
+  };
+}
+
 async function typeKeys(page, textarea) {
   await textarea.click();
   await page.evaluate(() => {
@@ -284,6 +320,7 @@ async function typeKeys(page, textarea) {
     window.__lag.events.length = 0;
     window.__lag.longtasks.length = 0;
   });
+  const before = await workCounters(page);
   const text = "the quick brown fox jumps over the lazy dog and keeps typing ";
   let seed = 7;
   const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -295,6 +332,7 @@ async function typeKeys(page, textarea) {
     await page.waitForTimeout(ch === " " ? 450 + rand() * 450 : 60 + rand() * 60);
   }
   await page.waitForTimeout(600);
+  const work = workDelta(before, await workCounters(page), KEYS);
   const lag = await page.evaluate(() => window.__lag);
   const typed = await textarea.inputValue();
   await textarea.fill("");
@@ -305,6 +343,7 @@ async function typeKeys(page, textarea) {
     perInteraction.set(key, Math.max(perInteraction.get(key) || 0, e.duration));
   }
   return {
+    work,
     typedOk: typed.length >= KEYS,
     latency: summarize(lag.probe),
     samples: lag.probe.map((ms) => Math.round(ms * 10) / 10),
@@ -453,6 +492,10 @@ function summarizeProfile(profile) {
   return { self: top(self, 25), inclusive: top(inclusive, 45), callers: top(callers, 8) };
 }
 
+function fmt2(n) {
+  return Number.isFinite(n) ? n.toFixed(2) : "-";
+}
+
 function fmt(n) {
   return Number.isFinite(n) ? n.toFixed(1) : "-";
 }
@@ -474,6 +517,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -497,32 +541,43 @@ async function main() {
   }
   if (JSON_OUT) await fs.writeFile(JSON_OUT, JSON.stringify(results, null, 2));
   const failures = [];
-  if (MAX_LAYOUT_OBJECTS !== null) {
-    for (const r of results) {
-      const idle = r.scenarios.idle?.breakdown;
-      if (!idle) failures.push(`turns=${r.turns}: --max-layout-objects needs --trace and the idle scenario`);
-      else if (idle.maxLayoutObjects > MAX_LAYOUT_OBJECTS) {
-        failures.push(`turns=${r.turns} idle: a keystroke laid out ${idle.maxLayoutObjects} layout objects > ${MAX_LAYOUT_OBJECTS}; typing is re-laying out the transcript`);
-      }
-    }
-  }
-  if (BUDGET_P95 !== null || MAX_LAYOUT_OBJECTS !== null) {
-    for (const r of results) {
-      for (const [scenario, m] of Object.entries(r.scenarios)) {
-        if (BUDGET_P95 === null) continue;
-        const budget = budgetFor(scenario);
-        if (!(m.latency.p95 <= budget) || !m.typedOk) {
-          failures.push(`turns=${r.turns} ${scenario}: p95 ${fmt(m.latency.p95)} ms > budget ${budget} ms (typedOk=${m.typedOk})`);
+  const advisories = [];
+  for (const r of results) {
+    if (r.errors.length) failures.push(`turns=${r.turns}: page errors ${r.errors.join(" | ")}`);
+    for (const [scenario, m] of Object.entries(r.scenarios)) {
+      if (!m.typedOk) failures.push(`turns=${r.turns} ${scenario}: keystrokes were lost`);
+      if (MAX_LAYOUT_OBJECTS !== null && scenario === "idle") {
+        if (!m.breakdown) failures.push(`turns=${r.turns}: --max-layout-objects needs --trace`);
+        else if (m.breakdown.maxLayoutObjects > MAX_LAYOUT_OBJECTS) {
+          failures.push(`turns=${r.turns} idle: a keystroke laid out ${m.breakdown.maxLayoutObjects} layout objects > ${MAX_LAYOUT_OBJECTS}; typing is re-laying out the transcript`);
         }
       }
-      if (r.errors.length) failures.push(`turns=${r.turns}: page errors ${r.errors.join(" | ")}`);
+      if (scenario === "streaming" && (MAX_FULL_DERIVATIONS_PER_TOKEN !== null || MAX_TURN_RENDERS_PER_TOKEN !== null)) {
+        if (m.work.tokens < 20) failures.push(`turns=${r.turns} streaming: only ${m.work.tokens} tokens streamed`);
+        if (MAX_FULL_DERIVATIONS_PER_TOKEN !== null) {
+          if (m.work.fullDerivationsPerToken === null) failures.push(`turns=${r.turns} streaming: derivation counters unavailable`);
+          else if (m.work.fullDerivationsPerToken > MAX_FULL_DERIVATIONS_PER_TOKEN) {
+            failures.push(`turns=${r.turns} streaming: ${fmt2(m.work.fullDerivationsPerToken)} full transcript derivations per token > ${MAX_FULL_DERIVATIONS_PER_TOKEN}; streamed text is re-deriving the whole log`);
+          }
+        }
+        if (MAX_TURN_RENDERS_PER_TOKEN !== null && m.work.turnRendersPerToken > MAX_TURN_RENDERS_PER_TOKEN) {
+          failures.push(`turns=${r.turns} streaming: ${fmt2(m.work.turnRendersPerToken)} turn renders per token > ${MAX_TURN_RENDERS_PER_TOKEN}; unchanged turns are re-rendering`);
+        }
+      }
+      if (BUDGET_P95 !== null) {
+        const budget = budgetFor(scenario);
+        if (!(m.latency.p95 <= budget)) {
+          (ENFORCE_TIMING ? failures : advisories).push(`turns=${r.turns} ${scenario}: p95 ${fmt(m.latency.p95)} ms > budget ${budget} ms`);
+        }
+      }
     }
-    if (failures.length) {
-      for (const f of failures) process.stderr.write(`[typing-lag-browser] FAIL ${f}\n`);
-      process.exit(1);
-    }
-    process.stdout.write(`[typing-lag-browser] every size and scenario within budget (p95 ${JSON.stringify(BUDGET_P95)}, layout objects ${MAX_LAYOUT_OBJECTS ?? "unchecked"})\n`);
   }
+  for (const a of advisories) process.stdout.write(`[typing-lag-browser] ADVISORY (timing, not enforced) ${a}\n`);
+  if (failures.length) {
+    for (const f of failures) process.stderr.write(`[typing-lag-browser] FAIL ${f}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`[typing-lag-browser] structural limits hold; timing ${ENFORCE_TIMING ? "enforced" : "advisory"} (p95 ${JSON.stringify(BUDGET_P95)})\n`);
 }
 
 if (require.main === module) {

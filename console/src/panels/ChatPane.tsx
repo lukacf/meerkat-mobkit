@@ -1646,6 +1646,14 @@ export function ChatPane({
     () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
     [entries, liveSpeech, activeVoiceScope],
   );
+  // Hosts may pass a fresh decision handler every render; every mounted turn
+  // receives it, so forward through a stable function to keep turns memoised.
+  const onApprovalDecisionRef = React.useRef(onApprovalDecision);
+  onApprovalDecisionRef.current = onApprovalDecision;
+  const stableApprovalDecision = React.useCallback<NonNullable<ChatPaneProps["onApprovalDecision"]>>(
+    (pendingId, action) => onApprovalDecisionRef.current?.(pendingId, action),
+    [],
+  );
   const presentationLabels = React.useMemo(
     () => displayLabels ?? { peers: peerLabels ?? undefined },
     [displayLabels, peerLabels],
@@ -2205,7 +2213,7 @@ export function ChatPane({
         markdownUrlPolicy={markdownUrlPolicy}
         conversationId={conversationId}
         approvalSnapshot={approvalSnapshot}
-        onApprovalDecision={onApprovalDecision}
+        onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
       />
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}

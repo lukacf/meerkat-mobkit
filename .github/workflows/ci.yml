@@ -181,9 +181,13 @@ jobs:
       - run: npm --prefix console run embedded:freshness --silent
       - run: npm --prefix console run build:acceptance --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
-      # Real-browser keystroke-to-next-paint latency in the composer with a
-      # full identity log, idle and while a reply streams. jsdom has no
-      # style, layout or paint, so only a browser can see this regress.
+      # Real-browser composer typing with a full identity log and a
+      # FlowForensics-shaped session, idle and while a reply streams. jsdom
+      # has no style, layout or paint, so only a browser can see this
+      # regress. Fails only on runner-independent work counts (layout objects
+      # per keystroke, full derivations and turn renders per streamed token);
+      # wall-clock p95 is printed as advisory (MOBKIT_TYPING_LAG_ENFORCE_TIMING=1
+      # makes it a failure for local perf work).
       - run: npm --prefix console run perf:typing:browser --silent
       # One immutable backend build serves every browser/API scenario below.
       - name: Build console acceptance backends

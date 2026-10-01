@@ -554,8 +554,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the panel phase extends incrementally; and geometry is read only where it
   is used. Periodic experience refreshes no longer replace unchanged agent
   records, which re-derived every docked transcript each time.
-  `npm run perf:typing:browser` gates real-browser latency and per-keystroke
-  layout scope in CI; the jsdom benchmark could not see layout or paint.
+  `npm run perf:typing:browser` drives Chromium in CI and fails on
+  runner-independent work counts (layout objects per idle keystroke, full
+  derivations and turn renders per streamed token), reporting wall-clock
+  p95 as advisory; the jsdom benchmark could not see layout or paint.
 
 - Console: panel data refreshes no longer pile up on a slow server. Every
   tool or lifecycle event from any agent refreshed the roster and every
