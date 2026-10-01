@@ -534,6 +534,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: panel data refreshes no longer pile up on a slow server. Every
+  tool or lifecycle event from any agent refreshed the roster and every
+  docked panel kind, including panels in hidden tabs, with no limit on
+  requests in flight. With a topology panel docked and a 60 s
+  `mobkit/topology/query`, the browser queued 28 topology queries a minute
+  and every other console request waited behind them at the per-origin
+  connection limit (p95 53 s). Each panel kind and the event-driven roster
+  refresh now keep at most one request in flight and coalesce later events
+  into one trailing refresh, and only panels in the active tab refresh
+  (hidden tabs refresh when shown). Other requests stay at p95 45-55 ms.
+
 - `*_and_wait` / `*AndWait` custody follow-up. Python: an SDK warning raised
   after admission (the untracked-wait, truncated-output or no-own-output
   warning) that a caller escalated with `filterwarnings("error")` now carries
