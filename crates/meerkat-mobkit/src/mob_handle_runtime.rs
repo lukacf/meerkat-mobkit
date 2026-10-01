@@ -848,6 +848,7 @@ impl PreBuildMobSessionService {
             return Ok(Some(session));
         }
         let epoch = absorber.observe_epoch(session_id);
+        absorber.epochs.count_authoritative_load();
         let loaded = self.inner.load_persisted_session(session_id).await?;
         match loaded.as_ref() {
             Some(session) => absorber.admit(session_id, epoch, session),
@@ -2696,6 +2697,39 @@ fn build_persistent_runtime_store(
 #[derive(Default)]
 pub(crate) struct SessionSnapshotWriteEpochs {
     epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Whole-document session reads that went past the epoch seam (see
+    /// [`SessionDocumentReads`]). Work counters, not part of the witness.
+    authoritative_loads: std::sync::atomic::AtomicU64,
+    history_reads: std::sync::atomic::AtomicU64,
+}
+
+/// Whole-document session reads this process made through the
+/// write-epoch seam, counted since the witness was created.
+///
+/// Each count is one full session-document read (and decode) that the
+/// epoch gates did not absorb. A converged, idle runtime makes none, so a
+/// delta over an idle window is a runner-independent measure of the idle
+/// re-read class that otherwise only shows up as CPU time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionDocumentReads {
+    /// Authoritative loads the read absorber could not serve from its copy
+    /// (the session's write epoch had moved, or it had no copy yet).
+    pub authoritative_loads: u64,
+    /// Session history reads, each of which reads the whole document (the
+    /// console session-history backfill, among others).
+    pub history_reads: u64,
+}
+
+impl SessionDocumentReads {
+    /// Reads made since `earlier`.
+    pub fn since(self, earlier: Self) -> Self {
+        Self {
+            authoritative_loads: self
+                .authoritative_loads
+                .saturating_sub(earlier.authoritative_loads),
+            history_reads: self.history_reads.saturating_sub(earlier.history_reads),
+        }
+    }
 }
 
 impl SessionSnapshotWriteEpochs {
@@ -2708,6 +2742,27 @@ impl SessionSnapshotWriteEpochs {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+    }
+
+    fn count_authoritative_load(&self) {
+        self.authoritative_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn count_history_read(&self) {
+        self.history_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn document_reads(&self) -> SessionDocumentReads {
+        SessionDocumentReads {
+            authoritative_loads: self
+                .authoritative_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            history_reads: self
+                .history_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
 
     fn observe(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
@@ -2730,6 +2785,13 @@ impl SessionSnapshotWriteEpochs {
 #[derive(Clone)]
 pub struct SessionWriteEpochsHandle {
     pub(crate) epochs: Arc<SessionSnapshotWriteEpochs>,
+}
+
+impl SessionWriteEpochsHandle {
+    /// Whole-document session reads made through this witness's seam so far.
+    pub fn session_document_reads(&self) -> SessionDocumentReads {
+        self.epochs.document_reads()
+    }
 }
 
 /// Wrap a runtime store so every session-scoped durable write advances the
@@ -10708,6 +10770,9 @@ impl MobRuntime {
         };
         let session_id = meerkat_core::types::SessionId::parse(session_id_str)
             .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        if let Some(epochs) = self.session_write_epochs.as_ref() {
+            epochs.count_history_read();
+        }
         SessionServiceHistoryExt::read_history(
             session_service.as_ref(),
             &session_id,

@@ -42,7 +42,7 @@ use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
 pub use query_error::{ConsoleTimelineQueryError, ConsoleTimelineQueryResult};
 pub use state::{
     ReplaySubscriptionEffect, ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect,
-    SendState, SendTransition, SourceIngestionEffect, SourceIngestionState,
+    SendState, SendTransition, SessionHistoryCatchUp, SourceIngestionEffect, SourceIngestionState,
     SourceIngestionTransition,
 };
 pub use store::{
@@ -176,6 +176,13 @@ struct AggregatorInner {
     /// unsettled pass over the same epoch has nothing to add and skips the
     /// full-document read; a settled pass always reads.
     session_pending_read_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Per-runtime catch-up state, republished at the end of every backfill
+    /// pass over the runtime. Senders live with the registration.
+    session_history_catch_up:
+        std::sync::Mutex<BTreeMap<String, tokio::sync::watch::Sender<SessionHistoryCatchUp>>>,
+    /// Source watermark rows written (session history and console events).
+    /// A converged, idle aggregator writes none.
+    source_watermark_writes: std::sync::atomic::AtomicU64,
     member_provenance: std::sync::Mutex<MemberProvenanceCache>,
     member_provenance_searches: std::sync::Mutex<MemberProvenanceSearchCache>,
     notice_observations: std::sync::Mutex<NoticeObservationCache>,
@@ -676,6 +683,8 @@ impl MobKitConsoleAggregator {
                 )),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_pending_read_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_history_catch_up: std::sync::Mutex::new(BTreeMap::new()),
+                source_watermark_writes: std::sync::atomic::AtomicU64::new(0),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
@@ -756,6 +765,8 @@ impl MobKitConsoleAggregator {
                 session_backfill_permits: owner.session_backfill_permits.clone(),
                 session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 session_pending_read_epochs: std::sync::Mutex::new(BTreeMap::new()),
+                session_history_catch_up: std::sync::Mutex::new(BTreeMap::new()),
+                source_watermark_writes: std::sync::atomic::AtomicU64::new(0),
                 session_history_projection_locks: std::sync::Mutex::new(BTreeMap::new()),
                 member_provenance: std::sync::Mutex::new(MemberProvenanceCache::new(
                     MEMBER_PROVENANCE_CACHE_LIMIT,
@@ -851,6 +862,39 @@ impl MobKitConsoleAggregator {
         self.inner.store.clone()
     }
 
+    /// Observe whether `runtime_key`'s projected session history has caught up
+    /// with its members' durable sessions (see [`SessionHistoryCatchUp`]).
+    /// `None` when no runtime is registered under the key. The receiver
+    /// survives re-registration under the same key, which restarts it at
+    /// `Pending`, and closes on unregister.
+    ///
+    /// Readiness checks await `CaughtUp` instead of guessing from timers: the
+    /// registration's catch-up reads every member's whole session document,
+    /// and a large session can need a second pass when its trailing durable
+    /// commits land during the first.
+    pub fn session_history_catch_up(
+        &self,
+        runtime_key: &str,
+    ) -> Option<tokio::sync::watch::Receiver<SessionHistoryCatchUp>> {
+        let owner = self.inner.projection_owner.as_ref().unwrap_or(&self.inner);
+        owner
+            .session_history_catch_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(runtime_key)
+            .map(tokio::sync::watch::Sender::subscribe)
+    }
+
+    /// Source watermark rows this aggregator has written. A converged, idle
+    /// aggregator writes none, so a delta over an idle window is a
+    /// runner-independent measure of idle re-projection.
+    pub fn source_watermark_writes(&self) -> u64 {
+        let owner = self.inner.projection_owner.as_ref().unwrap_or(&self.inner);
+        owner
+            .source_watermark_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn register_runtime(&self, registration: ConsoleRuntimeRegistration) {
         let identity_runtime = registration.runtime.identity_runtime().cloned();
         self.register_runtime_handles_with_policy(
@@ -932,6 +976,17 @@ impl MobKitConsoleAggregator {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|key, _| !key.starts_with(&prefix));
         }
+        // The new registration has proven nothing yet. Keep the sender so a
+        // reader of the previous registration observes the restart.
+        self.inner
+            .session_history_catch_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(runtime_key.clone())
+            .and_modify(|sender| {
+                sender.send_replace(SessionHistoryCatchUp::Pending);
+            })
+            .or_insert_with(|| tokio::sync::watch::channel(SessionHistoryCatchUp::Pending).0);
         // Re-registering a key replaces its live-projection task: signal the
         // old one before spawning the new (otherwise both would project).
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1078,6 +1133,12 @@ impl MobKitConsoleAggregator {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|key, _| !key.starts_with(&prefix));
         }
+        // Dropping the sender closes every catch-up receiver for this key.
+        self.inner
+            .session_history_catch_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(runtime_key);
         if removed {
             self.inner
                 .identity_read_model
@@ -3996,7 +4057,98 @@ async fn backfill_session_history(
             session_id,
         });
     }
-    backfill_session_history_targets(inner, targets, force_refresh).await
+    let sessions = targets
+        .iter()
+        .map(|target| {
+            (
+                target.session_id.clone(),
+                (
+                    entry.registration_id,
+                    entry.runtime_key.clone(),
+                    target.record.identity.clone(),
+                    target.session_id.clone(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let result = backfill_session_history_targets(inner.clone(), targets, force_refresh).await;
+    publish_session_history_catch_up(&inner, &entry, &sessions, result.is_ok());
+    result
+}
+
+/// `(registration, runtime key, identity, session)`: one assistant-history
+/// retry, as kept in `assistant_history_retries`.
+type AssistantRetryKey = (uuid::Uuid, String, String, String);
+
+/// Republish `entry`'s catch-up state after a pass over its member
+/// `sessions` (each with its assistant-retry key). A session is caught up
+/// when its last clean backfill observed its current durable write epoch and
+/// no assistant refresh is pending for it: the next pass then skips it
+/// without a read.
+fn publish_session_history_catch_up(
+    inner: &AggregatorInner,
+    entry: &RuntimeEntry,
+    sessions: &[(String, AssistantRetryKey)],
+    pass_succeeded: bool,
+) {
+    if !runtime_entry_is_current(inner, entry) {
+        return;
+    }
+    let state = if pass_succeeded {
+        let current = sessions
+            .iter()
+            .map(|(session_id, _)| entry.runtime.session_document_write_epoch(session_id))
+            .collect::<Vec<_>>();
+        if current.iter().any(Option::is_none) {
+            SessionHistoryCatchUp::Unwitnessed
+        } else {
+            let read_at = {
+                let epochs = inner
+                    .session_backfill_epochs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sessions
+                    .iter()
+                    .map(|(session_id, _)| {
+                        epochs
+                            .get(&session_history_watermark_runtime_key(
+                                &entry.runtime_key,
+                                session_id,
+                            ))
+                            .copied()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let retry_pending = {
+                let retries = inner
+                    .assistant_history_retries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sessions
+                    .iter()
+                    .any(|(_, retry_key)| retries.contains(retry_key))
+            };
+            if !retry_pending && read_at == current {
+                SessionHistoryCatchUp::CaughtUp
+            } else {
+                SessionHistoryCatchUp::Behind
+            }
+        }
+    } else {
+        SessionHistoryCatchUp::Behind
+    };
+    if let Some(sender) = inner
+        .session_history_catch_up
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&entry.runtime_key)
+    {
+        sender.send_if_modified(|published| {
+            let changed = *published != state;
+            *published = state;
+            changed
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -6034,6 +6186,9 @@ async fn record_session_history_watermark(
     offset: usize,
 ) -> ConsoleLogResult<()> {
     inner
+        .source_watermark_writes
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    inner
         .store
         .record_source_watermark(
             watermark_runtime_key,
@@ -6597,6 +6752,9 @@ async fn project_console_event(
         None
     };
     append_and_emit_with_policy(&inner, frame, entry.visibility_policy.clone()).await?;
+    inner
+        .source_watermark_writes
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     inner
         .store
         .record_source_watermark(
@@ -15723,6 +15881,205 @@ comms = true
             .into_iter()
             .filter(|frame| frame.kind == "runtime_notice_snapshot")
             .collect()
+    }
+
+    /// The catch-up state a pass publishes: caught up only when every member
+    /// session's last clean read observed its current durable write epoch
+    /// and no assistant refresh is pending, so the next pass skips them all.
+    #[tokio::test]
+    async fn session_history_catch_up_reports_whether_the_next_pass_reads() {
+        let (_temp, runtime, _service) =
+            build_stress_runtime_with_write_epochs(1, Duration::ZERO, true).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let entry = runtime_entry_for_test("catch-up-test", &runtime);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("registry")
+            .insert(entry.runtime_key.clone(), entry.clone());
+        let (sender, receiver) = tokio::sync::watch::channel(SessionHistoryCatchUp::Pending);
+        aggregator
+            .inner
+            .session_history_catch_up
+            .lock()
+            .expect("catch-up registry")
+            .insert(entry.runtime_key.clone(), sender);
+        let member = runtime
+            .mob_handle()
+            .list_members_observation_snapshot()
+            .await
+            .into_iter()
+            .next()
+            .expect("fixture member");
+        let record = identity_record_for_member(&entry, &runtime.mob_handle(), &member)
+            .await
+            .expect("fixture identity");
+        let session_id = record.session_id.clone().expect("fixture session");
+        let current = entry
+            .runtime
+            .session_document_write_epoch(&session_id)
+            .expect("precondition: the fixture composes the write-epoch witness");
+        let retry_key = (
+            entry.registration_id,
+            entry.runtime_key.clone(),
+            record.identity.clone(),
+            session_id.clone(),
+        );
+        let sessions = vec![(session_id.clone(), retry_key.clone())];
+        let watermark_key = session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
+        let publish = |succeeded| {
+            publish_session_history_catch_up(&aggregator.inner, &entry, &sessions, succeeded);
+            *receiver.borrow()
+        };
+
+        assert_eq!(
+            publish(true),
+            SessionHistoryCatchUp::Behind,
+            "a session never read cleanly is behind"
+        );
+        aggregator
+            .inner
+            .session_backfill_epochs
+            .lock()
+            .expect("epochs")
+            .insert(watermark_key.clone(), current);
+        assert_eq!(publish(true), SessionHistoryCatchUp::CaughtUp);
+        assert_eq!(
+            publish(false),
+            SessionHistoryCatchUp::Behind,
+            "a failed pass proves nothing"
+        );
+        aggregator
+            .inner
+            .assistant_history_retries
+            .lock()
+            .expect("retries")
+            .insert(retry_key.clone());
+        assert_eq!(
+            publish(true),
+            SessionHistoryCatchUp::Behind,
+            "a pending assistant refresh reads again"
+        );
+        aggregator
+            .inner
+            .assistant_history_retries
+            .lock()
+            .expect("retries")
+            .remove(&retry_key);
+        aggregator
+            .inner
+            .session_backfill_epochs
+            .lock()
+            .expect("epochs")
+            .insert(watermark_key, current.wrapping_sub(1));
+        assert_eq!(
+            publish(true),
+            SessionHistoryCatchUp::Behind,
+            "a read at an older epoch than the current write is behind"
+        );
+
+        // A replaced registration cannot publish for its successor.
+        let mut stale = entry.clone();
+        stale.registration_id = uuid::Uuid::new_v4();
+        publish_session_history_catch_up(&aggregator.inner, &stale, &[], true);
+        assert_eq!(*receiver.borrow(), SessionHistoryCatchUp::Behind);
+        let _ = runtime.mob_handle().stop().await;
+
+        // Without a write-epoch witness nothing can be proven.
+        let (_temp, unwitnessed, _service) = build_stress_runtime(1, Duration::ZERO).await;
+        let unwitnessed_entry = runtime_entry_for_test("catch-up-unwitnessed", &unwitnessed);
+        aggregator.inner.runtimes.write().expect("registry").insert(
+            unwitnessed_entry.runtime_key.clone(),
+            unwitnessed_entry.clone(),
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(SessionHistoryCatchUp::Pending);
+        aggregator
+            .inner
+            .session_history_catch_up
+            .lock()
+            .expect("catch-up registry")
+            .insert(unwitnessed_entry.runtime_key.clone(), sender);
+        let member = unwitnessed
+            .mob_handle()
+            .list_members_observation_snapshot()
+            .await
+            .into_iter()
+            .next()
+            .expect("fixture member");
+        let record =
+            identity_record_for_member(&unwitnessed_entry, &unwitnessed.mob_handle(), &member)
+                .await
+                .expect("fixture identity");
+        let session_id = record.session_id.clone().expect("fixture session");
+        publish_session_history_catch_up(
+            &aggregator.inner,
+            &unwitnessed_entry,
+            &[(
+                session_id.clone(),
+                (
+                    unwitnessed_entry.registration_id,
+                    unwitnessed_entry.runtime_key.clone(),
+                    record.identity.clone(),
+                    session_id,
+                ),
+            )],
+            true,
+        );
+        assert_eq!(*receiver.borrow(), SessionHistoryCatchUp::Unwitnessed);
+        let _ = unwitnessed.mob_handle().stop().await;
+    }
+
+    /// The catch-up receiver follows the registration: it starts `Pending`,
+    /// re-registration under the same key restarts it, and unregister closes
+    /// it.
+    #[tokio::test]
+    async fn session_history_catch_up_follows_the_registration() {
+        let (_temp, runtime, _service) =
+            build_stress_runtime_with_write_epochs(0, Duration::ZERO, true).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        assert!(
+            aggregator
+                .session_history_catch_up("catch-up-life")
+                .is_none()
+        );
+        let register = || {
+            aggregator.register_runtime(ConsoleRuntimeRegistration {
+                runtime_key: "catch-up-life".to_string(),
+                runtime: Arc::clone(&runtime),
+                identity_namespace: "life".to_string(),
+                visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+            });
+        };
+        register();
+        let mut receiver = aggregator
+            .session_history_catch_up("catch-up-life")
+            .expect("registered");
+        // No members: the recovery pass has nothing to read.
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            receiver.wait_for(|state| *state == SessionHistoryCatchUp::CaughtUp),
+        )
+        .await
+        .expect("an empty runtime catches up on its first pass")
+        .expect("open while registered");
+        register();
+        assert_eq!(
+            *receiver.borrow_and_update(),
+            SessionHistoryCatchUp::Pending,
+            "re-registration restarts the same receiver"
+        );
+        aggregator.unregister_runtime("catch-up-life");
+        assert!(
+            receiver.changed().await.is_err(),
+            "unregister closes the receiver"
+        );
+        assert!(
+            aggregator
+                .session_history_catch_up("catch-up-life")
+                .is_none()
+        );
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test]
