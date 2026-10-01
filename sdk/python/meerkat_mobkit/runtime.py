@@ -1677,8 +1677,31 @@ class IdentityAgentHandle:
     ) -> Any:
         """Wait for an admitted delivery and say whether the result is its own.
 
-        Warnings raised here are attributed four frames up: this method, the
-        ``_*_outcome`` helper, the public method, then the caller."""
+        Everything raised here happens after admission, so every exception
+        (including a warning a caller escalated with
+        ``filterwarnings("error")``) keeps its type and carries the admission
+        and ticket."""
+        try:
+            return await self._await_admitted_inner(
+                result, operation, timeout=timeout, poll_interval=poll_interval,
+                require_attribution=require_attribution,
+            )
+        except BaseException as failure:
+            _attach_admission(failure, result, getattr(result, "turn_ticket", None))
+            raise
+
+    async def _await_admitted_inner(
+        self,
+        result: Any,
+        operation: str,
+        *,
+        timeout: float,
+        poll_interval: float,
+        require_attribution: bool,
+    ) -> Any:
+        """Warnings raised here are attributed five frames up: this method,
+        :meth:`_await_admitted`, the ``_*_outcome`` helper, the public method,
+        then the caller."""
         from .identity_first_models import AwaitedTurn
         ticket = getattr(result, "turn_ticket", None)
         if ticket is not None:
@@ -1686,7 +1709,7 @@ class IdentityAgentHandle:
                 result, ticket, operation, timeout=timeout, poll_interval=poll_interval,
             )
             return AwaitedTurn(
-                text=self._text_of_turn(turn, operation, stacklevel=5),
+                text=self._text_of_turn(turn, operation, stacklevel=6),
                 attributed=True,
                 admission=result,
                 ticket=ticket,
@@ -1721,7 +1744,7 @@ class IdentityAgentHandle:
             "cursor instead, which another delivery's completion can also "
             "satisfy, so the result is not attributed to this delivery",
             TurnTrackingUnavailableWarning,
-            stacklevel=4,
+            stacklevel=5,
         )
         from .errors import PostAdmissionObservationError, TurnWaitTimeoutError
         try:

@@ -342,6 +342,19 @@ async def test_cancelling_the_wait_never_redispatches(tmp_path):
     })
     runtime = await _runtime(stand_in)
     captured: dict[str, BaseException] = {}
+    innermost: dict[str, object] = {}
+    sdk_rpc = runtime._rpc
+
+    async def recording_rpc(method, params=None, **kwargs):
+        # The CancelledError asyncio raises at the innermost await point.
+        try:
+            return await sdk_rpc(method, params, **kwargs)
+        except asyncio.CancelledError as cancelled:
+            innermost["error"] = cancelled
+            innermost["args"] = cancelled.args
+            raise
+
+    runtime._rpc = recording_rpc
 
     async def dispatch_and_wait():
         try:
@@ -368,6 +381,8 @@ async def test_cancelling_the_wait_never_redispatches(tmp_path):
     # The same CancelledError propagated, carrying the admitted delivery.
     cancelled = captured["cancelled"]
     assert type(cancelled) is asyncio.CancelledError
+    assert cancelled is innermost["error"], "the SDK re-raised the same instance"
+    assert cancelled.args == innermost["args"], "its args are unchanged"
     assert isinstance(cancelled.admission, DispatchResult)
     assert cancelled.admission.turn_ticket == _TICKET
     assert cancelled.ticket == _TICKET

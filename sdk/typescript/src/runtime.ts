@@ -1708,7 +1708,9 @@ export class MobKitRuntime {
         });
       } catch (err) {
         if (isTurnOutcomeError(err)) {
-          err.admission = result;
+          // A tracked outcome names its turn: a WaitEndedError gets the
+          // top-level ticket too, for parity with the other outcomes.
+          attachAdmission(err, result, ticket);
           throw err;
         }
         const remaining = deadline - Date.now();
