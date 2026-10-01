@@ -156,6 +156,8 @@ luka = rt.agent("identity:luka")
 triage = rt.agent("triage:main")
 
 await triage.dispatch_text("New calendar event needs triage", origin="connector")
+# Waits for THIS send's own turn on a turn_driven member; an untracked member
+# raises TurnTrackingUnavailableError carrying the send result instead.
 answer = await luka.send_and_wait("What needs my attention before lunch?", timeout=60)
 print(answer)
 ```

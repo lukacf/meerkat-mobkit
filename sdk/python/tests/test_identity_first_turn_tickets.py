@@ -22,6 +22,7 @@ from meerkat_mobkit.errors import (
     TurnOutputTruncatedWarning,
     TurnOutputUnavailableError,
     TurnOutputUnavailableWarning,
+    TurnTrackingUnavailableError,
     TurnTrackingUnavailableWarning,
     TurnUnknownError,
 )
@@ -441,23 +442,51 @@ class TestWaitForTurn:
 
 class TestExplicitFallback:
     @pytest.mark.asyncio
-    async def test_an_old_gateway_falls_back_to_the_cursor_with_a_warning(self):
-        """A gateway that predates turn tickets returns no ``turn``: the wait
-        falls back to the identity-wide cursor, and says so."""
+    async def test_an_old_gateway_raises_typed_with_the_admission_by_default(self):
+        """A gateway that predates turn tickets returns no ``turn``: the call
+        raises instead of silently waiting on the identity-wide cursor, and
+        the error carries the admitted send so nothing is redispatched."""
         transport = TicketTransport(
             sends=[_sent(None, turns=0)],
             inspections=[_inspection("latest reply", turns=1)],
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
-        with pytest.warns(TurnTrackingUnavailableWarning, match="predates turn tickets"):
-            output = await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", TurnTrackingUnavailableWarning)
+            with pytest.raises(TurnTrackingUnavailableError) as raised:
+                await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
 
-        assert output == "latest reply"
-        assert transport.params_of("mobkit/turn_result") == []
+        assert isinstance(raised.value, MobKitError)
+        assert isinstance(raised.value.admission, SendResult)
+        assert raised.value.admission.completion_baseline == CompletionCursor(epoch=3, turns=0)
+        assert (raised.value.code, raised.value.reason) == (None, None)
+        assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
+        assert transport.params_of("mobkit/wait_for_completion") == []
+        assert transport.params_of("mobkit/completion_cursor") == []
+        assert transport.params_of("mobkit/inspect_identity") == []
 
     @pytest.mark.asyncio
-    async def test_an_untrackable_turn_names_the_reason(self):
+    async def test_an_untrackable_turn_raises_naming_the_reason(self):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.raises(TurnTrackingUnavailableError, match="autonomous_host") as raised:
+            await handle.dispatch_text_and_wait("alpha", timeout=5, poll_interval=0.001)
+
+        assert isinstance(raised.value.admission, DispatchResult)
+        assert raised.value.code == "autonomous_host"
+        assert raised.value.reason == "because autonomous_host"
+        assert len(transport.params_of("mobkit/dispatch")) == 1, "delivered exactly once"
+        assert transport.params_of("mobkit/inspect_identity") == []
+
+    @pytest.mark.asyncio
+    async def test_the_identity_wide_wait_is_an_explicit_opt_in_with_a_warning(self):
+        """The legacy cursor wait survives only on request, and still warns
+        that it does not attribute the completion it returns."""
         transport = TicketTransport(
             sends=[_sent(None, turns=0, unavailable="autonomous_host")],
             inspections=[_inspection("latest reply", turns=1)],
@@ -465,9 +494,28 @@ class TestExplicitFallback:
         handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
 
         with pytest.warns(TurnTrackingUnavailableWarning, match="autonomous_host"):
-            output = await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+            output = await handle.send_and_wait(
+                "alpha", timeout=5, poll_interval=0.001,
+                allow_identity_wide_fallback=True,
+            )
         assert output == "latest reply"
         assert len(transport.params_of("mobkit/send")) == 1, "delivered exactly once"
+        assert transport.params_of("mobkit/turn_result") == []
+
+    @pytest.mark.asyncio
+    async def test_an_old_gateway_opt_in_falls_back_with_a_warning(self):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0)],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+
+        with pytest.warns(TurnTrackingUnavailableWarning, match="predates turn tickets"):
+            output = await handle.dispatch_and_wait(
+                DispatchInput(content="alpha", origin="system"), timeout=5, poll_interval=0.001,
+                allow_identity_wide_fallback=True,
+            )
+        assert output == "latest reply"
 
     @pytest.mark.asyncio
     async def test_an_undelivered_send_raises_instead_of_waiting(self):
@@ -482,6 +530,7 @@ class TestExplicitFallback:
         with pytest.raises(TurnNotDeliveredError) as raised:
             await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
         assert isinstance(raised.value, MobKitError)
+        assert isinstance(raised.value.admission, SendResult)
         assert (raised.value.code, raised.value.reason) == ("not_delivered", "no session bridge")
         assert transport.params_of("mobkit/inspect_identity") == []
 

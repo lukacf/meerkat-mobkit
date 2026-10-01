@@ -215,7 +215,9 @@ class TestIdenticalConsecutiveOutput:
         )
         handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
 
-        output = await handle.send_and_wait("ping", timeout=5, poll_interval=0.01)
+        output = await handle.send_and_wait(
+            "ping", timeout=5, poll_interval=0.01, allow_identity_wide_fallback=True,
+        )
 
         assert output == "ACK"
         assert transport.wait_calls == 1, "one server-side wait, no client polling"
@@ -350,7 +352,9 @@ class TestWaitForCompletion:
         handle = IdentityAgentHandle(_make_runtime(transport), "triage:main")
 
         with pytest.raises(RuntimeError, match="no completion_baseline"):
-            await handle.send_and_wait("ping", timeout=1, poll_interval=0.01)
+            await handle.send_and_wait(
+                "ping", timeout=1, poll_interval=0.01, allow_identity_wide_fallback=True,
+            )
 
     @pytest.mark.asyncio
     async def test_dispatch_and_wait_threads_its_own_baseline(self):
@@ -368,7 +372,8 @@ class TestWaitForCompletion:
         handle = IdentityAgentHandle(_make_runtime(transport), "internal:main")
 
         output = await handle.dispatch_and_wait(
-            DispatchInput(content="go", origin="system"), timeout=5, poll_interval=0.01
+            DispatchInput(content="go", origin="system"), timeout=5, poll_interval=0.01,
+            allow_identity_wide_fallback=True,
         )
 
         assert output == "ACK"
@@ -760,7 +765,8 @@ class TestDispatchTextConvenience:
 
         output = await handle.dispatch_text_and_wait(
             "New event", origin="connector", correlation_id="event-1",
-            idempotency_key="connector:event-1", timeout=5, poll_interval=0.01
+            idempotency_key="connector:event-1", timeout=5, poll_interval=0.01,
+            allow_identity_wide_fallback=True,
         )
 
         assert output == "ACK"
@@ -796,6 +802,7 @@ class TestPerIdentityCorrelation:
                 DispatchInput(content="A", origin="system"),
                 timeout=0.05,
                 poll_interval=0.01,
+                allow_identity_wide_fallback=True,
             )
 
         polled = {

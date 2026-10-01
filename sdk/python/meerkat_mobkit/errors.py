@@ -289,7 +289,12 @@ class WaitEndedError(MobKitError):
     parked Broken), ``retiring`` (retiring, retired or being deleted),
     ``identity_gone`` (no longer registered) or ``shutting_down`` (the
     gateway is shutting down). Tolerate future values.
+
+    ``admission`` is the send/dispatch result when a ``*_and_wait`` call
+    raised this after its delivery was admitted, else ``None``.
     """
+
+    admission: Any = None
 
     def __init__(self, identity: str, outcome: str, detail: str = ""):
         message = f"wait on identity {identity!r} ended: {outcome}"
@@ -300,7 +305,11 @@ class WaitEndedError(MobKitError):
 
 class TurnFailedError(MobKitError):
     """The turn a ticket names ran and failed (``mobkit/turn_result`` state
-    ``failed``). ``reason`` carries the runtime's typed detail."""
+    ``failed``). ``reason`` carries the runtime's typed detail. ``admission``
+    is the send/dispatch result when a ``*_and_wait`` call raised this, else
+    ``None``."""
+
+    admission: Any = None
 
     def __init__(self, identity: str, ticket: str, reason: str):
         super().__init__(f"turn {ticket} of identity {identity!r} failed: {reason}")
@@ -312,7 +321,12 @@ class TurnFailedError(MobKitError):
 class TurnUnknownError(MobKitError):
     """The gateway knows no turn with this ticket for this identity: it was
     never admitted there, belongs to another identity, aged out, or the
-    gateway restarted since. Never guessed in either direction."""
+    gateway restarted since. Never guessed in either direction. ``admission``
+    is the send/dispatch result when a ``*_and_wait`` call raised this after
+    its delivery was admitted, else ``None``: the delivery was admitted, so do
+    not redispatch it because its ticket is no longer known."""
+
+    admission: Any = None
 
     def __init__(self, identity: str, ticket: str):
         super().__init__(
@@ -327,7 +341,10 @@ class TurnNotDeliveredError(MobKitError):
     """A ``track_turn`` delivery was NOT delivered at all
     (``turn_unavailable.code == "not_delivered"``: the gateway has no session
     bridge, or the identity has no bound runtime). Nothing ran and there is no
-    turn to wait for, so retrying is safe, unlike a failed or unknown turn."""
+    turn to wait for, so retrying is safe, unlike a failed or unknown turn.
+    ``admission`` is the send/dispatch result that reported it."""
+
+    admission: Any = None
 
     def __init__(self, identity: str, operation: str, code: str, reason: str):
         super().__init__(
@@ -338,6 +355,93 @@ class TurnNotDeliveredError(MobKitError):
         self.operation = operation
         self.code = code
         self.reason = reason
+
+
+class TurnTrackingUnavailableError(MobKitError):
+    """A ``*_and_wait`` delivery was ADMITTED, but the gateway returned no
+    turn ticket, so its own turn cannot be observed (an ``autonomous_host``
+    member, an externally bound member, or a gateway predating turn tickets).
+
+    The work was handed to the identity and will run, or already ran: keep
+    ``admission`` (the full send/dispatch result) and do not redispatch it.
+    ``code`` and ``reason`` carry the typed ``turn_unavailable`` reason, or
+    are ``None`` when the gateway returned no reason at all.
+
+    Pass ``allow_identity_wide_fallback=True`` to opt into the legacy
+    identity-wide completion wait instead. That wait does NOT attribute the
+    completion it returns: another delivery's turn (a peer message, a
+    scheduled turn) can satisfy it."""
+
+    def __init__(
+        self,
+        identity: str,
+        operation: str,
+        admission: Any,
+        code: str | None,
+        reason: str | None,
+    ):
+        detail = f"{code}: {reason}" if code is not None else "no turn ticket returned"
+        super().__init__(
+            f"{operation} for identity {identity!r} was admitted but its turn "
+            f"cannot be tracked ({detail}); the admission result is retained, "
+            "do not redispatch"
+        )
+        self.identity = identity
+        self.operation = operation
+        self.admission = admission
+        self.code = code
+        self.reason = reason
+
+
+class PostAdmissionObservationError(MobKitError):
+    """Observing an ADMITTED delivery's turn failed for a transport or RPC
+    reason (the gateway did not answer the wait), and retrying that exact
+    observation ran out of the caller's deadline.
+
+    The turn may still run, or may already have completed. ``admission`` is
+    the full send/dispatch result and ``ticket`` names the turn (``None``
+    only on the opt-in identity-wide fallback). Read the turn later with
+    ``wait_for_turn(ticket)`` or ``turn_result(ticket)``; never redispatch the
+    business work because of this error. ``__cause__`` is the last
+    observation failure and ``attempts`` counts observation tries."""
+
+    def __init__(
+        self,
+        identity: str,
+        operation: str,
+        admission: Any,
+        ticket: str | None,
+        *,
+        attempts: int,
+    ):
+        turn = f"turn {ticket}" if ticket is not None else "its turn"
+        super().__init__(
+            f"{operation} for identity {identity!r} was admitted, but observing "
+            f"{turn} failed after {attempts} attempt(s); the admission result is "
+            "retained, do not redispatch"
+        )
+        self.identity = identity
+        self.operation = operation
+        self.admission = admission
+        self.ticket = ticket
+        self.attempts = attempts
+
+
+class TurnWaitTimeoutError(MobKitError, TimeoutError):
+    """A ``*_and_wait`` call's own turn did not settle by the caller's
+    deadline. It is a ``TimeoutError``, so existing handlers keep working,
+    and it carries ``admission`` (the send/dispatch result) and ``ticket`` so
+    the turn can be read later instead of redispatched."""
+
+    def __init__(self, identity: str, ticket: str, timeout: float, admission: Any):
+        super().__init__(
+            f"turn {ticket} of identity {identity!r} did not complete within "
+            f"{timeout}s; the admission result is retained, do not redispatch"
+        )
+        self.identity = identity
+        self.ticket = ticket
+        self.timeout = timeout
+        self.admission = admission
 
 
 class TurnOutputUnavailableError(MobKitError):
@@ -373,6 +477,8 @@ class TurnOutputUnavailableWarning(RuntimeWarning):
 
 
 class TurnTrackingUnavailableWarning(RuntimeWarning):
-    """A ``*_and_wait`` call could not track its own turn and fell back to the
-    identity-wide completion cursor, which another delivery's completion can
-    also satisfy (so the returned output is not request-correlated)."""
+    """A ``*_and_wait`` call made with ``allow_identity_wide_fallback=True``
+    could not track its own turn and fell back to the identity-wide
+    completion cursor, which another delivery's completion can also satisfy
+    (so the returned output is not request-correlated). Without that opt-in
+    the call raises :class:`TurnTrackingUnavailableError` instead."""

@@ -78,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exhaustive matches must add both arms. `PeerWiringTimedOut.operation` can
   also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
 
+### Breaking (Python SDK)
+
+- `send_and_wait`, `dispatch_and_wait` and `dispatch_text_and_wait` no longer
+  fall back silently to the identity-wide completion wait when the admitted
+  delivery returns no turn ticket (an `autonomous_host` member, the default
+  mode; an externally bound member; a gateway predating turn tickets). They
+  raise `TurnTrackingUnavailableError` carrying the full send/dispatch result
+  as `admission` and the typed `code`/`reason`. Callers that relied on the
+  fallback must pass `allow_identity_wide_fallback=True`, which keeps the old
+  wait and its `TurnTrackingUnavailableWarning`; that wait does not attribute
+  the completion it returns.
+
 ### Storage and wire compatibility
 
 - Storage census slots add `resolution: "unverified"` when a bare injected
@@ -115,6 +127,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python SDK: `*_and_wait` never attributes another turn and never loses an
+  admitted delivery. Any other peer's or scheduled turn could satisfy the old
+  no-ticket identity-wide wait, and an observation error after a successful
+  admission (for example `observation_lane_saturated`) discarded the
+  `DispatchResult`, inviting callers to redispatch business work. Now a
+  transport or RPC failure of the exact-ticket wait retries only that
+  ticket's observation, with bounded backoff, until the caller's deadline,
+  then raises `PostAdmissionObservationError` with `admission`, `ticket` and
+  the last failure as `__cause__`. `TurnFailedError`, `TurnUnknownError`,
+  `WaitEndedError` and `TurnNotDeliveredError` carry `admission` when raised
+  by these calls, and a turn still pending at the deadline raises
+  `TurnWaitTimeoutError` (a `TimeoutError` carrying `admission` and
+  `ticket`). The server-side `mobkit/wait_for_turn` stays the primary wait;
+  only the exact-ticket `mobkit/turn_result` poll remains as the fallback for
+  gateways without it. The calls never resend.
 - Console: the chat turn-navigation rail no longer draws a gray capsule track
   behind its ticks; the ticks stand on their own.
 
