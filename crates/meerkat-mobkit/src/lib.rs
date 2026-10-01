@@ -7,6 +7,9 @@
 
 pub(crate) mod identity_control_target;
 pub mod identity_first;
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod test_process_isolation;
 
 pub mod access;
 pub mod actor_loop_health;
@@ -245,7 +248,8 @@ pub use storage_doctor::{
 };
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
-    StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,
+    StorageResolutionError, StorageSlotDurability, StorageSlotSummary,
+    probe_session_store_incremental,
 };
 pub use storage_layout::{
     DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,

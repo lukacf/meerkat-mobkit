@@ -1,8 +1,9 @@
 //! Composition-time storage durability resolution (H1/H2 hotfixes plus the
 //! M4 per-slot census of the storage-unification arc).
 //!
-//! Every durable slot must resolve to a configured backend, an explicitly
-//! declared ephemeral choice, or a startup error — never a silent fallback.
+//! Provider-backed durable slots resolve to a declared backend or a startup
+//! error. A bare caller-injected WorkGraph store has no durability
+//! declaration; its census entry is unverified rather than inferred from kind.
 //! This module carries the vocabulary:
 //!
 //! - **Blobs (H1)**: [`BlobDurability`] records what the blob slot resolved
@@ -19,8 +20,9 @@
 //!   runtime store is constructible only by declaration.
 //! - **Per-slot census (M4)**: [`StorageSlotSummary`] records what every
 //!   composed storage slot resolved to (backend, durability class,
-//!   resolution, sanctioned degradations) using meerkat's machine-readable
-//!   [`meerkat_core::DurabilityDeclaration`] vocabulary.
+//!   resolution, sanctioned degradations). [`StorageSlotDurability`] preserves
+//!   meerkat's [`meerkat_core::DurabilityDeclaration`] when present and records
+//!   an unverified resolution when a caller supplied no declaration.
 //!
 //! The resolved [`ResolvedStorageSummary`] rides the bootstrap spec onto the
 //! runtime and is reported by `mobkit/status` / `mobkit/capabilities`.
@@ -64,13 +66,63 @@ impl BlobDurability {
     }
 }
 
-/// One composed storage slot's resolution record: meerkat's machine-readable
-/// durability declaration plus the concrete backend and any sanctioned
-/// degradation detail. Recorded per slot at composition time (M4).
+/// Durability evidence available for a composed storage slot.
+///
+/// This is MobKit's census vocabulary. An unverified injection does not add
+/// a resolution to Meerkat's provider declaration or bypass its validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageSlotDurability {
+    /// The selected composition or provider supplied this declaration.
+    Declared(DurabilityDeclaration),
+    /// The slot's domain and class are known, but its injected store supplied
+    /// no durability declaration. Backend kind is not durability evidence.
+    Unverified {
+        domain: String,
+        class: DurabilityClass,
+    },
+}
+
+impl StorageSlotDurability {
+    /// The domain this census entry describes.
+    pub fn domain(&self) -> &str {
+        match self {
+            Self::Declared(declaration) => &declaration.domain,
+            Self::Unverified { domain, .. } => domain,
+        }
+    }
+
+    /// The meaning of losing this domain's contents, independent of backend.
+    pub fn class(&self) -> DurabilityClass {
+        match self {
+            Self::Declared(declaration) => declaration.class,
+            Self::Unverified { class, .. } => *class,
+        }
+    }
+
+    /// The selected store's declaration, if one was supplied.
+    pub fn declaration(&self) -> Option<&DurabilityDeclaration> {
+        match self {
+            Self::Declared(declaration) => Some(declaration),
+            Self::Unverified { .. } => None,
+        }
+    }
+
+    fn resolution_json(&self) -> serde_json::Value {
+        match self {
+            Self::Declared(declaration) => {
+                serde_json::to_value(declaration.resolution).unwrap_or(serde_json::Value::Null)
+            }
+            Self::Unverified { .. } => serde_json::Value::String("unverified".to_string()),
+        }
+    }
+}
+
+/// One composed storage slot's durability evidence, concrete backend and
+/// any sanctioned degradation detail, recorded at composition time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageSlotSummary {
-    /// Domain name, durability class, and resolution (meerkat vocabulary).
-    pub declaration: DurabilityDeclaration,
+    /// The selected store's declaration or explicit absence of one.
+    pub durability: StorageSlotDurability,
     /// Human-readable backend name (`"SqliteRuntimeStore"`,
     /// `"InMemoryConsoleLogStore (declared default)"`, ...).
     pub backend: String,
@@ -87,7 +139,10 @@ impl StorageSlotSummary {
     /// A slot backed by persistent storage.
     pub fn persistent(domain: &str, backend: impl Into<String>) -> Self {
         Self {
-            declaration: DurabilityDeclaration::durable(domain, DurabilityResolution::Persistent),
+            durability: StorageSlotDurability::Declared(DurabilityDeclaration::durable(
+                domain,
+                DurabilityResolution::Persistent,
+            )),
             backend: backend.into(),
             detail: None,
             degraded: false,
@@ -102,10 +157,10 @@ impl StorageSlotSummary {
         detail: impl Into<String>,
     ) -> Self {
         Self {
-            declaration: DurabilityDeclaration::durable(
+            durability: StorageSlotDurability::Declared(DurabilityDeclaration::durable(
                 domain,
                 DurabilityResolution::DeclaredEphemeral,
-            ),
+            )),
             backend: backend.into(),
             detail: Some(detail.into()),
             degraded: false,
@@ -117,13 +172,27 @@ impl StorageSlotSummary {
     /// non-persistent, and the record is health-visible.
     pub fn degraded(domain: &str, detail: impl Into<String>) -> Self {
         Self {
-            declaration: DurabilityDeclaration::durable(
+            durability: StorageSlotDurability::Declared(DurabilityDeclaration::durable(
                 domain,
                 DurabilityResolution::NonPersistent,
-            ),
+            )),
             backend: "disabled".to_string(),
             detail: Some(detail.into()),
             degraded: true,
+        }
+    }
+
+    /// A caller-injected slot with no durability declaration. Its domain's
+    /// class does not assert that the selected backend persists those bytes.
+    pub fn unverified(domain: &str, class: DurabilityClass, backend: impl Into<String>) -> Self {
+        Self {
+            durability: StorageSlotDurability::Unverified {
+                domain: domain.to_string(),
+                class,
+            },
+            backend: backend.into(),
+            detail: None,
+            degraded: false,
         }
     }
 
@@ -139,11 +208,11 @@ impl StorageSlotSummary {
     /// decision rather than an accident.
     pub fn scratch(domain: &str, backend: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
-            declaration: DurabilityDeclaration {
+            durability: StorageSlotDurability::Declared(DurabilityDeclaration {
                 domain: domain.to_string(),
                 class: DurabilityClass::Scratch,
                 resolution: DurabilityResolution::DeclaredEphemeral,
-            },
+            }),
             backend: backend.into(),
             detail: Some(detail.into()),
             degraded: false,
@@ -152,11 +221,10 @@ impl StorageSlotSummary {
 
     fn status_json(&self) -> serde_json::Value {
         let mut object = serde_json::json!({
-            "domain": self.declaration.domain,
-            "class": serde_json::to_value(self.declaration.class)
+            "domain": self.durability.domain(),
+            "class": serde_json::to_value(self.durability.class())
                 .unwrap_or(serde_json::Value::Null),
-            "resolution": serde_json::to_value(self.declaration.resolution)
-                .unwrap_or(serde_json::Value::Null),
+            "resolution": self.durability.resolution_json(),
             "backend": self.backend,
             "degraded": self.degraded,
         });
@@ -734,6 +802,56 @@ mod tests {
         assert_eq!(slots[2]["degraded"], true);
         assert_eq!(slots[2]["backend"], "disabled");
         assert_eq!(slots[3]["class"], "scratch");
+    }
+
+    #[test]
+    fn status_json_unverified_slot_does_not_invent_a_declaration() {
+        let slot = StorageSlotSummary::unverified(
+            "workgraph",
+            DurabilityClass::Durable,
+            "custom workgraph store",
+        );
+        assert!(slot.durability.declaration().is_none());
+        assert_eq!(slot.durability.domain(), "workgraph");
+        assert_eq!(slot.durability.class(), DurabilityClass::Durable);
+        assert_eq!(
+            slot.status_json(),
+            serde_json::json!({
+                "domain": "workgraph",
+                "class": "durable",
+                "resolution": "unverified",
+                "backend": "custom workgraph store",
+                "degraded": false,
+            })
+        );
+    }
+
+    #[test]
+    fn status_json_declared_slot_preserves_provider_resolution_verbatim() {
+        for resolution in [
+            DurabilityResolution::Persistent,
+            DurabilityResolution::DeclaredEphemeral,
+            DurabilityResolution::NonPersistent,
+        ] {
+            let declaration = DurabilityDeclaration::durable("workgraph", resolution);
+            let slot = StorageSlotSummary {
+                durability: StorageSlotDurability::Declared(declaration.clone()),
+                backend: "storage provider 'test'".to_string(),
+                detail: None,
+                degraded: false,
+            };
+            assert_eq!(slot.durability.declaration(), Some(&declaration));
+            assert_eq!(
+                slot.status_json(),
+                serde_json::json!({
+                    "domain": "workgraph",
+                    "class": "durable",
+                    "resolution": resolution,
+                    "backend": "storage provider 'test'",
+                    "degraded": false,
+                })
+            );
+        }
     }
 
     #[test]

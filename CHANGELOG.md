@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
+  `durability: StorageSlotDurability`. Match `Declared(declaration)` or
+  `Unverified { domain, class }`; use the enum's accessors to inspect the
+  common domain/class or an optional declaration. This MobKit census type
+  leaves Meerkat's `DurabilityResolution` unchanged.
+
 - `CrossMobError` gains `PlacedMemberUnavailable { member_id, mob_id, reason }`
   for a placed member that has no usable endpoint (Broken, or none
   registered), and `PlacedRouteInstallPending { member_id, mob_id, peer_id,
@@ -69,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
 
 ### Storage and wire compatibility
+
+- Storage census slots add `resolution: "unverified"` when a bare injected
+  WorkGraph store supplied no durability declaration. Existing declared
+  resolutions and slot fields retain their wire shape. Both persistent and
+  ephemeral constructors report the actually selected injected store,
+  rather than a persistent, default-memory or unselected provider label.
 
 - `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
   for cached unsuccessful provenance searches. Its default returns `None`, so

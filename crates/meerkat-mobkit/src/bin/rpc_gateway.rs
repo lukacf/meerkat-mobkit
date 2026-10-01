@@ -3967,9 +3967,12 @@ comms = true
         let options =
             parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
         let slot = agent_memory_census_slot(&options.agent_memory.expect("agent memory options"));
-        assert_eq!(slot.declaration.domain, "agent-memory");
+        assert_eq!(slot.durability.domain(), "agent-memory");
         assert_eq!(
-            slot.declaration.resolution,
+            slot.durability
+                .declaration()
+                .expect("declared slot")
+                .resolution,
             meerkat_core::DurabilityResolution::Persistent
         );
         assert_eq!(slot.backend, "SqliteAgentMemoryStore");
@@ -3979,7 +3982,7 @@ comms = true
         let options =
             parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
         let slot = agent_memory_census_slot(&options.agent_memory.expect("agent memory options"));
-        assert_eq!(slot.declaration.domain, "agent-memory");
+        assert_eq!(slot.durability.domain(), "agent-memory");
         assert_eq!(slot.backend, "MarkdownImportOnly");
     }
 

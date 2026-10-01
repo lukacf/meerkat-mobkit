@@ -1025,7 +1025,7 @@ impl UnifiedRuntimeBuilder {
             let provider_census = std::mem::take(&mut self.provider_slot_census);
             summary.slots.retain(|slot| {
                 !provider_census.iter().any(|provider_slot| {
-                    provider_slot.declaration.domain == slot.declaration.domain
+                    provider_slot.durability.domain() == slot.durability.domain()
                 })
             });
             summary.slots.extend(provider_census);
@@ -1779,7 +1779,9 @@ impl UnifiedRuntimeBuilder {
             .durability
             .iter()
             .map(|declaration| crate::storage_health::StorageSlotSummary {
-                declaration: declaration.clone(),
+                durability: crate::storage_health::StorageSlotDurability::Declared(
+                    declaration.clone(),
+                ),
                 backend: format!("storage provider '{}'", provider.name()),
                 detail: Some(
                     "provider-declared durability (composite realm store set)".to_string(),
