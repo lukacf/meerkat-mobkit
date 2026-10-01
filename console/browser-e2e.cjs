@@ -3,12 +3,12 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
-const net = require("node:net");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { chromium } = require("playwright");
 const { exampleBackendSpec } = require("./example-backend.cjs");
+const { LOOPBACK_ANY_PORT, awaitFixtureReady } = require("./fixture-ready.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -43,27 +43,6 @@ async function stopBackend(child) {
   await waitForExit(child);
 }
 
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("failed to reserve port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function waitForHttpOk(url, timeoutMs = 300_000) {
   const deadline = Date.now() + timeoutMs;
@@ -194,8 +173,9 @@ async function waitForRpcMethod(server, method, minCount = 1) {
   throw new Error(`expected ${method} RPC; saw ${JSON.stringify(rpcMethodsFromRequests(server.requests))}`);
 }
 
-function startMockConsoleServer(port, options = {}) {
-  const baseUrl = `http://127.0.0.1:${port}`;
+// Listens on port 0 in this process and reports the bound URL; picking a free
+// port first and binding it later races other processes for the port.
+function startMockConsoleServer(options = {}) {
   const html = fs.readFileSync(path.join(__dirname, "dist", "index.html"), "utf8");
   const js = fs.readFileSync(path.join(__dirname, "dist", "console-app.js"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "dist", "console-app.css"), "utf8");
@@ -903,9 +883,9 @@ function startMockConsoleServer(port, options = {}) {
 
   return new Promise((resolve, reject) => {
     server.on("error", reject);
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(0, "127.0.0.1", () => {
       resolve({
-        baseUrl,
+        baseUrl: `http://127.0.0.1:${server.address().port}`,
         requests,
         close: () => new Promise((done, closeError) => {
           server.close((error) => error ? closeError(error) : done());
@@ -916,9 +896,6 @@ function startMockConsoleServer(port, options = {}) {
 }
 
 async function runReferenceBrowserProof() {
-  const port = await reservePort();
-  const addr = `127.0.0.1:${port}`;
-  const baseUrl = `http://${addr}`;
   const observedRequests = [];
 
   const backendSpec = exampleBackendSpec(repoRoot, "library_mode_reference");
@@ -927,7 +904,7 @@ async function runReferenceBrowserProof() {
     backendSpec.args,
     {
       cwd: repoRoot,
-      env: { ...process.env, MOBKIT_REF_ADDR: addr },
+      env: { ...process.env, MOBKIT_REF_ADDR: LOOPBACK_ANY_PORT },
       stdio: ["ignore", "pipe", "pipe"],
     }
   );
@@ -937,7 +914,12 @@ async function runReferenceBrowserProof() {
   });
 
   let browser;
+  let baseUrl;
   try {
+    ({ baseUrl } = await awaitFixtureReady(backend, {
+      label: "reference app",
+      timeoutMs: backendSpec.prebuilt ? 60_000 : 300_000,
+    }));
     await waitForHttpOk(`${baseUrl}/healthz`);
     await waitForHttpOk(`${baseUrl}/console`);
 
@@ -1024,8 +1006,7 @@ async function runReferenceBrowserProof() {
 }
 
 async function runCanonicalSendBrowserProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port);
+  const server = await startMockConsoleServer();
   let browser;
 
   try {
@@ -1086,9 +1067,8 @@ async function runCanonicalSendBrowserProof() {
 }
 
 async function runImageRenderingBrowserProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-12T05:45:00.000Z");
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeImageAgent: true,
     timelineFrames: [
       {
@@ -1236,8 +1216,7 @@ async function runImageRenderingBrowserProof() {
 }
 
 async function runComposerPasteAttachmentProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port, { includeImageAgent: true });
+  const server = await startMockConsoleServer({ includeImageAgent: true });
   let browser;
 
   try {
@@ -1287,9 +1266,8 @@ async function runComposerPasteAttachmentProof() {
 }
 
 async function runBusyWorkerConsoleProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:29:50.000Z");
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": [
@@ -1387,10 +1365,9 @@ async function runBusyWorkerConsoleProof() {
 }
 
 async function runToolOnlyWorkerBusyQueueProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:50:00.000Z");
   const queuedText = "Queue me while the tool-only worker is busy.";
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeToolOnlyWorker: true,
     timelineFramesByIdentity: {
       "tool-only-worker": [
@@ -1505,10 +1482,9 @@ async function runToolOnlyWorkerBusyQueueProof() {
 }
 
 async function runToolOnlyWorkerTerminalClearsBusyProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:55:00.000Z");
   const sendText = "This should send immediately after terminal turn_completed.";
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeToolOnlyWorker: true,
     timelineFramesByIdentity: {
       "tool-only-worker": [
@@ -1621,10 +1597,9 @@ async function runToolOnlyWorkerTerminalClearsBusyProof() {
 }
 
 async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:57:00.000Z");
   const queuedText = "Queue me after runtime metadata while the worker is still busy.";
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeToolOnlyWorker: true,
     timelineFramesByIdentity: {
       "tool-only-worker": [
@@ -1735,8 +1710,7 @@ async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
 }
 
 async function runSidebarSearchExpandsCollapsedWorkerSectionProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeToolOnlyWorker: true,
     collapseWorkersSection: true,
   });
@@ -1765,7 +1739,6 @@ async function runSidebarSearchExpandsCollapsedWorkerSectionProof() {
 }
 
 async function runChatPaneAutoScrollProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
   const historyFrames = Array.from({ length: 48 }, (_, index) => ({
     id: `history-line-${index}`,
@@ -1807,7 +1780,7 @@ async function runChatPaneAutoScrollProof() {
       },
     },
   ];
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": [...historyFrames, growingFrame],
@@ -1851,7 +1824,6 @@ async function runChatPaneAutoScrollProof() {
 }
 
 async function runChatPaneTurnRailProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T21:35:00.000Z");
   const frames = [];
   for (let index = 1; index <= 6; index += 1) {
@@ -1879,7 +1851,7 @@ async function runChatPaneTurnRailProof() {
     });
   }
 
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": frames,
@@ -2183,7 +2155,6 @@ async function runChatPaneTurnRailProof() {
 }
 
 async function runGlobalTimelineRecentSeedProof() {
-  const port = await reservePort();
   const baseTs = Date.now() - 60_000;
   const oldFrames = Array.from({ length: 1_200 }, (_, index) => ({
     id: `old-global-${index + 1}`,
@@ -2203,7 +2174,7 @@ async function runGlobalTimelineRecentSeedProof() {
     cursor: "console:1201",
     payload: { text: "RECENT_GLOBAL_EVENT_VISIBLE" },
   };
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     timelineFrames: [...oldFrames, recentFrame],
   });
   let browser;
@@ -2242,7 +2213,6 @@ async function runGlobalTimelineRecentSeedProof() {
 }
 
 async function runChatPaneRecentFirstPageProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T21:40:00.000Z");
   const frames = Array.from({ length: 1_500 }, (_, index) => ({
     id: `recent-first-line-${index + 1}`,
@@ -2255,7 +2225,7 @@ async function runChatPaneRecentFirstPageProof() {
       text: `Recent-first worker line ${index + 1}`,
     },
   }));
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": frames,
@@ -2296,7 +2266,6 @@ async function runChatPaneRecentFirstPageProof() {
 }
 
 async function runChatPaneOlderHistoryDemandPagingProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T22:40:00.000Z");
   const frames = Array.from({ length: 250 }, (_, index) => ({
     id: `older-demand-line-${index + 1}`,
@@ -2309,7 +2278,7 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
       text: `Older-demand worker line ${index + 1}`,
     },
   }));
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": frames,
@@ -2366,7 +2335,6 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
 }
 
 async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T22:45:00.000Z");
   const frames = Array.from({ length: 250 }, (_, index) => ({
     id: `async-backfill-line-${index + 1}`,
@@ -2384,7 +2352,7 @@ async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
   // land; the console has no periodic poll. The mock emits the backfilled
   // tail on the stream after the pane has taken its provisional empty first
   // page, and the console's terminal-frame reconcile re-queries the page.
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFrameSnapshotsByIdentity: {
       "person-worker-alpha": [[], frames],
@@ -2435,7 +2403,6 @@ async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
 }
 
 async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T22:46:00.000Z");
   const frames = Array.from({ length: 250 }, (_, index) => ({
     id: `nonempty-async-backfill-line-${index + 1}`,
@@ -2452,7 +2419,7 @@ async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
   // page was a provisional non-empty exhausted tail. A backfilled frame
   // that the tail already held is deduplicated, so the stream carries the
   // frame just below it to trigger the reconcile.
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFrameSnapshotsByIdentity: {
       "person-worker-alpha": [[frames[249]], frames],
@@ -2506,7 +2473,6 @@ async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
 }
 
 async function runChatPaneReplayRecoveryReplacesStaleLocalLogProof() {
-  const port = await reservePort();
   const oldFrames = Array.from({ length: 250 }, (_, index) => ({
     id: `stale-replay-line-${index + 1}`,
     kind: "interaction_complete",
@@ -2529,7 +2495,7 @@ async function runChatPaneReplayRecoveryReplacesStaleLocalLogProof() {
       text: "Fresh replay worker line 400",
     },
   };
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeBusyWorker: true,
     timelineFramesByIdentity: {
       "person-worker-alpha": oldFrames,
@@ -2593,7 +2559,6 @@ async function runChatPaneReplayRecoveryReplacesStaleLocalLogProof() {
 }
 
 async function runRunStartedClearsOptimisticPromptProof() {
-  const port = await reservePort();
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
   const baseTs = Date.parse("2026-05-23T20:45:00.000Z");
   const orderProofComplete = {
@@ -2605,7 +2570,7 @@ async function runRunStartedClearsOptimisticPromptProof() {
     cursor: "console:order:2",
     payload: { text: "ORDER_PROOF_FINAL visible after the prompt." },
   };
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     // Reproduce the send/SSE race: run_started arrives on the live stream
     // while the console send RPC is still in flight, before the optimistic
     // entry has the interaction id from the response.
@@ -2684,7 +2649,6 @@ async function runRunStartedClearsOptimisticPromptProof() {
 }
 
 async function runUserInputEchoClearsOptimisticPromptProof() {
-  const port = await reservePort();
   const prompt = "USER_INPUT_ECHO_PROOF should render once after the send race.";
   const baseTs = Date.parse("2026-05-23T21:20:00.000Z");
   const userInputEchoComplete = {
@@ -2696,7 +2660,7 @@ async function runUserInputEchoClearsOptimisticPromptProof() {
     cursor: "console:user-input-echo:2",
     payload: { text: "USER_INPUT_ECHO_FINAL visible after one prompt." },
   };
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     // Reproduce the send/SSE race for the canonical console user_input
     // echo. This is distinct from run_started: the echoed frame already has
     // an interaction id, but the optimistic entry may not yet have received
@@ -2770,9 +2734,8 @@ async function runUserInputEchoClearsOptimisticPromptProof() {
 }
 
 async function runLiveSystemNoticeAppearsInOpenChatProof() {
-  const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T21:10:00.000Z");
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     timelineFramesByIdentity: {
       "identity:luka": [
         {
@@ -2843,8 +2806,7 @@ async function runLiveSystemNoticeAppearsInOpenChatProof() {
 }
 
 async function runConsoleMountsWithoutCryptoRandomUuidProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port);
+  const server = await startMockConsoleServer();
   let browser;
 
   try {
@@ -2892,8 +2854,7 @@ async function runConsoleMountsWithoutCryptoRandomUuidProof() {
 }
 
 async function runHeadlessControlSurfaceBrowserProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     includeLifecycleActions: true,
   });
   let browser;
@@ -2946,8 +2907,7 @@ async function runHeadlessControlSurfaceBrowserProof() {
 }
 
 async function runTopologyUnavailableBrowserProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port);
+  const server = await startMockConsoleServer();
   let browser;
   try {
     browser = await launchBrowser();
@@ -2974,8 +2934,7 @@ async function runTopologyUnavailableBrowserProof() {
 }
 
 async function runTopologyDeniedPairBrowserProof() {
-  const port = await reservePort();
-  const server = await startMockConsoleServer(port, {
+  const server = await startMockConsoleServer({
     topologyControl: {
       methods: [
         "mobkit/topology/query",
@@ -3067,7 +3026,6 @@ async function runTopologyDeniedPairBrowserProof() {
 }
 
 async function runTopologyAmbiguousCommitBrowserProof() {
-  const port = await reservePort();
   const committedByKey = new Map();
   const applyPayloads = [];
   let physicalMutations = 0;
@@ -3181,7 +3139,7 @@ async function runTopologyAmbiguousCommitBrowserProof() {
       return true;
     },
   };
-  const server = await startMockConsoleServer(port, { topologyControl });
+  const server = await startMockConsoleServer({ topologyControl });
   let browser;
   try {
     browser = await launchBrowser();

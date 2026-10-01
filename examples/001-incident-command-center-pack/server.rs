@@ -84,10 +84,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = std::env::var("INCIDENT_COMMAND_CENTER_LISTEN_ADDR")
         .unwrap_or_else(|_| bundle.scenario.listen_addr.clone());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    println!(
-        "incident command center listening on http://{}",
-        listen_addr
-    );
+    let bound = listener.local_addr()?;
+    println!("incident command center listening on http://{bound}");
+    // Harnesses pass a port-0 address and read the bound one from this line;
+    // see console/fixture-ready.cjs.
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{bound}\"}}");
     println!("GET  /console");
     println!("GET  /console/experience");
     println!("POST /console/rpc");

@@ -92,7 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr =
         std::env::var("MOBKIT_REF_ADDR").unwrap_or_else(|_| "127.0.0.1:3210".to_string());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    println!("reference app listening on http://{listen_addr}");
+    let bound = listener.local_addr()?;
+    println!("reference app listening on http://{bound}");
+    // Harnesses pass a port-0 address and read the bound one from this line;
+    // see console/fixture-ready.cjs.
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{bound}\"}}");
     println!("GET  /console");
     println!("GET  /console/experience");
     println!("GET  /console/modules");

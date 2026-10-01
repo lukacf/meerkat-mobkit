@@ -271,6 +271,9 @@ comms = true
         .unwrap_or_else(|err| panic!("bind {listen_addr}: {err}"));
     let bound = listener.local_addr().expect("local addr");
     println!("access control console listening on http://{bound}/console");
+    // Harnesses pass a port-0 address and read the bound one from this line;
+    // see console/fixture-ready.cjs.
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{bound}\"}}");
     println!("access config persisted at {}", access_path.display());
     println!("mint persona tokens with persona-proxy.mjs to browse as each identity");
     axum::serve(listener, app).await.expect("serve");
