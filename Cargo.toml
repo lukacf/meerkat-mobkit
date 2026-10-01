@@ -150,3 +150,43 @@ opt-level = 0
 
 [profile.release.package.meerkat-live]
 opt-level = 0
+
+# TEMPORARY: pins the Meerkat family to lukacf/meerkat branch
+# fix/stop-typed-member-idle (#1390) until it is released; replace with the
+# published =0.8.50 pins before merge.
+[patch.crates-io]
+meerkat = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-anthropic = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-auth-core = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-capabilities = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-client = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-comms = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-copilot = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-core = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-gemini = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-hooks = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-jobs = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-live = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-machine-derive = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-machine-dsl = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-machine-dsl-core = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-machine-kernels = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-machine-schema = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-memory = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-models = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-providers = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-schedule = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-skills = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-sqlite = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }
+meerkat-workgraph = { git = "https://github.com/lukacf/meerkat", branch = "fix/stop-typed-member-idle" }

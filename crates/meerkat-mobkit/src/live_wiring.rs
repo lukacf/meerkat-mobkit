@@ -4121,6 +4121,9 @@ fn live_status_result_from_machine_authority(
     Ok(LiveStatusResult {
         channel_id,
         status: wire_live_status_from_machine_authority(authority)?,
+        // The machine authority carries no provider input-latency
+        // measurement (meerkat 0.8.50 added the field, #1400).
+        provider_input_latency: None,
     })
 }
 
