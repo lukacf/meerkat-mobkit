@@ -290,6 +290,11 @@ export class WaitEndedError extends MobKitError {
   readonly outcome: string;
   /** The send/dispatch result when an `*AndWait` call threw this, else `null`. */
   admission: unknown = null;
+  /**
+   * The ticket of the tracked turn the `*AndWait` call was waiting on, else
+   * `null` (an untracked wait, or not thrown by an `*AndWait` call).
+   */
+  ticket: string | null = null;
 
   constructor(identity: string, outcome: string, detail = "") {
     const message = `wait on identity ${identity} ended: ${outcome}`;

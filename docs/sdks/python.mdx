@@ -241,9 +241,13 @@ caller keeps the receipt instead of redispatching the work:
   `TurnUnknownError`, `WaitEndedError`, the identity-wide wait's
   missing-baseline, superseded-incarnation and live-alias `RuntimeError`s, the
   persistent transport's plain `RuntimeError` on a response timeout or closed
-  stdout, and a caller's `asyncio.CancelledError` (the same instance,
-  re-raised). A wait still pending at `timeout` raises `TurnWaitTimeoutError`,
-  a `TimeoutError` that also carries `admission` and `ticket`.
+  stdout, a caller's `asyncio.CancelledError` (the same instance,
+  re-raised), and an SDK warning a caller escalated with
+  `filterwarnings("error")`. A wait still pending at `timeout` raises
+  `TurnWaitTimeoutError`, a `TimeoutError` that also carries `admission` and
+  `ticket`. The one exception is a custom exception type that rejects
+  attribute assignment, which cannot carry the fields and still propagates
+  unchanged.
 
 The typed `turn_unavailable.code` says why a turn could not be tracked. Every
 code but `not_delivered` means the delivery still happened, exactly once:

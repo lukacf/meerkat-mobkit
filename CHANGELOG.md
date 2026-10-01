@@ -534,6 +534,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `*_and_wait` / `*AndWait` custody follow-up. Python: an SDK warning raised
+  after admission (the untracked-wait, truncated-output or no-own-output
+  warning) that a caller escalated with `filterwarnings("error")` now carries
+  `admission` and `ticket` like every other post-admission failure; warning
+  behaviour is unchanged and nothing is replayed. TypeScript: a tracked
+  `WaitEndedError` now carries the top-level `ticket` as well as `admission`.
+  The docs name the one exception: a thrown value that cannot carry fields.
+
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,
   and join the non-reaping exit observer before returning. A timeout closes

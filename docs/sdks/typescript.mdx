@@ -73,7 +73,10 @@ admission keeps its type and carries `admission` (and `ticket`, `null` when
 untracked): `TurnFailedError`, `TurnUnknownError`, `WaitEndedError`,
 `TurnWaitTimeoutError` (a turn still pending at the deadline), and on the
 identity-wide wait its deadline, missing-baseline and superseded-incarnation
-errors and a raw transport error.
+errors and a raw transport error. A tracked `WaitEndedError` carries the
+top-level `ticket` too. The one exception is a thrown value that cannot carry
+fields (a non-object, or a frozen object thrown by custom code), which still
+propagates unchanged.
 
 `waitForCompletion(identity, baseline)` and `waitUntilReady(identities)` are
 identity-wide: any completion on the identity satisfies them.

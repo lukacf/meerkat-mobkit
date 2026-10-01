@@ -660,6 +660,75 @@ class TestDefaultPathCustody:
         assert error.ticket is None
 
 
+class TestWarningsAsErrorsCustody:
+    """A caller that escalates the SDK's warnings to errors still gets the
+    admission on the raised warning, and the warnings still name the
+    caller's own line."""
+
+    @pytest.mark.asyncio
+    async def test_the_untracked_wait_warning_raised_as_an_error_carries_the_admission(self):
+        transport = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", TurnTrackingUnavailableWarning)
+            with pytest.raises(TurnTrackingUnavailableWarning) as raised:
+                await handle.dispatch_text_and_wait("alpha", timeout=5, poll_interval=0.001)
+        assert isinstance(raised.value.admission, DispatchResult)
+        assert raised.value.ticket is None
+        assert len(transport.params_of("mobkit/dispatch")) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("completed", "category"),
+        [
+            (_completed("cut", truncated=True), TurnOutputTruncatedWarning),
+            (_completed(None, status="no_own_result"), TurnOutputUnavailableWarning),
+        ],
+    )
+    async def test_an_output_warning_raised_as_an_error_carries_the_admission(
+        self, completed, category,
+    ):
+        transport = TicketTransport(
+            sends=[_sent("t-own")], turn_results={"t-own": [completed]},
+        )
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", category)
+            with pytest.raises(category) as raised:
+                await handle.send_and_wait("alpha", timeout=5, poll_interval=0.001)
+        assert isinstance(raised.value.admission, SendResult)
+        assert raised.value.ticket == "t-own"
+        assert len(transport.params_of("mobkit/send")) == 1
+
+    @pytest.mark.asyncio
+    async def test_warnings_still_name_the_callers_line(self):
+        untracked = TicketTransport(
+            sends=[_sent(None, turns=0, unavailable="autonomous_host")],
+            inspections=[_inspection("latest reply", turns=1)],
+        )
+        truncated = TicketTransport(
+            sends=[_sent("t-own")],
+            turn_results={"t-own": [_completed("cut", truncated=True)]},
+        )
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            await IdentityAgentHandle(_make_runtime(untracked), "keeper").send_and_wait(
+                "alpha", timeout=5, poll_interval=0.001,
+            )
+            await IdentityAgentHandle(_make_runtime(truncated), "keeper").send_and_wait_outcome(
+                "alpha", timeout=5, poll_interval=0.001,
+            )
+        sdk_warnings = [
+            w for w in seen
+            if issubclass(w.category, (TurnTrackingUnavailableWarning, TurnOutputTruncatedWarning))
+        ]
+        assert len(sdk_warnings) == 2
+        assert all(w.filename == __file__ for w in sdk_warnings), [w.filename for w in sdk_warnings]
+
+
 class TestModels:
     def test_results_carry_the_ticket_and_round_trip(self):
         sent = SendResult.from_dict(_sent("ticket-a", turns=2))
