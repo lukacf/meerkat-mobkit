@@ -77,15 +77,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      # The idle CPU gate asserts an absolute per-30s CPU budget calibrated on
-      # real hardware; GitHub's shared 2-vCPU runners read ~3-4s where real
-      # machines read 0.5-2s, even with exclusive nextest scheduling - the
-      # runner class is not a valid measurement environment for the assertion.
-      # The gate stays armed in local full-suite runs (exclusively scheduled
-      # via .config/nextest.toml) and in the release-gate protocol.
+      # The idle CPU gate runs here on its structural assertions: zero
+      # whole-document session reads and zero console watermark writes over
+      # the idle window, measured after the console's typed session-history
+      # catch-up. Its absolute per-30s CPU budget is calibrated on real
+      # hardware (GitHub's shared 2-vCPU runners read ~3-4s where real
+      # machines read well under 1s), so that assertion is advisory here and
+      # stays enforced in local full-suite runs (exclusively scheduled via
+      # .config/nextest.toml) and in the release-gate protocol.
       # The live-event burst test remains CPU-speed-sensitive. History backfill
       # saturation uses a deterministic read barrier and runs in this gate.
-      - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts) and not test(converged_idle_gateway_consumes_near_zero_cpu) and not test(live_event_burst_reaches_store_while_slow_backfill_is_running)' --no-fail-fast
+      - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts) and not test(live_event_burst_reaches_store_while_slow_backfill_is_running)' --no-fail-fast
+        env:
+          MOBKIT_IDLE_CPU_TIMING: advisory
 
   test-voice:
     name: test-voice

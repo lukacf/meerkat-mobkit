@@ -120,7 +120,9 @@ retries = 2
 # num-cpus makes nextest schedule it EXCLUSIVELY - the in-suite equivalent of
 # the solo-run disposition protocol - instead of weakening the CPU budget,
 # which is a real production assertion (it caught the 0.8.9 wave's O(document)
-# regression).
+# regression). Its structural assertions (zero whole-document reads and
+# watermark writes after the typed console catch-up) are runner-independent;
+# hosted CI sets MOBKIT_IDLE_CPU_TIMING=advisory for the CPU budget only.
 [[profile.default.overrides]]
 filter = 'package(meerkat-mobkit) & test(converged_idle_gateway_consumes_near_zero_cpu)'
 threads-required = "num-cpus"

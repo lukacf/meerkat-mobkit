@@ -319,6 +319,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `MobKitConsoleAggregator::session_history_catch_up(runtime_key)` returns a
+  watch of the runtime's typed `SessionHistoryCatchUp` (`Pending`, `Behind`,
+  `CaughtUp`, `Unwitnessed`). Every backfill pass over the runtime
+  republishes it; `CaughtUp` means every visible member session's history
+  was read cleanly at its current durable write epoch, so the next pass
+  skips them all. Readiness checks can await it instead of timing the
+  registration's catch-up, which can take a second pass when a large
+  session's trailing durable commits land during the first.
+- Work counters for the idle re-read classes:
+  `SessionWriteEpochsHandle::session_document_reads()` (whole-document
+  authoritative loads and history reads through the write-epoch seam, as
+  `SessionDocumentReads`) and
+  `MobKitConsoleAggregator::source_watermark_writes()`.
+
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
   and `sendAndWaitOutcome` / `dispatchAndWaitOutcome` (TypeScript) return
@@ -533,6 +547,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
+
+- The idle CPU gate no longer fails intermittently by measuring the console's
+  own catch-up. It opened its window after the first quiet 2 s CPU probe, but
+  the registration's catch-up of a large session can need a second
+  whole-document pass about one discovery period later, after a quiet gap;
+  that pass (about 5.4 CPU-seconds in a debug build) landed in the window
+  and read as an idle burn. The gate now awaits the typed
+  `SessionHistoryCatchUp::CaughtUp` before measuring and asserts zero
+  whole-document session reads and zero watermark writes over the window
+  (a converged idle gateway measures 13-18 ms of CPU per 30 s). Hosted CI
+  runs it again on those structural assertions, with its absolute CPU
+  budget advisory there (`MOBKIT_IDLE_CPU_TIMING=advisory`) and still
+  enforced locally.
 
 - Console: typing in the chat composer no longer lags with a long history,
   idle or while a reply streams. In Chromium against the real gateway with

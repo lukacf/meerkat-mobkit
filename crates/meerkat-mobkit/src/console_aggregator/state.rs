@@ -60,6 +60,32 @@ pub enum SourceIngestionState {
     ReplayUnavailable,
 }
 
+/// Whether a registered runtime's projected session history has caught up
+/// with its members' durable sessions, as of the last finished backfill pass
+/// over the runtime.
+///
+/// Published through
+/// [`MobKitConsoleAggregator::session_history_catch_up`](crate::MobKitConsoleAggregator::session_history_catch_up).
+/// A runtime starts `Pending`, and every finished pass (the registration's
+/// recovery pass, then each discovery pass) republishes it. Activity moves a
+/// caught-up runtime back to `Behind` until a pass reads the new history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionHistoryCatchUp {
+    /// Registered; no backfill pass over the runtime has finished yet.
+    Pending,
+    /// The last finished pass left a member session behind its durable
+    /// session: a read failed or raced a write, or an assistant refresh is
+    /// still pending. A later pass reads it again.
+    Behind,
+    /// The last finished pass proved every visible member session's history
+    /// was read cleanly at the session's current durable write epoch, so the
+    /// next pass skips them all without a read.
+    CaughtUp,
+    /// A member session has no durable write-epoch witness, so catch-up
+    /// cannot be proven and every pass reads it again.
+    Unwitnessed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceIngestionTransition {
     StartBackfill,

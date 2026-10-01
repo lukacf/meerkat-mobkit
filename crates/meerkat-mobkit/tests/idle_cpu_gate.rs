@@ -9,15 +9,21 @@
 //! 17-member fleet consumed ~5 cores on a 4-core host.
 //!
 //! This gate boots a real persistent gateway with multiple durable members,
-//! waits for convergence, idles, and asserts the PROCESS CPU-TIME delta over
-//! the idle window stays far below the historical burn. It measures CPU time
-//! via `getrusage`, never wall clock. This test must stay alone in its own
-//! integration binary so no sibling test's CPU pollutes the measurement.
+//! waits for the console's typed session-history catch-up, idles, and
+//! asserts two things over the idle window:
 //!
-//! The threshold is deliberately generous to CI noise (10% of one core over
-//! the window); the historical defect consumed ~30% of a core per member and
-//! scales with member count, so a hot-loop recurrence trips this
-//! immediately.
+//! - STRUCTURAL (runner-independent): zero whole-document session reads
+//!   through the write-epoch seam and zero console source-watermark writes.
+//!   Every idle-burn generation so far was one of these re-read classes.
+//! - CPU TIME (backstop): the PROCESS CPU-time delta, via `getrusage`, never
+//!   wall clock, stays far below the historical burn. Generous to noise (10%
+//!   of one core over the window); the historical defect consumed ~30% of a
+//!   core per member. Set `MOBKIT_IDLE_CPU_TIMING=advisory` to report it
+//!   without failing (hosted CI's shared runners read 3-4 s where real
+//!   machines read well under 1 s).
+//!
+//! This test must stay alone in its own integration binary so no sibling
+//! test's CPU pollutes the measurement.
 //!
 //! SIZE-PROPORTIONAL class: one member carries a large (multi-megabyte)
 //! persisted transcript and a console aggregator (session-history backfill
@@ -58,11 +64,11 @@ use meerkat_mobkit::identity_first::{
     IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider,
     SessionBridge,
 };
-use meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store;
+use meerkat_mobkit::mob_handle_runtime::{SessionDocumentReads, epoch_tracking_runtime_store};
 use meerkat_mobkit::{
     AllowAllConsoleVisibilityPolicy, Base64BlobStoreAdapter, BinaryBlobStore,
     ConsoleRuntimeRegistration, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    MobKitConsoleAggregator, ObjectStoreBlobStore, UnifiedRuntime,
+    MobKitConsoleAggregator, ObjectStoreBlobStore, SessionHistoryCatchUp, UnifiedRuntime,
 };
 use meerkat_store::SqliteSessionStore;
 use tokio::time::sleep;
@@ -346,33 +352,68 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
         visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
     });
 
-    // Quiesce before opening the measured window: the large turns' trailing
-    // durable commits (multi-second, size-proportional, debug-build) and the
-    // console's one legitimate catch-up backfill must finish first. Probe the
-    // process CPU rate until it drops to idle level; a gateway that NEVER
-    // quiesces fails here — which is the defect this gate exists to catch.
-    let quiesce_deadline = Instant::now() + Duration::from_mins(4);
-    loop {
-        let probe_start = process_cpu_time();
-        sleep(Duration::from_secs(2)).await;
-        let probe_burn = process_cpu_time().saturating_sub(probe_start);
-        if probe_burn < Duration::from_millis(200) {
-            break;
+    // Open the measured window only once the console has caught up. The
+    // registration's catch-up reads every member's whole session document,
+    // and the large member's trailing durable commits (multi-second,
+    // size-proportional, debug-build) can land during that first read, which
+    // then needs a second pass on the next discovery tick. A CPU-rate probe
+    // could fall in the gap between the two passes and let the second one
+    // into the window; the typed catch-up cannot. A gateway that never
+    // converges fails here instead.
+    let mut catch_up = aggregator
+        .session_history_catch_up("idle-cpu-gate")
+        .expect("a registered runtime publishes its catch-up");
+    let caught_up = tokio::time::timeout(
+        Duration::from_mins(4),
+        catch_up.wait_for(|state| *state == SessionHistoryCatchUp::CaughtUp),
+    )
+    .await
+    .map(|waited| waited.map(|_| ()));
+    match caught_up {
+        Ok(waited) => {
+            waited.expect("the catch-up channel stays open while the runtime is registered");
         }
-        assert!(
-            Instant::now() < quiesce_deadline,
-            "gateway never quiesced after seeding: still burning {probe_burn:?} \
-             per 2s probe (an idle-CPU hot loop)"
-        );
+        Err(elapsed) => panic!(
+            "console session history never caught up after seeding ({elapsed}; last state {:?})",
+            *catch_up.borrow()
+        ),
     }
 
-    // The measured contract: a converged, idle gateway must consume ~zero
-    // CPU regardless of member count or transcript size.
+    // The measured contract: a converged, idle gateway re-reads nothing and
+    // consumes ~zero CPU regardless of member count or transcript size.
+    let reads_before = session_write_epochs.session_document_reads();
+    let watermark_writes_before = aggregator.source_watermark_writes();
     let cpu_before = process_cpu_time();
     sleep(IDLE_WINDOW).await;
     let idle_cpu = process_cpu_time().saturating_sub(cpu_before);
+    let idle_reads = session_write_epochs
+        .session_document_reads()
+        .since(reads_before);
+    let idle_watermark_writes = aggregator
+        .source_watermark_writes()
+        .saturating_sub(watermark_writes_before);
+    eprintln!(
+        "idle window: {idle_cpu:?} CPU, {idle_reads:?}, \
+         {idle_watermark_writes} source watermark writes"
+    );
+    assert_eq!(
+        idle_reads,
+        SessionDocumentReads::default(),
+        "the idle gateway re-read whole session documents; the converged \
+         fleet must be event-driven, not busy re-verifying unchanged sessions"
+    );
+    assert_eq!(
+        idle_watermark_writes, 0,
+        "the idle console re-projected session history it had already caught up on"
+    );
+    assert_eq!(
+        *catch_up.borrow(),
+        SessionHistoryCatchUp::CaughtUp,
+        "nothing moved, so the console must still be caught up"
+    );
+    let timing_advisory = std::env::var("MOBKIT_IDLE_CPU_TIMING").as_deref() == Ok("advisory");
     assert!(
-        idle_cpu <= MAX_IDLE_CPU,
+        timing_advisory || idle_cpu <= MAX_IDLE_CPU,
         "idle gateway burned {idle_cpu:?} CPU over {IDLE_WINDOW:?} \
          (limit {MAX_IDLE_CPU:?}); the converged fleet must be event-driven, \
          not busy re-verifying unchanged session documents"
