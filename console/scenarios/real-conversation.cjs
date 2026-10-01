@@ -59,15 +59,45 @@ async function anchorAt(viewport, row, offset = 100) {
   }, id);
 }
 
+/// Wait until the controller has finished restoring ("Restoring earlier
+/// position" gone) and the row's offset has held for `stableMs` of frames.
+/// Returning to an identity reloads its history and the host may page older
+/// history before the remembered row exists; rows can also reflow after the
+/// row first appears. A fixed two-frame settle could measure mid-restore. A
+/// real drift still settles at the wrong offset and fails.
+async function settleRow(viewport, id, { stableMs = 500, timeoutMs = 8_000 } = {}) {
+  await viewport.evaluate((node, { id, stableMs, timeoutMs }) => new Promise((resolve) => {
+    const started = performance.now();
+    let last = null;
+    let since = started;
+    const restoring = () => [...document.querySelectorAll('[role="status"]')]
+      .some(status => status.textContent.includes("Restoring earlier position"));
+    const tick = () => {
+      const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
+      const top = row && !restoring() ? row.getBoundingClientRect().top - node.getBoundingClientRect().top : null;
+      const now = performance.now();
+      if (top !== last) { last = top; since = now; }
+      if ((top !== null && now - since >= stableMs) || now - started >= timeoutMs) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }), { id, stableMs, timeoutMs });
+}
+
+
+
 async function measureAnchor(viewport, anchor, action, label) {
+  await settleRow(viewport, anchor.id);
   const before = await viewport.evaluate((node, id) => {
     const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
     return { top: row.getBoundingClientRect().top - node.getBoundingClientRect().top, height: node.clientHeight, rows: node.querySelectorAll("[data-conversation-row-id]").length, text: row.textContent.slice(0, 150) };
   }, anchor.id);
   await action(); await settle(viewport.page());
+  await settleRow(viewport, anchor.id);
   const after = await viewport.evaluate((node, id) => {
     const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
     return { top: row?.getBoundingClientRect().top - node.getBoundingClientRect().top, height: node.clientHeight, rows: node.querySelectorAll("[data-conversation-row-id]").length,
+      statuses: [...document.querySelectorAll('[role="status"]')].map(status => status.textContent.trim()).filter(text => /earlier position/i.test(text)),
       ...(row ? {} : { retainedRows: [...node.querySelectorAll("[data-conversation-row-id]")].slice(0, 12).map(item => ({ id: item.dataset.conversationRowId, text: item.textContent.slice(0, 150) })) }) };
   }, anchor.id);
   const drift = Math.abs(after.top - before.top);
