@@ -162,7 +162,8 @@ def _attach_admission(error: BaseException, admission: Any, ticket: str | None) 
         if getattr(error, "ticket", None) is None:
             error.ticket = ticket  # type: ignore[attr-defined]
     except AttributeError:
-        # An exception type with __slots__ cannot carry the receipt; it still
+        # A custom exception type that rejects attribute assignment raises
+        # AttributeError here and cannot carry the receipt; it still
         # propagates unchanged.
         pass
 def _next_request_id(method: str) -> str:

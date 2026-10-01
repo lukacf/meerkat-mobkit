@@ -247,7 +247,7 @@ describe("post-admission observation", () => {
     await assert.rejects(rt.sendAndWait("keeper", "alpha", FAST), (error) => {
       assert.ok(error instanceof WaitEndedError);
       assert.equal((error.admission as { turnTicket: unknown }).turnTicket, TICKET);
-      assert.equal((error as unknown as { ticket: unknown }).ticket, TICKET);
+      assert.equal(error.ticket, TICKET);
       return true;
     });
     assert.equal(count("mobkit/send"), 1);

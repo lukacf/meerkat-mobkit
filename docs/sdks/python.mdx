@@ -245,8 +245,9 @@ caller keeps the receipt instead of redispatching the work:
   re-raised), and an SDK warning a caller escalated with
   `filterwarnings("error")`. A wait still pending at `timeout` raises
   `TurnWaitTimeoutError`, a `TimeoutError` that also carries `admission` and
-  `ticket`. The one exception is an exception type defined with `__slots__`,
-  which cannot carry the fields and still propagates unchanged.
+  `ticket`. The one exception is a custom exception type that rejects
+  attribute assignment, which cannot carry the fields and still propagates
+  unchanged.
 
 The typed `turn_unavailable.code` says why a turn could not be tracked. Every
 code but `not_delivered` means the delivery still happened, exactly once:
