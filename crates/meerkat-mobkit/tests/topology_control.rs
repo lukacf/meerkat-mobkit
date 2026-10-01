@@ -191,6 +191,129 @@ impl BlockingEdgeDiscovery {
     }
 }
 
+impl BlockingEdgeDiscovery {
+    fn release(&self) {
+        self.state.release.add_permits(1);
+    }
+}
+
+/// Counts every discovery and, while gated, parks each one until released, so
+/// a test can hold an edge discovery in flight and count how many ran.
+#[derive(Clone)]
+struct CountingGatedEdgeDiscovery {
+    state: Arc<CountingGatedEdgeDiscoveryState>,
+}
+
+impl Default for CountingGatedEdgeDiscovery {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(CountingGatedEdgeDiscoveryState {
+                gated: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+                entered: tokio::sync::Semaphore::new(0),
+                release: tokio::sync::Semaphore::new(0),
+            }),
+        }
+    }
+}
+
+struct CountingGatedEdgeDiscoveryState {
+    gated: AtomicBool,
+    calls: AtomicUsize,
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+}
+
+impl CountingGatedEdgeDiscovery {
+    fn gate(&self) {
+        self.state.gated.store(true, Ordering::SeqCst);
+    }
+
+    fn open(&self) {
+        self.state.gated.store(false, Ordering::SeqCst);
+        self.state.release.add_permits(64);
+    }
+
+    fn calls(&self) -> usize {
+        self.state.calls.load(Ordering::SeqCst)
+    }
+
+    async fn wait_until_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(3), self.state.entered.acquire())
+            .await
+            .expect("gated discovery was not entered")
+            .expect("gated discovery semaphore closed")
+            .forget();
+    }
+}
+
+impl EdgeDiscovery for CountingGatedEdgeDiscovery {
+    fn discover_edges(
+        &self,
+        _active_members: Vec<meerkat_mobkit::unified_runtime::edge_types::EdgeMemberView>,
+    ) -> Pin<Box<dyn Future<Output = Vec<DesiredPeerEdge>> + Send + '_>> {
+        Box::pin(async move {
+            self.state.calls.fetch_add(1, Ordering::SeqCst);
+            if self.state.gated.load(Ordering::SeqCst) {
+                self.state.entered.add_permits(1);
+                self.state
+                    .release
+                    .acquire()
+                    .await
+                    .expect("gated discovery release semaphore closed")
+                    .forget();
+            }
+            Vec::new()
+        })
+    }
+}
+
+fn connect_alice_bob(expected_revision: u64, idempotency_key: &str) -> TopologyApplyRequest {
+    TopologyApplyRequest {
+        expected_revision,
+        idempotency_key: idempotency_key.to_string(),
+        operations: vec![TopologyMutation {
+            action: TopologyAction::Connect,
+            edge: TopologyEdge::new(
+                TopologyEndpoint::local("alice"),
+                TopologyEndpoint::local("bob"),
+            )
+            .expect("local edge"),
+        }],
+        reason: Some("topology query concurrency acceptance".to_string()),
+        risk_tier: None,
+    }
+}
+
+fn alice_bob_operator_added(snapshot: &meerkat_mobkit::TopologySnapshot) -> bool {
+    // Snapshot edges carry the runtime's authority on both endpoints.
+    let endpoint = |identity: &str| TopologyEndpoint {
+        authority: Some(snapshot.authority.clone()),
+        identity: identity.to_string(),
+    };
+    let edge = TopologyEdge::new(endpoint("alice"), endpoint("bob")).expect("local edge");
+    snapshot
+        .edges
+        .iter()
+        .any(|candidate| candidate.edge == edge && candidate.operator_added)
+}
+
+async fn spawn_bob(runtime: &UnifiedRuntime) {
+    runtime
+        .spawn(
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                MeerkatId::from("bob").to_string(),
+                None,
+                Some(MobRuntimeMode::TurnDriven),
+                None,
+            )
+            .with_additional_instructions(vec!["You are bob.".to_string()]),
+        )
+        .await
+        .expect("spawn bob");
+}
+
 impl EdgeDiscovery for BlockingEdgeDiscovery {
     fn discover_edges(
         &self,
@@ -215,7 +338,7 @@ async fn build_runtime_with_edge_discovery(
     root: &Path,
     authority: &str,
     member: &str,
-    edge_discovery: BlockingEdgeDiscovery,
+    edge_discovery: impl EdgeDiscovery + 'static,
 ) -> UnifiedRuntime {
     let session_path = root.join(format!("{authority}-blocking-sessions"));
     std::fs::create_dir_all(&session_path).expect("session path");
@@ -1581,4 +1704,212 @@ async fn identity_reconcile_reports_dormant_endpoint_as_missing_and_incomplete()
     );
 
     shutdown(&unified).await;
+}
+
+/// OB3 production (MobKit 0.8.43): queries arriving about 1/s with a 0.8 s
+/// edge discovery queued for minutes, because every read took the exclusive
+/// mutation lock. Concurrent reads now share one computation: with one
+/// discovery held in flight, eight more callers cost at most one further
+/// discovery, not eight serialized ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_topology_queries_share_one_discovery_instead_of_serializing() {
+    let _serial = TOPOLOGY_TEST_LOCK.lock().await;
+    let root = tempfile::tempdir().expect("root");
+    let discovery = CountingGatedEdgeDiscovery::default();
+    let runtime = Arc::new(
+        build_runtime_with_edge_discovery(root.path(), "query-flights", "alice", discovery.clone())
+            .await,
+    );
+    let topology = runtime.topology_runtime_handle();
+    topology.query().await.expect("warm query");
+    let baseline = discovery.calls();
+
+    discovery.gate();
+    let first = tokio::spawn({
+        let topology = topology.clone();
+        async move { topology.query().await }
+    });
+    discovery.wait_until_entered().await;
+    // Poll each joiner once: registration in the shared flight slots happens
+    // synchronously on that first poll, so all eight are queued behind the
+    // flight in progress before any discovery is released.
+    let handles = (0..8).map(|_| topology.clone()).collect::<Vec<_>>();
+    let mut joined = handles
+        .iter()
+        .map(|handle| Box::pin(handle.query()))
+        .collect::<Vec<_>>();
+    for joiner in &mut joined {
+        assert!(
+            futures::poll!(joiner.as_mut()).is_pending(),
+            "joiner waits on the shared flight"
+        );
+    }
+    assert_eq!(discovery.calls(), baseline + 1, "one discovery in flight");
+    discovery.open();
+
+    first.await.expect("first query task").expect("first query");
+    for result in futures::future::join_all(joined).await {
+        result.expect("joined query");
+    }
+    let used = discovery.calls() - baseline;
+    assert!(
+        used <= 2,
+        "nine concurrent queries ran {used} discoveries; at most the running one plus one shared fresh one"
+    );
+
+    shutdown(&runtime).await;
+}
+
+/// A read while an apply is mid-flight (journal written, wiring parked) does
+/// not wait for it and reports the committed state before the apply; after
+/// the apply commits a read reports the new state. Never the half-applied
+/// target the journal holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn topology_query_during_apply_sees_before_then_after_never_half() {
+    let _serial = TOPOLOGY_TEST_LOCK.lock().await;
+    let root = tempfile::tempdir().expect("root");
+    let gate = BlockingEdgeDiscovery::new();
+    let runtime = Arc::new(
+        build_runtime_with_edge_discovery(root.path(), "query-during-apply", "alice", gate.clone())
+            .await,
+    );
+    spawn_bob(&runtime).await;
+    let topology = runtime.topology_runtime_handle();
+    let before = topology.query().await.expect("query before apply");
+    assert!(!alice_bob_operator_added(&before));
+
+    gate.arm();
+    let apply = tokio::spawn({
+        let topology = topology.clone();
+        let request = connect_alice_bob(before.revision, "query-during-apply");
+        async move { topology.apply(request, "query-concurrency").await }
+    });
+    gate.wait_until_entered().await;
+    let during = tokio::time::timeout(Duration::from_secs(5), topology.query())
+        .await
+        .expect("a read must not wait for an in-flight apply")
+        .expect("query during apply");
+    assert_eq!(
+        during.revision, before.revision,
+        "the uncommitted target revision is never reported"
+    );
+    assert!(
+        !alice_bob_operator_added(&during),
+        "the uncommitted target edge is never reported"
+    );
+
+    gate.release();
+    let receipt = apply.await.expect("apply task").expect("apply");
+    assert_eq!(receipt.status, TopologyOperationStatus::Applied);
+    let after = topology.query().await.expect("query after apply");
+    assert_eq!(after.revision, before.revision + 1);
+    assert!(alice_bob_operator_added(&after));
+
+    shutdown(&runtime).await;
+}
+
+/// An interrupted journal (its apply was cancelled mid-flight) is still
+/// recovered on the next read, under the mutation lock, because no mutation
+/// holds the lock: the read reports the rolled-back committed state and a
+/// later apply against that revision succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn topology_query_recovers_an_interrupted_journal() {
+    let _serial = TOPOLOGY_TEST_LOCK.lock().await;
+    let root = tempfile::tempdir().expect("root");
+    let gate = BlockingEdgeDiscovery::new();
+    let runtime = Arc::new(
+        build_runtime_with_edge_discovery(root.path(), "query-recovers", "alice", gate.clone())
+            .await,
+    );
+    spawn_bob(&runtime).await;
+    let topology = runtime.topology_runtime_handle();
+    let before = topology.query().await.expect("query before apply");
+
+    gate.arm();
+    let apply = tokio::spawn({
+        let topology = topology.clone();
+        let request = connect_alice_bob(before.revision, "interrupted-apply");
+        async move { topology.apply(request, "query-concurrency").await }
+    });
+    gate.wait_until_entered().await;
+    apply.abort();
+    assert!(apply.await.expect_err("apply cancelled").is_cancelled());
+
+    let recovered = topology
+        .query()
+        .await
+        .expect("the read recovers the interrupted journal");
+    assert_eq!(
+        recovered.revision, before.revision,
+        "the interrupted operation rolled back"
+    );
+    assert!(!alice_bob_operator_added(&recovered));
+    let audit = runtime
+        .topology_controller()
+        .operation_records(None, 20)
+        .await
+        .expect("audit after recovery");
+    assert!(
+        audit.records.iter().all(|record| !matches!(
+            record.status,
+            meerkat_mobkit::TopologyOperationRecordStatus::Pending
+                | meerkat_mobkit::TopologyOperationRecordStatus::Requested
+        )),
+        "recovery closed the interrupted operation: {:?}",
+        audit.records
+    );
+    let retried = topology
+        .apply(
+            connect_alice_bob(recovered.revision, "after-recovery"),
+            "query-concurrency",
+        )
+        .await
+        .expect("apply after the read's recovery");
+    assert_eq!(retried.status, TopologyOperationStatus::Applied);
+
+    shutdown(&runtime).await;
+}
+
+/// An expensive edge discovery inside a read no longer holds the mutation
+/// lock, so an apply proceeds and commits while the read is parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expensive_topology_query_does_not_block_apply() {
+    let _serial = TOPOLOGY_TEST_LOCK.lock().await;
+    let root = tempfile::tempdir().expect("root");
+    let gate = BlockingEdgeDiscovery::new();
+    let runtime = Arc::new(
+        build_runtime_with_edge_discovery(root.path(), "query-vs-apply", "alice", gate.clone())
+            .await,
+    );
+    spawn_bob(&runtime).await;
+    let topology = runtime.topology_runtime_handle();
+    let before = topology.query().await.expect("query before");
+
+    gate.arm();
+    let parked_query = tokio::spawn({
+        let topology = topology.clone();
+        async move { topology.query().await }
+    });
+    gate.wait_until_entered().await;
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(5),
+        topology.apply(
+            connect_alice_bob(before.revision, "apply-beside-query"),
+            "query-concurrency",
+        ),
+    )
+    .await
+    .expect("an apply must not wait for a read's edge discovery")
+    .expect("apply beside a parked read");
+    assert_eq!(receipt.status, TopologyOperationStatus::Applied);
+
+    gate.release();
+    parked_query
+        .await
+        .expect("parked query task")
+        .expect("parked query");
+    let after = topology.query().await.expect("query after");
+    assert!(alice_bob_operator_added(&after));
+
+    shutdown(&runtime).await;
 }
