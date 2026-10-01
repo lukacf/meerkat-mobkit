@@ -1,18 +1,31 @@
 //! Process boundary types for gateway binary communication.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use std::io::{BufRead, BufReader};
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use std::process::{Child, Command, Stdio};
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use std::sync::mpsc;
 use std::time::Duration;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessBoundaryError {
     SpawnFailed(String),
     MissingStdout,
     Io(String),
-    Timeout { timeout_ms: u64 },
+    Timeout {
+        timeout_ms: u64,
+    },
     EmptyOutput,
     InvalidJsonLine,
+    /// The operating system did not confirm that the direct child was reaped.
+    CleanupUnconfirmed {
+        pid: u32,
+        source: String,
+    },
 }
 
 impl std::fmt::Display for ProcessBoundaryError {
@@ -24,12 +37,39 @@ impl std::fmt::Display for ProcessBoundaryError {
             Self::Timeout { timeout_ms } => write!(f, "timed out after {timeout_ms}ms"),
             Self::EmptyOutput => write!(f, "empty output"),
             Self::InvalidJsonLine => write!(f, "invalid JSON line"),
+            Self::CleanupUnconfirmed { pid, source } => {
+                write!(f, "cleanup unconfirmed for process {pid}: {source}")
+            }
         }
     }
 }
 
 impl std::error::Error for ProcessBoundaryError {}
 
+/// Run a process and return its first JSON line after its direct child exits.
+///
+/// On Linux and macOS, one deadline covers stdout and child exit. Timeout or
+/// read failure closes the owned reader, terminates the direct child, and waits
+/// for reaping. Cleanup can exceed the operation deadline if termination fails.
+/// No reader or exit-observer thread is detached. Descendants are not owned.
+/// The caller must not install an external reaper for this owned child (including
+/// SIGCHLD auto-reaping). An OS wait failure is `CleanupUnconfirmed`, not proof
+/// of settlement; the value-only API cannot transfer a still-unconfirmed child.
+///
+/// Other targets, including Windows, retain the legacy first-read timeout and
+/// blocking reader/exit behavior; they do not provide the Linux/macOS guarantee.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn run_process_json_line(
+    command: &str,
+    args: &[String],
+    env: &[(String, String)],
+    timeout: Duration,
+) -> Result<String, ProcessBoundaryError> {
+    unix::run(command, args, env, timeout)
+}
+
+/// Legacy process boundary. Its timeout covers the first read only.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn run_process_json_line(
     command: &str,
     args: &[String],
@@ -93,6 +133,7 @@ pub fn run_process_json_line(
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn wait_with_context(child: &mut Child, context: &str) -> Result<(), ProcessBoundaryError> {
     child
         .wait()
@@ -100,6 +141,7 @@ fn wait_with_context(child: &mut Child, context: &str) -> Result<(), ProcessBoun
         .map_err(|err| ProcessBoundaryError::Io(format!("{context}: {err}")))
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn cleanup_timeout_with_process(
     child: &mut Child,
     timeout_ms: u64,
@@ -133,7 +175,7 @@ fn cleanup_timeout_with_process(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 fn cleanup_timeout_with_ops<FTryWait, FKill, FWait>(
     timeout_ms: u64,
     mut try_wait: FTryWait,
@@ -174,7 +216,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::io;

@@ -2785,6 +2785,7 @@ dependencies = [
  "reqwest 0.12.28",
  "ring",
  "rusqlite",
+ "rustix 1.1.4",
  "schemars 1.2.2",
  "serde",
  "serde_json",
