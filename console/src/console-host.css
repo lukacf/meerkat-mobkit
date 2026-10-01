@@ -2338,9 +2338,18 @@ svg[data-svg="fit"],
   display: flex; flex-direction: column; height: 100%;
   min-width: 0; min-height: 0;
   position: relative;
-  container-type: inline-size;
   overflow: hidden;
   background: var(--bg-elev-1);
+}
+/* The header's compact-action query container. It must not be .conv itself:
+   a size container re-lays out its whole subtree on every layout pass that
+   reaches it, and .conv holds the transcript and the composer, so each
+   keystroke and each streamed token re-laid out every mounted message. */
+.conv__head-frame {
+  container-type: inline-size;
+  flex: none;
+  position: relative;
+  z-index: 30;
 }
 .conv__head {
   padding: 14px 24px 12px;
@@ -2505,7 +2514,7 @@ svg[data-svg="fit"],
   position: absolute;
   left: 28px;
   top: 50%;
-  width: min(320px, calc(100cqw - 72px));
+  width: min(320px, calc(var(--conv-pane-inline-size, 100vw) - 72px));
   min-height: 0;
   padding: 10px 12px;
   border-radius: 12px;
@@ -3009,12 +3018,21 @@ svg[data-svg="fit"],
 .gating__list > div > button { margin: 8px 14px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-elev-2); color: var(--ink); font: inherit; cursor: pointer; }
 .gating__list > div > button:hover { background: var(--bg); }
 .gating__list > div > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Block layout, not flex: .composer__input must not be a flex item. */
 .composer__shell {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elev-2);
   padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 8px;
+  display: block;
+}
+.composer__shell > * + * { margin-top: 8px; }
+/* Typing only lays out this box: size and layout containment make it a
+   relayout boundary, so a keystroke never reaches the transcript. Two rows
+   of the textarea's 1.5 line-height plus its 2px block padding. */
+.composer__input {
+  contain: strict;
+  height: calc(3em + 4px);
 }
 .composer__shell:focus-within { border-color: var(--line-strong); }
 .composer__shell.is-drag-active { border-color: var(--accent); }
@@ -3053,14 +3071,16 @@ svg[data-svg="fit"],
   cursor: pointer;
 }
 .composer textarea {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
+  height: 100%;
   border: none;
   background: transparent;
   color: var(--ink);
   font: inherit;
   resize: none;
   outline: none;
-  min-height: 38px;
   line-height: 1.5;
 }
 .composer textarea::placeholder { color: var(--ink-faint); }

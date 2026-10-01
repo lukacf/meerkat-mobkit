@@ -596,3 +596,8 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
   }
   return orderBySource(reconciled);
 }
+
+/** Ordering inputs of `reconcileRuntimeAppendFrames`, for incremental callers
+ * that must prove an appended frame cannot reorder: the source-sequence scope
+ * and the source sequence that orders frames within it. */
+export { scopeOf as runtimeSourceScope, sourceSequence as runtimeSourceSequence };

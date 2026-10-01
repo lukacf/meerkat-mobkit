@@ -166,6 +166,9 @@ jobs:
       - run: npm --prefix console run phase0:types --silent
       - run: npm --prefix console run contracts:console --silent
       - run: npm --prefix console run contracts:conversation --silent
+      # Continuing a transcript derivation must equal deriving from scratch,
+      # checked on every adapter suite's frame sequences.
+      - run: npm --prefix console run contracts:timeline-incremental --silent
       - run: npm --prefix console run typecheck:contracts --silent
       - run: npm --prefix console run test:scenario-registry --silent
       - run: npm --prefix console run e2e:api:list --silent
@@ -178,6 +181,10 @@ jobs:
       - run: npm --prefix console run embedded:freshness --silent
       - run: npm --prefix console run build:acceptance --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
+      # Real-browser keystroke-to-next-paint latency in the composer with a
+      # full identity log, idle and while a reply streams. jsdom has no
+      # style, layout or paint, so only a browser can see this regress.
+      - run: npm --prefix console run perf:typing:browser --silent
       # One immutable backend build serves every browser/API scenario below.
       - name: Build console acceptance backends
         run: |
