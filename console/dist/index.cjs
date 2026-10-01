@@ -29075,6 +29075,39 @@ function httpStatusCode(error) {
   return typeof status === "number" ? status : null;
 }
 
+// src/lib/single-flight.ts
+function createSingleFlight() {
+  const flights = /* @__PURE__ */ new Map();
+  return (key, task) => {
+    const current = flights.get(key);
+    if (current) {
+      current.again = true;
+      current.task = task;
+      return current.done;
+    }
+    const flight = { again: false, task, done: Promise.resolve() };
+    flight.done = (async () => {
+      try {
+        let failure;
+        do {
+          flight.again = false;
+          failure = null;
+          try {
+            await flight.task();
+          } catch (error) {
+            failure = { error };
+          }
+        } while (flight.again);
+        if (failure) throw failure.error;
+      } finally {
+        flights.delete(key);
+      }
+    })();
+    flights.set(key, flight);
+    return flight.done;
+  };
+}
+
 // src/lib/conversation-visibility.ts
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
@@ -43723,7 +43756,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshAccessData = import_react45.default.useCallback(async () => {
+  const panelRefreshFlight = import_react45.default.useMemo(() => createSingleFlight(), []);
+  const visiblePanelTargets = import_react45.default.useMemo(() => {
+    const activeTab = dock.viewState.tabs.find((tab2) => tab2.id === dock.viewState.activeTabId);
+    const visible = new Set(collectConsoleDockPanelIds(activeTab?.layout));
+    return dock.viewState.panels.filter((panel) => visible.has(panel.id)).map((panel) => panel.target).filter(Boolean);
+  }, [dock.viewState.panels, dock.viewState.tabs, dock.viewState.activeTabId]);
+  const refreshAccessData = import_react45.default.useCallback(() => panelRefreshFlight("access", async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status = await executeHeadlessCommand(
@@ -43742,8 +43781,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     } catch (err) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
-  }, [baseUrl]);
-  const refreshMemoryData = import_react45.default.useCallback(async () => {
+  }), [panelRefreshFlight, baseUrl]);
+  const refreshMemoryData = import_react45.default.useCallback(() => panelRefreshFlight("memory", async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records = [];
@@ -43883,9 +43922,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       }
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
-  }, [baseUrl, experience?.memory?.can_review_quarantine]);
+  }), [panelRefreshFlight, baseUrl, experience?.memory?.can_review_quarantine]);
   const workGraphRefreshSequencerRef = import_react45.default.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = import_react45.default.useCallback(async () => {
+  const refreshWorkGraphData = import_react45.default.useCallback(() => panelRefreshFlight("workgraph", async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -43935,7 +43974,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       }
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
-  }, [baseUrl]);
+  }), [panelRefreshFlight, baseUrl]);
   const queryMemoryRecords = import_react45.default.useCallback(
     async (params) => {
       try {
@@ -44020,7 +44059,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
-  const refreshTopologyData = import_react45.default.useCallback(async () => {
+  const refreshTopologyData = import_react45.default.useCallback(() => panelRefreshFlight("topology", async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -44039,65 +44078,62 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setTopologyQueryResult(null);
       throw error2;
     }
-  }, [consoleTransport]);
+  }), [panelRefreshFlight, consoleTransport]);
   const refreshPanelData = import_react45.default.useCallback(async () => {
-    const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
+    const openPanels = visiblePanelTargets;
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
     );
-    if (inspects.length) {
-      const entries = await Promise.all(
-        inspects.map(async (t) => {
-          const r2 = await inspectIdentityViaHeadless(t.identity);
-          return [t.identity, normalizeConsoleInspectResult(r2)];
-        })
-      );
-      setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
-    }
+    const refreshes = inspects.map((t) => panelRefreshFlight(`inspect:${t.identity}`, async () => {
+      const r2 = await inspectIdentityViaHeadless(t.identity);
+      const result = normalizeConsoleInspectResult(r2);
+      setInspectByIdentity((c) => ({ ...c, [t.identity]: result }));
+    }));
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
-      const routingTarget = controlWorkbenchTarget("routing");
-      const [routes, history] = await Promise.all([
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listRoutingRoutes, routingTarget),
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listDeliveryHistory, routingTarget)
-      ]);
-      setRoutingData(
-        buildRoutingSectionView2({
-          routesResponse: routes,
-          historyResponse: history
-        })
-      );
+      refreshes.push(panelRefreshFlight("routing", async () => {
+        const routingTarget = controlWorkbenchTarget("routing");
+        const [routes, history] = await Promise.all([
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listRoutingRoutes, routingTarget),
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listDeliveryHistory, routingTarget)
+        ]);
+        setRoutingData(
+          buildRoutingSectionView2({
+            routesResponse: routes,
+            historyResponse: history
+          })
+        );
+      }));
     }
-    if (openPanels.some((t) => t.kind === "access")) {
-      await refreshAccessData();
-    }
-    if (openPanels.some((t) => t.kind === "memory")) {
-      await refreshMemoryData();
-    }
-    if (openPanels.some((t) => t.kind === "workgraph")) {
-      await refreshWorkGraphData();
-    }
-    if (openPanels.some((t) => t.kind === "topology")) {
-      await refreshTopologyData();
-    }
+    if (openPanels.some((t) => t.kind === "access")) refreshes.push(refreshAccessData());
+    if (openPanels.some((t) => t.kind === "memory")) refreshes.push(refreshMemoryData());
+    if (openPanels.some((t) => t.kind === "workgraph")) refreshes.push(refreshWorkGraphData());
+    if (openPanels.some((t) => t.kind === "topology")) refreshes.push(refreshTopologyData());
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
-      const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 });
-      setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      refreshes.push(panelRefreshFlight("gating-audit", async () => {
+        const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 });
+        setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      }));
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
+    await Promise.all(refreshes);
+  }, [baseUrl, visiblePanelTargets, hasMobControlSurface, panelRefreshFlight, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
+  const refreshPanelDataRef = import_react45.default.useRef(refreshPanelData);
+  refreshPanelDataRef.current = refreshPanelData;
+  const visiblePanelKey = JSON.stringify(visiblePanelTargets);
   import_react45.default.useEffect(() => {
-    void refreshPanelData().catch(() => {
+    void refreshPanelDataRef.current().catch(() => {
     });
-  }, [dock.viewState.panels, refreshPanelData]);
+  }, [visiblePanelKey]);
   const scheduleExperienceRefresh = import_react45.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
-    experienceTimerRef.current = window.setTimeout(async () => {
+    experienceTimerRef.current = window.setTimeout(() => {
       experienceTimerRef.current = null;
-      await loadExperience().catch(() => {
-      });
-      await refreshPanelData().catch(() => {
+      void panelRefreshFlight("experience-events", () => loadExperience().then(() => {
+      }, () => {
+      }));
+      void refreshPanelDataRef.current().catch(() => {
       });
     }, 150);
-  }, [loadExperience, refreshPanelData]);
+  }, [loadExperience, panelRefreshFlight]);
   const scheduleHistoryRefresh = import_react45.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
@@ -44209,9 +44245,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshMemoryDataRef = import_react45.default.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
   const memoryPanelDockedRef = import_react45.default.useRef(false);
-  memoryPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => panel.target?.kind === "memory"
-  );
+  memoryPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "memory");
   const dockedChatIdentitiesRef = import_react45.default.useRef([]);
   dockedChatIdentitiesRef.current = dock.viewState.panels.flatMap((panel) => {
     const target = panel.target;
@@ -44221,9 +44255,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshWorkGraphDataRef = import_react45.default.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
   const workGraphPanelDockedRef = import_react45.default.useRef(false);
-  workGraphPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => panel.target?.kind === "workgraph"
-  );
+  workGraphPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "workgraph");
   const workGraphRefreshTimerRef = import_react45.default.useRef(null);
   import_react45.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {

@@ -27,6 +27,7 @@ import type {
   TopologyOperationReceipt,
 } from "@console-core";
 import {
+  collectConsoleDockPanelIds,
   createPendingApprovalResource,
   identityStateLabel,
   migrateConsoleWorkbenchTarget,
@@ -62,6 +63,7 @@ import {
   type OptimisticUserMessage,
 } from "./lib/adapters";
 import { errorMessage, jsonRpcErrorCode } from "./lib/errors";
+import { createSingleFlight } from "./lib/single-flight";
 import { sanitizeConversationEntries } from "./lib/conversation-visibility";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
@@ -2551,7 +2553,20 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
 
-  const refreshAccessData = React.useCallback(async () => {
+  // Panel and experience refreshes are triggered by stream events. One run
+  // per kind at a time, with one trailing re-run for requests made mid-run.
+  const panelRefreshFlight = React.useMemo(() => createSingleFlight(), []);
+  // Only panels in the active tab are on screen; hidden tabs refresh when
+  // they become active instead of on every event.
+  const visiblePanelTargets = React.useMemo(() => {
+    const activeTab = dock.viewState.tabs.find((tab) => tab.id === dock.viewState.activeTabId);
+    const visible = new Set(collectConsoleDockPanelIds(activeTab?.layout));
+    return dock.viewState.panels
+      .filter((panel) => visible.has(panel.id))
+      .map((panel) => panel.target)
+      .filter(Boolean) as MobKitDockTarget[];
+  }, [dock.viewState.panels, dock.viewState.tabs, dock.viewState.activeTabId]);
+  const refreshAccessData = React.useCallback(() => panelRefreshFlight("access", async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status =
@@ -2572,9 +2587,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl]);
+  }), [panelRefreshFlight, baseUrl]);
 
-  const refreshMemoryData = React.useCallback(async () => {
+  const refreshMemoryData = React.useCallback(() => panelRefreshFlight("memory", async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records: MemoryPanelRecord[] = [];
@@ -2738,13 +2753,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, experience?.memory?.can_review_quarantine]);
+  }), [panelRefreshFlight, baseUrl, experience?.memory?.can_review_quarantine]);
 
   // Overlapping refreshes (debounced live signals, manual refresh, post-
   // mutation re-reads) can resolve out of order — sequence them so a stale
   // snapshot never overwrites a fresher one.
   const workGraphRefreshSequencerRef = React.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = React.useCallback(async () => {
+  const refreshWorkGraphData = React.useCallback(() => panelRefreshFlight("workgraph", async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -2808,7 +2823,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl]);
+  }), [panelRefreshFlight, baseUrl]);
 
   /// Filtered/paged panel/records query for the Records filter bar, the
   /// keyset load-more, and the lattice page-walk. Resolves null STRICTLY on
@@ -2920,7 +2935,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [baseUrl, refreshAccessData, loadExperience],
   );
 
-  const refreshTopologyData = React.useCallback(async () => {
+  const refreshTopologyData = React.useCallback(() => panelRefreshFlight("topology", async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -2944,71 +2959,72 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setTopologyQueryResult(null);
       throw error;
     }
-  }, [consoleTransport]);
+  }), [panelRefreshFlight, consoleTransport]);
 
   const refreshPanelData = React.useCallback(async () => {
-    const openPanels = dock.viewState.panels
-      .map((p) => p.target)
-      .filter(Boolean) as MobKitDockTarget[];
+    const openPanels = visiblePanelTargets;
     const inspects = openPanels.filter(
       (t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> =>
         t.kind === "identity-inspect",
     );
-    if (inspects.length) {
-      const entries = await Promise.all(
-        inspects.map(async (t) => {
-          const r = await inspectIdentityViaHeadless(t.identity);
-          return [t.identity, normalizeConsoleInspectResult(r)] as const;
-        }),
-      );
-      setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
-    }
+    // Each kind refreshes independently, so one slow surface (topology on a
+    // loaded server) neither delays the others nor stacks up behind itself.
+    const refreshes: Promise<void>[] = inspects.map((t) => panelRefreshFlight(`inspect:${t.identity}`, async () => {
+      const r = await inspectIdentityViaHeadless(t.identity);
+      const result = normalizeConsoleInspectResult(r);
+      setInspectByIdentity((c) => ({ ...c, [t.identity]: result }));
+    }));
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
-      const routingTarget = controlWorkbenchTarget("routing");
-      const [routes, history] = await Promise.all([
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget),
-      ]);
-      setRoutingData(
-        buildRoutingSectionView({
-          routesResponse: routes,
-          historyResponse: history,
-        }),
-      );
+      refreshes.push(panelRefreshFlight("routing", async () => {
+        const routingTarget = controlWorkbenchTarget("routing");
+        const [routes, history] = await Promise.all([
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget),
+        ]);
+        setRoutingData(
+          buildRoutingSectionView({
+            routesResponse: routes,
+            historyResponse: history,
+          }),
+        );
+      }));
     }
-    if (openPanels.some((t) => t.kind === "access")) {
-      await refreshAccessData();
-    }
-    if (openPanels.some((t) => t.kind === "memory")) {
-      await refreshMemoryData();
-    }
-    if (openPanels.some((t) => t.kind === "workgraph")) {
-      await refreshWorkGraphData();
-    }
-    if (openPanels.some((t) => t.kind === "topology")) {
-      await refreshTopologyData();
-    }
+    if (openPanels.some((t) => t.kind === "access")) refreshes.push(refreshAccessData());
+    if (openPanels.some((t) => t.kind === "memory")) refreshes.push(refreshMemoryData());
+    if (openPanels.some((t) => t.kind === "workgraph")) refreshes.push(refreshWorkGraphData());
+    if (openPanels.some((t) => t.kind === "topology")) refreshes.push(refreshTopologyData());
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
     ) {
-      const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 }) as { entries?: unknown[] };
-      setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      refreshes.push(panelRefreshFlight("gating-audit", async () => {
+        const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 }) as { entries?: unknown[] };
+        setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      }));
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
+    await Promise.all(refreshes);
+  }, [baseUrl, visiblePanelTargets, hasMobControlSurface, panelRefreshFlight, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
 
+  const refreshPanelDataRef = React.useRef(refreshPanelData);
+  refreshPanelDataRef.current = refreshPanelData;
+  // Refresh what becomes visible (mount, panel changes, tab switches).
+  const visiblePanelKey = JSON.stringify(visiblePanelTargets);
   React.useEffect(() => {
-    void refreshPanelData().catch(() => {});
-  }, [dock.viewState.panels, refreshPanelData]);
+    void refreshPanelDataRef.current().catch(() => {});
+  }, [visiblePanelKey]);
 
   const scheduleExperienceRefresh = React.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
-    experienceTimerRef.current = window.setTimeout(async () => {
+    experienceTimerRef.current = window.setTimeout(() => {
       experienceTimerRef.current = null;
-      await loadExperience().catch(() => {});
-      await refreshPanelData().catch(() => {});
+      // Events keep arriving while a refresh is in flight; they coalesce
+      // into one trailing refresh instead of overlapping requests. The roster
+      // and each panel kind coalesce separately, so a slow panel (topology
+      // on a loaded server) never holds back the others.
+      void panelRefreshFlight("experience-events", () => loadExperience().then(() => {}, () => {}));
+      void refreshPanelDataRef.current().catch(() => {});
     }, 150);
-  }, [loadExperience, refreshPanelData]);
+  }, [loadExperience, panelRefreshFlight]);
 
   // =========================================================================
   // HISTORY REFRESH — server is the single source of truth
@@ -3181,9 +3197,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshMemoryDataRef = React.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
   const memoryPanelDockedRef = React.useRef(false);
-  memoryPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
-  );
+  memoryPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "memory");
   // Identities with a docked chat, read by the mount-scoped stream
   // subscription when it repairs after a replay gap.
   const dockedChatIdentitiesRef = React.useRef<string[]>([]);
@@ -3198,9 +3212,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshWorkGraphDataRef = React.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
   const workGraphPanelDockedRef = React.useRef(false);
-  workGraphPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "workgraph",
-  );
+  workGraphPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "workgraph");
   const workGraphRefreshTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
