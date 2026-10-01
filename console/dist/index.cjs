@@ -6185,8 +6185,12 @@ function useConversationScrollController(options) {
               reveal.timer = window.setTimeout(finish, Number.isFinite(timeout) ? Math.max(1, Math.min(timeout, 6e4)) : 15e3);
               Promise.resolve(result).then((available) => {
                 if (!isCurrent()) return;
-                if (available) reveal.frame = window.requestAnimationFrame(finish);
-                else finish();
+                if (!available) {
+                  finish();
+                  return;
+                }
+                reveal.confirmed = { version: optionsRef.current.contentVersion };
+                applyLayoutRef.current();
               }, finish);
             }
           } else cancelReveal(session);
@@ -6194,7 +6198,8 @@ function useConversationScrollController(options) {
           cancelReveal(session);
         }
       }
-      if (!found && session.awaitingAnchor) {
+      const promisedCommitLacksRow = !found && session.reveal?.confirmed !== void 0 && session.reveal.confirmed.version !== optionsRef.current.contentVersion;
+      if (!found && session.awaitingAnchor && !promisedCommitLacksRow) {
         publish(false);
         return;
       }
