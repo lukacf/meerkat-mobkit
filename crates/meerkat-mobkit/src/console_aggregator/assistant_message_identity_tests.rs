@@ -1032,6 +1032,79 @@ async fn assistant_identity_append_only_runs_do_not_repeat_full_position_maps()
     Ok(())
 }
 
+/// Wait until the fixture member's initial run (its spawn prompt) is done and
+/// the assistant-history refresh gate reads `Settled`: fresh typed idle status
+/// for this exact session and no uncommitted run input.
+///
+/// Idle with nothing admitted is not enough: under load the member can read
+/// idle before its kickoff input is admitted, then open that run while the
+/// test backfills, and a backfill over a `Pending` gate correctly publishes no
+/// snapshot. A kickoff that reached `Started` has been admitted, so from there
+/// a `Settled` gate means that run completed and committed. Both signals are
+/// typed and re-read only after a machine-state change (kickoff transitions)
+/// or a member event (run and commit progress), subscribed before the first
+/// read; the deadline only bounds a broken fixture and fails with a clear
+/// message.
+#[allow(clippy::panic)]
+async fn await_initial_run_settled(
+    handle: &MobHandle,
+    member: &AgentIdentity,
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+    session_id: &str,
+) {
+    use futures::StreamExt as _;
+    let mut member_events = handle
+        .subscribe_agent_events(member)
+        .await
+        .unwrap_or_else(|error| panic!("subscribe to the fixture member's events: {error}"));
+    let mut changes = handle.machine_state_changes();
+    let settled = async {
+        loop {
+            let kickoff = handle
+                .list_members_observation_snapshot()
+                .await
+                .into_iter()
+                .find(|entry| &entry.agent_identity == member)
+                .unwrap_or_else(|| panic!("the fixture member left the roster"))
+                .kickoff
+                .map(|kickoff| kickoff.phase);
+            let admitted = match kickoff {
+                Some(
+                    meerkat_mob::MobMemberKickoffPhase::Failed
+                    | meerkat_mob::MobMemberKickoffPhase::Cancelled,
+                ) => {
+                    panic!("the fixture member's initial run ended {kickoff:?}")
+                }
+                Some(meerkat_mob::MobMemberKickoffPhase::Started) | None => true,
+                Some(_) => false,
+            };
+            if admitted
+                && assistant_history_refresh::observe(entry, record, session_id, true).await
+                    == assistant_history_refresh::AssistantHistoryRefreshGate::Settled
+            {
+                return;
+            }
+            tokio::select! {
+                event = member_events.next() => assert!(
+                    event.is_some(),
+                    "the fixture member's event stream ended before its initial run settled"
+                ),
+                changed = changes.changed() => assert!(
+                    changed.is_ok(),
+                    "the mob actor stopped before the fixture member's initial run settled"
+                ),
+            }
+        }
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_mins(1), settled)
+            .await
+            .is_ok(),
+        "the fixture member's initial run did not complete and settle (typed idle, no uncommitted run input) within 60 s"
+    );
+}
+
 #[tokio::test]
 async fn assistant_identity_backfill_publishes_only_complete_current_images_and_restores_rows()
 -> ConsoleLogResult<()> {
@@ -1051,6 +1124,14 @@ async fn assistant_identity_backfill_publishes_only_complete_current_images_and_
         .await
         .ok_or("fixture identity missing")?;
     let session_id = record.session_id.clone().ok_or("fixture session missing")?;
+    await_initial_run_settled(
+        &runtime.mob_handle(),
+        &member.agent_identity,
+        &entry,
+        &record,
+        &session_id,
+    )
+    .await;
     let mob_id = entry.runtime.handle().mob_id().to_string();
     let provenance = ConsoleFrameMemberProvenance {
         identity: record.clone(),

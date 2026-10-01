@@ -92,6 +92,10 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# Safe nonblocking pipe readiness and non-reaping child-exit observation.
+rustix = { version = "1.1.4", features = ["fs", "event", "process"] }
+
 [features]
 integration-real-tests = []
 # Public OpenAI Live (`gpt-live-1`) execution path: the neutral GPT Live
@@ -186,3 +190,7 @@ meerkat-mob = { version = "=0.8.49", features = ["schema"] }
 # tests (tests/gateway_live.rs) can observe the exact channel identity handed
 # to the provider lane without a provider socket or credential.
 meerkat = { version = "=0.8.49", features = ["test-realtime-fixtures"] }
+# `test-support` (test-only) exposes meerkat-core's per-session WholeBlob
+# decode counter, so decode assertions attribute decodes to the test's own
+# session instead of the process-wide count every parallel test moves.
+meerkat-core = { version = "=0.8.49", features = ["test-support"] }

@@ -322,6 +322,9 @@ pub async fn restore_flow(
     topology_provider: Option<&dyn TopologyProvider>,
     customizer: Option<&dyn AgentCustomizer>,
 ) -> Result<RestoreFlowResult, IdentityRuntimeError> {
+    // The pass is one embodiment burst: the repair supervisor defers until
+    // all of it settled, then runs one pass for every settle it raised.
+    let _burst = runtime.enter_embodiment_burst();
     // Fleet-level declaration and continuity resolution remain fail-closed:
     // without a valid unique roster, topology, or complete batch-store answer
     // there is no truthful set of identities to materialize. The lazy

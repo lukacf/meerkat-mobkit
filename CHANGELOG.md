@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
+  `durability: StorageSlotDurability`. Match `Declared(declaration)` or
+  `Unverified { domain, class }`; use the enum's accessors to inspect the
+  common domain/class or an optional declaration. This MobKit census type
+  leaves Meerkat's `DurabilityResolution` unchanged.
+
+- `ProcessBoundaryError` adds `CleanupUnconfirmed { pid, source }` for an OS
+  wait failure that cannot confirm direct-child reaping. Exhaustive matches
+  must handle this explicit uncertainty.
+
 - `CrossMobError` gains `PlacedMemberUnavailable { member_id, mob_id, reason }`
   for a placed member that has no usable endpoint (Broken, or none
   registered), and `PlacedRouteInstallPending { member_id, mob_id, peer_id,
@@ -69,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   also be `"wake_topology_locks"` (the wake path's bounded lock acquisition).
 
 ### Storage and wire compatibility
+
+- Storage census slots add `resolution: "unverified"` when a bare injected
+  WorkGraph store supplied no durability declaration. Existing declared
+  resolutions and slot fields retain their wire shape. Both persistent and
+  ephemeral constructors report the actually selected injected store,
+  rather than a persistent, default-memory or unselected provider label.
 
 - `ConsoleLogStore::history_prefix_revision` is an optional continuity witness
   for cached unsuccessful provenance searches. Its default returns `None`, so
@@ -473,6 +489,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
+
+- On Linux and macOS, one-shot process boundaries apply the caller timeout
+  to both stdout and child exit, drain excess stdout after the first line,
+  and join the non-reaping exit observer before returning. A timeout closes
+  the reader and kills/reaps the direct child; OS cleanup can outlast the
+  deadline. Windows and other targets retain their narrower legacy behavior.
 
 - MobKit's two `MobSessionService` wrappers (`delegate_mob_session_service!`
   and `AfterCreateMobSessionService`) forward meerkat 0.8.49's

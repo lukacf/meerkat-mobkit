@@ -12501,7 +12501,10 @@ async fn a_reconcile_pass_triggers_the_repair_supervisor() {
 /// #468 review (item 4): a burst of other members' embodiments settling (a
 /// warm-up) must not run one repair pass per settle and trip the
 /// identical-failure park within seconds. The supervisor defers while
-/// embodiments are in flight and runs one pass once they settle.
+/// embodiments are in flight and runs one pass once they settle. The burst
+/// itself counts as in flight: between two of its members no single
+/// embodiment may be, and a pass started in that gap plus the pass on the
+/// remaining settles parked the identity (CI, PR #507).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_warm_up_burst_does_not_trip_the_identical_failure_park() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
@@ -12534,8 +12537,11 @@ async fn a_warm_up_burst_does_not_trip_the_identical_failure_park() {
             .values()
             .all(|outcome| matches!(outcome, RestoreOutcome::Created { .. }))
     );
-    // Let the deferred pass (if any) run.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The burst held the in-flight count above zero until `restore_flow`
+    // returned, so every settle it raised is covered by one deferred pass:
+    // the third resume attempt, then the identity back in Broken.
+    wait_for_resume_calls(&bridge, 3).await;
+    wait_for_state(&runtime, &stuck, IdentityLifecycleState::Broken).await;
     assert!(
         runtime
             .status(&stuck)
@@ -12545,10 +12551,10 @@ async fn a_warm_up_burst_does_not_trip_the_identical_failure_park() {
             .is_none(),
         "a warm-up burst must not park the stuck identity"
     );
-    assert!(
-        bridge.resume_calls.load(Ordering::SeqCst) <= 4,
-        "the burst runs a bounded number of passes, not one per settle: {}",
-        bridge.resume_calls.load(Ordering::SeqCst)
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        3,
+        "the burst runs one deferred pass, not one per settle"
     );
     repair.abort();
 }

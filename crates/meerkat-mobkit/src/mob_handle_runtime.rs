@@ -9191,8 +9191,12 @@ impl MobBootstrapSpec {
                 (
                     Some(service),
                     Some(slot),
-                    StorageSlotSummary::persistent("workgraph", "custom workgraph store")
-                        .with_detail("caller-injected store; durability rides with the injector"),
+                    StorageSlotSummary::unverified(
+                        "workgraph",
+                        meerkat_core::DurabilityClass::Durable,
+                        "custom workgraph store",
+                    )
+                    .with_detail("caller-injected store; no durability declaration"),
                 )
             } else if let Some(provider) = provider_meerkat_stores.as_ref() {
                 // Canonical mob realm via the one helper - see
@@ -9499,32 +9503,49 @@ impl MobBootstrapSpec {
                  attaches schedule tools without a firing host",
             )
         });
-        let (workgraph_service, workgraph_admission_slot) = if let Some(store) = workgraph_store {
-            // Per-slot injection (item 5) wins over the provider bundle,
-            // for the same reachability reason as the persistent arm.
-            crate::workgraph_wiring::attach_workgraph_tools_with_store(
-                &builder,
-                store,
-                definition.id.as_str(),
-            )
-        } else if let Some(provider) = provider_meerkat_stores.as_ref() {
-            // M4b single-bundle: the workgraph rides the composite
-            // provider's meerkat-level bundle instead of process-local
-            // memory.
-            // Canonical mob realm via the one helper - see
-            // `workgraph_wiring::scoped_workgraph_service`.
-            let service = crate::workgraph_wiring::scoped_workgraph_service(
-                Arc::clone(&provider.workgraph_store),
-                definition.id.as_str(),
-            );
-            let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
-            (service, slot)
-        } else {
-            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
-                &builder,
-                definition.id.as_str(),
-            )
-        };
+        let (workgraph_service, workgraph_admission_slot, workgraph_slot) =
+            if let Some(store) = workgraph_store {
+                // Per-slot injection wins over the provider bundle. Keep the
+                // census with the exact selected source rather than the mode.
+                let (service, slot) = crate::workgraph_wiring::attach_workgraph_tools_with_store(
+                    &builder,
+                    store,
+                    definition.id.as_str(),
+                );
+                (
+                    service,
+                    slot,
+                    StorageSlotSummary::unverified(
+                        "workgraph",
+                        meerkat_core::DurabilityClass::Durable,
+                        "custom workgraph store",
+                    )
+                    .with_detail("caller-injected store; no durability declaration"),
+                )
+            } else if let Some(provider) = provider_meerkat_stores.as_ref() {
+                // Use the canonical mob realm and the declaration of the
+                // provider store actually selected by this branch.
+                let service = crate::workgraph_wiring::scoped_workgraph_service(
+                    Arc::clone(&provider.workgraph_store),
+                    definition.id.as_str(),
+                );
+                let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
+                (service, slot, provider.workgraph_slot_summary())
+            } else {
+                let (service, slot) = crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                    &builder,
+                    definition.id.as_str(),
+                );
+                (
+                    service,
+                    slot,
+                    StorageSlotSummary::declared_ephemeral(
+                        "workgraph",
+                        "MemoryWorkGraphStore",
+                        "declared by the ephemeral launch mode",
+                    ),
+                )
+            };
         let mut live_compose_inputs: Option<LiveComposeInputs> = None;
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
@@ -9654,15 +9675,7 @@ impl MobBootstrapSpec {
                 )
             },
             blob_slot_summary(blob_durability),
-            if let Some(provider) = provider_meerkat_stores.as_ref() {
-                provider.workgraph_slot_summary()
-            } else {
-                StorageSlotSummary::declared_ephemeral(
-                    "workgraph",
-                    "MemoryWorkGraphStore",
-                    "declared by the ephemeral launch mode",
-                )
-            },
+            workgraph_slot,
             if let Some(provider) = provider_meerkat_stores.as_ref() {
                 provider.job_slot_summary()
             } else {
@@ -18616,6 +18629,13 @@ comms = true
     /// (3x) and, without rewrites, a second committed digest (4x).
     #[tokio::test]
     async fn unchanged_boundaries_over_a_compacted_row_hash_the_transcript_once() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "unchanged_boundaries_over_a_compacted_row_hash_the_transcript_once",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 3;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (session_store, inner, mut committed, runtime_id) =
@@ -18753,6 +18773,13 @@ comms = true
     /// seeds the midstate the head mint reuses.
     #[tokio::test]
     async fn unchanged_boundaries_over_a_plain_row_hash_the_transcript_once() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "unchanged_boundaries_over_a_plain_row_hash_the_transcript_once",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 3;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
@@ -18894,6 +18921,13 @@ comms = true
     /// the digest work is the appended turns, not the transcript.
     #[tokio::test]
     async fn prepared_append_boundaries_project_without_a_decode_or_graph_validation() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "prepared_append_boundaries_project_without_a_decode_or_graph_validation",
+        ) {
+            return;
+        }
         const BOUNDARIES: u64 = 4;
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (session_store, inner, committed, runtime_id) =
@@ -18916,7 +18950,8 @@ comms = true
 
         let append_skips_before = store.append_prefix_skip_count();
         let durable_loads_before = store.durable_body_load_count();
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let session_id = live.id().clone();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(&session_id);
         let validations_before = meerkat_core::global_transcript_graph_validations();
         let digest_before = meerkat_core::global_session_content_digest_bytes();
         let mut last = warm;
@@ -18924,7 +18959,7 @@ comms = true
             last = next_turn_carrier(&mut live, 1_000 + turn as usize);
             commit_prepared_boundary_through(&store, &runtime_id, &last).await;
         }
-        let decodes = meerkat_core::global_whole_blob_decodes() - decodes_before;
+        let decodes = meerkat_core::whole_blob_decodes_of_session(&session_id) - decodes_before;
         let validations = meerkat_core::global_transcript_graph_validations() - validations_before;
         let hashed = meerkat_core::global_session_content_digest_bytes() - digest_before;
 
@@ -19016,13 +19051,13 @@ comms = true
             .await
             .unwrap_or_else(|error| panic!("{error}"));
 
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(newer.id());
         store
             .project_committed_session_to_durable(&runtime_id, Some(stale_binding))
             .await
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(
-            meerkat_core::global_whole_blob_decodes() > decodes_before,
+            meerkat_core::whole_blob_decodes_of_session(newer.id()) > decodes_before,
             "a moved head must take the authoritative committed read, not the stale binding"
         );
         assert_eq!(
@@ -19085,6 +19120,13 @@ comms = true
     /// durable body read, nothing written.
     #[tokio::test]
     async fn the_startup_compaction_refresh_projects_without_a_decode() {
+        // Process-wide cost counters: run as the only test of a child process.
+        if !crate::test_process_isolation::run_body_in_isolated_process(
+            module_path!(),
+            "the_startup_compaction_refresh_projects_without_a_decode",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let (store, session_store, inner, committed, runtime_id) =
             booted_facade(dir.path(), "domain:refresh-receipt").await;
@@ -19092,7 +19134,7 @@ comms = true
         let bytes = committed_raw_bytes(&inner, &runtime_id).await;
         let skips_before = store.receipt_skip_count();
         let durable_loads_before = store.durable_body_load_count();
-        let decodes_before = meerkat_core::global_whole_blob_decodes();
+        let decodes_before = meerkat_core::whole_blob_decodes_of_session(committed.id());
         let validations_before = meerkat_core::global_transcript_graph_validations();
 
         meerkat_runtime::RuntimeStore::commit_session_snapshot(
@@ -19116,7 +19158,7 @@ comms = true
             "the refresh projection reads no durable body"
         );
         assert_eq!(
-            meerkat_core::global_whole_blob_decodes() - decodes_before,
+            meerkat_core::whole_blob_decodes_of_session(committed.id()) - decodes_before,
             0,
             "the byte-identical refresh decodes nothing (meerkat reaffirms it, and MobKit's \
              projection answers from the receipt)"
@@ -20410,10 +20452,14 @@ comms = true
         let runtime_slot = summary
             .slots
             .iter()
-            .find(|slot| slot.declaration.domain == "runtime")
+            .find(|slot| slot.durability.domain() == "runtime")
             .unwrap_or_else(|| panic!("runtime slot recorded"));
         assert_eq!(
-            runtime_slot.declaration.resolution,
+            runtime_slot
+                .durability
+                .declaration()
+                .expect("declared slot")
+                .resolution,
             meerkat_core::DurabilityResolution::DeclaredEphemeral
         );
         assert_eq!(runtime_slot.backend, "InMemoryRuntimeStore");
@@ -20477,9 +20523,189 @@ comms = true
         let workgraph_slot = summary
             .slots
             .iter()
-            .find(|slot| slot.declaration.domain == "workgraph")
+            .find(|slot| slot.durability.domain() == "workgraph")
             .unwrap_or_else(|| panic!("workgraph slot recorded"));
         assert_eq!(workgraph_slot.backend, "custom workgraph store");
+        assert_eq!(
+            workgraph_slot.durability,
+            crate::storage_health::StorageSlotDurability::Unverified {
+                domain: "workgraph".to_string(),
+                class: meerkat_core::DurabilityClass::Durable,
+            }
+        );
+        let json = summary.status_json();
+        let wire_slot = json["slots"]
+            .as_array()
+            .expect("slots")
+            .iter()
+            .find(|slot| slot["domain"] == "workgraph")
+            .expect("workgraph wire slot");
+        assert_eq!(wire_slot["resolution"], "unverified");
+    }
+
+    fn workgraph_census_provider() -> crate::storage_provider::ProviderMeerkatStores {
+        use meerkat_core::{DurabilityDeclaration, DurabilityResolution};
+
+        crate::storage_provider::ProviderMeerkatStores {
+            provider_name: "census-test-provider".to_string(),
+            runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            runtime_declaration: DurabilityDeclaration::durable(
+                "runtime",
+                DurabilityResolution::DeclaredEphemeral,
+            ),
+            workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+            workgraph_declaration: DurabilityDeclaration::durable(
+                "workgraph",
+                DurabilityResolution::DeclaredEphemeral,
+            ),
+            job_store: Arc::new(meerkat::MemoryDetachedJobStore::new()),
+            job_declaration: DurabilityDeclaration::durable(
+                "jobs",
+                DurabilityResolution::DeclaredEphemeral,
+            ),
+        }
+    }
+
+    fn workgraph_census_spec(
+        persistent: bool,
+        store_path: PathBuf,
+        injected: Option<Arc<dyn meerkat::WorkGraphStore>>,
+        provider: Option<crate::storage_provider::ProviderMeerkatStores>,
+    ) -> MobBootstrapSpec {
+        let definition =
+            meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n").expect("definition");
+        if persistent {
+            let session_store: Arc<dyn SessionStore> = Arc::new(
+                meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
+                    .expect("session store"),
+            );
+            MobBootstrapSpec::persistent_inner_with_provider_stores(
+                definition,
+                meerkat_mob::MobStorage::in_memory(),
+                store_path,
+                4,
+                session_store,
+                "SqliteSessionStore",
+                None,
+                false,
+                false,
+                None,
+                injected,
+                None,
+                CapabilityFlags::default(),
+                None,
+                None,
+                provider,
+            )
+            .expect("persistent constructor")
+        } else {
+            MobBootstrapSpec::ephemeral_runtime_backed_with_provider_stores(
+                definition,
+                meerkat_mob::MobStorage::in_memory(),
+                store_path,
+                4,
+                None,
+                "test session store",
+                None,
+                None,
+                injected,
+                None,
+                CapabilityFlags::default(),
+                None,
+                None,
+                provider,
+            )
+        }
+    }
+
+    fn assert_injected_workgraph_census(persistent: bool, with_provider: bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let injected: Arc<dyn meerkat::WorkGraphStore> =
+            Arc::new(meerkat::MemoryWorkGraphStore::new());
+        let spec = workgraph_census_spec(
+            persistent,
+            dir.path().to_path_buf(),
+            Some(Arc::clone(&injected)),
+            with_provider.then(workgraph_census_provider),
+        );
+        assert!(Arc::ptr_eq(
+            spec.workgraph_service.as_ref().expect("service").store(),
+            &injected,
+        ));
+        let json = spec
+            .resolved_storage
+            .as_ref()
+            .expect("summary")
+            .status_json();
+        let slots: Vec<_> = json["slots"]
+            .as_array()
+            .expect("slots")
+            .iter()
+            .filter(|slot| slot["domain"] == "workgraph")
+            .collect();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0]["resolution"], "unverified");
+        assert_eq!(slots[0]["class"], "durable");
+        assert_eq!(slots[0]["backend"], "custom workgraph store");
+        assert_eq!(slots[0]["degraded"], false);
+        assert!(
+            !dir.path()
+                .join(crate::workgraph_wiring::WORKGRAPH_STORE_FILE)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn injected_workgraph_census_persistent_without_provider() {
+        assert_injected_workgraph_census(true, false);
+    }
+
+    #[test]
+    fn injected_workgraph_census_persistent_overrides_provider() {
+        assert_injected_workgraph_census(true, true);
+    }
+
+    #[test]
+    fn injected_workgraph_census_ephemeral_without_provider() {
+        assert_injected_workgraph_census(false, false);
+    }
+
+    #[test]
+    fn injected_workgraph_census_ephemeral_overrides_provider() {
+        assert_injected_workgraph_census(false, true);
+    }
+
+    #[test]
+    fn provider_workgraph_census_follows_selected_store_in_both_constructors() {
+        for persistent in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let provider = workgraph_census_provider();
+            let selected = Arc::clone(&provider.workgraph_store);
+            let declaration = provider.workgraph_declaration.clone();
+            let spec =
+                workgraph_census_spec(persistent, dir.path().to_path_buf(), None, Some(provider));
+            assert!(Arc::ptr_eq(
+                spec.workgraph_service.as_ref().expect("service").store(),
+                &selected,
+            ));
+            let summary = spec.resolved_storage.as_ref().expect("summary");
+            let slots: Vec<_> = summary
+                .slots
+                .iter()
+                .filter(|slot| slot.durability.domain() == "workgraph")
+                .collect();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].durability.declaration(), Some(&declaration));
+            assert_eq!(slots[0].backend, "storage provider 'census-test-provider'");
+            let json = summary.status_json();
+            let wire_slot = json["slots"]
+                .as_array()
+                .expect("slots")
+                .iter()
+                .find(|slot| slot["domain"] == "workgraph")
+                .expect("workgraph wire slot");
+            assert_eq!(wire_slot["resolution"], "declared_ephemeral");
+        }
     }
 
     /// H1: the happy persistent path reports disk-backed blobs and the
@@ -20515,11 +20741,14 @@ comms = true
             let slot = summary
                 .slots
                 .iter()
-                .find(|slot| slot.declaration.domain == domain)
+                .find(|slot| slot.durability.domain() == domain)
                 .unwrap_or_else(|| panic!("{domain} slot recorded"));
             assert_eq!(slot.backend, backend);
             assert_eq!(
-                slot.declaration.resolution,
+                slot.durability
+                    .declaration()
+                    .expect("declared slot")
+                    .resolution,
                 meerkat_core::DurabilityResolution::Persistent
             );
         }
@@ -20527,10 +20756,10 @@ comms = true
             let slot = summary
                 .slots
                 .iter()
-                .find(|slot| slot.declaration.domain == domain)
+                .find(|slot| slot.durability.domain() == domain)
                 .unwrap_or_else(|| panic!("{domain} ring buffer classified"));
             assert_eq!(
-                slot.declaration.class,
+                slot.durability.class(),
                 meerkat_core::DurabilityClass::Scratch
             );
         }
@@ -20675,10 +20904,13 @@ comms = true
             let slot = summary
                 .slots
                 .iter()
-                .find(|slot| slot.declaration.domain == domain)
+                .find(|slot| slot.durability.domain() == domain)
                 .unwrap_or_else(|| panic!("{domain} slot recorded"));
             assert_eq!(
-                slot.declaration.resolution,
+                slot.durability
+                    .declaration()
+                    .expect("declared slot")
+                    .resolution,
                 meerkat_core::DurabilityResolution::DeclaredEphemeral,
                 "{domain} must be a declared ephemeral choice"
             );
