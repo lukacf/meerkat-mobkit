@@ -94,6 +94,14 @@ struct SeededIds {
     dream_run: String,
 }
 
+/// Gating refs for the seeded promotions, as one gating owner issues them.
+/// `memory-e2e.cjs` addresses the rows by these exact strings.
+fn reference_pending_ref(seq: u64) -> meerkat_mobkit::PendingRef {
+    format!("gpr1.0000000000000000000000000000c0de.{seq}")
+        .parse()
+        .expect("canonical reference ref")
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -516,7 +524,7 @@ async fn seed_store(store: &SqliteAgentMemoryStore) -> SeededIds {
         .record_pending_promotion(
             REALM,
             meerkat_mobkit::memory::PendingPromotion {
-                pending_id: "gate-mob-promotion".to_string(),
+                pending_ref: reference_pending_ref(1),
                 stage_token: mob_stage.token,
                 record_id: quarantined.memory_id.clone(),
                 scope_kind: "mob".to_string(),
@@ -534,7 +542,7 @@ async fn seed_store(store: &SqliteAgentMemoryStore) -> SeededIds {
         .record_pending_promotion(
             REALM,
             meerkat_mobkit::memory::PendingPromotion {
-                pending_id: "gate-delivery-promotion".to_string(),
+                pending_ref: reference_pending_ref(2),
                 stage_token: delivery_stage.token,
                 record_id: quarantined.memory_id.clone(),
                 scope_kind: "identity".to_string(),
@@ -661,7 +669,7 @@ fn emit_timeline_events(runtime: &UnifiedRuntime, ids: &SeededIds) {
         },
         MemoryTimelineEvent::PromotionPendingGate {
             realm: REALM.to_string(),
-            pending_id: "gate-mob-promotion".to_string(),
+            pending_ref: reference_pending_ref(1),
             record_id: ids.quarantined.clone(),
             scope_kind: "mob".to_string(),
             scope_key: MOB.to_string(),

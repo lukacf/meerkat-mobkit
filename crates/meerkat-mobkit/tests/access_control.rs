@@ -2132,7 +2132,7 @@ async fn mob_observe_does_not_bypass_per_agent_view() {
 /// Seed a bundled store with one record per scope, a supersede chain, a
 /// quarantined record, an injection-ledger row, one steward dream's audit
 /// rows, and two gated promotions parked in the quarantine queue
-/// (`gate-mob-promotion` targeting mob scope, `gate-delivery-promotion`
+/// (the mob-scope promotion `...c0de.1` and the identity-scope `...c0de.2`
 /// targeting the "delivery" identity). Returns (store, router_active_id,
 /// router_quarantined_id, delivery_id, mob_record_id, operator_record_id).
 async fn seeded_memory_store(
@@ -2341,7 +2341,9 @@ async fn seeded_memory_store(
         .record_pending_promotion(
             "default",
             meerkat_mobkit::memory::PendingPromotion {
-                pending_id: "gate-mob-promotion".to_string(),
+                pending_ref: "gpr1.0000000000000000000000000000c0de.1"
+                    .parse()
+                    .expect("mob promotion ref"),
                 stage_token: mob_stage.token,
                 record_id: quarantined.memory_id.clone(),
                 scope_kind: "mob".to_string(),
@@ -2359,7 +2361,9 @@ async fn seeded_memory_store(
         .record_pending_promotion(
             "default",
             meerkat_mobkit::memory::PendingPromotion {
-                pending_id: "gate-delivery-promotion".to_string(),
+                pending_ref: "gpr1.0000000000000000000000000000c0de.2"
+                    .parse()
+                    .expect("delivery promotion ref"),
                 stage_token: delivery_stage.token,
                 record_id: quarantined.memory_id.clone(),
                 scope_kind: "identity".to_string(),
@@ -2696,13 +2700,13 @@ async fn memory_panel_enforces_scope_actions_end_to_end() {
     assert!(
         promotions
             .iter()
-            .any(|row| row["pending_id"] == json!("gate-mob-promotion")),
+            .any(|row| row["pending_ref"] == json!("gpr1.0000000000000000000000000000c0de.1")),
         "{promotions:#?}"
     );
     assert!(
         promotions
             .iter()
-            .all(|row| row["pending_id"] != json!("gate-delivery-promotion")),
+            .all(|row| row["pending_ref"] != json!("gpr1.0000000000000000000000000000c0de.2")),
         "identity promotions must not ride the unscoped read grant: {promotions:#?}"
     );
 
@@ -2841,7 +2845,10 @@ async fn memory_panel_quarantine_queue_filters_rows_per_scope() {
         .as_array()
         .expect("promotions");
     assert_eq!(promotions.len(), 1, "{promotions:#?}");
-    assert_eq!(promotions[0]["pending_id"], json!("gate-mob-promotion"));
+    assert_eq!(
+        promotions[0]["pending_ref"],
+        json!("gpr1.0000000000000000000000000000c0de.1")
+    );
 
     // Reviewer + read/view on "delivery": its promotion joins the queue.
     controller
@@ -2860,7 +2867,7 @@ async fn memory_panel_quarantine_queue_filters_rows_per_scope() {
     assert!(
         promotions
             .iter()
-            .any(|row| row["pending_id"] == json!("gate-delivery-promotion")),
+            .any(|row| row["pending_ref"] == json!("gpr1.0000000000000000000000000000c0de.2")),
         "{promotions:#?}"
     );
 

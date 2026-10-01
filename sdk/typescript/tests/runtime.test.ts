@@ -16,6 +16,8 @@ import {
   CapabilityUnavailableError,
   NotConnectedError,
   RpcError,
+  StalePendingDecisionError,
+  isRpcError,
   TransportError,
 } from "../dist/index.js";
 
@@ -2312,6 +2314,7 @@ describe("MobHandle.gatingEvaluate()", () => {
       risk_tier: "high",
       outcome: "pending",
       pending_id: "pend-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.3",
     }));
 
     const result = await handle.gatingEvaluate("delete_account", "user-1", {
@@ -2327,6 +2330,7 @@ describe("MobHandle.gatingEvaluate()", () => {
     assert.equal(result.riskTier, "high");
     assert.equal(result.outcome, "pending");
     assert.equal(result.pendingId, "pend-1");
+    assert.equal(result.pendingRef, "gpr1.0000000000000000000000000000000a.3");
   });
 });
 
@@ -2337,6 +2341,7 @@ describe("MobHandle.gatingPending()", () => {
       pending: [
         {
           pending_id: "p-1",
+          pending_ref: "gpr1.0000000000000000000000000000000a.3",
           action_id: "a-1",
           action: "delete",
           actor_id: "u-1",
@@ -2350,6 +2355,7 @@ describe("MobHandle.gatingPending()", () => {
     assert.equal(calls[0].method, "mobkit/gating/pending");
     assert.equal(result.length, 1);
     assert.equal(result[0].pendingId, "p-1");
+    assert.equal(result[0].pendingRef, "gpr1.0000000000000000000000000000000a.3");
     assert.equal(result[0].actionId, "a-1");
     assert.equal(result[0].action, "delete");
     assert.equal(result[0].actorId, "u-1");
@@ -2359,25 +2365,53 @@ describe("MobHandle.gatingPending()", () => {
 });
 
 describe("MobHandle.gatingDecide()", () => {
-  it("sends mobkit/gating/decide", async () => {
+  it("sends mobkit/gating/decide by pending ref", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
       pending_id: "p-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.3",
       action_id: "a-1",
       decision: "approved",
     }));
 
-    const result = await handle.gatingDecide("p-1", "approved", "admin-1", {
+    const result = await handle.gatingDecide("gpr1.0000000000000000000000000000000a.3", "approved", "admin-1", {
       note: "looks good",
     });
     assert.equal(calls[0].method, "mobkit/gating/decide");
-    assert.equal(calls[0].params!.pending_id, "p-1");
+    assert.equal(calls[0].params!.pending_ref, "gpr1.0000000000000000000000000000000a.3");
+    assert.equal("pending_id" in calls[0].params!, false);
+    assert.equal(result.pendingRef, "gpr1.0000000000000000000000000000000a.3");
     assert.equal(calls[0].params!.decision, "approved");
     assert.equal(calls[0].params!.approver_id, "admin-1");
     assert.equal(calls[0].params!.note, "looks good");
     assert.equal(result.pendingId, "p-1");
     assert.equal(result.actionId, "a-1");
     assert.equal(result.decision, "approved");
+  });
+
+  it("raises StalePendingDecisionError when the owner refuses a stale ref", async () => {
+    const { rt, handle } = createMockRuntime();
+    delete (rt as any)._rpc;
+    (rt as any)._transport = {
+      sendAsync: async (request: Record<string, unknown>) => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: {
+          code: -32602,
+          message: "Invalid params: pending_ref was issued by a different gating owner",
+          data: { kind: "stale_pending_decision", reason: "other_incarnation" },
+        },
+      }),
+    };
+    await assert.rejects(
+      () => handle.gatingDecide("gpr1.0000000000000000000000000000000a.3", "approve", "admin-1"),
+      (err: unknown) =>
+        err instanceof StalePendingDecisionError &&
+        err instanceof RpcError &&
+        err.code === -32602 &&
+        err.reason === "other_incarnation" &&
+        isRpcError(err),
+    );
   });
 });
 

@@ -127,6 +127,7 @@ from .errors import (
     TurnUnknownError,
     TurnWaitTimeoutError,
     WaitEndedError,
+    StalePendingDecisionError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
 )
@@ -334,6 +335,7 @@ __all__ = [
     "LeaseLostError",
     "MemoryBackendUnavailableError",
     "StorageResolutionError",
+    "StalePendingDecisionError",
     "WorkGraphConflictError",
     "WorkGraphUnavailableError",
     "ContractMismatchError",

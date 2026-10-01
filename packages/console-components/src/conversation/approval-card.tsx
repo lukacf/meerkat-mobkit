@@ -7,20 +7,20 @@ export interface ApprovalCardProps {
   resourceStatus: PendingApprovalSnapshot["status"];
   decision?: ApprovalDecisionState;
   readOnly?: boolean;
-  onDecide(pendingId: string, action: ApprovalAction): void | Promise<void>;
+  onDecide(pendingRef: string, action: ApprovalAction): void | Promise<void>;
 }
 
 /** The same request and decision owner can feed an inbox and several panes. */
 export function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }: ApprovalCardProps) {
-  const pending = request.status === "pending" && decision?.phase !== "settled";
+  const pending = request.status === "pending" && decision?.phase !== "settled" && decision?.phase !== "superseded";
   const submitting = decision?.phase === "submitting";
   const stale = resourceStatus !== "ready";
-  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
+  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : decision?.phase === "superseded" ? "superseded" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
   return (
-    <article className="cc-approval" data-state={state} data-testid={`gating-pending:${request.pendingId}`}>
+    <article className="cc-approval" data-state={state} data-testid={`gating-pending:${request.pendingRef}`}>
       <header className="cc-approval__header">
         <strong>{request.action}</strong>
-        <span className="cc-approval__status" role="status">{state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved"}</span>
+        <span className="cc-approval__status" role="status">{state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "superseded" ? "No longer pending" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved"}</span>
       </header>
       {request.rationale ? <p>{request.rationale}</p> : null}
       <dl className="cc-approval__scope">
@@ -40,7 +40,7 @@ export function ApprovalCard({ request, resourceStatus, decision, readOnly = fal
       {readOnly ? <p>Read-only access</p> : null}
       {resourceStatus === "forbidden" ? <p>Approval access denied</p> : null}
       {pending ? <div className="cc-approval__actions">{request.actions.map((action) => (
-        <button key={action} type="button" disabled={readOnly || stale || submitting} data-action={action} data-testid={`gating-action:${request.pendingId}:${action}`} onClick={() => { void onDecide(request.pendingId, action); }}>{labels[action]}</button>
+        <button key={action} type="button" disabled={readOnly || stale || submitting} data-action={action} data-testid={`gating-action:${request.pendingRef}:${action}`} onClick={() => { void onDecide(request.pendingRef, action); }}>{labels[action]}</button>
       ))}</div> : null}
     </article>
   );
@@ -48,16 +48,16 @@ export function ApprovalCard({ request, resourceStatus, decision, readOnly = fal
 
 export function ApprovalAttention({ snapshot, onOpen }: {
   snapshot: PendingApprovalSnapshot;
-  onOpen(pendingId?: string): void;
+  onOpen(pendingRef?: string): void;
 }) {
   if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
-  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
+  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingRef]?.phase !== "settled");
   const ready = snapshot.status === "ready";
   const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return (
     <section className="cc-approval-attention" aria-label="Needs you" data-testid="approval-attention" data-state={snapshot.status} data-pending={ready && requests.length > 0}>
       <button className="cc-approval-attention__open" type="button" aria-label={`Needs you, ${status}`} title={status}
-        onClick={() => onOpen(ready && requests.length === 1 ? requests[0].pendingId : undefined)}>
+        onClick={() => onOpen(ready && requests.length === 1 ? requests[0].pendingRef : undefined)}>
         <svg className="cc-approval-attention__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m4 5-2 9v5h20v-5l-2-9H4Z" /><path d="M2 14h6l2 3h4l2-3h6" />
         </svg>

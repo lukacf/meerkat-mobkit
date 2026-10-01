@@ -128,11 +128,11 @@ module.exports = {
   PIPELINE_NO_GRANT: "memory-pipeline-no-grant", // shown without memory.quarantine.review
   QUARANTINE_NOTE: "memory-quarantine-note", // read-only disclaimer (kept from P3b)
   quarantineRecord: (memoryId) => `memory-quarantine-record:${memoryId}`, // now a button → Biography
-  pendingPromotion: (pendingId) => `memory-pending:${pendingId}`,
-  // `memory-pipeline-decide:${pendingId}` — deep link into the Gating inbox.
+  pendingPromotion: (pendingRef) => `memory-pending:${pendingRef}`,
+  // `memory-pipeline-decide:${pendingRef}` - deep link into the Gating inbox.
   // Renders ONLY when the nav offers gating (visibleControls) — on aggregator
   // runtimes without a mob control surface the button is absent.
-  pipelineDecide: (pendingId) => `memory-pipeline-decide:${pendingId}`,
+  pipelineDecide: (pendingRef) => `memory-pipeline-decide:${pendingRef}`,
 
   // ── Live memory-event strip (bottom of Pipeline tab) ──
   LIVE_STRIP: "memory-live-strip",

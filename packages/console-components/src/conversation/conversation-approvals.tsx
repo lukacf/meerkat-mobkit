@@ -5,7 +5,7 @@ export type ConversationApprovalProps = {
   approvalSnapshot?: PendingApprovalSnapshot;
   /** Canonical host-authorized target, never a label or actor ID. */
   approvalIdentity?: string;
-  onApprovalDecision?: (pendingId: string, action: ApprovalAction) => void | Promise<void>;
+  onApprovalDecision?: (pendingRef: string, action: ApprovalAction) => void | Promise<void>;
 };
 
 /** A continued interaction belongs beside its latest matching visible turn. */
@@ -24,5 +24,5 @@ export function ConversationApprovals({ approvalSnapshot, approvalIdentity, onAp
   const requests = approvalSnapshot.requests.filter((request) =>
     Boolean(request.origin?.interactionId) === Boolean(interactionIds)
     && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
-  return <>{requests.map((request) => <ApprovalCard key={request.pendingId} request={request} resourceStatus={approvalSnapshot.status} decision={approvalSnapshot.decisions[request.pendingId]} readOnly={approvalSnapshot.readOnly || !onApprovalDecision} onDecide={onApprovalDecision ?? (() => {})} />)}</>;
+  return <>{requests.map((request) => <ApprovalCard key={request.pendingRef} request={request} resourceStatus={approvalSnapshot.status} decision={approvalSnapshot.decisions[request.pendingRef]} readOnly={approvalSnapshot.readOnly || !onApprovalDecision} onDecide={onApprovalDecision ?? (() => {})} />)}</>;
 }

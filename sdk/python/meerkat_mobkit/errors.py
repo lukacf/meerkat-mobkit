@@ -273,6 +273,41 @@ class WorkGraphConflictError(RpcError):
         )
 
 
+class StalePendingDecisionError(RpcError):
+    """Raised by ``gating_decide`` when the decision named no pending request.
+
+    The ``pending_ref`` was malformed or absent (a legacy ``pending_id`` alone
+    is refused), was never issued, was issued by a replaced gating owner, or
+    is already resolved. Nothing was decided and nothing was notified.
+    ``reason`` is one of ``malformed``, ``unknown``, ``other_incarnation`` or
+    ``resolved``; tolerate values added later. Refresh the pending list
+    rather than retrying.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "unknown",
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            -32602,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+        self.reason = reason
+
+
+def is_stale_pending_decision_data(data: Any) -> bool:
+    """True when a JSON-RPC error payload is a typed stale gating decision."""
+    return isinstance(data, dict) and data.get("kind") == "stale_pending_decision"
+
+
 class ContractMismatchError(MobKitError):
     """Raised when the SDK and runtime contract versions are incompatible."""
 

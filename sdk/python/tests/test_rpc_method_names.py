@@ -1208,6 +1208,57 @@ def test_console_timeline_replay_unavailable_uses_distinct_typed_error():
     assert err.data["latest_cursor"] == "console:42"
 
 
+def test_stale_gating_decision_reifies_as_typed_error():
+    """A decide naming no pending request is typed, with the owner's reason."""
+    from meerkat_mobkit import StalePendingDecisionError
+    from meerkat_mobkit.errors import RpcError
+    from meerkat_mobkit.runtime import _rpc_error_from_payload
+
+    err = _rpc_error_from_payload(
+        {
+            "code": -32602,
+            "message": "Invalid params: pending_ref was issued by a different gating owner",
+            "data": {"kind": "stale_pending_decision", "reason": "other_incarnation"},
+        },
+        request_id="rid",
+        method="mobkit/gating/decide",
+    )
+    assert isinstance(err, StalePendingDecisionError)
+    assert isinstance(err, RpcError)
+    assert err.code == -32602
+    assert err.reason == "other_incarnation"
+
+    plain = _rpc_error_from_payload(
+        {"code": -32602, "message": "Invalid params: approver mismatch"},
+        request_id="rid",
+        method="mobkit/gating/decide",
+    )
+    assert not isinstance(plain, StalePendingDecisionError)
+
+
+@pytest.mark.asyncio
+async def test_gating_decide_sends_pending_ref_not_pending_id():
+    ref = "gpr1.0000000000000000000000000000000a.1"
+    handle, calls = make_mock_mob_handle(
+        {
+            "mobkit/gating/decide": {
+                "pending_id": "gate-pending-000001",
+                "pending_ref": ref,
+                "action_id": "gate-action-000000",
+                "decision": "approve",
+            }
+        }
+    )
+    result = await handle.gating_decide(ref, "approve", "operator")
+    assert calls == [
+        (
+            "mobkit/gating/decide",
+            {"pending_ref": ref, "decision": "approve", "approver_id": "operator"},
+        )
+    ]
+    assert result.pending_ref == ref
+
+
 def test_lease_lost_reifies_as_lease_lost_error_not_capability_unavailable():
     """Identity-plane lease loss (-32005) must NOT collide with -32004.
 

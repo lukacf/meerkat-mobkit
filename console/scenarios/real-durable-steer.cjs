@@ -252,7 +252,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     return view;
   }
   async function inspectApproval(label) {
-    const card = viewport().getByTestId(`gating-pending:${result.approval.pending_id}`);
+    const card = viewport().getByTestId(`gating-pending:${result.approval.pending_ref}`);
     await eventually(async () => await card.count() === 1, `${host} ${label}: one exact approval in this transcript`);
     const view = await card.evaluate(node => ({ pendingId: node.dataset.testid,
       turnId: node.closest("[data-conversation-turn-id]")?.dataset.conversationTurnId,
@@ -260,7 +260,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     assert(view.turnId, "correlated approval belongs to a concrete visible conversation turn");
     assert(view.text.includes("Review this exact background-check interaction"));
     const pending = await rpc(fixture.baseUrl, "mobkit/gating/pending");
-    const owner = pending.body.result?.pending.find(item => item.pending_id === result.approval.pending_id);
+    const owner = pending.body.result?.pending.find(item => item.pending_ref === result.approval.pending_ref);
     assert.equal(owner?.origin?.interaction_id, result.started.interaction_id,
       "the runtime approval owner retains the exact active interaction");
     assert.equal(fixture.observations.filter(item => item.request.includes('"method":"mobkit/gating/decide"')).length, 0,
@@ -337,7 +337,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     assert(result.runStart.run_id && result.runStart.session_id);
     result.approval = await fixture.control("approval", { identity, interaction_id: result.started.interaction_id,
       action: "Review this exact background-check interaction" });
-    assert(result.approval.pending_id);
+    assert(result.approval.pending_ref);
     await inspectApproval("waiting");
     await composer().fill(draft);
     await composer().evaluate(node => node.setSelectionRange(3, 17));

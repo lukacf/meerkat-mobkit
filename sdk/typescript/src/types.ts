@@ -847,6 +847,8 @@ export interface GatingEvaluateResult {
   readonly riskTier: string | null;
   readonly outcome: string;
   readonly pendingId: string | null;
+  /** The opaque handle `gatingDecide` accepts; null unless a request is pending. */
+  readonly pendingRef: string | null;
 }
 
 export function parseGatingEvaluateResult(
@@ -860,6 +862,7 @@ export function parseGatingEvaluateResult(
     riskTier: typeof d.risk_tier === "string" ? d.risk_tier : null,
     outcome: String(d.outcome ?? ""),
     pendingId: typeof d.pending_id === "string" ? d.pending_id : null,
+    pendingRef: typeof d.pending_ref === "string" ? d.pending_ref : null,
   };
 }
 
@@ -867,8 +870,12 @@ export function parseGatingEvaluateResult(
 
 export interface GatingDecisionResult {
   readonly pendingId: string;
+  readonly pendingRef: string;
   readonly actionId: string;
   readonly decision: string;
+  /** Set when an escalation created a successor request. */
+  readonly nextPendingId: string | null;
+  readonly nextPendingRef: string | null;
 }
 
 export function parseGatingDecisionResult(
@@ -877,8 +884,11 @@ export function parseGatingDecisionResult(
   const d = asRecord(raw);
   return {
     pendingId: String(d.pending_id ?? ""),
+    pendingRef: String(d.pending_ref ?? ""),
     actionId: String(d.action_id ?? ""),
     decision: String(d.decision ?? ""),
+    nextPendingId: typeof d.next_pending_id === "string" ? d.next_pending_id : null,
+    nextPendingRef: typeof d.next_pending_ref === "string" ? d.next_pending_ref : null,
   };
 }
 
@@ -889,6 +899,8 @@ export interface GatingAuditEntry {
   readonly timestampMs: number;
   readonly eventType: string;
   readonly actionId: string;
+  readonly pendingId: string | null;
+  readonly pendingRef: string | null;
   readonly actorId: string;
   readonly riskTier: string | null;
   readonly outcome: string;
@@ -901,6 +913,8 @@ export function parseGatingAuditEntry(raw: unknown): GatingAuditEntry {
     timestampMs: Number(d.timestamp_ms ?? 0),
     eventType: String(d.event_type ?? ""),
     actionId: String(d.action_id ?? ""),
+    pendingId: typeof d.pending_id === "string" ? d.pending_id : null,
+    pendingRef: typeof d.pending_ref === "string" ? d.pending_ref : null,
     actorId: String(d.actor_id ?? ""),
     riskTier: typeof d.risk_tier === "string" ? d.risk_tier : null,
     outcome: String(d.outcome ?? ""),
@@ -910,7 +924,10 @@ export function parseGatingAuditEntry(raw: unknown): GatingAuditEntry {
 // -- GatingPendingEntry ---------------------------------------------------
 
 export interface GatingPendingEntry {
+  /** Display ID, reused after an owner restarts. Never decide by it. */
   readonly pendingId: string;
+  /** The opaque handle `gatingDecide` accepts. */
+  readonly pendingRef: string;
   readonly actionId: string;
   readonly action: string;
   readonly actorId: string;
@@ -922,6 +939,7 @@ export function parseGatingPendingEntry(raw: unknown): GatingPendingEntry {
   const d = asRecord(raw);
   return {
     pendingId: String(d.pending_id ?? ""),
+    pendingRef: String(d.pending_ref ?? ""),
     actionId: String(d.action_id ?? ""),
     action: String(d.action ?? ""),
     actorId: String(d.actor_id ?? ""),

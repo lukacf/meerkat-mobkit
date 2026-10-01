@@ -412,7 +412,7 @@ describe("stock durable queue integration", () => {
   it("clears pending approval data before loading a new principal", async () => {
     const fake = transport(vi.fn());
     fake.capabilities = async () => ({ methods: ["mobkit/gating/pending", "mobkit/gating/decide", "mobkit/console/send"] });
-    fake.executeCommand = async () => ({ result: { pending: [{ pending_id: "private-gate", action_id: "private-action", action: "Private principal approval", origin: { identity }, risk_tier: "r3" }] } }) as never;
+    fake.executeCommand = async () => ({ result: { pending: [{ pending_ref: "gpr1.0000000000000000000000000000000a.1", pending_id: "private-gate", action_id: "private-action", action: "Private principal approval", origin: { identity }, risk_tier: "r3" }] } }) as never;
     const view = render(<ConsoleApp baseUrl="" transport={fake} storageNamespace="old-principal" />);
     fireEvent.click(await screen.findByRole("button", { name: "Needs you, 1 pending approval" }));
     await screen.findAllByText("Private principal approval");

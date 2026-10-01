@@ -88,7 +88,7 @@ use crate::memory::records::{
 };
 use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
-use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
+use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver, PendingRef};
 
 /// Embedded prompt bundle (crate-local copy of
 /// `tests/memory-evals/prompts/steward-v0.md`; a unit test enforces byte
@@ -638,7 +638,7 @@ impl StewardClientHandle for FactoryStewardHandle {
 
 /// Enqueue a gating pending entry for a quarantine-promotion (§10.2). The
 /// wiring implements this over the runtime's `evaluate_gating_action`
-/// (risk tier R3); the returned `pending_id` keys the staged token.
+/// (risk tier R3); the returned pending ref keys the staged token.
 #[async_trait]
 pub trait MemoryGatingBridge: Send + Sync {
     /// `entity`/`topic` give the gating engine's memory-conflict probe a
@@ -650,7 +650,7 @@ pub trait MemoryGatingBridge: Send + Sync {
         description: &str,
         entity: &str,
         topic: &str,
-    ) -> Result<String, String>;
+    ) -> Result<PendingRef, String>;
 }
 
 /// Emit a conflict signal into the operational ledger (§8.5 contradiction
@@ -1769,11 +1769,11 @@ impl StewardEngine {
             let _ = self.store.discard_stage(token).await;
             let _ = self
                 .store
-                .resolve_pending_promotion(&self.realm, &promotion.pending_id, "expired")
+                .resolve_pending_promotion(&self.realm, &promotion.pending_ref, "expired")
                 .await;
             run.skips.push(format!(
                 "gated promotion '{}' expired unresolved after {}d",
-                promotion.pending_id,
+                promotion.pending_ref,
                 PROMOTION_EXPIRY_MS / 86_400_000
             ));
         }
@@ -2012,7 +2012,7 @@ impl StewardEngine {
                     promotion.record_id,
                     promotion.scope_kind,
                     promotion.scope_key,
-                    promotion.pending_id,
+                    promotion.pending_ref,
                 ));
             }
         }
@@ -3162,7 +3162,7 @@ impl StewardEngine {
     }
 
     /// Stage a promotion batch WITHOUT committing, enqueue the gating
-    /// pending entry, and persist the pending_id → token mapping. Returns
+    /// pending entry, and persist the pending_ref → token mapping. Returns
     /// whether the gate was successfully enqueued.
     #[allow(clippy::too_many_arguments)]
     async fn stage_gated_promotion(
@@ -3257,11 +3257,11 @@ impl StewardEngine {
             scope.kind_str(),
             scope.key(),
         );
-        let pending_id = match gating
+        let pending_ref = match gating
             .enqueue_promotion_gate(&self.realm, &description, scope.key(), source_id)
             .await
         {
-            Ok(pending_id) => pending_id,
+            Ok(pending_ref) => pending_ref,
             Err(err) => {
                 run.skips.push(format!(
                     "gated promotion of '{source_id}': gating enqueue failed ({err}); \
@@ -3272,7 +3272,7 @@ impl StewardEngine {
             }
         };
         let promotion = PendingPromotion {
-            pending_id: pending_id.clone(),
+            pending_ref,
             stage_token: token.token.clone(),
             record_id: source_id.to_string(),
             scope_kind: scope.kind_str().to_string(),
@@ -3295,7 +3295,7 @@ impl StewardEngine {
         }
         self.emit(MemoryTimelineEvent::PromotionPendingGate {
             realm: self.realm.clone(),
-            pending_id,
+            pending_ref,
             record_id: source_id.to_string(),
             scope_kind: scope.kind_str().to_string(),
             scope_key: scope.key().to_string(),
@@ -3305,18 +3305,20 @@ impl StewardEngine {
 
     /// Resolve a gating decision for one of this realm's staged
     /// promotions. Called by [`PromotionGateResolver`]; unknown pending
-    /// ids are not ours and are ignored.
+    /// refs are not ours and are ignored. Matching is by the typed ref, so a
+    /// gate another owner minted under the same pending ID never resolves a
+    /// promotion staged behind an earlier one.
     pub async fn resolve_gating_notice(&self, notice: GatingResolutionNotice) {
         let promotion = match self
             .store
-            .pending_promotion_by_id(&self.realm, &notice.pending_id)
+            .pending_promotion_by_ref(&self.realm, &notice.pending_ref)
             .await
         {
             Ok(Some(promotion)) => promotion,
             Ok(None) => return,
             Err(err) => {
                 tracing::warn!(
-                    pending_id = %notice.pending_id,
+                    pending_ref = %notice.pending_ref,
                     error = %err,
                     "agent memory steward: promotion lookup failed"
                 );
@@ -3332,7 +3334,7 @@ impl StewardEngine {
                 Ok(receipt) => {
                     let _ = self
                         .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "committed")
+                        .resolve_pending_promotion(&self.realm, &notice.pending_ref, "committed")
                         .await;
                     // Proposal-sourced gates (record_id carries the "prop-"
                     // token minted by `propose`) resolve their proposal on
@@ -3341,7 +3343,7 @@ impl StewardEngine {
                     self.resolve_gated_proposal(&promotion.record_id, "accepted")
                         .await;
                     tracing::info!(
-                        pending_id = %notice.pending_id,
+                        pending_ref = %notice.pending_ref,
                         record_id = %promotion.record_id,
                         applied_ops = receipt.applied_ops,
                         "agent memory steward: gated promotion committed on approval"
@@ -3362,21 +3364,21 @@ impl StewardEngine {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        pending_id = %notice.pending_id,
+                        pending_ref = %notice.pending_ref,
                         error = %err,
                         "agent memory steward: gated promotion commit failed; marking expired"
                     );
                     let _ = self
                         .store
-                        .resolve_pending_promotion(&self.realm, &notice.pending_id, "expired")
+                        .resolve_pending_promotion(&self.realm, &notice.pending_ref, "expired")
                         .await;
                 }
             }
-        } else if let Some(next_pending_id) = notice.next_pending_id.as_deref() {
-            // Escalation: the gate lives on under a successor pending id.
+        } else if let Some(next_pending_ref) = notice.next_pending_ref.as_ref() {
+            // Escalation: the gate lives on under a successor pending ref.
             let _ = self
                 .store
-                .rekey_pending_promotion(&self.realm, &notice.pending_id, next_pending_id)
+                .rekey_pending_promotion(&self.realm, &notice.pending_ref, next_pending_ref)
                 .await;
         } else {
             let token = crate::memory::staged::StageToken {
@@ -3391,7 +3393,7 @@ impl StewardEngine {
             };
             let _ = self
                 .store
-                .resolve_pending_promotion(&self.realm, &notice.pending_id, status)
+                .resolve_pending_promotion(&self.realm, &notice.pending_ref, status)
                 .await;
             // An explicit operator denial rejects a proposal-sourced gate's
             // proposal (re-gating a denied proposal every dream would spam
@@ -3402,7 +3404,7 @@ impl StewardEngine {
                     .await;
             }
             tracing::info!(
-                pending_id = %notice.pending_id,
+                pending_ref = %notice.pending_ref,
                 record_id = %promotion.record_id,
                 cause = %notice.cause,
                 "agent memory steward: gated promotion discarded"
@@ -4366,6 +4368,23 @@ mod tests {
         }
     }
 
+    /// A deterministic ref per scripted gate name, as one gating owner would
+    /// issue them.
+    fn gate_ref(name: &str) -> PendingRef {
+        gate_ref_from(GATE_TEST_INCARNATION, name)
+    }
+
+    const GATE_TEST_INCARNATION: &str = "000000000000000000000000000005ee";
+
+    fn gate_ref_from(incarnation: &str, name: &str) -> PendingRef {
+        let seq = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+        format!("gpr1.{incarnation}.{seq}")
+            .parse()
+            .expect("canonical test ref")
+    }
+
     struct ScriptedGatingBridge {
         pending_ids: StdMutex<Vec<String>>,
         calls: StdMutex<Vec<(String, String, String)>>,
@@ -4388,7 +4407,7 @@ mod tests {
             description: &str,
             entity: &str,
             _topic: &str,
-        ) -> Result<String, String> {
+        ) -> Result<PendingRef, String> {
             self.calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4404,7 +4423,7 @@ mod tests {
             if ids.is_empty() {
                 Err("no scripted pending ids left".to_string())
             } else {
-                Ok(ids.remove(0))
+                Ok(gate_ref(&ids.remove(0)))
             }
         }
     }
@@ -5242,15 +5261,49 @@ mod tests {
             2
         );
 
+        // An approval from another gating owner that reused the pending ID
+        // is not this promotion's gate: nothing commits.
+        fixture
+            .engine
+            .resolve_gating_notice(GatingResolutionNotice {
+                pending_id: "gate-1".to_string(),
+                pending_ref: gate_ref_from("0000000000000000000000000000beef", "gate-1"),
+                action_id: "gate-action-000001".to_string(),
+                approved: true,
+                next_pending_id: None,
+                next_pending_ref: None,
+                cause: "approval_decided".to_string(),
+            })
+            .await;
+        assert!(
+            fixture
+                .store
+                .manifest(&[mob_scope()], ManifestTier::Full)
+                .await
+                .expect("mob manifest")
+                .is_empty()
+        );
+        assert_eq!(
+            fixture
+                .store
+                .pending_promotions(REALM)
+                .await
+                .expect("pending")
+                .len(),
+            2
+        );
+
         // Approval commits the staged batch: mob record exists, source
         // tombstoned, mapping resolved.
         fixture
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-1".to_string(),
+                pending_ref: gate_ref("gate-1"),
                 action_id: "gate-action-000001".to_string(),
                 approved: true,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "approval_decided".to_string(),
             })
             .await;
@@ -5295,9 +5348,11 @@ mod tests {
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-2".to_string(),
+                pending_ref: gate_ref("gate-2"),
                 action_id: "gate-action-000002".to_string(),
                 approved: false,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "rejection_decided".to_string(),
             })
             .await;
@@ -5332,9 +5387,11 @@ mod tests {
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-2".to_string(),
+                pending_ref: gate_ref("gate-2"),
                 action_id: "gate-action-000002".to_string(),
                 approved: true,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "approval_decided".to_string(),
             })
             .await;
@@ -5452,9 +5509,11 @@ mod tests {
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-p1".to_string(),
+                pending_ref: gate_ref("gate-p1"),
                 action_id: "gate-action-1".to_string(),
                 approved: true,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "approval_decided".to_string(),
             })
             .await;
@@ -5764,9 +5823,11 @@ mod tests {
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-prop".to_string(),
+                pending_ref: gate_ref("gate-prop"),
                 action_id: "gate-action-1".to_string(),
                 approved: true,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "approval_decided".to_string(),
             })
             .await;
@@ -5897,9 +5958,11 @@ mod tests {
             .engine
             .resolve_gating_notice(GatingResolutionNotice {
                 pending_id: "gate-1".to_string(),
+                pending_ref: gate_ref("gate-1"),
                 action_id: "gate-action-1".to_string(),
                 approved: false,
                 next_pending_id: None,
+                next_pending_ref: None,
                 cause: "rejection_decided".to_string(),
             })
             .await;

@@ -48,6 +48,7 @@ use crate::memory::records::{
 };
 use crate::memory::staged::{StageToken, StagedMemoryStore};
 use crate::memory::taint::LlmWriteGate;
+use crate::runtime::PendingRef;
 
 // ---------------------------------------------------------------------------
 // Evidence resolution (re-homed from sqlite_store.rs)
@@ -140,7 +141,10 @@ pub struct PendingHarvest {
 /// gating approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPromotion {
-    pub pending_id: String,
+    /// The gating ref the promotion waits on. Keyed by the ref, not the
+    /// owner-local pending ID, so a gate minted by a later owner that reuses
+    /// the ID never resolves this promotion.
+    pub pending_ref: PendingRef,
     pub stage_token: String,
     pub record_id: MemoryId,
     pub scope_kind: String,
@@ -272,7 +276,7 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
         retired_at_ms: u64,
     ) -> Result<(), AgentMemoryError>;
 
-    /// Record a gated quarantine-promotion: gating `pending_id` → staged
+    /// Record a gated quarantine-promotion: gating `pending_ref` → staged
     /// batch token (§10.2). Only a gating approval commits the token.
     async fn record_pending_promotion(
         &self,
@@ -280,11 +284,11 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
         promotion: PendingPromotion,
     ) -> Result<(), AgentMemoryError>;
 
-    /// Look up a still-pending gated promotion by its gating pending id.
-    async fn pending_promotion_by_id(
+    /// Look up a still-pending gated promotion by its gating pending ref.
+    async fn pending_promotion_by_ref(
         &self,
         realm: &str,
-        pending_id: &str,
+        pending_ref: &PendingRef,
     ) -> Result<Option<PendingPromotion>, AgentMemoryError>;
 
     /// All still-pending gated promotions (dream-start reconciliation).
@@ -297,7 +301,7 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
     async fn resolve_pending_promotion(
         &self,
         realm: &str,
-        pending_id: &str,
+        pending_ref: &PendingRef,
         status: &str,
     ) -> Result<(), AgentMemoryError>;
 
@@ -306,8 +310,8 @@ pub trait StewardStore: StagedMemoryStore + TombstoneSource {
     async fn rekey_pending_promotion(
         &self,
         realm: &str,
-        old_pending_id: &str,
-        new_pending_id: &str,
+        old_pending_ref: &PendingRef,
+        new_pending_ref: &PendingRef,
     ) -> Result<(), AgentMemoryError>;
 
     /// Discard a staged-but-uncommitted batch (denied/expired gated

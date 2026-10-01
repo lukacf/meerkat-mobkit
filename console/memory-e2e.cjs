@@ -461,14 +461,14 @@ const openAccessFlows = [
       await page.getByTestId(T.QUARANTINE_NOTE).waitFor({ timeout: 10_000 });
 
       // Both parked promotions render with their rationales; no stage tokens.
-      for (const [pendingId, rationale] of [
-        ["gate-mob-promotion", "steward: mob-wide convention"],
-        ["gate-delivery-promotion", "steward: delivery personal fact"],
+      for (const [pendingRef, rationale] of [
+        ["gpr1.0000000000000000000000000000c0de.1", "steward: mob-wide convention"],
+        ["gpr1.0000000000000000000000000000c0de.2", "steward: delivery personal fact"],
       ]) {
-        const row = page.getByTestId(T.pendingPromotion(pendingId));
+        const row = page.getByTestId(T.pendingPromotion(pendingRef));
         await row.waitFor({ timeout: 10_000 });
         const text = await row.innerText();
-        assert(text.includes(rationale), `promotion ${pendingId} rationale: ${text}`);
+        assert(text.includes(rationale), `promotion ${pendingRef} rationale: ${text}`);
       }
       const pipelineText = await page.getByTestId(T.PIPELINE).innerText();
       assert(
@@ -496,7 +496,7 @@ const openAccessFlows = [
 
       // The decide button is a door into the Gating inbox.
       await openTab(page, "pipeline");
-      await page.getByTestId(T.pipelineDecide("gate-mob-promotion")).click();
+      await page.getByTestId(T.pipelineDecide("gpr1.0000000000000000000000000000c0de.1")).click();
       await page.getByTestId("gating-panel").waitFor({ timeout: 10_000 });
       await openMemoryPanel(page);
     },

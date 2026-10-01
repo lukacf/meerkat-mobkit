@@ -9343,7 +9343,7 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
       assert.equal(entries.length, 1);
       assert.equal(entries[0].identity.role, "user");
       assert.equal(entries[0].interactionId, ownerId);
-      const approval = normalizePendingApprovalForInputTest({ pending_id: "release-approval", action_id: "release", action: "Review release",
+      const approval = normalizePendingApprovalForInputTest({ pending_ref: "release-approval", pending_id: "release-approval", action_id: "release", action: "Review release",
         origin: { identity: "router:main", interaction_id: ownerId } })!;
       const interactionIds = entries.flatMap(entry => entry.interactionId ? [entry.interactionId] : []);
       const target = { identity: "router:main", conversationId: "router:main", interactionIds };
@@ -9384,7 +9384,7 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
       assert.equal(entries.length, 1);
       assert.equal(entries[0].identity.role, "user");
       assert.equal(entries[0].interactionId, undefined);
-      const request = normalizePendingApprovalForInputTest({ pending_id: "release-approval", origin: { identity: "router:main", interaction_id: ownerId } })!;
+      const request = normalizePendingApprovalForInputTest({ pending_ref: "release-approval", pending_id: "release-approval", origin: { identity: "router:main", interaction_id: ownerId } })!;
       assert.equal(approvalMatchesInputConversation(request, { identity: "router:main", interactionIds: [] }), false);
     }
   });

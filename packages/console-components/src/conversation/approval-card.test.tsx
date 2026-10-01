@@ -4,7 +4,7 @@ import { ApprovalAttention, ApprovalCard } from "./approval-card";
 import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../console-core/src/pending-approvals";
 
 afterEach(cleanup);
-const request = normalizePendingApproval({ pending_id: "request:1", action_id: "action:1", action: "Publish release artifacts", rationale: "Make the tested release available", actor_id: "actor", deadline_at_ms: 1, payload: { destination: "production", full: "complete request contents" } })!;
+const request = normalizePendingApproval({ pending_ref: "request:1", pending_id: "request:1", action_id: "action:1", action: "Publish release artifacts", rationale: "Make the tested release available", actor_id: "actor", deadline_at_ms: 1, payload: { destination: "production", full: "complete request contents" } })!;
 const snapshot = (status: PendingApprovalSnapshot["status"] = "ready"): PendingApprovalSnapshot => ({ scopeKey: "authority", status, requests: [request], decisions: {}, readOnly: false });
 describe("ApprovalCard", () => {
   it("shows readable scope, full request details and supported decisions", () => {
@@ -93,7 +93,7 @@ describe("ApprovalCard", () => {
   });
   it("keeps a large inbox to one navigation row and opens all requests", () => {
     const onOpen = vi.fn();
-    const requests = Array.from({ length: 25 }, (_, index) => ({ ...request, pendingId: `request:${index}` }));
+    const requests = Array.from({ length: 25 }, (_, index) => ({ ...request, pendingRef: `request:${index}`, pendingId: `request:${index}` }));
     const view = render(<ApprovalAttention snapshot={{ ...snapshot(), requests }} onOpen={onOpen} />);
     expect(view.getAllByRole("button")).toHaveLength(1);
     expect(view.queryByText("Publish release artifacts")).toBeNull();

@@ -99,7 +99,7 @@ pub enum MemoryTimelineEvent {
     /// through the gating flow (§10.2).
     PromotionPendingGate {
         realm: String,
-        pending_id: String,
+        pending_ref: crate::runtime::PendingRef,
         record_id: String,
         scope_kind: String,
         scope_key: String,
@@ -300,13 +300,13 @@ impl MemoryTimelineEvent {
             }),
             Self::PromotionPendingGate {
                 realm,
-                pending_id,
+                pending_ref,
                 record_id,
                 scope_kind,
                 scope_key,
             } => json!({
                 "realm": realm,
-                "pending_id": pending_id,
+                "pending_ref": pending_ref,
                 "record_id": record_id,
                 "scope_kind": scope_kind,
                 "scope_key": scope_key,

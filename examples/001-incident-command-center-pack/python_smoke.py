@@ -64,19 +64,19 @@ def main() -> int:
     first_pending = pending[0]
 
     escalated = rpc(base_url, "mobkit/gating/decide", {
-        "pending_id": first_pending["pending_id"],
+        "pending_ref": first_pending["pending_ref"],
         "approver_id": "console-ops-lead",
         "decision": "escalate",
         "reason": "python_smoke_escalate",
     })
-    next_pending_id = escalated["next_pending_id"]
-    assert next_pending_id, "expected successor pending id"
+    next_pending_ref = escalated["next_pending_ref"]
+    assert next_pending_ref, "expected successor pending ref"
 
     pending_after = rpc(base_url, "mobkit/gating/pending", {})["pending"]
-    successor = next(item for item in pending_after if item["pending_id"] == next_pending_id)
+    successor = next(item for item in pending_after if item["pending_ref"] == next_pending_ref)
 
     approved = rpc(base_url, "mobkit/gating/decide", {
-        "pending_id": successor["pending_id"],
+        "pending_ref": successor["pending_ref"],
         "approver_id": "console-ops-lead",
         "decision": "approve",
         "reason": "python_smoke_approve",

@@ -233,7 +233,7 @@ describe("conversation quote and approval integration", () => {
   });
   test("places only exact provenance approvals and shares decision state", async () => {
     const { normalizePendingApproval } = await import("../../../console-core/src/pending-approvals");
-    const request = (id: string, origin?: object) => normalizePendingApproval({ pending_id: id, action: `Approve ${id}`, action_id: "filesystem.write", actor_id: "agent", origin })!;
+    const request = (id: string, origin?: object) => normalizePendingApproval({ pending_ref: id, pending_id: id, action: `Approve ${id}`, action_id: "filesystem.write", actor_id: "agent", origin })!;
     const snapshot = { scopeKey: "test", status: "ready" as const, readOnly: false, decisions: {}, requests: [
       request("matching", { identity: "agent", conversation_id: "conversation", interaction_id: "interaction:one" }),
       request("conversation", { identity: "agent", conversation_id: "conversation" }),

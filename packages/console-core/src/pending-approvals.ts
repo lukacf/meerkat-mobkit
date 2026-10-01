@@ -9,6 +9,9 @@ export interface ApprovalOrigin {
   interactionId?: string;
 }
 export interface PendingApproval {
+  /** Opaque owner-issued handle; the only key decisions accept. */
+  pendingRef: string;
+  /** Owner-local display ID. Reused after an owner restarts, so never a key. */
   pendingId: string;
   actionId: string;
   action: string;
@@ -23,8 +26,11 @@ export interface PendingApproval {
   raw: Readonly<Record<string, unknown>>;
 }
 export interface ApprovalDecisionState {
-  /** Unavailable means a typed capability refusal before dispatch; failed retains outcome uncertainty. */
-  phase: "submitting" | "settled" | "failed" | "unavailable";
+  /**
+   * Unavailable means a typed capability refusal before dispatch; failed retains outcome uncertainty;
+   * superseded means the owner refused the decision as stale (the request was no longer pending), so nothing was decided.
+   */
+  phase: "submitting" | "settled" | "failed" | "unavailable" | "superseded";
   action: ApprovalAction;
   result?: GatingActionResult;
   error?: string;
@@ -50,7 +56,7 @@ export interface PendingApprovalResource {
   getSnapshot(): PendingApprovalSnapshot;
   subscribe(listener: () => void): () => void;
   refresh(): Promise<void>;
-  decide(pendingId: string, action: ApprovalAction): Promise<void>;
+  decide(pendingRef: string, action: ApprovalAction): Promise<void>;
   dispose(): void;
 }
 const POLL_MS = 15_000;
@@ -60,8 +66,9 @@ const millis = (value: unknown) => typeof value === "number" && Number.isFinite(
 export function normalizePendingApproval(value: unknown): PendingApproval | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
+  const pendingRef = text(raw.pending_ref);
   const pendingId = text(raw.pending_id);
-  if (!pendingId) return null;
+  if (!pendingRef || !pendingId) return null;
   if (raw.status !== undefined && raw.status !== "pending" && raw.status !== "settled" && raw.status !== "expired") return null;
   const record = raw.origin && typeof raw.origin === "object" ? raw.origin as Record<string, unknown> : undefined;
   const identity = text(record?.identity);
@@ -69,7 +76,7 @@ export function normalizePendingApproval(value: unknown): PendingApproval | null
     ? APPROVAL_ACTIONS.filter((action) => (raw.supported_actions as unknown[]).includes(action))
     : APPROVAL_ACTIONS;
   return {
-    pendingId, actionId: text(raw.action_id) || "Unknown action scope",
+    pendingRef, pendingId, actionId: text(raw.action_id) || "Unknown action scope",
     action: text(raw.action) || text(raw.summary) || text(raw.action_id) || "Approval requested",
     actorId: text(raw.actor_id), rationale: text(raw.rationale), riskTier: text(raw.risk_tier),
     status: raw.status === "expired" ? "expired" : raw.status === "settled" ? "settled" : "pending",
@@ -111,6 +118,8 @@ function unavailableCapability(error: unknown): { method: string; availableMetho
     && Array.isArray(record.availableMethods) && record.availableMethods.every((method) => typeof method === "string")
     ? { method: record.method, availableMethods: record.availableMethods } : null;
 }
+const isStaleDecision = (error: unknown) =>
+  (error as { rpcError?: { data?: { kind?: string } } } | null)?.rpcError?.data?.kind === "stale_pending_decision";
 const isDenied = (error: unknown) => {
   const record = error as { httpStatus?: number; rpcError?: { code?: number; data?: { kind?: string } } } | null;
   return record?.httpStatus === 401 || record?.httpStatus === 403 || record?.rpcError?.code === -32030 || record?.rpcError?.data?.kind === "access_denied";
@@ -120,7 +129,7 @@ const isDenied = (error: unknown) => {
 export function createPendingApprovalResource(input: {
   scopeKey: string;
   load(signal: AbortSignal): Promise<unknown>;
-  decide(pendingId: string, action: ApprovalAction, signal: AbortSignal): Promise<unknown>;
+  decide(pendingRef: string, action: ApprovalAction, signal: AbortSignal): Promise<unknown>;
   readOnly?: boolean;
   environment?: ApprovalResourceEnvironment;
 }): PendingApprovalResource {
@@ -178,7 +187,7 @@ export function createPendingApprovalResource(input: {
         for (const row of raw) {
           const request = normalizePendingApproval(row);
           if (!request) throw new Error("Pending approval response contains an invalid request");
-          if (!ids.has(request.pendingId)) { ids.add(request.pendingId); requests.push(request); }
+          if (!ids.has(request.pendingRef)) { ids.add(request.pendingRef); requests.push(request); }
         }
         publish({ requests, status: "ready", updatedAtMs: env.now(), error: undefined });
       } catch (error) {
@@ -219,54 +228,59 @@ export function createPendingApprovalResource(input: {
     getSnapshot: () => snapshot,
     subscribe(listener) { if (disposed) return () => {}; listeners.add(listener); return () => { listeners.delete(listener); }; },
     refresh: () => refresh(true),
-    decide(pendingId, action) {
+    decide(pendingRef, action) {
       if (disposed) return Promise.resolve();
-      const existing = decisionJobs.get(pendingId);
+      const existing = decisionJobs.get(pendingRef);
       if (existing) return existing;
-      const request = snapshot.requests.find((candidate) => candidate.pendingId === pendingId);
+      const request = snapshot.requests.find((candidate) => candidate.pendingRef === pendingRef);
       if (snapshot.readOnly || denied || snapshot.status !== "ready" || !request || request.status !== "pending" || !request.actions.includes(action)) {
         return Promise.resolve();
       }
-      const previousDecision = snapshot.decisions[pendingId];
+      const previousDecision = snapshot.decisions[pendingRef];
       ++decisionGeneration;
-      setDecision(pendingId, { phase: "submitting", action });
+      setDecision(pendingRef, { phase: "submitting", action });
       const job = (async () => {
         try {
-          const value = await Promise.resolve().then(() => input.decide(pendingId, action, lifetime.signal));
+          const value = await Promise.resolve().then(() => input.decide(pendingRef, action, lifetime.signal));
           if (disposed || denied) return;
           const result = normalizeGatingActionResult(value);
-          if (!result || result.pending_id !== pendingId || result.action_id !== request.actionId || result.decision !== action
+          if (!result || result.pending_ref !== pendingRef || result.action_id !== request.actionId || result.decision !== action
             || (action === "approve" && result.outcome !== "allowed")
             || (action === "reject" && result.outcome !== "safe_draft")
-            || (action === "escalate" && (result.outcome !== "pending_approval" || !result.next_pending_id || result.next_pending_id === pendingId))) {
+            || (action === "escalate" && (result.outcome !== "pending_approval" || !result.next_pending_ref || result.next_pending_ref === pendingRef))) {
             throw new Error("Decision outcome is unconfirmed; refreshing approval state");
           }
-          setDecision(pendingId, { phase: "settled", action, result });
+          setDecision(pendingRef, { phase: "settled", action, result });
           // The response is authoritative for this request. A successor remains
           // pending and will be read through the same owner on refresh.
-          publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingId !== pendingId) });
+          publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingRef !== pendingRef) });
         } catch (error) {
           if (disposed || denied) return;
           const capability = unavailableCapability(error);
-          if (capability?.method === CONSOLE_RPC_METHODS.gatingDecide
+          if (isStaleDecision(error)) {
+            // The owner proved nothing was decided: the request was resolved
+            // elsewhere, expired, or belongs to a replaced owner.
+            setDecision(pendingRef, { phase: "superseded", action, error: "This request is no longer pending; nothing was decided" });
+            publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingRef !== pendingRef) });
+          } else if (capability?.method === CONSOLE_RPC_METHODS.gatingDecide
             && capability.availableMethods.includes(CONSOLE_RPC_METHODS.gatingPending)) {
             publish({ readOnly: true });
             // A refused retry says nothing about an earlier dispatched attempt.
-            setDecision(pendingId, previousDecision?.phase === "failed" ? previousDecision : {
+            setDecision(pendingRef, previousDecision?.phase === "failed" ? previousDecision : {
               phase: "unavailable", action, error: "Approval decisions are unavailable with current access",
             });
           } else if (isDenied(error) || capability?.method === CONSOLE_RPC_METHODS.gatingDecide) {
             denied = true;
             publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
             lifetime.abort();
-          } else setDecision(pendingId, { phase: "failed", action, error: errorText(error) });
+          } else setDecision(pendingRef, { phase: "failed", action, error: errorText(error) });
         } finally {
           ++decisionGeneration;
-          decisionJobs.delete(pendingId);
+          decisionJobs.delete(pendingRef);
           if (!disposed && !denied) await refresh(true);
         }
       })();
-      decisionJobs.set(pendingId, job);
+      decisionJobs.set(pendingRef, job);
       return job;
     },
     dispose() {

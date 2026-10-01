@@ -20,8 +20,8 @@ function clock() {
   };
   return { environment, advance(ms: number) { const until = now + ms; while (true) { const next = Array.from(timers.entries()).filter(([, t]) => t.at <= until).sort((a, b) => a[1].at - b[1].at)[0]; if (!next) break; now = next[1].at; timers.delete(next[0]); next[1].callback(); } now = until; }, visible(value: boolean) { visible = value; for (const listener of visibility) listener(); }, timers };
 }
-const row = (id = "p1") => ({ pending_id: id, action_id: `action:${id}`, action: "Deploy service", actor_id: "actor", risk_tier: "r3", deadline_at_ms: 1000 });
-const accepted = (id = "p1", decision = "approve") => ({ pending_id: id, action_id: `action:${id}`, approver_id: "operator", decision, outcome: decision === "escalate" ? "pending_approval" : "allowed", decided_at_ms: 10, ...(decision === "escalate" ? { next_pending_id: "p2" } : {}) });
+const row = (id = "p1", ref = id) => ({ pending_ref: ref, pending_id: id, action_id: `action:${id}`, action: "Deploy service", actor_id: "actor", risk_tier: "r3", deadline_at_ms: 1000 });
+const accepted = (id = "p1", decision = "approve", ref = id) => ({ pending_ref: ref, pending_id: id, action_id: `action:${id}`, approver_id: "operator", decision, outcome: decision === "escalate" ? "pending_approval" : "allowed", decided_at_ms: 10, ...(decision === "escalate" ? { next_pending_id: "p2", next_pending_ref: "p2" } : {}) });
 
 test("one resource discovers approvals without an inbox, pauses while hidden and refreshes on return", async () => {
   const c = clock(); let calls = 0;
@@ -141,8 +141,9 @@ test("decision scope, outcome and escalation successor must all match the owner 
   for (const response of [
     { ...accepted(), action_id: "different action" },
     { ...accepted(), outcome: "safe_draft" },
-    { ...accepted("p1", "escalate"), next_pending_id: undefined },
-    { ...accepted("p1", "escalate"), next_pending_id: "p1" },
+    { ...accepted(), pending_ref: "another owner's ref" },
+    { ...accepted("p1", "escalate"), next_pending_ref: undefined },
+    { ...accepted("p1", "escalate"), next_pending_ref: "p1" },
   ]) {
     const c = clock();
     const resource = createPendingApprovalResource({ scopeKey: "a", environment: c.environment,
@@ -258,5 +259,42 @@ test("unadvertised gating is unsupported, stops polling and cannot accept a deci
   assert.deepEqual(resource.getSnapshot().requests, []);
   c.advance(60_000); await tick(); await resource.refresh(); await resource.decide("p1", "approve");
   assert.equal(calls, 1); assert.equal(writes, 0);
+  resource.dispose();
+});
+
+test("decisions are keyed and sent by the owner ref, never the reusable display ID", async () => {
+  // A replaced owner restarts its sequence, so two requests can share a display ID.
+  const older = "gpr1.0000000000000000000000000000000a.1", newer = "gpr1.0000000000000000000000000000000b.1";
+  const c = clock(); const sent: string[] = [];
+  const resource = createPendingApprovalResource({ scopeKey: "a", environment: c.environment,
+    load: async () => ({ pending: [row("gate-pending-000001", older), row("gate-pending-000001", newer)] }),
+    decide: async (pendingRef) => { sent.push(pendingRef); return accepted("gate-pending-000001", "approve", pendingRef); },
+  });
+  await tick();
+  assert.deepEqual(resource.getSnapshot().requests.map((request) => request.pendingRef), [older, newer]);
+  await resource.decide(newer, "approve");
+  assert.deepEqual(sent, [newer]);
+  assert.equal(resource.getSnapshot().decisions[newer].phase, "settled");
+  assert.equal(resource.getSnapshot().decisions[older], undefined);
+  assert.equal(normalizePendingApproval({ pending_id: "gate-pending-000001", action_id: "a" }), null, "a request without a ref cannot be decided");
+  resource.dispose();
+});
+
+test("a stale refusal says nothing was decided and drops the request without retrying", async () => {
+  const c = clock(); let reads = 0, writes = 0;
+  const resource = createPendingApprovalResource({ scopeKey: "a", environment: c.environment,
+    load: async () => ({ pending: ++reads === 1 ? [row()] : [] }),
+    decide: async () => {
+      writes++;
+      throw Object.assign(new Error("stale pending decision"), { rpcError: { code: -32602, data: { kind: "stale_pending_decision", reason: "other_incarnation" } } });
+    },
+  });
+  await tick(); await resource.decide("p1", "approve");
+  const snapshot = resource.getSnapshot();
+  assert.equal(snapshot.decisions.p1.phase, "superseded");
+  assert.equal(snapshot.decisions.p1.result, undefined);
+  assert.equal(snapshot.requests.length, 0);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(writes, 1); assert.equal(reads, 2);
   resource.dispose();
 });

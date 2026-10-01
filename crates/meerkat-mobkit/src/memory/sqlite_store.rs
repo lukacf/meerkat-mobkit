@@ -29,6 +29,7 @@ use crate::identity_first::agent_memory::{
     normalize_tags, read_markdown_records, select_recall_records,
 };
 use crate::memory::taint::LlmWriteGate;
+use crate::runtime::PendingRef;
 
 // The judgment-plane capability vocabulary lived here before the M4 de-weld;
 // re-exported so `sqlite_store::{EvidenceRefResolver, PendingPromotion, ...}`
@@ -221,22 +222,35 @@ const MOBKIT_MEMORY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Schem
             name: "logical-identity-scope-keys",
             apply: migration_0003_logical_identity_scope_keys,
         },
+        meerkat_sqlite::Migration {
+            version: 4,
+            name: "pending-promotion-gating-refs",
+            apply: migration_0004_pending_promotion_gating_refs,
+        },
     ],
     initialize_current: initialize_current_memory_schema,
     // Version 2 is the mobkit 0.8.8 floor (SCHEMA_SQL already carried the
     // quarantine/taint columns inline; v1 files are pre-floor and refused
     // typed). Version 3 folds legacy runtime-id-keyed identity scopes into
     // the logical identity (task #53) - data-only, so the v2 predecessor
-    // verifier is the CURRENT schema fingerprint.
-    allowed_existing_versions: &[2, 3],
+    // verifier is the CURRENT schema fingerprint. Version 4 keys gated
+    // promotions by the gating pending ref instead of the owner-local ID.
+    allowed_existing_versions: &[2, 3, 4],
     // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
     // floor) and mobkit never runs the offline bridge, so no source
     // version is inferable.
     bridge_recoverable_versions: &[],
-    released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
-        version: 2,
-        verify: verify_released_0_8_10_memory_schema,
-    }],
+    released_predecessors: &[
+        meerkat_sqlite::SchemaPredecessor {
+            version: 2,
+            verify: verify_released_0_8_10_memory_schema,
+        },
+        // Migration 0003 is data-only, so v3 shares the v2 catalog.
+        meerkat_sqlite::SchemaPredecessor {
+            version: 3,
+            verify: verify_released_0_8_10_memory_schema,
+        },
+    ],
     owned_objects: &[
         meerkat_sqlite::SchemaObject {
             kind: meerkat_sqlite::SchemaObjectKind::Table,
@@ -314,7 +328,38 @@ fn initialize_current_memory_schema(tx: &Transaction<'_>) -> Result<(), rusqlite
     initialize_v2_memory_schema(tx)?;
     // Data-only on a fresh file (no rows to fold); kept for the invariant
     // that initialize_current composes every migration.
-    migration_0003_logical_identity_scope_keys(tx)
+    migration_0003_logical_identity_scope_keys(tx)?;
+    migration_0004_pending_promotion_gating_refs(tx)
+}
+
+/// Migration 0004: gated promotions are keyed by the gating pending ref.
+///
+/// The owner-local pending ID (`gate-pending-000005`) restarts with the
+/// gating sequence whenever a runtime starts without restored gating state,
+/// so a durable row keyed by it could be resolved by an unrelated gate the
+/// next runtime minted with the same ID. The key column becomes
+/// `pending_ref`. A row still pending under a legacy ID can never be named
+/// by a ref, so it expires now (its stage discarded, exactly like the
+/// steward's own expiry) and its source becomes re-dreamable instead of
+/// staying blocked behind a gate nobody can decide.
+fn migration_0004_pending_promotion_gating_refs(
+    tx: &Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    tx.execute(
+        "ALTER TABLE pending_promotions RENAME COLUMN pending_id TO pending_ref",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM stage WHERE token IN (SELECT stage_token FROM pending_promotions \
+         WHERE status = 'pending' AND pending_ref NOT LIKE 'gpr1.%')",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE pending_promotions SET status = 'expired', resolved_at_ms = ?1 \
+         WHERE status = 'pending' AND pending_ref NOT LIKE 'gpr1.%'",
+        rusqlite::params![now_ms() as i64],
+    )?;
+    Ok(())
 }
 
 /// Frozen fingerprint verifier for allowed predecessor version 2.
@@ -515,6 +560,23 @@ fn migration_0002_quarantine_and_taint_columns(
         )?;
     }
     Ok(())
+}
+
+/// Parse a stored gating ref. Rows still pending are refs by construction
+/// (migration 0004 expired every legacy row), so a failure is corruption.
+fn pending_ref_column(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> Result<PendingRef, rusqlite::Error> {
+    row.get::<_, String>(index)?
+        .parse::<PendingRef>()
+        .map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                index,
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })
 }
 
 /// `PRAGMA table_info` guard lifted from the historical `ensure_column`
@@ -2039,11 +2101,11 @@ impl StewardStore for SqliteAgentMemoryStore {
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
                 conn.execute(
-                    "INSERT INTO pending_promotions (pending_id, stage_token, record_id, \
+                    "INSERT INTO pending_promotions (pending_ref, stage_token, record_id, \
                      scope_kind, scope_key, rationale, status, created_at_ms) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
-                        promotion.pending_id,
+                        promotion.pending_ref.to_string(),
                         promotion.stage_token,
                         promotion.record_id,
                         promotion.scope_kind,
@@ -2060,24 +2122,24 @@ impl StewardStore for SqliteAgentMemoryStore {
         .await
     }
 
-    async fn pending_promotion_by_id(
+    async fn pending_promotion_by_ref(
         &self,
         realm: &str,
-        pending_id: &str,
+        pending_ref: &PendingRef,
     ) -> Result<Option<PendingPromotion>, AgentMemoryError> {
         let store = self.clone();
         let realm = realm.to_string();
-        let pending_id = pending_id.to_string();
+        let pending_ref = pending_ref.to_string();
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
                 conn.query_row(
-                    "SELECT pending_id, stage_token, record_id, scope_kind, scope_key, \
+                    "SELECT pending_ref, stage_token, record_id, scope_kind, scope_key, \
                      rationale, status, created_at_ms FROM pending_promotions \
-                     WHERE pending_id = ?1 AND status = 'pending'",
-                    params![pending_id],
+                     WHERE pending_ref = ?1 AND status = 'pending'",
+                    params![pending_ref],
                     |row| {
                         Ok(PendingPromotion {
-                            pending_id: row.get(0)?,
+                            pending_ref: pending_ref_column(row, 0)?,
                             stage_token: row.get(1)?,
                             record_id: row.get(2)?,
                             scope_kind: row.get(3)?,
@@ -2105,7 +2167,7 @@ impl StewardStore for SqliteAgentMemoryStore {
             store.with_realm_conn(&realm, |conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT pending_id, stage_token, record_id, scope_kind, scope_key, \
+                        "SELECT pending_ref, stage_token, record_id, scope_kind, scope_key, \
                          rationale, status, created_at_ms FROM pending_promotions \
                          WHERE status = 'pending' ORDER BY created_at_ms ASC",
                     )
@@ -2113,7 +2175,7 @@ impl StewardStore for SqliteAgentMemoryStore {
                 let rows = stmt
                     .query_map([], |row| {
                         Ok(PendingPromotion {
-                            pending_id: row.get(0)?,
+                            pending_ref: pending_ref_column(row, 0)?,
                             stage_token: row.get(1)?,
                             record_id: row.get(2)?,
                             scope_kind: row.get(3)?,
@@ -2137,7 +2199,7 @@ impl StewardStore for SqliteAgentMemoryStore {
     async fn resolve_pending_promotion(
         &self,
         realm: &str,
-        pending_id: &str,
+        pending_ref: &PendingRef,
         status: &str,
     ) -> Result<(), AgentMemoryError> {
         if !matches!(status, "committed" | "denied" | "expired") {
@@ -2147,14 +2209,14 @@ impl StewardStore for SqliteAgentMemoryStore {
         }
         let store = self.clone();
         let realm = realm.to_string();
-        let pending_id = pending_id.to_string();
+        let pending_ref = pending_ref.to_string();
         let status = status.to_string();
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
                 conn.execute(
                     "UPDATE pending_promotions SET status = ?1, resolved_at_ms = ?2 \
-                     WHERE pending_id = ?3",
-                    params![status, now_ms() as i64, pending_id],
+                     WHERE pending_ref = ?3",
+                    params![status, now_ms() as i64, pending_ref],
                 )
                 .map_err(sql_err)?;
                 Ok(())
@@ -2166,18 +2228,18 @@ impl StewardStore for SqliteAgentMemoryStore {
     async fn rekey_pending_promotion(
         &self,
         realm: &str,
-        old_pending_id: &str,
-        new_pending_id: &str,
+        old_pending_ref: &PendingRef,
+        new_pending_ref: &PendingRef,
     ) -> Result<(), AgentMemoryError> {
         let store = self.clone();
         let realm = realm.to_string();
-        let old_pending_id = old_pending_id.to_string();
-        let new_pending_id = new_pending_id.to_string();
+        let old_pending_ref = old_pending_ref.to_string();
+        let new_pending_ref = new_pending_ref.to_string();
         run_blocking(move || {
             store.with_realm_conn(&realm, |conn| {
                 conn.execute(
-                    "UPDATE pending_promotions SET pending_id = ?1 WHERE pending_id = ?2",
-                    params![new_pending_id, old_pending_id],
+                    "UPDATE pending_promotions SET pending_ref = ?1 WHERE pending_ref = ?2",
+                    params![new_pending_ref, old_pending_ref],
                 )
                 .map_err(sql_err)?;
                 Ok(())
@@ -4327,10 +4389,11 @@ mod tests {
                     now_ms() as i64
                 ],
             )?;
+            // Keyed by a gating ref, so migration 0004 keeps it pending.
             tx.execute(
                 "INSERT INTO pending_promotions (pending_id, stage_token, record_id, \
                  scope_kind, scope_key, rationale, status, created_at_ms) VALUES \
-                 ('pending-1', 'stage-1', 'mem-gen0', 'identity', ?1, NULL, 'pending', 1)",
+                 ('gpr1.000000000000000000000000000000a1.1', 'stage-1', 'mem-gen0', 'identity', ?1, NULL, 'pending', 1)",
                 params![gen0],
             )?;
             tx.commit()?;
@@ -4344,8 +4407,8 @@ mod tests {
         let probe = Connection::open(&db_path)?;
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
-            Some(3),
-            "migration must stamp v3"
+            Some(4),
+            "migrations must stamp the current version"
         );
         let logical_records: i64 = probe.query_row(
             "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
@@ -4416,7 +4479,7 @@ mod tests {
         );
         // Pending promotion: key rewritten.
         let promotion_scope: String = probe.query_row(
-            "SELECT scope_key FROM pending_promotions WHERE pending_id = 'pending-1'",
+            "SELECT scope_key FROM pending_promotions WHERE pending_ref = 'gpr1.000000000000000000000000000000a1.1'",
             [],
             |row| row.get(0),
         )?;
@@ -4445,7 +4508,7 @@ mod tests {
         }
         drop(probe);
 
-        // Idempotent reopen: a second open at v3 changes nothing and errors
+        // Idempotent reopen: a second open at the current version changes nothing and errors
         // nowhere (the ledger will not re-run the migration).
         drop(store);
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
@@ -4453,7 +4516,7 @@ mod tests {
         let probe = Connection::open(&db_path)?;
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
-            Some(3)
+            Some(4)
         );
         let logical_records: i64 = probe.query_row(
             "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
@@ -4544,7 +4607,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             meerkat_sqlite::domain_version(&guard, "mobkit-memory")?,
-            Some(3)
+            Some(4)
         );
         Ok(())
     }
@@ -4646,6 +4709,113 @@ mod tests {
         Ok(())
     }
 
+    fn test_pending_ref(seq: u64) -> PendingRef {
+        format!("gpr1.000000000000000000000000000000a1.{seq}")
+            .parse()
+            .expect("canonical test ref")
+    }
+
+    /// Migration 0004: a v3 file's gated promotions are re-keyed by gating
+    /// ref. A row still pending under a legacy owner-local ID can never be
+    /// named by a ref, so it expires and its stage is discarded; resolved
+    /// rows keep their history.
+    #[tokio::test]
+    async fn migration_expires_promotions_keyed_by_legacy_pending_ids() -> Result<(), Box<dyn Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let db_path = {
+            let store = SqliteAgentMemoryStore::open(dir.path())?;
+            store.path_for_realm("default")
+        };
+        {
+            let mut conn = Connection::open(&db_path)?;
+            let tx = conn.transaction()?;
+            initialize_v2_memory_schema(&tx)?;
+            tx.execute_batch(
+                "CREATE TABLE meerkat_schema (domain TEXT PRIMARY KEY, version INTEGER NOT NULL);
+                 INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-memory', 3);",
+            )?;
+            for token in ["stage-legacy", "stage-resolved"] {
+                tx.execute(
+                    "INSERT INTO stage (token, batch, created_at_ms) VALUES (?1, '{}', ?2)",
+                    params![token, now_ms() as i64],
+                )?;
+            }
+            for (pending_id, token, status) in [
+                ("gate-pending-000005", "stage-legacy", "pending"),
+                ("gate-pending-000002", "stage-resolved", "denied"),
+            ] {
+                tx.execute(
+                    "INSERT INTO pending_promotions (pending_id, stage_token, record_id, \
+                     scope_kind, scope_key, rationale, status, created_at_ms) VALUES \
+                     (?1, ?2, 'mem-src', 'mob', 'mob:home', NULL, ?3, 1)",
+                    params![pending_id, token, status],
+                )?;
+            }
+            tx.commit()?;
+        }
+
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        assert!(store.pending_promotions("default").await?.is_empty());
+        let probe = Connection::open(&db_path)?;
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
+            Some(4)
+        );
+        let rows: Vec<(String, String, Option<i64>)> = {
+            let mut stmt = probe.prepare(
+                "SELECT pending_ref, status, resolved_at_ms FROM pending_promotions \
+                 ORDER BY pending_ref",
+            )?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        assert_eq!(rows[0].0, "gate-pending-000002");
+        assert_eq!(rows[0].1, "denied");
+        assert_eq!(rows[1].0, "gate-pending-000005");
+        assert_eq!(rows[1].1, "expired");
+        assert!(rows[1].2.is_some());
+        let stages: Vec<String> = {
+            let mut stmt = probe.prepare("SELECT token FROM stage ORDER BY token")?;
+            stmt.query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        assert_eq!(stages, ["stage-resolved"]);
+        drop(probe);
+
+        // The re-keyed table resolves by ref, and only by the ref it holds.
+        store
+            .record_pending_promotion(
+                "default",
+                PendingPromotion {
+                    pending_ref: test_pending_ref(5),
+                    stage_token: "stage-new".to_string(),
+                    record_id: "mem-src".to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "mob:home".to_string(),
+                    rationale: None,
+                    status: "pending".to_string(),
+                    created_at_ms: now_ms(),
+                },
+            )
+            .await?;
+        let other_owner: PendingRef = "gpr1.000000000000000000000000000000b2.5".parse()?;
+        assert!(
+            store
+                .pending_promotion_by_ref("default", &other_owner)
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .pending_promotion_by_ref("default", &test_pending_ref(5))
+                .await?
+                .map(|promotion| promotion.pending_ref),
+            Some(test_pending_ref(5))
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stale_stage_tokens_gc_on_open() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
@@ -4673,7 +4843,7 @@ mod tests {
             .record_pending_promotion(
                 "family",
                 PendingPromotion {
-                    pending_id: "gate-pending".to_string(),
+                    pending_ref: test_pending_ref(1),
                     stage_token: pending_gated.token.clone(),
                     record_id: "mem-src-1".to_string(),
                     scope_kind: "mob".to_string(),
@@ -4691,7 +4861,7 @@ mod tests {
             .record_pending_promotion(
                 "family",
                 PendingPromotion {
-                    pending_id: "gate-resolved".to_string(),
+                    pending_ref: test_pending_ref(2),
                     stage_token: resolved_gated.token.clone(),
                     record_id: "mem-src-2".to_string(),
                     scope_kind: "mob".to_string(),
@@ -4703,7 +4873,7 @@ mod tests {
             )
             .await?;
         store
-            .resolve_pending_promotion("family", "gate-resolved", "denied")
+            .resolve_pending_promotion("family", &test_pending_ref(2), "denied")
             .await?;
         // Age every stage row past the 24h GC horizon, then reopen.
         {

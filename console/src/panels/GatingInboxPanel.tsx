@@ -5,11 +5,11 @@ import type { PendingApprovalSnapshot } from "../../../packages/console-core/src
 interface GatingInboxPanelProps {
   pending: unknown[];
   audit: unknown[];
-  onDecide: (pendingId: string, decision: "approve" | "reject" | "escalate") => void;
+  onDecide: (pendingRef: string, decision: "approve" | "reject" | "escalate") => void;
   readOnly?: boolean;
   resource?: PendingApprovalSnapshot;
   onRefresh?: () => void;
-  selectedPendingId?: string;
+  selectedPendingRef?: string;
 }
 
 type Tab = "pending" | "auto" | "audit" | "policies";
@@ -54,22 +54,22 @@ export function GatingInboxPanel({
   readOnly = false,
   resource,
   onRefresh,
-  selectedPendingId,
+  selectedPendingRef,
 }: GatingInboxPanelProps): React.JSX.Element {
   const [tab, setTab] = React.useState<Tab>("pending");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
-  const pendingRequests = resource?.requests.filter((request) => request.status === "pending" && resource.decisions[request.pendingId]?.phase !== "settled");
+  const pendingRequests = resource?.requests.filter((request) => request.status === "pending" && resource.decisions[request.pendingRef]?.phase !== "settled");
   const pendingLabel = !resource || resource.status === "ready" ? String(pendingRequests ? pendingRequests.length : pending.length) : "?";
-  const selectedRequestAvailable = resource?.requests.some((request) => request.pendingId === selectedPendingId) === true;
-  React.useEffect(() => { if (selectedPendingId) { setSelectedId(selectedPendingId); setTab("pending"); } }, [selectedPendingId]);
+  const selectedRequestAvailable = resource?.requests.some((request) => request.pendingRef === selectedPendingRef) === true;
+  React.useEffect(() => { if (selectedPendingRef) { setSelectedId(selectedPendingRef); setTab("pending"); } }, [selectedPendingRef]);
   React.useEffect(() => {
-    if (tab !== "pending" || !selectedPendingId || !selectedRequestAvailable) return;
+    if (tab !== "pending" || !selectedPendingRef || !selectedRequestAvailable) return;
     const selected = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-approval-id]") || [])
-      .find((element) => element.dataset.approvalId === selectedPendingId);
+      .find((element) => element.dataset.approvalId === selectedPendingRef);
     selected?.scrollIntoView?.({ block: "nearest" });
     selected?.focus({ preventScroll: true });
-  }, [selectedPendingId, selectedRequestAvailable, tab]);
+  }, [selectedPendingRef, selectedRequestAvailable, tab]);
 
   const autoApproved = audit.filter((e) => {
     const r = e as Record<string, unknown>;
@@ -124,8 +124,8 @@ export function GatingInboxPanel({
             {resource.status !== "ready" ? <p role="status">{resource.status === "forbidden" ? "Approval access denied" : resource.status === "unsupported" ? "Approvals are not available for this connection" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable"}</p> : null}
             {onRefresh ? <button type="button" onClick={onRefresh}>Refresh approvals</button> : null}
             {resource.status === "ready" && pendingRequests?.length === 0 ? <p>No pending approvals.</p> : null}
-            {resource.requests.map((request) => <div key={request.pendingId} tabIndex={-1} data-approval-id={request.pendingId} data-selected={selectedId === request.pendingId} className={selectedId === request.pendingId ? "is-selected" : undefined}>
-              <ApprovalCard request={request} resourceStatus={resource.status} decision={resource.decisions[request.pendingId]} readOnly={readOnly || resource.readOnly} onDecide={onDecide} />
+            {resource.requests.map((request) => <div key={request.pendingRef} tabIndex={-1} data-approval-id={request.pendingRef} data-selected={selectedId === request.pendingRef} className={selectedId === request.pendingRef ? "is-selected" : undefined}>
+              <ApprovalCard request={request} resourceStatus={resource.status} decision={resource.decisions[request.pendingRef]} readOnly={readOnly || resource.readOnly} onDecide={onDecide} />
             </div>)}
           </div>
         ) : tab === "policies" ? (
@@ -137,7 +137,10 @@ export function GatingInboxPanel({
           )}
           {currentList.map((entry, index) => {
           const r = entry as Record<string, unknown>;
-          const pid = String(r.pending_id || r.audit_id || `item-${index}`);
+          // Decisions name the opaque ref; the display ID is only a label.
+          const pendingRef = typeof r.pending_ref === "string" && r.pending_ref ? r.pending_ref : undefined;
+          const pid = String(pendingRef || r.audit_id || `item-${index}`);
+          const label = String(r.pending_id || r.audit_id || `item-${index}`);
           const action = String(r.action_id || r.event_type || "unknown action");
           const agent = String(r.agent || r.identity || r.actor || "");
           const waited = formatWaited(r);
@@ -145,7 +148,7 @@ export function GatingInboxPanel({
           const payload = payloadSummary(r);
 
           const selected = selectedId === pid;
-          const showActions = tab === "pending" && !readOnly;
+          const showActions = tab === "pending" && !readOnly && pendingRef !== undefined;
 
           return (
             <div
@@ -156,7 +159,7 @@ export function GatingInboxPanel({
               onClick={() => setSelectedId(pid)}
             >
               <span className="gitem__risk" />
-              <span className="gitem__id">{pid.slice(0, 8)}</span>
+              <span className="gitem__id">{label.slice(0, 8)}</span>
               <span>
                 <div className="gitem__action">{action}</div>
                 {payload && <div className="gitem__payload">{payload}</div>}

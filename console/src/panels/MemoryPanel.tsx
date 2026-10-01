@@ -2622,8 +2622,8 @@ export function MemoryPanel({
                     {pendingPromotions.map((pending) => (
                       <div
                         className="memory-row memory-row--static"
-                        key={pending.pending_id}
-                        data-testid={`memory-pending:${pending.pending_id}`}
+                        key={pending.pending_ref}
+                        data-testid={`memory-pending:${pending.pending_ref}`}
                       >
                         <span className="memory-row__title">
                           {pending.record_id} → {pending.scope_kind}:{pending.scope_key}
@@ -2638,7 +2638,7 @@ export function MemoryPanel({
                             <button
                               type="button"
                               className="memory-back"
-                              data-testid={`memory-pipeline-decide:${pending.pending_id}`}
+                              data-testid={`memory-pipeline-decide:${pending.pending_ref}`}
                               onClick={onOpenGating}
                             >
                               → decide in Gating inbox

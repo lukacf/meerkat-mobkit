@@ -232,6 +232,42 @@ export class WorkGraphConflictError extends RpcError {
   }
 }
 
+/** Why a gating decision named no request pending in the owner. */
+export type StalePendingDecisionReason = "malformed" | "unknown" | "other_incarnation" | "resolved";
+
+/**
+ * Raised by `gatingDecide` when the decision named no request that is pending
+ * in the gating owner: the ref is malformed or absent (a legacy `pending_id`
+ * alone is refused), was never issued, was issued by a replaced owner, or is
+ * already resolved. Nothing was decided and nothing was notified. Refresh the
+ * pending list rather than retrying.
+ */
+export class StalePendingDecisionError extends RpcError {
+  constructor(
+    message: string,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(-32602, message, requestId, method, data);
+    this.name = "StalePendingDecisionError";
+  }
+
+  /** The owner's reason. Open set: tolerate values added later. */
+  get reason(): StalePendingDecisionReason | string {
+    const data = typeof this.data === "object" && this.data !== null
+      ? (this.data as Record<string, unknown>)
+      : {};
+    return typeof data.reason === "string" ? data.reason : "unknown";
+  }
+}
+
+/** True when a JSON-RPC error payload is a typed stale gating decision. */
+export function isStalePendingDecisionData(data: unknown): boolean {
+  return typeof data === "object" && data !== null
+    && (data as Record<string, unknown>).kind === "stale_pending_decision";
+}
+
 // -- Contract errors ------------------------------------------------------
 
 /** Raised when the SDK and runtime contract versions are incompatible. */
@@ -486,7 +522,8 @@ export function isRpcError(err: unknown): err is RpcError {
     candidate.name === "ConsoleTimelineReplayUnavailableError" ||
     candidate.name === "StorageResolutionError" ||
     candidate.name === "WorkGraphUnavailableError" ||
-    candidate.name === "WorkGraphConflictError"
+    candidate.name === "WorkGraphConflictError" ||
+    candidate.name === "StalePendingDecisionError"
   ) && typeof candidate.code === "number";
 }
 

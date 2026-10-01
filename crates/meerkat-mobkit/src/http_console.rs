@@ -63,8 +63,9 @@ use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse}
 use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
-    ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
-    RuntimeDecisionState, extract_bearer_token_from_header,
+    ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideError, GatingDecideRequest,
+    GatingDecision, PendingRef, RuntimeDecisionState, StalePendingDecisionReason,
+    extract_bearer_token_from_header,
     handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph,
     resolve_authorized_console_auth_from_token,
 };
@@ -3024,7 +3025,7 @@ async fn handle_memory_panel_quarantine(
                         // stage_token is a commit capability — never surfaced.
                         json!({
                             "realm": realm,
-                            "pending_id": promotion.pending_id,
+                            "pending_ref": promotion.pending_ref,
                             "record_id": promotion.record_id,
                             "scope_kind": promotion.scope_kind,
                             "scope_key": promotion.scope_key,
@@ -4323,12 +4324,25 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
-fn gating_decision_failed_error(id: Value, err: impl std::fmt::Display) -> Value {
+fn gating_decision_failed_error(id: Value, err: GatingDecideError) -> Value {
     tracing::warn!(
         target: "mobkit::console",
         error = %err,
         "console gating decision failed"
     );
+    // A stale decision is the caller's state, not a backend detail: say so,
+    // typed, so the console can refresh the request instead of retrying it.
+    if let GatingDecideError::StalePendingDecision { reason } = err {
+        return response_value(
+            id,
+            None,
+            Some(JsonRpcError {
+                code: -32602,
+                message: "stale pending decision".to_string(),
+                data: Some(json!({ "kind": "stale_pending_decision", "reason": reason })),
+            }),
+        );
+    }
     invalid_params(id, "gating decision failed")
 }
 
@@ -7843,15 +7857,25 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }),
                 );
             };
-            let Some(pending_id) = request.params.get("pending_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "pending_id required");
+            // Parse the ref once. A request without one, including a legacy
+            // request that names only `pending_id`, is a stale decision.
+            let Some(pending_ref) = request
+                .params
+                .get("pending_ref")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<PendingRef>().ok())
+            else {
+                return gating_decision_failed_error(
+                    response_id,
+                    GatingDecideError::StalePendingDecision {
+                        reason: StalePendingDecisionReason::Malformed,
+                    },
+                );
             };
-            // The gating owner trims IDs. Authorize that same canonical value.
-            let pending_id = pending_id.trim();
             if let Some(view) = access_view {
                 let pending = module_runtime.lock().await.list_gating_pending();
                 if pending.iter().any(|entry| {
-                    entry.pending_id == pending_id
+                    entry.pending_ref == pending_ref
                         && entry
                             .origin
                             .as_ref()
@@ -7891,7 +7915,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .lock()
                 .await
                 .decide_gating_action(GatingDecideRequest {
-                    pending_id: pending_id.to_string(),
+                    pending_ref,
                     approver_id,
                     decision,
                     reason,
@@ -11555,6 +11579,7 @@ mod tests {
         JSONRPC_VERSION, JsonRpcRequest, resolve_rpc_identity_control_target_with_handle,
     };
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
+    use crate::runtime::{GatingDecideError, StalePendingDecisionReason};
     use crate::unified_runtime::ConsoleEventStore;
     use crate::{MobBootstrapOptions, MobBootstrapSpec};
     use bytes::Bytes;
@@ -12599,14 +12624,36 @@ comms = true
 
     #[test]
     fn gating_decision_error_hides_backend_details() {
-        let response = super::gating_decision_failed_error(json!(7), "secret backend DSN");
+        let response = super::gating_decision_failed_error(
+            json!(7),
+            GatingDecideError::ApproverMismatch {
+                expected: "secret-expected-approver".to_string(),
+                provided: "secret-provided-approver".to_string(),
+            },
+        );
 
         assert_eq!(response["error"]["code"], json!(-32602));
         assert_eq!(
             response["error"]["message"],
             json!("gating decision failed")
         );
-        assert!(!response.to_string().contains("secret backend DSN"));
+        assert!(!response.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn gating_decision_error_types_stale_decisions() {
+        let response = super::gating_decision_failed_error(
+            json!(7),
+            GatingDecideError::StalePendingDecision {
+                reason: StalePendingDecisionReason::OtherIncarnation,
+            },
+        );
+
+        assert_eq!(response["error"]["code"], json!(-32602));
+        assert_eq!(
+            response["error"]["data"],
+            json!({ "kind": "stale_pending_decision", "reason": "other_incarnation" })
+        );
     }
 
     #[tokio::test]

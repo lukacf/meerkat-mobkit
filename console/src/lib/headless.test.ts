@@ -448,7 +448,7 @@ test("headless command execution models lifecycle, routing, and gating commands 
       command,
       target: controlTarget("gating"),
       params: command === CONSOLE_COMMAND_NAMES.decideGating
-        ? { pending_id: "pending-1", approver_id: "operator", decision: "approve" }
+        ? { pending_ref: "gpr1.0000000000000000000000000000000a.1", approver_id: "operator", decision: "approve" }
         : {},
     })).accepted, true);
     await assert.rejects(

@@ -779,7 +779,7 @@ fn choke_108_gating_to_approval_flow_target_defined_red() {
             "id":"choke-108-self-approve",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"alice",
                 "decision":"approve"
             }
@@ -794,7 +794,7 @@ fn choke_108_gating_to_approval_flow_target_defined_red() {
             "id":"choke-108-approve",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"bob",
                 "decision":"approve",
                 "reason":"peer-reviewed"

@@ -4,7 +4,8 @@ import { GatingInboxPanel } from "./GatingInboxPanel";
 import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
 
 afterEach(cleanup);
-const request = normalizePendingApproval({ pending_id: "p1", action_id: "a1", action: "Deploy release", rationale: "Publish reviewed changes" })!;
+const REF = "gpr1.0000000000000000000000000000000a.1";
+const request = normalizePendingApproval({ pending_ref: REF, pending_id: "p1", action_id: "a1", action: "Deploy release", rationale: "Publish reviewed changes" })!;
 const snapshot = (status: PendingApprovalSnapshot["status"]): PendingApprovalSnapshot => ({ scopeKey: "scope", status, requests: [request], decisions: {}, readOnly: false });
 describe("GatingInboxPanel shared resource", () => {
   it("does not mistake unavailable data for an empty inbox", () => {
@@ -15,8 +16,8 @@ describe("GatingInboxPanel shared resource", () => {
     expect(view.getByText("No pending approvals.")).toBeTruthy();
   });
   it("navigates attention to the exact request without a second fetch owner", () => {
-    const view = render(<GatingInboxPanel pending={[]} audit={[]} onDecide={vi.fn()} resource={snapshot("ready")} selectedPendingId="p1" />);
-    const selected = view.container.querySelector<HTMLElement>('[data-approval-id="p1"]');
+    const view = render(<GatingInboxPanel pending={[]} audit={[]} onDecide={vi.fn()} resource={snapshot("ready")} selectedPendingRef={REF} />);
+    const selected = view.container.querySelector<HTMLElement>(`[data-approval-id="${REF}"]`);
     expect(selected?.dataset.selected).toBe("true");
     expect(document.activeElement).toBe(selected);
     expect(view.getByText("Publish reviewed changes")).toBeTruthy();
@@ -46,7 +47,7 @@ describe("GatingInboxPanel shared resource", () => {
       { audit_id: "auto-approval", action_id: "automatic-check", decision: "auto_approve" },
       { audit_id: "manual-approval", action_id: "manual-review", decision: "approve" },
     ];
-    const view = render(<GatingInboxPanel pending={[]} audit={audit} onDecide={vi.fn()} resource={snapshot("ready")} selectedPendingId="p1" />);
+    const view = render(<GatingInboxPanel pending={[]} audit={audit} onDecide={vi.fn()} resource={snapshot("ready")} selectedPendingRef={REF} />);
     fireEvent.click(view.getByTestId("gating-tab:policies"));
     fireEvent.click(view.getByTestId("gating-tab:audit"));
     expect(view.getByText("automatic-check", { exact: true })).toBeTruthy();
@@ -56,7 +57,7 @@ describe("GatingInboxPanel shared resource", () => {
     expect(view.queryByText("manual-review", { exact: true })).toBeNull();
     fireEvent.click(view.getByTestId("gating-tab:pending"));
     expect(view.getByText("Publish reviewed changes")).toBeTruthy();
-    expect(document.activeElement).toBe(view.container.querySelector('[data-approval-id="p1"]'));
+    expect(document.activeElement).toBe(view.container.querySelector(`[data-approval-id="${REF}"]`));
   });
   it("explains an unsupported approval capability without claiming access was denied", () => {
     const view = render(<GatingInboxPanel pending={[]} audit={[]} onDecide={vi.fn()} resource={{ ...snapshot("unsupported"), requests: [], readOnly: true }} />);

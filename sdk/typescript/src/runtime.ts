@@ -49,6 +49,8 @@ import {
   WaitEndedError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
+  StalePendingDecisionError,
+  isStalePendingDecisionData,
   isRpcError,
 } from "./errors.js";
 import { PersistentTransport, buildJsonRpcRequest } from "./transport.js";
@@ -1031,6 +1033,9 @@ export class MobKitRuntime {
       }
       if (code === WORKGRAPH_CONFLICT_CODE) {
         throw new WorkGraphConflictError(message, rid, method, err.data);
+      }
+      if (code === -32602 && isStalePendingDecisionData(err.data)) {
+        throw new StalePendingDecisionError(message, rid, method, err.data);
       }
       const rpcError = new RpcError(code, message, rid, method, err.data);
       if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
@@ -2985,15 +2990,21 @@ export class MobHandle {
     return (entries as unknown[]).map(parseGatingPendingEntry);
   }
 
+  /**
+   * Decide the pending request `pendingRef` names. Pass the opaque
+   * `pendingRef` from the pending entry or evaluate result verbatim; the
+   * display `pendingId` is not accepted. A ref that names no pending request
+   * throws {@link StalePendingDecisionError} and decides nothing.
+   */
   async gatingDecide(
-    pendingId: string,
+    pendingRef: string,
     decision: string,
     approverId: string,
     options?: Record<string, unknown>,
   ): Promise<GatingDecisionResult> {
     return parseGatingDecisionResult(
       await this._runtime._rpc("mobkit/gating/decide", {
-        pending_id: pendingId,
+        pending_ref: pendingRef,
         decision,
         approver_id: approverId,
         ...(options ?? {}),

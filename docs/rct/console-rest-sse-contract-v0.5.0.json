@@ -788,7 +788,7 @@
           ],
           "request": {
             "required_fields": [
-              "pending_id",
+              "pending_ref",
               "decision"
             ],
             "optional_fields": [
@@ -798,6 +798,7 @@
             "conditional_required_fields": {
               "approver_id": "Required only when HTTP has no resolved principal; otherwise the principal is used regardless of the supplied approver_id."
             },
+            "pending_ref": "The opaque gpr1.<incarnation>.<seq> ref from the pending entry, echoed verbatim. A request carrying only the legacy pending_id is refused as a stale decision.",
             "decision_values": [
               "approve",
               "reject",
@@ -817,6 +818,14 @@
                 -32000,
                 -32601
               ]
+            },
+            {
+              "code": -32602,
+              "data": {
+                "kind": "stale_pending_decision",
+                "reason": "malformed | unknown | other_incarnation | resolved"
+              },
+              "applicability": "The decision named no request pending in this owner. Nothing was decided; refresh the pending list."
             }
           ]
         },

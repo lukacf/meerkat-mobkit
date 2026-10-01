@@ -37,10 +37,12 @@ from .errors import (
     MobEventsStaleError,
     NotConnectedError,
     RpcError,
+    StalePendingDecisionError,
     StorageResolutionError,
     TransportError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
+    is_stale_pending_decision_data,
 )
 from .events import AgentEvent, MobEvent
 from .identity_first_models import (
@@ -225,6 +227,14 @@ def _rpc_error_from_payload(
     if code == STORAGE_RESOLUTION_CODE:
         return StorageResolutionError(
             message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == -32602 and is_stale_pending_decision_data(data):
+        return StalePendingDecisionError(
+            message,
+            reason=str(data.get("reason", "unknown")),
             request_id=request_id,
             method=method,
             data=data,
@@ -2990,14 +3000,20 @@ class MobHandle:
 
     async def gating_decide(
         self,
-        pending_id: str,
+        pending_ref: str,
         decision: str,
         approver_id: str,
         **kwargs: Any,
     ) -> GatingDecisionResult:
-        """Approve or reject a pending gating action."""
+        """Approve, reject, or escalate the pending request ``pending_ref`` names.
+
+        Pass the opaque ``pending_ref`` from the pending entry or evaluate
+        result verbatim; the display ``pending_id`` is not accepted. A ref that
+        names no pending request raises ``StalePendingDecisionError`` and
+        decides nothing.
+        """
         params: dict[str, Any] = {
-            "pending_id": pending_id,
+            "pending_ref": pending_ref,
             "decision": decision,
             "approver_id": approver_id,
             **kwargs,

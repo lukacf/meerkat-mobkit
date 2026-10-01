@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking - gating decisions name an owner-issued pending ref
+
+A gating owner that starts without restored state restarts its sequence, so a
+request it mints can reuse the `pending_id` of a request the replaced runtime
+issued (the stock gateway never persists gating state). A delayed decision
+for the old request then resolved the new one, and the memory steward could
+commit or discard a promotion staged behind the old gate. Decisions now name
+an opaque ref that no other owner can issue.
+
+- Wire: every gating owner has a random incarnation. Pending entries, evaluate
+  and decide results, audit entries, and approval delivery payloads carry
+  `pending_ref` (`gpr1.<incarnation as 32 lowercase hex>.<seq>`), and
+  escalations return `next_pending_ref`. Treat the ref as opaque and echo it
+  verbatim. `pending_id` remains as a display ID only.
+- Wire: `mobkit/gating/decide` (stdio and console HTTP) requires `pending_ref`.
+  A request with only `pending_id` is refused, with no compatibility window.
+  A malformed, never-issued, other-owner, or already-resolved ref fails with
+  `-32602` and `data: {"kind": "stale_pending_decision", "reason":
+  "malformed" | "unknown" | "other_incarnation" | "resolved"}`. A stale
+  decision resolves nothing, writes no audit entry, and notifies no
+  resolution observer. Update decide callers to send the `pending_ref` from
+  the pending entry or evaluate result.
+- SDKs: TypeScript `gatingDecide(pendingRef, ...)` and Python
+  `gating_decide(pending_ref, ...)` send the ref. Gating models add
+  `pendingRef`/`pending_ref` (and `nextPendingRef`/`next_pending_ref` on
+  decision results), and a stale refusal raises `StalePendingDecisionError`
+  with its `reason`. The Python `GatingPendingEntry` and
+  `GatingDecisionResult` dataclasses gain a required `pending_ref` field.
+- Console: approvals are keyed, selected, and decided by `pendingRef`
+  (`PendingApproval.pendingRef`, `PendingApprovalResource.decide(pendingRef,
+  ...)`, and the `gating-pending:`/`gating-action:` test IDs). A stale
+  refusal settles the card as "No longer pending" (decision phase
+  `superseded`) instead of reporting an unconfirmed outcome.
+- Rust: `GatingDecideRequest.pending_id` is replaced by `pending_ref:
+  PendingRef`. `GatingDecideError::UnknownPendingId` is replaced by
+  `StalePendingDecision { reason: StalePendingDecisionReason }`.
+  `GatingPendingEntry`, `GatingDecisionResult`, `GatingEvaluateResult`,
+  `GatingAuditEntry`, and `GatingResolutionNotice` gain ref fields.
+  `MemoryGatingBridge::enqueue_promotion_gate` returns the `PendingRef`, and
+  the steward store's promotion methods take refs
+  (`pending_promotion_by_id` is now `pending_promotion_by_ref`).
+- Persistence: `GatingStateSnapshot` is version 2 and carries the owner's
+  `incarnation`, so refs issued before a restart still resolve after a
+  restore. Deserializing a version 1 snapshot migrates it under a fresh
+  incarnation; no ref the old owner could have issued resolves against it.
+- Storage: the agent-memory SQLite store migrates to schema v4, which keys
+  gated promotions by `pending_ref`. A promotion still pending under a legacy
+  ID can never be decided, so the migration expires it and discards its
+  stage; its source becomes re-dreamable. The memory panel and the
+  `memory.promotion.pending_gate` event carry `pending_ref` in place of
+  `pending_id`. This is a one-way upgrade: earlier releases cannot open a v4
+  store.
+
 ### Breaking (Rust source)
 
 - `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
@@ -558,6 +611,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   runner-independent work counts (layout objects per idle keystroke, full
   derivations and turn renders per streamed token), reporting wall-clock
   p95 as advisory; the jsdom benchmark could not see layout or paint.
+
+- A gating decision refused for self-approval or an approver mismatch leaves
+  the request in its queue position instead of moving it to the back, where
+  retention could evict it first.
+- The stdio gating decide parameter errors name every accepted decision:
+  `approve`, `reject`, or `escalate`.
 
 - Console: panel data refreshes no longer pile up on a slow server. Every
   tool or lifecycle event from any agent refreshed the roster and every

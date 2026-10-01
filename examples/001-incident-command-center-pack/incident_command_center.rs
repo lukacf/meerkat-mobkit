@@ -487,27 +487,26 @@ fn canonical_incident_edge(left: &str, right: &str) -> (String, String) {
 
 pub async fn seed_escalation_chain(
     runtime: &UnifiedRuntime,
-    pending_id: &str,
+    pending_ref: meerkat_mobkit::PendingRef,
     approver_id: &str,
 ) -> Result<GatingPendingEntry> {
     let escalation = runtime
         .decide_gating_action(GatingDecideRequest {
-            pending_id: pending_id.to_string(),
+            pending_ref,
             approver_id: approver_id.to_string(),
             decision: GatingDecision::Escalate,
             reason: Some("incident_command_center_smoke".to_string()),
         })
         .await
         .context("escalate gating entry")?;
-    let next_pending_id = escalation
-        .next_pending_id
-        .clone()
+    let next_pending_ref = escalation
+        .next_pending_ref
         .ok_or_else(|| anyhow!("expected escalation to create successor pending entry"))?;
     let pending = runtime.list_gating_pending().await;
     pending
         .into_iter()
-        .find(|entry| entry.pending_id == next_pending_id)
-        .ok_or_else(|| anyhow!("successor pending entry {next_pending_id} not found"))
+        .find(|entry| entry.pending_ref == next_pending_ref)
+        .ok_or_else(|| anyhow!("successor pending entry {next_pending_ref} not found"))
 }
 
 fn default_addressable() -> bool {

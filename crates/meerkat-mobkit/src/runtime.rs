@@ -936,8 +936,130 @@ pub struct GatingEvaluateResult {
     pub outcome: GatingOutcome,
     #[serde(default)]
     pub pending_id: Option<String>,
+    /// The only handle `decide` accepts for the pending entry this created.
+    #[serde(default)]
+    pub pending_ref: Option<PendingRef>,
     #[serde(default)]
     pub fallback_reason: Option<String>,
+}
+
+/// Random identity of one gating owner. It is minted when the owner is built,
+/// persisted in [`GatingStateSnapshot`], and restored with it, so a runtime
+/// that starts empty (and restarts its sequence) never shares one with the
+/// runtime it replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GatingIncarnation(u128);
+
+impl GatingIncarnation {
+    pub(crate) fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4().as_u128())
+    }
+}
+
+impl std::fmt::Display for GatingIncarnation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:032x}", self.0)
+    }
+}
+
+impl std::str::FromStr for GatingIncarnation {
+    type Err = PendingRefParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() != 32
+            || !value
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(PendingRefParseError);
+        }
+        u128::from_str_radix(value, 16)
+            .map(Self)
+            .map_err(|_| PendingRefParseError)
+    }
+}
+
+impl Serialize for GatingIncarnation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for GatingIncarnation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        value
+            .parse()
+            .map_err(|_| serde::de::Error::custom("invalid gating incarnation"))
+    }
+}
+
+/// Identifies one pending gating request across owner restarts. On the wire
+/// it is the opaque string `gpr1.<incarnation as 32 lowercase hex>.<seq>`;
+/// clients must treat it as opaque and echo it verbatim to `decide`. Parse it
+/// once at a boundary and compare the typed value, never the string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PendingRef {
+    pub incarnation: GatingIncarnation,
+    pub seq: u64,
+}
+
+const PENDING_REF_PREFIX: &str = "gpr1.";
+
+impl std::fmt::Display for PendingRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{PENDING_REF_PREFIX}{}.{}", self.incarnation, self.seq)
+    }
+}
+
+/// A string that is not a canonical pending ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingRefParseError;
+
+impl std::fmt::Display for PendingRefParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "malformed pending ref")
+    }
+}
+
+impl std::error::Error for PendingRefParseError {}
+
+impl std::str::FromStr for PendingRef {
+    type Err = PendingRefParseError;
+
+    /// Accepts only the canonical form, so a parsed ref renders back to the
+    /// exact input.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (incarnation, seq) = value
+            .strip_prefix(PENDING_REF_PREFIX)
+            .and_then(|rest| rest.split_once('.'))
+            .ok_or(PendingRefParseError)?;
+        let canonical_seq = !seq.is_empty()
+            && seq.bytes().all(|b| b.is_ascii_digit())
+            && (seq == "0" || !seq.starts_with('0'));
+        if !canonical_seq {
+            return Err(PendingRefParseError);
+        }
+        Ok(Self {
+            incarnation: incarnation.parse()?,
+            seq: seq.parse().map_err(|_| PendingRefParseError)?,
+        })
+    }
+}
+
+impl Serialize for PendingRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        value
+            .parse()
+            .map_err(|_| serde::de::Error::custom("malformed pending ref"))
+    }
 }
 
 /// Origin supplied by the host at the action boundary, never inferred from
@@ -954,6 +1076,7 @@ pub struct GatingOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingPendingEntry {
     pub pending_id: String,
+    pub pending_ref: PendingRef,
     pub action_id: String,
     pub action: String,
     pub actor_id: String,
@@ -986,7 +1109,10 @@ pub enum GatingDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingDecideRequest {
-    pub pending_id: String,
+    /// Must be the ref the owner issued for the pending entry. A bare
+    /// `pending_id` is not accepted: it is reused once a replaced owner
+    /// restarts its sequence.
+    pub pending_ref: PendingRef,
     pub approver_id: String,
     pub decision: GatingDecision,
     #[serde(default)]
@@ -996,6 +1122,7 @@ pub struct GatingDecideRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatingDecisionResult {
     pub pending_id: String,
+    pub pending_ref: PendingRef,
     pub action_id: String,
     pub approver_id: String,
     pub decision: GatingDecision,
@@ -1005,6 +1132,8 @@ pub struct GatingDecisionResult {
     pub reason: Option<String>,
     #[serde(default)]
     pub next_pending_id: Option<String>,
+    #[serde(default)]
+    pub next_pending_ref: Option<PendingRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1015,6 +1144,9 @@ pub struct GatingAuditEntry {
     pub action_id: String,
     #[serde(default)]
     pub pending_id: Option<String>,
+    /// Present exactly when `pending_id` is.
+    #[serde(default)]
+    pub pending_ref: Option<PendingRef>,
     pub actor_id: String,
     pub risk_tier: GatingRiskTier,
     pub outcome: GatingOutcome,
@@ -1024,14 +1156,92 @@ pub struct GatingAuditEntry {
 /// Versioned owner state for a trusted host's scoped persistence adapter.
 /// Exporting this value does not enable persistence by itself. Hosts must save
 /// atomically after mutations and restore before exposing their runtime.
+///
+/// The current version is 2. Deserializing a version 1 snapshot, which
+/// predates incarnations, migrates it to version 2 under a fresh incarnation,
+/// so no ref the old owner could have issued resolves against it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "GatingStateSnapshotRepr")]
 pub struct GatingStateSnapshot {
     pub version: u32,
+    pub incarnation: GatingIncarnation,
     /// The next owner sequence, including IDs no longer retained in the log.
     pub next_sequence: u64,
     /// In the owner's insertion order, including unattributed legacy records.
     pub pending: Vec<GatingPendingEntry>,
     pub audit: Vec<GatingAuditEntry>,
+}
+
+pub(crate) const GATING_SNAPSHOT_VERSION: u32 = 2;
+
+#[derive(Deserialize)]
+struct GatingStateSnapshotRepr {
+    version: u32,
+    #[serde(default)]
+    incarnation: Option<GatingIncarnation>,
+    next_sequence: u64,
+    pending: Vec<Value>,
+    audit: Vec<GatingAuditEntry>,
+}
+
+impl TryFrom<GatingStateSnapshotRepr> for GatingStateSnapshot {
+    type Error = String;
+
+    fn try_from(repr: GatingStateSnapshotRepr) -> Result<Self, Self::Error> {
+        let parse_pending = |values: Vec<Value>| {
+            values
+                .into_iter()
+                .map(serde_json::from_value::<GatingPendingEntry>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("invalid gating pending entry: {error}"))
+        };
+        match (repr.version, repr.incarnation) {
+            (1, None) => {
+                let incarnation = GatingIncarnation::fresh();
+                let migrated_ref = |pending_id: &str| PendingRef {
+                    incarnation,
+                    seq: pending_id
+                        .strip_prefix("gate-pending-")
+                        .and_then(|suffix| suffix.parse().ok())
+                        // Unparseable IDs keep an impossible ref, and restore
+                        // validation rejects them as invalid pending IDs.
+                        .unwrap_or(u64::MAX),
+                };
+                let mut pending = repr.pending;
+                for value in &mut pending {
+                    let Some(object) = value.as_object_mut() else {
+                        continue;
+                    };
+                    if let Some(pending_id) = object.get("pending_id").and_then(Value::as_str) {
+                        let pending_ref = migrated_ref(pending_id).to_string();
+                        object.insert("pending_ref".to_string(), Value::String(pending_ref));
+                    }
+                }
+                let mut audit = repr.audit;
+                for entry in &mut audit {
+                    entry.pending_ref = entry.pending_id.as_deref().map(migrated_ref);
+                }
+                Ok(Self {
+                    version: GATING_SNAPSHOT_VERSION,
+                    incarnation,
+                    next_sequence: repr.next_sequence,
+                    pending: parse_pending(pending)?,
+                    audit,
+                })
+            }
+            (1, Some(_)) => Err("version 1 gating snapshot cannot carry an incarnation".into()),
+            (version, Some(incarnation)) => Ok(Self {
+                version,
+                incarnation,
+                next_sequence: repr.next_sequence,
+                pending: parse_pending(repr.pending)?,
+                audit: repr.audit,
+            }),
+            (version, None) => Err(format!(
+                "gating snapshot version {version} requires an incarnation"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1064,10 +1274,12 @@ impl std::error::Error for GatingStateRestoreError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatingResolutionNotice {
     pub pending_id: String,
+    pub pending_ref: PendingRef,
     pub action_id: String,
     pub approved: bool,
     /// Set when an escalation minted a successor pending entry.
     pub next_pending_id: Option<String>,
+    pub next_pending_ref: Option<PendingRef>,
     /// `approval_decided`, `rejection_decided`, `escalation_decided`, or
     /// `timeout_fallback`.
     pub cause: String,
@@ -1099,17 +1311,53 @@ impl GatingResolutionObservers {
     }
 }
 
+/// Why a decision did not name a request that is pending in this owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StalePendingDecisionReason {
+    /// The request carried no canonical `pending_ref` (including a request
+    /// that carried only the legacy `pending_id`).
+    Malformed,
+    /// The ref names this owner but a request it never issued.
+    Unknown,
+    /// The ref was issued by a different owner, such as the runtime this one
+    /// replaced.
+    OtherIncarnation,
+    /// The request was issued here and is no longer pending: it was decided,
+    /// timed out, or evicted.
+    Resolved,
+}
+
+impl StalePendingDecisionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::Unknown => "unknown",
+            Self::OtherIncarnation => "other_incarnation",
+            Self::Resolved => "resolved",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatingDecideError {
-    UnknownPendingId(String),
+    /// The decision resolved nothing and notified no observer.
+    StalePendingDecision {
+        reason: StalePendingDecisionReason,
+    },
     SelfApprovalForbidden,
-    ApproverMismatch { expected: String, provided: String },
+    ApproverMismatch {
+        expected: String,
+        provided: String,
+    },
 }
 
 impl std::fmt::Display for GatingDecideError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownPendingId(id) => write!(f, "unknown pending id: {id}"),
+            Self::StalePendingDecision { reason } => {
+                write!(f, "stale pending decision: {}", reason.as_str())
+            }
             Self::SelfApprovalForbidden => write!(f, "self-approval is forbidden"),
             Self::ApproverMismatch { expected, provided } => {
                 write!(f, "approver mismatch: expected {expected}, got {provided}")
@@ -1179,9 +1427,11 @@ pub struct MobkitRuntimeHandle {
     delivery_idempotency: BTreeMap<String, DeliveryIdempotencyEntry>,
     delivery_idempotency_by_delivery: BTreeMap<String, Vec<String>>,
     delivery_rate_window_counts: BTreeMap<DeliveryRateWindowKey, u32>,
+    gating_incarnation: GatingIncarnation,
     gating_sequence: u64,
-    gating_pending: BTreeMap<String, GatingPendingEntry>,
-    gating_pending_order: Vec<String>,
+    /// Keyed by the pending ref's sequence; every entry has this incarnation.
+    gating_pending: BTreeMap<u64, GatingPendingEntry>,
+    gating_pending_order: Vec<u64>,
     gating_audit: Vec<GatingAuditEntry>,
     gating_resolution_observers: GatingResolutionObservers,
     memory_sequence: u64,

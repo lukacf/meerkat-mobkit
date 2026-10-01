@@ -751,16 +751,27 @@ class TestGatingEvaluateResult:
         assert r.risk_tier == "r1"
         assert r.outcome == "allowed"
         assert r.pending_id is None
+        assert r.pending_ref is None
 
 
 class TestGatingDecisionResult:
     def test_from_dict(self):
         r = GatingDecisionResult.from_dict(
-            {"pending_id": "p1", "action_id": "a1", "decision": "approve"}
+            {
+                "pending_id": "p1",
+                "pending_ref": "gpr1.0000000000000000000000000000000a.3",
+                "action_id": "a1",
+                "decision": "escalate",
+                "next_pending_id": "p2",
+                "next_pending_ref": "gpr1.0000000000000000000000000000000a.5",
+            }
         )
         assert r.pending_id == "p1"
+        assert r.pending_ref == "gpr1.0000000000000000000000000000000a.3"
+        assert r.next_pending_id == "p2"
+        assert r.next_pending_ref == "gpr1.0000000000000000000000000000000a.5"
         assert r.action_id == "a1"
-        assert r.decision == "approve"
+        assert r.decision == "escalate"
 
 
 class TestGatingAuditEntry:
@@ -790,6 +801,7 @@ class TestGatingPendingEntry:
         r = GatingPendingEntry.from_dict(
             {
                 "pending_id": "p1",
+                "pending_ref": "gpr1.0000000000000000000000000000000a.3",
                 "action_id": "a1",
                 "action": "deploy",
                 "actor_id": "bot-1",
@@ -798,6 +810,7 @@ class TestGatingPendingEntry:
             }
         )
         assert r.pending_id == "p1"
+        assert r.pending_ref == "gpr1.0000000000000000000000000000000a.3"
         assert r.action_id == "a1"
         assert r.action == "deploy"
         assert r.actor_id == "bot-1"

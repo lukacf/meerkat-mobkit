@@ -358,10 +358,10 @@ impl StewardStore for FakeJudgmentStore {
         Ok(())
     }
 
-    async fn pending_promotion_by_id(
+    async fn pending_promotion_by_ref(
         &self,
         _realm: &str,
-        _pending_id: &str,
+        _pending_ref: &meerkat_mobkit::PendingRef,
     ) -> Result<Option<PendingPromotion>, AgentMemoryError> {
         Ok(None)
     }
@@ -376,7 +376,7 @@ impl StewardStore for FakeJudgmentStore {
     async fn resolve_pending_promotion(
         &self,
         _realm: &str,
-        _pending_id: &str,
+        _pending_ref: &meerkat_mobkit::PendingRef,
         _status: &str,
     ) -> Result<(), AgentMemoryError> {
         Ok(())
@@ -385,8 +385,8 @@ impl StewardStore for FakeJudgmentStore {
     async fn rekey_pending_promotion(
         &self,
         _realm: &str,
-        _old_pending_id: &str,
-        _new_pending_id: &str,
+        _old_pending_ref: &meerkat_mobkit::PendingRef,
+        _new_pending_ref: &meerkat_mobkit::PendingRef,
     ) -> Result<(), AgentMemoryError> {
         Ok(())
     }

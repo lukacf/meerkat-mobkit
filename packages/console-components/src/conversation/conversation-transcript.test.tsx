@@ -182,7 +182,7 @@ describe("ConversationTranscript", () => {
       { id: "steer", kind: "message", variant: "plain", identity: { id: "operator", label: "You", role: "user" }, interactionId: "steer", text: "Include deployment" },
       { id: "continue", kind: "message", variant: "plain", identity: { id: "agent", label: "Agent", role: "assistant" }, interactionId: "original", text: "Deployment needs approval" },
     ];
-    const request = normalizePendingApproval({ pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", conversation_id: "review", interaction_id: "original" } })!;
+    const request = normalizePendingApproval({ pending_ref: "deployment", pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", conversation_id: "review", interaction_id: "original" } })!;
     const viewState = { conversationId: "review", entries, groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null };
     const view = render(<ConversationTranscript viewState={viewState} approvalIdentity="agent" approvalSnapshot={{ scopeKey: "scope", status: "ready", requests: [request], decisions: {}, readOnly: false }} onApprovalDecision={() => {}} />);
     expect(screen.getAllByTestId("gating-pending:deployment")).toHaveLength(1);
@@ -204,9 +204,9 @@ for (const [surface, project] of [["stock", projectStockApprovalInputs], ["share
     expect(entries).toHaveLength(1);
     expect(entries.every(entry => entry.identity.role === "user")).toBe(true);
     const requests = [
-      normalizePendingApproval({ pending_id: "exact", action: "Review release", origin: { identity: "reviewer", interaction_id: currentId } })!,
-      normalizePendingApproval({ pending_id: "foreign-interaction", action: "Unseen review", origin: { identity: "reviewer", interaction_id: missingId } })!,
-      normalizePendingApproval({ pending_id: "foreign-agent", action: "Other agent review", origin: { identity: "other-agent", interaction_id: currentId } })!,
+      normalizePendingApproval({ pending_ref: "exact", pending_id: "exact", action: "Review release", origin: { identity: "reviewer", interaction_id: currentId } })!,
+      normalizePendingApproval({ pending_ref: "foreign-interaction", pending_id: "foreign-interaction", action: "Unseen review", origin: { identity: "reviewer", interaction_id: missingId } })!,
+      normalizePendingApproval({ pending_ref: "foreign-agent", pending_id: "foreign-agent", action: "Other agent review", origin: { identity: "other-agent", interaction_id: currentId } })!,
     ];
     render(<ConversationTranscript
       viewState={{ conversationId: "reviewer", entries, groups: groupConversationTimelineEntries(entries), turnDiff: null, emptyState: null }}

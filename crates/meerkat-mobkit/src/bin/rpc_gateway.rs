@@ -14512,7 +14512,7 @@ impl meerkat_mobkit::MemoryGatingBridge for GatewayMemoryGatingBridge {
         description: &str,
         entity: &str,
         topic: &str,
-    ) -> Result<String, String> {
+    ) -> Result<meerkat_mobkit::PendingRef, String> {
         let Some(runtime) = self.runtime.get() else {
             return Err("runtime not yet bound".to_string());
         };
@@ -14532,7 +14532,7 @@ impl meerkat_mobkit::MemoryGatingBridge for GatewayMemoryGatingBridge {
                 topic: Some(topic.to_string()),
             })
             .await;
-        result.pending_id.ok_or_else(|| {
+        result.pending_ref.ok_or_else(|| {
             format!(
                 "gating evaluation returned outcome {:?} without a pending entry{}",
                 result.outcome,

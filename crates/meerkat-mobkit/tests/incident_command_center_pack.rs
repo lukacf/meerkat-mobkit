@@ -619,7 +619,7 @@ async fn incident_pack_gating_approval_notification_fires_from_async_context() {
                     "id": "incident-pack-gating-decide",
                     "method": "mobkit/gating/decide",
                     "params": {
-                        "pending_id": seeded["pending_id"],
+                        "pending_ref": seeded["pending_ref"],
                         // The seeded pending pins its approver; a mismatched
                         // principal is refused.
                         "approver_id": seeded["requested_approver"]

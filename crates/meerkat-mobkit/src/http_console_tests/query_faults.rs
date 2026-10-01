@@ -296,7 +296,7 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
             .build(),
     )
     .await?;
-    let mut pending_ids = Vec::new();
+    let mut pending_refs = Vec::new();
     for (conversation_id, interaction_id) in [
         (None, Some("private-turn".to_string())),
         (Some(" ".to_string()), Some("private-turn".to_string())),
@@ -326,7 +326,12 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
                 }),
             )
             .await;
-        pending_ids.push(created.pending_id.expect("owner creates pending approval"));
+        pending_refs.push(
+            created
+                .pending_ref
+                .expect("owner creates pending approval")
+                .to_string(),
+        );
     }
     let app = runtime.build_console_json_router(RuntimeDecisionState::local_console(
         crate::ConsolePolicy {
@@ -340,10 +345,14 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
         "mobkit/gating/audit",
         "mobkit/gating/decide",
     ] {
-        for id in pending_ids
-            .iter()
-            .flat_map(|pending_id| [pending_id.clone(), format!("  {pending_id}\t")])
-        {
+        // Refs are opaque and exact: a padded ref is not a ref, so it is
+        // refused as stale before authorization is consulted.
+        for (pending_ref, decide_refusal) in pending_refs.iter().flat_map(|pending_ref| {
+            [
+                (pending_ref.clone(), "access_denied"),
+                (format!("  {pending_ref}\t"), "stale_pending_decision"),
+            ]
+        }) {
             let response = app
                 .clone()
                 .oneshot(
@@ -353,7 +362,7 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
                         .header("content-type", "application/json")
                         .body(Body::from(
                             json!({ "jsonrpc":"2.0", "id":1, "method":method,
-                    "params": {"pending_id":id, "approver_id":"operator", "decision":"approve"} })
+                    "params": {"pending_ref":pending_ref, "approver_id":"operator", "decision":"approve"} })
                             .to_string(),
                         ))?,
                 )
@@ -361,7 +370,7 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
             let bytes = axum::body::to_bytes(response.into_body(), 32_768).await?;
             let body: Value = serde_json::from_slice(&bytes)?;
             if method.ends_with("/decide") {
-                assert_eq!(body["error"]["data"]["kind"], "access_denied", "{body}");
+                assert_eq!(body["error"]["data"]["kind"], decide_refusal, "{body}");
             } else {
                 assert!(body["error"].is_null(), "{body}");
                 assert!(
@@ -372,7 +381,7 @@ async fn approval_origin_access_cannot_be_bypassed_by_whitespace_ids()
             }
             assert_eq!(
                 runtime.list_gating_pending().await.len(),
-                pending_ids.len(),
+                pending_refs.len(),
                 "rejected route cannot mutate owner"
             );
         }

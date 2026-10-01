@@ -2449,9 +2449,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       load: async signal => (await consoleController.commands.execute({
         command: CONSOLE_COMMAND_NAMES.listGatingPending, target, signal,
       })).result,
-      decide: async (pendingId, decision, signal) => (await consoleController.commands.execute({
+      decide: async (pendingRef, decision, signal) => (await consoleController.commands.execute({
         command: CONSOLE_COMMAND_NAMES.decideGating, target, signal,
-        params: { pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` },
+        params: { pending_ref: pendingRef, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` },
       })).result,
     });
     approvalResourceRef.current = resource;
@@ -2466,8 +2466,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // Scope changes hide the previous principal's snapshot before effects run.
   const activeApprovals = approvalSnapshot?.owner === consoleController && approvalSnapshot.snapshot.scopeKey === approvalScope
     ? approvalSnapshot.snapshot : undefined;
-  function openApproval(pendingId?: string) {
-    setSelectedApprovalId(pendingId);
+  function openApproval(pendingRef?: string) {
+    setSelectedApprovalId(pendingRef);
     dock.openTarget(buildControlTarget("gating"), "replace_focused");
   }
   const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
@@ -3986,10 +3986,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   }
 
   async function onGatingDecision(
-    pendingId: string,
+    pendingRef: string,
     decision: "approve" | "reject" | "escalate",
   ) {
-    await approvalResourceRef.current?.decide(pendingId, decision);
+    await approvalResourceRef.current?.decide(pendingRef, decision);
     if (dock.viewState.panels.some(panel => panel.target?.kind === "gating" || panel.target?.kind === "gates")) {
       await refreshPanelData().catch(() => {});
     }
@@ -4945,7 +4945,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         <GatingInboxPanel
           pending={activeApprovals?.requests.map(request => request.raw) || []}
           resource={activeApprovals}
-          selectedPendingId={selectedApprovalId}
+          selectedPendingRef={selectedApprovalId}
           onRefresh={() => void approvalResourceRef.current?.refresh()}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
@@ -4997,7 +4997,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         <GatingInboxPanel
           pending={activeApprovals?.requests.map(request => request.raw) || []}
           resource={activeApprovals}
-          selectedPendingId={selectedApprovalId}
+          selectedPendingRef={selectedApprovalId}
           onRefresh={() => void approvalResourceRef.current?.refresh()}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}

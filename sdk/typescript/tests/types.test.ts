@@ -882,7 +882,9 @@ describe("parseGatingEvaluateResult", () => {
       risk_tier: "high",
       outcome: "approved",
       pending_id: "pend-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.3",
     });
+    assert.equal(result.pendingRef, "gpr1.0000000000000000000000000000000a.3");
     assert.equal(result.actionId, "act-1");
     assert.equal(result.action, "delete_user");
     assert.equal(result.actorId, "actor-1");
@@ -900,6 +902,7 @@ describe("parseGatingEvaluateResult", () => {
     });
     assert.equal(result.riskTier, null);
     assert.equal(result.pendingId, null);
+    assert.equal(result.pendingRef, null);
   });
 
   it("defaults missing fields", () => {
@@ -921,17 +924,25 @@ describe("parseGatingDecisionResult", () => {
   it("parses valid wire-format object", () => {
     const result = parseGatingDecisionResult({
       pending_id: "pend-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.3",
       action_id: "act-1",
-      decision: "approved",
+      decision: "escalate",
+      next_pending_id: "pend-2",
+      next_pending_ref: "gpr1.0000000000000000000000000000000a.5",
     });
     assert.equal(result.pendingId, "pend-1");
+    assert.equal(result.pendingRef, "gpr1.0000000000000000000000000000000a.3");
+    assert.equal(result.nextPendingId, "pend-2");
+    assert.equal(result.nextPendingRef, "gpr1.0000000000000000000000000000000a.5");
     assert.equal(result.actionId, "act-1");
-    assert.equal(result.decision, "approved");
+    assert.equal(result.decision, "escalate");
   });
 
   it("defaults missing fields", () => {
     const result = parseGatingDecisionResult({});
     assert.equal(result.pendingId, "");
+    assert.equal(result.pendingRef, "");
+    assert.equal(result.nextPendingRef, null);
     assert.equal(result.actionId, "");
     assert.equal(result.decision, "");
   });
@@ -993,6 +1004,7 @@ describe("parseGatingPendingEntry", () => {
   it("parses valid wire-format object", () => {
     const result = parseGatingPendingEntry({
       pending_id: "pend-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.3",
       action_id: "act-1",
       action: "transfer_funds",
       actor_id: "actor-1",
@@ -1000,6 +1012,7 @@ describe("parseGatingPendingEntry", () => {
       created_at_ms: 1700000000000,
     });
     assert.equal(result.pendingId, "pend-1");
+    assert.equal(result.pendingRef, "gpr1.0000000000000000000000000000000a.3");
     assert.equal(result.actionId, "act-1");
     assert.equal(result.action, "transfer_funds");
     assert.equal(result.actorId, "actor-1");

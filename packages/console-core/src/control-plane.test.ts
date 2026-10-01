@@ -313,13 +313,13 @@ test("normalize inspect views and typed console errors", () => {
 test("normalize gating and routing payloads for the shared control-plane contract", () => {
   assert.deepEqual(
     normalizeGatingActionRequest({
-      pending_id: " pending-1 ",
+      pending_ref: "gpr1.0000000000000000000000000000000a.1",
       approver_id: " luka ",
       decision: "escalate",
       reason: " needs higher approval ",
     }),
     {
-      pending_id: "pending-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.1",
       approver_id: "luka",
       decision: "escalate",
       reason: "needs higher approval",
@@ -329,22 +329,31 @@ test("normalize gating and routing payloads for the shared control-plane contrac
   assert.deepEqual(
     normalizeGatingActionResult({
       pending_id: "pending-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.1",
       action_id: "action-1",
       approver_id: "luka",
       decision: "escalate",
       outcome: "pending_approval",
       decided_at_ms: 1717171717,
       next_pending_id: " pending-2 ",
+      next_pending_ref: "gpr1.0000000000000000000000000000000a.4",
     }),
     {
       pending_id: "pending-1",
+      pending_ref: "gpr1.0000000000000000000000000000000a.1",
       action_id: "action-1",
       approver_id: "luka",
       decision: "escalate",
       outcome: "pending_approval",
       decided_at_ms: 1717171717,
       next_pending_id: "pending-2",
+      next_pending_ref: "gpr1.0000000000000000000000000000000a.4",
     },
+  );
+  // A legacy request that names only the display ID is not a decision.
+  assert.equal(
+    normalizeGatingActionRequest({ pending_id: "pending-1", approver_id: "luka", decision: "approve" }),
+    null,
   );
 
   assert.deepEqual(

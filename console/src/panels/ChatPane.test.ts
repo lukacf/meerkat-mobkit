@@ -893,7 +893,7 @@ test("stock chat renders one approval for a run continued after a user steer", (
     { ...message({ id: "steer", role: "user", createdAt: "2026-09-26T05:00:02Z", text: "Include deployment" }), interactionId: "steer" },
     { ...message({ id: "continue", role: "assistant", createdAt: "2026-09-26T05:00:03Z", text: "Deployment needs approval" }), interactionId: "original" },
   ];
-  const request = normalizePendingApproval({ pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", interaction_id: "original" } })!;
+  const request = normalizePendingApproval({ pending_ref: "deployment", pending_id: "deployment", action: "Deploy reviewed change", action_id: "deploy", origin: { identity: "agent", interaction_id: "original" } })!;
   const html = renderChat({ entries, phase: null, approvalSnapshot: { scopeKey: "scope", status: "ready", requests: [request], decisions: {}, readOnly: false } });
   assert.equal((html.match(/data-testid="gating-pending:deployment"/g) || []).length, 1);
   const turnStart = html.indexOf('data-testid="chat-turn:agent:1"');

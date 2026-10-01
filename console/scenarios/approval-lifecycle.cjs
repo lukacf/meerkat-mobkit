@@ -23,14 +23,17 @@ async function audit(fixture) {
   return response.body.result.entries;
 }
 const decide = (fixture, id, decision = "approve", approver = "fixture-operator") => rpc(fixture.baseUrl, "mobkit/gating/decide", {
-  pending_id: id, approver_id: approver, decision, reason: "Reviewed the complete owner request",
+  pending_ref: id, approver_id: approver, decision, reason: "Reviewed the complete owner request",
 });
 function accessDenied(response) {
   assert.equal(response.body.error?.code, -32030, JSON.stringify(response));
 }
+function staleDecision(response, reason) {
+  assert.deepEqual(response.body.error?.data, { kind: "stale_pending_decision", reason }, JSON.stringify(response));
+}
 function decisionResult(response, id, decision) {
   const result = response.body.result;
-  assert.equal(result?.pending_id, id, JSON.stringify(response));
+  assert.equal(result?.pending_ref, id, JSON.stringify(response));
   assert.equal(result.decision, decision);
   assert.equal(result.outcome, decision === "approve" ? "allowed" : decision === "reject" ? "safe_draft" : "pending_approval");
   return result;
@@ -38,7 +41,7 @@ function decisionResult(response, id, decision) {
 function decisions(fixture, id) {
   return fixture.observations.filter(item => {
     if (item.method !== "POST" || !item.request) return false;
-    try { const value = JSON.parse(item.request); return value.method === "mobkit/gating/decide" && value.params?.pending_id === id; }
+    try { const value = JSON.parse(item.request); return value.method === "mobkit/gating/decide" && value.params?.pending_ref === id; }
     catch { return false; }
   });
 }
@@ -87,22 +90,22 @@ async function ownerRestart() {
   try {
     const origin = { identity: "router:main", interaction_id: "review-interaction", conversation_id: "release-review" };
     const created = await fixture.control("approval", { ...origin, action: "Publish the reviewed workgraph report" });
-    assert(created.pending_id, JSON.stringify(created));
+    assert(created.pending_ref, JSON.stringify(created));
     const first = await rpc(fixture.baseUrl, "mobkit/gating/pending");
     assert.deepEqual(first.body.result.pending[0].origin, origin);
     await fixture.close(); fixture = await startFixture({ stateDir });
     const restored = await rpc(fixture.baseUrl, "mobkit/gating/pending");
     assert.deepEqual(restored.body.result.pending[0], first.body.result.pending[0]);
     const escalated = await rpc(fixture.baseUrl, "mobkit/gating/decide", {
-      pending_id: created.pending_id, approver_id: "fixture-operator", decision: "escalate", reason: "Second reviewer required",
+      pending_ref: created.pending_ref, approver_id: "fixture-operator", decision: "escalate", reason: "Second reviewer required",
     });
-    assert(escalated.body.result.next_pending_id, JSON.stringify(escalated.body));
+    assert(escalated.body.result.next_pending_ref, JSON.stringify(escalated.body));
     await fixture.close(); fixture = await startFixture({ stateDir });
     const successor = (await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending[0];
-    assert.equal(successor.pending_id, escalated.body.result.next_pending_id);
+    assert.equal(successor.pending_ref, escalated.body.result.next_pending_ref);
     assert.deepEqual(successor.origin, origin);
     const decided = await rpc(fixture.baseUrl, "mobkit/gating/decide", {
-      pending_id: successor.pending_id, approver_id: "fixture-operator", decision: "approve", reason: "Reviewed complete request",
+      pending_ref: successor.pending_ref, approver_id: "fixture-operator", decision: "approve", reason: "Reviewed complete request",
     });
     assert.equal(decided.body.result.outcome, "allowed", JSON.stringify(decided.body));
     await fixture.close(); fixture = await startFixture({ stateDir });
@@ -110,8 +113,8 @@ async function ownerRestart() {
     const audit = (await rpc(fixture.baseUrl, "mobkit/gating/audit", { limit: 100 })).body.result.entries;
     assert(audit.some(item => item.detail?.origin?.interaction_id === origin.interaction_id));
     const next = await fixture.control("approval", { ...origin, action: "Review next report" });
-    assert.notEqual(next.pending_id, successor.pending_id);
-    assert.notEqual(next.pending_id, created.pending_id);
+    assert.notEqual(next.pending_ref, successor.pending_ref);
+    assert.notEqual(next.pending_ref, created.pending_ref);
     await fs.mkdir(evidence, { recursive: true });
     await fs.writeFile(path.join(evidence, "approval-owner-restart.json"), JSON.stringify({ origin, created, successor, audit, next }, null, 2));
   } finally { await fixture.close(); await fs.rm(stateDir, { recursive: true, force: true }); }
@@ -136,26 +139,26 @@ async function lateApprovalGeometry(host) {
     result.geometry = await geometry.measureAnchor(viewport, anchor, async () => {
       result.created = await fixture.control("approval", { identity: "router:main", interaction_id: result.turns[1].accepted.interaction_id,
         action: "Approve the earlier dependency review before publishing", timeout_ms: 300000 });
-      assert(result.created.pending_id);
-      const owner = (await pending(fixture)).find(item => item.pending_id === result.created.pending_id);
+      assert(result.created.pending_ref);
+      const owner = (await pending(fixture)).find(item => item.pending_ref === result.created.pending_ref);
       assert.equal(owner.origin.interaction_id, result.turns[1].accepted.interaction_id);
       result.owner = owner;
       // Let the actual subscribed resource discover the owner request while the inbox stays closed.
-      await viewport.getByTestId(`gating-pending:${result.created.pending_id}`).waitFor({ state: "attached", timeout: 25_000 });
+      await viewport.getByTestId(`gating-pending:${result.created.pending_ref}`).waitFor({ state: "attached", timeout: 25_000 });
       await geometry.settle(page);
       const relative = await viewport.evaluate((node, id) => {
         const card = node.querySelector(`[data-testid="gating-pending:${id}"]`);
         return { bottom: card.getBoundingClientRect().bottom - node.getBoundingClientRect().top, height: card.getBoundingClientRect().height, scrollHeight: node.scrollHeight };
-      }, result.created.pending_id);
+      }, result.created.pending_ref);
       assert(relative.height > 100, "real inline approval occupies layout space");
       assert(relative.bottom < 0, "late correlated approval is inserted above the retained reading viewport");
       assert(relative.scrollHeight > beforeHeight + 100, "late card grows the real transcript above the reader");
       result.card = relative;
     }, `${host} late correlated approval preserves reading position`);
     await capture(page, `${host}-late-approval-reading-1600`);
-    assert.equal(decisions(fixture, result.created.pending_id).length, 0, "merely receiving a late approval never decides it");
+    assert.equal(decisions(fixture, result.created.pending_ref).length, 0, "merely receiving a late approval never decides it");
     // Explicit navigation is allowed to move the reader so the actual card can be inspected.
-    const card = viewport.getByTestId(`gating-pending:${result.created.pending_id}`);
+    const card = viewport.getByTestId(`gating-pending:${result.created.pending_ref}`);
     await card.scrollIntoViewIfNeeded(); await geometry.settle(page);
     await card.getByRole("button", { name: "Approve", exact: true }).waitFor();
     await capture(page, `${host}-late-approval-review-1600`);
@@ -173,13 +176,13 @@ async function composedApproval(host) {
   await withBrowser(`real-${host}-approvals`, async ({ fixture, page }) => {
     const accepted = await openConversation(page, fixture, host);
     const created = await fixture.control("approval", { identity: "router:main", interaction_id: accepted.interaction_id, action: "Publish the reviewed workgraph report" });
-    assert(created.pending_id, JSON.stringify(created));
+    assert(created.pending_ref, JSON.stringify(created));
     // The resource must discover this while the inbox is closed.
-    await page.getByTestId(`gating-pending:${created.pending_id}`).first().waitFor({ timeout: 25_000 });
+    await page.getByTestId(`gating-pending:${created.pending_ref}`).first().waitFor({ timeout: 25_000 });
     if (host === "shared") {
       await page.getByRole("button", { name: "Toggle second pane" }).click();
       await page.getByRole("button", { name: /^Needs you/ }).click();
-      assert.equal(await page.getByTestId(`gating-pending:${created.pending_id}`).count(), 3, "two panes and one inbox share the same request");
+      assert.equal(await page.getByTestId(`gating-pending:${created.pending_ref}`).count(), 3, "two panes and one inbox share the same request");
     } else {
       await page.getByTestId("approval-attention").getByRole("button", { name: /^Needs you/ }).click();
       await page.getByRole("heading", { name: /gating|approval/i }).first().waitFor();
@@ -191,17 +194,17 @@ async function composedApproval(host) {
       assert(panes.every(height => height >= 400), "approval inbox preserves usable split transcript space");
     }
     await capture(page, `${host}-approval-review-1440`);
-    const before = decisions(fixture, created.pending_id).length;
-    await page.getByTestId(`gating-action:${created.pending_id}:approve`).first().click();
+    const before = decisions(fixture, created.pending_ref).length;
+    await page.getByTestId(`gating-action:${created.pending_ref}:approve`).first().click();
     await eventually(async () => (await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length === 0, "owner approval resolution");
-    await eventually(async () => await page.getByTestId(`gating-action:${created.pending_id}:approve`).count() === 0, "all approval copies settle");
+    await eventually(async () => await page.getByTestId(`gating-action:${created.pending_ref}:approve`).count() === 0, "all approval copies settle");
     await navigation(page, "explicit approval host reload", async () => {
       const response = await page.reload();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
       return response;
     });
     assert.equal((await rpc(fixture.baseUrl, "mobkit/gating/pending")).body.result.pending.length, 0);
-    assert.equal(decisions(fixture, created.pending_id).length, before + 1, "one UI decision dispatch settles all copies");
+    assert.equal(decisions(fixture, created.pending_ref).length, before + 1, "one UI decision dispatch settles all copies");
     await capture(page, `${host}-approval-settled`);
   });
 }
@@ -248,26 +251,28 @@ async function accessMatrix() {
 
     await fixture.control("access", { mode: "read-only" });
     assert.equal((await pending(fixture)).length, 3, "read-only operators retain pending visibility");
-    accessDenied(await decide(fixture, publicRequest.pending_id));
+    accessDenied(await decide(fixture, publicRequest.pending_ref));
     assert.equal((await pending(fixture)).length, 3, "denied decisions do not consume pending owner entries");
 
     await fixture.control("access", { mode: "denied" });
     accessDenied(await rpc(fixture.baseUrl, "mobkit/gating/pending"));
     accessDenied(await rpc(fixture.baseUrl, "mobkit/gating/audit", { limit: 100 }));
-    accessDenied(await decide(fixture, publicRequest.pending_id));
+    accessDenied(await decide(fixture, publicRequest.pending_ref));
 
     await fixture.control("access", { mode: "hide-origin" });
     const visible = await pending(fixture);
-    assert.deepEqual(visible.map(item => item.pending_id).sort(), [publicRequest.pending_id, originless.pending_id].sort());
+    assert.deepEqual(visible.map(item => item.pending_ref).sort(), [publicRequest.pending_ref, originless.pending_ref].sort());
     const visibleAudit = await audit(fixture);
-    assert(!visibleAudit.some(item => item.pending_id === privateRequest.pending_id || item.detail?.origin?.identity === "domain:delivery"));
-    for (const id of [privateRequest.pending_id, ` ${privateRequest.pending_id} `]) accessDenied(await decide(fixture, id));
+    assert(!visibleAudit.some(item => item.pending_ref === privateRequest.pending_ref || item.detail?.origin?.identity === "domain:delivery"));
+    accessDenied(await decide(fixture, privateRequest.pending_ref));
+    // Refs are opaque and exact: a padded ref is not a ref at all.
+    staleDecision(await decide(fixture, ` ${privateRequest.pending_ref} `), "malformed");
 
     await fixture.control("access", { mode: "open" });
     assert.equal((await pending(fixture)).length, 3, "access filtering never deletes the hidden request");
-    decisionResult(await decide(fixture, publicRequest.pending_id), publicRequest.pending_id, "approve");
-    decisionResult(await decide(fixture, privateRequest.pending_id, "reject"), privateRequest.pending_id, "reject");
-    decisionResult(await decide(fixture, originless.pending_id, "reject"), originless.pending_id, "reject");
+    decisionResult(await decide(fixture, publicRequest.pending_ref), publicRequest.pending_ref, "approve");
+    decisionResult(await decide(fixture, privateRequest.pending_ref, "reject"), privateRequest.pending_ref, "reject");
+    decisionResult(await decide(fixture, originless.pending_ref, "reject"), originless.pending_ref, "reject");
     assert.deepEqual(await pending(fixture), []);
   });
 }
@@ -277,27 +282,32 @@ async function ownerEdges() {
     const origin = { identity: "router:main", interaction_id: "owner-edges", conversation_id: "release-review" };
     const created = await fixture.control("approval", { ...origin, action: "Escalate the full review" });
     const original = (await pending(fixture))[0];
-    const escalated = decisionResult(await decide(fixture, created.pending_id, "escalate"), created.pending_id, "escalate");
-    assert(escalated.next_pending_id && escalated.next_pending_id !== created.pending_id);
+    const escalated = decisionResult(await decide(fixture, created.pending_ref, "escalate"), created.pending_ref, "escalate");
+    assert(escalated.next_pending_ref && escalated.next_pending_ref !== created.pending_ref);
     const successor = (await pending(fixture))[0];
-    assert.equal(successor.pending_id, escalated.next_pending_id);
+    assert.equal(successor.pending_ref, escalated.next_pending_ref);
     assert.equal(successor.action_id, original.action_id);
     assert.equal(successor.deadline_at_ms, original.deadline_at_ms, "escalation does not extend owner expiry");
     assert.deepEqual(successor.origin, origin);
-    assert((await decide(fixture, created.pending_id)).body.error, "the predecessor cannot be decided twice");
+    staleDecision(await decide(fixture, created.pending_ref), "resolved");
+    // A legacy decision naming only the display ID is refused, typed, and decides nothing.
+    staleDecision(await rpc(fixture.baseUrl, "mobkit/gating/decide", {
+      pending_id: successor.pending_id, approver_id: "fixture-operator", decision: "approve", reason: "legacy client",
+    }), "malformed");
+    assert.equal((await pending(fixture)).length, 1, "a refused legacy decision leaves the successor pending");
 
-    const competitors = await Promise.all([decide(fixture, successor.pending_id, "approve", "reviewer-a"), decide(fixture, successor.pending_id, "reject", "reviewer-b")]);
+    const competitors = await Promise.all([decide(fixture, successor.pending_ref, "approve", "reviewer-a"), decide(fixture, successor.pending_ref, "reject", "reviewer-b")]);
     assert.equal(competitors.filter(result => result.body.result).length, 1, "exactly one competing decision wins");
     assert.equal(competitors.filter(result => result.body.error).length, 1);
     assert.deepEqual(await pending(fixture), []);
     const settledAudit = await audit(fixture);
-    assert.equal(settledAudit.filter(item => item.pending_id === successor.pending_id && ["approval_decided", "rejection_decided"].includes(item.event_type)).length, 1);
+    assert.equal(settledAudit.filter(item => item.pending_ref === successor.pending_ref && ["approval_decided", "rejection_decided"].includes(item.event_type)).length, 1);
 
     const expiring = await fixture.control("approval", { ...origin, timeout_ms: 1000, action: "Review before the owner deadline" });
-    assert((await pending(fixture)).some(item => item.pending_id === expiring.pending_id));
-    await eventually(async () => !(await pending(fixture)).some(item => item.pending_id === expiring.pending_id), "owner expiry", 5000);
-    assert((await decide(fixture, expiring.pending_id)).body.error, "expired request cannot be approved");
-    const expiry = (await audit(fixture)).filter(item => item.pending_id === expiring.pending_id && item.event_type === "timeout_fallback");
+    assert((await pending(fixture)).some(item => item.pending_ref === expiring.pending_ref));
+    await eventually(async () => !(await pending(fixture)).some(item => item.pending_ref === expiring.pending_ref), "owner expiry", 5000);
+    staleDecision(await decide(fixture, expiring.pending_ref), "resolved");
+    const expiry = (await audit(fixture)).filter(item => item.pending_ref === expiring.pending_ref && item.event_type === "timeout_fallback");
     assert.equal(expiry.length, 1);
     assert.equal(expiry[0].outcome, "safe_draft");
     assert.deepEqual(expiry[0].detail.origin, origin);
@@ -309,18 +319,18 @@ async function accessRevocation(host) {
     const accepted = await openConversation(page, fixture, host);
     const created = await fixture.control("approval", { identity: "router:main", interaction_id: accepted.interaction_id, action: "Review access-sensitive publication" });
     await refreshApprovals(page, host);
-    await page.getByTestId(`gating-pending:${created.pending_id}`).first().waitFor();
+    await page.getByTestId(`gating-pending:${created.pending_ref}`).first().waitFor();
     if (host === "shared") {
       await page.getByRole("button", { name: "Toggle second pane" }).click();
-      assert.equal(await page.getByTestId(`gating-pending:${created.pending_id}`).count(), 3);
+      assert.equal(await page.getByTestId(`gating-pending:${created.pending_ref}`).count(), 3);
     }
     await capture(page, `${host}-approval-before-revocation`);
     await fixture.control("access", { mode: "denied" });
     await refreshApprovals(page, host);
-    await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_id}`).count() === 0, "revoked content clears from every copy");
+    await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_ref}`).count() === 0, "revoked content clears from every copy");
     await eventually(async () => await page.getByTestId("approval-attention").count() === 0,
       "permanently denied approvals do not leave a global Needs you control");
-    assert.equal(decisions(fixture, created.pending_id).length, 0, "read revocation never submits a decision");
+    assert.equal(decisions(fixture, created.pending_ref).length, 0, "read revocation never submits a decision");
     if (host === "stock") {
       // The fixture removes gating from advertised capabilities before dispatch.
       // The explicit inbox must explain that state after Needs you disappears.
@@ -337,7 +347,7 @@ async function accessRevocation(host) {
     }
     await capture(page, `${host}-approval-access-revoked`);
     await fixture.control("access", { mode: "open" });
-    assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
+    assert((await pending(fixture)).some(item => item.pending_ref === created.pending_ref));
     await navigation(page, "explicit approval host reload", async () => {
       const response = await page.reload();
       await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
@@ -345,7 +355,7 @@ async function accessRevocation(host) {
     });
     if (host === "stock") await refreshApprovals(page, host);
     else await page.getByRole("button", { name: /^Needs you/ }).click();
-    await page.getByTestId(`gating-pending:${created.pending_id}`).first().waitFor();
+    await page.getByTestId(`gating-pending:${created.pending_ref}`).first().waitFor();
   });
 }
 
@@ -355,18 +365,18 @@ async function readOnlyApproval() {
     const created = await fixture.control("approval", { identity: "router:main", interaction_id: accepted.interaction_id, action: "Read this complete approval request" });
     await fixture.control("access", { mode: "read-only" });
     await refreshApprovals(page, "stock");
-    const card = page.getByTestId(`gating-pending:${created.pending_id}`).first();
+    const card = page.getByTestId(`gating-pending:${created.pending_ref}`).first();
     await card.waitFor();
     const button = card.getByRole("button", { name: "Approve", exact: true });
     // Discovery advertises available methods. The command gateway must refuse
     // locally and convert the visible resource to read-only before any write.
     if (await button.isEnabled()) await button.click();
     await eventually(async () => {
-      const copies = page.getByTestId(`gating-action:${created.pending_id}:approve`);
+      const copies = page.getByTestId(`gating-action:${created.pending_ref}:approve`);
       return await copies.count() > 0 && (await copies.evaluateAll(nodes => nodes.every(node => node.disabled)));
     }, "read-only approval controls");
-    assert.equal(decisions(fixture, created.pending_id).length, 0, "unsupported decision capability stops before dispatch");
-    assert((await pending(fixture)).some(item => item.pending_id === created.pending_id));
+    assert.equal(decisions(fixture, created.pending_ref).length, 0, "unsupported decision capability stops before dispatch");
+    assert((await pending(fixture)).some(item => item.pending_ref === created.pending_ref));
     await card.getByRole("status").filter({ hasText: /^Decision unavailable$/ }).waitFor();
     assert.equal(await card.getAttribute("data-state"), "unavailable");
     assert.equal(await page.getByText("Decision unconfirmed", { exact: true }).count(), 0,
@@ -378,7 +388,7 @@ async function readOnlyApproval() {
     await page.getByTestId("theme-toggle").click();
     assert.equal(await page.getByTestId("meerkat-console").getAttribute("data-cc-theme"), "dark");
     await capture(page, "stock-approval-read-only-dark-1440");
-    assert.equal(decisions(fixture, created.pending_id).length, 0, "inspecting the refused request never sends a decision");
+    assert.equal(decisions(fixture, created.pending_ref).length, 0, "inspecting the refused request never sends a decision");
   });
 }
 
@@ -391,11 +401,11 @@ async function hiddenOriginAndCorrelation() {
     const globalRequest = await fixture.control("approval", { action: "Unattributed global owner review" });
     await page.getByRole("button", { name: "Toggle second pane" }).click();
     await refreshApprovals(page, "shared");
-    await eventually(async () => await page.getByTestId(`gating-pending:${matching.pending_id}`).count() === 3, "matching approval appears in both panes and inbox");
+    await eventually(async () => await page.getByTestId(`gating-pending:${matching.pending_ref}`).count() === 3, "matching approval appears in both panes and inbox");
     for (const request of [otherTurn, privateRequest, globalRequest]) {
-      assert.equal(await page.getByTestId(`gating-pending:${request.pending_id}`).count(), 1, "uncorrelated requests are inbox-only");
-      assert.equal(await page.getByTestId("shared-pane-0").getByTestId(`gating-pending:${request.pending_id}`).count(), 0);
-      assert.equal(await page.getByTestId("shared-pane-1").getByTestId(`gating-pending:${request.pending_id}`).count(), 0);
+      assert.equal(await page.getByTestId(`gating-pending:${request.pending_ref}`).count(), 1, "uncorrelated requests are inbox-only");
+      assert.equal(await page.getByTestId("shared-pane-0").getByTestId(`gating-pending:${request.pending_ref}`).count(), 0);
+      assert.equal(await page.getByTestId("shared-pane-1").getByTestId(`gating-pending:${request.pending_ref}`).count(), 0);
     }
     await capture(page, "shared-approval-origin-correlation");
     const geometry = await page.evaluate(() => ({
@@ -410,12 +420,12 @@ async function hiddenOriginAndCorrelation() {
     // Open the inbox again after its refresh toggle so hidden-origin absence
     // is tested while the containing view remains visible.
     await refreshApprovals(page, "shared");
-    await eventually(async () => await page.getByTestId(`gating-pending:${privateRequest.pending_id}`).count() === 0, "hidden-origin request clears from inbox");
-    await eventually(async () => await page.getByTestId(`gating-pending:${matching.pending_id}`).count() === 3, "authorized matching request remains visible");
-    assert.equal(await page.getByTestId(`gating-pending:${otherTurn.pending_id}`).count(), 1);
-    assert.equal(await page.getByTestId(`gating-pending:${globalRequest.pending_id}`).count(), 1);
+    await eventually(async () => await page.getByTestId(`gating-pending:${privateRequest.pending_ref}`).count() === 0, "hidden-origin request clears from inbox");
+    await eventually(async () => await page.getByTestId(`gating-pending:${matching.pending_ref}`).count() === 3, "authorized matching request remains visible");
+    assert.equal(await page.getByTestId(`gating-pending:${otherTurn.pending_ref}`).count(), 1);
+    assert.equal(await page.getByTestId(`gating-pending:${globalRequest.pending_ref}`).count(), 1);
     assert(!(await page.locator("body").innerText()).includes("Private delivery review details"));
-    assert.equal(decisions(fixture, privateRequest.pending_id).length, 0);
+    assert.equal(decisions(fixture, privateRequest.pending_ref).length, 0);
     await page.setViewportSize({ width: 1440, height: 900 });
     await capture(page, "shared-approval-hidden-origin-1440");
   });
@@ -428,7 +438,7 @@ async function staleCopies() {
     const created = await fixture.control("approval", { ...origin, action: "Resolve this approval exactly once" });
     await page.getByRole("button", { name: "Toggle second pane" }).click();
     await refreshApprovals(page, "shared");
-    await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_id}`).count() === 3, "two correlated panes and inbox");
+    await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_ref}`).count() === 3, "two correlated panes and inbox");
 
     // Hold an actual authorized owner read, not a fabricated pending fixture.
     // It is released only after another operator settles and the stale UI's
@@ -441,7 +451,7 @@ async function staleCopies() {
       armed = false;
       const response = await route.fetch();
       const snapshot = await response.json();
-      assert(snapshot.result?.pending.some(item => item.pending_id === created.pending_id));
+      assert(snapshot.result?.pending.some(item => item.pending_ref === created.pending_ref));
       held = true;
       await gate;
       await route.fulfill({ response });
@@ -449,25 +459,25 @@ async function staleCopies() {
     try {
       await refreshApprovals(page, "shared");
       await eventually(() => held, "delayed real pending snapshot");
-      decisionResult(await decide(fixture, created.pending_id, "reject", "other-operator"), created.pending_id, "reject");
-      await page.getByTestId(`gating-action:${created.pending_id}:approve`).first().click();
-      await eventually(() => decisions(fixture, created.pending_id).some(item => item.response && JSON.parse(item.response).error), "stale UI receives owner conflict");
+      decisionResult(await decide(fixture, created.pending_ref, "reject", "other-operator"), created.pending_ref, "reject");
+      await page.getByTestId(`gating-action:${created.pending_ref}:approve`).first().click();
+      await eventually(() => decisions(fixture, created.pending_ref).some(item => item.response && JSON.parse(item.response).error), "stale UI receives owner conflict");
       release();
-      await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_id}`).count() === 0, "late pending response cannot recreate settled copies");
-      assert.equal(decisions(fixture, created.pending_id).length, 2, "one other-operator decision and one explicit stale decision");
-      const resolutions = (await audit(fixture)).filter(item => item.pending_id === created.pending_id && ["approval_decided", "rejection_decided"].includes(item.event_type));
+      await eventually(async () => await page.getByTestId(`gating-pending:${created.pending_ref}`).count() === 0, "late pending response cannot recreate settled copies");
+      assert.equal(decisions(fixture, created.pending_ref).length, 2, "one other-operator decision and one explicit stale decision");
+      const resolutions = (await audit(fixture)).filter(item => item.pending_ref === created.pending_ref && ["approval_decided", "rejection_decided"].includes(item.event_type));
       assert.equal(resolutions.length, 1);
       assert.equal(resolutions[0].event_type, "rejection_decided");
     } finally { release(); await page.unroute("**/console/rpc"); }
 
     const expired = await fixture.control("approval", { ...origin, timeout_ms: 3000, action: "This approval expires at the owner" });
     await refreshApprovals(page, "shared");
-    await page.getByTestId(`gating-pending:${expired.pending_id}`).first().waitFor();
-    await eventually(async () => !(await pending(fixture)).some(item => item.pending_id === expired.pending_id), "owner expires visible request", 8000);
-    await page.getByTestId(`gating-action:${expired.pending_id}:approve`).first().click();
-    await eventually(async () => await page.getByTestId(`gating-pending:${expired.pending_id}`).count() === 0, "expired copies settle after authoritative refresh");
-    assert.equal(decisions(fixture, expired.pending_id).length, 1, "expiry never silently resubmits");
-    assert.equal((await audit(fixture)).filter(item => item.pending_id === expired.pending_id && item.event_type === "timeout_fallback").length, 1);
+    await page.getByTestId(`gating-pending:${expired.pending_ref}`).first().waitFor();
+    await eventually(async () => !(await pending(fixture)).some(item => item.pending_ref === expired.pending_ref), "owner expires visible request", 8000);
+    await page.getByTestId(`gating-action:${expired.pending_ref}:approve`).first().click();
+    await eventually(async () => await page.getByTestId(`gating-pending:${expired.pending_ref}`).count() === 0, "expired copies settle after authoritative refresh");
+    assert.equal(decisions(fixture, expired.pending_ref).length, 1, "expiry never silently resubmits");
+    assert.equal((await audit(fixture)).filter(item => item.pending_ref === expired.pending_ref && item.event_type === "timeout_fallback").length, 1);
     await capture(page, "shared-approval-stale-and-expired-settled");
   });
 }

@@ -936,6 +936,8 @@ class GatingEvaluateResult:
     risk_tier: str | None
     outcome: str
     pending_id: str | None
+    #: The opaque handle ``gating_decide`` accepts; ``None`` unless pending.
+    pending_ref: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GatingEvaluateResult:
@@ -946,6 +948,7 @@ class GatingEvaluateResult:
             risk_tier=data.get("risk_tier"),
             outcome=data["outcome"],
             pending_id=data.get("pending_id"),
+            pending_ref=data.get("pending_ref"),
         )
 
 
@@ -953,15 +956,22 @@ class GatingEvaluateResult:
 class GatingDecisionResult:
     """Result of a gating decision."""
     pending_id: str
+    pending_ref: str
     action_id: str
     decision: str
+    #: Set when an escalation created a successor request.
+    next_pending_id: str | None = None
+    next_pending_ref: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GatingDecisionResult:
         return cls(
             pending_id=data["pending_id"],
+            pending_ref=data["pending_ref"],
             action_id=data["action_id"],
             decision=data["decision"],
+            next_pending_id=data.get("next_pending_id"),
+            next_pending_ref=data.get("next_pending_ref"),
         )
 
 
@@ -975,6 +985,8 @@ class GatingAuditEntry:
     actor_id: str
     risk_tier: str | None
     outcome: str
+    pending_id: str | None = None
+    pending_ref: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GatingAuditEntry:
@@ -989,13 +1001,20 @@ class GatingAuditEntry:
             actor_id=str(data.get("actor_id", "")),
             risk_tier=data.get("risk_tier"),
             outcome=str(data.get("outcome", "")),
+            pending_id=data.get("pending_id"),
+            pending_ref=data.get("pending_ref"),
         )
 
 
 @dataclass(frozen=True)
 class GatingPendingEntry:
-    """A pending gating decision awaiting approval."""
+    """A pending gating decision awaiting approval.
+
+    ``pending_id`` is a display ID that a restarted owner reuses; decide by
+    the opaque ``pending_ref``.
+    """
     pending_id: str
+    pending_ref: str
     action_id: str
     action: str
     actor_id: str
@@ -1006,6 +1025,7 @@ class GatingPendingEntry:
     def from_dict(cls, data: dict[str, Any]) -> GatingPendingEntry:
         return cls(
             pending_id=data["pending_id"],
+            pending_ref=data["pending_ref"],
             action_id=data["action_id"],
             action=data["action"],
             actor_id=data["actor_id"],
@@ -2420,4 +2440,3 @@ class MemberRunStopReceipt:
             current_run_id=current if isinstance(current, str) else None,
             state=state if isinstance(state, str) else None,
         )
-

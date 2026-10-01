@@ -53,7 +53,7 @@ export function PublicContractFixture() {
       markdownUrlPolicy={urlPolicy} header={props.header} displayLabels={props.displayLabels}
       onQuoteSelection={props.onQuoteSelection} onDraftChange={() => {}} onSend={async () => false} />
     <ConsoleTransportStatus state={transportState} onRetry={() => {}} />
-    {snapshot.requests.map(request => <ApprovalCard key={request.pendingId} request={request} resourceStatus={snapshot.status} onDecide={(id, action) => resource.decide(id, action)} />)}
+    {snapshot.requests.map(request => <ApprovalCard key={request.pendingRef} request={request} resourceStatus={snapshot.status} onDecide={(id, action) => resource.decide(id, action)} />)}
     <QuoteContextChips records={[quote]} destinationLabel="One" onRemove={() => {}} onReorder={() => {}} />
   </>;
 }

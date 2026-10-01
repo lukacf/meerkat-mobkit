@@ -192,14 +192,14 @@ fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
                 entity: None,
                 topic: None,
             });
-            result.pending_id.expect("R3 mints a pending entry")
+            result.pending_ref.expect("R3 mints a pending entry")
         };
 
     // Approve → approved=true notice.
     let approved_id = evaluate(&mut runtime, "memory.quarantine_promote:one", None);
     runtime
         .decide_gating_action(GatingDecideRequest {
-            pending_id: approved_id.clone(),
+            pending_ref: approved_id,
             approver_id: "operator-1".to_string(),
             decision: GatingDecision::Approve,
             reason: None,
@@ -210,7 +210,7 @@ fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
     let rejected_id = evaluate(&mut runtime, "memory.quarantine_promote:two", None);
     runtime
         .decide_gating_action(GatingDecideRequest {
-            pending_id: rejected_id.clone(),
+            pending_ref: rejected_id,
             approver_id: "operator-1".to_string(),
             decision: GatingDecision::Reject,
             reason: Some("not shareable".to_string()),
@@ -221,13 +221,13 @@ fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
     let escalated_id = evaluate(&mut runtime, "memory.quarantine_promote:three", None);
     let escalated = runtime
         .decide_gating_action(GatingDecideRequest {
-            pending_id: escalated_id.clone(),
+            pending_ref: escalated_id,
             approver_id: "operator-1".to_string(),
             decision: GatingDecision::Escalate,
             reason: None,
         })
         .expect("escalate");
-    let successor = escalated.next_pending_id.clone().expect("successor id");
+    let successor = escalated.next_pending_ref.expect("successor ref");
 
     // Timeout → approved=false notice with cause timeout_fallback (the
     // sweep runs on the next gating call; 1s is the clamp floor).
@@ -236,10 +236,10 @@ fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
     let _ = runtime.list_gating_pending();
 
     let notices = collector.notices.lock().unwrap();
-    let find = |pending: &str| -> GatingResolutionNotice {
+    let find = |pending: &meerkat_mobkit::PendingRef| -> GatingResolutionNotice {
         notices
             .iter()
-            .find(|notice| notice.pending_id == pending)
+            .find(|notice| notice.pending_ref == *pending)
             .unwrap_or_else(|| panic!("no notice for {pending}: {notices:?}"))
             .clone()
     };
@@ -252,10 +252,7 @@ fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
     let escalate_notice = find(&escalated_id);
     assert!(!escalate_notice.approved);
     assert_eq!(escalate_notice.cause, "escalation_decided");
-    assert_eq!(
-        escalate_notice.next_pending_id.as_deref(),
-        Some(successor.as_str())
-    );
+    assert_eq!(escalate_notice.next_pending_ref, Some(successor));
     let timeout_notice = find(&timed_out_id);
     assert!(!timeout_notice.approved);
     assert_eq!(timeout_notice.cause, "timeout_fallback");
@@ -289,7 +286,7 @@ fn phase0_contract_008_gating_escalate_returns_successor_pending_entry() {
             "id":"phase0-gating-escalate",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"bob",
                 "decision":"escalate",
                 "reason":"needs higher approval"
@@ -319,6 +316,14 @@ fn phase0_contract_008_gating_escalate_returns_successor_pending_entry() {
     assert_eq!(
         pending["result"]["pending"][0]["pending_id"],
         json!(next_pending_id)
+    );
+    assert_eq!(
+        pending["result"]["pending"][0]["pending_ref"],
+        escalated["result"]["next_pending_ref"]
+    );
+    assert_ne!(
+        escalated["result"]["next_pending_ref"],
+        evaluated["result"]["pending_ref"]
     );
     assert_eq!(
         pending["result"]["pending"][0]["requested_approver"],
@@ -361,7 +366,7 @@ fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
             "id":"phase12-r3-self-approve",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"alice",
                 "decision":"approve"
             }
@@ -376,7 +381,7 @@ fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
             "id":"phase12-r3-wrong-approver",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"carol",
                 "decision":"approve"
             }
@@ -396,7 +401,7 @@ fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
             "id":"phase12-r3-approve",
             "method":"mobkit/gating/decide",
             "params":{
-                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "pending_ref": evaluated["result"]["pending_ref"].clone(),
                 "approver_id":"bob",
                 "decision":"approve"
             }
@@ -459,6 +464,15 @@ fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
     assert_eq!(
         pending_after_invalid["result"]["pending"][0]["pending_id"],
         pending_before_decision["result"]["pending"][0]["pending_id"]
+    );
+    assert_eq!(
+        history["result"]["deliveries"][0]["idempotency_key"],
+        json!(format!(
+            "gating-approval-{}",
+            evaluated["result"]["pending_ref"]
+                .as_str()
+                .expect("pending ref")
+        ))
     );
     assert_eq!(
         pending_created["detail"]["approval_route_id"],
@@ -838,7 +852,7 @@ fn gating_origin_is_opt_in_and_preserved_across_serialization_and_escalation() {
         interaction_id: Some("interaction:123".to_string()),
     };
     let evaluated = runtime.evaluate_gating_action_with_origin(request, Some(origin.clone()));
-    let pending_id = evaluated.pending_id.expect("R3 pending");
+    let pending_ref = evaluated.pending_ref.expect("R3 pending");
     let entry = runtime.list_gating_pending().remove(0);
     assert_eq!(entry.origin.as_ref(), Some(&origin));
     assert_eq!(entry.rationale.as_deref(), Some("Release approved changes"));
@@ -847,7 +861,7 @@ fn gating_origin_is_opt_in_and_preserved_across_serialization_and_escalation() {
     assert_eq!(entry, restored);
     let result = runtime
         .decide_gating_action(GatingDecideRequest {
-            pending_id,
+            pending_ref,
             approver_id: "operator".to_string(),
             decision: GatingDecision::Escalate,
             reason: None,
@@ -855,6 +869,7 @@ fn gating_origin_is_opt_in_and_preserved_across_serialization_and_escalation() {
         .expect("escalation");
     let successor = runtime.list_gating_pending().remove(0);
     assert_eq!(Some(successor.pending_id), result.next_pending_id);
+    assert_eq!(Some(successor.pending_ref), result.next_pending_ref);
     assert_eq!(successor.origin.as_ref(), Some(&origin));
     let audit = runtime.gating_audit_entries(20);
     assert!(
@@ -871,7 +886,9 @@ fn gating_origin_is_opt_in_and_preserved_across_serialization_and_escalation() {
 fn legacy_gating_records_and_rpc_actor_claims_do_not_mint_origin() {
     use meerkat_mobkit::runtime::GatingPendingEntry;
     let legacy: GatingPendingEntry = serde_json::from_value(json!({
-        "pending_id": "old", "action_id": "action", "action": "Legacy request",
+        "pending_id": "old",
+        "pending_ref": "gpr1.0123456789abcdef0123456789abcdef.7",
+        "action_id": "action", "action": "Legacy request",
         "actor_id": "identity:release", "risk_tier": "r3", "created_at_ms": 1,
         "deadline_at_ms": 2,
     }))
@@ -910,9 +927,9 @@ fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decision
         conversation_id: Some("conversation:release".to_string()),
         interaction_id: Some("interaction:release".to_string()),
     };
-    let original_id = source
+    let original_ref = source
         .evaluate_gating_action_with_origin(request(), Some(origin.clone()))
-        .pending_id
+        .pending_ref
         .expect("pending");
     let persisted = serde_json::to_vec(&source.gating_state_snapshot()).expect("serialize owner");
     let snapshot: GatingStateSnapshot =
@@ -924,14 +941,14 @@ fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decision
     assert_eq!(restored.gating_state_snapshot(), snapshot);
     let decision = restored
         .decide_gating_action(GatingDecideRequest {
-            pending_id: original_id.clone(),
+            pending_ref: original_ref,
             approver_id: "operator".to_string(),
             decision: GatingDecision::Escalate,
             reason: None,
         })
         .expect("escalate after restart");
     let successor = restored.list_gating_pending().remove(0);
-    assert_ne!(successor.pending_id, original_id);
+    assert_ne!(successor.pending_ref, original_ref);
     assert_eq!(
         Some(&successor.pending_id),
         decision.next_pending_id.as_ref()
@@ -942,15 +959,16 @@ fn gating_owner_snapshot_restores_origin_and_sequence_without_replaying_decision
     restarted
         .restore_gating_state(restored.gating_state_snapshot())
         .expect("successor restore");
-    assert!(
-        restarted
-            .decide_gating_action(GatingDecideRequest {
-                pending_id: original_id,
-                approver_id: "operator".to_string(),
-                decision: GatingDecision::Approve,
-                reason: None,
-            })
-            .is_err()
+    assert_eq!(
+        restarted.decide_gating_action(GatingDecideRequest {
+            pending_ref: original_ref,
+            approver_id: "operator".to_string(),
+            decision: GatingDecision::Approve,
+            reason: None,
+        }),
+        Err(meerkat_mobkit::GatingDecideError::StalePendingDecision {
+            reason: meerkat_mobkit::StalePendingDecisionReason::Resolved,
+        })
     );
     let later_id = restarted
         .evaluate_gating_action(request())
@@ -997,6 +1015,21 @@ fn gating_snapshot_validation_is_atomic_and_cannot_overwrite_a_live_owner() {
     let mut deadline = valid.clone();
     deadline.pending[0].deadline_at_ms = 0;
     corruptions.push(deadline);
+    // Refs must be ones this owner issued, for the sequence the ID carries.
+    let mut foreign_ref = valid.clone();
+    foreign_ref.incarnation = runtime_for_gating().gating_state_snapshot().incarnation;
+    corruptions.push(foreign_ref);
+    let mut shifted_ref = valid.clone();
+    shifted_ref.pending[0].pending_ref.seq += 1;
+    corruptions.push(shifted_ref);
+    let mut unreferenced_audit = valid.clone();
+    let created = unreferenced_audit
+        .audit
+        .iter_mut()
+        .find(|entry| entry.pending_id.is_some())
+        .expect("pending_created audit");
+    created.pending_ref = None;
+    corruptions.push(unreferenced_audit);
     for invalid in corruptions {
         let mut target = runtime_for_gating();
         let before = target.gating_state_snapshot();
@@ -1122,4 +1155,302 @@ fn gating_invalid_supplied_identity_cannot_become_unattributed() {
         assert!(runtime.list_gating_pending().is_empty());
         assert!(runtime.gating_audit_entries(20).is_empty());
     }
+}
+
+fn evaluate_r3_for_bob(runtime: &mut meerkat_mobkit::MobkitRuntimeHandle, action: &str) -> Value {
+    parse_response(&handle_mobkit_rpc_json(
+        runtime,
+        &json!({
+            "jsonrpc": "2.0", "id": "evaluate", "method": "mobkit/gating/evaluate",
+            "params": {
+                "action": action, "actor_id": "alice", "risk_tier": "r3",
+                "requested_approver": "bob", "approval_timeout_ms": 60_000,
+            },
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ))["result"]
+        .clone()
+}
+
+fn decide_over_rpc(runtime: &mut meerkat_mobkit::MobkitRuntimeHandle, params: Value) -> Value {
+    parse_response(&handle_mobkit_rpc_json(
+        runtime,
+        &json!({
+            "jsonrpc": "2.0", "id": "decide", "method": "mobkit/gating/decide", "params": params,
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ))
+}
+
+/// The defect this contract closes: a gating owner that starts without
+/// restored state restarts its sequence, so the request it mints next reuses
+/// the display ID (and here the approver) of a request the replaced owner
+/// issued. A delayed decision for the old request must be refused, typed,
+/// without resolving the new one or notifying anyone.
+#[test]
+fn delayed_decision_for_a_replaced_owner_never_resolves_the_reused_pending_id() {
+    use meerkat_mobkit::runtime::{
+        GatingDecideRequest, GatingDecision, GatingResolutionNotice, GatingResolutionObserver,
+    };
+    use meerkat_mobkit::{GatingDecideError, PendingRef, StalePendingDecisionReason};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Collector(Mutex<Vec<GatingResolutionNotice>>);
+    impl GatingResolutionObserver for Collector {
+        fn on_gating_resolution(&self, notice: &GatingResolutionNotice) {
+            self.0.lock().unwrap().push(notice.clone());
+        }
+    }
+
+    // Request A, whose ref the approver's client retains.
+    let mut replaced = runtime_for_gating();
+    let a = evaluate_r3_for_bob(&mut replaced, "Deploy release A");
+    replaced.shutdown();
+
+    // The runtime is replaced without restored gating state, and request B
+    // gets the same numeric ID and the same approver.
+    let mut runtime = runtime_for_gating();
+    let collector = Arc::new(Collector::default());
+    runtime.register_gating_resolution_observer(collector.clone());
+    let b = evaluate_r3_for_bob(&mut runtime, "Deploy release B");
+    assert_eq!(a["pending_id"], b["pending_id"], "the display ID is reused");
+    assert_ne!(a["pending_ref"], b["pending_ref"], "the ref is not");
+    let ref_a: PendingRef = serde_json::from_value(a["pending_ref"].clone()).expect("ref A");
+    let ref_b: PendingRef = serde_json::from_value(b["pending_ref"].clone()).expect("ref B");
+    let pending_before = runtime.list_gating_pending();
+    let audit_before = runtime.gating_audit_entries(50);
+
+    // The delayed decision for A, typed and over the wire.
+    assert_eq!(
+        runtime.decide_gating_action(GatingDecideRequest {
+            pending_ref: ref_a,
+            approver_id: "bob".to_string(),
+            decision: GatingDecision::Approve,
+            reason: None,
+        }),
+        Err(GatingDecideError::StalePendingDecision {
+            reason: StalePendingDecisionReason::OtherIncarnation,
+        })
+    );
+    let refused = decide_over_rpc(
+        &mut runtime,
+        json!({ "pending_ref": a["pending_ref"], "approver_id": "bob", "decision": "approve" }),
+    );
+    assert_eq!(refused["error"]["code"], json!(-32602));
+    assert_eq!(
+        refused["error"]["data"],
+        json!({ "kind": "stale_pending_decision", "reason": "other_incarnation" })
+    );
+    // A legacy decision that names only the pending ID is refused too.
+    let legacy = decide_over_rpc(
+        &mut runtime,
+        json!({ "pending_id": a["pending_id"], "approver_id": "bob", "decision": "approve" }),
+    );
+    assert_eq!(
+        legacy["error"]["data"],
+        json!({ "kind": "stale_pending_decision", "reason": "malformed" })
+    );
+
+    // B is untouched and nobody was told anything.
+    assert_eq!(runtime.list_gating_pending(), pending_before);
+    assert_eq!(runtime.gating_audit_entries(50), audit_before);
+    assert!(collector.0.lock().unwrap().is_empty());
+
+    // B's own ref still decides B.
+    let decided = runtime
+        .decide_gating_action(GatingDecideRequest {
+            pending_ref: ref_b,
+            approver_id: "bob".to_string(),
+            decision: GatingDecision::Approve,
+            reason: None,
+        })
+        .expect("B decides with its own ref");
+    assert_eq!(decided.pending_ref, ref_b);
+    let notices = collector.0.lock().unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].pending_ref, ref_b);
+    drop(notices);
+    runtime.shutdown();
+}
+
+#[test]
+fn stale_decisions_are_typed_by_why_the_ref_is_not_pending() {
+    use meerkat_mobkit::runtime::{GatingDecideRequest, GatingDecision};
+    use meerkat_mobkit::{GatingDecideError, PendingRef, StalePendingDecisionReason};
+    let mut runtime = runtime_for_gating();
+    let evaluated = evaluate_r3_for_bob(&mut runtime, "Deploy");
+    let issued: PendingRef =
+        serde_json::from_value(evaluated["pending_ref"].clone()).expect("issued ref");
+    let decide = |runtime: &mut meerkat_mobkit::MobkitRuntimeHandle, pending_ref| {
+        runtime.decide_gating_action(GatingDecideRequest {
+            pending_ref,
+            approver_id: "bob".to_string(),
+            decision: GatingDecision::Reject,
+            reason: None,
+        })
+    };
+    let stale = |reason| Err(GatingDecideError::StalePendingDecision { reason });
+    let never_issued = PendingRef {
+        seq: issued.seq + 100,
+        ..issued
+    };
+    assert_eq!(
+        decide(&mut runtime, never_issued),
+        stale(StalePendingDecisionReason::Unknown)
+    );
+    decide(&mut runtime, issued).expect("first decision resolves");
+    assert_eq!(
+        decide(&mut runtime, issued),
+        stale(StalePendingDecisionReason::Resolved)
+    );
+
+    for malformed in [
+        json!(null),
+        json!(7),
+        json!(""),
+        json!("gate-pending-000001"),
+        json!(issued.to_string().to_uppercase()),
+        json!(format!("{issued}.1")),
+        json!(issued.to_string().replace("gpr1.", "gpr2.")),
+        json!(format!("gpr1.{}.0{}", issued.incarnation, issued.seq)),
+        json!(format!(" {issued}")),
+    ] {
+        let response = decide_over_rpc(
+            &mut runtime,
+            json!({ "pending_ref": malformed, "approver_id": "bob", "decision": "approve" }),
+        );
+        assert_eq!(
+            response["error"]["data"],
+            json!({ "kind": "stale_pending_decision", "reason": "malformed" }),
+            "{malformed}"
+        );
+    }
+    runtime.shutdown();
+}
+
+#[test]
+fn pending_refs_round_trip_only_in_canonical_form() {
+    use meerkat_mobkit::PendingRef;
+    let text = "gpr1.00000000000000000000000000000abc.0";
+    let parsed: PendingRef = text.parse().expect("canonical ref");
+    assert_eq!(parsed.seq, 0);
+    assert_eq!(parsed.to_string(), text);
+    assert_eq!(
+        serde_json::to_value(parsed).expect("serialize"),
+        json!(text)
+    );
+    let max = format!("gpr1.{}.{}", "f".repeat(32), u64::MAX);
+    assert_eq!(max.parse::<PendingRef>().expect("max").to_string(), max);
+    for invalid in [
+        "gpr1.abc.1",
+        "gpr1.00000000000000000000000000000abc",
+        "gpr1.00000000000000000000000000000abc.",
+        "gpr1.00000000000000000000000000000abc.+1",
+        "gpr1.00000000000000000000000000000abc.18446744073709551616",
+        "gpr1.0000000000000000000000000000000g.1",
+        "gpr1.-0000000000000000000000000000abc.1",
+    ] {
+        assert!(invalid.parse::<PendingRef>().is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn refused_authorization_keeps_the_request_in_its_position() {
+    use meerkat_mobkit::runtime::{GatingDecideRequest, GatingDecision};
+    let mut runtime = runtime_for_gating();
+    let first = evaluate_r3_for_bob(&mut runtime, "First");
+    evaluate_r3_for_bob(&mut runtime, "Second");
+    evaluate_r3_for_bob(&mut runtime, "Third");
+    let order = |runtime: &mut meerkat_mobkit::MobkitRuntimeHandle| {
+        runtime
+            .list_gating_pending()
+            .into_iter()
+            .map(|entry| entry.action)
+            .collect::<Vec<_>>()
+    };
+    let before = order(&mut runtime);
+    assert_eq!(before, ["First", "Second", "Third"]);
+    let first_ref = serde_json::from_value(first["pending_ref"].clone()).expect("ref");
+    for (approver, decision) in [
+        ("carol", GatingDecision::Approve),
+        ("alice", GatingDecision::Approve),
+    ] {
+        assert!(
+            runtime
+                .decide_gating_action(GatingDecideRequest {
+                    pending_ref: first_ref,
+                    approver_id: approver.to_string(),
+                    decision,
+                    reason: None,
+                })
+                .is_err()
+        );
+        assert_eq!(order(&mut runtime), before);
+    }
+    runtime.shutdown();
+}
+
+#[test]
+fn version_1_gating_snapshot_restores_under_a_fresh_incarnation() {
+    use meerkat_mobkit::runtime::{GatingDecideRequest, GatingDecision, GatingStateSnapshot};
+    use meerkat_mobkit::{GatingDecideError, PendingRef, StalePendingDecisionReason};
+    let mut source = runtime_for_gating();
+    let evaluated = evaluate_r3_for_bob(&mut source, "Deploy");
+    let source_ref: PendingRef =
+        serde_json::from_value(evaluated["pending_ref"].clone()).expect("ref");
+    let mut v1 = serde_json::to_value(source.gating_state_snapshot()).expect("snapshot");
+    v1["version"] = json!(1);
+    v1.as_object_mut().expect("snapshot").remove("incarnation");
+    for section in ["pending", "audit"] {
+        for entry in v1[section].as_array_mut().expect("entries") {
+            entry.as_object_mut().expect("entry").remove("pending_ref");
+        }
+    }
+    let mut with_incarnation = v1.clone();
+    with_incarnation["incarnation"] = json!(source_ref.incarnation);
+    assert!(serde_json::from_value::<GatingStateSnapshot>(with_incarnation).is_err());
+
+    let snapshot: GatingStateSnapshot = serde_json::from_value(v1).expect("v1 migrates");
+    assert_eq!(snapshot.version, 2);
+    assert_ne!(snapshot.incarnation, source_ref.incarnation);
+    let mut restored = runtime_for_gating();
+    restored
+        .restore_gating_state(snapshot.clone())
+        .expect("migrated snapshot restores");
+    let pending = restored.list_gating_pending();
+    assert_eq!(pending[0].pending_id, evaluated["pending_id"]);
+    assert_eq!(
+        pending[0].pending_ref,
+        PendingRef {
+            incarnation: snapshot.incarnation,
+            seq: source_ref.seq,
+        }
+    );
+    assert!(
+        restored
+            .gating_audit_entries(20)
+            .iter()
+            .all(|entry| entry.pending_ref.map(|r| r.incarnation)
+                == entry.pending_id.as_ref().map(|_| snapshot.incarnation))
+    );
+    let decide = |restored: &mut meerkat_mobkit::MobkitRuntimeHandle, pending_ref| {
+        restored.decide_gating_action(GatingDecideRequest {
+            pending_ref,
+            approver_id: "bob".to_string(),
+            decision: GatingDecision::Approve,
+            reason: None,
+        })
+    };
+    assert_eq!(
+        decide(&mut restored, source_ref),
+        Err(GatingDecideError::StalePendingDecision {
+            reason: StalePendingDecisionReason::OtherIncarnation,
+        })
+    );
+    decide(&mut restored, pending[0].pending_ref).expect("the migrated ref decides");
+    source.shutdown();
+    restored.shutdown();
 }

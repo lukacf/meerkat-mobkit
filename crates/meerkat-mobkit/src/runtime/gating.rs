@@ -20,7 +20,7 @@ fn valid_gating_origin(origin: &GatingOrigin) -> bool {
 
 fn validate_gating_snapshot(snapshot: &GatingStateSnapshot) -> Result<(), GatingStateRestoreError> {
     use GatingStateRestoreError::InvalidSnapshot;
-    if snapshot.version != 1 {
+    if snapshot.version != GATING_SNAPSHOT_VERSION {
         return Err(GatingStateRestoreError::UnsupportedVersion(
             snapshot.version,
         ));
@@ -37,17 +37,24 @@ fn validate_gating_snapshot(snapshot: &GatingStateSnapshot) -> Result<(), Gating
     {
         return Err(InvalidSnapshot("sequence is exhausted"));
     }
-    let valid_id = |value: &str, prefix: &str| {
+    let id_sequence = |value: &str, prefix: &str| {
         value
             .strip_prefix(prefix)
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .is_some_and(|sequence| {
-                sequence < snapshot.next_sequence && value == format!("{prefix}{sequence:06}")
+            .filter(|sequence| {
+                *sequence < snapshot.next_sequence && value == format!("{prefix}{sequence:06}")
             })
+    };
+    let valid_id = |value: &str, prefix: &str| id_sequence(value, prefix).is_some();
+    // Every ref in a snapshot was issued by its owner, for the sequence its
+    // display ID carries.
+    let issued_ref = |pending_id: &str, pending_ref: &PendingRef| {
+        pending_ref.incarnation == snapshot.incarnation
+            && id_sequence(pending_id, "gate-pending-") == Some(pending_ref.seq)
     };
     let mut pending_ids = BTreeSet::new();
     for entry in &snapshot.pending {
-        if !valid_id(&entry.pending_id, "gate-pending-")
+        if !issued_ref(&entry.pending_id, &entry.pending_ref)
             || !valid_id(&entry.action_id, "gate-action-")
             || !pending_ids.insert(entry.pending_id.as_str())
         {
@@ -71,10 +78,11 @@ fn validate_gating_snapshot(snapshot: &GatingStateSnapshot) -> Result<(), Gating
         if !valid_id(&entry.audit_id, "gate-audit-")
             || !valid_id(&entry.action_id, "gate-action-")
             || !audit_ids.insert(entry.audit_id.as_str())
-            || entry
-                .pending_id
-                .as_deref()
-                .is_some_and(|id| !valid_id(id, "gate-pending-"))
+            || match (entry.pending_id.as_deref(), entry.pending_ref.as_ref()) {
+                (Some(pending_id), Some(pending_ref)) => !issued_ref(pending_id, pending_ref),
+                (None, None) => false,
+                _ => true,
+            }
         {
             return Err(InvalidSnapshot("invalid or duplicate audit ID"));
         }
@@ -108,12 +116,13 @@ impl MobkitRuntimeHandle {
     pub fn gating_state_snapshot(&mut self) -> GatingStateSnapshot {
         self.refresh_gating_timeouts();
         GatingStateSnapshot {
-            version: 1,
+            version: GATING_SNAPSHOT_VERSION,
+            incarnation: self.gating_incarnation,
             next_sequence: self.gating_sequence,
             pending: self
                 .gating_pending_order
                 .iter()
-                .filter_map(|id| self.gating_pending.get(id).cloned())
+                .filter_map(|seq| self.gating_pending.get(seq).cloned())
                 .collect(),
             audit: self.gating_audit.clone(),
         }
@@ -122,6 +131,8 @@ impl MobkitRuntimeHandle {
     /// Restore trusted host persistence before any gating action is evaluated.
     /// Validation is atomic, and expired entries resolve through the existing
     /// owner timeout path instead of becoming silently approved or renewed.
+    /// The owner adopts the snapshot's incarnation, so refs issued before the
+    /// snapshot was saved still resolve.
     pub fn restore_gating_state(
         &mut self,
         snapshot: GatingStateSnapshot,
@@ -134,16 +145,17 @@ impl MobkitRuntimeHandle {
             return Err(GatingStateRestoreError::RuntimeNotPristine);
         }
         validate_gating_snapshot(&snapshot)?;
+        self.gating_incarnation = snapshot.incarnation;
         self.gating_sequence = snapshot.next_sequence;
         self.gating_pending_order = snapshot
             .pending
             .iter()
-            .map(|entry| entry.pending_id.clone())
+            .map(|entry| entry.pending_ref.seq)
             .collect();
         self.gating_pending = snapshot
             .pending
             .into_iter()
-            .map(|entry| (entry.pending_id.clone(), entry))
+            .map(|entry| (entry.pending_ref.seq, entry))
             .collect();
         self.gating_audit = snapshot.audit;
         self.refresh_gating_timeouts();
@@ -152,6 +164,17 @@ impl MobkitRuntimeHandle {
 
     fn next_gating_sequence(&mut self) -> u64 {
         Self::next_sequence(&mut self.gating_sequence)
+    }
+    /// Mint the display ID and the ref for a new pending entry.
+    fn next_gating_pending_ref(&mut self) -> (String, PendingRef) {
+        let seq = self.next_gating_sequence();
+        (
+            format!("gate-pending-{seq:06}"),
+            PendingRef {
+                incarnation: self.gating_incarnation,
+                seq,
+            },
+        )
     }
     fn append_gating_audit(&mut self, mut entry: GatingAuditEntry) {
         let audit_sequence = self.next_gating_sequence();
@@ -168,18 +191,19 @@ impl MobkitRuntimeHandle {
             .gating_pending
             .iter()
             .filter(|(_, entry)| now_ms >= entry.deadline_at_ms)
-            .map(|(pending_id, _)| pending_id.clone())
+            .map(|(seq, _)| *seq)
             .collect::<Vec<_>>();
-        for pending_id in expired {
-            if let Some(expired_entry) = self.gating_pending.remove(&pending_id) {
+        for seq in expired {
+            if let Some(expired_entry) = self.gating_pending.remove(&seq) {
                 self.gating_pending_order
-                    .retain(|candidate| candidate != &pending_id);
+                    .retain(|candidate| *candidate != seq);
                 self.append_gating_audit(GatingAuditEntry {
                     audit_id: String::new(),
                     timestamp_ms: 0,
                     event_type: "timeout_fallback".to_string(),
                     action_id: expired_entry.action_id.clone(),
-                    pending_id: Some(pending_id.clone()),
+                    pending_id: Some(expired_entry.pending_id.clone()),
+                    pending_ref: Some(expired_entry.pending_ref),
                     actor_id: expired_entry.actor_id,
                     risk_tier: expired_entry.risk_tier,
                     outcome: GatingOutcome::SafeDraft,
@@ -191,21 +215,23 @@ impl MobkitRuntimeHandle {
                 });
                 self.gating_resolution_observers
                     .notify(&GatingResolutionNotice {
-                        pending_id,
+                        pending_id: expired_entry.pending_id,
+                        pending_ref: expired_entry.pending_ref,
                         action_id: expired_entry.action_id,
                         approved: false,
                         next_pending_id: None,
+                        next_pending_ref: None,
                         cause: "timeout_fallback".to_string(),
                     });
             }
         }
     }
-    fn upsert_gating_pending_entry(&mut self, entry: GatingPendingEntry) {
-        let pending_id = entry.pending_id.clone();
-        self.gating_pending.insert(pending_id.clone(), entry);
+    fn insert_gating_pending_entry(&mut self, entry: GatingPendingEntry) {
+        let seq = entry.pending_ref.seq;
+        self.gating_pending.insert(seq, entry);
         self.gating_pending_order
-            .retain(|candidate| candidate != &pending_id);
-        self.gating_pending_order.push(pending_id);
+            .retain(|candidate| *candidate != seq);
+        self.gating_pending_order.push(seq);
         while self.gating_pending_order.len() > GATING_PENDING_MAX_RETAINED {
             let oldest = self.gating_pending_order.remove(0);
             self.gating_pending.remove(&oldest);
@@ -337,6 +363,7 @@ impl MobkitRuntimeHandle {
                 risk_tier,
                 outcome: GatingOutcome::SafeDraft,
                 pending_id: None,
+                pending_ref: None,
                 fallback_reason: Some("invalid_gating_origin".to_string()),
             };
         }
@@ -349,6 +376,7 @@ impl MobkitRuntimeHandle {
                     event_type: "conflict_blocked".to_string(),
                     action_id: action_id.clone(),
                     pending_id: None,
+                    pending_ref: None,
                     actor_id: actor_id.clone(),
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::SafeDraft,
@@ -375,6 +403,7 @@ impl MobkitRuntimeHandle {
                     risk_tier,
                     outcome: GatingOutcome::SafeDraft,
                     pending_id: None,
+                    pending_ref: None,
                     fallback_reason: Some("memory_conflict_context_missing".to_string()),
                 };
             }
@@ -389,6 +418,7 @@ impl MobkitRuntimeHandle {
                         event_type: "memory_conflict_lookup_failed".to_string(),
                         action_id: action_id.clone(),
                         pending_id: None,
+                        pending_ref: None,
                         actor_id: actor_id.clone(),
                         risk_tier: risk_tier.clone(),
                         outcome: GatingOutcome::SafeDraft,
@@ -410,6 +440,7 @@ impl MobkitRuntimeHandle {
                         risk_tier,
                         outcome: GatingOutcome::SafeDraft,
                         pending_id: None,
+                        pending_ref: None,
                         fallback_reason: Some("memory_conflict_lookup_failed".to_string()),
                     };
                 }
@@ -421,6 +452,7 @@ impl MobkitRuntimeHandle {
                     event_type: "conflict_blocked".to_string(),
                     action_id: action_id.clone(),
                     pending_id: None,
+                    pending_ref: None,
                     actor_id: actor_id.clone(),
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::SafeDraft,
@@ -443,6 +475,7 @@ impl MobkitRuntimeHandle {
                     risk_tier,
                     outcome: GatingOutcome::SafeDraft,
                     pending_id: None,
+                    pending_ref: None,
                     fallback_reason: Some("memory_conflict".to_string()),
                 };
             }
@@ -456,6 +489,7 @@ impl MobkitRuntimeHandle {
                     event_type: "evaluated".to_string(),
                     action_id: action_id.clone(),
                     pending_id: None,
+                    pending_ref: None,
                     actor_id: actor_id.clone(),
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::Allowed,
@@ -473,6 +507,7 @@ impl MobkitRuntimeHandle {
                     risk_tier,
                     outcome: GatingOutcome::Allowed,
                     pending_id: None,
+                    pending_ref: None,
                     fallback_reason: None,
                 }
             }
@@ -483,6 +518,7 @@ impl MobkitRuntimeHandle {
                     event_type: "evaluated".to_string(),
                     action_id: action_id.clone(),
                     pending_id: None,
+                    pending_ref: None,
                     actor_id: actor_id.clone(),
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::AllowedWithAudit,
@@ -500,12 +536,12 @@ impl MobkitRuntimeHandle {
                     risk_tier,
                     outcome: GatingOutcome::AllowedWithAudit,
                     pending_id: None,
+                    pending_ref: None,
                     fallback_reason: None,
                 }
             }
             GatingRiskTier::R3 => {
-                let pending_sequence = self.next_gating_sequence();
-                let pending_id = format!("gate-pending-{pending_sequence:06}");
+                let (pending_id, pending_ref) = self.next_gating_pending_ref();
                 let created_at_ms = current_time_ms();
                 // Clamp both ends. The upper bound stops a deadline that
                 // saturates past `u64::MAX` from never expiring (the
@@ -544,6 +580,7 @@ impl MobkitRuntimeHandle {
                                     payload: serde_json::json!({
                                         "kind": "gating_approval_request",
                                         "pending_id": pending_id,
+                                        "pending_ref": pending_ref,
                                         "action_id": action_id,
                                         "action": action,
                                         "actor_id": actor_id,
@@ -551,7 +588,7 @@ impl MobkitRuntimeHandle {
                                         "requested_approver": requested_approver,
                                         "deadline_at_ms": created_at_ms.saturating_add(timeout_ms),
                                     }),
-                                    idempotency_key: Some(format!("gating-approval-{pending_id}")),
+                                    idempotency_key: Some(format!("gating-approval-{pending_ref}")),
                                 }) {
                                     Ok(record) => {
                                         if record.status == "sent" {
@@ -589,6 +626,7 @@ impl MobkitRuntimeHandle {
                 }
                 let pending_entry = GatingPendingEntry {
                     pending_id: pending_id.clone(),
+                    pending_ref,
                     action_id: action_id.clone(),
                     action: action.clone(),
                     actor_id: actor_id.clone(),
@@ -603,13 +641,14 @@ impl MobkitRuntimeHandle {
                     rationale: request.rationale,
                     origin,
                 };
-                self.upsert_gating_pending_entry(pending_entry.clone());
+                self.insert_gating_pending_entry(pending_entry.clone());
                 self.append_gating_audit(GatingAuditEntry {
                     audit_id: String::new(),
                     timestamp_ms: 0,
                     event_type: "pending_created".to_string(),
                     action_id: action_id.clone(),
                     pending_id: Some(pending_id.clone()),
+                    pending_ref: Some(pending_ref),
                     actor_id: actor_id.clone(),
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::PendingApproval,
@@ -632,6 +671,7 @@ impl MobkitRuntimeHandle {
                     risk_tier,
                     outcome: GatingOutcome::PendingApproval,
                     pending_id: Some(pending_id),
+                    pending_ref: Some(pending_ref),
                     fallback_reason: None,
                 }
             }
@@ -642,10 +682,15 @@ impl MobkitRuntimeHandle {
         self.refresh_gating_timeouts();
         self.gating_pending_order
             .iter()
-            .filter_map(|pending_id| self.gating_pending.get(pending_id).cloned())
+            .filter_map(|seq| self.gating_pending.get(seq).cloned())
             .collect()
     }
 
+    /// Resolve exactly the pending request `request.pending_ref` names. A ref
+    /// this owner did not issue, or one that is no longer pending, is refused
+    /// as a stale decision: nothing is resolved and no observer is notified.
+    /// A refused authorization (self-approval, approver mismatch) leaves the
+    /// request pending in its position.
     pub fn decide_gating_action(
         &mut self,
         request: GatingDecideRequest,
@@ -653,39 +698,52 @@ impl MobkitRuntimeHandle {
         self.refresh_gating_timeouts();
         let decision = request.decision.clone();
         let reason = request.reason.clone();
-        let pending_id = request.pending_id.trim().to_string();
+        let pending_ref = request.pending_ref;
         let approver_id = request.approver_id.trim().to_string();
-        let pending_entry = self
-            .gating_pending
-            .remove(&pending_id)
-            .ok_or_else(|| GatingDecideError::UnknownPendingId(pending_id.clone()))?;
-        self.gating_pending_order
-            .retain(|candidate| candidate != &pending_id);
+        if pending_ref.incarnation != self.gating_incarnation {
+            return Err(GatingDecideError::StalePendingDecision {
+                reason: StalePendingDecisionReason::OtherIncarnation,
+            });
+        }
+        let Some(pending_entry) = self.gating_pending.get(&pending_ref.seq) else {
+            let reason = if pending_ref.seq < self.gating_sequence {
+                StalePendingDecisionReason::Resolved
+            } else {
+                StalePendingDecisionReason::Unknown
+            };
+            return Err(GatingDecideError::StalePendingDecision { reason });
+        };
 
         if matches!(decision, GatingDecision::Approve) && approver_id == pending_entry.actor_id {
-            self.upsert_gating_pending_entry(pending_entry);
             return Err(GatingDecideError::SelfApprovalForbidden);
         }
         if let Some(expected_approver) = pending_entry.requested_approver.as_deref()
             && expected_approver != approver_id
         {
-            let expected = expected_approver.to_string();
-            self.upsert_gating_pending_entry(pending_entry);
             return Err(GatingDecideError::ApproverMismatch {
-                expected,
+                expected: expected_approver.to_string(),
                 provided: approver_id,
             });
         }
+        let Some(pending_entry) = self.gating_pending.remove(&pending_ref.seq) else {
+            return Err(GatingDecideError::StalePendingDecision {
+                reason: StalePendingDecisionReason::Unknown,
+            });
+        };
+        self.gating_pending_order
+            .retain(|candidate| *candidate != pending_ref.seq);
+        let pending_id = pending_entry.pending_id.clone();
 
         let mut next_pending_id = None;
+        let mut next_pending_ref = None;
         let (outcome, event_type) = match decision {
             GatingDecision::Approve => (GatingOutcome::Allowed, "approval_decided"),
             GatingDecision::Reject => (GatingOutcome::SafeDraft, "rejection_decided"),
             GatingDecision::Escalate => {
-                let successor_sequence = self.next_gating_sequence();
-                let successor_pending_id = format!("gate-pending-{successor_sequence:06}");
+                let (successor_pending_id, successor_pending_ref) = self.next_gating_pending_ref();
                 let successor_entry = GatingPendingEntry {
                     pending_id: successor_pending_id.clone(),
+                    pending_ref: successor_pending_ref,
                     action_id: pending_entry.action_id.clone(),
                     action: pending_entry.action.clone(),
                     actor_id: pending_entry.actor_id.clone(),
@@ -700,19 +758,22 @@ impl MobkitRuntimeHandle {
                     rationale: pending_entry.rationale.clone(),
                     origin: pending_entry.origin.clone(),
                 };
-                self.upsert_gating_pending_entry(successor_entry.clone());
+                self.insert_gating_pending_entry(successor_entry.clone());
                 next_pending_id = Some(successor_pending_id.clone());
+                next_pending_ref = Some(successor_pending_ref);
                 self.append_gating_audit(GatingAuditEntry {
                     audit_id: String::new(),
                     timestamp_ms: 0,
                     event_type: "pending_created".to_string(),
                     action_id: successor_entry.action_id.clone(),
                     pending_id: Some(successor_pending_id),
+                    pending_ref: Some(successor_pending_ref),
                     actor_id: successor_entry.actor_id.clone(),
                     risk_tier: successor_entry.risk_tier.clone(),
                     outcome: GatingOutcome::PendingApproval,
                     detail: serde_json::json!({
-                        "escalated_from_pending_id": pending_id.clone(),
+                        "escalated_from_pending_id": pending_id,
+                        "escalated_from_pending_ref": pending_ref,
                         "requested_approver": successor_entry.requested_approver,
                         "approval_recipient": successor_entry.approval_recipient,
                         "approval_channel": successor_entry.approval_channel,
@@ -733,6 +794,7 @@ impl MobkitRuntimeHandle {
             event_type: event_type.to_string(),
             action_id: pending_entry.action_id.clone(),
             pending_id: Some(pending_id.clone()),
+            pending_ref: Some(pending_ref),
             actor_id: pending_entry.actor_id.clone(),
             risk_tier: pending_entry.risk_tier.clone(),
             outcome: outcome.clone(),
@@ -743,19 +805,23 @@ impl MobkitRuntimeHandle {
                 "approval_route_id": pending_entry.approval_route_id,
                 "approval_delivery_id": pending_entry.approval_delivery_id,
                 "next_pending_id": next_pending_id,
+                "next_pending_ref": next_pending_ref,
                 "origin": pending_entry.origin,
             }),
         });
         self.gating_resolution_observers
             .notify(&GatingResolutionNotice {
                 pending_id: pending_id.clone(),
+                pending_ref,
                 action_id: pending_entry.action_id.clone(),
                 approved: matches!(decision, GatingDecision::Approve),
                 next_pending_id: next_pending_id.clone(),
+                next_pending_ref,
                 cause: event_type.to_string(),
             });
         Ok(GatingDecisionResult {
             pending_id,
+            pending_ref,
             action_id: pending_entry.action_id,
             approver_id,
             decision,
@@ -763,6 +829,7 @@ impl MobkitRuntimeHandle {
             decided_at_ms,
             reason,
             next_pending_id,
+            next_pending_ref,
         })
     }
 

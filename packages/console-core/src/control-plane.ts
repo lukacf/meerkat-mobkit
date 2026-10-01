@@ -113,6 +113,8 @@ export type ResponsePhase = "waiting" | "tool-executing" | "generating" | null;
 
 export interface GatingActionResult {
   pending_id: string;
+  /** The opaque ref the decision resolved. */
+  pending_ref: string;
   action_id: string;
   approver_id: string;
   decision: "approve" | "reject" | "escalate";
@@ -120,6 +122,7 @@ export interface GatingActionResult {
   decided_at_ms: number;
   reason?: string;
   next_pending_id?: string;
+  next_pending_ref?: string;
 }
 
 export interface RoutingSectionView {
@@ -153,7 +156,8 @@ export interface RoutingSectionView {
 }
 
 export interface GatingActionRequest {
-  pending_id: string;
+  /** The opaque ref from the pending entry, echoed verbatim. */
+  pending_ref: string;
   approver_id: string;
   decision: "approve" | "reject" | "escalate";
   reason?: string;
@@ -453,16 +457,17 @@ export function normalizeGatingActionRequest(value: unknown): GatingActionReques
   if (!record) {
     return null;
   }
-  const pendingId = trimString(record.pending_id);
+  // Refs are opaque: echoed exactly, never trimmed or rebuilt.
+  const pendingRef = typeof record.pending_ref === "string" && record.pending_ref ? record.pending_ref : undefined;
   const approverId = trimString(record.approver_id);
-  if (!pendingId || !approverId) {
+  if (!pendingRef || !approverId) {
     return null;
   }
   if (record.decision !== "approve" && record.decision !== "reject" && record.decision !== "escalate") {
     return null;
   }
   return {
-    pending_id: pendingId,
+    pending_ref: pendingRef,
     approver_id: approverId,
     decision: record.decision,
     ...(trimString(record.reason) ? { reason: trimString(record.reason) } : {}),
@@ -475,10 +480,11 @@ export function normalizeGatingActionResult(value: unknown): GatingActionResult 
     return null;
   }
   const pendingId = trimString(record.pending_id);
+  const pendingRef = typeof record.pending_ref === "string" && record.pending_ref ? record.pending_ref : undefined;
   const actionId = trimString(record.action_id);
   const approverId = trimString(record.approver_id);
   const decidedAt = normalizeFiniteNumber(record.decided_at_ms);
-  if (!pendingId || !actionId || !approverId || decidedAt === undefined) {
+  if (!pendingId || !pendingRef || !actionId || !approverId || decidedAt === undefined) {
     return null;
   }
   if (record.decision !== "approve" && record.decision !== "reject" && record.decision !== "escalate") {
@@ -489,6 +495,7 @@ export function normalizeGatingActionResult(value: unknown): GatingActionResult 
   }
   return {
     pending_id: pendingId,
+    pending_ref: pendingRef,
     action_id: actionId,
     approver_id: approverId,
     decision: record.decision,
@@ -496,6 +503,7 @@ export function normalizeGatingActionResult(value: unknown): GatingActionResult 
     decided_at_ms: decidedAt,
     ...(trimString(record.reason) ? { reason: trimString(record.reason) } : {}),
     ...(trimString(record.next_pending_id) ? { next_pending_id: trimString(record.next_pending_id) } : {}),
+    ...(typeof record.next_pending_ref === "string" && record.next_pending_ref ? { next_pending_ref: record.next_pending_ref } : {}),
   };
 }
 

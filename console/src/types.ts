@@ -477,7 +477,8 @@ export interface MemoryInjectionEntry {
 
 export interface MemoryPendingPromotion {
   realm: string;
-  pending_id: string;
+  /** The gating ref the promotion waits on. */
+  pending_ref: string;
   record_id: string;
   scope_kind: string;
   scope_key: string;

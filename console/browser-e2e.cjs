@@ -717,6 +717,7 @@ function startMockConsoleServer(port, options = {}) {
             result: {
               pending: [{
                 pending_id: "gate-control-1",
+                pending_ref: "gpr1.0000000000000000000000000000c0de.1",
                 action_id: "deploy-preview",
                 identity: "identity:luka",
                 waited_ms: 1_500,
@@ -749,7 +750,7 @@ function startMockConsoleServer(port, options = {}) {
             jsonrpc: "2.0",
             id: rpcId,
             result: {
-              pending_id: payload.params?.pending_id,
+              pending_ref: payload.params?.pending_ref,
               approver_id: payload.params?.approver_id,
               decision: payload.params?.decision,
               outcome: "accepted",
@@ -2912,17 +2913,24 @@ async function runHeadlessControlSurfaceBrowserProof() {
 
     await page.getByTestId("nav:gating").click();
     await page.getByTestId("gating-panel").waitFor({ timeout: 10_000 });
-    await page.getByTestId("gating-pending:gate-control-1").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-pending:gpr1.0000000000000000000000000000c0de.1").waitFor({ timeout: 10_000 });
     await waitForRpcMethod(server, "mobkit/gating/pending");
     await waitForRpcMethod(server, "mobkit/gating/audit");
-    await page.getByTestId("gating-action:gate-control-1:approve").click();
+    await page.getByTestId("gating-action:gpr1.0000000000000000000000000000c0de.1:approve").click();
     await waitForRpcMethod(server, "mobkit/gating/decide", 1);
-    await page.getByTestId("gating-action:gate-control-1:reject").waitFor({ timeout: 10_000 });
-    await page.getByTestId("gating-action:gate-control-1:reject").click();
+    await page.getByTestId("gating-action:gpr1.0000000000000000000000000000c0de.1:reject").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gpr1.0000000000000000000000000000c0de.1:reject").click();
     await waitForRpcMethod(server, "mobkit/gating/decide", 2);
-    await page.getByTestId("gating-action:gate-control-1:escalate").waitFor({ timeout: 10_000 });
-    await page.getByTestId("gating-action:gate-control-1:escalate").click();
+    await page.getByTestId("gating-action:gpr1.0000000000000000000000000000c0de.1:escalate").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gpr1.0000000000000000000000000000c0de.1:escalate").click();
     await waitForRpcMethod(server, "mobkit/gating/decide", 3);
+    // Decisions name the opaque owner ref, never the reusable display ID.
+    for (const request of server.requests.filter((candidate) => candidate.url === "/console/rpc")) {
+      const body = JSON.parse(request.body || "{}");
+      if (body.method !== "mobkit/gating/decide") continue;
+      assert.equal(body.params?.pending_ref, "gpr1.0000000000000000000000000000c0de.1");
+      assert.equal("pending_id" in (body.params || {}), false);
+    }
 
     await openSidebarAgentChat(page, "Identity Luka");
     await page.getByTestId("conv-action:respawn").waitFor({ timeout: 10_000 });

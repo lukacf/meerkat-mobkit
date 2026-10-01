@@ -16,10 +16,10 @@ use crate::runtime::{
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
     GatingDecideError, GatingDecideRequest, GatingDecision, GatingEvaluateRequest, GatingRiskTier,
     LocalJsonMemoryStoreError, MemoryIndexError, MemoryIndexRequest, MemoryQueryRequest,
-    MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest, ROUTING_RETRY_MAX_CAP,
+    MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest, PendingRef, ROUTING_RETRY_MAX_CAP,
     RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeRoute,
-    RuntimeRouteMutationError, SessionPersistenceRow, SubscribeError, SubscribeRequest,
-    SubscribeScope, handle_console_rest_json_route, route_module_call,
+    RuntimeRouteMutationError, SessionPersistenceRow, StalePendingDecisionReason, SubscribeError,
+    SubscribeRequest, SubscribeScope, handle_console_rest_json_route, route_module_call,
 };
 use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 
@@ -1124,7 +1124,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
-                        data: None,
+                        data: err.data(),
                     }),
                 },
             }
@@ -3115,7 +3115,7 @@ async fn handle_unified_rpc_json_inner(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
-                        data: None,
+                        data: err.data(),
                     }),
                 },
             }

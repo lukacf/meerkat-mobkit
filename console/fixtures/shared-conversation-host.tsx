@@ -60,8 +60,8 @@ function SharedHost() {
   const approvalResource = useMemo(() => createPendingApprovalResource({
     scopeKey: scope,
     load: signal => callConsoleRpc(baseUrl, "mobkit/gating/pending", {}, undefined, signal),
-    decide: (pendingId, decision, signal) => callConsoleRpc(baseUrl, "mobkit/gating/decide", {
-      pending_id: pendingId, decision, approver_id: "acceptance-operator", reason: "Reviewed evidence",
+    decide: (pendingRef, decision, signal) => callConsoleRpc(baseUrl, "mobkit/gating/decide", {
+      pending_ref: pendingRef, decision, approver_id: "acceptance-operator", reason: "Reviewed evidence",
     }, undefined, signal),
   }), [scope, baseUrl]);
   useEffect(() => {
@@ -189,9 +189,9 @@ function SharedHost() {
     <ConsoleTransportStatus state={transportState} onRetry={() => setRevision(value => value + 1)} />
     {error ? <div role="alert">{error}</div> : null}
     {showInbox && activeApprovals ? <aside aria-label="Approval inbox">
-      {activeApprovals.requests.map(request => <ApprovalCard key={request.pendingId} request={request}
+      {activeApprovals.requests.map(request => <ApprovalCard key={request.pendingRef} request={request}
         resourceStatus={activeApprovals.status} readOnly={activeApprovals.readOnly}
-        decision={activeApprovals.decisions[request.pendingId]}
+        decision={activeApprovals.decisions[request.pendingRef]}
         onDecide={(id, action) => void approvalResource.decide(id, action)} />)}
     </aside> : null}
     <div className="acceptance-panes">

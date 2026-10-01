@@ -48,7 +48,7 @@ Only `action`, `actor_id`, and `risk_tier` are required. MobKit mints the `actio
 
 - `action_id`, `action`, `actor_id`, and the effective `risk_tier`
 - one of `allowed`, `allowed_with_audit`, `pending_approval`, or `safe_draft` in `outcome`
-- `pending_id` when approval is pending
+- `pending_id` and `pending_ref` when approval is pending
 - `fallback_reason` when conflict policy forced `safe_draft`
 
 <Note>
@@ -57,9 +57,9 @@ When the stdio `rpc_gateway` loads an `actions` map from `runtime_options.gating
 
 ## Pending approval
 
-An `r3` evaluation creates a `GatingPendingEntry` with the action and actor identity, optional requested approver and notification fields, and `created_at_ms` and `deadline_at_ms` timestamps.
+An `r3` evaluation creates a `GatingPendingEntry` with its `pending_id`, its `pending_ref`, the action and actor identity, optional requested approver and notification fields, and `created_at_ms` and `deadline_at_ms` timestamps.
 
-If both `approval_recipient` and `approval_channel` are present, the runtime attempts to route and send a `gating_approval_request` through the loaded router and delivery modules. A missing module or failed notification is recorded in the `pending_created` audit detail. It does not prevent the pending entry from being created.
+If both `approval_recipient` and `approval_channel` are present, the runtime attempts to route and send a `gating_approval_request` through the loaded router and delivery modules. The request payload carries both `pending_id` and `pending_ref`, and its idempotency key is `gating-approval-<pending_ref>`. A missing module or failed notification is recorded in the `pending_created` audit detail. It does not prevent the pending entry from being created.
 
 Approval timeouts default to 60 seconds and are clamped to the runtime limits. Expiry is refreshed lazily when another gating operation evaluates, lists pending entries, decides, or reads the audit log. An expired entry is removed and recorded as:
 
@@ -74,13 +74,27 @@ Approval timeouts default to 60 seconds and are clamped to the runtime limits. E
 }
 ```
 
+## Pending refs
+
+Each gating owner has a random incarnation, minted when the owner is built. `pending_id` (`gate-pending-000002`) is a display ID drawn from the owner's sequence. An owner that starts without restored state starts that sequence again, so the next request it mints can reuse the display ID of a request the replaced owner issued.
+
+`pending_ref` identifies one request across owners. On the wire it is the opaque string `gpr1.<incarnation>.<seq>`, where the incarnation is 32 lowercase hex characters and the sequence is canonical decimal:
+
+```json
+"gpr1.4f9c2e0b7d1a4c3e8b5f6a7d9e0c1b2a.2"
+```
+
+Treat the ref as opaque. Echo it verbatim from the pending entry or evaluate result. Do not trim, rebuild, or compare its parts. Escalations return the successor's ref as `next_pending_ref`. Audit entries carry `pending_ref` exactly when they carry `pending_id`.
+
+A host that persists gating state with `gating_state_snapshot` and `restore_gating_state` persists the incarnation too, so refs issued before a restart still resolve after it. Snapshots are version 2. A version 1 snapshot, which predates incarnations, restores under a fresh incarnation, so no ref the old owner could have issued resolves against the restored owner.
+
 ## Decisions
 
-Resolve a pending entry with:
+Resolve a pending entry by its ref:
 
 ```json
 {
-  "pending_id": "gate-pending-000002",
+  "pending_ref": "gpr1.4f9c2e0b7d1a4c3e8b5f6a7d9e0c1b2a.2",
   "approver_id": "human-reviewer",
   "decision": "approve",
   "reason": "Reviewed against the customer request"
@@ -93,7 +107,24 @@ Resolve a pending entry with:
 | `reject` | `safe_draft` | `rejection_decided` |
 | `escalate` | `pending_approval` | `escalation_decided` and a `pending_created` entry for the successor |
 
-Approval by the original `actor_id` is rejected. When `requested_approver` is set, every decision must come from that approver. Escalation creates a successor pending entry, clears the requested approver, preserves the original deadline, and returns its ID in `next_pending_id`.
+Approval by the original `actor_id` is rejected. When `requested_approver` is set, every decision must come from that approver. A refused authorization leaves the request pending, in its original queue position. Escalation creates a successor pending entry, clears the requested approver, preserves the original deadline, and returns its ID and ref in `next_pending_id` and `next_pending_ref`.
+
+### Stale decisions
+
+A decision that does not name a request pending in this owner is refused as a stale decision. It resolves nothing, writes no audit entry, and notifies no resolution observer. The JSON-RPC error has code `-32602` and typed data:
+
+```json
+{ "kind": "stale_pending_decision", "reason": "other_incarnation" }
+```
+
+| Reason | Meaning |
+|--------|---------|
+| `malformed` | The request carried no canonical `pending_ref`. This includes a request that names only the legacy `pending_id`. |
+| `unknown` | The ref names this owner but a request it never issued. |
+| `other_incarnation` | A different owner issued the ref, such as the runtime this one replaced. |
+| `resolved` | The request was issued here and is no longer pending: it was decided, timed out, or evicted. |
+
+Treat the reason set as open. On a stale decision, refresh the pending list instead of retrying. The TypeScript and Python SDKs raise `StalePendingDecisionError` with the reason.
 
 ## Audit records
 
@@ -106,6 +137,7 @@ pub struct GatingAuditEntry {
     pub event_type: String,
     pub action_id: String,
     pub pending_id: Option<String>,
+    pub pending_ref: Option<PendingRef>,
     pub actor_id: String,
     pub risk_tier: GatingRiskTier,
     pub outcome: GatingOutcome,
@@ -129,6 +161,8 @@ The audit log and pending queue are bounded runtime collections. They are not th
 ## Memory conflict integration
 
 For `r2` and `r3`, the runtime checks the supplied `entity` and `topic` against memory conflicts. If the `memory` module is loaded, that core MCP boundary must provide the `memory.conflict_read` tool. Without a loaded memory module, the runtime uses its in-process conflict ledger.
+
+The memory steward's gated quarantine promotions wait on a gating request. The steward stores each promotion under its `pending_ref` and resolves it only when a resolution names that ref, so a later owner's request that reuses the display ID never commits or discards it.
 
 ## API methods
 

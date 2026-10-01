@@ -176,6 +176,7 @@ export {
   StorageResolutionError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
+  StalePendingDecisionError,
   ContractMismatchError,
   NotConnectedError,
   TurnFailedError,

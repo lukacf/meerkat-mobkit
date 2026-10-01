@@ -998,10 +998,11 @@ function normalizeGatingActionResult(value) {
     return null;
   }
   const pendingId = trimString(record5.pending_id);
+  const pendingRef = typeof record5.pending_ref === "string" && record5.pending_ref ? record5.pending_ref : void 0;
   const actionId = trimString(record5.action_id);
   const approverId = trimString(record5.approver_id);
   const decidedAt = normalizeFiniteNumber(record5.decided_at_ms);
-  if (!pendingId || !actionId || !approverId || decidedAt === void 0) {
+  if (!pendingId || !pendingRef || !actionId || !approverId || decidedAt === void 0) {
     return null;
   }
   if (record5.decision !== "approve" && record5.decision !== "reject" && record5.decision !== "escalate") {
@@ -1012,13 +1013,15 @@ function normalizeGatingActionResult(value) {
   }
   return {
     pending_id: pendingId,
+    pending_ref: pendingRef,
     action_id: actionId,
     approver_id: approverId,
     decision: record5.decision,
     outcome: record5.outcome,
     decided_at_ms: decidedAt,
     ...trimString(record5.reason) ? { reason: trimString(record5.reason) } : {},
-    ...trimString(record5.next_pending_id) ? { next_pending_id: trimString(record5.next_pending_id) } : {}
+    ...trimString(record5.next_pending_id) ? { next_pending_id: trimString(record5.next_pending_id) } : {},
+    ...typeof record5.next_pending_ref === "string" && record5.next_pending_ref ? { next_pending_ref: record5.next_pending_ref } : {}
   };
 }
 function normalizeRoutingSectionView(value) {
@@ -5212,13 +5215,15 @@ var millis = (value) => typeof value === "number" && Number.isFinite(value) && v
 function normalizePendingApproval(value) {
   if (!value || typeof value !== "object") return null;
   const raw = value;
+  const pendingRef = text(raw.pending_ref);
   const pendingId = text(raw.pending_id);
-  if (!pendingId) return null;
+  if (!pendingRef || !pendingId) return null;
   if (raw.status !== void 0 && raw.status !== "pending" && raw.status !== "settled" && raw.status !== "expired") return null;
   const record5 = raw.origin && typeof raw.origin === "object" ? raw.origin : void 0;
   const identity = text(record5?.identity);
   const actions = Array.isArray(raw.supported_actions) ? APPROVAL_ACTIONS.filter((action) => raw.supported_actions.includes(action)) : APPROVAL_ACTIONS;
   return {
+    pendingRef,
     pendingId,
     actionId: text(raw.action_id) || "Unknown action scope",
     action: text(raw.action) || text(raw.summary) || text(raw.action_id) || "Approval requested",
@@ -5259,6 +5264,7 @@ function unavailableCapability(error) {
   const record5 = error;
   return record5?.kind === "console-capability-unavailable" && typeof record5.method === "string" && Array.isArray(record5.availableMethods) && record5.availableMethods.every((method) => typeof method === "string") ? { method: record5.method, availableMethods: record5.availableMethods } : null;
 }
+var isStaleDecision = (error) => error?.rpcError?.data?.kind === "stale_pending_decision";
 var isDenied = (error) => {
   const record5 = error;
   return record5?.httpStatus === 401 || record5?.httpStatus === 403 || record5?.rpcError?.code === -32030 || record5?.rpcError?.data?.kind === "access_denied";
@@ -5324,8 +5330,8 @@ function createPendingApprovalResource(input) {
         for (const row of raw) {
           const request = normalizePendingApproval(row);
           if (!request) throw new Error("Pending approval response contains an invalid request");
-          if (!ids.has(request.pendingId)) {
-            ids.add(request.pendingId);
+          if (!ids.has(request.pendingRef)) {
+            ids.add(request.pendingRef);
             requests.push(request);
           }
         }
@@ -5381,33 +5387,36 @@ function createPendingApprovalResource(input) {
       };
     },
     refresh: () => refresh(true),
-    decide(pendingId, action) {
+    decide(pendingRef, action) {
       if (disposed) return Promise.resolve();
-      const existing = decisionJobs.get(pendingId);
+      const existing = decisionJobs.get(pendingRef);
       if (existing) return existing;
-      const request = snapshot.requests.find((candidate) => candidate.pendingId === pendingId);
+      const request = snapshot.requests.find((candidate) => candidate.pendingRef === pendingRef);
       if (snapshot.readOnly || denied || snapshot.status !== "ready" || !request || request.status !== "pending" || !request.actions.includes(action)) {
         return Promise.resolve();
       }
-      const previousDecision = snapshot.decisions[pendingId];
+      const previousDecision = snapshot.decisions[pendingRef];
       ++decisionGeneration;
-      setDecision(pendingId, { phase: "submitting", action });
+      setDecision(pendingRef, { phase: "submitting", action });
       const job = (async () => {
         try {
-          const value = await Promise.resolve().then(() => input.decide(pendingId, action, lifetime.signal));
+          const value = await Promise.resolve().then(() => input.decide(pendingRef, action, lifetime.signal));
           if (disposed || denied) return;
           const result = normalizeGatingActionResult(value);
-          if (!result || result.pending_id !== pendingId || result.action_id !== request.actionId || result.decision !== action || action === "approve" && result.outcome !== "allowed" || action === "reject" && result.outcome !== "safe_draft" || action === "escalate" && (result.outcome !== "pending_approval" || !result.next_pending_id || result.next_pending_id === pendingId)) {
+          if (!result || result.pending_ref !== pendingRef || result.action_id !== request.actionId || result.decision !== action || action === "approve" && result.outcome !== "allowed" || action === "reject" && result.outcome !== "safe_draft" || action === "escalate" && (result.outcome !== "pending_approval" || !result.next_pending_ref || result.next_pending_ref === pendingRef)) {
             throw new Error("Decision outcome is unconfirmed; refreshing approval state");
           }
-          setDecision(pendingId, { phase: "settled", action, result });
-          publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingId !== pendingId) });
+          setDecision(pendingRef, { phase: "settled", action, result });
+          publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingRef !== pendingRef) });
         } catch (error) {
           if (disposed || denied) return;
           const capability = unavailableCapability(error);
-          if (capability?.method === CONSOLE_RPC_METHODS.gatingDecide && capability.availableMethods.includes(CONSOLE_RPC_METHODS.gatingPending)) {
+          if (isStaleDecision(error)) {
+            setDecision(pendingRef, { phase: "superseded", action, error: "This request is no longer pending; nothing was decided" });
+            publish({ requests: snapshot.requests.filter((candidate) => candidate.pendingRef !== pendingRef) });
+          } else if (capability?.method === CONSOLE_RPC_METHODS.gatingDecide && capability.availableMethods.includes(CONSOLE_RPC_METHODS.gatingPending)) {
             publish({ readOnly: true });
-            setDecision(pendingId, previousDecision?.phase === "failed" ? previousDecision : {
+            setDecision(pendingRef, previousDecision?.phase === "failed" ? previousDecision : {
               phase: "unavailable",
               action,
               error: "Approval decisions are unavailable with current access"
@@ -5416,14 +5425,14 @@ function createPendingApprovalResource(input) {
             denied = true;
             publish({ requests: [], decisions: {}, status: isDenied(error) ? "forbidden" : "unsupported", readOnly: true, error: errorText(error) });
             lifetime.abort();
-          } else setDecision(pendingId, { phase: "failed", action, error: errorText(error) });
+          } else setDecision(pendingRef, { phase: "failed", action, error: errorText(error) });
         } finally {
           ++decisionGeneration;
-          decisionJobs.delete(pendingId);
+          decisionJobs.delete(pendingRef);
           if (!disposed && !denied) await refresh(true);
         }
       })();
-      decisionJobs.set(pendingId, job);
+      decisionJobs.set(pendingRef, job);
       return job;
     },
     dispose() {
@@ -5832,14 +5841,14 @@ function JumpToLatest({ onClick, working = false }) {
 var import_jsx_runtime8 = require("react/jsx-runtime");
 var labels = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
 function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }) {
-  const pending = request.status === "pending" && decision?.phase !== "settled";
+  const pending = request.status === "pending" && decision?.phase !== "settled" && decision?.phase !== "superseded";
   const submitting = decision?.phase === "submitting";
   const stale = resourceStatus !== "ready";
-  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": `gating-pending:${request.pendingId}`, children: [
+  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : decision?.phase === "superseded" ? "superseded" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": `gating-pending:${request.pendingRef}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("header", { className: "cc-approval__header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: request.action }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval__status", role: "status", children: state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved" })
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval__status", role: "status", children: state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "superseded" ? "No longer pending" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved" })
     ] }),
     request.rationale ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: request.rationale }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dl", { className: "cc-approval__scope", children: [
@@ -5873,14 +5882,14 @@ function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onD
     ] }) : null,
     readOnly ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: "Read-only access" }) : null,
     resourceStatus === "forbidden" ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: "Approval access denied" }) : null,
-    pending ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": `gating-action:${request.pendingId}:${action}`, onClick: () => {
-      void onDecide(request.pendingId, action);
+    pending ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": `gating-action:${request.pendingRef}:${action}`, onClick: () => {
+      void onDecide(request.pendingRef, action);
     }, children: labels[action] }, action)) }) : null
   ] });
 }
 function ApprovalAttention({ snapshot, onOpen }) {
   if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
-  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
+  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingRef]?.phase !== "settled");
   const ready = snapshot.status === "ready";
   const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
   return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", "data-state": snapshot.status, "data-pending": ready && requests.length > 0, children: [
@@ -5891,7 +5900,7 @@ function ApprovalAttention({ snapshot, onOpen }) {
         type: "button",
         "aria-label": `Needs you, ${status}`,
         title: status,
-        onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingId : void 0),
+        onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingRef : void 0),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("svg", { className: "cc-approval-attention__icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "m4 5-2 9v5h20v-5l-2-9H4Z" }),
@@ -5917,8 +5926,8 @@ function approvalInteractionIdsByTurn(turns) {
 function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }) {
   if (!approvalSnapshot || !approvalIdentity) return null;
   const requests = approvalSnapshot.requests.filter((request) => Boolean(request.origin?.interactionId) === Boolean(interactionIds) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_jsx_runtime9.Fragment, { children: requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ApprovalCard, { request, resourceStatus: approvalSnapshot.status, decision: approvalSnapshot.decisions[request.pendingId], readOnly: approvalSnapshot.readOnly || !onApprovalDecision, onDecide: onApprovalDecision ?? (() => {
-  }) }, request.pendingId)) });
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_jsx_runtime9.Fragment, { children: requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ApprovalCard, { request, resourceStatus: approvalSnapshot.status, decision: approvalSnapshot.decisions[request.pendingRef], readOnly: approvalSnapshot.readOnly || !onApprovalDecision, onDecide: onApprovalDecision ?? (() => {
+  }) }, request.pendingRef)) });
 }
 
 // ../packages/console-components/src/conversation/presentation-policy.tsx
@@ -31675,26 +31684,26 @@ function GatingInboxPanel({
   readOnly = false,
   resource,
   onRefresh,
-  selectedPendingId
+  selectedPendingRef
 }) {
   const [tab2, setTab] = import_react27.default.useState("pending");
   const [selectedId, setSelectedId] = import_react27.default.useState(null);
   const listRef = import_react27.default.useRef(null);
-  const pendingRequests = resource?.requests.filter((request) => request.status === "pending" && resource.decisions[request.pendingId]?.phase !== "settled");
+  const pendingRequests = resource?.requests.filter((request) => request.status === "pending" && resource.decisions[request.pendingRef]?.phase !== "settled");
   const pendingLabel = !resource || resource.status === "ready" ? String(pendingRequests ? pendingRequests.length : pending.length) : "?";
-  const selectedRequestAvailable = resource?.requests.some((request) => request.pendingId === selectedPendingId) === true;
+  const selectedRequestAvailable = resource?.requests.some((request) => request.pendingRef === selectedPendingRef) === true;
   import_react27.default.useEffect(() => {
-    if (selectedPendingId) {
-      setSelectedId(selectedPendingId);
+    if (selectedPendingRef) {
+      setSelectedId(selectedPendingRef);
       setTab("pending");
     }
-  }, [selectedPendingId]);
+  }, [selectedPendingRef]);
   import_react27.default.useEffect(() => {
-    if (tab2 !== "pending" || !selectedPendingId || !selectedRequestAvailable) return;
-    const selected = Array.from(listRef.current?.querySelectorAll("[data-approval-id]") || []).find((element2) => element2.dataset.approvalId === selectedPendingId);
+    if (tab2 !== "pending" || !selectedPendingRef || !selectedRequestAvailable) return;
+    const selected = Array.from(listRef.current?.querySelectorAll("[data-approval-id]") || []).find((element2) => element2.dataset.approvalId === selectedPendingRef);
     selected?.scrollIntoView?.({ block: "nearest" });
     selected?.focus({ preventScroll: true });
-  }, [selectedPendingId, selectedRequestAvailable, tab2]);
+  }, [selectedPendingRef, selectedRequestAvailable, tab2]);
   const autoApproved = audit.filter((e) => {
     const r2 = e;
     return String(r2.decision || "").toLowerCase() === "auto_approve" || String(r2.event_type || "").includes("auto");
@@ -31762,7 +31771,7 @@ function GatingInboxPanel({
       resource.status !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { role: "status", children: resource.status === "forbidden" ? "Approval access denied" : resource.status === "unsupported" ? "Approvals are not available for this connection" : resource.status === "loading" ? "Loading approvals" : resource.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable" }) : null,
       onRefresh ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { type: "button", onClick: onRefresh, children: "Refresh approvals" }) : null,
       resource.status === "ready" && pendingRequests?.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { children: "No pending approvals." }) : null,
-      resource.requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { tabIndex: -1, "data-approval-id": request.pendingId, "data-selected": selectedId === request.pendingId, className: selectedId === request.pendingId ? "is-selected" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ApprovalCard, { request, resourceStatus: resource.status, decision: resource.decisions[request.pendingId], readOnly: readOnly || resource.readOnly, onDecide }) }, request.pendingId))
+      resource.requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { tabIndex: -1, "data-approval-id": request.pendingRef, "data-selected": selectedId === request.pendingRef, className: selectedId === request.pendingRef ? "is-selected" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ApprovalCard, { request, resourceStatus: resource.status, decision: resource.decisions[request.pendingRef], readOnly: readOnly || resource.readOnly, onDecide }) }, request.pendingRef))
     ] }) : tab2 === "policies" ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gating__empty", role: "status", children: "Policy details are not available in this console." }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
       currentList.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "gating__empty", children: [
         "No ",
@@ -31771,14 +31780,16 @@ function GatingInboxPanel({
       ] }),
       currentList.map((entry, index2) => {
         const r2 = entry;
-        const pid = String(r2.pending_id || r2.audit_id || `item-${index2}`);
+        const pendingRef = typeof r2.pending_ref === "string" && r2.pending_ref ? r2.pending_ref : void 0;
+        const pid = String(pendingRef || r2.audit_id || `item-${index2}`);
+        const label = String(r2.pending_id || r2.audit_id || `item-${index2}`);
         const action = String(r2.action_id || r2.event_type || "unknown action");
         const agent = String(r2.agent || r2.identity || r2.actor || "");
         const waited = formatWaited(r2);
         const risk = getRisk(r2);
         const payload = payloadSummary(r2);
         const selected = selectedId === pid;
-        const showActions = tab2 === "pending" && !readOnly;
+        const showActions = tab2 === "pending" && !readOnly && pendingRef !== void 0;
         return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
           "div",
           {
@@ -31788,7 +31799,7 @@ function GatingInboxPanel({
             onClick: () => setSelectedId(pid),
             children: [
               /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__risk" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__id", children: pid.slice(0, 8) }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "gitem__id", children: label.slice(0, 8) }),
               /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gitem__action", children: action }),
                 payload && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "gitem__payload", children: payload }),
@@ -34093,7 +34104,7 @@ function MemoryPanel({
               "div",
               {
                 className: "memory-row memory-row--static",
-                "data-testid": `memory-pending:${pending.pending_id}`,
+                "data-testid": `memory-pending:${pending.pending_ref}`,
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "memory-row__title", children: [
                     pending.record_id,
@@ -34111,7 +34122,7 @@ function MemoryPanel({
                       {
                         type: "button",
                         className: "memory-back",
-                        "data-testid": `memory-pipeline-decide:${pending.pending_id}`,
+                        "data-testid": `memory-pipeline-decide:${pending.pending_ref}`,
                         onClick: onOpenGating,
                         children: "\u2192 decide in Gating inbox"
                       }
@@ -34119,7 +34130,7 @@ function MemoryPanel({
                   ] })
                 ]
               },
-              pending.pending_id
+              pending.pending_ref
             ))
           ] }) : null,
           quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "memory-group", children: [
@@ -44041,11 +44052,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         target,
         signal
       })).result,
-      decide: async (pendingId, decision, signal) => (await consoleController.commands.execute({
+      decide: async (pendingRef, decision, signal) => (await consoleController.commands.execute({
         command: CONSOLE_COMMAND_NAMES2.decideGating,
         target,
         signal,
-        params: { pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` }
+        params: { pending_ref: pendingRef, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}` }
       })).result
     });
     approvalResourceRef.current = resource;
@@ -44059,8 +44070,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     };
   }, [approvalScope, Boolean(experience), hasMobControlSurface, consoleReadOnly, consoleController]);
   const activeApprovals = approvalSnapshot?.owner === consoleController && approvalSnapshot.snapshot.scopeKey === approvalScope ? approvalSnapshot.snapshot : void 0;
-  function openApproval(pendingId) {
-    setSelectedApprovalId(pendingId);
+  function openApproval(pendingRef) {
+    setSelectedApprovalId(pendingRef);
     dock.openTarget(buildControlTarget2("gating"), "replace_focused");
   }
   const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
@@ -45216,8 +45227,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setActionError(errorMessage(stopError));
     }
   }
-  async function onGatingDecision(pendingId, decision) {
-    await approvalResourceRef.current?.decide(pendingId, decision);
+  async function onGatingDecision(pendingRef, decision) {
+    await approvalResourceRef.current?.decide(pendingRef, decision);
     if (dock.viewState.panels.some((panel) => panel.target?.kind === "gating" || panel.target?.kind === "gates")) {
       await refreshPanelData().catch(() => {
       });
@@ -45917,7 +45928,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         {
           pending: activeApprovals?.requests.map((request) => request.raw) || [],
           resource: activeApprovals,
-          selectedPendingId: selectedApprovalId,
+          selectedPendingRef: selectedApprovalId,
           onRefresh: () => void approvalResourceRef.current?.refresh(),
           audit: gatingData.audit,
           onDecide: (pid, decision) => void onGatingDecision(pid, decision),
@@ -45970,7 +45981,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         {
           pending: activeApprovals?.requests.map((request) => request.raw) || [],
           resource: activeApprovals,
-          selectedPendingId: selectedApprovalId,
+          selectedPendingRef: selectedApprovalId,
           onRefresh: () => void approvalResourceRef.current?.refresh(),
           audit: gatingData.audit,
           onDecide: (pid, decision) => void onGatingDecision(pid, decision),
