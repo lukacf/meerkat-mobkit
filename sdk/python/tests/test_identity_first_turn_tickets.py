@@ -25,6 +25,8 @@ from meerkat_mobkit.errors import (
     TurnTrackingUnavailableError,
     TurnTrackingUnavailableWarning,
     TurnUnknownError,
+    TurnWaitTimeoutError,
+    WaitEndedError,
 )
 from meerkat_mobkit.identity_first_models import (
     AwaitedTurn,
@@ -565,6 +567,97 @@ class TestAttribution:
 
         assert "track_turn" not in transport.params_of("mobkit/send")[0]
         assert result.turn_ticket is None
+
+
+class _CursorOutcomeTransport(TicketTransport):
+    """Answers the identity-wide ``mobkit/wait_for_completion`` with a fixed
+    typed outcome, to drive the default (untracked) wait's failure paths."""
+
+    def __init__(self, *, sends, outcome: str, cursor: dict | None):
+        super().__init__(sends=sends)
+        self._outcome = outcome
+        self._cursor = cursor
+
+    def send_sync(self, request):
+        if request.get("method") == "mobkit/wait_for_completion":
+            self.calls.append(request)
+            params = request.get("params") or {}
+            result = {
+                "identity": params.get("identity"),
+                "outcome": self._outcome,
+                "completion_cursor": self._cursor,
+            }
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+        return super().send_sync(request)
+
+
+class TestDefaultPathCustody:
+    """Every failure after an untracked admission keeps its own type and
+    still carries the exact admission (and no ticket), with one dispatch."""
+
+    async def _fail(self, transport):
+        handle = IdentityAgentHandle(_make_runtime(transport), "keeper")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", TurnTrackingUnavailableWarning)
+            with pytest.raises(BaseException) as raised:
+                await handle.dispatch_text_and_wait("alpha", timeout=0.2, poll_interval=0.001)
+        assert len(transport.params_of("mobkit/dispatch")) == 1, "dispatched exactly once"
+        return raised.value
+
+    @pytest.mark.asyncio
+    async def test_a_wait_that_ended_carries_the_admission(self):
+        error = await self._fail(_CursorOutcomeTransport(
+            sends=[_sent(None, unavailable="autonomous_host")],
+            outcome="broken", cursor={"epoch": 3, "turns": 0},
+        ))
+        assert isinstance(error, WaitEndedError)
+        assert error.outcome == "broken"
+        assert isinstance(error.admission, DispatchResult)
+        assert error.ticket is None
+
+    @pytest.mark.asyncio
+    async def test_the_cursor_deadline_is_a_timeout_carrying_the_admission(self):
+        error = await self._fail(_CursorOutcomeTransport(
+            sends=[_sent(None, unavailable="autonomous_host")],
+            outcome="timed_out", cursor={"epoch": 3, "turns": 0},
+        ))
+        assert isinstance(error, TimeoutError)
+        assert isinstance(error, TurnWaitTimeoutError)
+        assert isinstance(error.admission, DispatchResult)
+        assert error.ticket is None
+
+    @pytest.mark.asyncio
+    async def test_a_missing_baseline_carries_the_admission(self):
+        sent = _sent(None, unavailable="autonomous_host")
+        del sent["completion_baseline"]
+        error = await self._fail(_CursorOutcomeTransport(
+            sends=[sent], outcome="completed", cursor={"epoch": 3, "turns": 1},
+        ))
+        assert type(error) is RuntimeError
+        assert "no completion_baseline" in str(error)
+        assert isinstance(error.admission, DispatchResult)
+        assert error.ticket is None
+
+    @pytest.mark.asyncio
+    async def test_an_incarnation_change_carries_the_admission(self):
+        error = await self._fail(_CursorOutcomeTransport(
+            sends=[_sent(None, unavailable="autonomous_host")],
+            outcome="incarnation_changed", cursor={"epoch": 4, "turns": 0},
+        ))
+        assert type(error) is RuntimeError
+        assert "superseded runtime incarnation" in str(error)
+        assert isinstance(error.admission, DispatchResult)
+        assert error.ticket is None
+
+    @pytest.mark.asyncio
+    async def test_an_untracked_alias_carries_the_admission(self):
+        error = await self._fail(_CursorOutcomeTransport(
+            sends=[_sent(None, unavailable="autonomous_host")],
+            outcome="untracked", cursor=None,
+        ))
+        assert type(error) is RuntimeError
+        assert isinstance(error.admission, DispatchResult)
+        assert error.ticket is None
 
 
 class TestModels:

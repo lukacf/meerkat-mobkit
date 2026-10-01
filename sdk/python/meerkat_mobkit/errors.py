@@ -425,14 +425,18 @@ class PostAdmissionObservationError(MobKitError):
 
 
 class TurnWaitTimeoutError(MobKitError, TimeoutError):
-    """A ``*_and_wait`` call's own turn did not settle by the caller's
-    deadline. It is a ``TimeoutError``, so existing handlers keep working,
-    and it carries ``admission`` (the send/dispatch result) and ``ticket`` so
-    the turn can be read later instead of redispatched."""
+    """A ``*_and_wait`` call's wait did not settle by the caller's deadline.
+    It is a ``TimeoutError``, so existing handlers keep working, and it
+    carries ``admission`` (the send/dispatch result) and ``ticket`` (``None``
+    when the delivery was untracked and the call waited identity-wide) so the
+    turn can be read later instead of redispatched."""
 
-    def __init__(self, identity: str, ticket: str, timeout: float, admission: Any):
+    def __init__(
+        self, identity: str, ticket: str | None, timeout: float, admission: Any,
+    ):
+        what = f"turn {ticket}" if ticket is not None else "the admitted delivery"
         super().__init__(
-            f"turn {ticket} of identity {identity!r} did not complete within "
+            f"{what} of identity {identity!r} did not complete within "
             f"{timeout}s; the admission result is retained, do not redispatch"
         )
         self.identity = identity

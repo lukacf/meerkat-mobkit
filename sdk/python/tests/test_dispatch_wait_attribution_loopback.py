@@ -18,6 +18,7 @@ here without a live model provider.
 from __future__ import annotations
 
 import asyncio
+import warnings
 import json
 import sys
 from pathlib import Path
@@ -340,10 +341,17 @@ async def test_cancelling_the_wait_never_redispatches(tmp_path):
         "mobkit/wait_for_turn": [{"sleep": 30, **_own("too late")}],
     })
     runtime = await _runtime(stand_in)
+    captured: dict[str, BaseException] = {}
+
+    async def dispatch_and_wait():
+        try:
+            return await runtime.agent(_IDENTITY).dispatch_text_and_wait("process", timeout=20)
+        except asyncio.CancelledError as cancelled:
+            captured["cancelled"] = cancelled
+            raise
+
     try:
-        task = asyncio.create_task(
-            runtime.agent(_IDENTITY).dispatch_text_and_wait("process", timeout=20)
-        )
+        task = asyncio.create_task(dispatch_and_wait())
         for _ in range(200):
             if stand_in.calls("mobkit/wait_for_turn"):
                 break
@@ -356,6 +364,42 @@ async def test_cancelling_the_wait_never_redispatches(tmp_path):
         assert len(stand_in.calls("mobkit/wait_for_turn")) == 1
     finally:
         await runtime.shutdown()
+
+    # The same CancelledError propagated, carrying the admitted delivery.
+    cancelled = captured["cancelled"]
+    assert type(cancelled) is asyncio.CancelledError
+    assert isinstance(cancelled.admission, DispatchResult)
+    assert cancelled.admission.turn_ticket == _TICKET
+    assert cancelled.ticket == _TICKET
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_real_transport_timeout_on_the_default_path_keeps_the_admission(tmp_path):
+    """The persistent transport raises a plain RuntimeError when a response
+    never arrives. On the default (untracked) path that error keeps its type
+    and carries the exact admission, with no ticket and one dispatch."""
+    stand_in = _StandIn(tmp_path, {
+        "mobkit/dispatch": [{"result": _admitted(None, unavailable="autonomous_host")}],
+        # Never answered within the transport's response deadline.
+        "mobkit/wait_for_completion": [{"sleep": 60, "result": {"outcome": "completed"}}],
+    })
+    runtime = await _runtime(stand_in)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", TurnTrackingUnavailableWarning)
+            with pytest.raises(RuntimeError) as raised:
+                await runtime.agent(_IDENTITY).dispatch_text_and_wait("process", timeout=0.2)
+    finally:
+        await runtime.shutdown()
+
+    error = raised.value
+    assert type(error) is RuntimeError
+    assert "persistent transport: timeout" in str(error)
+    assert isinstance(error.admission, DispatchResult)
+    assert error.admission.turn_ticket is None
+    assert error.ticket is None
+    assert len(stand_in.calls("mobkit/dispatch")) == 1
 
 
 @pytest.mark.asyncio

@@ -148,6 +148,23 @@ _OBSERVATION_RETRY_MAX_SECONDS = 2.0
 # response timeout or a closed stdout as RuntimeError and a dead subprocess as
 # an RPC error.
 _OBSERVATION_FAILURES = (RpcError, TransportError, NotConnectedError, RuntimeError)
+
+
+def _attach_admission(error: BaseException, admission: Any, ticket: str | None) -> None:
+    """Record the admitted delivery on a failure raised after admission.
+
+    The error keeps its type and is re-raised by the caller unchanged; only
+    ``admission`` and ``ticket`` are added where not already set, so a caller
+    can keep the receipt instead of redispatching the work."""
+    try:
+        if getattr(error, "admission", None) is None:
+            error.admission = admission  # type: ignore[attr-defined]
+        if getattr(error, "ticket", None) is None:
+            error.ticket = ticket  # type: ignore[attr-defined]
+    except AttributeError:
+        # An exception type with __slots__ cannot carry the receipt; it still
+        # propagates unchanged.
+        pass
 def _next_request_id(method: str) -> str:
     return f"{method}:{next(_request_counter)}"
 
@@ -1706,18 +1723,28 @@ class IdentityAgentHandle:
             TurnTrackingUnavailableWarning,
             stacklevel=4,
         )
+        from .errors import PostAdmissionObservationError, TurnWaitTimeoutError
         try:
             text = await self._wait_for_admission(
                 result, operation, timeout=timeout, poll_interval=poll_interval,
             )
-        # The cursor path raises its own typed RuntimeErrors (no baseline, a
-        # superseded incarnation, a live alias), so only RPC and transport
-        # failures are observation failures here.
+        # RPC and transport failures are observation failures. The cursor
+        # path's own errors (a wait that ended, no baseline, a superseded
+        # incarnation, a live alias, the persistent transport's plain
+        # RuntimeError on a response timeout or closed stdout) and caller
+        # cancellation keep their type and semantics; each still carries the
+        # admission, with no ticket, so the caller never redispatches.
         except (RpcError, TransportError, NotConnectedError) as err:
-            from .errors import PostAdmissionObservationError
             raise PostAdmissionObservationError(
                 self._identity, operation, result, None, attempts=1,
             ) from err
+        except TimeoutError as expired:
+            raise TurnWaitTimeoutError(
+                self._identity, None, timeout, result,
+            ) from expired
+        except BaseException as failure:
+            _attach_admission(failure, result, None)
+            raise
         return AwaitedTurn(
             text=text, attributed=False, admission=result, untracked_code=code,
         )
@@ -1738,6 +1765,27 @@ class IdentityAgentHandle:
         delivery is never repeated. The turn's typed outcomes (failed,
         unknown, wait ended, still pending at the deadline) are raised with
         the admission result attached."""
+        deadline = time.monotonic() + timeout
+        try:
+            return await self._observe_admitted_turn_loop(
+                result, ticket, operation, deadline, timeout, poll_interval,
+            )
+        # Caller cancellation (during the wait or a retry backoff) and any
+        # unexpected failure keep their type and propagate unchanged, with
+        # the admission and ticket attached. Typed outcomes already carry it.
+        except BaseException as failure:
+            _attach_admission(failure, result, ticket)
+            raise
+
+    async def _observe_admitted_turn_loop(
+        self,
+        result: Any,
+        ticket: str,
+        operation: str,
+        deadline: float,
+        timeout: float,
+        poll_interval: float,
+    ) -> Any:
         from .errors import (
             PostAdmissionObservationError,
             TurnFailedError,
@@ -1745,7 +1793,6 @@ class IdentityAgentHandle:
             TurnWaitTimeoutError,
             WaitEndedError,
         )
-        deadline = time.monotonic() + timeout
         attempts = 0
         while True:
             attempts += 1

@@ -21,6 +21,7 @@ import {
   TurnTrackingUnavailableError,
   TurnUnknownError,
   TurnWaitTimeoutError,
+  WaitEndedError,
 } from "../src/errors.js";
 
 const TICKET = "6f1c2a8e-0d4b-4b7e-9a51-3c2f8d7e1a90";
@@ -62,7 +63,12 @@ function own(output: string): Record<string, unknown> {
  * rejects like a gateway JSON-RPC error. The identity-wide methods report a
  * peer's completed turn, so any fallback is visible.
  */
-async function makeRuntime(script: { sends: Record<string, unknown>[]; waitForTurn?: Step[] }) {
+async function makeRuntime(script: {
+  sends: Record<string, unknown>[];
+  waitForTurn?: Step[];
+  /** Answer for `mobkit/wait_for_completion`; `raw` throws a plain Error. */
+  completion?: Record<string, unknown> | { raw: string };
+}) {
   const { MobKitRuntime } = await import("../src/runtime.js");
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const rt = new MobKitRuntime({
@@ -117,10 +123,15 @@ async function makeRuntime(script: { sends: Record<string, unknown>[]; waitForTu
       return { identity: p.identity, ticket: p.ticket, ...step };
     }
     if (method === "mobkit/wait_for_completion") {
+      const completion = script.completion;
+      if (completion !== undefined && "raw" in completion) {
+        throw new Error(String(completion.raw));
+      }
       return {
         identity: p.identity,
         outcome: "completed",
         completion_cursor: { epoch: 3, turns: 5 },
+        ...(completion ?? {}),
       };
     }
     if (method === "mobkit/inspect_identity") {
@@ -300,5 +311,87 @@ describe("post-admission observation", () => {
       },
     );
     assert.equal(count("mobkit/send"), 1);
+  });
+});
+
+describe("default-path custody", () => {
+  async function failOnDefaultPath(
+    sends: Record<string, unknown>[],
+    completion: Record<string, unknown> | { raw: string },
+  ): Promise<{ error: unknown; dispatches: number }> {
+    const { rt, count } = await makeRuntime({ sends, completion });
+    let error: unknown;
+    await withWarnings(async () => {
+      try {
+        await rt.dispatchAndWait("keeper", { content: "alpha", origin: "system" }, {
+          timeoutMs: 200,
+          pollIntervalMs: 1,
+        });
+      } catch (caught) {
+        error = caught;
+      }
+    });
+    return { error, dispatches: count("mobkit/dispatch") };
+  }
+
+  function custody(error: unknown): { admission: unknown; ticket: unknown } {
+    return error as { admission: unknown; ticket: unknown };
+  }
+
+  it("a wait that ended keeps its type and carries the admission", async () => {
+    const { error, dispatches } = await failOnDefaultPath([admitted(null, "autonomous_host")], {
+      outcome: "broken",
+      completion_cursor: { epoch: 3, turns: 4 },
+    });
+    assert.ok(error instanceof WaitEndedError);
+    assert.equal((custody(error).admission as { turnTicket: unknown }).turnTicket, null);
+    assert.equal(custody(error).ticket, null);
+    assert.equal(dispatches, 1);
+  });
+
+  it("the cursor deadline keeps its type and carries the admission", async () => {
+    const { error, dispatches } = await failOnDefaultPath([admitted(null, "autonomous_host")], {
+      outcome: "timed_out",
+      completion_cursor: { epoch: 3, turns: 4 },
+    });
+    assert.ok(error instanceof Error);
+    assert.match(String((error as Error).message), /did not complete a turn past/);
+    assert.notEqual(custody(error).admission, undefined);
+    assert.equal(custody(error).ticket, null);
+    assert.equal(dispatches, 1);
+  });
+
+  it("a missing baseline keeps its type and carries the admission", async () => {
+    const sent = admitted(null, "autonomous_host");
+    delete sent.completion_baseline;
+    const { error, dispatches } = await failOnDefaultPath([sent], {});
+    assert.ok(error instanceof Error);
+    assert.match(String((error as Error).message), /no completion_baseline/);
+    assert.notEqual(custody(error).admission, undefined);
+    assert.equal(custody(error).ticket, null);
+    assert.equal(dispatches, 1);
+  });
+
+  it("an incarnation change keeps its type and carries the admission", async () => {
+    const { error, dispatches } = await failOnDefaultPath([admitted(null, "autonomous_host")], {
+      outcome: "incarnation_changed",
+      completion_cursor: { epoch: 4, turns: 0 },
+    });
+    assert.ok(error instanceof Error);
+    assert.match(String((error as Error).message), /superseded runtime/);
+    assert.notEqual(custody(error).admission, undefined);
+    assert.equal(dispatches, 1);
+  });
+
+  it("a raw transport Error keeps its type and carries the admission", async () => {
+    const { error, dispatches } = await failOnDefaultPath([admitted(null, "autonomous_host")], {
+      raw: "persistent transport: timeout after 5200ms",
+    });
+    assert.ok(error instanceof Error);
+    assert.equal(Object.getPrototypeOf(error), Error.prototype);
+    assert.match(String((error as Error).message), /persistent transport: timeout/);
+    assert.equal((custody(error).admission as { turnTicket: unknown }).turnTicket, null);
+    assert.equal(custody(error).ticket, null);
+    assert.equal(dispatches, 1);
   });
 });

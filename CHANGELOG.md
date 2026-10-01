@@ -132,10 +132,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     ticket's observation, with bounded backoff, until the caller's deadline,
     then raises `PostAdmissionObservationError` with `admission`, `ticket`
     and the last failure as its cause. The delivery is never repeated.
-  - `TurnFailedError`, `TurnUnknownError`, `WaitEndedError` and
-    `TurnNotDeliveredError` carry `admission` when these calls raise them; a
-    turn still pending at the deadline raises `TurnWaitTimeoutError` (a
-    Python `TimeoutError`).
+  - Every error these calls raise after admission keeps its type and carries
+    the exact `admission` (and `ticket`, `None`/`null` when untracked):
+    `TurnFailedError`, `TurnUnknownError`, `WaitEndedError`,
+    `TurnNotDeliveredError`, the identity-wide wait's missing-baseline,
+    superseded-incarnation and live-alias errors, a raw persistent-transport
+    timeout or closed-process error, and in Python a caller's
+    `asyncio.CancelledError` (the same instance, re-raised). A turn still
+    pending at the deadline raises `TurnWaitTimeoutError` (a Python
+    `TimeoutError`); the Python identity-wide deadline raises it too.
   - The server-side `mobkit/wait_for_turn` stays the primary wait; only the
     exact-ticket `mobkit/turn_result` poll remains as the fallback for
     gateways without it.

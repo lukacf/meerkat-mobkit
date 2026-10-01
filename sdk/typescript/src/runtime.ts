@@ -313,6 +313,26 @@ export interface AndWaitOptions {
   requireAttribution?: boolean;
 }
 
+/**
+ * Record the admitted delivery on a failure thrown after admission. The
+ * error keeps its type and is rethrown unchanged; only `admission` and
+ * `ticket` are added where not already set.
+ */
+function attachAdmission(
+  err: unknown,
+  admission: SendResult | DispatchResult,
+  ticket: string | null,
+): void {
+  if (typeof err !== "object" || err === null) return;
+  const record = err as { admission?: unknown; ticket?: unknown };
+  try {
+    if (record.admission == null) record.admission = admission;
+    if (record.ticket == null) record.ticket = ticket;
+  } catch {
+    // A frozen error cannot carry the receipt; it still propagates unchanged.
+  }
+}
+
 /** A turn outcome thrown while waiting: it carries the admission. */
 function isTurnOutcomeError(
   err: unknown,
@@ -1642,12 +1662,15 @@ export class MobKitRuntime {
         options,
       );
     } catch (err) {
-      // The cursor path throws its own typed errors (no baseline, a
-      // superseded incarnation, a live alias, the deadline), so only RPC and
-      // transport failures are observation failures here.
+      // RPC and transport failures are observation failures. The cursor
+      // path's own errors (a wait that ended, the deadline, no baseline, a
+      // superseded incarnation, a live alias, a raw transport timeout or
+      // closed process) keep their type and semantics; each still carries
+      // the admission, with no ticket, so the caller never redispatches.
       if (isRpcError(err) || err instanceof TransportError || err instanceof NotConnectedError) {
         throw new PostAdmissionObservationError(identity, operation, result, null, 1, err);
       }
+      attachAdmission(err, result, null);
       throw err;
     }
     return {

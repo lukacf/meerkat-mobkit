@@ -236,10 +236,14 @@ caller keeps the receipt instead of redispatching the work:
   with bounded backoff, until `timeout`; then
   `PostAdmissionObservationError` carries `admission`, `ticket` and the last
   failure as `__cause__`. Read the turn later with `wait_for_turn(ticket)`.
-- `TurnFailedError`, `TurnUnknownError` and `WaitEndedError` carry
-  `admission`; a turn still pending at `timeout` raises
-  `TurnWaitTimeoutError`, a `TimeoutError` that also carries `admission` and
-  `ticket`.
+- Every other error after admission keeps its type and carries `admission`
+  (and `ticket`, `None` when untracked): `TurnFailedError`,
+  `TurnUnknownError`, `WaitEndedError`, the identity-wide wait's
+  missing-baseline, superseded-incarnation and live-alias `RuntimeError`s, the
+  persistent transport's plain `RuntimeError` on a response timeout or closed
+  stdout, and a caller's `asyncio.CancelledError` (the same instance,
+  re-raised). A wait still pending at `timeout` raises `TurnWaitTimeoutError`,
+  a `TimeoutError` that also carries `admission` and `ticket`.
 
 The typed `turn_unavailable.code` says why a turn could not be tracked. Every
 code but `not_delivered` means the delivery still happened, exactly once:

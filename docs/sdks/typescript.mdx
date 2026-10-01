@@ -68,9 +68,12 @@ instead. `not_delivered` (nothing ran) throws `TurnNotDeliveredError`.
 The delivery is never repeated. A transport or RPC failure of the
 exact-ticket wait is retried for that ticket only until `timeoutMs`, then
 throws `PostAdmissionObservationError` with `admission`, `ticket` and the
-last failure as `cause`. `TurnFailedError`, `TurnUnknownError`,
-`WaitEndedError` and `TurnWaitTimeoutError` (a turn still pending at the
-deadline) carry `admission` when an `*AndWait` call throws them.
+last failure as `cause`. Every error an `*AndWait` call throws after
+admission keeps its type and carries `admission` (and `ticket`, `null` when
+untracked): `TurnFailedError`, `TurnUnknownError`, `WaitEndedError`,
+`TurnWaitTimeoutError` (a turn still pending at the deadline), and on the
+identity-wide wait its deadline, missing-baseline and superseded-incarnation
+errors and a raw transport error.
 
 `waitForCompletion(identity, baseline)` and `waitUntilReady(identities)` are
 identity-wide: any completion on the identity satisfies them.
