@@ -541,6 +541,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behaviour is unchanged and nothing is replayed. TypeScript: a tracked
   `WaitEndedError` now carries the top-level `ticket` as well as `admission`.
   The docs name the one exception: a thrown value that cannot carry fields.
+- `mobkit/topology/query` no longer serializes behind the topology mutation
+  lock. In OB3 production (MobKit 0.8.43) queries arriving about once a second
+  with a roughly 0.8 s edge discovery queued behind each other, with p50 67 s
+  and p95 119 s, almost all of it waiting before the provider ran: every read
+  took the exclusive mutation lock and ran reconcile and recovery under it. A
+  read now takes no mutation lock. It reports the committed intent under one
+  state read: while a mutation's write-ahead journal is pending, the journal's
+  pre-operation view, so a read sees the state before or after an apply and
+  never a half-applied one. Concurrent reads share one snapshot computation:
+  a caller arriving while one runs joins the single fresh computation that
+  follows it, so N concurrent queries cost at most two edge discoveries and a
+  result is never older than its call. Nothing is cached by time.
+  Reconcile and recovery run only when an interrupted journal or a
+  non-terminal audit record exists and no plan, apply or recovery holds the
+  mutation lock. A read no longer delays an apply. The same-process bilateral
+  coordinator query still takes its coordinator and runtime locks.
 
 - On Linux and macOS, one-shot process boundaries apply the caller timeout
   to both stdout and child exit, drain excess stdout after the first line,
