@@ -129,6 +129,13 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
    * behind a disclosure, instead of printing the payload inline.
    */
   runtimeEvent?: ConversationRuntimeEvent | null;
+  /** Display-only projection of an explicit runtime refusal or audit diagnostic. */
+  operationFeedback?: {
+    kind: "permission-refused" | "audit-unavailable";
+    title: string;
+    detail: string;
+    operationId?: string;
+  };
 }
 
 /** Typed provenance of a user-lane message. */

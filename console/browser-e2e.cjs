@@ -3223,7 +3223,112 @@ async function runTopologyAmbiguousCommitBrowserProof() {
   }
 }
 
+// UI contract test only: local HTTP fixtures do not install native authorization.
+async function runAuthorizationFeedbackProof() {
+  const evidence = process.env.MOBKIT_BROWSER_EVIDENCE || "/tmp/adr-001-console-browser-r2";
+  fs.mkdirSync(evidence, { recursive: true });
+  const base = { identity: "identity:luka", session_id: "session-auth", run_id: "run-auth", interaction_id: "work-auth" };
+  const frame = (id, kind, payload, index) => ({ ...base, id, kind, payload, cursor: `console:${index}`, timestamp_ms: Date.now() - 10000 + index });
+  const frames = [
+    frame("start", "run_started", {}, 1),
+    frame("refusal", "system_notice", { message: { role: "system_notice", kind: "generic", body: "PRIVATE_NOTICE_CANARY", blocks: [{ type: "runtime_notice", category: "operation_refused", payload: { code: "operation_refused" } }] } }, 2),
+    frame("read", "tool_call_requested", { id: "read-call", name: "read_calendar", args: {} }, 3),
+    frame("read-result", "tool_result_received", { id: "read-call", name: "read_calendar", is_error: false, content: [{ type: "text", text: "Permitted calendar read completed" }] }, 4),
+    frame("audit", "operation_observation_failed", { operation_id: "op-read", phase: "outcome", private: "PRIVATE_AUDIT_CANARY" }, 5),
+    frame("answer", "text_complete", { text: "I continued with the permitted calendar read." }, 6),
+    frame("done", "run_completed", { result: "I continued with the permitted calendar read." }, 7),
+    frame("interaction-done", "interaction_complete", { result: "I continued with the permitted calendar read." }, 8),
+  ];
+  const server = await startMockConsoleServer(await reservePort(), { timelineFramesByIdentity: { "identity:luka": frames } });
+  let browser;
+  let finishPreview;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(String(error)));
+    let admin = true;
+    let revision = 1;
+    let mutations = 0;
+    let previewStarted;
+    const previewRequest = new Promise(resolve => { previewStarted = resolve; });
+    const status = () => ({ available: true, enabled: true, can_administer: admin, subject: "admin@example.test", revision, actions: ["agent.view", "agent.send"] });
+    await page.route("**/console/experience", async route => {
+      const response = await route.fetch();
+      const value = await response.json();
+      await route.fulfill({ response, json: { ...value, access: status() } });
+    });
+    await page.route("**/console/rpc", async route => {
+      const request = route.request().postDataJSON();
+      const reply = result => route.fulfill({ json: { jsonrpc: "2.0", id: request.id, result } });
+      if (request.method === "mobkit/capabilities") {
+        const response = await route.fetch(); const value = await response.json();
+        value.result.methods.push(...["status", "get", "set", "enable", "rules/upsert", "rules/delete", "groups/set", "groups/delete", "preview"].map(name => `mobkit/access/${name}`));
+        return route.fulfill({ response, json: value });
+      }
+      if (request.method === "mobkit/access/status") return reply(status());
+      if (request.method === "mobkit/access/get") return reply({ revision, config: { enabled: true, admins: ["admin@example.test"], rules: [], groups: {} } });
+      if (request.method === "mobkit/access/preview") {
+        previewStarted();
+        await new Promise(resolve => { finishPreview = resolve; });
+        return reply({ allowed: true, reason: "STALE_PREVIEW_CANARY" });
+      }
+      if (request.method === "mobkit/access/rules/upsert") {
+        mutations += 1;
+        return route.fulfill({ json: { jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "Fixture owner rejected this rule" } } });
+      }
+      return route.continue();
+    });
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await openSidebarAgentChat(page, "Identity Luka");
+    const pane = page.getByTestId("chat-pane:identity:luka");
+    await pane.getByText("Permission denied", { exact: true }).waitFor();
+    await pane.getByText("Audit update unavailable", { exact: true }).waitFor();
+    await pane.getByText("I continued with the permitted calendar read.", { exact: true }).first().waitFor();
+    assert.doesNotMatch(await page.locator("body").innerText(), /PRIVATE_NOTICE_CANARY|PRIVATE_AUDIT_CANARY/);
+    await page.screenshot({ path: path.join(evidence, "operation-feedback.png"), fullPage: true });
+    const composer = page.getByTestId("chat-composer:identity:luka");
+    await composer.fill("A permitted follow-up request");
+    await composer.press("Enter");
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-composer:identity:luka"]')?.value === "", null, { timeout: 10_000 });
+    await waitForRpcMethod(server, "mobkit/console/send");
+    assert(server.requests.some(row => row.body.includes("A permitted follow-up request")), "follow-up must reach the existing send owner");
+    await page.getByText("Access", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Console access", exact: true }).waitFor();
+    await page.getByTestId("access-toggle-enabled").waitFor();
+    await page.getByTestId("access-tab:preview").click();
+    await page.getByTestId("access-preview-subject").fill("first@example.test");
+    await page.getByTestId("access-preview-run").click();
+    await previewRequest;
+    await page.getByTestId("access-preview-subject").fill("second@example.test");
+    finishPreview();
+    await page.getByTestId("access-tab:rules").click();
+    await page.getByTestId("access-rule-new").click();
+    await page.getByTestId("access-rule-id").fill("draft-survives");
+    await page.getByTestId("access-rule-save").click();
+    await page.getByTestId("access-error").waitFor();
+    assert.equal(await page.getByTestId("access-rule-id").inputValue(), "draft-survives");
+    assert.equal(mutations, 1);
+    assert(await page.getByTestId("access-rule-save").isDisabled());
+    assert.doesNotMatch(await page.locator("body").innerText(), /STALE_PREVIEW_CANARY/);
+    await page.screenshot({ path: path.join(evidence, "console-access-failed-draft.png"), fullPage: true });
+    admin = false; revision += 1;
+    await page.getByTestId("access-refresh").click();
+    await page.getByText("Current administrator access is required to view this configuration.").waitFor();
+    assert.doesNotMatch(await page.locator("body").innerText(), /admin@example.test|draft-survives/);
+    assert.equal(errors.length, 0, errors.join("\n"));
+    await page.screenshot({ path: path.join(evidence, "console-access-revoked.png"), fullPage: true });
+    fs.writeFileSync(path.join(evidence, "result.json"), JSON.stringify({ backend: "local mock HTTP", nativeAuthorizationInstalled: false, cases: ["typed local refusal", "separate audit outcome", "permitted follow-up", "stale preview discarded", "failed draft retained", "revoked data hidden"], mutations, errors }, null, 2));
+    process.stdout.write("authorization feedback browser contract passed (mock backend)\n");
+  } finally {
+    finishPreview?.();
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
 const scenarios = [
+  { id: "authorization-feedback", family: "console", backend: "mock", run: runAuthorizationFeedbackProof },
   { id: "reference", family: "runtime", backend: "real", run: runReferenceBrowserProof },
   { id: "topology-unavailable", family: "topology", backend: "mock", run: runTopologyUnavailableBrowserProof },
   { id: "topology-denied-pair", family: "topology", backend: "mock", run: runTopologyDeniedPairBrowserProof },

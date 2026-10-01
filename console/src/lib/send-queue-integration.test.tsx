@@ -1116,3 +1116,44 @@ describe("durable queued quote editing", () => {
     expect(fixture.send).not.toHaveBeenCalled();
   });
 });
+
+describe("access async scope isolation", () => {
+  it.each(["preview", "mutation"])("does not let a delayed old-scope %s overwrite refreshed owner data", async (operation) => {
+    const fake = transport(vi.fn());
+    const initial = await fake.loadExperience();
+    let subject = "first-admin";
+    let receive: ((frame: never) => void) | undefined;
+    let finish!: () => void;
+    const started = vi.fn();
+    fake.loadExperience = async () => ({ ...initial, access: { available: true, enabled: true, can_administer: true, subject } }) as never;
+    fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
+    fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", "mobkit/access/status", "mobkit/access/get", "mobkit/access/preview", "mobkit/access/enable"] }) as never;
+    fake.executeCommand = vi.fn(async input => {
+      let result: unknown;
+      if (input.command === "accessStatus") result = { available: true, enabled: true, can_administer: true, subject, revision: 1, actions: ["agent.view"] };
+      else if (input.command === "getAccessConfig") result = { config: { enabled: true, admins: [subject], rules: [], groups: {} }, revision: 1 };
+      else if (input.command === "previewAccess" || input.command === "enableAccess") {
+        started();
+        return new Promise((resolve, reject) => { finish = () => operation === "preview" ? reject(new Error("OLD_SCOPE_PRIVATE_ERROR")) : resolve({ command: input.command, accepted: true, result: {} } as never); });
+      } else throw new Error(`unexpected ${input.command}`);
+      return { command: input.command, accepted: true, result } as never;
+    });
+    render(<ConsoleApp baseUrl="" transport={fake} />);
+    fireEvent.click(await screen.findByText("Access", { exact: true }));
+    await screen.findByText("first-admin", { exact: true });
+    if (operation === "preview") {
+      fireEvent.click(screen.getByTestId("access-tab:preview"));
+      fireEvent.change(screen.getByTestId("access-preview-subject"), { target: { value: "reader" } });
+      fireEvent.click(screen.getByTestId("access-preview-run"));
+    } else fireEvent.click(screen.getByTestId("access-toggle-enabled"));
+    await waitFor(() => expect(started).toHaveBeenCalledOnce());
+    subject = "second-admin";
+    await act(async () => { receive?.({ id: "scope-update", event: "interaction_started", identity, interactionId: "scope-update", timestampMs: 2, data: {} } as never); });
+    await screen.findByText("second-admin", { exact: true });
+    await act(async () => { finish(); });
+    expect(screen.getByText("second-admin", { exact: true })).toBeVisible();
+    expect(screen.queryByTestId("access-error")).toBeNull();
+    expect(document.body).not.toHaveTextContent("OLD_SCOPE_PRIVATE_ERROR");
+    expect(screen.getByTestId("access-toggle-enabled")).toBeEnabled();
+  });
+});

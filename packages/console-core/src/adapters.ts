@@ -1,3 +1,4 @@
+import { operationFeedbackFromFrame } from "./operation-feedback";
 import { assistantPresentationEntries, conversationPresentationRows } from "./assistant-presentation";
 import { userMessageRenderKey } from "./user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "./realtime-message-identity";
@@ -1121,7 +1122,8 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
   const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
   const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
   const raw = record?.result ?? record?.content;
-  const result = toolResultTextFromContent(raw);
+  const feedback = operationFeedbackFromFrame(frame);
+  const result = feedback ? feedback.detail : toolResultTextFromContent(raw);
   return { ...(result !== undefined ? { result } : {}), status, completionEvidence };
 }
 
@@ -2270,7 +2272,8 @@ function historyToolResults(frames: ConsoleFrame[], includeLive = false): Map<st
         : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = toolResultTextFromContent(rawResult);
+    const feedback = operationFeedbackFromFrame(frame);
+    const result = feedback ? feedback.detail : toolResultTextFromContent(rawResult);
     const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
     const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
@@ -3551,6 +3554,7 @@ export function mapFramesToTimelineEntries(
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map(frame => frame.id));
   const entries: ConversationTimelineEntry[] = [];
+  const emittedOperationFeedback = new Set<string>();
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames);
@@ -3740,6 +3744,23 @@ export function mapFramesToTimelineEntries(
     )) {
       if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
       completeOwnedStream(frame);
+    }
+
+    const operationFeedback = operationFeedbackFromFrame(frame);
+    if (operationFeedback) {
+      flushPendingReasoning(true);
+      flushPendingText();
+      const key = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId,
+        frame.runId, frame.interactionId, operationFeedback.kind,
+        operationFeedback.operationId ?? parseToolCallId(frame) ?? entryId]);
+      if (!emittedOperationFeedback.has(key)) {
+        emittedOperationFeedback.add(key);
+        entries.push({ kind: "message", id: entryId, identity: SYSTEM_IDENTITY,
+          variant: "meta", createdAt: isoFromTimestampMs(frame.timestampMs),
+          runId: frame.runId, interactionId: frame.interactionId,
+          text: operationFeedback.detail, operationFeedback });
+      }
+      continue;
     }
 
     if (frame.event === "reasoning_delta") {

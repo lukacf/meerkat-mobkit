@@ -22,6 +22,49 @@ import {
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
 import { describeFailure, summarizeFailureData } from "./failure-summary";
+
+test("authorization feedback projects a typed operation refusal without ending the active run", () => {
+  const frames = [
+    { id: "auth-start", event: "run_started", data: {}, interactionId: "auth-run" },
+    { id: "auth-refused", event: "system_notice", interactionId: "auth-run", data: { message: {
+      role: "system_notice", kind: "generic", body: "private-owner-detail-canary",
+      blocks: [{ type: "runtime_notice", category: "operation_refused", payload: { code: "operation_refused" } }],
+    } } },
+  ];
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, frames);
+  const feedback = entries.find(entry => "operationFeedback" in entry && entry.operationFeedback)?.operationFeedback;
+  assert.equal(feedback?.kind, "permission-refused");
+  assert.doesNotMatch(JSON.stringify(feedback), /private-owner-detail-canary/);
+  assert.equal(inferResponsePhaseFromFrames(frames, null), "waiting");
+  assert.equal(systemNoticeClearsBusyState(frames[1]), false);
+  const continued = [...frames, { id: "auth-answer", event: "text_delta", interactionId: "auth-run", data: { delta: "Continuing with the permitted action." } }];
+  assert.equal(inferResponsePhaseFromFrames(continued, null), "generating");
+  assert.match(JSON.stringify(mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, continued)), /Continuing with the permitted action/);
+});
+
+test("authorization feedback distinguishes actual tool refusal from ordinary text mentioning refusal", () => {
+  const tool = { id: "auth-tool", event: "tool_result_received", data: { id: "call", name: "calendar", is_error: true,
+    content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "operation refused" }) }] } };
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, [tool]);
+  assert.equal(entries.filter(entry => "operationFeedback" in entry && entry.operationFeedback?.kind === "permission-refused").length, 1);
+  const ordinary = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, [{
+    ...tool, id: "ordinary", data: { ...tool.data, is_error: false, content: [{ type: "text", text: "operation_refused is an example string" }] },
+  }]);
+  assert.equal(ordinary.some(entry => "operationFeedback" in entry && entry.operationFeedback), false);
+});
+
+test("authorization feedback keeps audit observation failure distinct and nonterminal", () => {
+  const frames = [
+    { id: "audit-start", event: "run_started", data: {} },
+    { id: "audit-feedback", event: "operation_observation_failed", data: { operation_id: "op-1", phase: "outcome", secret: "audit-private-canary" } },
+  ];
+  const entries = mapFramesToTimelineEntries({ agent_id: "a", label: "Agent" }, frames);
+  const feedback = entries.find(entry => "operationFeedback" in entry && entry.operationFeedback)?.operationFeedback;
+  assert.equal(feedback?.kind, "audit-unavailable");
+  assert.equal(feedback?.operationId, "op-1");
+  assert.doesNotMatch(JSON.stringify(feedback), /audit-private-canary/);
+  assert.equal(inferResponsePhaseFromFrames(frames, null), "waiting");
+});
 import {
   mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared,
   inferResponsePhaseFromFrames as inferResponsePhaseFromFramesShared,
@@ -9387,5 +9430,46 @@ for (const [surface, project] of [["stock", mapFramesToTimelineEntries], ["share
       const request = normalizePendingApprovalForInputTest({ pending_id: "release-approval", origin: { identity: "router:main", interaction_id: ownerId } })!;
       assert.equal(approvalMatchesInputConversation(request, { identity: "router:main", interactionIds: [] }), false);
     }
+  });
+}
+
+for (const [name, map] of [["console", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`authorization feedback ${name} keeps separate attempts, suppresses replay and omits private diagnostics`, () => {
+    const base = { runId: "run-a", interactionId: "work-a", sessionId: "session", identity: "a" };
+    const start = { ...base, id: "tool-start", event: "tool_call_requested", data: { id: "call-a", name: "calendar", args: {} } };
+    const refused = { ...base, id: "refusal", event: "tool_result_received", data: { id: "call-a", name: "calendar", is_error: true,
+      content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "private-refusal-canary", data: { secret: "hidden-policy-canary" } }) }] } };
+    const result = map({ agent_id: "a", label: "Agent" }, [start, refused,
+      { ...refused, id: "replay", event: "tool_execution_completed" },
+      { ...refused, id: "other-attempt", runId: "run-b", interactionId: "work-b" },
+      { ...base, id: "allowed-start", event: "tool_call_requested", data: { id: "allowed", name: "read", args: {} } },
+      { ...base, id: "allowed-result", event: "tool_result_received", data: { id: "allowed", name: "read", is_error: false, content: [{ type: "text", text: "Actual permitted result" }] } },
+      { ...base, id: "audit", event: "operation_observation_failed", data: { operation_id: "op-a", phase: "outcome", secret: "audit-secret-canary" } },
+    ]);
+    assert.equal(result.filter(e => "operationFeedback" in e && e.operationFeedback?.kind === "permission-refused").length, 2);
+    assert.match(JSON.stringify(result), /Actual permitted result/);
+    assert.doesNotMatch(JSON.stringify(result), /private-refusal-canary|hidden-policy-canary|audit-secret-canary/);
+    const ordinary = map({ agent_id: "a", label: "Agent" }, [{ ...refused, data: { ...refused.data,
+      content: [{ type: "text", text: JSON.stringify({ error: "other", message: "operation_refused" }) }] } }]);
+    assert.equal(ordinary.some(e => "operationFeedback" in e && e.operationFeedback), false);
+  });
+}
+
+for (const [name, project] of [["console", mapFramesToTimelineEntries], ["shared", mapFramesToTimelineEntriesShared]] as const) {
+  test(`authorization feedback ${name} sanitizes reconstructed history tools without changing completion`, () => {
+    const base = { sourceKind: "session_history", identity: "agent", runId: "run", sessionId: "session" };
+    const entries = project({ agent_id: "agent", label: "Agent" }, [
+      { ...base, id: "assistant", event: "text_complete", data: { message: { role: "block_assistant", blocks: [
+        { block_type: "tool_use", data: { id: "denied", name: "delete", args: {} } },
+        { block_type: "tool_use", data: { id: "allowed", name: "read", args: {} } },
+      ] } } },
+      { ...base, id: "denied-result", event: "tool_result_received", data: { id: "denied", is_error: true, content: [{ type: "text", text: JSON.stringify({ error: "operation_refused", message: "PRIVATE_HISTORY_CANARY" }) }] } },
+      { ...base, id: "allowed-result", event: "tool_result_received", data: { id: "allowed", is_error: false, content: [{ type: "text", text: "Actual history result" }] } },
+    ]);
+    assert.doesNotMatch(JSON.stringify(entries), /PRIVATE_HISTORY_CANARY/);
+    assert.match(JSON.stringify(entries), /Actual history result/);
+    const tools = entries.flatMap(entry => entry.kind === "message" ? entry.blocks ?? [] : []).filter(block => block.type === "tool-call");
+    assert(tools.some(block => block.toolCallId === "denied" && block.status === "error"));
+    assert(tools.some(block => block.toolCallId === "allowed" && block.status === "success"));
   });
 }

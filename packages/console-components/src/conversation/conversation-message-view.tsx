@@ -21,6 +21,29 @@ import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
 
+export function OperationFeedbackView({ feedback, createdAt }: {
+  feedback: NonNullable<Extract<ConversationTimelineEntry, { kind: "message" }>["operationFeedback"]>;
+  createdAt?: string;
+}) {
+  return (
+    <article
+      className="cc-operation-feedback"
+      data-feedback-kind={feedback.kind}
+      aria-label={feedback.title}
+      role="status"
+    >
+      <div className="cc-operation-feedback__heading">
+        <strong>{feedback.title}</strong>
+        <EntryTime iso={createdAt} />
+      </div>
+      <p>{feedback.detail}</p>
+      {feedback.operationId ? (
+        <span className="cc-operation-feedback__reference">Operation {feedback.operationId}</span>
+      ) : null}
+    </article>
+  );
+}
+
 const SYSTEM_TASK_PROMPT_STYLE = { whiteSpace: "pre-wrap" } as const;
 
 function renderMultilineText(text: string) {
@@ -154,6 +177,10 @@ export function ConversationMessageView({
 
   if (entry.kind === "summary") {
     return <SummaryCard entry={entry} />;
+  }
+
+  if (entry.operationFeedback) {
+    return <OperationFeedbackView feedback={entry.operationFeedback} createdAt={entry.createdAt} />;
   }
 
   if (entry.taskKind || entry.taskLabel) {

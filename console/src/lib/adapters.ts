@@ -1,3 +1,4 @@
+import { operationFeedbackFromFrame } from "../../../packages/console-core/src/operation-feedback";
 import { assistantPresentationEntries, conversationPresentationRows } from "../../../packages/console-core/src/assistant-presentation";
 import { userMessageRenderKey } from "../../../packages/console-core/src/user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "../../../packages/console-core/src/realtime-message-identity";
@@ -1155,7 +1156,8 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
   const completionEvidence = toolCompletionFromFrame(frame, parseToolCallId(frame) || "");
   const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
   const raw = record?.result ?? record?.content;
-  const result = toolResultTextFromContent(raw);
+  const feedback = operationFeedbackFromFrame(frame);
+  const result = feedback ? feedback.detail : toolResultTextFromContent(raw);
   return { ...(result !== undefined ? { result } : {}), status, completionEvidence };
 }
 
@@ -3370,7 +3372,8 @@ function historyToolResults(
         : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
-    const result = toolResultTextFromContent(rawResult);
+    const feedback = operationFeedbackFromFrame(frame);
+    const result = feedback ? feedback.detail : toolResultTextFromContent(rawResult);
     const completionEvidence = toolCompletionFromFrame(frame, toolCallId);
     const status = completionEvidence.outcome === "success" ? "success" : completionEvidence.outcome === "error" ? "error" : "pending";
     results.set(toolCallId, {
@@ -4739,6 +4742,7 @@ export function mapFramesToTimelineEntries(
   // React key. The workgraph fold avoids this by anchoring per card; a
   // council is a single call, so a seen-set is enough.
   const emittedCouncilIds = new Set<string>();
+  const emittedOperationFeedback = new Set<string>();
   const { entriesByAnchor: workGraphEntriesByAnchor, representedToolCallIds: cardToolCallIds } =
     buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const toolBlocks = buildToolBlocks(orderedFrames, cardToolCallIds);
@@ -4930,6 +4934,23 @@ export function mapFramesToTimelineEntries(
     )) {
       if (sameTextStreamOwner(streamedOwner, frame)) flushPendingText();
       completeOwnedStream(frame);
+    }
+
+    const operationFeedback = operationFeedbackFromFrame(frame);
+    if (operationFeedback) {
+      flushPendingReasoning(true);
+      flushPendingText();
+      const key = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId,
+        frame.runId, frame.interactionId, operationFeedback.kind,
+        operationFeedback.operationId ?? parseToolCallId(frame) ?? entryId]);
+      if (!emittedOperationFeedback.has(key)) {
+        emittedOperationFeedback.add(key);
+        entries.push({ kind: "message", id: entryId, identity: SYSTEM_IDENTITY,
+          variant: "meta", createdAt: isoFromTimestampMs(frame.timestampMs),
+          runId: frame.runId, interactionId: frame.interactionId,
+          text: operationFeedback.detail, operationFeedback });
+      }
+      continue;
     }
 
     if (frame.event === "reasoning_delta") {
