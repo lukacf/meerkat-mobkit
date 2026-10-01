@@ -559,6 +559,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   derivations and turn renders per streamed token), reporting wall-clock
   p95 as advisory; the jsdom benchmark could not see layout or paint.
 
+- Console: a failed send's typed `message_delivery_failed` frame is now
+  committed before its input frame turns `delivery_failed`, so any client
+  that observes the status (a stream subscriber or a timeline query) can
+  already read why. The status used to commit first, which also made
+  `console_send_selected_skills_member_lane_admission_refusal_surfaces_typed`
+  intermittently miss the failure frame.
+
 - Console: panel data refreshes no longer pile up on a slow server. Every
   tool or lifecycle event from any agent refreshed the roster and every
   docked panel kind, including panels in hidden tabs, with no limit on

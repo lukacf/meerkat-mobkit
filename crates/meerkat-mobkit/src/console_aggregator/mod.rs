@@ -3786,27 +3786,17 @@ fn spawn_console_send_dispatch(
             }
             Err(err) => {
                 let _ = dispatching.apply(SendTransition::MarkDeliveryFailed);
-                if let Err(update_err) = update_frame_status_and_emit(
-                    &inner,
-                    &user_frame.id,
-                    ConsoleFrameStatus::DeliveryFailed,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        frame_id = %user_frame.id,
-                        error = %update_err,
-                        "failed to update console send failure status"
-                    );
-                }
+                // The typed failure frame commits before the input frame turns
+                // `delivery_failed`: anyone who observes that status (a stream
+                // subscriber, a timeline query) can already read why.
                 let failure_frame = NewConsoleFrame {
                     id: None,
                     dedupe_key: format!("delivery-failed:{}", user_frame.id),
                     timestamp_ms: current_time_ms(),
-                    runtime_key: user_frame.runtime_key,
-                    identity: user_frame.identity,
-                    conversation_id: user_frame.conversation_id,
-                    session_id: user_frame.session_id,
+                    runtime_key: user_frame.runtime_key.clone(),
+                    identity: user_frame.identity.clone(),
+                    conversation_id: user_frame.conversation_id.clone(),
+                    session_id: user_frame.session_id.clone(),
                     kind: "message_delivery_failed".to_string(),
                     status: ConsoleFrameStatus::DeliveryFailed,
                     payload: json!({ "reason": err.to_string(), "data": err.structured_data() }),
@@ -3820,7 +3810,7 @@ fn spawn_console_send_dispatch(
                     turn_id: None,
                     run_id: None,
                     parent_frame_id: Some(user_frame.id.clone()),
-                    caused_by_frame_id: Some(user_frame.id),
+                    caused_by_frame_id: Some(user_frame.id.clone()),
                 };
                 if let Err(append_err) =
                     append_and_emit_with_policy(&inner, failure_frame, host_policy).await
@@ -3828,6 +3818,19 @@ fn spawn_console_send_dispatch(
                     tracing::warn!(
                         error = %append_err,
                         "failed to append console send failure frame"
+                    );
+                }
+                if let Err(update_err) = update_frame_status_and_emit(
+                    &inner,
+                    &user_frame.id,
+                    ConsoleFrameStatus::DeliveryFailed,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        error = %update_err,
+                        "failed to update console send failure status"
                     );
                 }
             }
