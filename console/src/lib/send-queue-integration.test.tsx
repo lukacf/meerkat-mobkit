@@ -610,7 +610,16 @@ describe("stock durable queue integration", () => {
     // A new transport remounts the console lifetime (and its controller).
     const newSend = vi.fn(async (input) => ({ interaction_id: "new", identity: input.identity }));
     view.rerender(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(newSend)} />);
-    await screen.findByText("Sending", {}, { timeout: ACCEPTANCE_NOTICE_GRACE_MS + 1_000 });
+    // The remount clears the old lifetime's stack at once; the queue note
+    // returns only when the new lifetime has loaded the in-flight row. Wait
+    // on that transition, not on the display-only acceptance grace timer
+    // (which restarts with every stack mount; PendingStack.test.tsx covers
+    // it with fake timers).
+    expect(screen.queryByText("Saved in this browser until sent")).toBeNull();
+    await screen.findByText("Saved in this browser until sent");
+    expect(savedAttempts(scope)[0].state).toBe("attempting");
+    expect(screen.queryByText("Not sent")).toBeNull();
+    expect(screen.queryByText("Not confirmed")).toBeNull();
     await act(async () => {
       if (outcome === "refused") settleOld.reject(unauthenticated());
       else settleOld.resolve({ interaction_id: "late-receipt", identity, input_frame_id: "late-frame" } as never);
@@ -651,7 +660,10 @@ describe("stock durable queue integration", () => {
     const retained = JSON.parse(window.localStorage.getItem(key)!).attempts[0];
     expect(retained.envelopeJson).toBe(frozen.envelopeJson);
     expect(retained.idempotencyKey).toBe(frozen.idempotencyKey);
-    expect(await screen.findByTestId(`pending-item:${retained.id}`, {}, { timeout: ACCEPTANCE_NOTICE_GRACE_MS + 1_000 })).toBeInTheDocument();
+    // The stack still holds the row (its queue note is derived from the
+    // stack itself); the row's own card may still be inside the display-only
+    // acceptance grace window, so do not wait on that timer.
+    expect(screen.getByText("Saved in this browser until sent")).toBeInTheDocument();
     expect(send).toHaveBeenCalledTimes(1);
   });
   it("clears a recovered queue storage failure before showing an unknown send outcome", async () => {
