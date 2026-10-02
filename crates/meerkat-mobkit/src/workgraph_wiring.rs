@@ -1958,6 +1958,14 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            // This double's sessions never report an active turn.
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         // In-memory double (meerkat 0.8.47): export visibility is its durable source.
         async fn observe_live_durable_source(
             &self,
@@ -2247,6 +2255,14 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            // This double's sessions never report an active turn.
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         // In-memory double (meerkat 0.8.47): export visibility is its durable source.
         async fn observe_live_durable_source(
             &self,

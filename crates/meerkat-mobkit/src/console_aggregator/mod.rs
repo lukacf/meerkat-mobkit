@@ -9126,6 +9126,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn subscribe_session_activity(
+            &self,
+            session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            self.inner.subscribe_session_activity(session_id).await
+        }
+
         // Forwarded to the wrapped service, like the production decorators.
         async fn observe_live_durable_source(
             &self,

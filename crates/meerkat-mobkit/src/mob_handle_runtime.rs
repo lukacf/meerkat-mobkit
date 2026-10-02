@@ -5224,6 +5224,20 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.inner.load_head_canonical_metadata(authority).await
     }
 
+    async fn load_current_head_canonical_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<serde_json::Map<String, serde_json::Value>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        // The inner store reads the current boundary's authority and metadata
+        // under one snapshot (meerkat 0.8.50).
+        self.inner
+            .load_current_head_canonical_metadata(runtime_id)
+            .await
+    }
+
     async fn discard_head_canonical_provisional_tail(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -6368,6 +6382,16 @@ macro_rules! delegate_mob_session_service {
                 self.inner.observe_live_durable_source(session_id).await
             }
 
+            // Forwarded exactly: a mob Stop or Shutdown awaits the inner
+            // service's activity watch to learn that an interrupted member's
+            // turn has ended. Required since meerkat 0.8.50.
+            async fn subscribe_session_activity(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<meerkat_mob::MemberSessionActivity, SessionError> {
+                self.inner.subscribe_session_activity(session_id).await
+            }
+
             #[cfg(feature = "openai-live")]
             async fn validate_live_bridge_member_eligibility(
                 &self,
@@ -6719,6 +6743,30 @@ macro_rules! delegate_mob_session_service {
                         session_id,
                         provisional,
                         final_event,
+                        bound,
+                    )
+                    .await
+            }
+
+            // Forwarded exactly: the inner persistent service commits a
+            // re-presented live transcript at the turn boundary. The trait
+            // default refuses (meerkat 0.8.50).
+            async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::types::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+                represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+                self.inner
+                    .commit_live_delegation_represented_transcript_at_turn_boundary(
+                        machine,
+                        session_id,
+                        provisional,
+                        final_event,
+                        represented,
                         bound,
                     )
                     .await
@@ -7454,6 +7502,15 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    // Forwarded exactly, as in `delegate_mob_session_service!`: a mob Stop
+    // awaits the inner service's activity watch for an interrupted turn.
+    async fn subscribe_session_activity(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberSessionActivity, SessionError> {
+        self.inner.subscribe_session_activity(session_id).await
+    }
+
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,
@@ -7791,6 +7848,28 @@ impl MobSessionService for AfterCreateMobSessionService {
                 session_id,
                 provisional,
                 final_event,
+                bound,
+            )
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`.
+    async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::types::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+        represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+        self.inner
+            .commit_live_delegation_represented_transcript_at_turn_boundary(
+                machine,
+                session_id,
+                provisional,
+                final_event,
+                represented,
                 bound,
             )
             .await
@@ -14787,6 +14866,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // In-memory double: its sessions never report an active turn.
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         // In-memory double (meerkat 0.8.47): export visibility is its durable source.
         async fn observe_live_durable_source(
             &self,
@@ -15346,6 +15433,14 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            self.record("subscribe_session_activity");
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         async fn observe_live_durable_source(
             &self,
             _session_id: &meerkat_core::SessionId,
@@ -15996,6 +16091,41 @@ comms = true
             probe.calls(),
             vec!["observe_live_durable_source", "observe_live_durable_source"],
             "each wrapper forwards exactly once and adds no read of its own"
+        );
+    }
+
+    /// meerkat 0.8.50 made `subscribe_session_activity` required: a mob Stop
+    /// or Shutdown awaits it to learn that an interrupted member's turn has
+    /// ended. Both production decorators must forward it exactly once.
+    #[tokio::test]
+    async fn wrappers_forward_the_session_activity_subscription_exactly() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            let activity = wrapper
+                .subscribe_session_activity(&session_id)
+                .await
+                .expect("the inner subscription is forwarded");
+            assert!(!activity.is_active());
+        }
+        assert_eq!(
+            probe.calls(),
+            vec!["subscribe_session_activity", "subscribe_session_activity"],
+            "each wrapper forwards exactly once"
         );
     }
 

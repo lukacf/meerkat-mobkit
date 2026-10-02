@@ -75,6 +75,15 @@ impl RuntimeStore for BodyReadCountingRuntimeStore {
         self.inner.load_head_canonical_metadata(authority).await
     }
 
+    async fn load_current_head_canonical_metadata(
+        &self,
+        runtime_id: &LogicalRuntimeId,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, RuntimeStoreError> {
+        self.inner
+            .load_current_head_canonical_metadata(runtime_id)
+            .await
+    }
+
     async fn load_session_resume_observation(
         &self,
         runtime_id: &LogicalRuntimeId,
