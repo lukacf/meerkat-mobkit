@@ -30,7 +30,10 @@ const CHAT_IDENTITY = "router:main";
 // ?session=flowforensics renders a session shaped like a real slow one;
 // ?session=<url> projects a persisted meerkat Session JSON served locally.
 const SESSION = params.get("session");
-let timeline: RealisticTimeline | FixedTimeline = new RealisticTimeline(SESSION ? 0 : TURNS);
+// ?restarted=1: the history came from a previous gateway process, so live
+// replies restart their source sequence in a new stream epoch.
+const RESTARTED = params.get("restarted") === "1";
+let timeline: RealisticTimeline | FixedTimeline = new RealisticTimeline(SESSION ? 0 : TURNS, { restarted: RESTARTED });
 async function loadTimeline(): Promise<void> {
   if (!SESSION) return;
   const session: MeerkatSessionLike = SESSION === "flowforensics"

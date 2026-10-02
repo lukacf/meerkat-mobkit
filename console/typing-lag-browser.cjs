@@ -23,7 +23,7 @@
 //        [--scenarios idle,streaming] [--budget-p95 idle=16,streaming=40]
 //        [--trace] [--profile]
 //        [--src ../other-tree/console] [--no-fill] [--json out.json]
-//        [--session flowforensics|path/to/session.json] [--expand]
+//        [--session flowforensics|path/to/session.json] [--expand] [--restarted]
 //        [--max-layout-objects 500] [--max-full-derivations-per-token 0.1]
 //        [--max-turn-renders-per-token 2] [--max-rect-reads-per-token 20]
 //        [--enforce-timing]
@@ -52,6 +52,9 @@ const TURNS = String(arg("turns", "100,1000,5000")).split(",").map(Number);
 // (a generated session shaped like a real slow one) or a Session JSON path.
 const SESSION = arg("session", null);
 const KEYS = Number(arg("keys", "40"));
+// History published by a previous gateway process: live replies restart their
+// source sequence in a new stream epoch, as after any gateway restart.
+const RESTARTED = Boolean(arg("restarted", false));
 const SCENARIOS = String(arg("scenarios", "idle,streaming")).split(",");
 const TRACE = Boolean(arg("trace", false));
 // p95 budget in ms, one number for every scenario or per scenario
@@ -376,7 +379,7 @@ async function measureSize(browser, baseUrl, turns) {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(installProbe);
   const session = SESSION ? `&session=${SESSION === "flowforensics" ? "flowforensics" : "/session.json"}` : "";
-  await page.goto(`${baseUrl}/?turns=${turns}${session}`);
+  await page.goto(`${baseUrl}/?turns=${turns}${session}${RESTARTED ? "&restarted=1" : ""}`);
   await page.waitForFunction(() => document.querySelectorAll("[data-chat-turn-index]").length > 0, null, { timeout: 120_000 });
   if (FILL) await fillHistory(page);
   if (EXPAND) {

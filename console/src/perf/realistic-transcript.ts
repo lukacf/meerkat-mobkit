@@ -73,7 +73,7 @@ function ids(i: number) {
 /** Wire frames for one turn, without cursors (assigned by the caller).
  * `sequenceBase` continues the session's source sequence, which the runtime
  * numbers monotonically per session, not per run. */
-function turnFrames(i: number, sequenceBase = 0): Array<Omit<WireFrame, "cursor">> {
+function turnFrames(i: number, sequenceBase = 0, epoch?: string): Array<Omit<WireFrame, "cursor">> {
   const out: Array<Omit<WireFrame, "cursor">> = [];
   const t0 = BASE_MS + i * TURN_SPACING_MS;
   const iid = interactionId(i);
@@ -91,7 +91,7 @@ function turnFrames(i: number, sequenceBase = 0): Array<Omit<WireFrame, "cursor"
       frame_version: 1,
       interaction_id: iid,
       kind,
-      payload: { identity: ids(i), run_id: rid, session_id: SESSION, source_event_type: kind, source_sequence: sequence, type: kind, ...payload },
+      payload: { identity: ids(i), run_id: rid, session_id: SESSION, source_event_type: kind, source_sequence: sequence, ...(epoch ? { source_epoch: epoch } : {}), type: kind, ...payload },
       run_id: rid,
       source: { kind: "console_event" },
       source_event_id: id,
@@ -245,9 +245,20 @@ export class RealisticTimeline {
   private readonly idCache = new Map<number, string[]>();
   private readonly turnCache = new Map<number, WireFrame[]>();
   private liveCursor: number;
+  /** Stream epochs of the stored history and of live replies (see `restarted`). */
+  private readonly historyEpoch?: string;
+  private readonly liveEpoch?: string;
 
-  constructor(turns: number) {
+  /** `restarted`: the history was published by a previous gateway process and
+   * live replies by this one. The gateway numbers a member's event stream from
+   * the start again in a new process and stamps each event with its stream
+   * epoch, so live sequences restart below the history's. */
+  constructor(turns: number, options: { restarted?: boolean } = {}) {
     this.turns = turns;
+    if (options.restarted) {
+      this.historyEpoch = "previous-process.0.1";
+      this.liveEpoch = "current-process.0.1";
+    }
     let cursor = 1;
     for (let i = 0; i < turns; i += 1) {
       this.turnStart.push(cursor);
@@ -261,6 +272,7 @@ export class RealisticTimeline {
     }
     this.total = cursor - 1;
     this.liveCursor = cursor;
+    if (options.restarted) this.nextSequence = 0;
   }
 
   get frameCount(): number {
@@ -276,7 +288,7 @@ export class RealisticTimeline {
     const cached = this.turnCache.get(i);
     if (cached) return cached;
     let cursor = this.turnStart[i];
-    const frames: WireFrame[] = turnFrames(i, this.sequenceStart[i]).map((frame) => ({ ...frame, cursor: `console:${cursor++}` }));
+    const frames: WireFrame[] = turnFrames(i, this.sequenceStart[i], this.historyEpoch).map((frame) => ({ ...frame, cursor: `console:${cursor++}` }));
     const observed = frames.filter((frame) => (frame.source as { kind?: string }).kind !== "session_history").at(-1)!.cursor;
     frames.push({
       conversation_id: IDENTITY,
@@ -370,7 +382,7 @@ export class RealisticTimeline {
         identity: IDENTITY,
         interaction_id: interactionId(i),
         kind,
-        payload: { identity: ids(i), run_id: rid, session_id: SESSION, source_event_type: kind, source_sequence: sequence, type: kind, assistant_message_id: mid, ...payload },
+        payload: { identity: ids(i), run_id: rid, session_id: SESSION, source_event_type: kind, source_sequence: sequence, ...(this.liveEpoch ? { source_epoch: this.liveEpoch } : {}), type: kind, assistant_message_id: mid, ...payload },
         run_id: rid,
         runtime_key: RUNTIME,
         session_id: SESSION,
