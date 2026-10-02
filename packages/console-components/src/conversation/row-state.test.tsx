@@ -75,6 +75,26 @@ describe("row state survives a row unmounting and mounting again", () => {
     expect(header().getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("keeps a completed-tools fold as it first rendered, whatever the scroll mode when it mounts again", () => {
+    const tools: ConversationRichToolCallBlock[] = [0, 1].map((i) => ({
+      type: "tool-call", toolCallId: `fold-${i}`, name: "read_file", arguments: "{}", result: "ok", status: "success",
+      completionEvidence: { outcome: "success", toolCallId: `fold-${i}`, source: "runtime-result" } as ConversationRichToolCallBlock["completionEvidence"],
+    }));
+    const pane = (mounted: boolean, autoFold: boolean) => (
+      <ConversationPresentationProvider autoFold={autoFold} viewportKey={{ authority: "row-state-test", identity: "agent", conversation: "fold", pane: "left" }}>
+        {mounted ? <ConversationRowStateScope rowId="row-fold"><ConversationRichContent blocks={tools} /></ConversationRowStateScope> : null}
+      </ConversationPresentationProvider>
+    );
+    // First rendered while following the live edge: folded.
+    const view = render(pane(true, true));
+    const open = () => (document.querySelector(".cc-completed-tools") as HTMLDetailsElement).open;
+    expect(open()).toBe(false);
+    // Mounted again while reading history (where a new fold would start open).
+    view.rerender(pane(false, false));
+    view.rerender(pane(true, false));
+    expect(open()).toBe(false);
+  });
+
   it("keeps a flow run's details choice, and still folds the card when its run completes", () => {
     const entry = (status: ConversationFlowRunEntry["status"]): ConversationFlowRunEntry => ({
       kind: "flow_run", id: "flow-1", identity: { role: "assistant", label: "Router" } as ConversationFlowRunEntry["identity"],

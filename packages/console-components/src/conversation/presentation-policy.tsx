@@ -138,6 +138,9 @@ export function CompletedToolDisclosure({ blocks, children }: { blocks: Conversa
   const disclosures = context?.disclosures ?? local.current;
   const key = JSON.stringify(blocks.map((block) => block.toolCallId));
   const initiallyOpen = (disclosures.get(key) as boolean | undefined) ?? context?.autoFold === false;
+  // Whether it starts folded depends on the scroll mode when it first
+  // renders; record that, so mounting it again later shows the same.
+  if (context && !disclosures.has(key)) rememberRowState(disclosures, key, initiallyOpen);
   const [state, setState] = useState(() => ({ disclosures, key, open: initiallyOpen }));
   const open = state.disclosures === disclosures && state.key === key ? state.open : initiallyOpen;
   return <details className="cc-completed-tools" open={open} onToggle={(event) => {
