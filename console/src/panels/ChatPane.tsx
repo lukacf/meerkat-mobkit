@@ -1575,6 +1575,8 @@ export function ChatPane({
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
   const [quoteError, setQuoteError] = React.useState<string | null>(null);
+  const quoteErrorRef = React.useRef(quoteError);
+  quoteErrorRef.current = quoteError;
   React.useEffect(() => { setQuoteError(null); }, [submittedRowId, identity, conversationId, viewportKey?.authority, viewportKey?.pane]);
   // The live composer value lives inside ComposerTextarea (below) so a
   // keystroke re-renders only that component. ChatPane keeps a ref to the
@@ -1601,7 +1603,9 @@ export function ChatPane({
   const [liveDraftTick, setLiveDraftTick] = React.useState(0);
   const onLiveChange = React.useCallback(
     (value: string) => {
-      setQuoteError(null);
+      // A same-value update still renders ChatPane when its fiber has
+      // leftover work, so a keystroke clears only an actual error.
+      if (quoteErrorRef.current !== null) setQuoteError(null);
       liveDraftRef.current = value;
       liveDraftRevisionRef.current += 1;
       if (publishDraftTimerRef.current !== null) {
@@ -1928,8 +1932,10 @@ export function ChatPane({
     const body = bodyRef.current;
     if (!body) return;
     const measure = () => setTranscriptOverflows(body.scrollHeight > body.clientHeight + 1);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") { measure(); return; }
+    // Content changes on every streamed token. Reading scrollHeight here
+    // forced a layout of the whole transcript each time; a new observer's
+    // first callback runs after the frame's layout instead.
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();

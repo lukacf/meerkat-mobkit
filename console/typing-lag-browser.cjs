@@ -68,6 +68,11 @@ const MAX_TURN_RENDERS_PER_TOKEN = arg("max-turn-renders-per-token", null) === n
 // Element rect reads per streamed token. Each read forces layout; holding a
 // submitted turn used to read every mounted row's rect on every token.
 const MAX_RECT_READS_PER_TOKEN = arg("max-rect-reads-per-token", null) === null ? null : Number(arg("max-rect-reads-per-token"));
+// Layouts forced by script (geometry read while layout was dirty) per
+// streamed token (needs --trace). Geometry belongs in resize observer
+// callbacks, which run after the frame's layout. A one-off commit, such as a
+// send mounting its row, may still force one.
+const MAX_FORCED_LAYOUTS_PER_TOKEN = arg("max-forced-layouts-per-token", null) === null ? null : Number(arg("max-forced-layouts-per-token"));
 const BUDGET_SPEC = process.env.MOBKIT_TYPING_LAG_BUDGET || arg("budget-p95", null);
 const BUDGET_P95 = BUDGET_SPEC === null || BUDGET_SPEC === true ? null : parseBudget(String(BUDGET_SPEC));
 
@@ -208,6 +213,11 @@ function summarize(values) {
   return { n: sorted.length, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), max: sorted[sorted.length - 1] };
 }
 
+// Script slices: a Layout nested inside one was forced by a geometry read.
+// A native layout, such as the editor's own text insertion under
+// EventDispatch, is not counted.
+const FORCING_SCRIPT = new Set(["FunctionCall", "v8.callFunction", "RunMicrotasks", "v8.run", "EvaluateScript", "V8.Execute"]);
+
 // Renderer main-thread slices, attributed by name (self time).
 const CATEGORY = {
   scripting: ["FunctionCall", "EventDispatch", "TimerFire", "FireAnimationFrame", "RunMicrotasks", "v8.callFunction", "EvaluateScript", "V8.GC_SCAVENGER_SCAVENGE_PARALLEL", "MinorGC", "MajorGC", "V8.GCScavenger", "BlinkGC.AtomicPhase", "v8.run", "V8.Execute"],
@@ -235,7 +245,9 @@ function analyzeTrace(trace) {
   const stack = [];
   for (const e of slices) {
     while (stack.length && stack[stack.length - 1].e.ts + stack[stack.length - 1].e.dur <= e.ts) stack.pop();
-    const record = { e, self: e.dur };
+    // A layout nested inside script ran because script read geometry with
+    // layout dirty (a forced, synchronous layout), not as the frame's own.
+    const record = { e, self: e.dur, inScript: stack.some((r) => FORCING_SCRIPT.has(r.e.name)), parents: stack.map((r) => r.e.name) };
     if (stack.length) stack[stack.length - 1].self -= e.dur;
     stack.push(record);
     records.push(record);
@@ -266,6 +278,18 @@ function analyzeTrace(trace) {
     totals[category] += ms;
   }
   const keystrokes = windows.length || 1;
+  const span = windows.length ? { start: Math.min(...windows.map((w) => w.start)), end: Math.max(...windows.map((w) => w.end)) } : null;
+  const forced = span ? records.filter((r) => r.e.name === "Layout" && r.inScript && r.e.ts >= span.start && r.e.ts <= span.end) : [];
+  // With --trace-invalidations Layout events carry the script stack that
+  // forced them; name the sources so a regression points at its reader.
+  const forcedSources = new Map();
+  for (const r of forced) {
+    const frames = r.e.args?.beginData?.stackTrace ?? [];
+    const source = frames.length
+      ? frames.slice(0, 3).map((f) => `${f.functionName || "(anonymous)"}@${String(f.url || "").split("/").pop()}:${f.lineNumber}`).join(" < ")
+      : r.parents.join(" > ");
+    forcedSources.set(source, (forcedSources.get(source) || 0) + 1);
+  }
   let maxLayoutObjects = 0;
   for (const e of slices) {
     if (e.name !== "Layout") continue;
@@ -275,6 +299,8 @@ function analyzeTrace(trace) {
   return {
     keystrokes,
     maxLayoutObjects,
+    forcedLayouts: forced.length,
+    forcedSources: [...forcedSources.entries()].sort((x, y) => y[1] - x[1]).slice(0, 5),
     perKey: Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, v / keystrokes])),
     top: [...byName.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([name, ms]) => ({ name, msPerKey: ms / keystrokes })),
   };
@@ -460,6 +486,7 @@ async function measureSize(browser, baseUrl, turns) {
       await fs.writeFile(tracePath, buffer);
       const traceJson = JSON.parse(buffer.toString("utf8"));
       measured.breakdown = analyzeTrace(traceJson);
+      measured.work.forcedLayoutsPerToken = measured.work.tokens ? (measured.breakdown?.forcedLayouts ?? 0) / measured.work.tokens : 0;
       if (TRACE_INVALIDATIONS) {
         // Big layouts and the invalidations recorded just before each.
         const events = traceJson.traceEvents || traceJson;
@@ -546,7 +573,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
-            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -560,6 +587,7 @@ async function main() {
         }
         if (m.breakdown) {
           for (const t of m.breakdown.top) process.stdout.write(`    ${t.name.padEnd(52)} ${fmt(t.msPerKey)} ms/key\n`);
+          for (const [source, count] of m.breakdown.forcedSources ?? []) process.stdout.write(`    forced layout x${count}: ${source}\n`);
         }
       }
       if (result.errors.length) process.stdout.write(`  page errors: ${result.errors.slice(0, 3).join(" | ")}\n`);
@@ -582,6 +610,12 @@ async function main() {
         }
       }
       const streamingScenario = scenario === "streaming" || scenario === "send-streaming";
+      if (streamingScenario && MAX_FORCED_LAYOUTS_PER_TOKEN !== null) {
+        if (!m.breakdown) failures.push(`turns=${r.turns} ${scenario}: --max-forced-layouts-per-token needs --trace`);
+        else if (m.work.forcedLayoutsPerToken > MAX_FORCED_LAYOUTS_PER_TOKEN) {
+          failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.forcedLayoutsPerToken)} script-forced layouts per token > ${MAX_FORCED_LAYOUTS_PER_TOKEN}; a streamed token reads geometry with layout dirty (rerun with --trace-invalidations for the source)`);
+        }
+      }
       if (streamingScenario && MAX_RECT_READS_PER_TOKEN !== null) {
         if (m.work.tokens < 20) failures.push(`turns=${r.turns} ${scenario}: only ${m.work.tokens} tokens streamed`);
         else if (m.work.rectReadsPerToken > MAX_RECT_READS_PER_TOKEN) {

@@ -776,6 +776,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ordering. `npm run perf:typing:browser` adds a restarted-session run that
   fails on full derivations per streamed token (0.00 now, 0.88 before).
 
+- Console: a streamed token no longer forces a synchronous layout of the
+  transcript. Two reads ran with layout dirty on every content commit: the
+  scroll controller measured its anchor row in the commit's layout effect,
+  and the chat pane re-read the transcript's scroll height to decide whether
+  the turn rail is needed. Both now read geometry in `ResizeObserver`
+  callbacks, which run after the frame's layout and before it paints, so a
+  steady session (following the live edge or holding an anchor) still
+  corrects its position in the same frame. Submissions, reveals, restores and
+  row insertion keep their immediate pass. A native scroll that lands at the
+  live edge no longer measures every mounted row to capture an anchor that
+  following discards. `npm run perf:typing:browser` now fails on more than
+  0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs
+  `--trace`, and `--trace-invalidations` names the source) and lowers the
+  rect-read limit to 12 per token (about 9 now, 13 before).
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in
