@@ -56,6 +56,8 @@ describe("scroll geometry", () => {
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 200, width: 200, x: 0, y: top, toJSON() {} });
 type Row = { id: string; height: number; text?: string };
 const baseRows: Row[] = Array.from({ length: 10 }, (_, i) => ({ id: `row-${i}`, height: 100 }));
+/** Row rect reads by row id, for asserting how much of the transcript a layout pass measures. */
+const rowReads = new Map<string, number>();
 function Harness({ rows = baseRows, conversation = "test", viewportKey, submittedRowId, revealAnchor, revealTimeoutMs, height = 200 }: {
   rows?: Row[]; conversation?: string; viewportKey?: ConversationViewportKey; submittedRowId?: string | null; revealAnchor?: ConversationScrollControllerOptions["revealAnchor"]; revealTimeoutMs?: number; height?: number;
 }) {
@@ -71,7 +73,10 @@ function Harness({ rows = baseRows, conversation = "test", viewportKey, submitte
     for (const row of rows) {
       const node = Array.from(viewport.querySelectorAll<HTMLElement>("[data-conversation-row-id]")).find((node) => node.dataset.conversationRowId === row.id)!;
       const rowTop = top;
-      node.getBoundingClientRect = () => rect(rowTop - viewport.scrollTop, row.height);
+      node.getBoundingClientRect = () => {
+        rowReads.set(row.id, (rowReads.get(row.id) ?? 0) + 1);
+        return rect(rowTop - viewport.scrollTop, row.height);
+      };
       top += row.height;
     }
   });
@@ -238,6 +243,24 @@ describe("conversation scroll intent", () => {
     expect(screen.getByTestId("mode")).toHaveTextContent("anchoring-submitted-turn");
     view.rerender(<Harness submittedRowId="accepted" rows={[...baseRows, { id: "accepted", height: 100 }, { id: "response", height: 100 }]} />);
     expect(viewport.scrollTop).toBe(900);
+  });
+  test("holding a submitted turn while its reply streams measures only the anchor row", () => {
+    const view = render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    const withReply = (text: string, height: number) => [...baseRows, { id: "accepted", height: 100 }, { id: "response", height, text }];
+    view.rerender(<Harness submittedRowId="accepted" rows={withReply("", 50)} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("anchoring-submitted-turn");
+    const anchored = viewport.scrollTop;
+    rowReads.clear();
+    // Each streamed token is a content commit. Reading every mounted row's
+    // rect on each one forced a whole-transcript layout per token.
+    for (let token = 1; token <= 5; token += 1) {
+      view.rerender(<Harness submittedRowId="accepted" rows={withReply("token ".repeat(token), 50 + token * 40)} />);
+    }
+    expect(viewport.scrollTop).toBe(anchored);
+    expect([...rowReads.keys()]).toEqual(["accepted"]);
+    // One pass per commit, plus at most one follow-up pass from its publish.
+    expect(rowReads.get("accepted")).toBeLessThanOrEqual(10);
   });
   test("does not treat a consumed acceptance as a new send after remount or identity return", () => {
     const key = { authority: "accepted-remount", identity: "agent", conversation: "one", pane: "left" };

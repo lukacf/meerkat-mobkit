@@ -6096,6 +6096,17 @@ function rowGeometry(viewport) {
     return { id: row.dataset.conversationRowId, top: rect.top - top, bottom: rect.bottom - top };
   });
 }
+function rowGeometryOf(viewport, ids) {
+  const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+  const rows = [];
+  for (const id of ids) {
+    const row = viewport.querySelector(`[data-conversation-row-id="${id.replace(/["\\]/g, "\\$&")}"]`);
+    if (!row || row.closest("details:not([open])")) continue;
+    const rect = row.getBoundingClientRect();
+    rows.push({ id, top: rect.top - top, bottom: rect.bottom - top });
+  }
+  return rows;
+}
 function useConversationScrollController(options) {
   const optionsRef = (0, import_react4.useRef)(options);
   optionsRef.current = options;
@@ -6137,32 +6148,32 @@ function useConversationScrollController(options) {
       publish(false);
       return;
     }
-    let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
       const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
       const submittedRowId = resolveSubmitted ? resolveSubmitted(session.pendingSubmittedRow) : session.pendingSubmittedRow;
-      const submitted = rows.find((row) => row.id === submittedRowId);
+      const [submitted] = submittedRowId ? rowGeometryOf(viewport, [submittedRowId]) : [];
       if (submitted) {
         cancelReveal(session);
         session.missingAnchor = false;
         session.mode = "anchoring-submitted-turn";
         session.pendingSubmittedRow = null;
         writeScroll(viewport.scrollTop + submitted.top - CONVERSATION_ANCHOR_OFFSET_PX);
-        rows = rowGeometry(viewport);
-        const actual = rows.find((row) => row.id === submitted.id);
+        const [actual] = rowGeometryOf(viewport, [submitted.id]);
         session.anchor = { rowId: actual.id, offset: actual.top, neighbors: [] };
       }
     }
     if (session.mode === "following-end") {
       writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      session.anchor = null;
       publish(false);
       return;
     }
     const anchor = session.anchor;
     let missing = session.missingAnchor;
     if (anchor) {
+      let rows = rowGeometryOf(viewport, [anchor.rowId, ...anchor.neighbors.map((neighbor) => neighbor.rowId)]);
       const found = rows.some((row) => row.id === anchor.rowId);
+      if (!found) rows = rowGeometry(viewport);
       if (!found && session.requestedAnchor !== anchor.rowId) {
         session.requestedAnchor = anchor.rowId;
         cancelReveal(session);
@@ -6209,7 +6220,7 @@ function useConversationScrollController(options) {
       if (restored) writeScroll(restored.scrollTop);
       if (!found) session.anchor = captureConversationAnchor(rowGeometry(viewport));
     } else {
-      session.anchor = captureConversationAnchor(rows);
+      session.anchor = captureConversationAnchor(rowGeometry(viewport));
     }
     publish(missing);
   }, [publish, writeScroll]);

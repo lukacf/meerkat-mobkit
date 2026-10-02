@@ -11,6 +11,8 @@
  */
 
 export type WireFrame = Record<string, unknown> & { cursor: string; kind: string };
+/** An operator send as the gateway accepts it. */
+export type OperatorSend = { content: string; idempotencyKey: string; origin: string };
 
 const IDENTITY = "router:main";
 const RUNTIME = "default";
@@ -233,6 +235,7 @@ function assistantIdsThrough(i: number, cache: Map<number, string[]>): string[] 
  * gateway's `mode: "recent"` query (newest `limit` frames before `before`).
  */
 export class RealisticTimeline {
+  private replies = 0;
   readonly turns: number;
   private readonly turnStart: number[] = [];
   private readonly turnCount: number[] = [];
@@ -323,13 +326,38 @@ export class RealisticTimeline {
     return { frames, exhausted: start <= 1 };
   }
 
-  /** Live frames of a new streamed reply, in arrival order, with fresh cursors. */
-  streamReply(text: string, chunkChars: number, startMs?: number): WireFrame[] {
-    const i = this.turns + 1_000;
+  /** The accepted user_input frame of an operator send, then its streamed reply. */
+  sendReply(input: OperatorSend, text: string, chunkChars: number): WireFrame[] {
+    return this.streamReply(text, chunkChars, undefined, input);
+  }
+
+  /** Live frames of a new streamed reply, in arrival order, with fresh cursors.
+   * With `input`, the reply answers an operator send: the accepted user_input
+   * frame comes first, as the gateway echoes it after accepting the send. */
+  streamReply(text: string, chunkChars: number, startMs?: number, input?: OperatorSend): WireFrame[] {
+    const i = this.turns + 1_000 + (this.replies += 1);
     const t0 = startMs ?? BASE_MS + i * TURN_SPACING_MS;
     const rid = runId(i);
     const mid = messageId(i, 0);
     const frames: WireFrame[] = [];
+    if (input !== undefined) {
+      frames.push({
+        conversation_id: IDENTITY,
+        cursor: `console:${this.liveCursor++}`,
+        dedupe_key: `send:default:${IDENTITY}:${input.origin}:${input.idempotencyKey}`,
+        frame_version: 1,
+        id: `console-frame-${hex(i, 8)}${"e".repeat(56)}`,
+        identity: IDENTITY,
+        interaction_id: interactionId(i),
+        kind: "user_input",
+        payload: { content: input.content, handling_mode: "queue", idempotency_key: input.idempotencyKey, origin: input.origin, origin_kind: "operator" },
+        runtime_key: RUNTIME,
+        session_id: SESSION,
+        source: { kind: "send", source_cursor: hex(i * 31337, 16) },
+        status: "delivered",
+        timestamp_ms: t0 - 40,
+      });
+    }
     const live = (kind: string, payload: Record<string, unknown>) => {
       const sequence = (this.nextSequence += 1);
       const id = `evt-agent-${uuid(5, i, sequence)}`;
@@ -352,9 +380,13 @@ export class RealisticTimeline {
         timestamp_ms: t0 + frames.length,
       });
     };
-    live("run_started", { input: { content: "Write the long report now.", kind: "content" } });
+    live("run_started", { input: { content: input?.content ?? "Write the long report now.", kind: "content" } });
     live("turn_started", { turn_number: 0 });
     for (let at = 0; at < text.length; at += chunkChars) live("text_delta", { delta: text.slice(at, at + chunkChars) });
+    // The run's terminal frame. A stream stopped early still delivers it, so
+    // the member is idle again (the console holds sends to a busy member).
+    live("interaction_complete", { extraction_required: false, result: text, source_event_type: "run_completed", type: "run_completed" });
+    frames[frames.length - 1].status = "completed";
     return frames;
   }
 }
@@ -362,6 +394,7 @@ export class RealisticTimeline {
 /** A fixed server log (e.g. a projected session), paged like the gateway. */
 export class FixedTimeline {
   private readonly frames: WireFrame[];
+  private liveUntilMs = 0;
   private readonly live = new RealisticTimeline(0);
 
   constructor(frames: WireFrame[]) {
@@ -379,9 +412,16 @@ export class FixedTimeline {
     return { frames: this.frames.slice(start, end), exhausted: start === 0 };
   }
 
-  streamReply(text: string, chunkChars: number): WireFrame[] {
-    // A live reply is newer than everything already in the log.
-    const latest = this.frames.reduce((max, frame) => Math.max(max, Number(frame.timestamp_ms) || 0), 0);
-    return this.live.streamReply(text, chunkChars, latest + 60_000);
+  sendReply(input: OperatorSend, text: string, chunkChars: number): WireFrame[] {
+    return this.streamReply(text, chunkChars, input);
+  }
+
+  streamReply(text: string, chunkChars: number, input?: OperatorSend): WireFrame[] {
+    // A live reply is newer than everything already in the log, including
+    // earlier replies.
+    const latest = this.frames.reduce((max, frame) => Math.max(max, Number(frame.timestamp_ms) || 0), this.liveUntilMs);
+    const frames = this.live.streamReply(text, chunkChars, latest + 60_000, input);
+    this.liveUntilMs = frames.reduce((max, frame) => Math.max(max, Number(frame.timestamp_ms) || 0), latest);
+    return frames;
   }
 }
