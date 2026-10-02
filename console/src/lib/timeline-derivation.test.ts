@@ -6,6 +6,7 @@ import { deriveTimelineEntries, type TimelineDerivation, type TimelineDerivation
 import { createIdentityLogCore, pushFrame, sortedEvents } from "./identity-log";
 import { parseSseFrames } from "./network";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
+import { reconcileRuntimeAppendFrames } from "../../../packages/console-core/src/runtime-append-projection";
 
 const agent = { identity: "router:main", label: "Router" } as unknown as ConsoleAgent;
 const options: TimelineDerivationOptions = { renderInteractionStartsAsUser: true, renderTextDeltas: true };
@@ -36,6 +37,57 @@ test("a streamed reply over a long realistic log extends the previous derivation
   assert.equal(extended, deltas);
   const last = derivation.entries.at(-1);
   assert.equal(last?.kind, "message");
+});
+
+/// Stream a reply into a log built from `history`, deriving incrementally and
+/// checking every step against a full derivation.
+function streamOver(timeline: RealisticTimeline, history: WireFrame[], reply: WireFrame[]) {
+  const log = createIdentityLogCore();
+  for (const frame of consoleFrames(history)) pushFrame(log, frame.id, frame);
+  let derivation: TimelineDerivation = deriveTimelineEntries(agent, sortedEvents(log), options);
+  let deltas = 0;
+  let extended = 0;
+  for (const frame of consoleFrames(reply)) {
+    pushFrame(log, frame.id, frame);
+    const previous = derivation;
+    const resumable = previous.resume !== null;
+    derivation = deriveTimelineEntries(agent, sortedEvents(log), options, previous);
+    if (frame.event === "text_delta") deltas += 1;
+    if (resumable && previous.resume === null) extended += 1;
+    assert.deepEqual(derivation.entries, deriveTimelineEntries(agent, sortedEvents(log).slice(), options).entries);
+  }
+  return { derivation, deltas, extended };
+}
+
+test("a reply streamed after a gateway restart extends the derivation for every text chunk", () => {
+  // The previous process published the history up to source sequence ~1,900;
+  // this process numbers the member's stream from 1 again, in a new epoch.
+  const timeline = new RealisticTimeline(40, { restarted: true });
+  const history = timeline.recent(2_000).frames;
+  const reply = timeline.streamReply(assistantReply(3) + assistantReply(4), 9);
+  const historyMax = Math.max(...history.map((frame) => Number((frame.payload as Record<string, unknown>).source_sequence ?? 0)));
+  assert.ok(historyMax > 500, `history reaches sequence ${historyMax}`);
+  assert.equal((reply.find((frame) => frame.kind === "text_delta")!.payload as Record<string, unknown>).source_sequence, 3);
+  const { derivation, deltas, extended } = streamOver(timeline, history, reply);
+  assert.ok(deltas > 50, `stream has ${deltas} chunks`);
+  assert.equal(extended, deltas, "every chunk continues the fold instead of re-deriving the log");
+  // Arrival orders the new epoch after the old one: the reply is last.
+  const last = derivation.entries.at(-1)!;
+  assert.equal(last.kind, "message");
+  assert.match(JSON.stringify(last), /retry policy|deployment notes|Findings/i);
+});
+
+test("without stream epochs a restarted sequence still derives correctly, but only in full", () => {
+  // Older stores carry no epoch: their sequences stay session-scoped, so the
+  // restarted ones cannot be proven to append and each chunk re-derives.
+  const timeline = new RealisticTimeline(20, { restarted: true });
+  const strip = (frames: WireFrame[]) => frames.map((frame) => {
+    const { source_epoch: _epoch, ...payload } = frame.payload as Record<string, unknown>;
+    return { ...frame, payload };
+  });
+  const { deltas, extended } = streamOver(timeline, strip(timeline.recent(2_000).frames), strip(timeline.streamReply(assistantReply(5), 12)));
+  assert.ok(deltas > 20);
+  assert.equal(extended, 0);
 });
 
 test("an unchanged entry keeps its object identity across derivations", () => {
@@ -172,4 +224,21 @@ test("incremental extension equals full derivation over seeded fuzzed frame sequ
     }
   }
   assert.ok(extended > 200, `incremental path exercised ${extended} times in ${checks} checks`);
+});
+
+test("source sequences order frames within one stream epoch, never across epochs", () => {
+  const frame = (id: string, cursor: number, sequence: number, epoch?: string): ConsoleFrame => ({
+    id, event: "text_delta", identity: "router:main", cursor: `console:${cursor}`, timestampMs: 1_000 + cursor,
+    runtimeKey: "default", sessionId: "01a0f7d0-4be7-7d02-bce5-b29fc7d82249", sourceKind: "console_event",
+    data: { delta: id, source_sequence: sequence, ...(epoch ? { source_epoch: epoch } : {}) },
+  } as unknown as ConsoleFrame);
+  const ids = (frames: ConsoleFrame[]) => reconcileRuntimeAppendFrames(frames).map((f) => f.id);
+  // Within an epoch, sequence repairs arrival order.
+  assert.deepEqual(ids([frame("b", 1, 2, "p.0.1"), frame("a", 2, 1, "p.0.1")]), ["a", "b"]);
+  // A restarted stream (new epoch) is not interleaved into the previous one.
+  const restarted = [frame("old-1", 1, 100, "p.0.1"), frame("old-2", 2, 101, "p.0.1"), frame("new-1", 3, 1, "q.0.1"), frame("new-2", 4, 2, "q.0.1")];
+  assert.deepEqual(ids(restarted), ["old-1", "old-2", "new-1", "new-2"]);
+  // Older frames without an epoch keep the session-wide comparison.
+  const legacy = restarted.map((f) => ({ ...f, data: { ...(f.data as Record<string, unknown>), source_epoch: undefined } }));
+  assert.deepEqual(ids(legacy), ["new-1", "new-2", "old-1", "old-2"]);
 });

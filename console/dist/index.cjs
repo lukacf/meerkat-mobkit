@@ -3505,6 +3505,11 @@ function originOf(message) {
 function scopeOf(frame) {
   return identifier2(frame.runtimeKey) && identifier2(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
 }
+function sequenceScopeOf(frame) {
+  const scope = scopeOf(frame);
+  const epoch = record2(frame.data)?.source_epoch;
+  return scope && identifier2(epoch) ? JSON.stringify([frame.runtimeKey, frame.sessionId, epoch]) : scope;
+}
 function logicalKey(frame, origin) {
   return `runtime-notice:${JSON.stringify([
     frame.runtimeKey,
@@ -3678,12 +3683,12 @@ function comparePosition(left, right) {
   return left.length - right.length;
 }
 function projected(frame) {
-  return { frame, scope: scopeOf(frame), position: canonicalPosition(frame), sequence: sourceSequence(frame) };
+  return { frame, scope: scopeOf(frame), position: canonicalPosition(frame), sequence: sourceSequence(frame), sequenceScope: sequenceScopeOf(frame) };
 }
 function newestObservation(nodes, sourceOrder) {
   if (sourceOrder) {
     const sequenced = nodes.filter((node2) => node2.sequence !== void 0);
-    if (sequenced.length) {
+    if (sequenced.length && new Set(sequenced.map((node2) => node2.sequenceScope)).size === 1) {
       const attempts = new Set(sequenced.map((node2) => node2.origin.run_id));
       const latest = sequenced.reduce((latest2, node2) => Math.max(latest2, node2.sequence), 0);
       return newestObservation(nodes.filter((node2) => node2.sequence === latest || node2.sequence === void 0 && !attempts.has(node2.origin.run_id)), false);
@@ -3720,11 +3725,18 @@ function orderBySource(nodes) {
     if (!node2.position && key && node2.frame.sourceKind === "console_event") node2.position = canonicalCounterparts.get(key);
   }
   const scopes2 = /* @__PURE__ */ new Map();
+  const sequenceScopes = /* @__PURE__ */ new Map();
   nodes.forEach((node2, index2) => {
-    if (!node2.scope) return;
-    const indices = scopes2.get(node2.scope) ?? [];
-    indices.push(index2);
-    scopes2.set(node2.scope, indices);
+    if (node2.scope) {
+      const indices = scopes2.get(node2.scope) ?? [];
+      indices.push(index2);
+      scopes2.set(node2.scope, indices);
+    }
+    if (node2.sequenceScope && node2.sequence !== void 0) {
+      const indices = sequenceScopes.get(node2.sequenceScope) ?? [];
+      indices.push(index2);
+      sequenceScopes.set(node2.sequenceScope, indices);
+    }
   });
   const edges = nodes.map(() => /* @__PURE__ */ new Set());
   const incoming = nodes.map(() => 0);
@@ -3737,7 +3749,9 @@ function orderBySource(nodes) {
   for (const indices of scopes2.values()) {
     const positioned = indices.filter((index2) => nodes[index2].position).sort((a, b) => comparePosition(nodes[a].position, nodes[b].position) || liveFirst(a, b));
     for (let index2 = 1; index2 < positioned.length; index2++) connect(positioned[index2 - 1], positioned[index2]);
-    const sequenced = indices.filter((index2) => nodes[index2].sequence !== void 0).sort((a, b) => nodes[a].sequence - nodes[b].sequence || a - b);
+  }
+  for (const indices of sequenceScopes.values()) {
+    const sequenced = [...indices].sort((a, b) => nodes[a].sequence - nodes[b].sequence || a - b);
     for (let index2 = 1; index2 < sequenced.length; index2++) connect(sequenced[index2 - 1], sequenced[index2]);
   }
   const ready = [];
@@ -3832,6 +3846,7 @@ function reconcileRuntimeAppendFrames(frames) {
           frame: noticeFrame,
           scope,
           origin,
+          sequenceScope: sequenceScopeOf(frame),
           position: [data.transcript_start + origin.append_ordinal],
           sequence: sourceSequence(frame),
           settled: Boolean(observed && snapshot.settled.has(attemptKey(scope, origin.run_id, origin.input_id)))
@@ -3868,7 +3883,7 @@ function reconcileRuntimeAppendFrames(frames) {
       };
       const before = nodes.findIndex((node2) => typeof node2.frame.timestampMs === "number" && node2.frame.timestampMs > frame.timestampMs);
       append(
-        { frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough },
+        { frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough, sequenceScope: scope },
         before < 0 ? nodes.length : before
       );
     }
@@ -3880,7 +3895,10 @@ function reconcileRuntimeAppendFrames(frames) {
     const winner = canonical ?? newestObservation(eligible, true);
     if (!winner) continue;
     const liveTwin = newestObservation((canonical ? twins : eligible).filter((node2) => !node2.canonical && node2.origin.run_id === winner.origin.run_id), true);
-    if (liveTwin?.sequence !== void 0) winner.sequence = liveTwin.sequence;
+    if (liveTwin?.sequence !== void 0) {
+      winner.sequence = liveTwin.sequence;
+      winner.sequenceScope = liveTwin.sequenceScope;
+    }
     chosen.set(key, winner);
   }
   const emitted = /* @__PURE__ */ new Set();
@@ -28630,7 +28648,7 @@ function fullTimelineDerivation(agent, frames, options) {
     noteInteractionStart(resume.interactionStartMs, frame);
     const cursor = cursorSeq(frame.cursor);
     if (cursor !== null && cursor > resume.maxCursor) resume.maxCursor = cursor;
-    const scope = scopeOf(frame);
+    const scope = sequenceScopeOf(frame);
     const sequence = sourceSequence(frame);
     if (scope && sequence !== void 0) {
       resume.maxSourceSequence.set(scope, Math.max(sequence, resume.maxSourceSequence.get(scope) ?? -1));
@@ -28665,7 +28683,7 @@ function extendTimelineDerivation(previous3, agent, frames, options) {
     const cursor = cursorSeq(frame.cursor);
     if (cursor === null || cursor <= maxCursor) return null;
     maxCursor = cursor;
-    const scope = scopeOf(frame);
+    const scope = sequenceScopeOf(frame);
     const sequence = sourceSequence(frame);
     if (scope && sequence !== void 0) {
       if (sequence <= (maxSourceSequence.get(scope) ?? -1)) return null;

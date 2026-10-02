@@ -3712,6 +3712,24 @@ fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent
     })
 }
 
+/// Identifies this process's member event streams. Meerkat numbers a
+/// member's stream from the start again whenever the stream is recreated, so
+/// sequence numbers only order events within one stream lifetime.
+static SOURCE_EVENT_PROCESS_EPOCH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| uuid::Uuid::new_v4().simple().to_string());
+
+/// The stream lifetime `attributed.envelope.seq` belongs to: this process and
+/// the member incarnation (generation and fence) that emitted it. Sequences
+/// from different epochs are not comparable; consumers order them by arrival.
+fn source_event_epoch(attributed: &AttributedEvent) -> String {
+    format!(
+        "{}.{}.{}",
+        *SOURCE_EVENT_PROCESS_EPOCH,
+        attributed.source.generation.get(),
+        attributed.source_fence_token.get()
+    )
+}
+
 fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {
     let mut payload =
         crate::mob_handle_runtime::console_agent_event_payload(&attributed.envelope.payload);
@@ -3723,6 +3741,10 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
             object.insert(
                 "source_sequence".to_string(),
                 json!(attributed.envelope.seq),
+            );
+            object.insert(
+                "source_epoch".to_string(),
+                json!(source_event_epoch(&attributed)),
             );
         }
     }
@@ -3819,6 +3841,19 @@ mod tests {
         assert_eq!(payload["session_id"], json!(session_id));
         assert_eq!(payload["source_sequence"], json!(41));
         assert_eq!(payload["delta"], "hello");
+        // The sequence is scoped to this process and member incarnation.
+        let epoch = payload["source_epoch"].as_str().expect("source epoch");
+        assert!(epoch.ends_with(".1.1"), "{epoch}");
+        let mut respawned = attributed_text_delta("router", 2);
+        respawned.envelope.source = meerkat_core::event::EventSourceIdentity::session(session_id);
+        let UnifiedEvent::Agent {
+            payload: Some(respawned),
+            ..
+        } = attributed_event_to_unified(respawned).event
+        else {
+            panic!("expected respawned agent payload");
+        };
+        assert_ne!(respawned["source_epoch"], payload["source_epoch"]);
         let legacy = attributed_event_to_unified(attributed_text_delta("router", 1));
         let UnifiedEvent::Agent {
             payload: Some(payload),
@@ -3829,6 +3864,7 @@ mod tests {
         };
         assert!(payload.get("session_id").is_none());
         assert!(payload.get("source_sequence").is_none());
+        assert!(payload.get("source_epoch").is_none());
     }
 
     #[test]

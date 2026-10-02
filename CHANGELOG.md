@@ -547,6 +547,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `npm run perf:typing:browser` adds a send-then-type scenario and fails on
   more than 40 element rect reads per streamed token (13 now, 1,207 before).
 
+- Console: after a gateway restart, a streamed reply no longer re-derives the
+  whole transcript on every token. Agent console events carry the member
+  stream's `source_sequence`, which Meerkat numbers from the start again in
+  each process. The transcript projection ordered sequences across the whole
+  session, so the restarted sequences (1, 2, 3, ... under a stored history
+  numbered into the thousands) could never be proven to append, the
+  incremental derivation fell back to a full derivation per token
+  (about 12 ms per token at 300 turns), and live frames from before and after
+  the restart could be interleaved. The gateway now stamps each agent event
+  with `source_epoch` (this process and the member's generation and fence),
+  and the projection orders sequences only within one epoch; across epochs
+  arrival order decides. Frames without an epoch keep the session-wide
+  ordering. `npm run perf:typing:browser` adds a restarted-session run that
+  fails on full derivations per streamed token (0.00 now, 0.88 before).
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in
