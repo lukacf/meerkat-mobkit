@@ -622,7 +622,10 @@ function decodePng(buffer) {
 /// Pixels that differ at all, the largest channel difference, and pixels
 /// that differ by more than `visible` levels in any channel. Two identical
 /// unwindowed pages differ by about ten pixels at one level (renderer
-/// noise, measured with EQUIVALENCE_SELF=1), so one level is tolerated.
+/// noise), so one level is tolerated. Every equivalence run measures that
+/// noise floor again (noiseFloor) and fails if it exceeds the tolerance, so
+/// the tolerance cannot silently hide a growing difference.
+const NOISE_FLOOR_MAX_PIXELS = 100;
 function differingPixels(left, right, visible = 1) {
   const a = decodePng(left), b = decodePng(right);
   if (a.width !== b.width || a.height !== b.height) return { any: Infinity, visible: Infinity, maxDelta: 255 };
@@ -675,15 +678,42 @@ function transcriptState(page) {
 
 /// Windowed versus unwindowed at a spread of scroll positions: scroll height,
 /// visible rows and their offsets, and a pixel-identical transcript.
+const contentClip = (state) => ({ x: state.box.x + state.contentLeft + 1, y: state.box.y, width: state.box.width - state.contentLeft - 1, height: state.box.height });
+
+/// Two identical unwindowed pages compared the same way: the renderer's own
+/// noise, which bounds what the windowed comparison may tolerate.
+async function noiseFloor(left, right, turns, clipOf, positions) {
+  const failures = [];
+  let worst = { any: 0, maxDelta: 0 };
+  let total = 0;
+  for (const y of positions) {
+    for (const page of [left, right]) await page.evaluate((top) => { document.querySelector(".conv__body").scrollTop = top; }, y);
+    await settled(left); await settled(right);
+    const clip = clipOf(await transcriptState(right));
+    const [a, b] = [await left.screenshot({ clip }), await right.screenshot({ clip })];
+    const diff = a.equals(b) ? { any: 0, visible: 0, maxDelta: 0 } : differingPixels(a, b);
+    worst = { any: Math.max(worst.any, diff.any), maxDelta: Math.max(worst.maxDelta, diff.maxDelta) };
+    total += diff.any;
+    if (diff.visible > 0 || diff.any > NOISE_FLOOR_MAX_PIXELS) {
+      failures.push(`turns=${turns} scrollTop=${y}: two identical unwindowed pages differ (${diff.any} pixels, max channel delta ${diff.maxDelta}); the renderer noise floor grew past the equivalence tolerance`);
+    }
+  }
+  process.stdout.write(`[typing-lag-browser] noise floor turns=${turns}: identical pages differ by ${total} pixels over ${positions.length} positions (at most ${worst.any} per position), max channel delta ${worst.maxDelta}\n`);
+  return failures;
+}
+
 async function equivalence(browser, baseUrl, turns) {
   const failures = [];
-  const windowed = await openFilled(browser, baseUrl, turns, process.env.EQUIVALENCE_SELF !== "1");
+  const windowed = await openFilled(browser, baseUrl, turns, true);
   const oracle = await openFilled(browser, baseUrl, turns, false);
   const base = await transcriptState(oracle);
   const range = base.scrollHeight - base.clientHeight;
   // A pane resize invalidates every measured height: compare after one too.
   const positions = [1, 0.97, 0.9, 0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.1, 0.05, 0, 0.5, 0.99, "resize", 0.8, 0.3, 1]
     .map((f) => (f === "resize" ? f : Math.round(range * f)));
+  const twin = await openFilled(browser, baseUrl, turns, false);
+  failures.push(...await noiseFloor(oracle, twin, turns, contentClip, positions.filter((y) => y !== "resize")));
+  await twin.context().close();
   let checked = 0;
   let maxElements = 0;
   const antialias = { any: 0, maxDelta: 0 };
@@ -718,7 +748,7 @@ async function equivalence(browser, baseUrl, turns) {
     // deterministic there even between two identical unwindowed pages, so the
     // pixels compared start at the content edge; the gutter's rail is
     // compared above as state.
-    const clip = { x: b.box.x + b.contentLeft + 1, y: b.box.y, width: b.box.width - b.contentLeft - 1, height: b.box.height };
+    const clip = contentClip(b);
     const [shotA, shotB] = [await windowed.screenshot({ clip }), await oracle.screenshot({ clip })];
     if (!shotA.equals(shotB)) {
       const diff = differingPixels(shotA, shotB);
