@@ -1754,7 +1754,17 @@ export function ChatPane({
   );
   // Of the revealed turns, only those near the viewport are mounted.
   const revealedTurns = React.useMemo(() => (windowStart > 0 ? turns.slice(windowStart) : turns), [turns, windowStart]);
-  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnContentKey);
+  // A turn renders by its content and the day it follows (the day separator).
+  const turnRenderKey = React.useMemo(() => {
+    let day: string | null = null;
+    const previous = revealedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+    return (turn: ChatTurn, index: number) => `${previous[index] ?? ""}\u0000${turnContentKey(turn)}`;
+  }, [revealedTurns]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey);
   const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,

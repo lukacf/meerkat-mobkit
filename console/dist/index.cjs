@@ -38545,7 +38545,7 @@ var TURN_WINDOW_MARGIN = 0.5;
 function measured(input, index2) {
   const turn = input.turns[index2];
   const measurement = input.measurements.get(turn.id);
-  return measurement && measurement.turn === turn && measurement.width === input.width ? measurement : null;
+  return measurement && measurement.key === input.keys[index2] && measurement.width === input.width ? measurement : null;
 }
 function planTurnWindow(input) {
   const count = input.turns.length;
@@ -38610,20 +38610,14 @@ function turnSlots(turns, mounted, measurements, gap) {
   spacer(next, turns.length);
   return slots;
 }
-function useTurnWindow(bodyRef, turns, enabled, contentKey) {
+function useTurnWindow(bodyRef, turns, enabled, renderKey) {
   const measurements = React24.useRef(/* @__PURE__ */ new Map());
   const geometry = React24.useRef({ width: 0, gap: 0, top: 0, viewportHeight: 0 });
   const turnsRef = React24.useRef(turns);
   turnsRef.current = turns;
-  const contentKeyRef = React24.useRef(contentKey);
-  contentKeyRef.current = contentKey;
-  const revalidate = React24.useCallback((list4) => {
-    for (const turn of list4) {
-      const measurement = measurements.current.get(turn.id);
-      if (!measurement || measurement.turn === turn) continue;
-      if (contentKeyRef.current(measurement.turn) === contentKeyRef.current(turn)) measurement.turn = turn;
-    }
-  }, []);
+  const keys2 = React24.useMemo(() => turns.map(renderKey), [turns, renderKey]);
+  const keysRef = React24.useRef(keys2);
+  keysRef.current = keys2;
   const pins = React24.useRef({ selection: /* @__PURE__ */ new Set(), focus: /* @__PURE__ */ new Set(), jump: /* @__PURE__ */ new Set() });
   const [plan, setPlan] = React24.useState(null);
   const planRef = React24.useRef(plan);
@@ -38632,11 +38626,11 @@ function useTurnWindow(bodyRef, turns, enabled, contentKey) {
     const body = bodyRef.current;
     if (!enabled || !body) return;
     const current = turnsRef.current;
-    revalidate(current);
     const pinned = /* @__PURE__ */ new Set([...pins.current.selection, ...pins.current.focus, ...pins.current.jump]);
     const next = planTurnWindow({
       turns: current,
       measurements: measurements.current,
+      keys: keysRef.current,
       ...geometry.current,
       scrollTop: body.scrollTop,
       current: planRef.current?.range ?? null,
@@ -38648,7 +38642,7 @@ function useTurnWindow(bodyRef, turns, enabled, contentKey) {
     const sink = globalThis.__consoleRenderCounts;
     if (sink) sink.TurnWindowPlans = (sink.TurnWindowPlans ?? 0) + 1;
     setPlan(next);
-  }, [bodyRef, enabled, revalidate]);
+  }, [bodyRef, enabled]);
   React24.useLayoutEffect(() => {
     const body = bodyRef.current;
     if (!enabled || !body || typeof ResizeObserver === "undefined") return;
@@ -38658,14 +38652,14 @@ function useTurnWindow(bodyRef, turns, enabled, contentKey) {
       const width = body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const gap = parseFloat(style.rowGap) || 0;
       geometry.current = { ...geometry.current, width, gap, viewportHeight: body.clientHeight };
-      const byId = new Map(turnsRef.current.map((turn) => [turn.id, turn]));
+      const indexById = new Map(turnsRef.current.map((turn, index2) => [turn.id, index2]));
       for (const entry of entries) {
         const id = indexOf.get(entry.target);
         if (id === void 0) continue;
-        const turn = byId.get(id);
-        if (!turn || !entry.target.isConnected) continue;
+        const index2 = indexById.get(id);
+        if (index2 === void 0 || !entry.target.isConnected) continue;
         const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.offsetHeight;
-        measurements.current.set(id, { height, turn, width });
+        measurements.current.set(id, { height, key: keysRef.current[index2], width });
       }
       const first = body.querySelector(":scope > [data-conversation-turn-id], :scope > [data-conversation-spacer]");
       if (first) geometry.current.top = first.offsetTop;
@@ -38741,14 +38735,14 @@ function useTurnWindow(bodyRef, turns, enabled, contentKey) {
     if (!enabled) return;
     const body = bodyRef.current;
     if (body) {
-      const byId = new Map(turns.map((turn) => [turn.id, turn]));
+      const indexById = new Map(turns.map((turn, index2) => [turn.id, index2]));
       for (const element2 of body.querySelectorAll(":scope > [data-conversation-turn-id]")) {
-        const turn = byId.get(element2.dataset.conversationTurnId);
-        const measurement = turn && measurements.current.get(turn.id);
-        if (turn && measurement && measurement.turn !== turn) measurement.turn = turn;
+        const index2 = indexById.get(element2.dataset.conversationTurnId);
+        const measurement = index2 === void 0 ? void 0 : measurements.current.get(turns[index2].id);
+        if (index2 !== void 0 && measurement) measurement.key = keys2[index2];
       }
     }
-  }, [turns, enabled, bodyRef]);
+  }, [turns, keys2, enabled, bodyRef]);
   const mount = React24.useCallback((index2) => {
     if (index2 < 0 || index2 >= turnsRef.current.length) return false;
     pins.current.jump = /* @__PURE__ */ new Set([index2]);
@@ -38767,14 +38761,13 @@ function useTurnWindow(bodyRef, turns, enabled, contentKey) {
   }, [bodyRef, replan]);
   const slots = React24.useMemo(() => {
     if (!enabled || !plan) return turns.map((_, index2) => ({ kind: "turn", index: index2 }));
-    revalidate(turns);
     const mounted = new Set(plan.mounted.filter((index2) => index2 < turns.length));
     for (let i = 0; i < turns.length; i += 1) {
       const measurement = measurements.current.get(turns[i].id);
-      if (!measurement || measurement.turn !== turns[i] || measurement.width !== geometry.current.width) mounted.add(i);
+      if (!measurement || measurement.key !== keys2[i] || measurement.width !== geometry.current.width) mounted.add(i);
     }
     return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap);
-  }, [enabled, plan, turns, revalidate]);
+  }, [enabled, plan, turns, keys2]);
   return React24.useMemo(() => ({ slots, mount }), [slots, mount]);
 }
 
@@ -39926,7 +39919,16 @@ function ChatPane({
     (id) => turnIndexById.get(id) ?? -1
   );
   const revealedTurns = import_react40.default.useMemo(() => windowStart > 0 ? turns.slice(windowStart) : turns, [turns, windowStart]);
-  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnContentKey);
+  const turnRenderKey = import_react40.default.useMemo(() => {
+    let day = null;
+    const previous3 = revealedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+    return (turn, index2) => `${previous3[index2] ?? ""}\0${turnContentKey(turn)}`;
+  }, [revealedTurns]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey);
   const revealScrollAnchorRef = import_react40.default.useRef(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef,

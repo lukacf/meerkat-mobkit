@@ -9,7 +9,7 @@ const TOP = 46;
 
 function measurements(width = 800, only?: (index: number) => boolean): Map<string, TurnMeasurement> {
   const map = new Map<string, TurnMeasurement>();
-  turns.forEach((turn, i) => { if (!only || only(i)) map.set(turn.id, { height: heights[i], turn, width }); });
+  turns.forEach((turn, i) => { if (!only || only(i)) map.set(turn.id, { height: heights[i], key: `k${i}`, width }); });
   return map;
 }
 
@@ -17,6 +17,7 @@ function input(overrides: Partial<TurnWindowInput> = {}): TurnWindowInput {
   return {
     turns,
     measurements: measurements(),
+    keys: turns.map((_, i) => `k${i}`),
     width: 800,
     gap: GAP,
     top: TOP,
@@ -55,9 +56,9 @@ describe("planTurnWindow", () => {
     expect(unmeasured.mounted).toContain(3);
     const resized = planTurnWindow(input({ width: 640 }));
     expect(resized.mounted).toHaveLength(turns.length);
-    const changed = measurements();
-    changed.set("t5", { height: heights[5], turn: { id: "t5" }, width: 800 });
-    expect(planTurnWindow(input({ measurements: changed })).mounted).toContain(5);
+    // A turn whose render key changed (its content, or the day it follows).
+    const keys = turns.map((_, i) => (i === 5 ? "k5-changed" : `k${i}`));
+    expect(planTurnWindow(input({ keys })).mounted).toContain(5);
   });
 
   it("mounts pinned turns wherever they are", () => {

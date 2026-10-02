@@ -18,8 +18,9 @@ export const TURN_WINDOW_MARGIN = 0.5;
 export interface TurnMeasurement {
   /** Border-box block size in CSS pixels. */
   height: number;
-  /** The turn object measured: a new object means new content. */
-  turn: unknown;
+  /** Render key the turn was measured under: its content and anything else
+   * that changes how it renders (such as the day it follows). */
+  key: string;
   /** Content width the turn was measured at. */
   width: number;
 }
@@ -28,6 +29,8 @@ export interface TurnWindowInput {
   /** Turns in transcript order (the revealed range). */
   turns: readonly { id: string }[];
   measurements: ReadonlyMap<string, TurnMeasurement>;
+  /** Each turn's render key now. */
+  keys: readonly string[];
   /** Content width of the transcript now. */
   width: number;
   /** Flex gap between turns. */
@@ -52,7 +55,7 @@ export interface TurnWindowPlan {
 function measured(input: TurnWindowInput, index: number): TurnMeasurement | null {
   const turn = input.turns[index];
   const measurement = input.measurements.get(turn.id);
-  return measurement && measurement.turn === turn && measurement.width === input.width ? measurement : null;
+  return measurement && measurement.key === input.keys[index] && measurement.width === input.width ? measurement : null;
 }
 
 /// Which turns to mount. Pure: the hook supplies geometry it read after layout.
@@ -151,25 +154,19 @@ export function useTurnWindow<T extends { id: string }>(
   bodyRef: React.RefObject<HTMLElement | null>,
   turns: readonly T[],
   enabled: boolean,
-  /** Content identity of a turn: a rebuilt turn object with the same key keeps its measurement. */
-  contentKey: (turn: T) => string,
+  /** A turn's render key: equal keys render equal heights at one width. */
+  renderKey: (turn: T, index: number) => string,
 ): TurnWindow {
   const measurements = React.useRef(new Map<string, TurnMeasurement>());
   const geometry = React.useRef({ width: 0, gap: 0, top: 0, viewportHeight: 0 });
   const turnsRef = React.useRef(turns);
   turnsRef.current = turns;
-  const contentKeyRef = React.useRef(contentKey);
-  contentKeyRef.current = contentKey;
-  // A turn object can be rebuilt with unchanged content (a full transcript
-  // derivation after the log trims rebuilds every message). Adopt it then,
-  // instead of mounting every such turn again to measure it.
-  const revalidate = React.useCallback((list: readonly T[]) => {
-    for (const turn of list) {
-      const measurement = measurements.current.get(turn.id);
-      if (!measurement || measurement.turn === turn) continue;
-      if (contentKeyRef.current(measurement.turn as T) === contentKeyRef.current(turn)) measurement.turn = turn;
-    }
-  }, []);
+  // Keys rather than turn objects: a full transcript derivation after the
+  // log trims rebuilds every turn object with unchanged content, which must
+  // not remount every turn to measure it again.
+  const keys = React.useMemo(() => turns.map(renderKey), [turns, renderKey]);
+  const keysRef = React.useRef(keys);
+  keysRef.current = keys;
   const pins = React.useRef({ selection: new Set<number>(), focus: new Set<number>(), jump: new Set<number>() });
   const [plan, setPlan] = React.useState<TurnWindowPlan | null>(null);
   const planRef = React.useRef(plan);
@@ -179,11 +176,11 @@ export function useTurnWindow<T extends { id: string }>(
     const body = bodyRef.current;
     if (!enabled || !body) return;
     const current = turnsRef.current;
-    revalidate(current);
     const pinned = new Set<number>([...pins.current.selection, ...pins.current.focus, ...pins.current.jump]);
     const next = planTurnWindow({
       turns: current,
       measurements: measurements.current,
+      keys: keysRef.current,
       ...geometry.current,
       scrollTop: body.scrollTop,
       current: planRef.current?.range ?? null,
@@ -198,7 +195,7 @@ export function useTurnWindow<T extends { id: string }>(
     const sink = (globalThis as { __consoleRenderCounts?: Record<string, number> }).__consoleRenderCounts;
     if (sink) sink.TurnWindowPlans = (sink.TurnWindowPlans ?? 0) + 1;
     setPlan(next);
-  }, [bodyRef, enabled, revalidate]);
+  }, [bodyRef, enabled]);
 
   // Measure after layout: a ResizeObserver callback reads geometry the frame
   // already computed. Turns are observed as they mount.
@@ -211,14 +208,14 @@ export function useTurnWindow<T extends { id: string }>(
       const width = body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const gap = parseFloat(style.rowGap) || 0;
       geometry.current = { ...geometry.current, width, gap, viewportHeight: body.clientHeight };
-      const byId = new Map(turnsRef.current.map((turn) => [turn.id, turn] as const));
+      const indexById = new Map(turnsRef.current.map((turn, index) => [turn.id, index] as const));
       for (const entry of entries) {
         const id = indexOf.get(entry.target);
         if (id === undefined) continue;
-        const turn = byId.get(id);
-        if (!turn || !entry.target.isConnected) continue;
+        const index = indexById.get(id);
+        if (index === undefined || !entry.target.isConnected) continue;
         const height = entry.borderBoxSize?.[0]?.blockSize ?? (entry.target as HTMLElement).offsetHeight;
-        measurements.current.set(id, { height, turn, width });
+        measurements.current.set(id, { height, key: keysRef.current[index], width });
       }
       const first = body.querySelector<HTMLElement>(":scope > [data-conversation-turn-id], :scope > [data-conversation-spacer]");
       if (first) geometry.current.top = first.offsetTop;
@@ -292,22 +289,22 @@ export function useTurnWindow<T extends { id: string }>(
   }, [bodyRef, enabled, replan]);
 
   // A mounted turn's size is tracked by the observer, so its measurement
-  // stays valid when only its object changes (its messages were rebuilt).
-  // A turn that changes while unmounted is measured again by mounting it.
+  // holds for whatever key it renders under now. A turn whose key changes
+  // while unmounted is measured again by mounting it.
   React.useLayoutEffect(() => {
     if (!enabled) return;
     const body = bodyRef.current;
     if (body) {
-      const byId = new Map(turns.map((turn) => [turn.id, turn] as const));
+      const indexById = new Map(turns.map((turn, index) => [turn.id, index] as const));
       for (const element of body.querySelectorAll<HTMLElement>(":scope > [data-conversation-turn-id]")) {
-        const turn = byId.get(element.dataset.conversationTurnId!);
-        const measurement = turn && measurements.current.get(turn.id);
-        if (turn && measurement && measurement.turn !== turn) measurement.turn = turn;
+        const index = indexById.get(element.dataset.conversationTurnId!);
+        const measurement = index === undefined ? undefined : measurements.current.get(turns[index].id);
+        if (index !== undefined && measurement) measurement.key = keys[index];
       }
     }
     // No replan here: reading scrollTop mid-commit forces layout. Changed
     // turns mount (see slots) and the observer replans after layout.
-  }, [turns, enabled, bodyRef]);
+  }, [turns, keys, enabled, bodyRef]);
 
   const mount = React.useCallback((index: number) => {
     if (index < 0 || index >= turnsRef.current.length) return false;
@@ -329,16 +326,15 @@ export function useTurnWindow<T extends { id: string }>(
 
   const slots = React.useMemo(() => {
     if (!enabled || !plan) return turns.map((_, index): TurnSlot => ({ kind: "turn", index }));
-    revalidate(turns);
     // Indexes from a plan for an older turn list are re-derived next replan;
     // anything new is mounted until then.
     const mounted = new Set(plan.mounted.filter((index) => index < turns.length));
     for (let i = 0; i < turns.length; i += 1) {
       const measurement = measurements.current.get(turns[i].id);
-      if (!measurement || measurement.turn !== turns[i] || measurement.width !== geometry.current.width) mounted.add(i);
+      if (!measurement || measurement.key !== keys[i] || measurement.width !== geometry.current.width) mounted.add(i);
     }
     return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap);
-  }, [enabled, plan, turns, revalidate]);
+  }, [enabled, plan, turns, keys]);
 
   return React.useMemo(() => ({ slots, mount }), [slots, mount]);
 }
