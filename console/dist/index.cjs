@@ -42719,6 +42719,7 @@ var import_jsx_runtime56 = require("react/jsx-runtime");
 var MAX_IDENTITY_LOG_EVENTS = 5e3;
 var IDENTITY_LOG_TRIM_SLACK = 500;
 var HIDDEN_TAB_FLUSH_MS = 250;
+var STREAM_TEXT_FRAMES = 3;
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -43250,14 +43251,29 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const [liveFrames, setLiveFrames] = import_react45.default.useState([]);
   const renderScheduledRef = import_react45.default.useRef(null);
   const liveFramesDirtyRef = import_react45.default.useRef(false);
-  const flushScheduledRender = import_react45.default.useCallback(() => {
+  const flushScheduledRender = import_react45.default.useCallback((transition = false) => {
     renderScheduledRef.current = null;
-    if (liveFramesDirtyRef.current) {
-      liveFramesDirtyRef.current = false;
-      setLiveFrames(liveFramesRef.current);
-    }
-    setRenderTick((n) => n + 1);
+    countRender("LiveRenderFlush");
+    const commit = () => {
+      if (liveFramesDirtyRef.current) {
+        liveFramesDirtyRef.current = false;
+        setLiveFrames(liveFramesRef.current);
+      }
+      setRenderTick((n) => n + 1);
+    };
+    if (transition) import_react45.default.startTransition(commit);
+    else commit();
   }, []);
+  const onScheduledFrame = import_react45.default.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || pending.kind !== "raf") return;
+    pending.frames += 1;
+    if (pending.textOnly && pending.frames < STREAM_TEXT_FRAMES) {
+      pending.id = window.requestAnimationFrame(onScheduledFrame);
+      return;
+    }
+    flushScheduledRender(pending.textOnly);
+  }, [flushScheduledRender]);
   const cancelScheduledRender = import_react45.default.useCallback(() => {
     const pending = renderScheduledRef.current;
     if (!pending || typeof window === "undefined") return;
@@ -43265,21 +43281,34 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     else window.clearTimeout(pending.id);
     renderScheduledRef.current = null;
   }, []);
-  const forceRender = import_react45.default.useCallback(() => {
-    if (renderScheduledRef.current !== null) return;
+  const forceRender = import_react45.default.useCallback((cause = "frame") => {
+    const pending = renderScheduledRef.current;
+    if (cause === "now") {
+      cancelScheduledRender();
+      flushScheduledRender();
+      return;
+    }
+    if (pending !== null) {
+      if (cause !== "text") pending.textOnly = false;
+      return;
+    }
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
       renderScheduledRef.current = {
         kind: "raf",
-        id: window.requestAnimationFrame(flushScheduledRender)
+        id: window.requestAnimationFrame(onScheduledFrame),
+        textOnly: cause === "text",
+        frames: 0
       };
       return;
     }
     renderScheduledRef.current = {
       kind: "timeout",
-      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16)
+      id: window.setTimeout(() => flushScheduledRender(), hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+      textOnly: false,
+      frames: 0
     };
-  }, [flushScheduledRender]);
+  }, [cancelScheduledRender, flushScheduledRender, onScheduledFrame]);
   import_react45.default.useEffect(() => {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
@@ -43791,10 +43820,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     return frames;
   }
   const activityRef = import_react45.default.useRef([]);
-  function commitLiveFrames(frames) {
+  function commitLiveFrames(frames, cause = "frame") {
     liveFramesRef.current = frames;
     liveFramesDirtyRef.current = true;
-    forceRender();
+    forceRender(cause);
   }
   const sendControllerRef = import_react45.default.useRef(consoleController);
   sendControllerRef.current = consoleController;
@@ -44986,11 +45015,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         identityAliasesRef.current
       );
       const frame = canonicalIdentity && canonicalIdentity !== incomingFrame.identity ? { ...incomingFrame, identity: canonicalIdentity } : incomingFrame;
+      const cause = frame.event === "text_delta" ? "text" : frame.event === "text_complete" || HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame) ? "now" : "frame";
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
       }
       if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
-        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300));
+        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300), cause === "now" ? "frame" : cause);
       }
       const identity = canonicalIdentity || frame.identity?.trim();
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
@@ -44998,7 +45028,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         updateBusyStateForFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
       }
-      forceRender();
+      forceRender(cause);
       if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }

@@ -263,6 +263,11 @@ const MAX_IDENTITY_LOG_EVENTS = 5000;
 const IDENTITY_LOG_TRIM_SLACK = 500;
 /// Coalesced render flush cadence while the tab is hidden (no rAF there).
 const HIDDEN_TAB_FLUSH_MS = 250;
+/// Animation frames between renders while only streamed text has arrived.
+const STREAM_TEXT_FRAMES = 3;
+/// Why a render is requested: streamed text (paced), any other change (next
+/// animation frame), or a stream's completion (at once).
+type RenderCause = "text" | "frame" | "now";
 
 /// See `IdentityLogCore` (src/lib/identity-log.ts) for the frame store and
 /// its transcript-ordered view; this adds the console's paging and busy
@@ -992,16 +997,37 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // hidden the flush runs on a 250 ms timer instead (frames keep landing in
   // the refs either way), and a pending timer flush is brought forward the
   // moment the tab becomes visible.
-  const renderScheduledRef = React.useRef<{ kind: "raf" | "timeout"; id: number } | null>(null);
+  //
+  // Streamed text alone renders less often: on every STREAM_TEXT_FRAMES-th
+  // animation frame, counted in frames so it slows with the frame rate
+  // instead of fighting it, and as a transition, so a keystroke always
+  // preempts it. Any other frame commits on the next animation frame, and a
+  // stream's completion commits at once.
+  const renderScheduledRef = React.useRef<{ kind: "raf" | "timeout"; id: number; textOnly: boolean; frames: number } | null>(null);
   const liveFramesDirtyRef = React.useRef(false);
-  const flushScheduledRender = React.useCallback(() => {
+  const flushScheduledRender = React.useCallback((transition = false) => {
     renderScheduledRef.current = null;
-    if (liveFramesDirtyRef.current) {
-      liveFramesDirtyRef.current = false;
-      setLiveFrames(liveFramesRef.current);
-    }
-    setRenderTick((n) => n + 1);
+    countRender("LiveRenderFlush");
+    const commit = () => {
+      if (liveFramesDirtyRef.current) {
+        liveFramesDirtyRef.current = false;
+        setLiveFrames(liveFramesRef.current);
+      }
+      setRenderTick((n) => n + 1);
+    };
+    if (transition) React.startTransition(commit);
+    else commit();
   }, []);
+  const onScheduledFrame = React.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || pending.kind !== "raf") return;
+    pending.frames += 1;
+    if (pending.textOnly && pending.frames < STREAM_TEXT_FRAMES) {
+      pending.id = window.requestAnimationFrame(onScheduledFrame);
+      return;
+    }
+    flushScheduledRender(pending.textOnly);
+  }, [flushScheduledRender]);
   const cancelScheduledRender = React.useCallback(() => {
     const pending = renderScheduledRef.current;
     if (!pending || typeof window === "undefined") return;
@@ -1009,21 +1035,35 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     else window.clearTimeout(pending.id);
     renderScheduledRef.current = null;
   }, []);
-  const forceRender = React.useCallback(() => {
-    if (renderScheduledRef.current !== null) return;
+  const forceRender = React.useCallback((cause: RenderCause = "frame") => {
+    const pending = renderScheduledRef.current;
+    if (cause === "now") {
+      cancelScheduledRender();
+      flushScheduledRender();
+      return;
+    }
+    if (pending !== null) {
+      // Anything but streamed text ends the text cadence: next frame, urgent.
+      if (cause !== "text") pending.textOnly = false;
+      return;
+    }
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
       renderScheduledRef.current = {
         kind: "raf",
-        id: window.requestAnimationFrame(flushScheduledRender),
+        id: window.requestAnimationFrame(onScheduledFrame),
+        textOnly: cause === "text",
+        frames: 0,
       };
       return;
     }
     renderScheduledRef.current = {
       kind: "timeout",
-      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+      id: window.setTimeout(() => flushScheduledRender(), hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+      textOnly: false,
+      frames: 0,
     };
-  }, [flushScheduledRender]);
+  }, [cancelScheduledRender, flushScheduledRender, onScheduledFrame]);
   React.useEffect(() => {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
@@ -1800,12 +1840,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // see tool calls (peer-comms send_*, etc.) in addition to interaction
   // lifecycle. The activity rail filters tool events out; this buffer
   // doesn't.
-  function commitLiveFrames(frames: ConsoleFrame[]): void {
+  function commitLiveFrames(frames: ConsoleFrame[], cause: RenderCause = "frame"): void {
     liveFramesRef.current = frames;
     // Published with the next scheduled render instead of per call, so a
     // frame burst commits the topology buffer once.
     liveFramesDirtyRef.current = true;
-    forceRender();
+    forceRender(cause);
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -3318,6 +3358,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         canonicalIdentity && canonicalIdentity !== incomingFrame.identity
           ? { ...incomingFrame, identity: canonicalIdentity }
           : incomingFrame;
+      const cause: RenderCause = frame.event === "text_delta" ? "text"
+        : frame.event === "text_complete" || HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame) ? "now"
+        : "frame";
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -3327,7 +3370,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // the activity rail filters out. Capped at 300; older frames roll
       // off naturally as live pulses age past their lifetime.
       if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
-        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300));
+        // A completion renders once, from forceRender below.
+        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300), cause === "now" ? "frame" : cause);
       }
 
       // Identity log (single canonical store)
@@ -3342,7 +3386,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         updatePhaseForIdentity(identity, frame);
       }
 
-      forceRender();
+      forceRender(cause);
 
       // Terminal events → reconcile server backfill (idempotent — keys
       // already seen via SSE are skipped). If hasServerLog is false,

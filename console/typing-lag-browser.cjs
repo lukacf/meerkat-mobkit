@@ -83,6 +83,10 @@ const MAX_MARKDOWN_CHARS_PER_TOKEN = arg("max-markdown-chars-per-token", null) =
 // separators on every token, and locale formatting is costly; a day key's
 // label is formatted once.
 const MAX_DAY_LABEL_FORMATS_PER_TOKEN = arg("max-day-label-formats-per-token", null) === null ? null : Number(arg("max-day-label-formats-per-token"));
+// Console renders (live-frame flushes) per second while a reply streams.
+// Streamed text alone renders on every third animation frame, so at 60 Hz
+// at most about 20 per second; every token used to render.
+const MAX_STREAM_COMMITS_PER_SECOND = arg("max-stream-commits-per-second", null) === null ? null : Number(arg("max-stream-commits-per-second"));
 const BUDGET_SPEC = process.env.MOBKIT_TYPING_LAG_BUDGET || arg("budget-p95", null);
 const BUDGET_P95 = BUDGET_SPEC === null || BUDGET_SPEC === true ? null : parseBudget(String(BUDGET_SPEC));
 
@@ -348,6 +352,7 @@ function workCounters(page) {
     derivations: window.__perf?.derivations?.() ?? null,
     streamed: window.__perf?.streamed ?? 0,
     rects: window.__lag?.rects ?? 0,
+    at: performance.now(),
   }));
 }
 
@@ -368,6 +373,7 @@ function workDelta(before, after, keystrokes) {
     markdownCharsPerToken: per(renders("MarkdownSourceChars"), tokens),
     dayLabelFormatsPerToken: per(renders("DayLabelFormats"), tokens),
     activeRunFramesPerToken: per(renders("ActiveRunFramesRead"), tokens),
+    commitsPerSecond: per(renders("LiveRenderFlush"), (after.at - before.at) / 1000),
     transcriptRendersPerKeystroke: per(renders("TranscriptView"), keystrokes),
     rowRendersPerKeystroke: per(renders("MessageRow"), keystrokes),
     rectReadsPerToken: per(after.rects - before.rects, tokens),
@@ -590,7 +596,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
-            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} presented-entries/token=${m.work.presentedEntriesPerToken === null ? "n/a" : fmt2(m.work.presentedEntriesPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)} markdown-chars/token=${fmt2(m.work.markdownCharsPerToken)} day-label-formats/token=${fmt2(m.work.dayLabelFormatsPerToken)} active-run-frames/token=${fmt2(m.work.activeRunFramesPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} presented-entries/token=${m.work.presentedEntriesPerToken === null ? "n/a" : fmt2(m.work.presentedEntriesPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)} markdown-chars/token=${fmt2(m.work.markdownCharsPerToken)} day-label-formats/token=${fmt2(m.work.dayLabelFormatsPerToken)} active-run-frames/token=${fmt2(m.work.activeRunFramesPerToken)} commits/s=${fmt2(m.work.commitsPerSecond)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -632,6 +638,9 @@ async function main() {
       }
       if (streamingScenario && MAX_DAY_LABEL_FORMATS_PER_TOKEN !== null && m.work.dayLabelFormatsPerToken > MAX_DAY_LABEL_FORMATS_PER_TOKEN) {
         failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.dayLabelFormatsPerToken)} day-label formats per token > ${MAX_DAY_LABEL_FORMATS_PER_TOKEN}; streamed renders format their day separators again`);
+      }
+      if (streamingScenario && MAX_STREAM_COMMITS_PER_SECOND !== null && m.work.commitsPerSecond > MAX_STREAM_COMMITS_PER_SECOND) {
+        failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.commitsPerSecond)} console renders per second while streaming > ${MAX_STREAM_COMMITS_PER_SECOND}; streamed text is rendering on every token`);
       }
       if (streamingScenario && MAX_FORCED_LAYOUTS_PER_TOKEN !== null) {
         if (!m.breakdown) failures.push(`turns=${r.turns} ${scenario}: --max-forced-layouts-per-token needs --trace`);
