@@ -600,6 +600,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Behavior change: dropping the runtime handle now terminates its live
     module processes; previously they kept running.
 
+- Identity members no longer lose their `customize_build` tools on a
+  restart, an adoption, a respawn or a delivery-time repair (#563). Before,
+  those tools reached a member only as the per-spawn overlay of the one
+  spawn that ran the customizer, and meerkat never persists that overlay.
+  The failure modes were:
+  - a restart restore rebuilt the member without the tools;
+  - when the next materialization's spawn hit "member already exists", every
+    adopt branch discarded the new tools;
+  - delivery-time repair respawned with role and labels only.
+
+  The host's handlers stayed registered, but the live agent stopped
+  advertising the tools (`mobkit/identity/resolved_tools`). Now each identity
+  member carries one stable, dynamic dispatcher for its whole life:
+  - Every successful `customize_build` publishes into it, swapping the tool
+    list and its handler scope together. A tool from an earlier build is
+    refused typed, never routed to a stale scope.
+  - A new `CustomizerToolsSpawnCustomizer` attaches it to every meerkat-side
+    build of a registered identity. MobKit installs it whenever an agent
+    customizer exists, and composes it with the memory customizer in meerkat's
+    single slot.
+  - An adopted occupant picks up the current tools without a respawn.
+  - On a restart, `customize_build` runs for every roster identity before the
+    mob is restored (before activation, or before the mob build when meerkat
+    restores members inside it). Restored members therefore start with their
+    tools, `mobkit/identity/resolved_tools` lists them before the first turn,
+    and runs that start at activation see them. The materialization still runs
+    `customize_build` and republishes. An early failure is logged per identity
+    and reported as the new optional
+    `IdentityStatus::customizer_tools_pending` (`{reason}`) until the
+    materialization publishes.
+  - Members that are not roster identities (helpers, forks, flow-provisioned
+    and raw-spawned members under their own ids) get no customizer tools.
+  - New public types: `identity_first::{CustomizerToolRegistry,
+    IdentityCustomizerTools, CustomizerToolsSpawnCustomizer,
+    ComposedSpawnMemberCustomizer}`,
+    `IdentityRuntime::set_customizer_tool_registry`, and
+    `MobBootstrapSpec::with_spawn_member_customizer`, which composes instead of
+    replacing.
+
 - Console: queued rows that did not go through now say what happened in
   plain words. A refused row reads "Not sent: this message never reached
   <agent>." with Send again and Discard; a row whose answer was lost reads

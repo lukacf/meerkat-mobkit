@@ -1087,6 +1087,12 @@ impl UnifiedRuntime {
                     return Err(error);
                 }
             };
+            // Publish every roster identity's customizer tools before the lift,
+            // so the restore builds each member with them (#563).
+            context
+                .runtime
+                .prepublish_customizer_tools(roster, context.customizer.as_deref())
+                .await;
             // Still parked `Stopped`, so nothing here is on a lifecycle budget.
             // The explicit resume `activate` is about to perform IS budgeted -
             // by a single per-member retire timeout covering O(members) work -

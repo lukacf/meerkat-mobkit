@@ -8550,6 +8550,21 @@ impl MobBootstrapSpec {
         self
     }
 
+    /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
+    /// slot, so this composes with one already installed (which runs first)
+    /// instead of replacing it.
+    pub fn with_spawn_member_customizer(
+        mut self,
+        customizer: Arc<dyn meerkat_mob::SpawnMemberCustomizer>,
+    ) -> Self {
+        self.spawn_member_customizer =
+            Some(crate::identity_first::ComposedSpawnMemberCustomizer::over(
+                self.spawn_member_customizer.take(),
+                customizer,
+            ));
+        self
+    }
+
     /// Install the process-local application consequence-policy registry.
     pub fn with_tool_consequence_policy_registry(
         mut self,
