@@ -860,6 +860,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
 
+- Console: browser find-in-page and keyboard and screen-reader navigation
+  still reach the windowed transcript. Measured turns within 20 turns of the
+  mounted window stay in the DOM, parked as `hidden="until-found"` at their
+  measured size: the browser lays out and paints nothing inside them, but
+  find-in-page finds their text and reveals the turn, and the window keeps a
+  revealed turn mounted. The transcript is now a WAI-ARIA feed (`role=feed`,
+  `aria-busy` while history loads) of turn articles with `aria-posinset` and
+  `aria-setsize`; PageDown and PageUp on a turn move focus to the next or
+  previous turn, mounting it (and revealing earlier turns at the top), and
+  Control+End moves to the composer. The parked band adds no measurable
+  CPU per key at the live edge. The browser equivalence run checks that
+  parked turns carry their full text, that the path find takes on a match
+  keeps the geometry, and that keyboard focus reaches every loaded turn in
+  order.
+
 - Console: the transcript mounts only the turns near the viewport. Every
   revealed turn used to stay mounted, so an operator who scrolled back kept
   the whole loaded history in the DOM (about 16,000 elements at 300 turns),

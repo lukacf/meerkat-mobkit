@@ -765,11 +765,87 @@ async function equivalence(browser, baseUrl, turns) {
     }
     checked += 1;
   }
+  failures.push(...await findBand(windowed, oracle, turns));
   failures.push(...await pinning(windowed, turns));
+  failures.push(...await feedNavigation(windowed, turns));
   process.stdout.write(`[typing-lag-browser] equivalence turns=${turns}: ${checked} scroll positions, windowed elements<=${maxElements} mounted turns=${(await transcriptState(windowed)).mountedTurns} vs unwindowed elements=${base.elements} turns=${base.mountedTurns}; pixels differing by one level ${antialias.any} (max channel delta ${antialias.maxDelta})\n`);
   if (MAX_MOUNTED_ELEMENTS !== null && maxElements > MAX_MOUNTED_ELEMENTS) failures.push(`turns=${turns}: windowed transcript mounted ${maxElements} elements > ${MAX_MOUNTED_ELEMENTS}`);
   await windowed.context().close();
   await oracle.context().close();
+  return failures;
+}
+
+/// Browser find-in-page cannot be driven headlessly (window.find and text
+/// fragments do not reveal hidden="until-found" content in automation), so
+/// this checks what the console owns: turns near the window are parked in
+/// the DOM with their full text, and the path find takes on a match
+/// (beforematch, the attribute removed, the turn scrolled into view) leaves
+/// the turn mounted and visible with geometry unchanged.
+async function findBand(windowed, oracle, turns) {
+  const failures = [];
+  for (const page of [windowed, oracle]) {
+    await page.evaluate(() => { const body = document.querySelector(".conv__body"); body.scrollTop = (body.scrollHeight - body.clientHeight) * 0.5; });
+    await settled(page);
+  }
+  const parked = await windowed.evaluate(() => [...document.querySelectorAll('.conv__body > [hidden="until-found"][data-chat-turn-index]')]
+    .map((turn) => ({ index: turn.dataset.chatTurnIndex, text: turn.textContent })));
+  if (parked.length < 10) failures.push(`turns=${turns}: only ${parked.length} turns parked for find-in-page around the window`);
+  const texts = await oracle.evaluate((indexes) => Object.fromEntries(indexes.map((index) => [index, document.querySelector(`.conv__body > [data-chat-turn-index="${index}"]`)?.textContent ?? null])), parked.map((turn) => turn.index));
+  const missing = parked.filter((turn) => !turn.text || turn.text !== texts[turn.index]);
+  if (missing.length) failures.push(`turns=${turns}: ${missing.length} parked turns lack their full text (first: turn ${Number(missing[0].index) + 1})`);
+  if (parked.length) {
+    const target = parked[0].index;
+    const before = await windowed.evaluate((index) => {
+      const body = document.querySelector(".conv__body");
+      const turn = document.querySelector(`.conv__body > [data-chat-turn-index="${index}"]`);
+      const scrollHeight = body.scrollHeight;
+      // What the browser does on a find match in a hidden="until-found" turn.
+      turn.dispatchEvent(new Event("beforematch", { bubbles: true }));
+      turn.removeAttribute("hidden");
+      turn.scrollIntoView({ block: "center" });
+      return { scrollHeight };
+    }, target);
+    await settled(windowed); await settled(windowed);
+    const after = await windowed.evaluate((index) => {
+      const body = document.querySelector(".conv__body");
+      const turn = document.querySelector(`.conv__body > [data-chat-turn-index="${index}"]`);
+      if (!turn) return null;
+      const a = turn.getBoundingClientRect(), b = body.getBoundingClientRect();
+      return { scrollHeight: body.scrollHeight, hidden: turn.hasAttribute("hidden"), visible: a.bottom > b.top && a.top < b.bottom };
+    }, target);
+    if (!after || after.hidden || !after.visible) failures.push(`turns=${turns}: a find match in parked turn ${Number(target) + 1} did not leave it shown in view`);
+    else if (Math.abs(after.scrollHeight - before.scrollHeight) > 0.5) failures.push(`turns=${turns}: revealing a parked turn changed the scroll height (${before.scrollHeight} to ${after.scrollHeight})`);
+  }
+  return failures;
+}
+
+/// The WAI-ARIA feed pattern: from the first turn, PageDown moves keyboard
+/// focus through every loaded turn in order, mounting each as it goes.
+async function feedNavigation(page, turns) {
+  const failures = [];
+  await page.evaluate(() => { document.querySelector(".conv__body").scrollTop = 0; });
+  await settled(page); await settled(page);
+  const setup = await page.evaluate(() => {
+    const body = document.querySelector(".conv__body");
+    const first = document.querySelector('.conv__body > [data-chat-turn-index="0"]');
+    if (!first) return null;
+    first.focus();
+    return { role: body.getAttribute("role"), setsize: Number(first.getAttribute("aria-setsize")), article: first.getAttribute("role") };
+  });
+  if (!setup) return [`turns=${turns}: the first turn is not mounted at the top of the feed`];
+  if (setup.role !== "feed" || setup.article !== "article") failures.push(`turns=${turns}: transcript is not a feed of articles`);
+  const total = setup.setsize > 0 ? setup.setsize : turns;
+  const visited = [];
+  for (let step = 0; step < total; step += 1) {
+    if (step > 0) { await page.keyboard.press("PageDown"); await settled(page); }
+    visited.push(await page.evaluate(() => Number(document.activeElement?.getAttribute("aria-posinset") ?? 0)));
+  }
+  const expected = Array.from({ length: total }, (_, i) => i + 1);
+  if (JSON.stringify(visited) !== JSON.stringify(expected)) {
+    const at = visited.findIndex((value, i) => value !== expected[i]);
+    failures.push(`turns=${turns}: feed focus did not reach every turn in order (step ${at + 1}: turn ${visited[at]} instead of ${expected[at]})`);
+  }
+  await page.evaluate(() => document.activeElement?.blur());
   return failures;
 }
 
@@ -783,11 +859,13 @@ async function pinning(page, turns) {
   };
   await scrollTo(0.5);
   const selected = await page.evaluate(() => {
-    const turns = [...document.querySelectorAll(".conv__body > [data-chat-turn-index]")];
+    const turns = [...document.querySelectorAll(".conv__body > [data-chat-turn-index]:not([hidden])")];
     const texts = turns.map((turn) => turn.querySelector(".cc-rich-paragraph, .msg__text"));
-    const first = texts.findIndex(Boolean);
-    const last = texts.findIndex((text, i) => text && i >= first + 2);
-    if (first < 0 || last < 0) return null;
+    // Three adjacent shown turns, each with text.
+    const index = (i) => Number(turns[i].dataset.chatTurnIndex);
+    const first = texts.findIndex((text, i) => text && texts[i + 2] && index(i + 2) === index(i) + 2);
+    const last = first + 2;
+    if (first < 0) return null;
     const range = document.createRange();
     range.setStart(texts[first].firstChild ?? texts[first], 0);
     range.setEnd(texts[last].firstChild ?? texts[last], 1);
@@ -806,7 +884,7 @@ async function pinning(page, turns) {
   }
   await scrollTo(0.5);
   const focused = await page.evaluate(() => {
-    const target = document.querySelector('.conv__body > [data-chat-turn-index] [role="button"][tabindex="0"], .conv__body > [data-chat-turn-index] button');
+    const target = document.querySelector('.conv__body > [data-chat-turn-index]:not([hidden]) [role="button"][tabindex="0"], .conv__body > [data-chat-turn-index]:not([hidden]) button');
     if (!target) return false;
     target.focus();
     window.__pinnedFocus = target;
@@ -821,7 +899,7 @@ async function pinning(page, turns) {
   }
   await scrollTo(0.5);
   const opened = await page.evaluate(() => {
-    const header = document.querySelector('.conv__body [role="button"][aria-expanded="false"]');
+    const header = document.querySelector('.conv__body > [data-chat-turn-index]:not([hidden]) [role="button"][aria-expanded="false"]');
     if (!header) return null;
     const row = header.closest("[data-conversation-row-id]")?.dataset.conversationRowId;
     header.click();

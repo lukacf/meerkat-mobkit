@@ -1204,6 +1204,8 @@ const TranscriptTurn = React.memo(function TranscriptTurn({
   onApprovalDecision,
   conversationId,
   approvalInteractionIds,
+  setSize,
+  parkedHeight,
 }: {
   turn: ChatTurn;
   turnIndex: number;
@@ -1217,8 +1219,33 @@ const TranscriptTurn = React.memo(function TranscriptTurn({
   onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
   conversationId?: string;
   approvalInteractionIds: string[];
+  /** Turns in the feed, or -1 while earlier turns can still load. */
+  setSize: number;
+  /** Set while parked outside the transcript window: in the DOM for
+   * find-in-page, laid out at this measured height. */
+  parkedHeight?: number;
 }) {
   countRender("TranscriptTurn");
+  // Parked: hidden="until-found" (React renders `hidden` as a boolean, which
+  // the turn's own display would override) at its measured size, so the
+  // browser lays out and paints nothing inside it but find-in-page still
+  // finds and reveals it. Set before paint.
+  const turnRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const element = turnRef.current;
+    if (!element) return;
+    if (parkedHeight === undefined) {
+      element.removeAttribute("hidden");
+      element.style.removeProperty("contain-intrinsic-block-size");
+      element.style.removeProperty("flex-shrink");
+    } else {
+      // Size containment drops the flex item's automatic minimum size, so
+      // without this the transcript column would shrink it to nothing.
+      element.style.setProperty("flex-shrink", "0");
+      element.style.setProperty("contain-intrinsic-block-size", `${parkedHeight}px`);
+      element.setAttribute("hidden", "until-found");
+    }
+  }, [parkedHeight]);
   // Day separators: before the first mounted row and at every local
   // calendar-day change, so a bare HH:MM is never ambiguous.
   let day = previousDay;
@@ -1242,10 +1269,17 @@ const TranscriptTurn = React.memo(function TranscriptTurn({
   return (
     <div
       aria-label={`Turn ${turnIndex + 1}`}
+      aria-posinset={turnIndex + 1}
+      aria-setsize={setSize}
       className="conv-turn"
       data-chat-turn-index={turnIndex}
       data-conversation-turn-id={turn.id}
       data-testid={`chat-turn:${identity}:${turnIndex}`}
+      // The WAI-ARIA feed pattern: each turn is an article that keyboard
+      // focus moves through (PageDown / PageUp), mounting turns as it goes.
+      ref={turnRef}
+      role="article"
+      tabIndex={-1}
     >
       {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
         const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
@@ -1283,6 +1317,7 @@ const TranscriptView = React.memo(function TranscriptView({
   onApprovalDecision,
   conversationId,
   turnWindow,
+  onTranscriptKeyDown,
 }: {
   identity: string;
   agentLabel: string;
@@ -1306,6 +1341,7 @@ const TranscriptView = React.memo(function TranscriptView({
   conversationId?: string;
   /** Mounted turns and spacers for `turns.slice(windowStart)`. */
   turnWindow: TurnWindow;
+  onTranscriptKeyDown: React.KeyboardEventHandler<HTMLDivElement>;
 }) {
   countRender("TranscriptView");
   const windowedTurns = React.useMemo(
@@ -1343,7 +1379,9 @@ const TranscriptView = React.memo(function TranscriptView({
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
-  const renderTurn = (offset: number) => {
+  // Earlier turns can still load (revealed or from the server): size unknown.
+  const setSize = windowStart > 0 || hasOlderHistory ? -1 : turns.length;
+  const renderTurn = (offset: number, parkedHeight?: number) => {
     const turn = windowedTurns[offset];
     return turn ? (
       <TranscriptTurn
@@ -1360,11 +1398,22 @@ const TranscriptView = React.memo(function TranscriptView({
         onApprovalDecision={onApprovalDecision}
         conversationId={conversationId}
         approvalInteractionIds={approvalInteractions[offset]}
+        setSize={setSize}
+        parkedHeight={parkedHeight}
       />
     ) : null;
   };
   return (
-    <div className="conv__body" onScroll={onScroll} ref={bodyRef} tabIndex={0} aria-label="Conversation transcript">
+    <div
+      aria-busy={isLoadingHistory || loadingOlderHistory}
+      aria-label="Conversation transcript"
+      className="conv__body"
+      onKeyDown={onTranscriptKeyDown}
+      onScroll={onScroll}
+      ref={bodyRef}
+      role="feed"
+      tabIndex={0}
+    >
       <CopyInlineButton
         className="msg__copy--transcript"
         label="Copy transcript"
@@ -1420,7 +1469,7 @@ const TranscriptView = React.memo(function TranscriptView({
           key={`spacer:${windowedTurns[slot.from].id}`}
           style={{ height: slot.height, flex: "none" }}
         />
-      ) : renderTurn(slot.index))}
+      ) : renderTurn(slot.index, slot.kind === "parked" ? slot.height : undefined))}
       <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} />
       {liveSpeech && liveSpeech.length > 0 && (
         <div
@@ -1950,6 +1999,30 @@ export function ChatPane({
   windowStartRef.current = windowStart;
   const revealEarlierRef = React.useRef(revealEarlier);
   revealEarlierRef.current = revealEarlier;
+  // Feed keyboard navigation: PageDown / PageUp on a turn moves focus to the
+  // next or previous turn, revealing earlier turns at the top; Control+End
+  // leaves the feed for the composer.
+  const turnsRefForKeys = React.useRef(turns);
+  turnsRefForKeys.current = turns;
+  const turnWindowRef = React.useRef(turnWindow);
+  turnWindowRef.current = turnWindow;
+  const onTranscriptKeyDown = React.useCallback<React.KeyboardEventHandler<HTMLDivElement>>((event) => {
+    const target = event.target as HTMLElement;
+    if (!target.matches?.("[data-conversation-turn-id]") || event.altKey || event.metaKey || event.shiftKey) return;
+    if (event.ctrlKey && event.key === "End") {
+      event.preventDefault();
+      bodyRef.current?.parentElement?.querySelector<HTMLTextAreaElement>('textarea[data-testid^="chat-composer"]')?.focus();
+      return;
+    }
+    if (event.ctrlKey || (event.key !== "PageDown" && event.key !== "PageUp")) return;
+    const all = turnsRefForKeys.current;
+    const index = all.findIndex((turn) => turn.id === target.dataset.conversationTurnId);
+    const next = index + (event.key === "PageDown" ? 1 : -1);
+    if (index < 0 || next < 0 || next >= all.length) return;
+    event.preventDefault();
+    if (next < windowStartRef.current) revealEarlierRef.current();
+    turnWindowRef.current.focusTurn(all[next].id);
+  }, []);
   const onBodyScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
       if (event.currentTarget.scrollLeft !== 0) {
@@ -2306,6 +2379,7 @@ export function ChatPane({
         approvalSnapshot={approvalSnapshot}
         onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
         turnWindow={turnWindow}
+        onTranscriptKeyDown={onTranscriptKeyDown}
       />
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}
