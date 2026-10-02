@@ -218,7 +218,7 @@ var require_utilities = __commonJS({
     var skipCamelCase = function(property) {
       return !property || NO_HYPHEN_REGEX.test(property) || CUSTOM_PROPERTY_REGEX.test(property);
     };
-    var capitalize = function(match, character) {
+    var capitalize2 = function(match, character) {
       return character.toUpperCase();
     };
     var trimHyphen = function(match, prefix) {
@@ -237,7 +237,7 @@ var require_utilities = __commonJS({
       } else {
         property = property.replace(VENDOR_PREFIX_REGEX, trimHyphen);
       }
-      return property.replace(HYPHEN_REGEX, capitalize);
+      return property.replace(HYPHEN_REGEX, capitalize2);
     };
     exports.camelCase = camelCase;
   }
@@ -5502,7 +5502,8 @@ function validateConsoleSendAttempt(value) {
 function beginConsoleSendAttempt(attempt, options) {
   validateConsoleSendAttempt(attempt);
   if (!nonemptyString(options.owner) || !Number.isFinite(options.now)) throw new Error("The browser send lease is invalid.");
-  if (attempt.state !== "draft" && !(attempt.state === "definitely-rejected" && options.retryRejected)) {
+  const resendable = attempt.state === "definitely-rejected" && (options.retryRejected || options.resend) || attempt.state === "outcome-unknown" && options.resend;
+  if (attempt.state !== "draft" && !resendable) {
     throw new Error("This send may already have been accepted. Reconcile it before taking another action.");
   }
   const envelope = {
@@ -5532,7 +5533,7 @@ function recoverConsoleSendAttempt(attempt, now) {
       ...attempt,
       state: "outcome-unknown",
       lease: void 0,
-      error: "Acceptance is unknown. Check the conversation before explicitly discarding this attempt."
+      error: "The page closed before the answer arrived, so delivery is unconfirmed."
     };
   }
   return attempt;
@@ -5653,36 +5654,6 @@ function classifyConsoleSendFailure(error) {
     message: `The console could not confirm acceptance${detail ? `: ${detail}` : ""}. Check acceptance before retrying.`
   };
 }
-function consoleSendFailureLabel(attempt) {
-  switch (attempt.failureKind) {
-    case "unauthenticated":
-      return "Not authorized";
-    case "access_denied":
-      return "Not allowed";
-    case "read_only":
-      return "Console read-only";
-    case "capability_unavailable":
-      return "Send unavailable";
-    case "connection_failed":
-      return "Acceptance unknown";
-    case "timeout":
-      return "No response";
-    case "invalid_response":
-      return "Unreadable response";
-    case "gateway_error":
-      return "Gateway error";
-    case "rejected":
-      return "Rejected";
-    case "refused":
-      return "Send failed";
-    case "rate_limited":
-      return "Gateway busy";
-    case "interrupted":
-      return "Interrupted";
-    default:
-      return attempt.state === "definitely-rejected" ? "Not accepted" : "Acceptance unknown";
-  }
-}
 function sameFrozenContent(actual, expected) {
   if (typeof expected === "string") return actual === expected;
   if (!Array.isArray(actual) || actual.length !== expected.length) return false;
@@ -5696,28 +5667,92 @@ function reconcileConsoleSendReceipt(attempt, frame, resolution) {
   if (!payload || payload.origin !== envelope.origin || payload.origin_kind !== envelope.origin_kind || payload.idempotency_key !== envelope.idempotency_key || payload.handling_mode !== envelope.handling_mode || !sameFrozenContent(payload.content, envelope.content)) return null;
   return finishConsoleSendAttempt(attempt, { state: "accepted", interactionId: frame.interactionId, inputFrameId: frame.id });
 }
-var CONSOLE_ACCEPTANCE_NO_RECEIPT = {
-  kind: "no_receipt",
-  message: "No acceptance receipt: this agent's timeline has no record of this message. It remains saved and will not be resent automatically."
-};
-function describeConsoleAcceptanceCheckFailure(error) {
-  const failure = classifyConsoleSendFailure(error);
-  const unchanged = "The saved message is unchanged and was not resent.";
-  switch (failure.kind) {
-    case "unauthenticated":
-      return { kind: failure.kind, message: `Could not check acceptance: not authorized from this network (401). ${unchanged}` };
-    case "access_denied":
-      return { kind: failure.kind, message: `Could not check acceptance: not allowed to read this agent's timeline (403). ${unchanged}` };
-    case "connection_failed":
-      return { kind: failure.kind, message: `Could not check acceptance: the connection failed before the gateway answered. ${unchanged}` };
-    case "timeout":
-      return { kind: failure.kind, message: `Could not check acceptance: no response from the gateway. ${unchanged}` };
-    default: {
-      const status = error?.httpStatus;
-      const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "the check failed";
-      return { kind: failure.kind, message: `Could not check acceptance${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${detail}. ${unchanged}` };
-    }
+var NEUTRAL_HOST = "the server";
+function hostOf(names) {
+  return names.host?.trim() || NEUTRAL_HOST;
+}
+function capitalize(text8) {
+  return text8.charAt(0).toUpperCase() + text8.slice(1);
+}
+function consoleCannotReachHost(names) {
+  return `Couldn't reach ${hostOf(names)} (offline or signed out).`;
+}
+function describeConsolePendingRow(attempt, names) {
+  const host = hostOf(names);
+  if (attempt.state === "draft") return { label: "Queued" };
+  if (attempt.state === "attempting") {
+    return { label: "Sending", title: "Sending...", detail: `Waiting for ${host} to confirm.` };
   }
+  if (attempt.state === "accepted") return { label: "Delivered" };
+  if (attempt.state === "definitely-rejected") {
+    const detail2 = (() => {
+      switch (attempt.failureKind) {
+        case "unauthenticated":
+          return "You were signed out, or this network isn't allowed.";
+        case "access_denied":
+          return `You don't have permission to message ${names.agent}.`;
+        case "read_only":
+          return "This console is read-only.";
+        case "capability_unavailable":
+          return "Sending isn't available here.";
+        default:
+          return `${capitalize(host)} refused it.`;
+      }
+    })();
+    return { label: "Not sent", title: `Not sent: this message never reached ${names.agent}.`, detail: detail2 };
+  }
+  const detail = (() => {
+    switch (attempt.failureKind) {
+      case "connection_failed":
+        return consoleCannotReachHost(names);
+      case "timeout":
+        return `${capitalize(host)} didn't answer in time.`;
+      case "invalid_response":
+        return `Got an unreadable answer from ${host}.`;
+      case "gateway_error":
+        return `${capitalize(host)} had a problem.`;
+      case "rate_limited":
+        return `${names.agent} was busy.`;
+      case "refused":
+        return `${capitalize(host)} reported a problem with this message.`;
+      case "interrupted":
+        return "The page was reloaded while sending.";
+      default:
+        return "It may or may not have arrived.";
+    }
+  })();
+  return { label: "Not confirmed", title: `We couldn't confirm ${names.agent} got this.`, detail };
+}
+function consoleCheckNotFound(names) {
+  return `Not found in ${names.agent}'s recent messages.`;
+}
+function consoleCheckDelivered(timestampMs) {
+  if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return "Delivered.";
+  return `Delivered at ${new Date(timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+}
+function describeConsoleCheckFailure(error, names) {
+  const host = hostOf(names);
+  const fetchFailed = error instanceof TypeError || typeof error === "object" && error !== null && error.name === "TypeError";
+  const kind = fetchFailed ? "connection_failed" : classifyConsoleSendFailure(error).kind;
+  const reason = (() => {
+    switch (kind) {
+      case "connection_failed":
+        return `couldn't reach ${host} (offline or signed out).`;
+      case "unauthenticated":
+        return "you were signed out. Sign in and check again.";
+      case "access_denied":
+        return `you don't have access to ${names.agent}'s messages.`;
+      case "timeout":
+        return `${host} didn't answer in time.`;
+      case "gateway_error":
+        return `${host} had a problem.`;
+      case "invalid_response":
+        return `got an unreadable answer from ${host}.`;
+      default:
+        return `${host} couldn't look up ${names.agent}'s messages.`;
+    }
+  })();
+  return `Couldn't check: ${reason}`;
 }
 
 // ../packages/console-core/src/context-edit.ts
@@ -40421,6 +40456,10 @@ function timeAgo(ts) {
 }
 function StackItem({
   item,
+  agentLabel,
+  hostLabel,
+  resendUncertain,
+  check,
   isHead,
   dragging,
   dropHint,
@@ -40465,10 +40504,11 @@ function StackItem({
     }
   };
   const isDraft = item.state === "draft";
+  const copy = describeConsolePendingRow(item, { agent: agentLabel, host: hostLabel });
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
   const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
-  const statusLabel2 = settledFailure ? consoleSendFailureLabel(item) : item.state === "attempting" ? "Awaiting acceptance" : item.state === "accepted" ? "Accepted" : "Queued";
-  const explanation = settledFailure && item.error ? `${item.error}${item.state === "definitely-rejected" ? " Retry sends the same saved message." : ""}` : item.state === "outcome-unknown" ? "Your message may already have been accepted. Check its status before discarding it." : item.state === "attempting" ? "Waiting for confirmation. Checking acceptance will not send the message again." : item.state === "definitely-rejected" ? "This attempt was rejected. Retry sends the same saved message." : void 0;
+  const canResend = item.state === "definitely-rejected" || item.state === "outcome-unknown" && resendUncertain;
+  const checking = check?.phase === "checking";
   const previewId = import_react42.default.useId();
   const cls = [
     "stk-item",
@@ -40569,7 +40609,7 @@ function StackItem({
         ] }) : /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__body", children: [
           /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__meta", children: [
             isHead && isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__state", role: needsAcceptance ? "status" : void 0, children: statusLabel2 }),
+            /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-item__state", role: needsAcceptance ? "status" : void 0, children: copy.label }),
             item.contexts.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("span", { children: [
               item.contexts.length,
               " ",
@@ -40599,12 +40639,13 @@ function StackItem({
               onReorder: item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : void 0
             }
           ),
-          explanation && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", "data-testid": `pending-explanation:${item.id}`, children: explanation }),
-          item.checkResult && needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", role: "status", "data-testid": `pending-check:${item.id}`, children: item.checkResult })
+          copy.title && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__title", "data-testid": `pending-title:${item.id}`, children: copy.title }),
+          copy.detail && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation", "data-testid": `pending-explanation:${item.id}`, children: copy.detail }),
+          check && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("p", { className: "stk-item__explanation stk-item__check", role: "status", "data-testid": `pending-check:${item.id}`, children: check.phase === "checking" ? "Checking..." : check.text })
         ] }),
         !item.editing && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("div", { className: "stk-item__actions", children: [
-          item.state === "definitely-rejected" && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", onClick: () => onRetry(item.id), children: "Retry same attempt" }),
-          needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", onClick: () => onReconcile(item.id), children: "Check acceptance" }),
+          needsAcceptance && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--primary", disabled: checking, onClick: () => onReconcile(item.id), children: "Check" }),
+          canResend && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn", disabled: checking, onClick: () => onRetry(item.id), children: "Send again" }),
           longText && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--expand", "aria-expanded": Boolean(item.expanded), "aria-controls": previewId, onClick: () => onToggleExpand(item.id), children: item.expanded ? "Hide saved message" : "Show saved message" }),
           isDraft && /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)(
             "button",
@@ -40633,16 +40674,26 @@ function StackItem({
               children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-compose" }) })
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
+          isDraft ? /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
             "button",
             {
               type: "button",
               className: "stk-btn stk-btn--icon stk-btn--trash",
               onClick: () => onTrash(item.id),
-              "aria-label": item.state === "draft" ? "Remove from queue" : "Discard saved attempt",
-              title: isDraft ? "Remove from queue" : "Discard saved attempt",
+              "aria-label": "Remove from queue",
+              title: "Remove from queue",
               "data-testid": `pending-trash:${item.id}`,
               children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-close" }) })
+            }
+          ) : /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "stk-btn stk-btn--trash",
+              onClick: () => onTrash(item.id),
+              title: "Discard this message",
+              "data-testid": `pending-trash:${item.id}`,
+              children: "Discard"
             }
           )
         ] })
@@ -40652,6 +40703,12 @@ function StackItem({
 }
 function PendingStack3({
   items,
+  agentLabel,
+  hostLabel,
+  resendUncertain = false,
+  checks: checks2,
+  delivered,
+  onDismissDelivered,
   directSendIds,
   agentBusy,
   reducedMotion,
@@ -40692,7 +40749,8 @@ function PendingStack3({
     if (visibleItems.length > lastCount.current) setCollapsed(false);
     lastCount.current = visibleItems.length;
   }, [visibleItems.length]);
-  if (visibleItems.length === 0) return null;
+  const notices = delivered ?? [];
+  if (visibleItems.length === 0 && notices.length === 0) return null;
   const onDragStart = (e, id) => {
     setDragId(id);
     try {
@@ -40735,7 +40793,7 @@ function PendingStack3({
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
+        visibleItems.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
           StackHead,
           {
             count: visibleItems.length,
@@ -40745,10 +40803,18 @@ function PendingStack3({
             onClear: onClearAll
           }
         ),
+        notices.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("ul", { className: "stack__delivered", "aria-label": "Delivered messages", children: notices.map((notice) => /* @__PURE__ */ (0, import_jsx_runtime55.jsxs)("li", { className: "stack__delivered-item", role: "status", "data-testid": `pending-delivered:${notice.id}`, children: [
+          notice.text,
+          onDismissDelivered && /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("button", { type: "button", className: "stk-btn stk-btn--icon", "aria-label": "Dismiss", onClick: () => onDismissDelivered(notice.id), children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("span", { className: "stk-btn__glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(Icon, { name: "i-close" }) }) })
+        ] }, notice.id)) }),
         /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("ol", { className: "stack__list", role: "list", children: visibleItems.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
           StackItem,
           {
             item,
+            agentLabel,
+            hostLabel,
+            resendUncertain,
+            check: checks2?.[item.id],
             isHead: i === 0,
             dragging: dragId === item.id,
             dropHint: dropTarget.id === item.id ? dropTarget.where : null,
@@ -42836,6 +42902,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     (source, samples) => voice?.sampleWaveform(source, samples),
     [voice]
   );
+  const [pendingChecks, setPendingChecks] = import_react45.default.useState({});
+  const [deliveredNotices, setDeliveredNotices] = import_react45.default.useState({});
   const [experience, setExperience] = import_react45.default.useState(
     null
   );
@@ -43651,6 +43719,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setContextDrafts({});
     setSubmittedFrames({});
     setSendingPanels(/* @__PURE__ */ new Set());
+    setPendingChecks({});
+    setDeliveredNotices({});
   }, [sendScope]);
   persistentSendScopeRef.current = persistentSendScope;
   const scopedDraftKey = (panelKey) => `${sendScopeRef.current}:${panelKey}`;
@@ -44089,6 +44159,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
   const consoleReadOnlyRef = import_react45.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  const resendUncertain = experience?.send_dedupe?.durable === true;
+  const resendUncertainRef = import_react45.default.useRef(false);
+  resendUncertainRef.current = resendUncertain;
   const [approvalSnapshot, setApprovalSnapshot] = import_react45.default.useState();
   const [selectedApprovalId, setSelectedApprovalId] = import_react45.default.useState();
   const approvalResourceRef = import_react45.default.useRef(null);
@@ -45071,7 +45144,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     return null;
   }
-  async function dispatchPendingAttempt(identity, id, handlingMode, retryRejected = false) {
+  async function dispatchPendingAttempt(identity, id, handlingMode, resend = false) {
     const generation = lifetimeRef.current.generation;
     const scope = sendScopeRef.current;
     const namespace = persistentSendScopeRef.current;
@@ -45081,10 +45154,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
       const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      if (!item || item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected") || item.scope !== scope || !target) return null;
+      const resendable = resend && (item?.state === "definitely-rejected" || item?.state === "outcome-unknown" && resendUncertainRef.current);
+      if (!item || item.state !== "draft" && !resendable || item.scope !== scope || !target) return null;
       let attempting;
       try {
-        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected }), checkResult: void 0 };
+        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, resend }), checkResult: void 0 };
       } catch (error2) {
         setActionError(errorMessage(error2));
         return null;
@@ -45103,17 +45177,35 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   function onStackSteer(identity, id) {
     if (!consoleReadOnlyRef.current) void dispatchPendingAttempt(identity, id, "steer");
   }
+  function pendingRowNames(identity, destination) {
+    const agent = agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(destination)) ?? agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(identity));
+    const host = experience?.console_config?.brand?.label?.trim();
+    return { agent: agent?.label || destination, host: host || void 0 };
+  }
+  function setPendingCheck(identity, id, view) {
+    setPendingChecks((current) => {
+      const rows = { ...current[identity] ?? {} };
+      if (view) rows[id] = view;
+      else delete rows[id];
+      return { ...current, [identity]: rows };
+    });
+  }
   async function onStackReconcile(identity, id) {
     const scope = sendScopeRef.current;
     const generation = lifetimeRef.current.generation;
     const controller = sendControllerRef.current;
     const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation && scope === sendScopeRef.current && controller === sendControllerRef.current;
     const original = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!original?.envelopeJson) return;
-    const noteCheckResult = (message) => {
-      setActionError(message);
-      setPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? { ...candidate, checkResult: message } : candidate));
+    if (!original) return;
+    const names = pendingRowNames(identity, original.destination);
+    const answer = (text8) => {
+      if (active()) setPendingCheck(identity, id, { phase: "result", text: text8 });
     };
+    if (!original.envelopeJson) {
+      answer("Couldn't check: this message was never sent.");
+      return;
+    }
+    setPendingCheck(identity, id, { phase: "checking" });
     let page;
     let canonicalIdentity;
     try {
@@ -45122,30 +45214,41 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       const record5 = inspection && typeof inspection === "object" ? inspection : null;
       const owner = record5?.identity && typeof record5.identity === "object" ? record5.identity : record5;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
-        throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
+        answer(`Couldn't check: ${names.agent} couldn't be found.`);
+        return;
       }
       canonicalIdentity = owner.identity;
       page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error2) {
-      if (active()) noteCheckResult(describeConsoleAcceptanceCheckFailure(error2).message);
+      answer(describeConsoleCheckFailure(error2, names));
       return;
     }
     if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!item || item.envelopeJson !== original.envelopeJson) return;
+    if (!item) return;
+    if (item.envelopeJson !== original.envelopeJson) {
+      answer("This message changed while it was being checked. Check again.");
+      return;
+    }
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
     const frames = [...page.frames, ...identityLogRef.current[canonicalIdentity]?.events ?? []];
-    const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const receipt = frames.find((frame) => reconcileConsoleSendReceipt(item, frame, resolution));
+    const accepted = receipt ? reconcileConsoleSendReceipt(item, receipt, resolution) : null;
     const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
     const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
     if (logChanged || metadataChanged) forceRender();
     if (!accepted) {
-      noteCheckResult(CONSOLE_ACCEPTANCE_NO_RECEIPT.message);
+      answer(consoleCheckNotFound(names));
       return;
     }
-    if (await setPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted }) : candidate))) {
-      await setPendingStack(identity, (previous3) => previous3.filter((candidate) => candidate.id !== id));
+    const delivered = consoleCheckDelivered(receipt.timestampMs);
+    if (await setPendingStack(identity, (previous3) => previous3.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted }) : candidate)) && await setPendingStack(identity, (previous3) => previous3.filter((candidate) => candidate.id !== id))) {
+      if (!active()) return;
+      setPendingCheck(identity, id, null);
+      setDeliveredNotices((current) => ({ ...current, [identity]: [...(current[identity] ?? []).filter((notice) => notice.id !== id), { id, text: delivered }] }));
+      return;
     }
+    answer(`${delivered} The saved copy couldn't be removed; discard it.`);
   }
   function updatePendingContexts(identity, id, update) {
     setPendingStack(identity, (previous3) => previous3.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
@@ -45711,7 +45814,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)(import_jsx_runtime56.Fragment, { children: [
-      stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("small", { className: "queue-storage-note", role: "status", children: persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload" }) : null,
+      stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("small", { className: "queue-storage-note", role: "status", children: persistentSendScopeRef.current ? "Saved in this browser until sent" : "Not saved: these messages are lost if you reload" }) : null,
       pendingStorageErrorRef.current[identity] && /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("p", { role: "alert", children: pendingStorageErrorRef.current[identity] }),
       hasLegacyQueue && /* @__PURE__ */ (0, import_jsx_runtime56.jsxs)("div", { className: "queue-import", role: "group", "aria-label": "Older queued messages", "data-testid": "legacy-queue-import", children: [
         /* @__PURE__ */ (0, import_jsx_runtime56.jsx)("span", { className: "queue-import__icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(Icon, { name: "i-clock" }) }),
@@ -45730,10 +45833,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           }
         )
       ] }),
-      stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(
+      stackItems.length > 0 || (deliveredNotices[identity]?.length ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime56.jsx)(
         PendingStack3,
         {
           items: stackItems,
+          agentLabel: target.title || agent?.label || identity,
+          hostLabel: experience?.console_config?.brand?.label?.trim() || void 0,
+          resendUncertain,
+          checks: pendingChecks[identity],
+          delivered: deliveredNotices[identity],
+          onDismissDelivered: (itemId2) => setDeliveredNotices((current) => ({ ...current, [identity]: (current[identity] ?? []).filter((notice) => notice.id !== itemId2) })),
           directSendIds: directSendIdsRef.current,
           agentBusy,
           reducedMotion,

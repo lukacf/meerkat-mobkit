@@ -70,6 +70,7 @@ export default defineConfig({
       "packages/console-core/src/context-record.test.ts",
       "console/src/lib/send-attempt-storage.test.ts",
       "console/src/lib/send-queue-integration.test.tsx",
+      "console/src/lib/pending-row-language.test.tsx",
       "console/src/lib/markdown-url-policy-integration.test.tsx",
       "console/src/panels/GatingInboxPanel.test.tsx",
       "console/src/panels/PendingStack.test.tsx",

@@ -15,6 +15,27 @@ pub type ConsoleLogResult<T> = Result<T, ConsoleLogError>;
 
 pub type ConsoleLogError = Box<dyn std::error::Error + Send + Sync>;
 
+/// How long a store keeps the send dedupe records behind
+/// [`ConsoleLogStore::frame_by_dedupe_key`]. A client may resend an
+/// uncertain send with its original idempotency key only when the record
+/// outlives a gateway restart; otherwise the resend can be admitted twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleSendDedupeDurability {
+    /// Records persist across gateway restarts and are never expired.
+    Durable,
+    /// Records live only as long as this process (or are not known to
+    /// outlive it).
+    ProcessLifetime,
+}
+
+impl ConsoleSendDedupeDurability {
+    #[must_use]
+    pub fn is_durable(self) -> bool {
+        matches!(self, Self::Durable)
+    }
+}
+
 /// Storage retains complete frames, including private member provenance, across
 /// append, lookup, status changes and reopen. Serde frame serialization is the
 /// storage representation; use aggregator projections for transport output.
@@ -61,6 +82,13 @@ pub trait ConsoleLogStore: Send + Sync {
 
     async fn frame_by_dedupe_key(&self, dedupe_key: &str)
     -> ConsoleLogResult<Option<ConsoleFrame>>;
+
+    /// Whether the dedupe records above survive a gateway restart. Stores
+    /// that cannot vouch for it keep the default, which never claims
+    /// durability.
+    fn send_dedupe_durability(&self) -> ConsoleSendDedupeDurability {
+        ConsoleSendDedupeDurability::ProcessLifetime
+    }
 
     async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>>;
 
@@ -128,6 +156,10 @@ impl InMemoryConsoleLogStore {
 
 #[async_trait::async_trait]
 impl ConsoleLogStore for InMemoryConsoleLogStore {
+    fn send_dedupe_durability(&self) -> ConsoleSendDedupeDurability {
+        ConsoleSendDedupeDurability::ProcessLifetime
+    }
+
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
         let mut state = self
             .state
@@ -481,6 +513,9 @@ pub struct SqliteConsoleLogStore {
     /// Database file path; `:memory:` for in-memory stores (where the
     /// per-operation fence guard degrades to a no-op).
     db_path: PathBuf,
+    /// Durable for a file-backed database, process-lifetime for
+    /// [`SqliteConsoleLogStore::in_memory`].
+    dedupe_durability: ConsoleSendDedupeDurability,
 }
 
 /// The console aggregator's schema domain in the per-file migration
@@ -635,23 +670,32 @@ impl SqliteConsoleLogStore {
             .map_err(into_boxed)?;
         meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_CONSOLE_DOMAIN)
             .map_err(into_boxed)?;
-        Self::from_connection(conn, path)
+        Self::from_connection(conn, path, ConsoleSendDedupeDurability::Durable)
     }
 
     pub fn in_memory() -> ConsoleLogResult<Self> {
         let mut conn = Connection::open_in_memory().map_err(into_boxed)?;
         meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_CONSOLE_DOMAIN)
             .map_err(into_boxed)?;
-        Self::from_connection(conn, PathBuf::from(":memory:"))
+        Self::from_connection(
+            conn,
+            PathBuf::from(":memory:"),
+            ConsoleSendDedupeDurability::ProcessLifetime,
+        )
     }
 
-    fn from_connection(conn: Connection, db_path: PathBuf) -> ConsoleLogResult<Self> {
+    fn from_connection(
+        conn: Connection,
+        db_path: PathBuf,
+        dedupe_durability: ConsoleSendDedupeDurability,
+    ) -> ConsoleLogResult<Self> {
         let watermarks = load_source_watermarks(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             watermarks: Arc::new(Mutex::new(watermarks)),
             prefix_revision: Mutex::new(uuid::Uuid::new_v4()),
             db_path,
+            dedupe_durability,
         })
     }
 
@@ -665,6 +709,10 @@ impl SqliteConsoleLogStore {
 
 #[async_trait::async_trait]
 impl ConsoleLogStore for SqliteConsoleLogStore {
+    fn send_dedupe_durability(&self) -> ConsoleSendDedupeDurability {
+        self.dedupe_durability
+    }
+
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
         let _fence = self.operation_fence()?;
         let mut conn = self
@@ -2261,5 +2309,53 @@ mod tests {
             .expect("query frames");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].dedupe_key, "event-1");
+    }
+
+    #[tokio::test]
+    async fn send_dedupe_durability_reports_the_store_actually_in_use() {
+        assert_eq!(
+            InMemoryConsoleLogStore::new().send_dedupe_durability(),
+            ConsoleSendDedupeDurability::ProcessLifetime
+        );
+        assert_eq!(
+            SqliteConsoleLogStore::in_memory()
+                .expect("store")
+                .send_dedupe_durability(),
+            ConsoleSendDedupeDurability::ProcessLifetime
+        );
+        assert_eq!(
+            LegacyQueryOnlyStore.send_dedupe_durability(),
+            ConsoleSendDedupeDurability::ProcessLifetime,
+            "a store that does not vouch for durability never claims it"
+        );
+
+        // A file-backed store claims durability, and the claim holds: the
+        // dedupe record is still found after the store is reopened.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("console.sqlite");
+        {
+            let store = SqliteConsoleLogStore::open(&path).expect("store");
+            assert_eq!(
+                store.send_dedupe_durability(),
+                ConsoleSendDedupeDurability::Durable
+            );
+            store
+                .append_if_absent(sample_frame("send:runtime:agent:origin:key", "agent"))
+                .await
+                .expect("append");
+        }
+        let reopened = SqliteConsoleLogStore::open(&path).expect("reopen");
+        assert_eq!(
+            reopened.send_dedupe_durability(),
+            ConsoleSendDedupeDurability::Durable
+        );
+        assert!(
+            reopened
+                .frame_by_dedupe_key("send:runtime:agent:origin:key")
+                .await
+                .expect("lookup")
+                .is_some(),
+            "a durable store must keep the send dedupe record across reopen"
+        );
     }
 }

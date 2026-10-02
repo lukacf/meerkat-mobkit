@@ -46,8 +46,8 @@ pub use state::{
     SourceIngestionTransition,
 };
 pub use store::{
-    ConsoleLogError, ConsoleLogResult, ConsoleLogStore, InMemoryConsoleLogStore,
-    SqliteConsoleLogStore,
+    ConsoleLogError, ConsoleLogResult, ConsoleLogStore, ConsoleSendDedupeDurability,
+    InMemoryConsoleLogStore, SqliteConsoleLogStore,
 };
 pub use types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameMemberProvenance,
@@ -849,6 +849,14 @@ impl MobKitConsoleAggregator {
 
     pub fn store(&self) -> Arc<dyn ConsoleLogStore> {
         self.inner.store.clone()
+    }
+
+    /// Durability of the send dedupe records in the store this aggregator
+    /// actually writes, which decides whether a client may resend an
+    /// uncertain send with its original idempotency key.
+    #[must_use]
+    pub fn send_dedupe_durability(&self) -> ConsoleSendDedupeDurability {
+        self.inner.store.send_dedupe_durability()
     }
 
     pub fn register_runtime(&self, registration: ConsoleRuntimeRegistration) {

@@ -319,6 +319,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
+  `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that
+  returns `ProcessLifetime` unless a store vouches for durability.
+  `SqliteConsoleLogStore::open` reports `Durable`;
+  `SqliteConsoleLogStore::in_memory` and `InMemoryConsoleLogStore` report
+  `ProcessLifetime`. `MobKitConsoleAggregator::send_dedupe_durability()`
+  reads it from the store in use, and `GET /console/experience` exposes it
+  as `send_dedupe: { durable: bool }` (absent without a console
+  aggregator). Custom stores that persist dedupe records across restarts
+  should override the method.
+
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
   and `sendAndWaitOutcome` / `dispatchAndWaitOutcome` (TypeScript) return
@@ -533,6 +544,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TurnUnknownError`, and typed process warnings (`TurnWarningType`).
 
 ### Fixed
+
+- Console: queued rows that did not go through now say what happened in
+  plain words. A refused row reads "Not sent: this message never reached
+  <agent>." with Send again and Discard; a row whose answer was lost reads
+  "We couldn't confirm <agent> got this." with Check, Send again and Discard.
+  Transport failures read "Couldn't reach <host> (offline or signed out)",
+  where <host> is `console_config.brand.label` (else "the server"). Rows
+  saved by 0.8.43 and earlier, which carry only a raw error string, are
+  reworded the same way on load.
+
+- Console: Check always ends in a visible result. The row shows "Checking..."
+  at once, then "Delivered at <time>" (the row clears and a dismissible
+  notice stays), "Not found in <agent>'s recent messages." (the row keeps its
+  options and its saved state), or a plain "Couldn't check: ..." error. Before,
+  some paths (an unresolved owner, a lock or scope miss) ended with no change
+  on screen.
+
+- Console: an uncertain row offers Send again only when the gateway
+  advertises `send_dedupe.durable: true`. Send again resends the saved
+  message with its original idempotency key, so the gateway returns the
+  original acceptance if the first send did arrive instead of delivering it
+  twice. Send dedupe records have no expiry or cap, but a gateway without a
+  storage layout keeps them in memory, where a restart between the two
+  sends could admit the message twice; such gateways (and older ones that
+  omit the field) get Check and Discard only. Refused rows keep Send again
+  either way, since nothing was admitted.
 
 - Console: typing while a reply streams after a send no longer measures the
   whole transcript on every streamed token. After a send the conversation

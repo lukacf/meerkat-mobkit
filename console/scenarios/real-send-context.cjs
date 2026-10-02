@@ -390,7 +390,7 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     await eventually(() => dropped, "browser delivery dropped after actual completed send response");
     const acceptance = JSON.parse(dropped.response).result;
     assert(acceptance?.interaction_id && acceptance.input_frame_id, dropped.response);
-    await page.getByText(/Acceptance unknown/).waitFor();
+    await page.getByText(/^We couldn't confirm .+ got this\.$/).waitFor();
     await page.unroute("**/console/rpc");
     const saved = await eventually(async () => (await savedAttempts(page, fixture, storageNamespace)).find(item => item.state === "outcome-unknown"), "unknown outcome saved");
     assert.equal(saved.text, text);
@@ -402,11 +402,26 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     assert.equal(await page.getByTestId(`pending-steer:${saved.id}`).count(), 0, "frozen attempts do not offer steering");
     assert.equal(await page.getByTestId(`pending-edit:${saved.id}`).count(), 0, "frozen attempts do not offer editing");
     assert.equal(await page.getByTestId("console-action-error").count(), 0, "saved recovery owns the failure message");
+    {
+      // Plain wording from the typed failure (the browser saw a dropped
+      // connection), never the raw fetch error.
+      const row = page.getByTestId(`pending-item:${saved.id}`);
+      await row.getByText(/^Couldn't reach .+ \(offline or signed out\)\.$/).waitFor();
+      assert.doesNotMatch(await row.innerText(), /Failed to fetch|acceptance|receipt/i, "no protocol terms on the row");
+      // This fixture keeps send dedupe in memory (no MOBKIT_FIXTURE_STATE),
+      // so a same-key resend is not offered: Check and Discard only.
+      const experience = await (await fetch(`${fixture.baseUrl}/console/experience`)).json();
+      assert.equal(experience.send_dedupe?.durable, false, "in-memory fixture store reports non-durable send dedupe");
+      assert.equal(await row.getByRole("button", { name: "Check", exact: true }).count(), 1, "uncertain row offers Check");
+      assert.equal(await row.getByRole("button", { name: "Discard", exact: true }).count(), 1, "uncertain row offers Discard");
+      assert.equal(await row.getByRole("button", { name: "Send again", exact: true }).count(), 0,
+        "no same-key resend without durable send dedupe");
+    }
     for (const width of [1600, 1024]) {
       await page.setViewportSize({ width, height: width === 1600 ? 1000 : 900 });
       const row = page.getByTestId(`pending-item:${saved.id}`);
       const bounds = await row.evaluate(node => {
-        const button = Array.from(node.querySelectorAll("button")).find(button => button.textContent.includes("Check acceptance"));
+        const button = Array.from(node.querySelectorAll("button")).find(button => button.textContent.trim() === "Check");
         const rect = node.getBoundingClientRect();
         const action = button?.getBoundingClientRect();
         return { overflow: node.scrollWidth - node.clientWidth, left: rect.left, right: rect.right,
@@ -414,7 +429,7 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
       });
       assert(bounds.overflow <= 1 && bounds.action, `recovery fits at ${width}px`);
       assert(bounds.action.left >= bounds.left && bounds.action.right <= bounds.right,
-        `Check acceptance stays within its row at ${width}px`);
+        `Check stays within its row at ${width}px`);
       assert(bounds.action.height >= 30, "recovery action has a usable target");
       if (width === 1024) await capture(page, `${name}-saved-1024`);
     }
@@ -425,7 +440,7 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     await capture(page, `${name}-saved-dark`, { animations: "disabled" });
     await page.getByTestId("theme-toggle").click();
     await reload(page);
-    await page.getByText(/Acceptance unknown/).waitFor();
+    await page.getByText(/^We couldn't confirm .+ got this\.$/).waitFor();
     await page.locator('[data-testid="console-transport-status"][data-phase="live"]').waitFor();
     const reloaded = (await savedAttempts(page, fixture, storageNamespace)).find(item => item.id === saved.id);
     assert.equal(reloaded.envelopeJson, saved.envelopeJson, "reload does not refreeze or normalize bytes");
@@ -434,11 +449,12 @@ async function lostAcknowledgement(withQuote = false, { host = "stock" } = {}) {
     const canonical = await eventually(async () => (await timeline(fixture)).frames?.find(frame => frame.id === acceptance.input_frame_id), "owner user-input receipt");
     assert.equal(canonical.kind, "user_input");
     for (const field of ["content", "origin", "origin_kind", "idempotency_key", "handling_mode"]) assert.deepEqual(canonical.payload[field], envelope[field], `canonical receipt ${field}`);
-    await page.getByRole("button", { name: "Check acceptance", exact: true }).click();
+    await page.getByTestId(`pending-item:${saved.id}`).getByRole("button", { name: "Check", exact: true }).click();
     // Durable removal precedes the scheduled render that removes its queue row.
     await eventually(async () => !(await savedAttempts(page, fixture, storageNamespace)).some(item => item.id === saved.id)
       && await page.getByTestId(`pending-item:${saved.id}`).count() === 0, "exact receipt removes unknown attempt from storage and queue");
-    assert.equal(sendObservations(fixture).length, before + 1, "Check acceptance only queries, never dispatches");
+    await page.getByTestId(`pending-delivered:${saved.id}`).getByText(/^Delivered at /).waitFor();
+    assert.equal(sendObservations(fixture).length, before + 1, "Check only queries, never dispatches");
     assert.equal((await timeline(fixture)).frames.filter(frame => frame.id === acceptance.input_frame_id).length, 1);
     await exactModelContent(fixture, content, "lost acknowledgement");
     if (withQuote) await assertDeliveredContext(page, "stock", content, saved.contexts);

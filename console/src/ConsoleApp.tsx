@@ -181,8 +181,8 @@ import {
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
-import { PendingStack, type PendingItem } from "./panels/PendingStack";
-import { beginConsoleSendAttempt, classifyConsoleSendFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT, createConsoleSendAttempt, describeConsoleAcceptanceCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
+import { PendingStack, type PendingCheckView, type PendingDeliveredNotice, type PendingItem } from "./panels/PendingStack";
+import { beginConsoleSendAttempt, classifyConsoleSendFailure, consoleCheckDelivered, consoleCheckNotFound, createConsoleSendAttempt, describeConsoleCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
 import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
 import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
 import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
@@ -753,6 +753,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   );
 
   // --- Low-frequency React state (UI-driven) ---
+  /// Explicit Check state per identity and row id (view state, never saved).
+  const [pendingChecks, setPendingChecks] = React.useState<Record<string, Record<string, PendingCheckView>>>({});
+  /// "Delivered at <time>" notices for rows a Check found and cleared.
+  const [deliveredNotices, setDeliveredNotices] = React.useState<Record<string, PendingDeliveredNotice[]>>({});
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(
     null,
   );
@@ -1879,6 +1883,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setContextDrafts({});
     setSubmittedFrames({});
     setSendingPanels(new Set());
+    setPendingChecks({});
+    setDeliveredNotices({});
   }, [sendScope]);
   persistentSendScopeRef.current = persistentSendScope;
   const scopedDraftKey = (panelKey: string) => `${sendScopeRef.current}:${panelKey}`;
@@ -2431,6 +2437,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  // Same-key resend of an uncertain send is safe only against a durable
+  // dedupe store; older gateways (field absent) and in-memory stores are not.
+  const resendUncertain = experience?.send_dedupe?.durable === true;
+  const resendUncertainRef = React.useRef(false);
+  resendUncertainRef.current = resendUncertain;
   const [approvalSnapshot, setApprovalSnapshot] = React.useState<{
     owner: typeof consoleController;
     snapshot: PendingApprovalSnapshot;
@@ -3754,7 +3765,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     return null;
   }
 
-  async function dispatchPendingAttempt(identity: string, id: string, handlingMode: "queue" | "steer", retryRejected = false) {
+  async function dispatchPendingAttempt(identity: string, id: string, handlingMode: "queue" | "steer", resend = false) {
     const generation = lifetimeRef.current.generation;
     const scope = sendScopeRef.current;
     const namespace = persistentSendScopeRef.current;
@@ -3764,10 +3775,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
       const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      if (!item || (item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected")) || item.scope !== scope || !target) return null;
+      const resendable = resend && (item?.state === "definitely-rejected" || (item?.state === "outcome-unknown" && resendUncertainRef.current));
+      if (!item || (item.state !== "draft" && !resendable) || item.scope !== scope || !target) return null;
       let attempting: PendingItem;
       try {
-        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected }), checkResult: undefined };
+        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, resend }), checkResult: undefined };
       } catch (error) { setActionError(errorMessage(error)); return null; }
       if (!commitPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
       return { attempting, target };
@@ -3783,6 +3795,26 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (!consoleReadOnlyRef.current) void dispatchPendingAttempt(identity, id, "steer");
   }
 
+  function pendingRowNames(identity: string, destination: string) {
+    const agent = agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(destination))
+      ?? agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(identity));
+    const host = experience?.console_config?.brand?.label?.trim();
+    return { agent: agent?.label || destination, host: host || undefined };
+  }
+  function setPendingCheck(identity: string, id: string, view: PendingCheckView | null) {
+    setPendingChecks((current) => {
+      const rows = { ...(current[identity] ?? {}) };
+      if (view) rows[id] = view; else delete rows[id];
+      return { ...current, [identity]: rows };
+    });
+  }
+
+  /// Explicit Check: look for this exact message in the owner's recent
+  /// timeline. Every path ends visibly: found clears the row with a
+  /// "Delivered at" notice; not found and failures land on the row as plain
+  /// text and leave its state (and saved message) unchanged. A row that was
+  /// discarded or whose console scope changed is gone, so nothing is left to
+  /// answer on.
   async function onStackReconcile(identity: string, id: string) {
     const scope = sendScopeRef.current;
     const generation = lifetimeRef.current.generation;
@@ -3790,13 +3822,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation
       && scope === sendScopeRef.current && controller === sendControllerRef.current;
     const original = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!original?.envelopeJson) return;
-    // The check's own typed outcome lands on the row it checked (and the
-    // banner), so "Check acceptance" always answers with a named state.
-    const noteCheckResult = (message: string) => {
-      setActionError(message);
-      setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? { ...candidate, checkResult: message } : candidate));
-    };
+    if (!original) return;
+    const names = pendingRowNames(identity, original.destination);
+    const answer = (text: string) => { if (active()) setPendingCheck(identity, id, { phase: "result", text }); };
+    if (!original.envelopeJson) { answer("Couldn't check: this message was never sent."); return; }
+    setPendingCheck(identity, id, { phase: "checking" });
     let page: ConsoleTimelinePage;
     let canonicalIdentity: string;
     try {
@@ -3806,7 +3836,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       const owner = record?.identity && typeof record.identity === "object"
         ? record.identity as Record<string, unknown> : record;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
-        throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
+        answer(`Couldn't check: ${names.agent} couldn't be found.`);
+        return;
       }
       canonicalIdentity = owner.identity;
       // The inspection supplies the alias correspondence. Timeline stores
@@ -3815,25 +3846,33 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // the current scope and saved attempt when the query returns.
       page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error) {
-      if (active()) noteCheckResult(describeConsoleAcceptanceCheckFailure(error).message);
+      answer(describeConsoleCheckFailure(error, names));
       return;
     }
     if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!item || item.envelopeJson !== original.envelopeJson) return;
+    if (!item) return;
+    if (item.envelopeJson !== original.envelopeJson) { answer("This message changed while it was being checked. Check again."); return; }
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
     // The latest page can omit an older receipt already loaded from the
     // authorized stream or history. Search only the freshly resolved owner's
     // merged log, after its current query succeeded and the scope stayed live.
     const frames = [...page.frames, ...(identityLogRef.current[canonicalIdentity]?.events ?? [])];
-    const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const receipt = frames.find((frame) => reconcileConsoleSendReceipt(item, frame, resolution));
+    const accepted = receipt ? reconcileConsoleSendReceipt(item, receipt, resolution) : null;
     const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
     const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
     if (logChanged || metadataChanged) forceRender();
-    if (!accepted) { noteCheckResult(CONSOLE_ACCEPTANCE_NO_RECEIPT.message); return; }
-    if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
-      await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));
+    if (!accepted) { answer(consoleCheckNotFound(names)); return; }
+    const delivered = consoleCheckDelivered((receipt as { timestampMs?: number }).timestampMs);
+    if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))
+      && await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id))) {
+      if (!active()) return;
+      setPendingCheck(identity, id, null);
+      setDeliveredNotices((current) => ({ ...current, [identity]: [...(current[identity] ?? []).filter((notice) => notice.id !== id), { id, text: delivered }] }));
+      return;
     }
+    answer(`${delivered} The saved copy couldn't be removed; discard it.`);
   }
   function updatePendingContexts(identity: string, id: string, update: (contexts: ConsoleContextRecord[]) => ConsoleContextRecord[]) {
     setPendingStack(identity, (previous) => previous.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
@@ -4577,7 +4616,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     } catch { /* Queue reader reports preserved invalid bytes separately. */ }
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = <>
-      {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload"}</small> : null}
+      {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Saved in this browser until sent" : "Not saved: these messages are lost if you reload"}</small> : null}
       {pendingStorageErrorRef.current[identity] && <p role="alert">{pendingStorageErrorRef.current[identity]}</p>}
       {hasLegacyQueue && (
         <div className="queue-import" role="group" aria-label="Older queued messages" data-testid="legacy-queue-import">
@@ -4594,9 +4633,15 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           >Import and send</button>
         </div>
       )}
-      {stackItems.length > 0 ? (
+      {stackItems.length > 0 || (deliveredNotices[identity]?.length ?? 0) > 0 ? (
         <PendingStack
           items={stackItems}
+          agentLabel={target.title || agent?.label || identity}
+          hostLabel={experience?.console_config?.brand?.label?.trim() || undefined}
+          resendUncertain={resendUncertain}
+          checks={pendingChecks[identity]}
+          delivered={deliveredNotices[identity]}
+          onDismissDelivered={(itemId) => setDeliveredNotices((current) => ({ ...current, [identity]: (current[identity] ?? []).filter((notice) => notice.id !== itemId) }))}
           directSendIds={directSendIdsRef.current}
           agentBusy={agentBusy}
           reducedMotion={reducedMotion}
