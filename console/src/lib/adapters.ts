@@ -1,4 +1,4 @@
-import { assistantPresentationEntries, assistantToolOwnership, conversationPresentationRows, extendAssistantToolOwnership } from "../../../packages/console-core/src/assistant-presentation";
+import { assistantPresenter, assistantToolOwnership, conversationPresentationRows, extendAssistantToolOwnership, type AssistantPresenterState } from "../../../packages/console-core/src/assistant-presentation";
 import { userMessageRenderKey } from "../../../packages/console-core/src/user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "../../../packages/console-core/src/realtime-message-identity";
 import { assistantMessageKey, assistantMessageRenderKey, hasAssistantMessageIdCarrier } from "../../../packages/console-core/src/assistant-message-identity";
@@ -4713,30 +4713,42 @@ function completedRunTimings(frames: ConsoleFrame[]): RunTimingIndex {
   return { timings, framesById };
 }
 
-/// Completed-run durations per entry. Never mutates the entries.
+/// Completed-run durations per entry. Never mutates the entries. With
+/// `qualified`, an entry's run key and duration (or null when it has none)
+/// are remembered per entry object; valid while the index is unchanged.
 function completedRunDurations(
   entries: ConversationTimelineEntry[],
   { timings, framesById }: RunTimingIndex,
+  qualified?: WeakMap<ConversationTimelineEntry, { key: string; duration: number } | null>,
 ): Map<ConversationTimelineEntry, number> {
   // Entry timestamps belong to their first source chunk, not completion.
   // Use that frame only for exact ownership; timing comes from named events.
+  const qualify = (entry: ConversationTimelineEntry): { key: string; duration: number } | null => {
+    // Pure conjunctive filters, cheapest first.
+    if (entry.kind !== "message" || !entry.runId) return null;
+    const frame = framesById.get(entry.id);
+    if (!frame || entry.runId !== frame.runId) return null;
+    const key = runOwnerKey(frame);
+    if (!key) return null;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) return null;
+    if (describeConversationEntrySource(entry).kind !== "assistant") return null;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) return null;
+    return { key, duration: timing.end - timing.start };
+  };
   const durations = new Map<ConversationTimelineEntry, number>();
   const assigned = new Set<string>();
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    // Pure conjunctive filters, cheapest first.
-    if (entry.kind !== "message" || !entry.runId) continue;
-    const frame = framesById.get(entry.id);
-    if (!frame || entry.runId !== frame.runId) continue;
-    const key = runOwnerKey(frame);
-    if (!key || assigned.has(key)) continue;
-    const timing = timings.get(key);
-    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) continue;
-    if (describeConversationEntrySource(entry).kind !== "assistant") continue;
-    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
-    if (!conversationEntryVisibleText(textEntry).trim()) continue;
-    durations.set(entry, timing.end - timing.start);
-    assigned.add(key);
+    let run = qualified?.get(entry);
+    if (run === undefined) {
+      run = qualify(entry);
+      qualified?.set(entry, run);
+    }
+    if (!run || assigned.has(run.key)) continue;
+    durations.set(entry, run.duration);
+    assigned.add(run.key);
   }
   return durations;
 }
@@ -4787,9 +4799,10 @@ interface TimelineResume {
   compactionOpen: boolean;
 }
 
-/// Full versus continued derivations, read by the real-browser benchmark as
-/// a runner-independent measure of per-token transcript work.
-export const timelineDerivationStats = { full: 0, extended: 0 };
+/// Full versus continued derivations, and entries presented (rendered for
+/// display) by them, read by the real-browser benchmark as a
+/// runner-independent measure of per-token transcript work.
+export const timelineDerivationStats = { full: 0, extended: 0, presented: 0 };
 
 export function deriveTimelineEntries(
   agent: ConsoleAgent | null,
@@ -4952,9 +4965,18 @@ function internEntries(
   next: ConversationTimelineEntry[],
   previous: readonly ConversationTimelineEntry[],
 ): ConversationTimelineEntry[] {
+  // A continued fold returns the previous objects for its unchanged prefix;
+  // only entries after it can have a structurally equal prior.
+  let same = 0;
+  while (same < next.length && same < previous.length && next[same] === previous[same]) same++;
+  if (same === next.length) return next;
   const byId = new Map<string, ConversationTimelineEntry>();
-  for (const entry of previous) byId.set(`${entry.kind}:${entry.id}:${(entry as { renderKey?: string }).renderKey ?? ""}`, entry);
-  return next.map((entry) => {
+  for (let i = same; i < previous.length; i++) {
+    const entry = previous[i];
+    byId.set(`${entry.kind}:${entry.id}:${(entry as { renderKey?: string }).renderKey ?? ""}`, entry);
+  }
+  return next.map((entry, index) => {
+    if (index < same) return entry;
     const prior = byId.get(`${entry.kind}:${entry.id}:${(entry as { renderKey?: string }).renderKey ?? ""}`);
     return prior && structurallyEqual(prior, entry) ? prior : entry;
   });
@@ -5661,24 +5683,23 @@ function createTimelineFold(
   orderedFrames.forEach(indexRenderKeys);
   const runTimings = completedRunTimings(frames);
   const toolOwnership = assistantToolOwnership(framesById.values());
-  // The previous render, so a continued fold re-renders only changed tail
-  // entries. Rendering an entry depends on it, its run duration, and (for
-  // presentation ordinals) the entries before it.
-  let lastRender: { visible: ConversationTimelineEntry[]; durations: (number | undefined)[]; output: ConversationTimelineEntry[] } | null = null;
-
-  function finish(): ConversationTimelineEntry[] {
-    // The trailing open text renders as streaming without being flushed, so
-    // folding can continue; reasoning needs no render-time flush.
-    const rendered = pendingText ? [...entries, pendingTextEntry(false)] : entries;
-    const durations = completedRunDurations(rendered, runTimings);
-    const visible = rendered.filter((entry) => entry.kind !== "message"
-    || entry.blocks?.length !== 1
-    || entry.blocks[0].type !== "thinking"
-    || entry.blocks[0].text.trim());
-    const visibleDurations = visible.map((entry) => durations.get(entry));
-    const output = assistantPresentationEntries(visible.map((entry) => {
+  // Rendering an entry depends on it, its run duration, and (through the
+  // presentation ordinals) the entries before it. The previous render keeps
+  // the presenter state after the committed entries it rendered, so a render
+  // that only grew the open text presents just that text: per token work no
+  // longer scales with the transcript.
+  type RenderCheckpoint = { count: number; state: AssistantPresenterState };
+  let lastRender: {
+    visible: ConversationTimelineEntry[];
+    durations: (number | undefined)[];
+    output: ConversationTimelineEntry[];
+    checkpoint: RenderCheckpoint | null;
+  } | null = null;
+  // The run index is fixed for this fold (appends are text only), so an
+  // entry object's duration eligibility never changes.
+  const qualifiedRuns = new WeakMap<ConversationTimelineEntry, { key: string; duration: number } | null>();
+  const renderEntry = (entry: ConversationTimelineEntry, runDurationMs: number | undefined): ConversationTimelineEntry => {
     if (entry.kind !== "message") return entry;
-    const runDurationMs = durations.get(entry);
     if (runDurationMs !== undefined) entry = { ...entry, runDurationMs };
     if (entry.identity.role === "user") {
       const userKey = userRenderKeys.get(entry.id);
@@ -5689,15 +5710,41 @@ function createTimelineFold(
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
       ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` }
       : block) };
-  }), renderKeys, framesById, toolOwnership);
+  };
+
+  function finish(): ConversationTimelineEntry[] {
+    // The trailing open text renders as streaming without being flushed, so
+    // folding can continue; reasoning needs no render-time flush.
+    const pending = pendingText ? pendingTextEntry(false) : null;
+    const rendered = pending ? [...entries, pending] : entries;
+    const durations = completedRunDurations(rendered, runTimings, qualifiedRuns);
+    const visible = rendered.filter((entry) => entry.kind !== "message"
+    || entry.blocks?.length !== 1
+    || entry.blocks[0].type !== "thinking"
+    || entry.blocks[0].text.trim());
+    const visibleDurations = visible.map((entry) => durations.get(entry));
+    // Committed entries come before the open text, which changes every token.
+    const committed = pending && visible.at(-1) === pending ? visible.length - 1 : visible.length;
     const previous = lastRender;
+    let same = 0;
     if (previous) {
-      for (let i = 0; i < output.length && i < previous.output.length; i++) {
-        if (visible[i] !== previous.visible[i] || visibleDurations[i] !== previous.durations[i]) break;
-        output[i] = previous.output[i];
-      }
+      while (same < visible.length && same < previous.visible.length
+        && visible[same] === previous.visible[same] && visibleDurations[same] === previous.durations[same]) same++;
     }
-    lastRender = { visible, durations: visibleDurations, output };
+    const resume = previous?.checkpoint && previous.checkpoint.count <= same ? previous.checkpoint : null;
+    const start = resume?.count ?? 0;
+    const presenter = assistantPresenter(renderKeys, framesById, toolOwnership, resume?.state);
+    const output = previous && start > 0 ? previous.output.slice(0, start) : [];
+    let checkpoint = resume && resume.count === committed ? resume : null;
+    timelineDerivationStats.presented += visible.length - start;
+    for (let i = start; i < visible.length; i++) {
+      if (i === committed && !checkpoint) checkpoint = { count: i, state: presenter.snapshot() };
+      const entry = presenter.present(renderEntry(visible[i], visibleDurations[i]));
+      // An unchanged prefix keeps the previous output objects.
+      output.push(i < same && previous ? previous.output[i] : entry);
+    }
+    if (!checkpoint) checkpoint = { count: visible.length, state: presenter.snapshot() };
+    lastRender = { visible, durations: visibleDurations, output, checkpoint };
     return output;
   }
 

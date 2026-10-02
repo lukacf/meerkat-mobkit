@@ -657,10 +657,18 @@ function extendAssistantToolOwnership(ownership, frame) {
     }
   }
 }
-function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /* @__PURE__ */ new Map(), ownership = assistantToolOwnership(sourceFrames.values())) {
+function assistantPresenter(occurrenceKeys, sourceFrames, ownership, from) {
   const ordinals = /* @__PURE__ */ new Map();
   const { scopedLiveTools, canonicalOwners } = ownership;
-  return entries.map((entry) => {
+  const countersFor = (owner) => {
+    let counters = ordinals.get(owner);
+    if (!counters) {
+      counters = new Map(from?.get(owner) ?? []);
+      ordinals.set(owner, counters);
+    }
+    return counters;
+  };
+  const present = (entry) => {
     const occurrence = entry.kind === "message" && entry.identity.role === "assistant" ? occurrenceKeys.get(entry.id) : void 0;
     if (entry.kind !== "message" || entry.identity.role !== "assistant") return entry;
     const source = sourceFrames.get(entry.id);
@@ -674,8 +682,7 @@ function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /*
       return owned ? `tool:${key}` : void 0;
     };
     if (!occurrence && !entry.blocks?.some((block) => toolKey(block))) return entry;
-    const counters = ordinals.get(occurrence ?? entry.id) ?? /* @__PURE__ */ new Map();
-    ordinals.set(occurrence ?? entry.id, counters);
+    const counters = countersFor(occurrence ?? entry.id);
     const nextKey = (lane) => {
       const ordinal2 = counters.get(lane) ?? 0;
       counters.set(lane, ordinal2 + 1);
@@ -706,7 +713,15 @@ function assistantPresentationEntries(entries, occurrenceKeys, sourceFrames = /*
       blocks: presentationRows.flatMap((row) => row.blocks),
       presentationRows
     };
-  });
+  };
+  return {
+    present,
+    snapshot() {
+      const state = new Map(from ?? []);
+      for (const [owner, counters] of ordinals) state.set(owner, new Map(counters));
+      return state;
+    }
+  };
 }
 function conversationPresentationRows(entries) {
   return entries.flatMap((entry) => {
@@ -28704,30 +28719,39 @@ function completedRunTimings(frames) {
   }
   return { timings, framesById };
 }
-function completedRunDurations(entries, { timings, framesById }) {
+function completedRunDurations(entries, { timings, framesById }, qualified) {
+  const qualify = (entry) => {
+    if (entry.kind !== "message" || !entry.runId) return null;
+    const frame = framesById.get(entry.id);
+    if (!frame || entry.runId !== frame.runId) return null;
+    const key = runOwnerKey(frame);
+    if (!key) return null;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === void 0 || timing.end === void 0 || timing.end < timing.start) return null;
+    if (describeConversationEntrySource(entry).kind !== "assistant") return null;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) return null;
+    return { key, duration: timing.end - timing.start };
+  };
   const durations = /* @__PURE__ */ new Map();
   const assigned = /* @__PURE__ */ new Set();
   for (let index2 = entries.length - 1; index2 >= 0; index2 -= 1) {
     const entry = entries[index2];
-    if (entry.kind !== "message" || !entry.runId) continue;
-    const frame = framesById.get(entry.id);
-    if (!frame || entry.runId !== frame.runId) continue;
-    const key = runOwnerKey(frame);
-    if (!key || assigned.has(key)) continue;
-    const timing = timings.get(key);
-    if (!timing || timing.invalid || timing.start === void 0 || timing.end === void 0 || timing.end < timing.start) continue;
-    if (describeConversationEntrySource(entry).kind !== "assistant") continue;
-    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
-    if (!conversationEntryVisibleText(textEntry).trim()) continue;
-    durations.set(entry, timing.end - timing.start);
-    assigned.add(key);
+    let run = qualified?.get(entry);
+    if (run === void 0) {
+      run = qualify(entry);
+      qualified?.set(entry, run);
+    }
+    if (!run || assigned.has(run.key)) continue;
+    durations.set(entry, run.duration);
+    assigned.add(run.key);
   }
   return durations;
 }
 function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   return deriveTimelineEntries(agent, frames, options).entries;
 }
-var timelineDerivationStats = { full: 0, extended: 0 };
+var timelineDerivationStats = { full: 0, extended: 0, presented: 0 };
 function deriveTimelineEntries(agent, frames, options = {}, previous3) {
   const extended = previous3?.resume ? extendTimelineDerivation(previous3, agent, frames, options) : null;
   const next = extended ?? fullTimelineDerivation(agent, frames, options);
@@ -28843,9 +28867,16 @@ function extendTimelineDerivation(previous3, agent, frames, options) {
   };
 }
 function internEntries(next, previous3) {
+  let same = 0;
+  while (same < next.length && same < previous3.length && next[same] === previous3[same]) same++;
+  if (same === next.length) return next;
   const byId = /* @__PURE__ */ new Map();
-  for (const entry of previous3) byId.set(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`, entry);
-  return next.map((entry) => {
+  for (let i = same; i < previous3.length; i++) {
+    const entry = previous3[i];
+    byId.set(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`, entry);
+  }
+  return next.map((entry, index2) => {
+    if (index2 < same) return entry;
     const prior = byId.get(`${entry.kind}:${entry.id}:${entry.renderKey ?? ""}`);
     return prior && structurallyEqual(prior, entry) ? prior : entry;
   });
@@ -29379,31 +29410,43 @@ function createTimelineFold(agent, frames, options) {
   const runTimings = completedRunTimings(frames);
   const toolOwnership = assistantToolOwnership(framesById.values());
   let lastRender = null;
+  const qualifiedRuns = /* @__PURE__ */ new WeakMap();
+  const renderEntry = (entry, runDurationMs) => {
+    if (entry.kind !== "message") return entry;
+    if (runDurationMs !== void 0) entry = { ...entry, runDurationMs };
+    if (entry.identity.role === "user") {
+      const userKey = userRenderKeys.get(entry.id);
+      if (userKey) entry = { ...entry, renderKey: userKey };
+    }
+    if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
+    let textIndex = 0;
+    return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
+  };
   function finish() {
-    const rendered = pendingText ? [...entries, pendingTextEntry(false)] : entries;
-    const durations = completedRunDurations(rendered, runTimings);
+    const pending = pendingText ? pendingTextEntry(false) : null;
+    const rendered = pending ? [...entries, pending] : entries;
+    const durations = completedRunDurations(rendered, runTimings, qualifiedRuns);
     const visible = rendered.filter((entry) => entry.kind !== "message" || entry.blocks?.length !== 1 || entry.blocks[0].type !== "thinking" || entry.blocks[0].text.trim());
     const visibleDurations = visible.map((entry) => durations.get(entry));
-    const output = assistantPresentationEntries(visible.map((entry) => {
-      if (entry.kind !== "message") return entry;
-      const runDurationMs = durations.get(entry);
-      if (runDurationMs !== void 0) entry = { ...entry, runDurationMs };
-      if (entry.identity.role === "user") {
-        const userKey = userRenderKeys.get(entry.id);
-        if (userKey) entry = { ...entry, renderKey: userKey };
-      }
-      if (!entry.blocks?.some((block) => block.type === "markdown")) return entry;
-      let textIndex = 0;
-      return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown" ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` } : block) };
-    }), renderKeys, framesById, toolOwnership);
+    const committed = pending && visible.at(-1) === pending ? visible.length - 1 : visible.length;
     const previous3 = lastRender;
+    let same = 0;
     if (previous3) {
-      for (let i = 0; i < output.length && i < previous3.output.length; i++) {
-        if (visible[i] !== previous3.visible[i] || visibleDurations[i] !== previous3.durations[i]) break;
-        output[i] = previous3.output[i];
-      }
+      while (same < visible.length && same < previous3.visible.length && visible[same] === previous3.visible[same] && visibleDurations[same] === previous3.durations[same]) same++;
     }
-    lastRender = { visible, durations: visibleDurations, output };
+    const resume = previous3?.checkpoint && previous3.checkpoint.count <= same ? previous3.checkpoint : null;
+    const start2 = resume?.count ?? 0;
+    const presenter = assistantPresenter(renderKeys, framesById, toolOwnership, resume?.state);
+    const output = previous3 && start2 > 0 ? previous3.output.slice(0, start2) : [];
+    let checkpoint = resume && resume.count === committed ? resume : null;
+    timelineDerivationStats.presented += visible.length - start2;
+    for (let i = start2; i < visible.length; i++) {
+      if (i === committed && !checkpoint) checkpoint = { count: i, state: presenter.snapshot() };
+      const entry = presenter.present(renderEntry(visible[i], visibleDurations[i]));
+      output.push(i < same && previous3 ? previous3.output[i] : entry);
+    }
+    if (!checkpoint) checkpoint = { count: visible.length, state: presenter.snapshot() };
+    lastRender = { visible, durations: visibleDurations, output, checkpoint };
     return output;
   }
   return {

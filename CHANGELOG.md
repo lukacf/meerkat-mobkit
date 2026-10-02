@@ -824,6 +824,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   completion. `npm run perf:typing:browser` fails on more than 500 Markdown
   source characters parsed per streamed token.
 
+- Console: a streamed token no longer presents the whole transcript again.
+  The continued (incremental) transcript derivation still rendered every
+  entry on each token: run durations, the visibility filter, per-entry
+  render keys and assistant presentation all ran over the full history.
+  Rendering now resumes from the presentation state after the committed
+  entries, so a token that only grows the open reply presents just that
+  reply; per-entry run-duration eligibility is cached, and interning skips
+  the unchanged prefix. Derivation time per token in the typing harness
+  drops from about 1.5 ms to about 0.2 ms at 300 turns, and the equivalence
+  oracle and seeded fuzz still prove it equal to a full derivation.
+  `npm run perf:typing:browser` fails on more than 4 transcript entries
+  presented per streamed token (about 2 now, one per derivation).
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in
