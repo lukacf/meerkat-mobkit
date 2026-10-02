@@ -846,6 +846,25 @@ async function feedNavigation(page, turns) {
     failures.push(`turns=${turns}: feed focus did not reach every turn in order (step ${at + 1}: turn ${visited[at]} instead of ${expected[at]})`);
   }
   await page.evaluate(() => document.activeElement?.blur());
+  // Outside the feed's articles the keys keep their normal behaviour: the
+  // composer keeps focus, and the transcript body itself scrolls.
+  const composer = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea[data-testid^="chat-composer"]');
+    textarea?.focus();
+    return Boolean(textarea) && document.activeElement === textarea;
+  });
+  if (composer) {
+    await page.keyboard.press("PageDown"); await settled(page);
+    const kept = await page.evaluate(() => document.activeElement?.matches('textarea[data-testid^="chat-composer"]') ?? false);
+    if (!kept) failures.push(`turns=${turns}: PageDown in the composer moved focus into the feed`);
+  }
+  await page.evaluate(() => { const body = document.querySelector(".conv__body"); body.scrollTop = 0; body.focus(); });
+  await settled(page);
+  const before = await page.evaluate(() => document.querySelector(".conv__body").scrollTop);
+  await page.keyboard.press("PageDown"); await settled(page);
+  const after = await page.evaluate(() => ({ top: document.querySelector(".conv__body").scrollTop, onBody: document.activeElement === document.querySelector(".conv__body") }));
+  if (!after.onBody || after.top <= before) failures.push(`turns=${turns}: PageDown on the transcript body did not scroll it (scrollTop ${before} to ${after.top}, focus on body ${after.onBody})`);
+  await page.evaluate(() => document.activeElement?.blur());
   return failures;
 }
 
