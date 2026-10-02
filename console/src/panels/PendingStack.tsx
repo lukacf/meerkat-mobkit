@@ -16,6 +16,48 @@ export interface PendingItem extends ConsoleSendAttempt {
 
 type DropWhere = "above" | "below";
 
+/// How long a normal send may stay in flight before its row appears.
+/// A send moves its row to `attempting` and, on the acceptance receipt, to
+/// `accepted` and out of the stack, usually within a fraction of a second;
+/// rendering the row in between flashed "Awaiting acceptance" on every
+/// message. A row still `attempting` (or `accepted` but not yet removed)
+/// this long after this view first saw it attempting shows the unchanged
+/// needs-acceptance UI. Display only: it never decides an outcome, and
+/// settled failures (`definitely-rejected`, `outcome-unknown`) render
+/// immediately.
+export const ACCEPTANCE_NOTICE_GRACE_MS = 2_000;
+
+/// Rows of a send still inside its acceptance grace window, keyed by item
+/// id and timed from when this view first saw the row `attempting`.
+/// A normal send first saves its row as a `draft` and dispatches it right
+/// after; `directSendIds` names those rows, so the saved draft does not
+/// flash "Queued" either. A draft queued behind a busy agent is not in the
+/// set and renders at once.
+export function acceptanceGraceDeadlines(
+  items: readonly PendingItem[],
+  firstSeenAttempting: Map<string, number>,
+  now: number,
+  directSendIds: ReadonlySet<string> = new Set(),
+): Map<string, number> {
+  const live = new Set(items.map((item) => item.id));
+  for (const id of [...firstSeenAttempting.keys()]) {
+    if (!live.has(id)) firstSeenAttempting.delete(id);
+  }
+  const deadlines = new Map<string, number>();
+  for (const item of items) {
+    const directDraft = item.state === "draft" && directSendIds.has(item.id);
+    if ((item.state === "attempting" || directDraft) && !firstSeenAttempting.has(item.id)) {
+      firstSeenAttempting.set(item.id, now);
+    }
+    if (item.state !== "attempting" && item.state !== "accepted" && !directDraft) continue;
+    const seen = firstSeenAttempting.get(item.id);
+    if (seen === undefined) continue;
+    const deadline = seen + ACCEPTANCE_NOTICE_GRACE_MS;
+    if (deadline > now) deadlines.set(item.id, deadline);
+  }
+  return deadlines;
+}
+
 interface DropTarget {
   id: string | null;
   where: DropWhere | null;
@@ -23,6 +65,8 @@ interface DropTarget {
 
 interface PendingStackProps {
   items: PendingItem[];
+  /** Rows the composer is sending right away (see acceptanceGraceDeadlines). */
+  directSendIds?: ReadonlySet<string>;
   agentBusy: boolean;
   reducedMotion?: boolean;
   onSteer: (id: string) => void;
@@ -342,6 +386,7 @@ function StackItem({
 
 export function PendingStack({
   items,
+  directSendIds,
   agentBusy,
   reducedMotion,
   onSteer,
@@ -370,15 +415,29 @@ export function PendingStack({
   const [dropTarget, setDropTarget] = React.useState<DropTarget>({ id: null, where: null });
   const [collapsed, setCollapsed] = React.useState(false);
 
+  // A send in flight stays out of the stack for ACCEPTANCE_NOTICE_GRACE_MS
+  // (see there); one timer re-renders at the earliest deadline and is
+  // cleared on every change and on unmount.
+  const firstSeenAttempting = React.useRef(new Map<string, number>());
+  const [, revealTick] = React.useReducer((n: number) => n + 1, 0);
+  const graceDeadlines = acceptanceGraceDeadlines(items, firstSeenAttempting.current, Date.now(), directSendIds);
+  const nextReveal = graceDeadlines.size > 0 ? Math.min(...graceDeadlines.values()) : null;
+  React.useEffect(() => {
+    if (nextReveal === null) return undefined;
+    const timer = window.setTimeout(revealTick, Math.max(0, nextReveal - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [nextReveal]);
+  const visibleItems = graceDeadlines.size > 0 ? items.filter((item) => !graceDeadlines.has(item.id)) : items;
+
   // Auto-expand whenever the stack grows. Designer requirement: fresh
   // items pull the user's attention back to the queue.
   const lastCount = React.useRef(0);
   React.useEffect(() => {
-    if (items.length > lastCount.current) setCollapsed(false);
-    lastCount.current = items.length;
-  }, [items.length]);
+    if (visibleItems.length > lastCount.current) setCollapsed(false);
+    lastCount.current = visibleItems.length;
+  }, [visibleItems.length]);
 
-  if (items.length === 0) return null;
+  if (visibleItems.length === 0) return null;
 
   const onDragStart = (e: React.DragEvent<HTMLLIElement>, id: string) => {
     setDragId(id);
@@ -420,14 +479,14 @@ export function PendingStack({
       data-testid="pending-stack"
     >
       <StackHead
-        count={items.length}
+        count={visibleItems.length}
         agentBusy={agentBusy}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         onClear={onClearAll}
       />
       <ol className="stack__list" role="list">
-        {items.map((item, i) => (
+        {visibleItems.map((item, i) => (
           <StackItem
             key={item.id}
             item={item}

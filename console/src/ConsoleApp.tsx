@@ -3707,10 +3707,22 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setActionError(errorMessage(error));
       return false;
     }
-    if (!await setPendingStack(identity, (previous) => [...previous, item])) return false;
-    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) return false;
+    // A row sent right away stays out of the pending stack while its send is
+    // in flight (PendingStack's ACCEPTANCE_NOTICE_GRACE_MS); name it before
+    // the saved draft first renders.
+    if (!shouldQueue) directSendIdsRef.current.add(item.id);
+    if (!await setPendingStack(identity, (previous) => [...previous, item])) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
+    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
     clearSubmittedContexts();
-    if (!shouldQueue) void dispatchPendingAttempt(identity, item.id, "queue");
+    if (!shouldQueue) {
+      void dispatchPendingAttempt(identity, item.id, "queue").finally(() => directSendIdsRef.current.delete(item.id));
+    }
     // This acknowledges local persistence only. submittedRowId is set on server acceptance.
     return true;
   }
@@ -3721,6 +3733,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       ? (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
         false)
       : false;
+  const directSendIdsRef = React.useRef(new Set<string>());
   const pendingDrainOwnerRef = React.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   );
@@ -4584,6 +4597,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       {stackItems.length > 0 ? (
         <PendingStack
           items={stackItems}
+          directSendIds={directSendIdsRef.current}
           agentBusy={agentBusy}
           reducedMotion={reducedMotion}
           onSteer={(itemId) => onStackSteer(identity, itemId)}
