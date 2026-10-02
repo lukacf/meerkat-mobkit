@@ -11,7 +11,7 @@
     "smoke": "npm run build --silent && node smoke.cjs",
     "e2e:browser": "npm run build --silent && node browser-e2e.cjs",
     "perf:typing": "vitest run --config vitest.config.mjs console/src/perf/typing-lag.bench.test.tsx",
-    "perf:typing:browser": "node typing-lag-browser.cjs --turns 1000,5000 --keys 40 --trace --max-layout-objects 500 --max-full-derivations-per-token 0.1 --max-turn-renders-per-token 3 --budget-p95 idle=16,streaming=40 && node typing-lag-browser.cjs --session flowforensics --no-fill --expand --keys 40 --trace --max-layout-objects 500 --max-full-derivations-per-token 0.1 --max-turn-renders-per-token 3 --budget-p95 idle=16,streaming=40",
+    "perf:typing:browser": "node typing-lag-browser.cjs --turns 1000,5000 --keys 40 --trace --scenarios idle,streaming,send-streaming --max-layout-objects 500 --max-full-derivations-per-token 0.1 --max-turn-renders-per-token 3 --max-rect-reads-per-token 40 --budget-p95 idle=16,streaming=40,send-streaming=40 && node typing-lag-browser.cjs --session flowforensics --no-fill --expand --keys 40 --trace --scenarios idle,streaming,send-streaming --max-layout-objects 500 --max-full-derivations-per-token 0.1 --max-turn-renders-per-token 3 --max-rect-reads-per-token 40 --budget-p95 idle=16,streaming=40,send-streaming=40",
     "voice:test": "vitest run --config vitest.config.mjs console/src/lib/voice-session.test.ts console/src/lib/use-voice-readiness.test.tsx console/src/lib/use-voice-controller.test.tsx console/src/panels/VoiceBar.test.tsx",
     "e2e:voice": "npm run build --silent && node voice-e2e.cjs",
     "e2e:voice:live": "node voice-e2e-live.cjs",

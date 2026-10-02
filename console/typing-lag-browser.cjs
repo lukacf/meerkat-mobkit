@@ -25,7 +25,13 @@
 //        [--src ../other-tree/console] [--no-fill] [--json out.json]
 //        [--session flowforensics|path/to/session.json] [--expand]
 //        [--max-layout-objects 500] [--max-full-derivations-per-token 0.1]
-//        [--max-turn-renders-per-token 2] [--enforce-timing]
+//        [--max-turn-renders-per-token 2] [--max-rect-reads-per-token 20]
+//        [--enforce-timing]
+//
+// Scenarios: idle (no stream), streaming (a reply streams into the open chat)
+// and send-streaming (the operator sends a message, then keeps typing while
+// its reply streams: the console holds the submitted turn in place instead
+// of following the live edge).
 
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
@@ -56,6 +62,9 @@ const TRACE = Boolean(arg("trace", false));
 const ENFORCE_TIMING = process.env.MOBKIT_TYPING_LAG_ENFORCE_TIMING === "1" || Boolean(arg("enforce-timing", false));
 const MAX_FULL_DERIVATIONS_PER_TOKEN = arg("max-full-derivations-per-token", null) === null ? null : Number(arg("max-full-derivations-per-token"));
 const MAX_TURN_RENDERS_PER_TOKEN = arg("max-turn-renders-per-token", null) === null ? null : Number(arg("max-turn-renders-per-token"));
+// Element rect reads per streamed token. Each read forces layout; holding a
+// submitted turn used to read every mounted row's rect on every token.
+const MAX_RECT_READS_PER_TOKEN = arg("max-rect-reads-per-token", null) === null ? null : Number(arg("max-rect-reads-per-token"));
 const BUDGET_SPEC = process.env.MOBKIT_TYPING_LAG_BUDGET || arg("budget-p95", null);
 const BUDGET_P95 = BUDGET_SPEC === null || BUDGET_SPEC === true ? null : parseBudget(String(BUDGET_SPEC));
 
@@ -152,7 +161,12 @@ function serve() {
 function installProbe() {
   // Sink for the console's countRender() calls (a no-op without it).
   globalThis.__consoleRenderCounts = {};
-  window.__lag = { probe: [], events: [], longtasks: [], index: 0 };
+  window.__lag = { probe: [], events: [], longtasks: [], index: 0, rects: 0 };
+  const rectOf = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
+    window.__lag.rects += 1;
+    return rectOf.call(this);
+  };
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
       window.__lag.events.push({ name: entry.name, duration: entry.duration, interactionId: entry.interactionId, start: entry.startTime });
@@ -294,6 +308,7 @@ function workCounters(page) {
     renders: { ...(globalThis.__consoleRenderCounts || {}) },
     derivations: window.__perf?.derivations?.() ?? null,
     streamed: window.__perf?.streamed ?? 0,
+    rects: window.__lag?.rects ?? 0,
   }));
 }
 
@@ -310,6 +325,7 @@ function workDelta(before, after, keystrokes) {
     rowRendersPerToken: per(renders("MessageRow"), tokens),
     transcriptRendersPerKeystroke: per(renders("TranscriptView"), keystrokes),
     rowRendersPerKeystroke: per(renders("MessageRow"), keystrokes),
+    rectReadsPerToken: per(after.rects - before.rects, tokens),
   };
 }
 
@@ -399,7 +415,17 @@ async function measureSize(browser, baseUrl, turns) {
   const result = { turns, dom, scenarios: {}, errors };
   for (const scenario of SCENARIOS) {
     let stop = null;
-    if (scenario === "streaming") {
+    if (scenario === "send-streaming") {
+      // Send like an operator, wait for the accepted turn to render, then
+      // stream its reply while typing the next message.
+      const message = "Write the long report now.";
+      await textarea.click();
+      await page.keyboard.type(message, { delay: 20 });
+      await page.keyboard.press("Enter");
+      await page.waitForFunction((text) => [...document.querySelectorAll("[data-chat-turn-index]")].at(-1)?.textContent?.includes(text), message, { timeout: 30_000 });
+      await page.waitForTimeout(500);
+    }
+    if (scenario === "streaming" || scenario === "send-streaming") {
       await page.evaluate((everyMs) => {
         window.__stopStream = window.__perf.streamReply(everyMs);
       }, STREAM_MS);
@@ -517,7 +543,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
-            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -552,16 +578,23 @@ async function main() {
           failures.push(`turns=${r.turns} idle: a keystroke laid out ${m.breakdown.maxLayoutObjects} layout objects > ${MAX_LAYOUT_OBJECTS}; typing is re-laying out the transcript`);
         }
       }
-      if (scenario === "streaming" && (MAX_FULL_DERIVATIONS_PER_TOKEN !== null || MAX_TURN_RENDERS_PER_TOKEN !== null)) {
-        if (m.work.tokens < 20) failures.push(`turns=${r.turns} streaming: only ${m.work.tokens} tokens streamed`);
+      const streamingScenario = scenario === "streaming" || scenario === "send-streaming";
+      if (streamingScenario && MAX_RECT_READS_PER_TOKEN !== null) {
+        if (m.work.tokens < 20) failures.push(`turns=${r.turns} ${scenario}: only ${m.work.tokens} tokens streamed`);
+        else if (m.work.rectReadsPerToken > MAX_RECT_READS_PER_TOKEN) {
+          failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.rectReadsPerToken)} element rect reads per token > ${MAX_RECT_READS_PER_TOKEN}; each streamed token is measuring the transcript`);
+        }
+      }
+      if (streamingScenario && (MAX_FULL_DERIVATIONS_PER_TOKEN !== null || MAX_TURN_RENDERS_PER_TOKEN !== null)) {
+        if (m.work.tokens < 20) failures.push(`turns=${r.turns} ${scenario}: only ${m.work.tokens} tokens streamed`);
         if (MAX_FULL_DERIVATIONS_PER_TOKEN !== null) {
-          if (m.work.fullDerivationsPerToken === null) failures.push(`turns=${r.turns} streaming: derivation counters unavailable`);
+          if (m.work.fullDerivationsPerToken === null) failures.push(`turns=${r.turns} ${scenario}: derivation counters unavailable`);
           else if (m.work.fullDerivationsPerToken > MAX_FULL_DERIVATIONS_PER_TOKEN) {
-            failures.push(`turns=${r.turns} streaming: ${fmt2(m.work.fullDerivationsPerToken)} full transcript derivations per token > ${MAX_FULL_DERIVATIONS_PER_TOKEN}; streamed text is re-deriving the whole log`);
+            failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.fullDerivationsPerToken)} full transcript derivations per token > ${MAX_FULL_DERIVATIONS_PER_TOKEN}; streamed text is re-deriving the whole log`);
           }
         }
         if (MAX_TURN_RENDERS_PER_TOKEN !== null && m.work.turnRendersPerToken > MAX_TURN_RENDERS_PER_TOKEN) {
-          failures.push(`turns=${r.turns} streaming: ${fmt2(m.work.turnRendersPerToken)} turn renders per token > ${MAX_TURN_RENDERS_PER_TOKEN}; unchanged turns are re-rendering`);
+          failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.turnRendersPerToken)} turn renders per token > ${MAX_TURN_RENDERS_PER_TOKEN}; unchanged turns are re-rendering`);
         }
       }
       if (BUDGET_P95 !== null) {

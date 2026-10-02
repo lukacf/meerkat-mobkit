@@ -15,6 +15,7 @@ import { createRoot } from "react-dom/client";
 import { ConsoleApp } from "../ConsoleApp";
 import type { MobKitConsoleTransport } from "../lib/headless";
 import * as adapters from "../lib/adapters";
+import { CONSOLE_RPC_METHODS } from "../lib/contract";
 import { parseSseFrames } from "../lib/network";
 import type { ConsoleFrame } from "../types";
 import { assistantReply, FixedTimeline, RealisticTimeline, type WireFrame } from "./realistic-transcript";
@@ -43,6 +44,9 @@ function toConsoleFrames(frames: WireFrame[]): ConsoleFrame[] {
   return parseSseFrames(frames.map((frame) => `event: frame\ndata: ${JSON.stringify({ type: "frame", frame })}\n\n`).join(""));
 }
 let live: ((frame: ConsoleFrame) => void) | undefined;
+/// The reply to the last operator send, streamed by `__perf.streamReply`.
+let pendingReply: WireFrame[] | null = null;
+const replyText = () => Array.from({ length: 30 }, (_, i) => assistantReply(i)).join("\n\n");
 
 function experience() {
   return {
@@ -74,7 +78,9 @@ function agentRow(index: number) {
 const transport: MobKitConsoleTransport = {
   loadExperience: async () => experience() as never,
   loadModules: async () => ({ modules: [] }) as never,
-  capabilities: async () => ({ version: "perf", methods: [] }) as never,
+  // Advertise the console methods like the gateway; without send the console
+  // keeps a sent message in its local queue.
+  capabilities: async () => ({ version: "perf", methods: Object.values(CONSOLE_RPC_METHODS) }) as never,
   // Pages exactly like the gateway: the newest `limit` frames before `before`.
   queryTimeline: async (input) => {
     if (input.identity !== CHAT_IDENTITY || input.mode === "since") {
@@ -83,13 +89,25 @@ const transport: MobKitConsoleTransport = {
     const page = timeline.recent(input.limit ?? 200, input.before);
     return { frames: toConsoleFrames(page.frames), available: true, exhausted: page.exhausted } as never;
   },
-  subscribeTimeline: (_input, onFrame) => {
+  subscribeTimeline: (_input, onFrame, options) => {
     live = onFrame;
+    // Report the stream live, as the gateway's does once connected; the
+    // console holds sends while its stream is still connecting.
+    window.setTimeout(() => options?.onTransportState?.({ phase: "live", stale: false, freshness: "current" }), 0);
     return () => {
       live = undefined;
     };
   },
-  send: async (input) => ({ interaction_id: "sent", identity: input.identity, cursor: "console:x" }) as never,
+  // Accept like the gateway: return the accepted input frame's id, then echo
+  // that frame live, so the console anchors the submitted turn while its
+  // reply streams (the send-then-type case).
+  send: async (input) => {
+    const content = typeof input.content === "string" ? input.content : "Write the long report now.";
+    const [accepted, ...reply] = timeline.sendReply({ content, idempotencyKey: input.idempotencyKey, origin: input.origin }, replyText(), 12);
+    pendingReply = reply;
+    window.setTimeout(() => { for (const frame of toConsoleFrames([accepted])) live?.(frame); }, 20);
+    return { interaction_id: accepted.interaction_id, identity: input.identity, cursor: accepted.cursor, input_frame_id: accepted.id } as never;
+  },
   executeCommand: async (input) => ({ command: input.command, accepted: true, result: {} }) as never,
   upload: async () => ({ blob_id: "blob" }) as never,
   blobUrl: (blobId) => `/blobs/${blobId}`,
@@ -140,16 +158,22 @@ window.__perf = {
     return stats ? { ...stats } : null;
   },
   streamReply: (everyMs, chunkChars = 12) => {
-    const text = Array.from({ length: 30 }, (_, i) => assistantReply(i)).join("\n\n");
-    const frames = timeline.streamReply(text, chunkChars);
+    const frames = pendingReply ?? timeline.streamReply(replyText(), chunkChars);
+    pendingReply = null;
+    // The last frame completes the run; streaming stops before it.
+    const completion = frames.at(-1)!;
+    const deltas = frames.slice(0, -1);
     let index = 0;
     const timer = window.setInterval(() => {
-      const frame = frames[index++];
+      const frame = deltas[index++];
       if (!frame) return window.clearInterval(timer);
       window.__perf.streamed += 1;
       for (const parsed of toConsoleFrames([frame])) live?.(parsed);
     }, everyMs);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      for (const parsed of toConsoleFrames([completion])) live?.(parsed);
+    };
   },
 };
 window.localStorage.clear();

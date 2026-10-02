@@ -534,6 +534,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: typing while a reply streams after a send no longer measures the
+  whole transcript on every streamed token. After a send the conversation
+  holds the submitted turn in place, and in that mode every content commit
+  read every mounted row's rect (about 1,200 element rect reads per token
+  with 200 turns mounted), forcing layout over the transcript while the
+  operator typed the next message. Holding an anchor now measures only the
+  anchor row (and its recorded neighbors); every row is read only when the
+  anchor is gone. Against the real gateway in an OB3-style nested iframe with
+  300 turns and 4x CPU throttling, main-thread time per keystroke while the
+  reply streams drops from 29-31 ms to 13-15 ms (p95 52-58 ms to 36-37 ms).
+  `npm run perf:typing:browser` adds a send-then-type scenario and fails on
+  more than 40 element rect reads per streamed token (13 now, 1,207 before).
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in

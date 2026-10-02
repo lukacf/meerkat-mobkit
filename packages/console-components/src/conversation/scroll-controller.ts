@@ -81,6 +81,22 @@ function rowGeometry(viewport: HTMLElement): ConversationRowGeometry[] {
   });
 }
 
+/** Geometry of just these rows (absent or collapsed rows are omitted), with
+ * the same coordinates and filtering as `rowGeometry`. Holding an anchor
+ * steady needs only the anchor row; reading every mounted row on each
+ * streamed commit made every token pay for the whole transcript's rects. */
+function rowGeometryOf(viewport: HTMLElement, ids: readonly string[]): ConversationRowGeometry[] {
+  const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+  const rows: ConversationRowGeometry[] = [];
+  for (const id of ids) {
+    const row = viewport.querySelector<HTMLElement>(`[data-conversation-row-id="${id.replace(/["\\]/g, "\\$&")}"]`);
+    if (!row || row.closest("details:not([open])")) continue;
+    const rect = row.getBoundingClientRect();
+    rows.push({ id, top: rect.top - top, bottom: rect.bottom - top });
+  }
+  return rows;
+}
+
 /** Preserve intent across streaming and layout without moving an outer document. */
 export function useConversationScrollController(options: ConversationScrollControllerOptions) {
   const optionsRef = useRef(options);
@@ -133,32 +149,37 @@ export function useConversationScrollController(options: ConversationScrollContr
       publish(false);
       return;
     }
-    let rows = rowGeometry(viewport);
     if (session.pendingSubmittedRow) {
       const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
       const submittedRowId = resolveSubmitted ? resolveSubmitted(session.pendingSubmittedRow) : session.pendingSubmittedRow;
-      const submitted = rows.find((row) => row.id === submittedRowId);
+      const [submitted] = submittedRowId ? rowGeometryOf(viewport, [submittedRowId]) : [];
       if (submitted) {
         cancelReveal(session);
         session.missingAnchor = false;
         session.mode = "anchoring-submitted-turn";
         session.pendingSubmittedRow = null;
         writeScroll(viewport.scrollTop + submitted.top - CONVERSATION_ANCHOR_OFFSET_PX);
-        rows = rowGeometry(viewport);
-        const actual = rows.find((row) => row.id === submitted.id)!;
+        const [actual] = rowGeometryOf(viewport, [submitted.id]);
         session.anchor = { rowId: actual.id, offset: actual.top, neighbors: [] };
       }
     }
     if (session.mode === "following-end") {
+      // Still waiting for the submitted row: follow the live edge. As on the
+      // ordinary following path, leaving it captures its own anchor.
       writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      session.anchor = null;
       publish(false);
       return;
     }
     const anchor = session.anchor;
     let missing = session.missingAnchor;
     if (anchor) {
+      // Holding the anchor needs only its row (or a recorded neighbor). Every
+      // mounted row is read only when the anchor is gone, to reveal it or to
+      // fall back to the nearest survivor.
+      let rows = rowGeometryOf(viewport, [anchor.rowId, ...anchor.neighbors.map((neighbor) => neighbor.rowId)]);
       const found = rows.some((row) => row.id === anchor.rowId);
+      if (!found) rows = rowGeometry(viewport);
       if (!found && session.requestedAnchor !== anchor.rowId) {
         session.requestedAnchor = anchor.rowId;
         cancelReveal(session);
@@ -211,7 +232,7 @@ export function useConversationScrollController(options: ConversationScrollContr
       // chosen it becomes the new anchor, instead of repeating reveal requests.
       if (!found) session.anchor = captureConversationAnchor(rowGeometry(viewport));
     } else {
-      session.anchor = captureConversationAnchor(rows);
+      session.anchor = captureConversationAnchor(rowGeometry(viewport));
     }
     publish(missing);
   }, [publish, writeScroll]);
