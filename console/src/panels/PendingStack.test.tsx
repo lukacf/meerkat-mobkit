@@ -26,11 +26,11 @@ const rejected = (item: PendingItem): PendingItem =>
   finishConsoleSendAttempt(item, { state: "definitely-rejected", error: "The request was refused.", kind: "refused" });
 
 function mount(items: PendingItem[], directSendIds?: ReadonlySet<string>) {
-  const view = render(<PendingStack items={items} agentBusy={false} directSendIds={directSendIds} {...handlers} />);
+  const view = render(<PendingStack items={items} agentLabel="Queue agent" agentBusy={false} directSendIds={directSendIds} {...handlers} />);
   return {
     view,
     update: (next: PendingItem[]) =>
-      view.rerender(<PendingStack items={next} agentBusy={false} directSendIds={directSendIds} {...handlers} />),
+      view.rerender(<PendingStack items={next} agentLabel="Queue agent" agentBusy={false} directSendIds={directSendIds} {...handlers} />),
   };
 }
 const advance = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
@@ -53,7 +53,7 @@ describe("PendingStack acceptance notice grace", () => {
     update([]);
     advance(ACCEPTANCE_NOTICE_GRACE_MS * 2);
     expect(view.queryByTestId("pending-stack")).toBeNull();
-    expect(view.queryByText("Awaiting acceptance")).toBeNull();
+    expect(view.queryByText("Sending")).toBeNull();
   });
 
   it("shows the unchanged needs-acceptance UI once a send is still attempting after the grace period", () => {
@@ -61,10 +61,10 @@ describe("PendingStack acceptance notice grace", () => {
     const { view } = mount([inFlight]);
     expect(view.queryByTestId("pending-stack")).toBeNull();
     advance(1_900);
-    expect(view.queryByText("Awaiting acceptance")).toBeNull();
+    expect(view.queryByText("Sending")).toBeNull();
     advance(200);
-    expect(view.getByText("Awaiting acceptance")).toBeTruthy();
-    expect(view.getByText("Waiting for confirmation. Checking acceptance will not send the message again.")).toBeTruthy();
+    expect(view.getByText("Sending")).toBeTruthy();
+    expect(view.getByText("Waiting for the server to confirm.")).toBeTruthy();
     expect(notice()).not.toBeNull();
   });
 
@@ -74,7 +74,7 @@ describe("PendingStack acceptance notice grace", () => {
     advance(300);
     update([rejected(attempting(row))]);
     expect(view.getByTestId("pending-stack")).toBeTruthy();
-    expect(view.getByText(/The request was refused\./)).toBeTruthy();
+    expect(view.getByText("Not sent: this message never reached Queue agent.")).toBeTruthy();
   });
 
   it("renders a draft queued behind a busy agent at once", () => {
@@ -89,7 +89,7 @@ describe("PendingStack acceptance notice grace", () => {
     advance(ACCEPTANCE_NOTICE_GRACE_MS + 100);
     update([failed]);
     update([attempting(failed, true)]);
-    expect(view.getByText("Awaiting acceptance")).toBeTruthy();
+    expect(view.getByText("Sending")).toBeTruthy();
   });
 
   it("leaves no grace timer behind on unmount", () => {

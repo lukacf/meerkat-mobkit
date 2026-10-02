@@ -534,6 +534,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: queued rows that did not go through now say what happened in
+  plain words. A refused row reads "Not sent: this message never reached
+  <agent>." with Send again and Discard; a row whose answer was lost reads
+  "We couldn't confirm <agent> got this." with Check, Send again and Discard.
+  Transport failures read "Couldn't reach <host> (offline or signed out)",
+  where <host> is `console_config.brand.label` (else "the server"). Rows
+  saved by 0.8.43 and earlier, which carry only a raw error string, are
+  reworded the same way on load.
+
+- Console: Check always ends in a visible result. The row shows "Checking..."
+  at once, then "Delivered at <time>" (the row clears and a dismissible
+  notice stays), "Not found in <agent>'s recent messages." (the row keeps its
+  options and its saved state), or a plain "Couldn't check: ..." error. Before,
+  some paths (an unresolved owner, a lock or scope miss) ended with no change
+  on screen.
+
+- Console: Send again on an uncertain row resends the saved message with its
+  original idempotency key, so the gateway returns the original acceptance
+  if the first send did arrive instead of delivering it twice. The gateway's
+  send dedupe records have no expiry or cap; a gateway without a storage
+  layout keeps them in memory only, so there a restart between the two sends
+  can admit the message twice.
+
 - Console: typing while a reply streams after a send no longer measures the
   whole transcript on every streamed token. After a send the conversation
   holds the submitted turn in place, and in that mode every content commit
