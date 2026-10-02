@@ -644,6 +644,9 @@ async function openFilled(browser, baseUrl, turns, windowed) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: DPR });
   const page = await context.newPage();
   if (!windowed) await page.addInitScript(() => { globalThis.__consoleTranscriptWindowing = false; });
+  // The same wall clock on every page: time labels ("Today", clock times)
+  // would otherwise differ between pages loaded in different minutes.
+  await page.clock.setFixedTime(new Date("2026-09-22T12:00:00Z"));
   await page.goto(`${baseUrl}/?turns=${turns}`);
   await page.waitForFunction(() => document.querySelectorAll("[data-chat-turn-index]").length > 0, null, { timeout: 120_000 });
   await fillHistory(page);
