@@ -35,6 +35,21 @@ export class TransportError extends MobKitError {
   }
 }
 
+/**
+ * The transport's reader stopped, so no response can arrive any more.
+ *
+ * Rejects every request still waiting when the gateway closes its stdout,
+ * and every later request on the same gateway process. `reason` names what
+ * ended the reader. A request written before the reader stopped may still
+ * have been executed by the gateway.
+ */
+export class TransportReaderFailedError extends TransportError {
+  constructor(readonly reason: string) {
+    super(`transport reader stopped: ${reason}`);
+    this.name = "TransportReaderFailedError";
+  }
+}
+
 // -- RPC errors -----------------------------------------------------------
 
 /** Raised when a JSON-RPC call returns an error response. */

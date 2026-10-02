@@ -34,6 +34,21 @@ class TransportError(MobKitError):
     """Raised when the transport layer fails (subprocess died, connection refused, etc.)."""
 
 
+class TransportReaderFailedError(TransportError):
+    """The transport's reader stopped, so no response can arrive any more.
+
+    Raised to every request still waiting when the gateway closes its stdout
+    or the reader thread fails, and to every later request on the same
+    gateway process. ``reason`` names what ended the reader. A request that
+    was written before the reader stopped may still have been executed by
+    the gateway.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"transport reader stopped: {reason}")
+
+
 class RpcError(MobKitError):
     """Raised when a JSON-RPC call returns an error response."""
 

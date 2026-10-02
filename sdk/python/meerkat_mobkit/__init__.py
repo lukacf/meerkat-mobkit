@@ -117,6 +117,7 @@ from .errors import (
     RpcError,
     StorageResolutionError,
     TransportError,
+    TransportReaderFailedError,
     TurnFailedError,
     TurnNotDeliveredError,
     TurnOutputTruncatedWarning,
@@ -319,6 +320,7 @@ __all__ = [
     # Errors
     "MobKitError",
     "TransportError",
+    "TransportReaderFailedError",
     "RpcError",
     "MobEventsStaleError",
     "MOB_EVENTS_STALE_CURSOR_CODE",
