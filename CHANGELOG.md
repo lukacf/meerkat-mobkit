@@ -319,6 +319,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
+  `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
+  host Rust tool bundles to meerkat-mob's `MobBuilder::register_tool_bundle`,
+  so a profile's `tools.rust_bundles` reaches its members on spawn, resume
+  (including the members resume revives) and respawn. A profile naming an
+  unregistered bundle is refused when its member is built. Registering one
+  name on both the builder and a supplied spec is refused as conflicting
+  configuration. Agent-created child mobs do not receive host bundles.
+
 - `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
   `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that
   returns `ProcessLifetime` unless a store vouches for durability.
