@@ -382,6 +382,39 @@ hook adds alerting, not logging. Use
 (`actor_loop_recovered`) from one starting before paging on it. The Python
 twin is `.on_error(callback)`.
 
+## Startup: no built-in total deadline
+
+`connect()` runs `mobkit/init` as accepted-then-settled. The gateway accepts
+the init at once, reports each startup phase, and then settles it `ready` or
+`failed`. The SDK has **no built-in total deadline** for that wait. Startup
+legitimately includes provider callbacks (each bounded at 130 s by the
+gateway) and native persisted-authority prewarm, which is deliberately
+unbounded and can run for minutes on a large roster. Any fixed SDK timer
+would sooner or later abort a healthy restore. `gatewayTimeoutMs` still
+bounds the wait for the `accepted` answer, and for an older gateway's single
+init response.
+
+The wait ends only when one of these happens:
+
+- the init settles `ready` (connected);
+- the init settles `failed`. You get the typed error, for example
+  `StorageResolutionError`, with `err.data.durable_effects`: `"none"` when
+  nothing durable was touched, otherwise `"possible"`;
+- the gateway exits, or the transport reader fails. You get
+  `InitOutcomeUnknownError`;
+- your own deadline runs out. Set it with
+  `MobKit.builder().initDeadline(ms)`, and running out also throws
+  `InitOutcomeUnknownError`.
+
+`InitOutcomeUnknownError` carries `initId`, `lastPhase` (the last
+`mobkit/init_progress` phase seen, such as `"prewarm"` or `"restore"`) and
+`reason`. That makes a stuck or interrupted init diagnosable. The gateway may
+already have changed native state, so the SDK never retries it automatically
+and asks the gateway to shut down.
+
+Provider callbacks that run during startup must not call ordinary runtime
+RPCs on the same runtime. Ordinary dispatch starts only after init settles.
+
 ## HTTP transport timeout
 
 `createJsonRpcHttpTransport` defaults to a 60-second timeout (via

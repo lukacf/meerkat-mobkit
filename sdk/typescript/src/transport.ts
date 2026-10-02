@@ -120,6 +120,81 @@ function sanitizeForJson(obj: unknown): unknown {
   return String(obj);
 }
 
+/** mobkit/init: accepted, then settled (#550). */
+export const INIT_PROTOCOL_ACCEPTED_THEN_SETTLED = "accepted_then_settled";
+const INIT_PROGRESS_METHOD = "mobkit/init_progress";
+const INIT_SETTLED_METHOD = "mobkit/init_settled";
+
+/**
+ * Correlates one accepted-then-settled `mobkit/init`. Registered before the
+ * init request is written, so no progress or settlement line arrives
+ * unclaimed.
+ */
+export class InitWatch {
+  /** The last `mobkit/init_progress` phase seen, for diagnostics. */
+  lastPhase: string | null = null;
+  private _settle!: (params: Record<string, unknown>) => void;
+  private _fail!: (error: Error) => void;
+  private _done = false;
+  private readonly _settlement: Promise<Record<string, unknown>>;
+
+  constructor(readonly initId: string) {
+    this._settlement = new Promise((resolve, reject) => {
+      this._settle = resolve;
+      this._fail = reject;
+    });
+    // A failure nobody awaits must not become an unhandled rejection.
+    this._settlement.catch(() => undefined);
+  }
+
+  /** @internal */
+  deliver(method: string, params: Record<string, unknown>): void {
+    if (method === INIT_PROGRESS_METHOD) {
+      if (typeof params.phase === "string") this.lastPhase = params.phase;
+    } else if (method === INIT_SETTLED_METHOD && !this._done) {
+      this._done = true;
+      this._settle(params);
+    }
+  }
+
+  /** @internal */
+  fail(error: Error): void {
+    if (this._done) return;
+    this._done = true;
+    this._fail(error);
+  }
+
+  /**
+   * Wait for `mobkit/init_settled`. `deadlineMs` is the caller's own cap
+   * (`null`: wait until the gateway settles, exits, or the reader fails);
+   * exceeding it rejects with `InitDeadlineExceeded`.
+   */
+  settlement(deadlineMs: number | null): Promise<Record<string, unknown>> {
+    if (deadlineMs === null) return this._settlement;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new InitDeadlineExceeded(deadlineMs)), deadlineMs);
+      this._settlement.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+}
+
+/** The caller's init deadline ran out before the init settled. */
+export class InitDeadlineExceeded extends Error {
+  constructor(readonly deadlineMs: number) {
+    super(`the init deadline of ${deadlineMs}ms ran out before init settled`);
+    this.name = "InitDeadlineExceeded";
+  }
+}
+
 function containsNonFinite(obj: unknown): boolean {
   if (typeof obj === "number") return !Number.isFinite(obj);
   if (Array.isArray(obj)) return obj.some(containsNonFinite);
@@ -259,6 +334,8 @@ export class PersistentTransport {
   // Set once the reader for the current gateway process has stopped; every
   // waiter and every later request fails with it.
   private _readerFailure: TransportReaderFailedError | null = null;
+  // The accepted-then-settled init in flight on this process, if any.
+  private _initWatch: InitWatch | null = null;
 
   constructor(
     readonly gatewayBin: string,
@@ -270,6 +347,18 @@ export class PersistentTransport {
 
   setCallbackHandler(handler: CallbackHandler): void {
     this._callbackHandler = handler;
+  }
+
+  /** Register the watch for `initId` before writing `mobkit/init`. */
+  openInitWatch(initId: string): InitWatch {
+    const watch = new InitWatch(initId);
+    this._initWatch = watch;
+    if (this._readerFailure !== null) watch.fail(this._readerFailure);
+    return watch;
+  }
+
+  closeInitWatch(watch: InitWatch): void {
+    if (this._initWatch === watch) this._initWatch = null;
   }
 
   start(): void {
@@ -321,6 +410,21 @@ export class PersistentTransport {
     const msg = parsed as Record<string, unknown>;
 
     if ("method" in msg) {
+      const method = String(msg.method);
+      if (!("id" in msg) && (method === INIT_PROGRESS_METHOD || method === INIT_SETTLED_METHOD)) {
+        const params = msg.params;
+        const watch = this._initWatch;
+        // Only the init this process is running; a late or foreign line is ignored.
+        if (
+          watch !== null &&
+          typeof params === "object" &&
+          params !== null &&
+          (params as Record<string, unknown>).init_id === watch.initId
+        ) {
+          watch.deliver(method, params as Record<string, unknown>);
+        }
+        return;
+      }
       this._handleCallback(msg);
     } else if ("id" in msg) {
       const msgId = String(msg.id);
@@ -340,6 +444,7 @@ export class PersistentTransport {
       this._pending.delete(id);
       pending.reject(failure);
     }
+    this._initWatch?.fail(failure);
   }
 
   private _handleCallback(msg: Record<string, unknown>): void {

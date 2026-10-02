@@ -208,6 +208,34 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
     spawn
 }
 
+/// A startup phase of [`UnifiedRuntime::install_and_bootstrap_identity_first_context`]
+/// or [`UnifiedRuntime::activate_without_identity_context`], reported to the
+/// installed [`UnifiedRuntimeBootstrapPhaseObserver`] as the phase begins.
+///
+/// Hosts use it to report startup progress (the stdio gateway forwards it as
+/// `mobkit/init_progress`); it never changes what bootstrap does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnifiedRuntimeBootstrapPhase {
+    /// Registering persisted continuity owners before the mob is lifted.
+    RegisterPersistedOwners,
+    /// Converging persisted runtime authority. Deliberately not on a
+    /// lifecycle budget, so it can run long on a large roster.
+    PrewarmPersistedAuthority,
+    /// Lifting the prepared mob and reconciling bootstrap edges.
+    Activate,
+    /// Applying the initial identity roster (eager restore embodies members).
+    RestoreRoster,
+    /// Bootstrap failed and the runtime is shutting down, which can await
+    /// external lease-release callbacks before the error is returned.
+    FailureCleanup,
+}
+
+/// Receives [`UnifiedRuntimeBootstrapPhase`] transitions. Called inline on
+/// the bootstrap task, so it must not block.
+pub type UnifiedRuntimeBootstrapPhaseObserver =
+    Arc<dyn Fn(UnifiedRuntimeBootstrapPhase) + Send + Sync>;
+
 pub struct UnifiedRuntime {
     // Immutable after construction — &self access
     mob_runtime: MobRuntime,
@@ -224,6 +252,8 @@ pub struct UnifiedRuntime {
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
+    /// Optional observer for bootstrap phase transitions (set once).
+    bootstrap_phase_observer: std::sync::OnceLock<UnifiedRuntimeBootstrapPhaseObserver>,
     /// Set only for an identity-first resume of a persistent log, where the
     /// mob is deliberately left `Stopped` until continuity is registered.
     /// While this is `Some`, the runtime is NOT ready: the mob cannot spawn
@@ -535,6 +565,7 @@ impl UnifiedRuntime {
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
+            bootstrap_phase_observer: std::sync::OnceLock::new(),
             pending_mob_activation: tokio::sync::Mutex::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
@@ -799,13 +830,30 @@ impl UnifiedRuntime {
         }
         let pending = self.pending_mob_activation.lock().await.take();
         if let Some(pending) = pending {
+            self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::Activate);
             if let Err(error) = pending.activate().await {
+                self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::FailureCleanup);
                 self.shutdown().await;
                 return Err(error);
             }
             self.reconcile_bootstrap_edges_if_configured().await;
         }
         Ok(())
+    }
+
+    /// Install the observer for [`UnifiedRuntimeBootstrapPhase`] transitions.
+    /// Returns `false` (and keeps the first) when one is already installed.
+    pub fn set_bootstrap_phase_observer(
+        &self,
+        observer: UnifiedRuntimeBootstrapPhaseObserver,
+    ) -> bool {
+        self.bootstrap_phase_observer.set(observer).is_ok()
+    }
+
+    fn report_bootstrap_phase(&self, phase: UnifiedRuntimeBootstrapPhase) {
+        if let Some(observer) = self.bootstrap_phase_observer.get() {
+            observer(phase);
+        }
     }
 
     /// Run bootstrap edge reconciliation if this runtime was configured for it.
@@ -1066,6 +1114,7 @@ impl UnifiedRuntime {
         let reconcile_after_materialization =
             pending.is_some() && !context.bootstrap_mode().is_lazy();
         if let Some(pending) = pending {
+            self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::RegisterPersistedOwners);
             let registered_sessions = match context
                 .runtime
                 .register_persisted_continuity_owners(roster)
@@ -1083,6 +1132,7 @@ impl UnifiedRuntime {
                     // owners are not registered, which is the exact failure
                     // this ordering exists to prevent, and it would present as
                     // every restored member coming back Broken.
+                    self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::FailureCleanup);
                     self.shutdown().await;
                     return Err(error);
                 }
@@ -1096,6 +1146,7 @@ impl UnifiedRuntime {
             // unbounded window. Exactly the sessions just registered: this set
             // is the registration's own output, so it cannot disagree with what
             // was published.
+            self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::PrewarmPersistedAuthority);
             let converged = self
                 .mob_runtime
                 .prewarm_persisted_runtime_authority(&registered_sessions)
@@ -1105,7 +1156,9 @@ impl UnifiedRuntime {
                 requested = registered_sessions.len(),
                 "converged persisted runtime authority before mob activation"
             );
+            self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::Activate);
             if let Err(error) = pending.activate().await {
+                self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::FailureCleanup);
                 self.shutdown().await;
                 return Err(crate::identity_first::IdentityRuntimeError::Internal(
                     format!(
@@ -1121,6 +1174,7 @@ impl UnifiedRuntime {
                 self.reconcile_bootstrap_edges_if_configured().await;
             }
         }
+        self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::RestoreRoster);
         match context.bootstrap_roster(roster).await {
             Ok(result) => {
                 if reconcile_after_materialization {
@@ -1130,6 +1184,7 @@ impl UnifiedRuntime {
                 Ok(result)
             }
             Err(error) => {
+                self.report_bootstrap_phase(UnifiedRuntimeBootstrapPhase::FailureCleanup);
                 self.shutdown().await;
                 Err(error)
             }

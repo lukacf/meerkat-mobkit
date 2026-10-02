@@ -36,6 +36,32 @@ export class TransportError extends MobKitError {
 }
 
 /**
+ * The SDK stopped waiting for `mobkit/init` before it settled.
+ *
+ * Thrown when the init request was written but no settlement arrived: the
+ * acceptance was lost, the reader failed, the gateway exited, or the
+ * caller's init deadline ran out. The gateway may have changed native state
+ * (owner publication, identities, leases, continuity, schedules) before it
+ * stopped, so this is never reported as a refusal and never retried
+ * automatically. `initId` correlates with the gateway's progress
+ * notifications; `lastPhase` is the last `mobkit/init_progress` phase seen
+ * (`null` when none arrived); `reason` names what ended the wait.
+ */
+export class InitOutcomeUnknownError extends MobKitError {
+  constructor(
+    readonly initId: string,
+    readonly lastPhase: string | null,
+    readonly reason: string,
+  ) {
+    super(
+      `mobkit/init outcome unknown (init_id=${initId}, last phase: ${lastPhase ?? "none"}): ` +
+        `${reason}; native state may have changed`,
+    );
+    this.name = "InitOutcomeUnknownError";
+  }
+}
+
+/**
  * The transport's reader stopped, so no response can arrive any more.
  *
  * Rejects every request still waiting when the gateway closes its stdout,

@@ -160,6 +160,7 @@ export {
   MobKitError,
   TransportError,
   TransportReaderFailedError,
+  InitOutcomeUnknownError,
   RpcError,
   MobEventsStaleError,
   MOB_EVENTS_STALE_CURSOR_CODE,

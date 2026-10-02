@@ -34,6 +34,60 @@ _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
 _GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown"
 
+# mobkit/init: accepted, then settled (#550). The SDK opts in with these
+# params; the gateway answers `accepted` at once, then sends progress
+# notifications and exactly one settlement carrying the same `init_id`.
+INIT_PROTOCOL_ACCEPTED_THEN_SETTLED = "accepted_then_settled"
+_INIT_PROGRESS_METHOD = "mobkit/init_progress"
+_INIT_SETTLED_METHOD = "mobkit/init_settled"
+
+
+class InitWatch:
+    """Correlates one accepted-then-settled ``mobkit/init``.
+
+    Registered before the init request is written, so a progress or
+    settlement notification can never arrive unclaimed. The reader thread
+    delivers into an asyncio future on the host loop, so waiting for the
+    settlement is cancellable and holds no thread.
+    """
+
+    def __init__(self, init_id: str, loop: asyncio.AbstractEventLoop):
+        self.init_id = init_id
+        #: The last ``mobkit/init_progress`` phase seen, for diagnostics.
+        self.last_phase: str | None = None
+        self._loop = loop
+        self._settlement: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+    def _resolve(self, settle: Callable[[asyncio.Future[dict[str, Any]]], None]) -> None:
+        def apply() -> None:
+            if not self._settlement.done():
+                settle(self._settlement)
+
+        try:
+            self._loop.call_soon_threadsafe(apply)
+        except RuntimeError:
+            # The host loop is closed; nobody is waiting any more.
+            pass
+
+    def _deliver(self, method: str, params: dict[str, Any]) -> None:
+        if method == _INIT_PROGRESS_METHOD:
+            phase = params.get("phase")
+            if isinstance(phase, str):
+                self.last_phase = phase
+        elif method == _INIT_SETTLED_METHOD:
+            self._resolve(lambda future: future.set_result(params))
+
+    def _fail(self, error: BaseException) -> None:
+        self._resolve(lambda future: future.set_exception(error))
+
+    async def settlement(self, deadline: float | None = None) -> dict[str, Any]:
+        """Wait for ``mobkit/init_settled``. ``deadline`` is the caller's own
+        cap in seconds (``None``: wait until the gateway settles, exits, or
+        the reader fails); exceeding it raises ``asyncio.TimeoutError``."""
+        if deadline is None:
+            return await asyncio.shield(self._settlement)
+        return await asyncio.wait_for(asyncio.shield(self._settlement), deadline)
+
 
 def _sanitize_for_json(obj: Any) -> Any:
     """Recursively sanitize a value so json.dumps won't fail.
@@ -107,9 +161,27 @@ class PersistentTransport:
         # Set once the reader for the current gateway process has stopped;
         # every waiter and every later request fails with it.
         self._reader_failure: TransportReaderFailedError | None = None
+        # The accepted-then-settled init in flight on this process, if any.
+        self._init_watch: InitWatch | None = None
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
+
+    def open_init_watch(self, init_id: str) -> InitWatch:
+        """Register the watch for ``init_id`` before writing ``mobkit/init``."""
+        loop = self._loop if self._loop is not None else asyncio.get_running_loop()
+        watch = InitWatch(init_id, loop)
+        with self._pending_lock:
+            self._init_watch = watch
+            failure = getattr(self, "_reader_failure", None)
+        if failure is not None:
+            watch._fail(failure)
+        return watch
+
+    def close_init_watch(self, watch: InitWatch) -> None:
+        with self._pending_lock:
+            if self._init_watch is watch:
+                self._init_watch = None
 
     @property
     def request_timeout(self) -> float:
@@ -186,6 +258,10 @@ class PersistentTransport:
             return
 
         if "method" in msg:
+            method = msg.get("method")
+            if "id" not in msg and method in (_INIT_PROGRESS_METHOD, _INIT_SETTLED_METHOD):
+                self._deliver_init_event(method, msg.get("params"))
+                return
             # Callback or notification FROM Rust
             self._handle_callback(msg)
         elif "id" in msg:
@@ -210,6 +286,18 @@ class PersistentTransport:
                 str(msg)[:200],
             )
 
+    def _deliver_init_event(self, method: str, params: Any) -> None:
+        if not isinstance(params, dict):
+            _log.warning("transport: %s without object params; ignored", method)
+            return
+        with self._pending_lock:
+            watch = self._init_watch
+        if watch is None or params.get("init_id") != watch.init_id:
+            # Not the init this process is running (a late or foreign line).
+            _log.debug("transport: %s for an init that is not in flight; ignored", method)
+            return
+        watch._deliver(method, params)
+
     def _fail_pending_after_reader_exit(self, reason: str) -> None:
         """No response can arrive any more: fail every waiter, typed.
 
@@ -221,8 +309,11 @@ class PersistentTransport:
         with self._pending_lock:
             self._reader_failure = failure
             events = list(self._pending.values())
+            watch = getattr(self, "_init_watch", None)
         for event in events:
             event.set()
+        if watch is not None:
+            watch._fail(failure)
 
     def _handle_callback(self, msg: dict) -> None:
         """Dispatch callback in a separate thread so the reader loop is not blocked."""

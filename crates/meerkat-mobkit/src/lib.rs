@@ -291,11 +291,12 @@ pub use unified_runtime::{
     EventLogConfig, EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome,
     IdentityBootstrapMode, MemberTurnAdmission, MobStopOutcome, PersistedEvent, PostReconcileHook,
     PostSpawnHook, PreSpawnContext, PreSpawnHook, RediscoverReport, ShutdownDrainReport,
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport, discovery_spec_to_spawn_spec,
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBootstrapPhase,
+    UnifiedRuntimeBootstrapPhaseObserver, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    discovery_spec_to_spawn_spec,
 };
 pub use workgraph_realm::{
     AttentionTargetRealm, MigratedMemberBinding, WorkGraphRealmMigrationMode,

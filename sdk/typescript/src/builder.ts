@@ -130,6 +130,12 @@ export interface MobKitBuilderConfig {
   maxSessions: number | null;
   gatewayTimeoutMs: number | null;
   gatewayBin: string | null;
+  /**
+   * Caller cap, in milliseconds, on waiting for an accepted `mobkit/init` to
+   * settle. `null` waits until the gateway settles, exits, or the reader
+   * fails. Running out throws `InitOutcomeUnknownError`.
+   */
+  initDeadlineMs: number | null;
   modules: unknown[];
   persistentState: string | null;
   continuityStore: ContinuityStore | null;
@@ -173,6 +179,7 @@ function defaultConfig(): MobKitBuilderConfig {
     maxSessions: null,
     gatewayTimeoutMs: null,
     gatewayBin: null,
+    initDeadlineMs: null,
     modules: [],
     persistentState: null,
     continuityStore: null,
@@ -728,6 +735,25 @@ export class MobKitBuilder {
 
   gateway(binPath: string): this {
     this._config.gatewayBin = binPath;
+    return this;
+  }
+
+  /**
+   * Cap how long `connect()` waits for an accepted `mobkit/init`.
+   *
+   * A gateway that accepted init keeps working through its startup phases
+   * (provider callbacks, restore, prewarm) and then settles ready or failed.
+   * By default the SDK waits for that settlement, the gateway exiting, or the
+   * reader failing. Set a deadline only when the host has its own startup
+   * budget: running out throws `InitOutcomeUnknownError`, because the gateway
+   * may already have changed native state, and the gateway is asked to shut
+   * down.
+   */
+  initDeadline(ms: number | null): this {
+    if (ms !== null && (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0)) {
+      throw new TypeError("initDeadline must be a positive finite number of milliseconds or null");
+    }
+    this._config.initDeadlineMs = ms;
     return this;
   }
 
