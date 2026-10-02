@@ -784,7 +784,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   callbacks, which run after the frame's layout and before it paints, so a
   steady session (following the live edge or holding an anchor) still
   corrects its position in the same frame. Submissions, reveals, restores and
-  row insertion keep their immediate pass. A native scroll that lands at the
+  row insertion keep their immediate pass. This also stops a streamed commit
+  from pinning a reader back to the live edge after a scroll whose event has
+  not arrived yet (the console e2e chat-pane-older-history-demand-paging
+  flake). A native scroll that lands at the
   live edge no longer measures every mounted row to capture an anchor that
   following discards. `npm run perf:typing:browser` now fails on more than
   0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs

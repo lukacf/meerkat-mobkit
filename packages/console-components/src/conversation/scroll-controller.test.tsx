@@ -504,6 +504,24 @@ describe("conversation scroll intent", () => {
     view.rerender(<Harness rows={[...baseRows, { id: "new", height: 100 }]} />);
     expect(viewport.scrollTop).toBe(900);
   });
+  test("a scroll away from the live edge is not pinned back by a commit before its event arrives", () => {
+    // Browser order: a scroll lands, a streamed commit can run in a task
+    // before the next frame delivers the scroll event, and the post-layout
+    // resize pass runs after it. Re-pinning on that commit snapped a reader
+    // (or a test's scrollIntoView) back to the bottom before the controller
+    // saw the scroll (console e2e chat-pane-older-history-demand-paging).
+    const view = render(<Harness resizeEachCommit={false} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    viewport.scrollTop = 0;
+    view.rerender(<Harness resizeEachCommit={false} rows={baseRows.map((row, index) => index === 9 ? { ...row, text: "streamed" } : row)} />);
+    expect(viewport.scrollTop).toBe(0);
+    fireEvent.scroll(viewport);
+    act(deliverResize);
+    expect(viewport.scrollTop).toBe(0);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
   test("a scroll that lands at the live edge keeps following without measuring rows", () => {
     // A clamp after the content shrinks emits a native scroll the controller
     // did not write. Following keeps no anchor, so reading every mounted row
