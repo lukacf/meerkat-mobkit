@@ -239,6 +239,26 @@ describe("day separators", () => {
     expect(transcriptDayLabel("2026-09-23", now)).toBe("Wednesday, 23 September 2026");
   });
 
+  test("formats a day once, and still names today and yesterday relative to now", () => {
+    const original = Date.prototype.toLocaleDateString;
+    let calls = 0;
+    Date.prototype.toLocaleDateString = function count(this: Date, ...args: Parameters<Date["toLocaleDateString"]>) {
+      calls += 1;
+      return original.apply(this, args);
+    };
+    try {
+      const now = new Date(2026, 8, 25, 10, 0, 0);
+      expect(transcriptDayLabel("2026-09-20", now)).toBe("Sunday, 20 September 2026");
+      const formatted = calls;
+      for (let i = 0; i < 5; i += 1) expect(transcriptDayLabel("2026-09-20", now)).toBe("Sunday, 20 September 2026");
+      expect(calls).toBe(formatted);
+      expect(transcriptDayLabel("2026-09-20", new Date(2026, 8, 21, 10, 0, 0))).toBe("Yesterday");
+      expect(transcriptDayLabel("2026-09-20", new Date(2026, 8, 20, 10, 0, 0))).toBe("Today");
+    } finally {
+      Date.prototype.toLocaleDateString = original;
+    }
+  });
+
   test("day keys are local calendar days", () => {
     const late = new Date(2026, 8, 24, 23, 59, 0).toISOString();
     const early = new Date(2026, 8, 25, 0, 1, 0).toISOString();

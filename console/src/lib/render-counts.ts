@@ -9,9 +9,9 @@ declare global {
   var __consoleRenderCounts: RenderCounts | undefined;
 }
 
-export function countRender(name: string): void {
+export function countRender(name: string, amount = 1): void {
   const sink = globalThis.__consoleRenderCounts;
-  if (sink) sink[name] = (sink[name] ?? 0) + 1;
+  if (sink) sink[name] = (sink[name] ?? 0) + amount;
 }
 
 export function installRenderCounts(): RenderCounts {
