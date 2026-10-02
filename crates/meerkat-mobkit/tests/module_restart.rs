@@ -574,7 +574,8 @@ fn phase_d_boundary_timeout_cleanup_terminate_failure_is_propagated() {
     };
     assert!(message.contains("cleanup terminate failed after timeout"));
 
-    // Forced cleanup failure leaves process termination to natural exit in this test hook path.
+    // The forced cleanup failure is reported; the dropped process owner still
+    // kills and reaps the module (see tests/module_startup_cleanup.rs).
     thread::sleep(Duration::from_millis(120));
     runtime.shutdown();
 }
