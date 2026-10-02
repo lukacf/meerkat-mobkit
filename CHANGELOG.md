@@ -319,6 +319,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
+  `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that
+  returns `ProcessLifetime` unless a store vouches for durability.
+  `SqliteConsoleLogStore::open` reports `Durable`;
+  `SqliteConsoleLogStore::in_memory` and `InMemoryConsoleLogStore` report
+  `ProcessLifetime`. `MobKitConsoleAggregator::send_dedupe_durability()`
+  reads it from the store in use, and `GET /console/experience` exposes it
+  as `send_dedupe: { durable: bool }` (absent without a console
+  aggregator). Custom stores that persist dedupe records across restarts
+  should override the method.
+
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
   and `sendAndWaitOutcome` / `dispatchAndWaitOutcome` (TypeScript) return
@@ -550,12 +561,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   some paths (an unresolved owner, a lock or scope miss) ended with no change
   on screen.
 
-- Console: Send again on an uncertain row resends the saved message with its
-  original idempotency key, so the gateway returns the original acceptance
-  if the first send did arrive instead of delivering it twice. The gateway's
-  send dedupe records have no expiry or cap; a gateway without a storage
-  layout keeps them in memory only, so there a restart between the two sends
-  can admit the message twice.
+- Console: an uncertain row offers Send again only when the gateway
+  advertises `send_dedupe.durable: true`. Send again resends the saved
+  message with its original idempotency key, so the gateway returns the
+  original acceptance if the first send did arrive instead of delivering it
+  twice. Send dedupe records have no expiry or cap, but a gateway without a
+  storage layout keeps them in memory, where a restart between the two
+  sends could admit the message twice; such gateways (and older ones that
+  omit the field) get Check and Discard only. Refused rows keep Send again
+  either way, since nothing was admitted.
 
 - Console: typing while a reply streams after a send no longer measures the
   whole transcript on every streamed token. After a send the conversation

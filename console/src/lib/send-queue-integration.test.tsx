@@ -552,8 +552,9 @@ describe("stock durable queue integration", () => {
     await waitFor(() => expect(within(row).getByText("Not confirmed")).toBeVisible());
     expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent("Couldn't reach the server (offline or signed out).");
     expect(within(row).getByRole("button", { name: "Check" })).toBeEnabled();
-    // Uncertain, not refused: Send again reuses the same idempotency key.
-    expect(within(row).getByRole("button", { name: "Send again" })).toBeEnabled();
+    // Uncertain, and this gateway does not advertise durable send dedupe:
+    // no same-key resend is offered.
+    expect(within(row).queryByRole("button", { name: "Send again" })).toBeNull();
     expect(savedAttempts()[0]).toMatchObject({ state: "outcome-unknown", failureKind: "connection_failed" });
     expect(screen.getByText("Agent idle")).toBeVisible();
   });
@@ -886,8 +887,7 @@ describe("stock durable queue integration", () => {
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
     await compose("uncertain capability request");
     await screen.findByText(/We couldn't confirm/);
-    // Uncertain, not refused: Send again is offered but never fires on its own.
-    expect(screen.getByRole("button", { name: "Send again" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -1036,10 +1036,9 @@ describe("pending recovery actions", () => {
     expect(row.querySelector(".stk-item__text")?.textContent).toBe(item.text);
     expect(screen.queryByTestId(`pending-steer:${item.id}`)).toBeNull();
     expect(screen.queryByTestId(`pending-edit:${item.id}`)).toBeNull();
-    // Only the uncertain row may be sent again (same idempotency key); a row
-    // still in flight may not.
-    if (state === "attempting") expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
-    else expect(screen.getByRole("button", { name: "Send again" })).toBeEnabled();
+    // No same-key resend without a durable dedupe store (resendUncertain
+    // defaults to false), and never for a row still in flight.
+    expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Check", exact: true }));
     expect(props.onReconcile).toHaveBeenCalledExactlyOnceWith(item.id);
     expect(props.onSteer).not.toHaveBeenCalled();

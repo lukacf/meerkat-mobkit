@@ -40458,6 +40458,7 @@ function StackItem({
   item,
   agentLabel,
   hostLabel,
+  resendUncertain,
   check,
   isHead,
   dragging,
@@ -40506,7 +40507,7 @@ function StackItem({
   const copy = describeConsolePendingRow(item, { agent: agentLabel, host: hostLabel });
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
   const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
-  const canResend = settledFailure;
+  const canResend = item.state === "definitely-rejected" || item.state === "outcome-unknown" && resendUncertain;
   const checking = check?.phase === "checking";
   const previewId = import_react42.default.useId();
   const cls = [
@@ -40704,6 +40705,7 @@ function PendingStack3({
   items,
   agentLabel,
   hostLabel,
+  resendUncertain = false,
   checks: checks2,
   delivered,
   onDismissDelivered,
@@ -40811,6 +40813,7 @@ function PendingStack3({
             item,
             agentLabel,
             hostLabel,
+            resendUncertain,
             check: checks2?.[item.id],
             isHead: i === 0,
             dragging: dragId === item.id,
@@ -44156,6 +44159,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
   const consoleReadOnlyRef = import_react45.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  const resendUncertain = experience?.send_dedupe?.durable === true;
+  const resendUncertainRef = import_react45.default.useRef(false);
+  resendUncertainRef.current = resendUncertain;
   const [approvalSnapshot, setApprovalSnapshot] = import_react45.default.useState();
   const [selectedApprovalId, setSelectedApprovalId] = import_react45.default.useState();
   const approvalResourceRef = import_react45.default.useRef(null);
@@ -45148,7 +45154,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
       const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      const resendable = resend && (item?.state === "definitely-rejected" || item?.state === "outcome-unknown");
+      const resendable = resend && (item?.state === "definitely-rejected" || item?.state === "outcome-unknown" && resendUncertainRef.current);
       if (!item || item.state !== "draft" && !resendable || item.scope !== scope || !target) return null;
       let attempting;
       try {
@@ -45833,6 +45839,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           items: stackItems,
           agentLabel: target.title || agent?.label || identity,
           hostLabel: experience?.console_config?.brand?.label?.trim() || void 0,
+          resendUncertain,
           checks: pendingChecks[identity],
           delivered: deliveredNotices[identity],
           onDismissDelivered: (itemId2) => setDeliveredNotices((current) => ({ ...current, [identity]: (current[identity] ?? []).filter((notice) => notice.id !== itemId2) })),

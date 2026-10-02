@@ -260,6 +260,12 @@ export interface RuntimeCapabilities {
 export interface ConsoleExperience {
   /** Opaque server-owned runtime and principal scope for browser persistence. */
   storage_scope?: string;
+  /**
+   * Whether the gateway's send dedupe records survive a restart, read from
+   * the store it actually uses. Absent on older gateways. The console
+   * resends an uncertain message (same idempotency key) only when true.
+   */
+  send_dedupe?: { durable?: boolean };
   contract_version?: string;
   runtime_id?: string;
   console_config?: ConsoleUiConfig;

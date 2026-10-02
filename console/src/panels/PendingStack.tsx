@@ -81,6 +81,12 @@ interface PendingStackProps {
   agentLabel: string;
   /** Embedding host's display name, if the console has one. */
   hostLabel?: string;
+  /**
+   * The gateway keeps send dedupe records across restarts, so an uncertain
+   * row may be sent again with its original idempotency key. False or
+   * absent: uncertain rows offer Check and Discard only.
+   */
+  resendUncertain?: boolean;
   /** Explicit Check state per row id. */
   checks?: Readonly<Record<string, PendingCheckView>>;
   /** Rows a Check found (and cleared) since this view mounted. */
@@ -161,6 +167,7 @@ interface StackItemProps {
   item: PendingItem;
   agentLabel: string;
   hostLabel?: string;
+  resendUncertain: boolean;
   check?: PendingCheckView;
   isHead: boolean;
   dragging: boolean;
@@ -196,6 +203,7 @@ function StackItem({
   item,
   agentLabel,
   hostLabel,
+  resendUncertain,
   check,
   isHead,
   dragging,
@@ -251,7 +259,10 @@ function StackItem({
   const copy = describeConsolePendingRow(item, { agent: agentLabel, host: hostLabel });
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
   const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
-  const canResend = settledFailure;
+  // A refused row was never admitted, so sending it again is always safe.
+  // An uncertain row may already be admitted: resending it is safe only
+  // when the gateway's dedupe record for its idempotency key is durable.
+  const canResend = item.state === "definitely-rejected" || (item.state === "outcome-unknown" && resendUncertain);
   const checking = check?.phase === "checking";
   const previewId = React.useId();
 
@@ -414,6 +425,7 @@ export function PendingStack({
   items,
   agentLabel,
   hostLabel,
+  resendUncertain = false,
   checks,
   delivered,
   onDismissDelivered,
@@ -532,6 +544,7 @@ export function PendingStack({
             item={item}
             agentLabel={agentLabel}
             hostLabel={hostLabel}
+            resendUncertain={resendUncertain}
             check={checks?.[item.id]}
             isHead={i === 0}
             dragging={dragId === item.id}

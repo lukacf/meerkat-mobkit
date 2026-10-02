@@ -22,9 +22,12 @@ function seed() {
     panels: [{ id: "panel-1", mode: "console", target }], activeTabId: "tab-1", focusedPanelId: "panel-1",
   }));
 }
-function transport(send: MobKitConsoleTransport["send"], brand?: string): MobKitConsoleTransport {
+// `durable` mirrors the gateway's `send_dedupe.durable`; undefined omits the
+// section, as an older gateway does.
+function transport(send: MobKitConsoleTransport["send"], brand?: string, durable?: boolean): MobKitConsoleTransport {
   return {
-    loadExperience: async () => ({ runtime_id: "queue-test", console_config: brand ? { brand: { label: brand } } : {}, agent_sidebar: { live_snapshot: { agents: [{ identity, member_id: identity, agent_id: identity, label: agentLabel, kind: "member", state: "running", addressable: true, affordances: { can_send_message: true }, model_capabilities: { image_input: false } }] } }, activity_feed: { filter_presets: [], active_preset_id: "all" } }) as never,
+    loadExperience: async () => ({ runtime_id: "queue-test", console_config: brand ? { brand: { label: brand } } : {},
+      ...(durable === undefined ? {} : { send_dedupe: { durable } }), agent_sidebar: { live_snapshot: { agents: [{ identity, member_id: identity, agent_id: identity, label: agentLabel, kind: "member", state: "running", addressable: true, affordances: { can_send_message: true }, model_capabilities: { image_input: false } }] } }, activity_feed: { filter_presets: [], active_preset_id: "all" } }) as never,
     loadModules: async () => ({ modules: [] }) as never,
     capabilities: async () => ({ version: "test", methods: ["mobkit/console/send", "mobkit/console/timeline", "mobkit/console/inspect_identity"] }) as never,
     queryTimeline: async () => ({ frames: [], available: true }),
@@ -57,7 +60,7 @@ afterEach(async () => {
 describe("pending row language", () => {
   it("words an uncertain row plainly, offers Check, Send again and Discard, and never shows protocol terms", async () => {
     saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("outcome-unknown", { failureKind: "connection_failed" })]);
-    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "HomeCore")} />);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "HomeCore", true)} />);
     const row = await screen.findByTestId("pending-item:row-1");
     expect(within(row).getByText(`We couldn't confirm ${agentLabel} got this.`)).toBeVisible();
     expect(within(row).getByText("Couldn't reach HomeCore (offline or signed out).")).toBeVisible();
@@ -101,7 +104,7 @@ describe("Check always ends in a visible result", () => {
     await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => { finish({ available: true, frames: [] }); });
     expect(await within(row).findByText(`Not found in ${agentLabel}'s recent messages.`)).toBeVisible();
-    for (const name of ["Check", "Send again", "Discard"]) expect(within(row).getByRole("button", { name })).toBeEnabled();
+    for (const name of ["Check", "Discard"]) expect(within(row).getByRole("button", { name })).toBeEnabled();
     expect(saved()[0].state).toBe("outcome-unknown");
     expect(fake.send).not.toHaveBeenCalled();
   });
@@ -153,7 +156,7 @@ describe("Send again on an uncertain row", () => {
     const row = savedRow("outcome-unknown", { failureKind: "connection_failed" });
     saveConsoleSendAttempts(window.localStorage, scope, identity, [row]);
     const send = vi.fn(async () => ({ interaction_id: "replayed-turn", identity, input_frame_id: "existing-frame" }) as never);
-    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(send)} />);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(send, undefined, true)} />);
     fireEvent.click(within(await screen.findByTestId("pending-item:row-1")).getByRole("button", { name: "Send again" }));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     const envelope = JSON.parse(row.envelopeJson!);
@@ -163,5 +166,29 @@ describe("Send again on an uncertain row", () => {
     await waitFor(() => expect(screen.queryByTestId("pending-item:row-1")).toBeNull());
     expect(saved()).toHaveLength(0);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Send again on an uncertain row follows the gateway's dedupe durability", () => {
+  it.each([
+    ["durable", true, true],
+    ["not durable (in-memory store)", false, false],
+    ["missing (older gateway)", undefined, false],
+  ] as const)("send_dedupe %s", async (_label, durable, offered) => {
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("outcome-unknown", { failureKind: "connection_failed" })]);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), "HomeCore", durable)} />);
+    const row = await screen.findByTestId("pending-item:row-1");
+    // The wording stays honest either way: delivery is unconfirmed.
+    expect(within(row).getByText(`We couldn't confirm ${agentLabel} got this.`)).toBeVisible();
+    for (const name of ["Check", "Discard"]) expect(within(row).getByRole("button", { name })).toBeEnabled();
+    if (offered) expect(within(row).getByRole("button", { name: "Send again" })).toBeEnabled();
+    else expect(within(row).queryByRole("button", { name: "Send again" })).toBeNull();
+  });
+
+  it.each([[true], [false], [undefined]] as const)("a refused row keeps Send again when send_dedupe.durable is %s", async (durable) => {
+    saveConsoleSendAttempts(window.localStorage, scope, identity, [savedRow("definitely-rejected", { failureKind: "unauthenticated" })]);
+    render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(vi.fn(), undefined, durable)} />);
+    const row = await screen.findByTestId("pending-item:row-1");
+    expect(within(row).getByRole("button", { name: "Send again" })).toBeEnabled();
   });
 });

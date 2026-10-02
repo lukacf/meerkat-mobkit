@@ -2437,6 +2437,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  // Same-key resend of an uncertain send is safe only against a durable
+  // dedupe store; older gateways (field absent) and in-memory stores are not.
+  const resendUncertain = experience?.send_dedupe?.durable === true;
+  const resendUncertainRef = React.useRef(false);
+  resendUncertainRef.current = resendUncertain;
   const [approvalSnapshot, setApprovalSnapshot] = React.useState<{
     owner: typeof consoleController;
     snapshot: PendingApprovalSnapshot;
@@ -3770,7 +3775,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
       const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      const resendable = resend && (item?.state === "definitely-rejected" || item?.state === "outcome-unknown");
+      const resendable = resend && (item?.state === "definitely-rejected" || (item?.state === "outcome-unknown" && resendUncertainRef.current));
       if (!item || (item.state !== "draft" && !resendable) || item.scope !== scope || !target) return null;
       let attempting: PendingItem;
       try {
@@ -4633,6 +4638,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           items={stackItems}
           agentLabel={target.title || agent?.label || identity}
           hostLabel={experience?.console_config?.brand?.label?.trim() || undefined}
+          resendUncertain={resendUncertain}
           checks={pendingChecks[identity]}
           delivered={deliveredNotices[identity]}
           onDismissDelivered={(itemId) => setDeliveredNotices((current) => ({ ...current, [identity]: (current[identity] ?? []).filter((notice) => notice.id !== itemId) }))}

@@ -580,6 +580,9 @@ pub async fn console_json_handler(
     {
         attach_console_storage_scope(&mut response.body, auth.principal.as_deref());
     }
+    if response.status == 200 && uri.path() == "/console/experience" {
+        attach_console_send_dedupe(&mut response.body, state.console_aggregator.as_ref());
+    }
     if response.status == 200
         && uri.path() == "/console/experience"
         && !state.decisions.console.read_only
@@ -595,6 +598,26 @@ pub async fn console_json_handler(
     }
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
+}
+
+/// Advertise whether the store behind `mobkit/console/send` keeps its dedupe
+/// records across a gateway restart, read from the store actually in use.
+/// The console offers "Send again" on an uncertain send (same idempotency
+/// key) only when `send_dedupe.durable` is true; without an aggregator there
+/// is no send path, so the section is absent.
+fn attach_console_send_dedupe(
+    experience: &mut Value,
+    aggregator: Option<&MobKitConsoleAggregator>,
+) {
+    let Some(aggregator) = aggregator else {
+        return;
+    };
+    if let Some(object) = experience.as_object_mut() {
+        object.insert(
+            "send_dedupe".to_string(),
+            json!({ "durable": aggregator.send_dedupe_durability().is_durable() }),
+        );
+    }
 }
 
 /// Storage keys are opaque projections of the authenticated runtime/principal.
@@ -12046,6 +12069,42 @@ comms = true
             super::attach_console_storage_scope(&mut body, None);
             assert!(body.get("storage_scope").is_none());
         }
+    }
+
+    #[test]
+    fn console_experience_advertises_send_dedupe_durability_of_the_store_in_use()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let project = |aggregator: Option<&MobKitConsoleAggregator>| {
+            let mut body = json!({ "runtime_id": "runtime-a" });
+            super::attach_console_send_dedupe(&mut body, aggregator);
+            body
+        };
+        let dir = tempfile::tempdir()?;
+        let file_backed = MobKitConsoleAggregator::new(Arc::new(
+            crate::console_aggregator::SqliteConsoleLogStore::open(
+                dir.path().join("console.sqlite"),
+            )?,
+        ));
+        assert_eq!(
+            project(Some(&file_backed))["send_dedupe"],
+            json!({ "durable": true })
+        );
+        let sqlite_memory = MobKitConsoleAggregator::new(Arc::new(
+            crate::console_aggregator::SqliteConsoleLogStore::in_memory()?,
+        ));
+        assert_eq!(
+            project(Some(&sqlite_memory))["send_dedupe"],
+            json!({ "durable": false })
+        );
+        let in_memory = MobKitConsoleAggregator::new(Arc::new(
+            crate::console_aggregator::InMemoryConsoleLogStore::new(),
+        ));
+        assert_eq!(
+            project(Some(&in_memory))["send_dedupe"],
+            json!({ "durable": false })
+        );
+        assert!(project(None).get("send_dedupe").is_none());
+        Ok(())
     }
 
     fn rpc_request(method: &str) -> JsonRpcRequest {
