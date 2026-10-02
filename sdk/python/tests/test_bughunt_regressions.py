@@ -175,7 +175,8 @@ def test_provider_callback_uses_dedicated_completion_deadline(request_timeout):
             "jsonrpc": "2.0",
             "id": "cb-dedicated-deadline",
             "result": {"released": True},
-        }
+        },
+        callback_response=True,
     )
 
 

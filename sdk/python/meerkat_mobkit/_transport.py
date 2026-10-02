@@ -148,7 +148,12 @@ class PersistentTransport:
         self._env = {**os.environ, **(env or {})}
         self._process: subprocess.Popen[bytes] | None = None
         self._timeout = timeout
-        self._write_lock = threading.Lock()      # protects stdin writes
+        # Serializes stdin writes line by line. Callback responses take
+        # priority: they wait only for the line being written, never behind
+        # queued requests, so a gateway callback is not held up by host RPCs.
+        self._write_cond = threading.Condition()
+        self._writing = False
+        self._priority_writers_waiting = 0
         self._pending_lock = threading.Lock()     # protects _pending and _results
         self._pending: dict[str, threading.Event] = {}
         self._results: dict[str, Any] = {}
@@ -340,7 +345,8 @@ class PersistentTransport:
                                     "method": method,
                                 },
                             },
-                        }
+                        },
+                        callback_response=True,
                     )
                 except Exception:
                     _log.error(
@@ -410,10 +416,11 @@ class PersistentTransport:
                             ),
                             "data": {"kind": "non_finite_result"},
                         },
-                    }
+                    },
+                    callback_response=True,
                 )
                 return
-            self._write_line(response)
+            self._write_line(response, callback_response=True)
         except Exception as exc:
             # Notifications: log only, don't try to send error response
             if callback_id is None:
@@ -426,17 +433,41 @@ class PersistentTransport:
                 "error": {"code": -32000, "message": str(exc)},
             }
             try:
-                self._write_line(error_response)
+                self._write_line(error_response, callback_response=True)
             except Exception:
                 _log.error("failed to send callback error response for id=%s", callback_id)
 
-    def _write_line(self, obj: dict) -> None:
-        with self._write_lock:
+    def _write_line(self, obj: dict, *, callback_response: bool = False) -> None:
+        """Write one JSON line to the gateway's stdin.
+
+        Lines never interleave. A callback response (``callback_response``)
+        waits only for the line currently being written; queued requests wait
+        until no callback response is waiting. One pipe cannot do better: a
+        line already being written must finish first.
+        """
+        # Strict JSON, encoded before taking a turn: the gateway cannot parse
+        # NaN/Infinity tokens, and a refusal must not hold the pipe.
+        data = (json.dumps(obj, allow_nan=False) + "\n").encode("utf-8")
+        with self._write_cond:
+            if callback_response:
+                self._priority_writers_waiting += 1
+            try:
+                while self._writing or (
+                    not callback_response and self._priority_writers_waiting
+                ):
+                    self._write_cond.wait()
+            finally:
+                if callback_response:
+                    self._priority_writers_waiting -= 1
+            self._writing = True
+        try:
             if self._process and self._process.stdin:
-                # Strict JSON: the gateway cannot parse NaN/Infinity tokens.
-                data = json.dumps(obj, allow_nan=False) + "\n"
-                self._process.stdin.write(data.encode("utf-8"))
+                self._process.stdin.write(data)
                 self._process.stdin.flush()
+        finally:
+            with self._write_cond:
+                self._writing = False
+                self._write_cond.notify_all()
 
     def send_sync(
         self,

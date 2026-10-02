@@ -591,6 +591,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The stdio gateway no longer queues ordinary requests behind `mobkit/init`
+  (#550). Before, a request that arrived during startup waited in a 64-slot
+  queue that nothing drained until init finished. A startup provider callback
+  that awaited such a request waited on itself until its 130 s deadline, and
+  a full queue stalled the stdin reader, so callback responses stopped being
+  routed. An ordinary request sent before init settles now gets an immediate
+  typed refusal: `-32018`, `data.kind: "init_in_progress"`, exported as
+  `INIT_IN_PROGRESS_CODE` and raised as `InitInProgressError` in both SDKs.
+  `mobkit/shutdown` and callback responses are still admitted. Startup
+  callbacks must not issue ordinary RPCs on the runtime that is starting.
+- Python SDK: a callback response is no longer written behind host requests
+  queued for the gateway's stdin. Writes stay whole lines, and a callback
+  response now waits only for the line currently being written (#550).
+
 - SDK transports (Python and TypeScript) no longer leave a request or a
   gateway callback waiting out its deadline because one stdout or stdin line
   was bad (#550):

@@ -5586,6 +5586,24 @@ comms = true
     }
 
     #[test]
+    fn init_in_progress_refusal_is_typed_and_skips_notifications() {
+        let refusal = init_in_progress_refusal(&json!({
+            "jsonrpc": "2.0", "id": "r-1", "method": "mobkit/status", "params": {}
+        }))
+        .expect("a request gets an answer");
+        assert_eq!(refusal["id"], "r-1");
+        assert_eq!(
+            refusal["error"]["code"],
+            meerkat_mobkit::INIT_IN_PROGRESS_CODE
+        );
+        assert_eq!(
+            refusal["error"]["data"],
+            json!({ "kind": "init_in_progress", "method": "mobkit/status" })
+        );
+        assert!(init_in_progress_refusal(&json!({ "jsonrpc": "2.0", "method": "note" })).is_none());
+    }
+
+    #[test]
     fn init_protocol_opt_in_needs_the_exact_name_and_an_init_id() {
         assert_eq!(
             init_protocol_request(
@@ -8882,6 +8900,25 @@ async fn abort_init_for_shutdown(
         }
     }
     std::process::exit(0);
+}
+
+/// The immediate answer to an ordinary request that arrived before init
+/// settled; `None` for a notification (no id), which gets no answer.
+fn init_in_progress_refusal(message: &Value) -> Option<Value> {
+    let id = message.get("id")?;
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": meerkat_mobkit::INIT_IN_PROGRESS_CODE,
+            "message": format!(
+                "{method} refused: mobkit/init has not settled yet; ordinary requests are \
+                 served only after init settles (startup callbacks must not issue them)"
+            ),
+            "data": { "kind": "init_in_progress", "method": method },
+        },
+    }))
 }
 
 #[derive(Debug)]
@@ -12196,12 +12233,18 @@ external_addressable = true
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<String>(64);
     let shutdown_requested = Arc::new(AtomicBool::new(false));
+    // False until init settles. Before that the dispatch loop is not running,
+    // so ordinary requests are refused at once (INIT_IN_PROGRESS_CODE) instead
+    // of queueing behind startup, where a provider callback awaiting one would
+    // wait on itself and a full queue would stall callback-response routing.
+    let dispatch_open = Arc::new(AtomicBool::new(false));
 
     let stdin_reader = tokio::spawn({
         let bridge = bridge.clone();
         let rpc_tx = rpc_tx.clone();
         let stdout_tx = stdout_tx.clone();
         let shutdown_requested = shutdown_requested.clone();
+        let dispatch_open = dispatch_open.clone();
         async move {
             let mut line = String::new();
             loop {
@@ -12295,6 +12338,13 @@ external_addressable = true
                         if let Ok(line) = serde_json::to_string(&response) {
                             let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
                         }
+                    }
+                } else if !dispatch_open.load(Ordering::Acquire) {
+                    // Init has not settled: refuse at once, never queue.
+                    if let Some(response) = init_in_progress_refusal(&msg)
+                        && let Ok(line) = serde_json::to_string(&response)
+                    {
+                        let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
                     }
                 } else {
                     // Queue RPC request for the dispatch loop
@@ -14769,6 +14819,10 @@ external_addressable = true
     if shutdown_requested.load(Ordering::Acquire) {
         abort_init_for_shutdown(Some(runtime.as_ref()), &mut rpc_rx, init_progress).await;
     }
+    // Ordinary requests are admitted from here on: the dispatch loop below
+    // drains them. Opened before readiness is reported, so a request the SDK
+    // sends right after the settlement is queued, not refused.
+    dispatch_open.store(true, Ordering::Release);
     // A legacy SDK gets its single response; an accepted init settles `ready`.
     let init_response = match init_session() {
         Some(session) => {

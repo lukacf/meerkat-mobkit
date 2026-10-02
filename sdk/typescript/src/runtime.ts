@@ -30,6 +30,7 @@ import {
   LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   STORAGE_RESOLUTION_CODE,
+  INIT_IN_PROGRESS_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
@@ -40,6 +41,7 @@ import {
   NotConnectedError,
   RpcError,
   StorageResolutionError,
+  InitInProgressError,
   TransportError,
   TransportReaderFailedError,
   InitOutcomeUnknownError,
@@ -705,6 +707,9 @@ function rpcErrorFromPayload(
   }
   if (code === STORAGE_RESOLUTION_CODE) {
     return new StorageResolutionError(message, rid, method, err.data);
+  }
+  if (code === INIT_IN_PROGRESS_CODE) {
+    return new InitInProgressError(message, rid, method, err.data);
   }
   if (code === WORKGRAPH_UNAVAILABLE_CODE) {
     return new WorkGraphUnavailableError(message, rid, method, err.data);
