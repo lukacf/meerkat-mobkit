@@ -1,9 +1,13 @@
 """Identity-first models for MobKit SDK (REQ-40, REQ-43, REQ-43a)."""
 from __future__ import annotations
 
+import copy
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
+
+from .errors import ContractMismatchError
 
 _VALID_ORIGINS = frozenset({"connector", "scheduler", "policy", "flow", "system"})
 MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY = 16
@@ -917,6 +921,12 @@ class IdentityStatus:
     checkpoint_version: int | None = None
     lease: LeaseInfo | None = None
     continuity_health: ContinuityHealth | None = None
+    #: The exact delivery scope to persist before a scoped dispatch
+    #: (``dispatch(..., expected_scope=)``); ``None`` when none can be
+    #: captured, with the reason in :attr:`delivery_scope_unavailable`.
+    delivery_scope: DeliveryScope | None = None
+    #: ``{"kind", "reason"}`` when :attr:`delivery_scope` is ``None``.
+    delivery_scope_unavailable: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -941,12 +951,32 @@ class IdentityStatus:
             result["lease"] = self.lease.to_dict()
         if self.continuity_health is not None:
             result["continuity_health"] = self.continuity_health.to_dict()
+        if self.delivery_scope is not None:
+            result["delivery_scope"] = self.delivery_scope.to_dict()
+        if self.delivery_scope_unavailable is not None:
+            result["delivery_scope_unavailable"] = dict(self.delivery_scope_unavailable)
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IdentityStatus:
         lease_raw = data.get("lease")
         ch_raw = data.get("continuity_health")
+        delivery_scope: DeliveryScope | None = None
+        unavailable_raw = data.get("delivery_scope_unavailable")
+        delivery_scope_unavailable = (
+            dict(unavailable_raw) if isinstance(unavailable_raw, dict) else None
+        )
+        scope_raw = data.get("delivery_scope")
+        if isinstance(scope_raw, dict):
+            try:
+                delivery_scope = DeliveryScope.from_dict(scope_raw)
+            except ContractMismatchError as exc:
+                # A scope this SDK cannot read is never guessed at; the rest
+                # of the status stays usable.
+                delivery_scope_unavailable = {
+                    "kind": "unsupported_delivery_scope_version",
+                    "reason": str(exc),
+                }
         # `.get()` with defaults to match the TS parser's graceful degradation.
         return cls(
             identity=str(data.get("identity", "")),
@@ -961,6 +991,8 @@ class IdentityStatus:
             checkpoint_version=data.get("checkpoint_version"),
             lease=LeaseInfo.from_dict(lease_raw) if lease_raw else None,
             continuity_health=ContinuityHealth.from_dict(ch_raw) if ch_raw else None,
+            delivery_scope=delivery_scope,
+            delivery_scope_unavailable=delivery_scope_unavailable,
         )
 
 
@@ -1144,6 +1176,211 @@ class DispatchResult:
             completion_baseline=_completion_cursor_from(data, "completion_baseline"),
             turn_ticket=_turn_ticket_from(data),
             turn_unavailable=TurnUnavailable.from_wire(data.get("turn_unavailable")),
+        )
+
+
+#: Serialized format version of :class:`DeliveryScope` this SDK reads.
+DELIVERY_SCOPE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class DeliveryScope:
+    """One identity's exact delivery scope, from :meth:`status`.
+
+    Persist it (``to_dict()``) before a scoped dispatch, and pass the same
+    scope to ``dispatch(..., expected_scope=)`` and ``recover_delivery``. It
+    pins the MobKit continuity (runtime id, generation, lease fencing token)
+    and meerkat's native member scope (``member``, opaque and versioned on
+    its own). It is a selector and stale-binding guard: the gateway
+    re-validates every atom and refuses a moved scope with
+    :class:`~meerkat_mobkit.errors.StaleScopeError`.
+    """
+
+    identity: str
+    agent_runtime_id: str
+    generation: int
+    lease_fencing_token: int
+    member: dict[str, Any] = field(compare=True, hash=False)
+    version: int = DELIVERY_SCOPE_VERSION
+
+    @property
+    def session_id(self) -> str | None:
+        """The member session the scope pins."""
+        session_id = self.member.get("session_id")
+        return session_id if isinstance(session_id, str) else None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The exact persisted form the gateway expects back."""
+        return {
+            "version": self.version,
+            "identity": self.identity,
+            "agent_runtime_id": self.agent_runtime_id,
+            "generation": self.generation,
+            "lease_fencing_token": self.lease_fencing_token,
+            "member": copy.deepcopy(self.member),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DeliveryScope:
+        """Decode a persisted scope.
+
+        Raises :class:`~meerkat_mobkit.errors.ContractMismatchError` for a
+        scope version this SDK does not read and :class:`ValueError` for a
+        malformed scope; neither is ever read as a guess.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("delivery scope must be an object")
+        version = data.get("version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError("delivery scope has no integer version")
+        if version != DELIVERY_SCOPE_VERSION:
+            raise ContractMismatchError(
+                f"unsupported delivery scope version {version} "
+                f"(this SDK reads version {DELIVERY_SCOPE_VERSION})"
+            )
+        identity = data.get("identity")
+        runtime_id = data.get("agent_runtime_id")
+        generation = data.get("generation")
+        token = data.get("lease_fencing_token")
+        member = data.get("member")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("delivery scope identity must be a non-empty string")
+        if not isinstance(runtime_id, str) or not runtime_id:
+            raise ValueError("delivery scope agent_runtime_id must be a non-empty string")
+        for name, value in (("generation", generation), ("lease_fencing_token", token)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"delivery scope {name} must be a non-negative integer")
+        if not isinstance(member, dict):
+            raise ValueError("delivery scope member must be an object")
+        return cls(
+            identity=identity,
+            agent_runtime_id=runtime_id,
+            generation=generation,
+            lease_fencing_token=token,
+            member=copy.deepcopy(member),
+            version=version,
+        )
+
+
+@dataclass(frozen=True)
+class DeliveryReceipt:
+    """What a scoped dispatch's admission proved.
+
+    ``stage`` is the admission stage the receipt proves (``ingress_accepted``
+    for this path: the member's work lane accepted the delivery; it is not a
+    durable runtime-input claim). ``session_id`` is the scope's session,
+    validated inside meerkat's admission.
+    """
+
+    work_ref: str
+    stage: str
+    session_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DeliveryReceipt:
+        return cls(
+            work_ref=str(data.get("work_ref", "")),
+            stage=str(data.get("stage", "")),
+            session_id=str(data.get("session_id", "")),
+        )
+
+
+@dataclass(frozen=True)
+class ScopedDispatchResult:
+    """Result of ``dispatch(..., expected_scope=)``."""
+
+    receipt: DeliveryReceipt
+    delivery_scope: DeliveryScope
+    fencing_token: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ScopedDispatchResult:
+        return cls(
+            receipt=DeliveryReceipt.from_dict(data.get("receipt") or {}),
+            delivery_scope=DeliveryScope.from_dict(data.get("delivery_scope") or {}),
+            fencing_token=int(data.get("fencing_token", 0)),
+        )
+
+
+class ScopedRecoveryState(str, Enum):
+    """What ``recover_delivery`` established, from the ORIGINAL session only."""
+
+    #: An authoritative point-in-time miss. An outstanding admission can still
+    #: land later: never permission to retry.
+    ABSENT = "absent"
+    #: The original session holds the input, not yet terminal.
+    IN_FLIGHT = "in_flight"
+    #: The delivery's turn completed (see ``output_status``).
+    COMPLETED = "completed"
+    #: The delivery's turn reached a failed terminal.
+    FAILED = "failed"
+    #: The input reached a terminal disposition without a run of its own.
+    TERMINAL_WITHOUT_RUN = "terminal_without_run"
+    #: Evidence exists but is internally inconsistent.
+    BROKEN = "broken"
+    #: The original owner could not establish the state (see ``cause``).
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class ScopedRecovery:
+    """Result of ``recover_delivery``. Only ``state`` is always set."""
+
+    state: ScopedRecoveryState
+    delivery_scope: DeliveryScope | None = None
+    input_id: str | None = None
+    #: ``in_flight``: the runtime input phase, and whether a committed store
+    #: row backs it (``False`` for a live-only row).
+    phase: Any = None
+    durable_witness: bool | None = None
+    #: ``completed``: as for :class:`TurnResult`.
+    output_status: str | None = None
+    output: str | None = None
+    output_truncated: bool = False
+    #: ``failed``.
+    error: str | None = None
+    #: ``terminal_without_run``.
+    terminal: Any = None
+    last_run_id: str | None = None
+    #: ``broken``.
+    reason: str | None = None
+    #: ``unresolved``: ``runtime_adapter_unavailable``,
+    #: ``original_session_unknown``, ``original_owner_unavailable`` or
+    #: ``evidence_read_timed_out``.
+    cause: str | None = None
+    detail: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ScopedRecovery:
+        recovery = data.get("recovery") if isinstance(data.get("recovery"), dict) else data
+        scope_raw = data.get("delivery_scope")
+        raw_state = str(recovery.get("state", "unresolved"))
+        try:
+            state = ScopedRecoveryState(raw_state)
+        except ValueError:
+            # A state this SDK does not know is unknown, never absence.
+            state = ScopedRecoveryState.UNRESOLVED
+        return cls(
+            state=state,
+            delivery_scope=(
+                DeliveryScope.from_dict(scope_raw) if isinstance(scope_raw, dict) else None
+            ),
+            input_id=recovery.get("input_id"),
+            phase=recovery.get("phase"),
+            durable_witness=recovery.get("durable_witness"),
+            output_status=recovery.get("output_status"),
+            output=recovery.get("output"),
+            output_truncated=bool(recovery.get("output_truncated", False)),
+            error=recovery.get("error"),
+            terminal=recovery.get("terminal"),
+            last_run_id=recovery.get("last_run_id"),
+            reason=recovery.get("reason"),
+            cause=(
+                recovery.get("cause")
+                if state is not ScopedRecoveryState.UNRESOLVED or raw_state == "unresolved"
+                else f"unknown_state:{raw_state}"
+            ),
+            detail=recovery.get("detail"),
         )
 
 

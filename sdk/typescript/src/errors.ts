@@ -77,6 +77,12 @@ export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
 export const STORAGE_RESOLUTION_CODE = -32014 as const;
 /** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
 export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
+/**
+ * A saved delivery scope no longer matches the identity's binding
+ * (`mobkit/dispatch` with `expected_scope`): nothing was submitted and
+ * nothing was retargeted.
+ */
+export const STALE_DELIVERY_SCOPE_CODE = -32006 as const;
 /** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
 export const WORKGRAPH_CONFLICT_CODE = -32042 as const;
 
@@ -151,6 +157,34 @@ export class LeaseLostError extends RpcError {
   ) {
     super(LEASE_LOST_CODE, message, requestId, method, data);
     this.name = "LeaseLostError";
+  }
+}
+
+/**
+ * Raised when a scoped dispatch's saved delivery scope no longer matches.
+ * Nothing was submitted and the delivery was not retargeted to the
+ * identity's current binding. `mismatch` names the atom that moved:
+ * `runtime_id`, `generation`, `lease_fencing_token`, `member` or
+ * `member_binding` (the member's session, incarnation or fence). Recover an
+ * earlier attempt under the same scope with `recoverDelivery`, never by
+ * redispatching to a fresh scope.
+ */
+export class StaleScopeError extends RpcError {
+  readonly mismatch: string | null;
+
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(STALE_DELIVERY_SCOPE_CODE, message, requestId, method, data);
+    this.name = "StaleScopeError";
+    const mismatch =
+      data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>).mismatch
+        : undefined;
+    this.mismatch = typeof mismatch === "string" ? mismatch : null;
   }
 }
 

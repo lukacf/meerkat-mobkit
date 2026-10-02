@@ -184,7 +184,9 @@ meerkat-schedule = { version = "=0.8.50" }
 # so a parity guard can assert the bundled adaptive layer-decision schema stays
 # Value-equal to meerkat's canonical one. Dev-dependency: not enabled in release
 # builds, so the production binary keeps the lean (no-schemars) meerkat-mob.
-meerkat-mob = { version = "=0.8.50", features = ["schema"] }
+# `test-support` (test-only) exposes the deterministic member-session rebind
+# the delivery-scope gates use to move a session under unchanged continuity.
+meerkat-mob = { version = "=0.8.50", features = ["schema", "test-support"] }
 # `test-realtime-fixtures` (test-only) exposes meerkat's shared
 # ScriptedRealtimeSessionFactory so the live-open cross-provider regression
 # tests (tests/gateway_live.rs) can observe the exact channel identity handed

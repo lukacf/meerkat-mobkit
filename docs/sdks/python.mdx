@@ -354,6 +354,48 @@ DispatchInput.connector("event from slack", correlation_id="msg-1")
 DispatchInput.scheduler("nightly sync")
 ```
 
+### Scope-bound dispatch
+
+A host that must never admit a delivery to a session other than the one it
+recorded captures the identity's scope from `status()`, persists it, and
+dispatches against it. A moved scope raises `StaleScopeError` with nothing
+submitted; a lost reply is recovered from the scope's original session.
+
+```python
+from meerkat_mobkit import DeliveryScope, ScopedRecoveryState, StaleScopeError
+
+status = await runtime.status("domain:calendar")
+scope = status.delivery_scope            # None: see status.delivery_scope_unavailable
+saved = scope.to_dict()                  # persist byte-exact before dispatching
+
+try:
+    result = await runtime.dispatch_text(
+        "domain:calendar", "occurrence 42",
+        idempotency_key="occ-42", correlation_id=correlation,
+        expected_scope=DeliveryScope.from_dict(saved),
+    )
+    result.receipt.stage                 # "ingress_accepted": not a durable-input claim
+except StaleScopeError as error:
+    error.mismatch                       # which atom moved; nothing was submitted
+
+recovery = await runtime.recover_delivery(
+    "domain:calendar", DeliveryScope.from_dict(saved),
+    idempotency_key="occ-42", correlation_id=correlation,
+)
+if recovery.state is ScopedRecoveryState.ABSENT:
+    ...                                  # a point-in-time miss, never permission to retry
+```
+
+`expected_scope` needs both `idempotency_key` and `correlation_id`, does not
+combine with `track_turn`, and applies no delivery preparation. A scope with
+an unknown `version` raises `ContractMismatchError` from
+`DeliveryScope.from_dict`; in `status()` it leaves `delivery_scope` `None` and
+the rest of the status usable. `recover_delivery` returns `ScopedRecovery`
+with `state` `ABSENT`, `IN_FLIGHT` (`durable_witness`), `COMPLETED`
+(`output_status`, `output`), `FAILED`, `TERMINAL_WITHOUT_RUN`, `BROKEN` or
+`UNRESOLVED` (`cause`); a state this SDK does not know reads as `UNRESOLVED`,
+never `ABSENT`. See [Scope-bound dispatch](/api/rpc#scope-bound-dispatch).
+
 ## Mob-Level API
 
 For direct mob-member operations (discovery-based), the mob handle API is still available.

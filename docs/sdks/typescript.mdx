@@ -95,6 +95,44 @@ A wait that ends before a completion (a failed or cancelled run, a Broken,
 retiring or deleted identity, or gateway shutdown) rejects with the typed
 `WaitEndedError`, whose `outcome` names why.
 
+## Scope-bound dispatch
+
+Capture the identity's scope from `status()`, persist it, and dispatch
+against it. A moved scope throws `StaleScopeError` with nothing submitted; a
+lost reply is recovered from the scope's original session.
+
+```typescript
+import { deliveryScopeToDict, parseDeliveryScope, StaleScopeError } from "@rkat/mobkit-sdk";
+
+const status = await runtime.status("domain:calendar");
+if (!status.deliveryScope) throw new Error(status.deliveryScopeUnavailable?.reason);
+const saved = deliveryScopeToDict(status.deliveryScope); // persist byte-exact
+
+try {
+  const { receipt } = await runtime.dispatch(
+    "domain:calendar",
+    { content: "occurrence 42", origin: "system", idempotencyKey: "occ-42", correlationId },
+    { expectedScope: parseDeliveryScope(saved) },
+  );
+  receipt.stage; // "ingress_accepted": not a durable-input claim
+} catch (error) {
+  if (error instanceof StaleScopeError) error.mismatch; // nothing was submitted
+}
+
+const recovery = await runtime.recoverDelivery("domain:calendar", parseDeliveryScope(saved), {
+  idempotencyKey: "occ-42",
+  correlationId,
+});
+// recovery.state: "absent" is a point-in-time miss, never permission to retry
+```
+
+`expectedScope` needs both keys, does not combine with `trackTurn`, and
+applies no delivery preparation. `parseDeliveryScope` throws
+`ContractMismatchError` for an unknown scope `version`; `status()` then
+leaves `deliveryScope` `null` and the rest usable. An unknown recovery state
+reads as `unresolved`, never `absent`. See
+[Scope-bound dispatch](/api/rpc#scope-bound-dispatch).
+
 ## Durable detached tools
 
 Long-running host work must declare detached execution rather than keeping a

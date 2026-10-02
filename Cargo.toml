@@ -150,3 +150,44 @@ opt-level = 0
 
 [profile.release.package.meerkat-live]
 opt-level = 0
+
+# TEMPORARY, DRAFT-ONLY: pins the Meerkat family to lukacf/meerkat branch
+# feat/delivery-scope-correctness (meerkat PR #1477, on release/0.8.51) until
+# it is released. This PR cannot merge with this block: remove it and repin to
+# the published meerkat release carrying #1477 (0.8.51) before leaving draft.
+[patch.crates-io]
+meerkat = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-anthropic = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-auth-core = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-capabilities = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-client = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-comms = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-copilot = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-core = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-gemini = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-hooks = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-jobs = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-live = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-machine-derive = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-machine-dsl = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-machine-dsl-core = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-machine-kernels = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-machine-schema = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-memory = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-models = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-providers = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-schedule = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-skills = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-sqlite = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }
+meerkat-workgraph = { git = "https://github.com/lukacf/meerkat", branch = "feat/delivery-scope-correctness" }

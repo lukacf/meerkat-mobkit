@@ -115,6 +115,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The generic identity-bridge submit with a stable delivery identity now
+  goes through meerkat's scope-bound bounded submit: it captures the
+  member's current scope immediately before submitting, which is the binding
+  it always targeted. A session rotation landing between that capture and
+  admission is refused typed (`StaleDeliveryScope`) instead of admitting to
+  the replacement session. A member with no session binding (a remotely
+  hosted peer) keeps meerkat's unscoped delivery-identity submit, bounded by
+  the same admission deadline.
+
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
   Any other peer's or scheduled turn can satisfy the identity-wide wait used
@@ -318,6 +327,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   paths.
 
 ### Added
+
+- Scope-bound internal dispatch (requires the meerkat release carrying
+  `MemberDeliveryScope`). `mobkit/status_identity` gains `delivery_scope`, a
+  versioned scope (`version: 1`) a host persists before it dispatches: the
+  identity's runtime id, generation and lease fencing token plus meerkat's
+  own versioned member scope (runtime incarnation, fence and session), or
+  `null` with `delivery_scope_unavailable: {kind, reason}`. `mobkit/dispatch`
+  accepts `expected_scope`: exact content to the session the scope pins,
+  with a required full `idempotency_key` + `correlation_id` pair used
+  verbatim. The scoped path never materializes, repairs, retargets or
+  prepares the delivery (no defang, ambient memory or injected context) and
+  does not combine with `track_turn`. It returns the native receipt
+  (`receipt: {work_ref, stage, session_id}`, `stage` = `ingress_accepted`,
+  never a durable-input claim) or a typed refusal: a moved scope is the new
+  `-32006` stale-delivery-scope error with `data.mismatch` (`runtime_id`,
+  `generation`, `lease_fencing_token`, `member` or `member_binding`); a
+  bridge without the scoped seam is `-32004`; every refusal carries
+  `data.kind` and `data.admission_possible` (true only for
+  `scoped_delivery_uncertain`). New `mobkit/recover_delivery` reads one
+  delivery's state from the scope's ORIGINAL session ledger only:
+  `absent` (an authoritative point-in-time miss, never permission to retry),
+  `in_flight` (with `durable_witness`), `completed`, `failed`,
+  `terminal_without_run`, `broken` or `unresolved` (`cause`); it never
+  resubmits. Rust: `IdentityRuntime::{capture_delivery_scope,
+  dispatch_at_scope, recover_at_scope}`, `DeliveryScope` (decoding an unknown
+  version is the typed `DeliveryScopeError::UnsupportedVersion`),
+  `ScopedDeliveryError`, `ScopedDispatchReceipt` and `ScopedRecovery`.
+  `SessionBridge` gains `capture_member_delivery_scope`, `submit_at_scope`
+  and `recover_at_scope`, defaulting to the typed `Unsupported` refusal, so
+  custom and remote bridges are unsupported until they opt in;
+  `MobSessionBridge` implements them on meerkat's scoped APIs. A member
+  with no native session binding (remotely hosted or peer-only) is refused
+  `Unsupported` on capture, dispatch and recovery; the scoped path never
+  falls back to the unscoped submit. Python:
+  `DeliveryScope` (from `status()`; an unknown version raises
+  `ContractMismatchError` and leaves the rest of the status usable),
+  `dispatch(..., expected_scope=)` / `dispatch_text(..., expected_scope=)`
+  returning `ScopedDispatchResult` with its `DeliveryReceipt`,
+  `recover_delivery(...)` returning `ScopedRecovery` / `ScopedRecoveryState`,
+  and `StaleScopeError` (`mismatch`). TypeScript: the same surface
+  (`parseDeliveryScope`, `deliveryScopeToDict`, `dispatch(..., {
+  expectedScope })`, `recoverDelivery`, `StaleScopeError`).
 
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)

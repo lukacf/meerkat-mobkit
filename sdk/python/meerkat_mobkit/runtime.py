@@ -26,6 +26,7 @@ from .errors import (
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
+    STALE_DELIVERY_SCOPE_CODE,
     STORAGE_RESOLUTION_CODE,
     WORKGRAPH_CONFLICT_CODE,
     WORKGRAPH_UNAVAILABLE_CODE,
@@ -37,6 +38,7 @@ from .errors import (
     MobEventsStaleError,
     NotConnectedError,
     RpcError,
+    StaleScopeError,
     StorageResolutionError,
     TransportError,
     WorkGraphConflictError,
@@ -189,6 +191,14 @@ def _rpc_error_from_payload(
     if code == LEASE_LOST_CODE:
         return LeaseLostError(
             message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == STALE_DELIVERY_SCOPE_CODE:
+        return StaleScopeError(
+            message,
+            mismatch=(data.get("mismatch") if isinstance(data, dict) else None),
             request_id=request_id,
             method=method,
             data=data,
@@ -862,20 +872,65 @@ class MobKitRuntime:
         dispatch_input: Any,
         *,
         track_turn: bool = False,
+        expected_scope: Any = None,
     ) -> Any:
         """Dispatch content to any identity (addressable or internal).
 
         ``track_turn`` as for :meth:`send`.
+
+        With ``expected_scope`` (a :class:`DeliveryScope` from :meth:`status`,
+        persisted beforehand) the dispatch is scope-bound: exact content to the
+        session the scope pins, never materialized, repaired, retargeted or
+        prepared. It needs both ``idempotency_key`` and ``correlation_id``,
+        does not combine with ``track_turn``, returns a
+        :class:`ScopedDispatchResult` carrying the admission receipt, and
+        raises :class:`StaleScopeError` when the scope moved. Recover a lost
+        reply with :meth:`recover_delivery` and the same scope.
         """
-        from .identity_first_models import DispatchResult
+        from .identity_first_models import DispatchResult, ScopedDispatchResult
         params: dict[str, Any] = {
             "identity": identity,
             "dispatch_input": dispatch_input.to_dict(),
         }
+        if expected_scope is not None:
+            if track_turn:
+                raise ValueError("expected_scope does not combine with track_turn")
+            params["expected_scope"] = expected_scope.to_dict()
+            raw = await self._rpc("mobkit/dispatch", params)
+            return ScopedDispatchResult.from_dict(raw) if isinstance(raw, dict) else raw
         if track_turn:
             params["track_turn"] = True
         raw = await self._rpc("mobkit/dispatch", params)
         return DispatchResult.from_dict(raw) if isinstance(raw, dict) else raw
+
+    async def recover_delivery(
+        self,
+        identity: str,
+        scope: Any,
+        *,
+        idempotency_key: str,
+        correlation_id: str,
+        timeout: float | None = None,
+    ) -> Any:
+        """Read one scoped delivery's state from the scope's ORIGINAL session.
+
+        Never reads the identity's current session and never resubmits.
+        ``ABSENT`` is an authoritative point-in-time miss and ``UNRESOLVED``
+        an unreachable original owner; neither is permission to retry.
+        ``timeout`` bounds the evidence read (seconds; gateway default when
+        ``None``).
+        """
+        from .identity_first_models import ScopedRecovery
+        params: dict[str, Any] = {
+            "identity": identity,
+            "scope": scope.to_dict(),
+            "idempotency_key": idempotency_key,
+            "correlation_id": correlation_id,
+        }
+        if timeout is not None:
+            params["timeout_ms"] = max(0, int(timeout * 1000))
+        raw = await self._rpc("mobkit/recover_delivery", params)
+        return ScopedRecovery.from_dict(raw) if isinstance(raw, dict) else raw
 
     async def dispatch_text(
         self,
@@ -886,17 +941,20 @@ class MobKitRuntime:
         correlation_id: str | None = None,
         idempotency_key: str | None = None,
         track_turn: bool = False,
+        expected_scope: Any = None,
     ) -> Any:
         """Dispatch plain text; supply correlation and idempotency keys together.
 
-        ``track_turn`` as for :meth:`send`.
+        ``track_turn`` and ``expected_scope`` as for :meth:`dispatch`.
         """
         from .identity_first_models import DispatchInput
         di = DispatchInput(
             content=text, origin=origin, correlation_id=correlation_id,
             idempotency_key=idempotency_key,
         )
-        return await self.dispatch(identity, di, track_turn=track_turn)
+        return await self.dispatch(
+            identity, di, track_turn=track_turn, expected_scope=expected_scope,
+        )
 
     async def turn_result(self, identity: str, ticket: str) -> Any:
         """Read one ticketed turn (``mobkit/turn_result``): its state and,
@@ -1251,10 +1309,20 @@ class IdentityAgentHandle:
         """Send conversational content (Addressable only)."""
         return await self._runtime.send(self._identity, content, track_turn=track_turn)
 
-    async def dispatch(self, dispatch_input: Any, *, track_turn: bool = False) -> Any:
-        """Dispatch with a DispatchInput object."""
+    async def dispatch(
+        self,
+        dispatch_input: Any,
+        *,
+        track_turn: bool = False,
+        expected_scope: Any = None,
+    ) -> Any:
+        """Dispatch with a DispatchInput object (``expected_scope`` as for
+        :meth:`MobKitRuntime.dispatch`)."""
         return await self._runtime.dispatch(
-            self._identity, dispatch_input, track_turn=track_turn,
+            self._identity,
+            dispatch_input,
+            track_turn=track_turn,
+            expected_scope=expected_scope,
         )
 
     async def dispatch_text(
@@ -1265,6 +1333,7 @@ class IdentityAgentHandle:
         correlation_id: str | None = None,
         idempotency_key: str | None = None,
         track_turn: bool = False,
+        expected_scope: Any = None,
     ) -> Any:
         """Dispatch plain text without constructing DispatchInput."""
         return await self._runtime.dispatch_text(
@@ -1274,6 +1343,25 @@ class IdentityAgentHandle:
             correlation_id=correlation_id,
             idempotency_key=idempotency_key,
             track_turn=track_turn,
+            expected_scope=expected_scope,
+        )
+
+    async def recover_delivery(
+        self,
+        scope: Any,
+        *,
+        idempotency_key: str,
+        correlation_id: str,
+        timeout: float | None = None,
+    ) -> Any:
+        """Recover one scoped delivery of this identity (see
+        :meth:`MobKitRuntime.recover_delivery`)."""
+        return await self._runtime.recover_delivery(
+            self._identity,
+            scope,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+            timeout=timeout,
         )
 
     async def turn_result(self, ticket: str) -> Any:
