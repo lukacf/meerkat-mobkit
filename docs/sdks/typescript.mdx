@@ -413,7 +413,9 @@ already have changed native state, so the SDK never retries it automatically
 and asks the gateway to shut down.
 
 Provider callbacks that run during startup must not call ordinary runtime
-RPCs on the same runtime. Ordinary dispatch starts only after init settles.
+RPCs on the same runtime. Ordinary dispatch starts only after init settles,
+and the gateway refuses an earlier request at once with `InitInProgressError`
+(`-32018`, exported as `INIT_IN_PROGRESS_CODE`).
 
 ## HTTP transport timeout
 

@@ -190,3 +190,50 @@ def test_written_callback_response_is_strict_json():
 
     line = process.stdin.write.call_args.args[0].decode("utf-8")
     assert json.loads(line, parse_constant=lambda token: pytest.fail(f"non-JSON token {token}"))
+
+
+def test_callback_response_is_written_before_queued_requests():
+    """A callback response waits only for the line being written, never
+    behind requests queued for the pipe (#550 head-of-line)."""
+    transport = PersistentTransport("unused")
+    first_write_started = threading.Event()
+    release_first_write = threading.Event()
+    written: list[str] = []
+
+    def write(data: bytes) -> None:
+        line = json.loads(data.decode("utf-8"))
+        written.append(line["id"])
+        if line["id"] == "req-1":
+            first_write_started.set()
+            assert release_first_write.wait(timeout=5)
+
+    process = MagicMock()
+    process.stdin.write.side_effect = write
+    transport._process = process
+
+    first = threading.Thread(
+        target=transport._write_line, args=({"jsonrpc": "2.0", "id": "req-1", "method": "m"},)
+    )
+    first.start()
+    assert first_write_started.wait(timeout=5)
+    # A second request queues behind the blocked write, then a callback
+    # response arrives.
+    second = threading.Thread(
+        target=transport._write_line, args=({"jsonrpc": "2.0", "id": "req-2", "method": "m"},)
+    )
+    second.start()
+    while not transport._write_cond._waiters:  # the second request is waiting its turn
+        threading.Event().wait(0.001)
+    response = threading.Thread(
+        target=transport._write_line,
+        args=({"jsonrpc": "2.0", "id": "cb-1", "result": {}},),
+        kwargs={"callback_response": True},
+    )
+    response.start()
+    while transport._priority_writers_waiting == 0:
+        threading.Event().wait(0.001)
+    release_first_write.set()
+    for thread in (first, second, response):
+        thread.join(timeout=5)
+
+    assert written == ["req-1", "cb-1", "req-2"]

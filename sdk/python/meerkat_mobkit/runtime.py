@@ -27,12 +27,14 @@ from .errors import (
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
     STORAGE_RESOLUTION_CODE,
+    INIT_IN_PROGRESS_CODE,
     WORKGRAPH_CONFLICT_CODE,
     WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     ConsoleTimelineReplayUnavailableError,
     LeaseLostError,
+    InitInProgressError,
     InitOutcomeUnknownError,
     MemoryBackendUnavailableError,
     MobEventsStaleError,
@@ -230,6 +232,13 @@ def _rpc_error_from_payload(
         )
     if code == STORAGE_RESOLUTION_CODE:
         return StorageResolutionError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == INIT_IN_PROGRESS_CODE:
+        return InitInProgressError(
             message,
             request_id=request_id,
             method=method,

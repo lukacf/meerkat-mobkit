@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  INIT_IN_PROGRESS_CODE,
+  InitInProgressError,
   InitOutcomeUnknownError,
   MobKit,
   MobKitRuntime,
@@ -279,5 +281,29 @@ describe("mobkit/init accepted then settled", () => {
     }
     assert.equal((builder.initDeadline(null) as any)._config.initDeadlineMs, null);
     assert.equal((builder.initDeadline(2000) as any)._config.initDeadlineMs, 2000);
+  });
+});
+
+describe("init in progress refusal", () => {
+  it("maps -32018 to the typed InitInProgressError", async () => {
+    const { bin } = gateway(`
+      emit({ jsonrpc: "2.0", id: init.id, result: { http_base_url: "http://127.0.0.1:5" } });
+      const request = await next();
+      emit({ jsonrpc: "2.0", id: request.id, error: { code: -32018, message: "mobkit/status refused: mobkit/init has not settled yet",
+        data: { kind: "init_in_progress", method: "mobkit/status" } } });
+      await new Promise(() => {});
+    `);
+    const rt = runtime(bin);
+    try {
+      await rt.connect();
+      await assert.rejects((rt as any)._rpcUnchecked("mobkit/status", {}), (error: any) => {
+        assert.ok(error instanceof InitInProgressError);
+        assert.equal(error.code, INIT_IN_PROGRESS_CODE);
+        assert.equal(error.data.kind, "init_in_progress");
+        return true;
+      });
+    } finally {
+      await rt.shutdown();
+    }
   });
 });

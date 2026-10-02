@@ -402,3 +402,63 @@ fn shutdown_during_init_settles_failed_after_cleanup_then_is_answered() {
     );
     gateway.wait_exit();
 }
+
+#[test]
+fn ordinary_request_during_init_is_refused_at_once_and_served_after_ready() {
+    let mut gateway = Gateway::spawn();
+    gateway.init(json!({
+        "init_protocol": "accepted_then_settled", "init_id": "init-t6",
+        "has_roster_provider": true,
+    }));
+    assert_eq!(gateway.next("accepted")["result"]["init_state"], "accepted");
+    // While the identity roster callback is held (init cannot progress), an
+    // ordinary request - what a reentrant provider callback would send - is
+    // answered at once with the typed refusal instead of queueing behind init.
+    let mut roster_calls = 0;
+    let held = loop {
+        let message = gateway.next("the identity roster callback");
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let id = message.get("id").cloned();
+        match (method.as_deref(), id) {
+            (Some("callback/roster_provider/roster"), Some(id)) => {
+                roster_calls += 1;
+                if roster_calls == 2 {
+                    break id;
+                }
+                gateway.send(json!({ "jsonrpc": "2.0", "id": id, "result": [] }));
+            }
+            (Some(method), Some(id)) => gateway.send(
+                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": method } }),
+            ),
+            _ => {}
+        }
+    };
+    gateway.send(
+        json!({ "jsonrpc": "2.0", "id": "reentrant", "method": "mobkit/status", "params": {} }),
+    );
+    let refusal = gateway.next("the init-in-progress refusal");
+    assert_eq!(
+        refusal["id"], "reentrant",
+        "answered before the held callback: {refusal}"
+    );
+    assert_eq!(
+        refusal["error"]["code"],
+        meerkat_mobkit::INIT_IN_PROGRESS_CODE
+    );
+    assert_eq!(refusal["error"]["data"]["kind"], "init_in_progress");
+
+    gateway.send(json!({ "jsonrpc": "2.0", "id": held, "result": [] }));
+    let seen = gateway.read_until("the ready settlement", |_| None, is_settled);
+    assert_eq!(seen.last().unwrap()["params"]["outcome"], "ready");
+    gateway
+        .send(json!({ "jsonrpc": "2.0", "id": "after", "method": "mobkit/status", "params": {} }));
+    let served = gateway.read_until("the status answer", |_| None, |m| m["id"] == "after");
+    let status = served.last().unwrap();
+    assert!(
+        status.get("result").is_some(),
+        "served after init settled: {status}"
+    );
+}

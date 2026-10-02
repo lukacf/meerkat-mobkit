@@ -20,6 +20,10 @@ CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
 # failure. The message carries the remediation (the storage doctor, or the
 # explicit ephemeral declaration).
 STORAGE_RESOLUTION_CODE: int = -32014
+# An ordinary request sent before mobkit/init settled: the stdio gateway
+# refuses it at once instead of queueing it behind startup (a provider
+# callback awaiting it during init would wait on itself).
+INIT_IN_PROGRESS_CODE: int = -32018
 # WorkGraph service not configured on the runtime.
 WORKGRAPH_UNAVAILABLE_CODE: int = -32041
 # WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
@@ -246,6 +250,32 @@ class StorageResolutionError(RpcError):
     ):
         super().__init__(
             STORAGE_RESOLUTION_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class InitInProgressError(RpcError):
+    """An ordinary request reached the gateway before ``mobkit/init`` settled.
+
+    The gateway serves ordinary requests only after init settles and refuses
+    earlier ones at once. A startup provider callback (roster, topology,
+    continuity, lease, session builder, customizer) must not issue ordinary
+    runtime RPCs on the runtime that is starting.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            INIT_IN_PROGRESS_CODE,
             message,
             request_id=request_id,
             method=method,

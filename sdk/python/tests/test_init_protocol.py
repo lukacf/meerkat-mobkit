@@ -293,3 +293,27 @@ async def test_long_prewarm_past_the_callback_bound_settles_ready(tmp_path, monk
         if not connect.done():
             connect.cancel()
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_init_in_progress_refusal_is_typed(tmp_path):
+    from meerkat_mobkit import INIT_IN_PROGRESS_CODE, InitInProgressError
+
+    script = _gateway(tmp_path, "refuses_during_init", """
+        emit({"jsonrpc": "2.0", "id": init["id"], "result": {"http_base_url": "http://127.0.0.1:5"}})
+        request = json.loads(sys.stdin.readline())
+        emit({"jsonrpc": "2.0", "id": request["id"], "error": {
+            "code": -32018, "message": "mobkit/status refused: mobkit/init has not settled yet",
+            "data": {"kind": "init_in_progress", "method": "mobkit/status"}}})
+        for raw in sys.stdin:
+            pass
+    """)
+    runtime = _runtime(script)
+    try:
+        await runtime.connect()
+        with pytest.raises(InitInProgressError) as raised:
+            await runtime._rpc("mobkit/status")
+        assert raised.value.code == INIT_IN_PROGRESS_CODE
+        assert raised.value.data["kind"] == "init_in_progress"
+    finally:
+        await runtime.shutdown()

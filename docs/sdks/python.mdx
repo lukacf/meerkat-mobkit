@@ -747,7 +747,9 @@ and asks the gateway to shut down.
 
 Provider callbacks that run during startup (roster, topology, continuity,
 lease, session builder, customizer) must not call ordinary runtime RPCs on the
-same runtime. Ordinary dispatch starts only after init settles.
+same runtime. Ordinary dispatch starts only after init settles, and the
+gateway refuses an earlier request at once with `InitInProgressError`
+(`-32018`, exported as `INIT_IN_PROGRESS_CODE`).
 
 ## Gateway logging (stderr)
 

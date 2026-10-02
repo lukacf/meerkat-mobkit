@@ -116,6 +116,12 @@ export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
  * explicit ephemeral declaration).
  */
 export const STORAGE_RESOLUTION_CODE = -32014 as const;
+/**
+ * An ordinary request sent before `mobkit/init` settled: the stdio gateway
+ * refuses it at once instead of queueing it behind startup (a provider
+ * callback awaiting it during init would wait on itself).
+ */
+export const INIT_IN_PROGRESS_CODE = -32018 as const;
 /** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
 export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
 /** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
@@ -240,6 +246,24 @@ export class StorageResolutionError extends RpcError {
   ) {
     super(STORAGE_RESOLUTION_CODE, message, requestId, method, data);
     this.name = "StorageResolutionError";
+  }
+}
+
+/**
+ * An ordinary request reached the gateway before `mobkit/init` settled. The
+ * gateway serves ordinary requests only after init settles and refuses
+ * earlier ones at once; startup provider callbacks must not issue ordinary
+ * runtime RPCs on the runtime that is starting.
+ */
+export class InitInProgressError extends RpcError {
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(INIT_IN_PROGRESS_CODE, message, requestId, method, data);
+    this.name = "InitInProgressError";
   }
 }
 
