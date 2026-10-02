@@ -545,6 +545,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- SDK transports (Python and TypeScript) no longer leave a request or a
+  gateway callback waiting out its deadline because one stdout or stdin line
+  was bad (#550):
+  - The Python reader skips a line that is not UTF-8 or not a JSON object.
+    Before, such a line ended the reader thread, so every waiter hung to its
+    timeout and every gateway callback to its 130 s deadline. The TypeScript
+    reader skips a line that is not a JSON object instead of throwing from its
+    listener.
+  - Any reader exit now fails every waiter with the typed
+    `TransportReaderFailedError` (a `TransportError` with a `reason`), and later
+    requests to the same gateway process fail at once. Before, a gateway that
+    closed its stdout answered waiters with an untyped `-32099 "subprocess
+    died"` RPC error. A response that arrived before the exit (such as a
+    fail-closed `mobkit/init` refusal) still reaches its waiter.
+  - A callback result containing NaN or Infinity is answered with a typed
+    error (`data.kind: "non_finite_result"`). Before, Python wrote a `NaN`
+    token the gateway could not parse, so the callback waited out its deadline,
+    and TypeScript silently sent `null`. The Python transport writes strict
+    JSON only (`allow_nan=False`).
+  - A callback request that arrives with no registered handler is answered at
+    once with a typed error (`data.kind: "callback_handler_unavailable"`)
+    instead of no reply.
+  - The gateway logs a stdin line that is not valid JSON (its length and any
+    callback id, never its content). When it is a reply to a pending callback,
+    that callback now fails at once with "malformed callback response" instead
+    of waiting out its 130 s deadline.
+
 - Console: queued rows that did not go through now say what happened in
   plain words. A refused row reads "Not sent: this message never reached
   <agent>." with Send again and Discard; a row whose answer was lost reads

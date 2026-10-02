@@ -5585,6 +5585,61 @@ comms = true
         assert!(bridge.state.lock().await.pending.is_empty());
     }
 
+    #[test]
+    fn malformed_callback_response_id_reads_only_a_top_level_cb_id() {
+        for (line, expected) in [
+            (
+                r#"{"jsonrpc":"2.0","id":"cb-7","result":{"weight":NaN}}"#,
+                Some("cb-7"),
+            ),
+            (
+                r#"{"jsonrpc":"2.0","result":{"x":Infinity},"id" : "cb-12"}"#,
+                Some("cb-12"),
+            ),
+            (r#"{"jsonrpc":"2.0","id":"req-1","result":NaN}"#, None),
+            (r#"{"jsonrpc":"2.0","id":"cb-","result":NaN}"#, None),
+            (r#"{"jsonrpc":"2.0","id":"cb-4x","result":NaN}"#, None),
+            (
+                r#"{"method":"m","params":{"text":"{\"id\":\"cb-3\"}"},NaN}"#,
+                None,
+            ),
+            ("not json at all", None),
+        ] {
+            assert_eq!(
+                malformed_callback_response_id(line).as_deref(),
+                expected,
+                "line: {line}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_callback_response_fails_its_callback_at_once() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call("callback/roster_provider/roster", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        let request: Value = serde_json::from_str(
+            &stdout_rx
+                .recv()
+                .await
+                .expect("callback request")
+                .to_string(),
+        )
+        .expect("request json");
+        let id = request["id"].as_str().expect("callback id").to_string();
+        let reply = format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{{"weight":NaN}}}}"#);
+        assert!(serde_json::from_str::<Value>(&reply).is_err());
+
+        let recovered = malformed_callback_response_id(&reply).expect("recoverable cb id");
+        bridge.fail_malformed_callback_response(&recovered).await;
+
+        // No time passes: the callback fails now, not at its 130 s deadline.
+        let error = call.await.expect_err("malformed reply fails the callback");
+        assert!(error.contains("malformed callback response"), "{error}");
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn callback_blocked_stdout_times_out_without_enqueuing_or_leaking_pending() {
         let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
@@ -8357,6 +8412,34 @@ async fn write_gateway_stdout_line(line: &mut GatewayStdoutLine) -> bool {
         .is_ok()
 }
 
+/// The `cb-<n>` id of a stdin line that failed to parse, when the line is a
+/// callback response whose top-level `"id"` member is still readable. Only an
+/// unescaped `"id"` key counts, so a `cb-` string inside escaped content
+/// (a user message quoting JSON) does not match.
+fn malformed_callback_response_id(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = line[from..].find("\"id\"") {
+        let key = from + offset;
+        from = key + 4;
+        if key > 0 && bytes[key - 1] == b'\\' {
+            continue;
+        }
+        let rest = line[key + 4..].trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("\"cb-") else {
+            continue;
+        };
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with('"') {
+            return Some(format!("cb-{digits}"));
+        }
+    }
+    None
+}
+
 /// Shared handle for sending lines to stdout and receiving callback responses.
 #[derive(Clone)]
 struct StdioCallbackBridge {
@@ -8765,6 +8848,22 @@ impl StdioCallbackBridge {
     }
 
     /// Route an incoming callback response (has "id" starting with "cb-").
+    /// Fail one pending callback whose SDK reply could not be parsed (for
+    /// example a `NaN` token), instead of letting it wait out its deadline.
+    async fn fail_malformed_callback_response(&self, id: &str) {
+        if let Some(tx) = self.state.lock().await.pending.remove(id) {
+            let _ = tx.send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32700,
+                    "message": "malformed callback response: the SDK's reply was not valid JSON \
+                                (for example a NaN or Infinity number)",
+                },
+            }));
+        }
+    }
+
     async fn route_callback_response(&self, msg: Value) {
         let id = msg
             .get("id")
@@ -11717,7 +11816,23 @@ external_addressable = true
                 }
                 let msg: Value = match serde_json::from_str(trimmed) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(error) => {
+                        // Never skip silently: a reply the SDK meant for a
+                        // callback would leave that callback waiting out its
+                        // full deadline. Fail it now when its id is readable.
+                        // The line itself is not logged (it may carry data).
+                        let callback_id = malformed_callback_response_id(trimmed);
+                        tracing::warn!(
+                            %error,
+                            bytes = trimmed.len(),
+                            callback_id = callback_id.as_deref().unwrap_or("none"),
+                            "skipping a stdin line that is not valid JSON"
+                        );
+                        if let Some(id) = callback_id {
+                            bridge.fail_malformed_callback_response(&id).await;
+                        }
+                        continue;
+                    }
                 };
                 // Callback responses: "id" starts with "cb-" and no "method"
                 let is_callback_response = msg

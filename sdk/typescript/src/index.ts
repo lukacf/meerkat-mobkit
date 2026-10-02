@@ -159,6 +159,7 @@ export { CallbackDispatcher } from "./agent-builder.js";
 export {
   MobKitError,
   TransportError,
+  TransportReaderFailedError,
   RpcError,
   MobEventsStaleError,
   MOB_EVENTS_STALE_CURSOR_CODE,
