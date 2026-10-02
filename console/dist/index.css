@@ -10789,8 +10789,8 @@ svg[data-svg=fit],
 }
 .msg:hover .msg__copy,
 .msg:focus-within .msg__copy,
-.conv__body:hover > .msg__copy--transcript,
-.conv__body:focus-within > .msg__copy--transcript {
+.conv__body:hover > .conv__tools > .msg__copy,
+.conv__body:focus-within > .conv__tools > .msg__copy {
   opacity: 1;
 }
 .msg__copy:hover:not(:disabled),
@@ -10806,11 +10806,59 @@ svg[data-svg=fit],
   color: var(--ok);
   border-color: color-mix(in oklch, var(--ok) 38%, var(--line));
 }
-.msg__copy--transcript {
+.conv__tools {
   position: sticky;
   top: 2px;
+  z-index: 2;
   align-self: flex-end;
+  display: flex;
+  gap: 4px;
   margin-bottom: -32px;
+}
+.conv__tools > .msg__copy {
+  position: static;
+}
+.conv__find {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg-elev-1);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+}
+.conv__find input {
+  width: 220px;
+  font: inherit;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+}
+.conv__find-count {
+  min-width: 64px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.conv__find button {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.conv__find button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+::highlight(transcript-find) {
+  background-color: color-mix(in oklch, var(--warn, #f5c542) 55%, transparent);
+  color: inherit;
 }
 .msg__copy--head {
   position: static;

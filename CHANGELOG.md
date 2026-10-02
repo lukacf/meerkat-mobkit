@@ -860,6 +860,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
 
+- Console: Find in transcript searches every loaded message, including turns
+  the windowed transcript keeps out of the DOM where the browser's
+  find-in-page cannot reach. Open it from the search button beside Copy
+  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
+  step through matching rows (newest first), each brought into view (and
+  revealed when it is behind Show earlier messages) and highlighted with
+  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
+
 - Console: browser find-in-page and keyboard and screen-reader navigation
   still reach the windowed transcript. Measured turns within 20 turns of the
   mounted window stay in the DOM, parked as `hidden="until-found"` at their

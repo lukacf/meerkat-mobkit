@@ -376,6 +376,118 @@ function isScaffoldUserText(text: string): boolean {
     || /^\[peer update\]/i.test(normalized);
 }
 
+/// Rows whose text contains `query` (case-insensitive), in transcript order:
+/// the in-app Find in transcript, over every loaded message whether or not
+/// its turn is mounted (the windowed transcript keeps far turns out of the DOM
+/// and out of reach of the browser's find-in-page).
+export function transcriptFindMatches(messages: readonly Msg[], query: string): string[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  const rows: string[] = [];
+  for (const message of messages) {
+    const text = message.kind === "event" || message.kind === "origin"
+      ? `${message.source?.sentence ?? ""} ${msgCopyText(message)}`
+      : msgCopyText(message);
+    if (text.toLocaleLowerCase().includes(needle)) rows.push(message.scrollRowId ?? message.id);
+  }
+  return rows;
+}
+
+const FIND_HIGHLIGHT = "transcript-find";
+
+/// Highlight every occurrence of `query` in a mounted row (CSS Custom
+/// Highlight API, so the row's DOM is untouched). False until the row is
+/// mounted.
+function highlightRow(body: HTMLElement, rowId: string, query: string): boolean {
+  const registry = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+  const row = [...body.querySelectorAll<HTMLElement>("[data-conversation-row-id]")]
+    .find((candidate) => candidate.dataset.conversationRowId === rowId);
+  if (!row) return false;
+  if (!registry || !HighlightCtor) return true;
+  const needle = query.trim().toLocaleLowerCase();
+  const ranges: Range[] = [];
+  const walker = body.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.textContent ?? "").toLocaleLowerCase();
+    for (let at = text.indexOf(needle); needle && at >= 0; at = text.indexOf(needle, at + needle.length)) {
+      const range = body.ownerDocument.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + needle.length);
+      ranges.push(range);
+    }
+  }
+  registry.set(FIND_HIGHLIGHT, new HighlightCtor(...ranges));
+  return true;
+}
+
+function clearFindHighlight() {
+  (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights?.delete(FIND_HIGHLIGHT);
+}
+
+function TranscriptFindBar({
+  identity,
+  messages,
+  bodyRef,
+  onJump,
+  onClose,
+}: {
+  identity: string;
+  messages: readonly Msg[];
+  bodyRef: React.RefObject<HTMLDivElement | null>;
+  onJump: (rowId: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const matches = React.useMemo(() => transcriptFindMatches(messages, query), [messages, query]);
+  // The newest match first: a transcript is read back from the live edge.
+  const [current, setCurrent] = React.useState(-1);
+  React.useEffect(() => { setCurrent(matches.length ? matches.length - 1 : -1); }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
+  const target = current >= 0 && current < matches.length ? matches[current] : null;
+  React.useEffect(() => {
+    if (!target) { clearFindHighlight(); return; }
+    onJump(target);
+    // The jump can mount (or reveal) the row a few frames later.
+    let frames = 0;
+    let handle = 0;
+    const tryHighlight = () => {
+      const body = bodyRef.current;
+      if (!body || highlightRow(body, target, query) || ++frames > 30) return;
+      handle = window.requestAnimationFrame(tryHighlight);
+    };
+    handle = window.requestAnimationFrame(tryHighlight);
+    return () => window.cancelAnimationFrame(handle);
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => clearFindHighlight, []);
+  const step = (delta: number) => {
+    if (!matches.length) return;
+    setCurrent((index) => ((index < 0 ? 0 : index) + delta + matches.length) % matches.length);
+  };
+  return (
+    <div className="conv__find" role="search" aria-label="Find in transcript">
+      <input
+        aria-label="Find in transcript"
+        autoFocus
+        data-testid={`chat-find:${identity}`}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
+          if (event.key === "Escape") { event.preventDefault(); onClose(); }
+        }}
+        placeholder="Find in transcript"
+        type="search"
+        value={query}
+      />
+      <span aria-live="polite" className="conv__find-count" data-testid={`chat-find-count:${identity}`}>
+        {query.trim() ? (matches.length ? `${current + 1} of ${matches.length}` : "No matches") : ""}
+      </span>
+      <button aria-label="Previous match" disabled={!matches.length} onClick={() => step(-1)} type="button">↑</button>
+      <button aria-label="Next match" disabled={!matches.length} onClick={() => step(1)} type="button">↓</button>
+      <button aria-label="Close find" onClick={onClose} type="button">×</button>
+    </div>
+  );
+}
+
 function transcriptCopyText(messages: Msg[]): string {
   return messages
     .map((message) => {
@@ -1318,6 +1430,7 @@ const TranscriptView = React.memo(function TranscriptView({
   conversationId,
   turnWindow,
   onTranscriptKeyDown,
+  onOpenFind,
 }: {
   identity: string;
   agentLabel: string;
@@ -1342,6 +1455,7 @@ const TranscriptView = React.memo(function TranscriptView({
   /** Mounted turns and spacers for `turns.slice(windowStart)`. */
   turnWindow: TurnWindow;
   onTranscriptKeyDown: React.KeyboardEventHandler<HTMLDivElement>;
+  onOpenFind: () => void;
 }) {
   countRender("TranscriptView");
   const windowedTurns = React.useMemo(
@@ -1414,11 +1528,22 @@ const TranscriptView = React.memo(function TranscriptView({
       role="feed"
       tabIndex={0}
     >
-      <CopyInlineButton
-        className="msg__copy--transcript"
-        label="Copy transcript"
-        getText={getTranscriptText}
-      />
+      <div className="conv__tools">
+        <button
+          aria-label="Find in transcript"
+          className="msg__copy"
+          data-testid={`chat-find-open:${identity}`}
+          onClick={onOpenFind}
+          title="Find in transcript (Ctrl+Shift+F)"
+          type="button"
+        >
+          <Icon name="i-search" />
+        </button>
+        <CopyInlineButton
+          label="Copy transcript"
+          getText={getTranscriptText}
+        />
+      </div>
       {windowStart > 0 ? (
         <button
           className="conv__history"
@@ -2002,6 +2127,18 @@ export function ChatPane({
   // Feed keyboard navigation: PageDown / PageUp on a turn moves focus to the
   // next or previous turn, revealing earlier turns at the top; Control+End
   // leaves the feed for the composer.
+  // In-app Find in transcript (Ctrl+Shift+F in the pane): reaches turns
+  // the window keeps out of the DOM, which the browser's find cannot.
+  const [findOpen, setFindOpen] = React.useState(false);
+  const openFind = React.useCallback(() => setFindOpen(true), []);
+  const closeFind = React.useCallback(() => {
+    setFindOpen(false);
+    bodyRef.current?.focus();
+  }, []);
+  // A found row mounts (or is revealed) through the controller's jump.
+  const jumpToFoundRef = React.useRef<(rowId: string) => void>(() => {});
+  jumpToFoundRef.current = (rowId) => { scroll.jumpToRow(rowId); };
+  const jumpToFound = React.useCallback((rowId: string) => jumpToFoundRef.current(rowId), []);
   const turnsRefForKeys = React.useRef(turns);
   turnsRefForKeys.current = turns;
   const turnWindowRef = React.useRef(turnWindow);
@@ -2326,7 +2463,16 @@ export function ChatPane({
 
   return (
     <ConversationPresentationProvider labels={presentationLabels} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
-    <div className="conv" data-testid={`chat-pane:${identity}`}>
+    <div
+      className="conv"
+      data-testid={`chat-pane:${identity}`}
+      onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          setFindOpen(true);
+        }
+      }}
+    >
       <div className="conv__head-frame">
       <div className={`conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`}>
         <div className="conv__avatar">{initial}</div>
@@ -2380,7 +2526,17 @@ export function ChatPane({
         onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
         turnWindow={turnWindow}
         onTranscriptKeyDown={onTranscriptKeyDown}
+        onOpenFind={openFind}
       />
+      {findOpen ? (
+        <TranscriptFindBar
+          identity={identity}
+          messages={messages}
+          bodyRef={bodyRef}
+          onJump={jumpToFound}
+          onClose={closeFind}
+        />
+      ) : null}
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}
       {scroll.missingAnchor ? <div className="conv__history-status" role="status">Earlier position is unavailable. Load older history to see more.</div> : null}

@@ -778,6 +778,7 @@ async function equivalence(browser, baseUrl, turns) {
   failures.push(...await findBand(windowed, oracle, turns));
   failures.push(...await pinning(windowed, turns));
   failures.push(...await feedNavigation(windowed, turns));
+  failures.push(...await inAppFind(windowed, turns));
   process.stdout.write(`[typing-lag-browser] equivalence turns=${turns}: ${checked} scroll positions, windowed elements<=${maxElements} mounted turns=${(await transcriptState(windowed)).mountedTurns} vs unwindowed elements=${base.elements} turns=${base.mountedTurns}; pixels differing by one level ${antialias.any} (max channel delta ${antialias.maxDelta})\n`);
   if (MAX_MOUNTED_ELEMENTS !== null && maxElements > MAX_MOUNTED_ELEMENTS) failures.push(`turns=${turns}: windowed transcript mounted ${maxElements} elements > ${MAX_MOUNTED_ELEMENTS}`);
   await windowed.context().close();
@@ -826,6 +827,39 @@ async function findBand(windowed, oracle, turns) {
     if (!after || after.hidden || !after.visible) failures.push(`turns=${turns}: a find match in parked turn ${Number(target) + 1} did not leave it shown in view`);
     else if (Math.abs(after.scrollHeight - before.scrollHeight) > 0.5) failures.push(`turns=${turns}: revealing a parked turn changed the scroll height (${before.scrollHeight} to ${after.scrollHeight})`);
   }
+  return failures;
+}
+
+/// Find in transcript reaches a turn beyond the find band from the live edge:
+/// it is mounted, brought into view and its match highlighted.
+async function inAppFind(page, turns) {
+  const failures = [];
+  await page.evaluate(() => { const body = document.querySelector(".conv__body"); body.scrollTop = body.scrollHeight; });
+  await settled(page);
+  const needle = "(request 3)";
+  const before = await page.evaluate(() => Boolean(document.querySelector('.conv__body > [data-chat-turn-index="3"]:not([hidden])')));
+  if (before) failures.push(`turns=${turns}: turn 4 was already shown at the live edge, so the find check proves nothing`);
+  await page.click('[data-testid^="chat-find-open:"]');
+  await page.fill('[data-testid^="chat-find:"]', needle);
+  await settled(page); await settled(page); await settled(page);
+  const state = await page.evaluate(() => {
+    const body = document.querySelector(".conv__body");
+    const turn = document.querySelector('.conv__body > [data-chat-turn-index="3"]');
+    const a = turn?.getBoundingClientRect(), b = body.getBoundingClientRect();
+    return {
+      count: document.querySelector('[data-testid^="chat-find-count:"]')?.textContent ?? "",
+      shown: Boolean(turn && !turn.hasAttribute("hidden")),
+      inView: Boolean(a && a.bottom > b.top && a.top < b.bottom),
+      highlights: globalThis.CSS?.highlights?.get("transcript-find")?.size ?? 0,
+    };
+  });
+  if (state.count !== "1 of 1") failures.push(`turns=${turns}: find in transcript counted "${state.count}" for a unique string`);
+  if (!state.shown || !state.inView) failures.push(`turns=${turns}: find in transcript did not bring the match's turn into view`);
+  if (state.highlights < 1) failures.push(`turns=${turns}: find in transcript did not highlight the match`);
+  await page.keyboard.press("Escape");
+  await settled(page);
+  const closed = await page.evaluate(() => !document.querySelector('[data-testid^="chat-find:"]') && !(globalThis.CSS?.highlights?.has("transcript-find")));
+  if (!closed) failures.push(`turns=${turns}: Escape did not close find and clear its highlight`);
   return failures;
 }
 
