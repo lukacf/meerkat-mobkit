@@ -8260,6 +8260,12 @@ pub struct MobBootstrapSpec {
     /// gates what this provider exposes to that member, and an EMPTY allowlist
     /// means the full surface, not none.
     pub(crate) default_external_tools_provider: Option<meerkat_mob::ExternalToolsProvider>,
+    /// Named Rust tool bundles, forwarded to
+    /// `MobBuilder::register_tool_bundle` for the profiles'
+    /// `tools.rust_bundles`. They are registered on every build of this mob:
+    /// create, resume (including the members it revives) and respawn. Mobs
+    /// that agents create through the mob tools do not receive them.
+    pub(crate) tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8369,6 +8375,7 @@ impl MobBootstrapSpec {
             spawn_member_customizer: None,
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
+            tool_bundles: BTreeMap::new(),
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -8523,6 +8530,23 @@ impl MobBootstrapSpec {
         provider: meerkat_mob::ExternalToolsProvider,
     ) -> Self {
         self.default_external_tools_provider = Some(provider);
+        self
+    }
+
+    /// Register a named Rust tool bundle. A profile whose `tools.rust_bundles`
+    /// names it gets the dispatcher's tools on every spawn, resume, revival
+    /// and respawn; meerkat-mob owns that wiring. A profile naming a bundle
+    /// that is not registered is refused when its member is built. Agent-
+    /// created child mobs never receive host bundles.
+    ///
+    /// Registering the same name twice replaces the earlier dispatcher.
+    #[must_use]
+    pub fn register_tool_bundle(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    ) -> Self {
+        self.tool_bundles.insert(name.into(), dispatcher);
         self
     }
 
@@ -10432,6 +10456,9 @@ impl MobRuntime {
 
         if let Some(provider) = spec.default_external_tools_provider.clone() {
             builder = builder.with_default_external_tools_provider(Some(provider));
+        }
+        for (name, dispatcher) in &spec.tool_bundles {
+            builder = builder.register_tool_bundle(name.clone(), Arc::clone(dispatcher));
         }
 
         // Apply-time WorkGraph attention overlays: the provisioner's

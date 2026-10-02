@@ -508,7 +508,7 @@ schedule = true
 | `read_only` | `false` | An enforcement declaration, not prompt guidance: a tool call executes only when its owning dispatcher declares it read-only, and the declaration wins over any per-spawn tool access policy. The category booleans above still decide what the model sees; this decides what may run. Provider-native tools, MCP tools and `shell` are outside the guarantee. |
 | `mcp` | `[]` | MCP server names this profile may use from the mob-wide default external-tools provider; an empty list means the full host surface. |
 | `mcp_servers` | `[]` | Declarative MCP server configs durable on the profile, so a revived member recomposes the same MCP tools that built it. |
-| `rust_bundles` | `[]` | Names of Rust tool bundles registered at mob construction. Not serializable; re-register them on resume. |
+| `rust_bundles` | `[]` | Names of Rust tool bundles the host registers with `MobBootstrapSpec::register_tool_bundle` or `UnifiedRuntimeBuilder::register_tool_bundle`. They are wired on every spawn, resume (including revived members) and respawn. Dispatchers are not serializable; register them again on every boot. A name that is not registered refuses the member build. Agent-created child mobs do not receive host bundles. |
 
 The `mob-communication` skill is preloaded for every member regardless of these
 flags. Agent-side spawns that inherit the parent's tool filter open every

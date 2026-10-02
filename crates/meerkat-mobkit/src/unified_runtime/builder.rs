@@ -88,6 +88,8 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
+    /// Named Rust tool bundles added to the resolved or supplied mob spec.
+    tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -348,6 +350,20 @@ impl UnifiedRuntimeBuilder {
     /// Set the managed topology provider for identity-first bootstrap and refresh.
     pub fn topology_provider(mut self, provider: Arc<dyn TopologyProvider>) -> Self {
         self.topology_provider = Some(provider);
+        self
+    }
+
+    /// Register a named Rust tool bundle for profiles' `tools.rust_bundles`.
+    /// It is added to the mob spec this builder resolves or is given; see
+    /// [`MobBootstrapSpec::register_tool_bundle`]. A name that the supplied
+    /// spec already registers is refused at build.
+    #[must_use]
+    pub fn register_tool_bundle(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    ) -> Self {
+        self.tool_bundles.insert(name.into(), dispatcher);
         self
     }
 
@@ -1029,6 +1045,18 @@ impl UnifiedRuntimeBuilder {
                 })
             });
             summary.slots.extend(provider_census);
+        }
+
+        for (name, dispatcher) in std::mem::take(&mut self.tool_bundles) {
+            if mob_spec.tool_bundles.contains_key(&name) {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    format!(
+                        "tool bundle '{name}' is registered on both the builder and the supplied \
+                     MobBootstrapSpec"
+                    ),
+                ));
+            }
+            mob_spec.tool_bundles.insert(name, dispatcher);
         }
 
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
