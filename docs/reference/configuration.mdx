@@ -605,6 +605,18 @@ on `mobkit/status`, `mobkit/capabilities`, and `mobkit/storage/doctor`:
 (H2), and the per-slot `slots` array (`domain`, `class`, `resolution`,
 `backend`, `degraded`, optional `detail`).
 
+**Incremental session persistence.** `session_store_incremental: false` means
+the session store writes the whole session document at every turn boundary.
+For an identity-first launch, that happens when the continuity store does not
+serve `ContinuityStore::as_incremental_sessions`. The method has no default,
+so every continuity store states its choice, and a wrapper must forward its
+inner store's channel. Rust embedders can opt in to strict mode with
+`UnifiedRuntime::builder().require_incremental_session_persistence(true)`.
+`build()` then refuses with `SessionStoreNotIncremental` instead of starting
+on that fallback. To check a wrapper, run
+`mobkit_store_conformance::chapters::continuity_wrapper_preserves_incremental_channel`
+with your wrapping function.
+
 <Note>
 **Changelog policy.** Any storage file rename or table move gets the
 binary-rename treatment: an explicit, loud changelog entry naming the old

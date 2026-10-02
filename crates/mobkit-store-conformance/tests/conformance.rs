@@ -12,6 +12,7 @@ use meerkat_mobkit::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
 use meerkat_mobkit::console_aggregator::{
     ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore,
 };
+use meerkat_mobkit::identity_first as contracts;
 use meerkat_mobkit::identity_first::{AgentMemoryProvider, ContinuityStore, LocalContinuityStore};
 use meerkat_mobkit::memory::SqliteAgentMemoryStore;
 use meerkat_mobkit::unified_runtime::EventLogStore;
@@ -255,6 +256,165 @@ async fn local_continuity_store_passes_incremental_profile() {
     chapters::continuity_incremental(&factory, 0)
         .await
         .expect("LocalContinuityStore must satisfy the incremental continuity profile");
+}
+
+/// A pass-through `ContinuityStore` decorator, the shape a metrics, auth or
+/// tenancy layer takes. `forward_channel` decides whether it forwards the
+/// inner store's session-delta channel.
+struct DecoratorContinuityStore {
+    inner: Arc<dyn ContinuityStore>,
+    forward_channel: bool,
+}
+
+#[async_trait]
+impl ContinuityStore for DecoratorContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[contracts::AgentIdentity],
+    ) -> Result<
+        std::collections::BTreeMap<contracts::AgentIdentity, contracts::ContinuityResolveState>,
+        contracts::ContinuityStoreError,
+    > {
+        self.inner.resolve_many(identities).await
+    }
+
+    async fn resolve_record_by_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            contracts::ContinuityRecord,
+            contracts::FencingToken,
+            contracts::CheckpointVersion,
+        )>,
+        contracts::ContinuityStoreError,
+    > {
+        self.inner.resolve_record_by_session(session_id).await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<contracts::SessionSnapshot>, contracts::ContinuityStoreError> {
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn session_snapshot_matches_current(
+        &self,
+        candidate: contracts::SessionSnapshotMatchCandidate,
+    ) -> Result<bool, contracts::ContinuityStoreError> {
+        self.inner.session_snapshot_matches_current(candidate).await
+    }
+
+    async fn delete_session_snapshot_if_current_revision(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_current_revision: &str,
+    ) -> Result<bool, contracts::ContinuityStoreError> {
+        self.inner
+            .delete_session_snapshot_if_current_revision(session_id, expected_current_revision)
+            .await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &contracts::AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: contracts::ContinuityGeneration,
+        version: contracts::CheckpointVersion,
+        fencing_token: contracts::FencingToken,
+        snapshot: &contracts::SessionSnapshot,
+    ) -> Result<(), contracts::ContinuityStoreError> {
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &contracts::ContinuityRecord,
+        fencing_token: contracts::FencingToken,
+    ) -> Result<(), contracts::ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await
+    }
+
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &contracts::ContinuityRecord,
+        previous: Option<&contracts::ContinuityRecord>,
+        fencing_token: contracts::FencingToken,
+    ) -> Result<(), contracts::ContinuityStoreError> {
+        self.inner
+            .rollback_continuity_record(expected_attempt, previous, fencing_token)
+            .await
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &contracts::AgentIdentity,
+        fencing_token: contracts::FencingToken,
+    ) -> Result<(), contracts::ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await
+    }
+
+    fn as_incremental_sessions(&self) -> Option<Arc<dyn contracts::ContinuityIncrementalSessions>> {
+        if self.forward_channel {
+            self.inner.as_incremental_sessions()
+        } else {
+            None
+        }
+    }
+}
+
+/// A decorator that forwards the inner store's channel keeps O(delta)
+/// session persistence through the wrapper and the session adapter.
+#[tokio::test]
+async fn forwarding_decorator_preserves_incremental_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let factory = LocalFileContinuityFactory {
+        path: dir.path().join("continuity.sqlite"),
+    };
+    let wrap = |inner: Arc<dyn ContinuityStore>| -> Arc<dyn ContinuityStore> {
+        Arc::new(DecoratorContinuityStore {
+            inner,
+            forward_channel: true,
+        })
+    };
+    chapters::continuity_wrapper_preserves_incremental_channel(&factory, &wrap)
+        .await
+        .expect("a forwarding decorator must keep the session-delta channel");
+}
+
+/// A decorator that drops the channel fails the wrapper chapter at the
+/// forwarding step: the chapter catches the silent whole-blob degradation.
+#[tokio::test]
+async fn channel_dropping_decorator_fails_the_wrapper_chapter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let factory = LocalFileContinuityFactory {
+        path: dir.path().join("continuity.sqlite"),
+    };
+    let wrap = |inner: Arc<dyn ContinuityStore>| -> Arc<dyn ContinuityStore> {
+        Arc::new(DecoratorContinuityStore {
+            inner,
+            forward_channel: false,
+        })
+    };
+    let failure = chapters::continuity_wrapper_preserves_incremental_channel(&factory, &wrap)
+        .await
+        .expect_err("a decorator that drops the channel must fail");
+    assert_eq!(failure.chapter(), "continuity_wrapper");
+    assert_eq!(failure.step(), "wrapper_forwards_delta_channel");
 }
 
 // ---------------------------------------------------------------------------

@@ -79,6 +79,11 @@ pub struct UnifiedRuntimeBuilder {
     max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
 
+    /// Refuse to build when the session store would persist whole session
+    /// documents per turn (see
+    /// [`require_incremental_session_persistence`](Self::require_incremental_session_persistence)).
+    require_incremental_session_persistence: bool,
+
     // --- Identity-first external path ---
     continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
     lease_provider: Option<Arc<dyn crate::identity_first::contracts::LeaseProvider>>,
@@ -251,6 +256,20 @@ impl UnifiedRuntimeBuilder {
         store: Arc<dyn crate::identity_first::contracts::ContinuityStore>,
     ) -> Self {
         self.continuity_store = Some(store);
+        self
+    }
+
+    /// Opt in to strict session persistence: `build()` refuses with
+    /// [`UnifiedRuntimeBuilderError::SessionStoreNotIncremental`] when the
+    /// session store does not advertise meerkat's incremental persistence,
+    /// instead of starting on the whole-blob fallback (one warning, then the
+    /// whole session document written at every turn boundary).
+    ///
+    /// For an identity-first launch this means the continuity store must
+    /// serve [`ContinuityStore::as_incremental_sessions`](crate::identity_first::contracts::ContinuityStore::as_incremental_sessions).
+    /// Off by default.
+    pub fn require_incremental_session_persistence(mut self, required: bool) -> Self {
+        self.require_incremental_session_persistence = required;
         self
     }
 
@@ -996,6 +1015,16 @@ impl UnifiedRuntimeBuilder {
         if let Some(store) = continuity_session_store.as_ref() {
             self.custom_session_store = Some(store.clone());
         }
+        // Strict mode: the default SQLite session store is incremental, so
+        // only a custom or continuity-backed store can fail this.
+        if self.require_incremental_session_persistence
+            && let Some(store) = self.custom_session_store.as_ref()
+            && Arc::clone(store).as_incremental().is_none()
+        {
+            return Err(UnifiedRuntimeBuilderError::SessionStoreNotIncremental {
+                store_kind: self.custom_session_store_kind(),
+            });
+        }
 
         // Legacy mob_spec path takes precedence — must be consumed before
         // resolve_mob_spec (which borrows &self for the definition path).
@@ -1706,11 +1735,13 @@ impl UnifiedRuntimeBuilder {
     /// H2 probe warning names the concrete store the builder composed
     /// (`build()` installs a `ContinuitySessionStoreAdapter` there when a
     /// continuity store is configured).
-    fn custom_session_store_kind(&self) -> &'static str {
-        if self.continuity_store.is_some() {
-            "ContinuitySessionStoreAdapter"
-        } else {
-            "custom session store"
+    fn custom_session_store_kind(&self) -> String {
+        match self.continuity_store.as_ref() {
+            Some(store) => format!(
+                "ContinuitySessionStoreAdapter over {}",
+                store.store_type_name()
+            ),
+            None => "custom session store".to_string(),
         }
     }
 
@@ -2033,7 +2064,7 @@ impl UnifiedRuntimeBuilder {
             let session_store_kind = if self.custom_session_store.is_some() {
                 self.custom_session_store_kind()
             } else {
-                "SqliteSessionStore"
+                "SqliteSessionStore".to_string()
             };
             let session_store: Arc<dyn meerkat::SessionStore> =
                 if let Some(ref store) = self.custom_session_store {
@@ -2059,7 +2090,7 @@ impl UnifiedRuntimeBuilder {
                 state_path.clone(),
                 max_sessions,
                 session_store,
-                session_store_kind,
+                &session_store_kind,
                 self.blob_injection()?,
                 self.ephemeral_blobs,
                 self.ephemeral_runtime_store,
@@ -2100,7 +2131,7 @@ impl UnifiedRuntimeBuilder {
                 scratch_dir.clone(),
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.custom_session_store_kind(),
+                &self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
                 self.workgraph_store.clone(),
@@ -2123,7 +2154,7 @@ impl UnifiedRuntimeBuilder {
                 store_path,
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.custom_session_store_kind(),
+                &self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
                 self.workgraph_store.clone(),

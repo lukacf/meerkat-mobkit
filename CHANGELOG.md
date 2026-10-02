@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `ContinuityStore::as_incremental_sessions` no longer has a default. Every
+  continuity store now states whether it serves MobKit's session-delta
+  channel: a decorator forwards its inner store's channel, and a
+  whole-snapshot store returns `None` and says why.
+  - The default `None` let wrappers around incremental-capable stores, and
+    native stores that never considered the channel, silently fall back to
+    writing the whole session document at every turn boundary. One OB3
+    coordinator was rewritten in full, at 286 MB, 44 times a day.
+  - Implementors without the method must add it.
+- `UnifiedRuntimeBuilderError` gains
+  `SessionStoreNotIncremental { store_kind }` (see Added). Exhaustive matches
+  must handle it.
+
 - `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
   `durability: StorageSlotDurability`. Match `Declared(declaration)` or
   `Unverified { domain, class }`; use the enum's accessors to inspect the
@@ -364,6 +377,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     cleanup.
   - Startup provider callbacks must not issue ordinary RPCs on the same
     gateway, because ordinary dispatch starts only after init settles.
+- `mobkit_store_conformance::chapters::continuity_wrapper_preserves_incremental_channel`
+  takes an incremental-capable substrate and the embedder's own wrapping
+  function. It fails when the wrapped store, or the
+  `ContinuitySessionStoreAdapter` over it, loses the session-delta channel.
+- `UnifiedRuntimeBuilder::require_incremental_session_persistence(true)`
+  turns on opt-in strict mode. `build()` then refuses with
+  `SessionStoreNotIncremental` instead of starting on the whole-blob fallback.
+- `ContinuityStore::store_type_name()` is defaulted to the concrete type
+  name, and `ContinuitySessionStoreAdapter::continuity_store_type_name()`
+  exposes it. The startup warning for a whole-blob session store now names
+  the continuity store behind the adapter and says how to fix it.
 
 - `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
   `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that
