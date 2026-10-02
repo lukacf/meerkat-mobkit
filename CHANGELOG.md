@@ -639,6 +639,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `MobBootstrapSpec::with_spawn_member_customizer`, which composes instead of
     replacing.
 
+- An identity member that had not run a turn before a shutdown is
+  materialized again at the next boot. The local continuity store creates its
+  head-canonical tables only at the first delta write, but its per-session
+  record lookup always read them. On such a file the lookup failed, MobKit
+  skipped the member's owner pre-registration, and the member stayed
+  unmaterialized with no live session (`mobkit/identity/resolved_tools`
+  answered "session not found").
+
 - Console: queued rows that did not go through now say what happened in
   plain words. A refused row reads "Not sent: this message never reached
   <agent>." with Send again and Discard; a row whose answer was lost reads
