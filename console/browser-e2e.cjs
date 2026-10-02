@@ -1028,7 +1028,7 @@ async function runCanonicalSendBrowserProof() {
     await openSidebarAgentChat(page, /Identity Luka/i);
     await fillComposer(page, "identity proof message");
     // A normal send is accepted well inside the pending stack's acceptance
-    // grace period, so its row (and the "Awaiting acceptance" notice) must
+    // grace period, so its row (and the "Sending" notice) must
     // never render, not even for a frame. Sampling the DOM after the fact
     // would miss a flash; an observer installed before the click records it.
     await page.evaluate(() => {
@@ -1036,7 +1036,7 @@ async function runCanonicalSendBrowserProof() {
       const record = () => {
         if (document.querySelector(".needs-acceptance")) seen.notice = true;
         if (document.querySelector('[data-testid="pending-stack"]')) seen.row = true;
-        if (document.body.innerText.includes("Awaiting acceptance")) seen.notice = true;
+        if (document.querySelector('[data-testid^="pending-item:"]')) seen.notice = true;
       };
       const observer = new MutationObserver(record);
       observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
