@@ -327,6 +327,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unregistered bundle is refused when its member is built. Registering one
   name on both the builder and a supplied spec is refused as conflicting
   configuration. Agent-created child mobs do not receive host bundles.
+- `mobkit/init` can run as accepted-then-settled (#550), so startup is no
+  longer cut off by the SDK's 60 s request timeout. Both SDKs opt in by
+  default.
+  - The SDK sends `init_protocol: "accepted_then_settled"` and an `init_id` it
+    is already listening for. After the cheap pre-durable gates pass, the
+    gateway answers `accepted` at once. It then emits
+    `mobkit/init_progress {init_id, phase}` at each startup phase: `storage`,
+    `owner_publication`, `prepare`, `roster`, `register_owners`, `prewarm`,
+    `activate`, `restore`, `schedules`, `serve`, and `cleanup` on failure.
+    Finally it emits exactly one `mobkit/init_settled`, either
+    `{outcome: "ready", ...init result}` or
+    `{outcome: "failed", code, message, data, durable_effects}`.
+  - `durable_effects` is `"none"` only when init failed before the `storage`
+    phase, and `"possible"` otherwise, including when cleanup fails.
+  - A gateway shutdown requested during init stops at the next phase
+    boundary, runs runtime cleanup, settles `failed`
+    (`data.reason: "shutdown_requested"`), and only then answers the shutdown
+    request.
+  - A client that does not opt in gets the single legacy response unchanged
+    and never sees `accepted`. A new SDK talking to an older gateway uses that
+    gateway's single response as before.
+  - The SDKs have no built-in total deadline for an accepted init, because
+    persisted-authority prewarm on a large roster is deliberately unbounded.
+    The wait ends on the settlement, the gateway exiting, a reader failure,
+    or the caller's deadline (Python `MobKitBuilder.init_deadline(seconds)`,
+    TypeScript `initDeadline(ms)`).
+  - A `failed` settlement raises the same typed error as before, with
+    `data.durable_effects`.
+  - Once the init request is written, losing the answer, the reader or the
+    gateway raises the new `InitOutcomeUnknownError(init_id, last_phase,
+    reason)`, never a refusal, and is never retried automatically.
+  - New Rust API: `UnifiedRuntime::set_bootstrap_phase_observer` with
+    `UnifiedRuntimeBootstrapPhase` (`#[non_exhaustive]`), which reports
+    owner registration, prewarm, activation, roster restore and failure
+    cleanup.
+  - Startup provider callbacks must not issue ordinary RPCs on the same
+    gateway, because ordinary dispatch starts only after init settles.
 
 - `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
   `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that

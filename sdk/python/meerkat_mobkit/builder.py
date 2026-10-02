@@ -1,6 +1,7 @@
 """MobKit builder chain — matches HomeCore's app.py patterns."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Sequence
@@ -38,6 +39,10 @@ class MobKitBuilderConfig:
     implicit_delegate_idle_retire_secs: int | None = None
     implicit_delegate_idle_retire_configured: bool = False
     gateway_bin: str | None = None
+    # Caller cap, in seconds, on waiting for an accepted mobkit/init to
+    # settle. None waits until the gateway settles, exits, or the reader
+    # fails. Running out raises InitOutcomeUnknownError.
+    init_deadline: float | None = None
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
     persistent_state: str | None = None
@@ -675,6 +680,27 @@ class MobKitBuilder:
 
     def gateway(self, bin_path: str) -> MobKitBuilder:
         self._config.gateway_bin = bin_path
+        return self
+
+    def init_deadline(self, seconds: float | None) -> MobKitBuilder:
+        """Cap how long ``connect()`` waits for an accepted ``mobkit/init``.
+
+        A gateway that accepted init keeps working through its startup
+        phases (provider callbacks, restore, prewarm) and then settles ready
+        or failed. By default the SDK waits for that settlement, the gateway
+        exiting, or the reader failing. Set a deadline only when the host has
+        its own startup budget: running out raises
+        ``InitOutcomeUnknownError``, because the gateway may already have
+        changed native state, and the gateway is asked to shut down.
+        """
+        if seconds is not None and (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError("init_deadline must be a positive finite number of seconds or None")
+        self._config.init_deadline = None if seconds is None else float(seconds)
         return self
 
     def modules(self, module_specs: list[dict[str, Any]]) -> MobKitBuilder:

@@ -33,12 +33,14 @@ from .errors import (
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     ConsoleTimelineReplayUnavailableError,
     LeaseLostError,
+    InitOutcomeUnknownError,
     MemoryBackendUnavailableError,
     MobEventsStaleError,
     NotConnectedError,
     RpcError,
     StorageResolutionError,
     TransportError,
+    TransportReaderFailedError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
 )
@@ -67,7 +69,11 @@ from .live import (
     supports_live_execution_mode,
 )
 from ._sse import SseEvent, parse_sse_stream
-from ._transport import PersistentTransport
+from ._transport import (
+    INIT_PROTOCOL_ACCEPTED_THEN_SETTLED,
+    InitWatch,
+    PersistentTransport,
+)
 from .models import DiscoverySpec
 from .types import (
     MemberRunStopReceipt,
@@ -580,9 +586,7 @@ class MobKitRuntime:
                         f"gateway binary failed to start: {self._config.gateway_bin}"
                     )
                 try:
-                    init_result = await self._rpc(
-                        "mobkit/init", self._build_init_params()
-                    )
+                    init_result = await self._run_init(transport)
                     if isinstance(init_result, dict):
                         self._rust_http_base = init_result.get("http_base_url")
                         public_base = init_result.get("http_public_base_url")
@@ -601,8 +605,10 @@ class MobKitRuntime:
                     # even though the gateway exits right after writing it
                     # (fail-closed init refusals such as the typed
                     # StorageResolutionError do exactly that): re-raise it
-                    # typed instead of reporting a transport failure.
-                    if isinstance(init_err, RpcError):
+                    # typed instead of reporting a transport failure. An
+                    # unknown outcome is already typed and must not be
+                    # mistaken for a refusal or a plain transport failure.
+                    if isinstance(init_err, (RpcError, InitOutcomeUnknownError)):
                         raise
                     if not transport.is_running():
                         raise TransportError(
@@ -622,6 +628,102 @@ class MobKitRuntime:
                 "RPC calls will fail with NotConnectedError"
             )
         self._running = True
+
+    async def _run_init(self, transport: PersistentTransport) -> Any:
+        """Run ``mobkit/init`` as accepted-then-settled (#550).
+
+        The init id is generated and its watch registered before the request
+        is written. A gateway that supports the protocol answers ``accepted``
+        at once; readiness comes only from the correlated ``ready``
+        settlement, and a ``failed`` settlement raises the typed error with
+        ``data["durable_effects"]``. An older gateway answers once with the
+        final result, which is used as before. Losing the answer, the reader
+        or the gateway after the request was written raises
+        ``InitOutcomeUnknownError``: the gateway may have changed native
+        state, so it is never reported as a refusal.
+        """
+        init_id = f"init-{uuid.uuid4()}"
+        params = self._build_init_params()
+        params["init_protocol"] = INIT_PROTOCOL_ACCEPTED_THEN_SETTLED
+        params["init_id"] = init_id
+        watch = transport.open_init_watch(init_id)
+        try:
+            return await self._init_with_watch(transport, watch, params)
+        finally:
+            transport.close_init_watch(watch)
+
+    async def _init_with_watch(
+        self,
+        transport: PersistentTransport,
+        watch: InitWatch,
+        params: dict[str, Any],
+    ) -> Any:
+        init_id = watch.init_id
+        rid = _next_request_id("mobkit/init")
+        request = _rpc_request(rid, "mobkit/init", params)
+        try:
+            response = await transport.send_async(request)
+        except TransportReaderFailedError as exc:
+            raise InitOutcomeUnknownError(init_id, watch.last_phase, str(exc)) from exc
+        except RuntimeError as exc:
+            # The response wait ran out after the request was written: the
+            # acceptance (or an older gateway's final answer) never came.
+            raise InitOutcomeUnknownError(
+                init_id, watch.last_phase, f"no answer to mobkit/init: {exc}"
+            ) from exc
+        if "error" in response:
+            # Refused before acceptance (or by an older gateway): typed, and
+            # nothing past the pre-durable gates ran.
+            raise _rpc_error_from_payload(
+                response["error"], request_id=rid, method="mobkit/init"
+            )
+        result = response.get("result")
+        if not (isinstance(result, dict) and result.get("init_state") == "accepted"):
+            # An older gateway: its single response is the final init result.
+            return result
+        if result.get("init_id") != init_id:
+            raise InitOutcomeUnknownError(
+                init_id,
+                watch.last_phase,
+                f"the gateway accepted a different init_id ({result.get('init_id')!r})",
+            )
+        try:
+            settled = await watch.settlement(self._config.init_deadline)
+        except TransportReaderFailedError as exc:
+            raise InitOutcomeUnknownError(init_id, watch.last_phase, str(exc)) from exc
+        except asyncio.TimeoutError as exc:
+            raise InitOutcomeUnknownError(
+                init_id,
+                watch.last_phase,
+                f"the init deadline of {self._config.init_deadline}s ran out before init settled",
+            ) from exc
+        outcome = settled.get("outcome")
+        if outcome == "ready":
+            return {
+                key: value
+                for key, value in settled.items()
+                if key not in ("init_id", "outcome")
+            }
+        if outcome == "failed":
+            data = settled.get("data")
+            error_data = dict(data) if isinstance(data, dict) else {}
+            if data is not None and not isinstance(data, dict):
+                error_data["detail"] = data
+            error_data["durable_effects"] = settled.get("durable_effects", "possible")
+            raise _rpc_error_from_payload(
+                {
+                    "code": settled.get("code", -32603),
+                    "message": settled.get("message", "mobkit/init failed"),
+                    "data": error_data,
+                },
+                request_id=rid,
+                method="mobkit/init",
+            )
+        raise InitOutcomeUnknownError(
+            init_id,
+            watch.last_phase,
+            f"unrecognized mobkit/init settlement outcome {outcome!r}",
+        )
 
     def _build_init_params(self) -> dict[str, Any]:
         """Build init params dict from builder config for mobkit/init RPC."""

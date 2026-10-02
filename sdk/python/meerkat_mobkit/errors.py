@@ -49,6 +49,30 @@ class TransportReaderFailedError(TransportError):
         super().__init__(f"transport reader stopped: {reason}")
 
 
+class InitOutcomeUnknownError(MobKitError):
+    """The SDK stopped waiting for ``mobkit/init`` before it settled.
+
+    Raised when the init request was written but no settlement arrived: the
+    acceptance was lost, the reader failed, the gateway exited, or the
+    caller's init deadline ran out. The gateway may have changed native state
+    (owner publication, identities, leases, continuity, schedules) before it
+    stopped, so this is never reported as a refusal and never retried
+    automatically. ``init_id`` correlates with the gateway's progress
+    notifications; ``last_phase`` is the last ``mobkit/init_progress`` phase
+    seen (``None`` when none arrived); ``reason`` names what ended the wait.
+    """
+
+    def __init__(self, init_id: str, last_phase: str | None, reason: str):
+        self.init_id = init_id
+        self.last_phase = last_phase
+        self.reason = reason
+        phase = last_phase or "none"
+        super().__init__(
+            f"mobkit/init outcome unknown (init_id={init_id}, last phase: {phase}): "
+            f"{reason}; native state may have changed"
+        )
+
+
 class RpcError(MobKitError):
     """Raised when a JSON-RPC call returns an error response."""
 

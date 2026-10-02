@@ -34,6 +34,107 @@ enforce contract compatibility compare `result.contract_version` before
 sending later requests. After init, `mobkit/capabilities` returns the methods
 available on that runtime.
 
+#### Accepted, then settled (opt-in)
+
+Startup runs provider callbacks (roster, leases, continuity, agent builds),
+each bounded at 130 seconds by the gateway, and native work such as
+persisted-authority prewarm that is deliberately unbounded. A single response
+written when all of that finishes cannot be bounded by any fixed request
+timeout, so the SDKs opt in to a two-step protocol:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "init-1",
+  "method": "mobkit/init",
+  "params": { "init_protocol": "accepted_then_settled", "init_id": "init-6f1c..." }
+}
+```
+
+The SDK generates `init_id` and starts listening for it before it writes the
+request. Only the exact protocol name together with a non-empty `init_id`
+opts in. Anything else gets the legacy single response, so a client that did
+not opt in never receives `accepted`.
+
+1. **`accepted`.** After the cheap pre-durable gates pass (mob TOML, model
+   resolution, host-config tables), the gateway answers the request at once:
+
+   ```json
+   {
+     "jsonrpc": "2.0",
+     "id": "init-1",
+     "result": {
+       "init_state": "accepted",
+       "init_id": "init-6f1c...",
+       "provider_callback_timeout_ms": 130000,
+       "stdio_shutdown_handshake": true,
+       "stdio_shutdown_horizon_ms": 347000
+     }
+   }
+   ```
+
+   `accepted` is not readiness and carries no `http_base_url`. A refusal from
+   those gates is still the plain JSON-RPC error response, and it means
+   nothing past them ran.
+
+2. **`mobkit/init_progress`** notifications, one per startup phase as it
+   begins: `storage` (first touch of durable state), `owner_publication`,
+   `prepare` (runtime and storage prepare, module startup), `roster`,
+   `register_owners`, `prewarm`, `activate`, `restore`, `schedules`, `serve`,
+   and `cleanup` (failure cleanup, which can await lease-release callbacks).
+   Progress events are non-terminal, and their order follows the native init
+   order. Callback requests continue to arrive between them.
+
+   ```json
+   { "jsonrpc": "2.0", "method": "mobkit/init_progress", "params": { "init_id": "init-6f1c...", "phase": "prewarm" } }
+   ```
+
+3. **Exactly one `mobkit/init_settled`** notification. Only a `ready`
+   settlement for the same `init_id` establishes readiness. It carries
+   every field of the legacy init result:
+
+   ```json
+   { "jsonrpc": "2.0", "method": "mobkit/init_settled",
+     "params": { "init_id": "init-6f1c...", "outcome": "ready", "http_base_url": "http://127.0.0.1:41234", "contract_version": "0.5.0", "...": "..." } }
+   ```
+
+   A `failed` settlement carries the error that the legacy response would have
+   carried (`code`, `message`, optional `data`) plus `durable_effects`. The
+   gateway exits after writing it.
+
+   ```json
+   { "jsonrpc": "2.0", "method": "mobkit/init_settled",
+     "params": { "init_id": "init-6f1c...", "outcome": "failed", "code": -32014, "message": "...", "durable_effects": "possible" } }
+   ```
+
+   `durable_effects` is `"none"` only when the init failed before the
+   `storage` phase began, which is positive evidence that nothing durable was
+   touched. Every later failure is `"possible"`, including a failure of the
+   cleanup itself. The SDKs raise the same typed errors as before (for example
+   `StorageResolutionError` for `-32014`) and add
+   `data.durable_effects`.
+
+**Shutdown during init.** `mobkit/shutdown` stays admissible while init runs.
+The gateway stops at the next phase boundary. If a runtime exists, it runs
+the normal runtime shutdown, lease-release callbacks included. Only after
+that cleanup has settled does it emit the `failed` settlement (`code:
+-32098`, `data.reason: "shutdown_requested"`). It then answers the shutdown
+request.
+
+**Startup callbacks must not issue ordinary RPCs.** Ordinary request dispatch
+starts only after init settles. A provider callback that awaits an ordinary
+request on the same gateway during init would wait on itself.
+
+**Outcome unknown.** Once the init request is written, the SDKs never turn a
+missing answer into a refusal. A lost acceptance, a reader failure, the
+gateway exiting before it settles, or the caller's optional init deadline
+(Python `MobKitBuilder.init_deadline(seconds)`, TypeScript
+`MobKitBuilder.initDeadline(ms)`) raises `InitOutcomeUnknownError(init_id,
+last_phase, reason)`. The gateway may already have changed native state, so
+the SDKs never retry automatically. By default the SDKs wait for the
+settlement with no deadline. Every callback is still bounded by the gateway,
+and a callback that runs out settles the init `failed`.
+
 #### `role_migrations`
 
 A durable member whose role changed refuses to resume
@@ -132,7 +233,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32010` | HTTP console mutation refused by read-only policy | `{kind: "read_only"}` |
 | `-32012` | `memory/index` backend persistence failed | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
-| `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response and exits. | none |
+| `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response (or, for an accepted init, the `failed` settlement) and exits. | none |
 | `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 | `-32017` | a covered unified/stdin read arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the wrapped arms (`identity/resolved_tools`, `identity/routing_status`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). The independent HTTP console dispatcher does not apply this wrapper. | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
@@ -1366,6 +1467,11 @@ stream) has no SDK wrapper either.
 The persistent `rpc_gateway` sends JSON-RPC notifications (no `id`) to the SDK
 alongside responses. Callback requests (`callback/*`) expect a reply; these do
 not.
+
+### `mobkit/init_progress` and `mobkit/init_settled`
+
+Sent only to an SDK that opted in to the accepted-then-settled init. See
+[Accepted, then settled](#accepted-then-settled-opt-in).
 
 ### `mobkit/on_error`
 
