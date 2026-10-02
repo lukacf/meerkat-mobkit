@@ -860,6 +860,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
 
+- Console: the transcript mounts only the turns near the viewport. Every
+  revealed turn used to stay mounted, so an operator who scrolled back kept
+  the whole loaded history in the DOM (about 16,000 elements at 300 turns),
+  and every keystroke and streamed token paid a frame lifecycle over all of
+  it. Turns farther than 1.5 viewports from the viewport are replaced by a
+  spacer whose height is the sum of their measured heights and the gaps
+  between them, so scroll height, scroll position and everything visible
+  are unchanged. Heights are measured (ResizeObserver, after layout) and
+  never estimated: a turn not measured at the current width with its current
+  content stays mounted. The newest turn, a selection's turns and the turn
+  holding keyboard focus stay mounted, and a rail jump or a restored anchor
+  mounts its turn. In the typing harness the transcript mounts about 1,100
+  elements after a full fill (16,000 before), and CPU per key falls to about
+  1.6-2.5 ms idle and 2.5-4 ms while a reply streams. `npm run
+  perf:typing:browser` fails above 3,000 mounted elements and adds an
+  equivalence run: the same history windowed and unwindowed
+  (`windowed=false`) must match in scroll height, visible rows and their
+  offsets, turn rail and pixels at 17 scroll positions including after a
+  resize, and a selection, a focused control, an opened tool call and a rail
+  jump must survive.
+
 - Console: a transcript row keeps what the reader opened if it unmounts and
   mounts again. Disclosure state lived in the DOM or in component state, so
   a remounted row reset it: event payloads, thinking blocks, tool calls,

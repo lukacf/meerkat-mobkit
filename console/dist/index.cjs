@@ -35207,13 +35207,13 @@ function WorkGraphGraphView({
   const hasNodes = layout.nodes.length > 0;
   const svgRef = import_react32.default.useRef(null);
   const frame = useFrameSize(svgRef, hasNodes);
-  const measured = frame.width > 0 && frame.height > 0;
+  const measured2 = frame.width > 0 && frame.height > 0;
   const fit = import_react32.default.useMemo(
-    () => measured ? fitViewport(frame.width, frame.height, layout.width, layout.height) : { tx: 0, ty: 0, scale: 1 },
-    [measured, frame.width, frame.height, layout.width, layout.height]
+    () => measured2 ? fitViewport(frame.width, frame.height, layout.width, layout.height) : { tx: 0, ty: 0, scale: 1 },
+    [measured2, frame.width, frame.height, layout.width, layout.height]
   );
-  const viewBoxWidth = measured ? frame.width : layout.width;
-  const viewBoxHeight = measured ? frame.height : layout.height;
+  const viewBoxWidth = measured2 ? frame.width : layout.width;
+  const viewBoxHeight = measured2 ? frame.height : layout.height;
   const zoom = useZoomPan(viewBoxWidth, viewBoxHeight, fit);
   const measure = useLabelMeasurers(svgRef, hasNodes);
   const setSvgRef = import_react32.default.useCallback((el) => {
@@ -38538,8 +38538,251 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
 }
 
+// src/panels/transcript-window.ts
+var React24 = __toESM(require("react"));
+var TURN_WINDOW_OVERSCAN = 1.5;
+var TURN_WINDOW_MARGIN = 0.5;
+function measured(input, index2) {
+  const turn = input.turns[index2];
+  const measurement = input.measurements.get(turn.id);
+  return measurement && measurement.turn === turn && measurement.width === input.width ? measurement : null;
+}
+function planTurnWindow(input) {
+  const count = input.turns.length;
+  if (count === 0) return { range: { from: 0, to: 0 }, mounted: [] };
+  const tops = new Array(count + 1);
+  tops[0] = input.top;
+  let anyUnmeasured = false;
+  for (let i = 0; i < count; i += 1) {
+    const measurement = measured(input, i);
+    if (!measurement) anyUnmeasured = true;
+    tops[i + 1] = tops[i] + (measurement?.height ?? 0) + input.gap;
+  }
+  const viewTop = input.scrollTop;
+  const viewBottom = input.scrollTop + input.viewportHeight;
+  const firstEndingAfter = (y) => {
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = lo + hi >>> 1;
+      if (tops[mid + 1] - input.gap > y) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
+  const firstStartingAfter = (y) => {
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = lo + hi >>> 1;
+      if (tops[mid] > y) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
+  const span = (above, below) => ({
+    from: Math.min(count - 1, firstEndingAfter(viewTop - above * input.viewportHeight)),
+    to: Math.max(1, firstStartingAfter(viewBottom + below * input.viewportHeight))
+  });
+  const needed = span(TURN_WINDOW_MARGIN, TURN_WINDOW_MARGIN);
+  const current = input.current;
+  const range = !anyUnmeasured && current && current.from <= needed.from && current.to >= needed.to && current.to <= count ? current : span(TURN_WINDOW_OVERSCAN, TURN_WINDOW_OVERSCAN);
+  const mounted = [];
+  for (let i = 0; i < count; i += 1) {
+    if (i >= range.from && i < range.to || i === count - 1 || input.pinned.has(i) || !measured(input, i)) mounted.push(i);
+  }
+  return { range, mounted };
+}
+function turnSlots(turns, mounted, measurements, gap) {
+  const slots = [];
+  let next = 0;
+  const spacer = (from, to) => {
+    if (from >= to) return;
+    let height = gap * (to - from - 1);
+    for (let i = from; i < to; i += 1) height += measurements.get(turns[i].id)?.height ?? 0;
+    slots.push({ kind: "spacer", from, to, height });
+  };
+  for (const index2 of mounted) {
+    spacer(next, index2);
+    slots.push({ kind: "turn", index: index2 });
+    next = index2 + 1;
+  }
+  spacer(next, turns.length);
+  return slots;
+}
+function useTurnWindow(bodyRef, turns, enabled, contentKey) {
+  const measurements = React24.useRef(/* @__PURE__ */ new Map());
+  const geometry = React24.useRef({ width: 0, gap: 0, top: 0, viewportHeight: 0 });
+  const turnsRef = React24.useRef(turns);
+  turnsRef.current = turns;
+  const contentKeyRef = React24.useRef(contentKey);
+  contentKeyRef.current = contentKey;
+  const revalidate = React24.useCallback((list4) => {
+    for (const turn of list4) {
+      const measurement = measurements.current.get(turn.id);
+      if (!measurement || measurement.turn === turn) continue;
+      if (contentKeyRef.current(measurement.turn) === contentKeyRef.current(turn)) measurement.turn = turn;
+    }
+  }, []);
+  const pins = React24.useRef({ selection: /* @__PURE__ */ new Set(), focus: /* @__PURE__ */ new Set(), jump: /* @__PURE__ */ new Set() });
+  const [plan, setPlan] = React24.useState(null);
+  const planRef = React24.useRef(plan);
+  planRef.current = plan;
+  const replan = React24.useCallback(() => {
+    const body = bodyRef.current;
+    if (!enabled || !body) return;
+    const current = turnsRef.current;
+    revalidate(current);
+    const pinned = /* @__PURE__ */ new Set([...pins.current.selection, ...pins.current.focus, ...pins.current.jump]);
+    const next = planTurnWindow({
+      turns: current,
+      measurements: measurements.current,
+      ...geometry.current,
+      scrollTop: body.scrollTop,
+      current: planRef.current?.range ?? null,
+      pinned
+    });
+    const previous3 = planRef.current;
+    if (previous3 && previous3.mounted.length === next.mounted.length && previous3.mounted.every((index2, i) => index2 === next.mounted[i]) && previous3.range.from === next.range.from && previous3.range.to === next.range.to) return;
+    planRef.current = next;
+    const sink = globalThis.__consoleRenderCounts;
+    if (sink) sink.TurnWindowPlans = (sink.TurnWindowPlans ?? 0) + 1;
+    setPlan(next);
+  }, [bodyRef, enabled, revalidate]);
+  React24.useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!enabled || !body || typeof ResizeObserver === "undefined") return;
+    const indexOf = /* @__PURE__ */ new Map();
+    const observer = new ResizeObserver((entries) => {
+      const style = getComputedStyle(body);
+      const width = body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const gap = parseFloat(style.rowGap) || 0;
+      geometry.current = { ...geometry.current, width, gap, viewportHeight: body.clientHeight };
+      const byId = new Map(turnsRef.current.map((turn) => [turn.id, turn]));
+      for (const entry of entries) {
+        const id = indexOf.get(entry.target);
+        if (id === void 0) continue;
+        const turn = byId.get(id);
+        if (!turn || !entry.target.isConnected) continue;
+        const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.offsetHeight;
+        measurements.current.set(id, { height, turn, width });
+      }
+      const first = body.querySelector(":scope > [data-conversation-turn-id], :scope > [data-conversation-spacer]");
+      if (first) geometry.current.top = first.offsetTop;
+      replan();
+    });
+    observer.observe(body);
+    const observeTurns = () => {
+      for (const element2 of [...indexOf.keys()]) {
+        if (element2.parentNode === body) continue;
+        observer.unobserve(element2);
+        indexOf.delete(element2);
+      }
+      for (const element2 of body.querySelectorAll(":scope > [data-conversation-turn-id]")) {
+        if (indexOf.has(element2)) continue;
+        indexOf.set(element2, element2.dataset.conversationTurnId);
+        observer.observe(element2);
+      }
+    };
+    observeTurns();
+    const mutation = new MutationObserver(observeTurns);
+    mutation.observe(body, { childList: true });
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        replan();
+      });
+    };
+    body.addEventListener("scroll", onScroll, { passive: true });
+    const turnIndex = (node2) => {
+      const element2 = node2 instanceof Element ? node2 : node2?.parentElement;
+      const turn = element2?.closest("[data-conversation-turn-id]");
+      if (!turn || !body.contains(turn)) return -1;
+      return turnsRef.current.findIndex((candidate) => candidate.id === turn.dataset.conversationTurnId);
+    };
+    const onSelection = () => {
+      const selection = body.ownerDocument.getSelection();
+      const next = /* @__PURE__ */ new Set();
+      if (selection && !selection.isCollapsed) {
+        const a = turnIndex(selection.anchorNode);
+        const b = turnIndex(selection.focusNode);
+        if (a >= 0 || b >= 0) {
+          const from = Math.min(a >= 0 ? a : b, b >= 0 ? b : a);
+          const to = Math.max(a, b);
+          for (let i = from; i <= to; i += 1) next.add(i);
+        }
+      }
+      const same = next.size === pins.current.selection.size && [...next].every((i) => pins.current.selection.has(i));
+      if (same) return;
+      pins.current.selection = next;
+      replan();
+    };
+    const onFocus = () => {
+      const index2 = turnIndex(body.ownerDocument.activeElement);
+      pins.current.focus = index2 >= 0 ? /* @__PURE__ */ new Set([index2]) : /* @__PURE__ */ new Set();
+      replan();
+    };
+    body.ownerDocument.addEventListener("selectionchange", onSelection);
+    body.addEventListener("focusin", onFocus);
+    body.addEventListener("focusout", onFocus);
+    return () => {
+      observer.disconnect();
+      mutation.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+      body.removeEventListener("scroll", onScroll);
+      body.ownerDocument.removeEventListener("selectionchange", onSelection);
+      body.removeEventListener("focusin", onFocus);
+      body.removeEventListener("focusout", onFocus);
+    };
+  }, [bodyRef, enabled, replan]);
+  React24.useLayoutEffect(() => {
+    if (!enabled) return;
+    const body = bodyRef.current;
+    if (body) {
+      const byId = new Map(turns.map((turn) => [turn.id, turn]));
+      for (const element2 of body.querySelectorAll(":scope > [data-conversation-turn-id]")) {
+        const turn = byId.get(element2.dataset.conversationTurnId);
+        const measurement = turn && measurements.current.get(turn.id);
+        if (turn && measurement && measurement.turn !== turn) measurement.turn = turn;
+      }
+    }
+  }, [turns, enabled, bodyRef]);
+  const mount = React24.useCallback((index2) => {
+    if (index2 < 0 || index2 >= turnsRef.current.length) return false;
+    pins.current.jump = /* @__PURE__ */ new Set([index2]);
+    replan();
+    const body = bodyRef.current;
+    const release = () => {
+      body?.removeEventListener("wheel", release);
+      body?.removeEventListener("pointerdown", release);
+      body?.removeEventListener("keydown", release);
+      pins.current.jump = /* @__PURE__ */ new Set();
+    };
+    body?.addEventListener("wheel", release, { passive: true });
+    body?.addEventListener("pointerdown", release);
+    body?.addEventListener("keydown", release);
+    return true;
+  }, [bodyRef, replan]);
+  const slots = React24.useMemo(() => {
+    if (!enabled || !plan) return turns.map((_, index2) => ({ kind: "turn", index: index2 }));
+    revalidate(turns);
+    const mounted = new Set(plan.mounted.filter((index2) => index2 < turns.length));
+    for (let i = 0; i < turns.length; i += 1) {
+      const measurement = measurements.current.get(turns[i].id);
+      if (!measurement || measurement.turn !== turns[i] || measurement.width !== geometry.current.width) mounted.add(i);
+    }
+    return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap);
+  }, [enabled, plan, turns, revalidate]);
+  return React24.useMemo(() => ({ slots, mount }), [slots, mount]);
+}
+
 // src/panels/ChatPane.tsx
 var import_jsx_runtime53 = require("react/jsx-runtime");
+function transcriptWindowingDefault() {
+  return globalThis.__consoleTranscriptWindowing !== false;
+}
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -38906,6 +39149,15 @@ function extendChatMessages(previous3, entries, options = {}) {
     };
   }
   return { entries: entries.slice(), resolvePeerLabel: options.resolvePeerLabel, messages: merged, spans };
+}
+var turnContentKeys = /* @__PURE__ */ new WeakMap();
+function turnContentKey(turn) {
+  let key = turnContentKeys.get(turn);
+  if (key === void 0) {
+    key = JSON.stringify(turn.messages);
+    turnContentKeys.set(turn, key);
+  }
+  return key;
 }
 function internTurns(next, previous3) {
   if (previous3.length === 0) return next;
@@ -39282,7 +39534,8 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
   markdownUrlPolicy,
   approvalSnapshot,
   onApprovalDecision,
-  conversationId
+  conversationId,
+  turnWindow
 }) {
   countRender("TranscriptView");
   const windowedTurns = import_react40.default.useMemo(
@@ -39314,6 +39567,27 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
   const todayKey = transcriptDayKey((/* @__PURE__ */ new Date()).toISOString());
   const dayLabelNow = import_react40.default.useMemo(() => /* @__PURE__ */ new Date(), [todayKey]);
   const getTranscriptText = import_react40.default.useCallback(() => transcriptCopyText(messages), [messages]);
+  const renderTurn = (offset) => {
+    const turn = windowedTurns[offset];
+    return turn ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+      TranscriptTurn,
+      {
+        turn,
+        turnIndex: windowStart + offset,
+        identity,
+        previousDay: previousDays[offset],
+        dayLabelNow,
+        suppressWorkedId: phase2 ? lastAgentMessageId : null,
+        workGraphActions,
+        markdownUrlPolicy,
+        approvalSnapshot,
+        onApprovalDecision,
+        conversationId,
+        approvalInteractionIds: approvalInteractions[offset]
+      },
+      turn.id
+    ) : null;
+  };
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__body", onScroll, ref: bodyRef, tabIndex: 0, "aria-label": "Conversation transcript", children: [
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       CopyInlineButton,
@@ -39364,24 +39638,19 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
       agentLabel,
       "."
     ] }) }) }),
-    windowedTurns.map((turn, offset) => /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      TranscriptTurn,
-      {
-        turn,
-        turnIndex: windowStart + offset,
-        identity,
-        previousDay: previousDays[offset],
-        dayLabelNow,
-        suppressWorkedId: phase2 ? lastAgentMessageId : null,
-        workGraphActions,
-        markdownUrlPolicy,
-        approvalSnapshot,
-        onApprovalDecision,
-        conversationId,
-        approvalInteractionIds: approvalInteractions[offset]
-      },
-      turn.id
-    )),
+    turnWindow.slots.map((slot) => slot.kind === "spacer" ? (
+      // Stands for unmounted turns at their measured height (see transcript-window).
+      /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+        "div",
+        {
+          "aria-hidden": "true",
+          className: "conv__spacer",
+          "data-conversation-spacer": `${windowStart + slot.from}-${windowStart + slot.to}`,
+          style: { height: slot.height, flex: "none" }
+        },
+        `spacer:${windowedTurns[slot.from].id}`
+      )
+    ) : renderTurn(slot.index)),
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId }),
     liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       "div",
@@ -39506,6 +39775,7 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
   ] });
 });
 function ChatPane({
+  windowed = transcriptWindowingDefault(),
   agent,
   agentLabel,
   identity,
@@ -39655,6 +39925,8 @@ function ChatPane({
     windowAnchor,
     (id) => turnIndexById.get(id) ?? -1
   );
+  const revealedTurns = import_react40.default.useMemo(() => windowStart > 0 ? turns.slice(windowStart) : turns, [turns, windowStart]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnContentKey);
   const revealScrollAnchorRef = import_react40.default.useRef(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef,
@@ -39701,7 +39973,8 @@ function ChatPane({
   }, [identity, messages, phase2]);
   revealScrollAnchorRef.current = (rowId) => {
     const index2 = turns.findIndex((turn) => turn.messages.some((message) => (message.scrollRowId ?? message.id) === rowId));
-    if (index2 < 0 || index2 >= windowStart) return false;
+    if (index2 < 0) return false;
+    if (index2 >= windowStart) return turnWindow.mount(index2 - windowStart);
     const turnId = index2 === 0 ? "" : turns[index2]?.id ?? "";
     setRevealedFrom({ identity, turnId, mountedTurns: turns.length - index2 });
     return true;
@@ -39770,7 +40043,7 @@ function ChatPane({
   }, [updateActiveTurn]);
   import_react40.default.useEffect(() => {
     scheduleActiveTurnUpdate();
-  }, [scheduleActiveTurnUpdate, scrollSignature]);
+  }, [scheduleActiveTurnUpdate, scrollSignature, turnWindow.slots]);
   import_react40.default.useEffect(() => {
     updateActiveTurn();
     window.addEventListener("resize", scheduleActiveTurnUpdate);
@@ -40130,7 +40403,8 @@ function ChatPane({
         markdownUrlPolicy,
         conversationId,
         approvalSnapshot,
-        onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0
+        onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0,
+        turnWindow
       }
     ),
     turnRail,

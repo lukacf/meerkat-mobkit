@@ -102,6 +102,10 @@ function budgetFor(scenario) {
   return BUDGET_P95[scenario] ?? BUDGET_P95.default ?? Infinity;
 }
 const JSON_OUT = arg("json", null);
+// Windowed transcript equivalence (#544): the same filled history rendered
+// windowed and unwindowed must look identical at every scroll position.
+const EQUIVALENCE = Boolean(arg("equivalence", false));
+const MAX_MOUNTED_ELEMENTS = arg("max-mounted-elements", null) === null ? null : Number(arg("max-mounted-elements"));
 const HEADED = Boolean(arg("headed", false));
 const FILL = !arg("no-fill", false);
 // Open every tool card and disclosure, as an operator reading tool output does.
@@ -579,11 +583,269 @@ function fmt(n) {
   return Number.isFinite(n) ? n.toFixed(1) : "-";
 }
 
+/// Decode a non-interlaced 8-bit RGB(A) PNG (what Chromium screenshots are)
+/// to count differing pixels when two screenshots are not byte-identical.
+function decodePng(buffer) {
+  const zlib = require("node:zlib");
+  let offset = 8;
+  let width = 0, height = 0, channels = 0;
+  const idat = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0); height = data.readUInt32BE(4);
+      channels = data[9] === 6 ? 4 : data[9] === 2 ? 3 : 0;
+      if (!channels || data[8] !== 8 || data[12] !== 0) throw new Error("unsupported png");
+    } else if (type === "IDAT") idat.push(data);
+    offset += 12 + length;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const pixels = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let x = 0; x < stride; x += 1) {
+      const a = x >= channels ? pixels[y * stride + x - channels] : 0;
+      const b = y > 0 ? pixels[(y - 1) * stride + x] : 0;
+      const c = x >= channels && y > 0 ? pixels[(y - 1) * stride + x - channels] : 0;
+      const predictor = filter === 1 ? a : filter === 2 ? b : filter === 3 ? (a + b) >> 1
+        : filter === 4 ? (() => { const p = a + b - c; const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; })() : 0;
+      pixels[y * stride + x] = (line[x] + predictor) & 0xff;
+    }
+  }
+  return { width, height, channels, pixels };
+}
+
+/// Pixels that differ at all, the largest channel difference, and pixels
+/// that differ by more than `visible` levels in any channel. Two identical
+/// unwindowed pages differ by about ten pixels at one level (renderer
+/// noise, measured with EQUIVALENCE_SELF=1), so one level is tolerated.
+function differingPixels(left, right, visible = 1) {
+  const a = decodePng(left), b = decodePng(right);
+  if (a.width !== b.width || a.height !== b.height) return { any: Infinity, visible: Infinity, maxDelta: 255 };
+  let any = 0, over = 0, maxDelta = 0;
+  for (let i = 0; i < a.width * a.height; i += 1) {
+    let delta = 0;
+    for (let k = 0; k < Math.min(a.channels, b.channels, 3); k += 1) delta = Math.max(delta, Math.abs(a.pixels[i * a.channels + k] - b.pixels[i * b.channels + k]));
+    if (delta > 0) any += 1;
+    if (delta > visible) over += 1;
+    maxDelta = Math.max(maxDelta, delta);
+  }
+  return { any, visible: over, maxDelta };
+}
+
+async function openFilled(browser, baseUrl, turns, windowed) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: DPR });
+  const page = await context.newPage();
+  if (!windowed) await page.addInitScript(() => { globalThis.__consoleTranscriptWindowing = false; });
+  await page.goto(`${baseUrl}/?turns=${turns}`);
+  await page.waitForFunction(() => document.querySelectorAll("[data-chat-turn-index]").length > 0, null, { timeout: 120_000 });
+  await fillHistory(page);
+  await page.evaluate(() => { const body = document.querySelector(".conv__body"); body.scrollTop = body.scrollHeight; });
+  await page.waitForTimeout(1500);
+  return page;
+}
+
+async function settled(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  await page.waitForTimeout(150);
+}
+
+function transcriptState(page) {
+  return page.evaluate(() => {
+    const body = document.querySelector(".conv__body");
+    const box = body.getBoundingClientRect();
+    const rows = [...body.querySelectorAll("[data-conversation-row-id]")].map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { id: element.dataset.conversationRowId, top: Math.round((rect.top - box.top) * 10) / 10, height: Math.round(rect.height * 10) / 10 };
+    }).filter((row) => row.top + row.height > 0 && row.top < box.height);
+    return {
+      scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, rows,
+      mountedTurns: body.querySelectorAll("[data-chat-turn-index]").length, elements: document.getElementsByTagName("*").length,
+      box: { x: box.x, y: box.y, width: box.width, height: box.height },
+      // Content starts after the left padding (the turn rail's gutter).
+      contentLeft: parseFloat(getComputedStyle(body).paddingLeft),
+      railActive: [...document.querySelectorAll(".conv-turn-rail__button")].map((button) => `${button.getAttribute("aria-label")}:${button.classList.contains("is-active") || button.getAttribute("aria-current") === "true"}`).join("|"),
+    };
+  });
+}
+
+/// Windowed versus unwindowed at a spread of scroll positions: scroll height,
+/// visible rows and their offsets, and a pixel-identical transcript.
+async function equivalence(browser, baseUrl, turns) {
+  const failures = [];
+  const windowed = await openFilled(browser, baseUrl, turns, process.env.EQUIVALENCE_SELF !== "1");
+  const oracle = await openFilled(browser, baseUrl, turns, false);
+  const base = await transcriptState(oracle);
+  const range = base.scrollHeight - base.clientHeight;
+  // A pane resize invalidates every measured height: compare after one too.
+  const positions = [1, 0.97, 0.9, 0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.1, 0.05, 0, 0.5, 0.99, "resize", 0.8, 0.3, 1]
+    .map((f) => (f === "resize" ? f : Math.round(range * f)));
+  let checked = 0;
+  let maxElements = 0;
+  const antialias = { any: 0, maxDelta: 0 };
+  for (const y of positions) {
+    if (y === "resize") {
+      for (const page of [windowed, oracle]) await page.setViewportSize({ width: 1180, height: 820 });
+      await windowed.waitForTimeout(1000);
+      continue;
+    }
+    for (const page of [windowed, oracle]) await page.evaluate((top) => { document.querySelector(".conv__body").scrollTop = top; }, y);
+    await settled(windowed); await settled(oracle);
+    const [a, b] = [await transcriptState(windowed), await transcriptState(oracle)];
+    maxElements = Math.max(maxElements, a.elements);
+    const where = `turns=${turns} scrollTop=${y}`;
+    if (Math.abs(a.scrollHeight - b.scrollHeight) > 0.5) failures.push(`${where}: scrollHeight ${a.scrollHeight} != ${b.scrollHeight}`);
+    if (process.env.EQUIVALENCE_DEBUG && Math.abs(a.scrollHeight - b.scrollHeight) > 0.5) {
+      const spacers = await windowed.evaluate(() => [...document.querySelectorAll("[data-conversation-spacer]")].map((el) => ({ range: el.dataset.conversationSpacer, height: el.getBoundingClientRect().height })));
+      const real = await oracle.evaluate(() => { const gap = parseFloat(getComputedStyle(document.querySelector(".conv__body")).rowGap); return { gap, turns: Object.fromEntries([...document.querySelectorAll("[data-chat-turn-index]")].map((el) => [el.dataset.chatTurnIndex, el.getBoundingClientRect().height])) }; });
+      const mountedHeights = await windowed.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-chat-turn-index]")].map((el) => [el.dataset.chatTurnIndex, el.getBoundingClientRect().height])));
+      for (const sp of spacers) {
+        const [from, to] = sp.range.split("-").map(Number);
+        let expected = real.gap * (to - from - 1);
+        for (let i = from; i < to; i += 1) expected += real.turns[i] ?? NaN;
+        if (Math.abs(expected - sp.height) > 0.5) process.stdout.write(`  spacer ${sp.range}: ${sp.height} vs real ${expected.toFixed(1)}\n`);
+      }
+      for (const [i, h] of Object.entries(mountedHeights)) if (Math.abs((real.turns[i] ?? NaN) - h) > 0.5) process.stdout.write(`  mounted turn ${i}: ${h} vs real ${real.turns[i]}\n`);
+    }
+    if (Math.abs(a.scrollTop - b.scrollTop) > 0.5) failures.push(`${where}: scrollTop ${a.scrollTop} != ${b.scrollTop}`);
+    if (JSON.stringify(a.rows) !== JSON.stringify(b.rows)) failures.push(`${where}: visible rows differ: ${JSON.stringify(a.rows).slice(0, 300)} vs ${JSON.stringify(b.rows).slice(0, 300)}`);
+    if (a.railActive !== b.railActive) failures.push(`${where}: turn rail differs`);
+    // Glyph anti-aliasing bleeds one column into the gutter and is not
+    // deterministic there even between two identical unwindowed pages, so the
+    // pixels compared start at the content edge; the gutter's rail is
+    // compared above as state.
+    const clip = { x: b.box.x + b.contentLeft + 1, y: b.box.y, width: b.box.width - b.contentLeft - 1, height: b.box.height };
+    const [shotA, shotB] = [await windowed.screenshot({ clip }), await oracle.screenshot({ clip })];
+    if (!shotA.equals(shotB)) {
+      const diff = differingPixels(shotA, shotB);
+      antialias.any += diff.any;
+      antialias.maxDelta = Math.max(antialias.maxDelta, diff.maxDelta);
+      if (diff.visible > 0) {
+        await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-windowed.png`), shotA);
+        await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-oracle.png`), shotB);
+        failures.push(`${where}: ${diff.visible} pixels differ by more than one level, max channel delta ${diff.maxDelta} (screenshots in ${outDir})`);
+      }
+    }
+    checked += 1;
+  }
+  failures.push(...await pinning(windowed, turns));
+  process.stdout.write(`[typing-lag-browser] equivalence turns=${turns}: ${checked} scroll positions, windowed elements<=${maxElements} mounted turns=${(await transcriptState(windowed)).mountedTurns} vs unwindowed elements=${base.elements} turns=${base.mountedTurns}; pixels differing by one level ${antialias.any} (max channel delta ${antialias.maxDelta})\n`);
+  if (MAX_MOUNTED_ELEMENTS !== null && maxElements > MAX_MOUNTED_ELEMENTS) failures.push(`turns=${turns}: windowed transcript mounted ${maxElements} elements > ${MAX_MOUNTED_ELEMENTS}`);
+  await windowed.context().close();
+  await oracle.context().close();
+  return failures;
+}
+
+/// A selection, keyboard focus and an opened disclosure survive scrolling
+/// their turns far out of the window.
+async function pinning(page, turns) {
+  const failures = [];
+  const scrollTo = async (fraction) => {
+    await page.evaluate((f) => { const body = document.querySelector(".conv__body"); body.scrollTop = (body.scrollHeight - body.clientHeight) * f; }, fraction);
+    await settled(page);
+  };
+  await scrollTo(0.5);
+  const selected = await page.evaluate(() => {
+    const turns = [...document.querySelectorAll(".conv__body > [data-chat-turn-index]")];
+    const texts = turns.map((turn) => turn.querySelector(".cc-rich-paragraph, .msg__text"));
+    const first = texts.findIndex(Boolean);
+    const last = texts.findIndex((text, i) => text && i >= first + 2);
+    if (first < 0 || last < 0) return null;
+    const range = document.createRange();
+    range.setStart(texts[first].firstChild ?? texts[first], 0);
+    range.setEnd(texts[last].firstChild ?? texts[last], 1);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    window.__pinnedSelection = { text: getSelection().toString(), turns: last - first + 1 };
+    return window.__pinnedSelection;
+  });
+  if (!selected) failures.push(`turns=${turns}: no selectable text for the pinning check`);
+  else {
+    await scrollTo(0.02);
+    await scrollTo(0.98);
+    const kept = await page.evaluate(() => ({ text: getSelection().toString(), connected: Boolean(getSelection().anchorNode?.isConnected) }));
+    if (kept.text !== selected.text || !kept.connected) failures.push(`turns=${turns}: a selection across ${selected.turns} turns did not survive scrolling away`);
+    await page.evaluate(() => getSelection().removeAllRanges());
+  }
+  await scrollTo(0.5);
+  const focused = await page.evaluate(() => {
+    const target = document.querySelector('.conv__body > [data-chat-turn-index] [role="button"][tabindex="0"], .conv__body > [data-chat-turn-index] button');
+    if (!target) return false;
+    target.focus();
+    window.__pinnedFocus = target;
+    return document.activeElement === target;
+  });
+  if (focused) {
+    await scrollTo(0.02);
+    await scrollTo(0.98);
+    const kept = await page.evaluate(() => document.activeElement === window.__pinnedFocus && window.__pinnedFocus.isConnected);
+    if (!kept) failures.push(`turns=${turns}: a focused control lost focus when its turn scrolled away`);
+    await page.evaluate(() => document.activeElement?.blur());
+  }
+  await scrollTo(0.5);
+  const opened = await page.evaluate(() => {
+    const header = document.querySelector('.conv__body [role="button"][aria-expanded="false"]');
+    if (!header) return null;
+    const row = header.closest("[data-conversation-row-id]")?.dataset.conversationRowId;
+    header.click();
+    return row ?? null;
+  });
+  if (opened) {
+    await scrollTo(0.02);
+    await scrollTo(0.5);
+    const still = await page.evaluate((row) => {
+      const element = [...document.querySelectorAll("[data-conversation-row-id]")].find((candidate) => candidate.dataset.conversationRowId === row);
+      return element ? element.querySelector('[role="button"][aria-expanded="true"]') !== null : null;
+    }, opened);
+    if (still === false) failures.push(`turns=${turns}: an opened tool call closed after its turn scrolled out and back`);
+  }
+  // A rail jump to a turn outside the window mounts it and brings it into view.
+  await scrollTo(1);
+  const jump = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('.conv-turn-rail__button[data-testid^="chat-turn-rail:"]')]
+      .find((candidate) => /^\d+$/.test(candidate.dataset.testid.split(":").pop()));
+    const turn = Number(button?.dataset.testid?.split(":").pop());
+    if (!button || !Number.isFinite(turn)) return null;
+    const mountedBefore = Boolean(document.querySelector(`.conv__body > [data-chat-turn-index="${turn}"]`));
+    button.click();
+    return { turn, mountedBefore };
+  });
+  if (jump && !jump.mountedBefore) {
+    await settled(page); await settled(page);
+    const inView = await page.evaluate((turn) => {
+      const body = document.querySelector(".conv__body");
+      const element = document.querySelector(`.conv__body > [data-chat-turn-index="${turn}"]`);
+      if (!element) return false;
+      const a = element.getBoundingClientRect(), b = body.getBoundingClientRect();
+      return a.bottom > b.top && a.top < b.bottom;
+    }, jump.turn);
+    if (!inView) failures.push(`turns=${turns}: a rail jump to unmounted turn ${jump.turn + 1} did not bring it into view`);
+  } else if (!jump) failures.push(`turns=${turns}: no rail tick for the jump check`);
+  return failures;
+}
+
 async function main() {
   await buildHarness();
   const server = await serve();
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ headless: !HEADED });
+  if (EQUIVALENCE) {
+    try {
+      const failures = [];
+      for (const turns of TURNS) failures.push(...await equivalence(browser, baseUrl, turns));
+      for (const failure of failures) process.stdout.write(`[typing-lag-browser] FAIL ${failure}\n`);
+      if (failures.length) process.exitCode = 1;
+      else process.stdout.write("[typing-lag-browser] windowed transcript is equivalent at every position\n");
+    } finally {
+      await browser.close();
+      server.close();
+    }
+    return;
+  }
   const results = [];
   try {
     for (const turns of SESSION ? [0] : TURNS) {
@@ -641,6 +903,9 @@ async function main() {
       }
       if (streamingScenario && MAX_STREAM_COMMITS_PER_SECOND !== null && m.work.commitsPerSecond > MAX_STREAM_COMMITS_PER_SECOND) {
         failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.commitsPerSecond)} console renders per second while streaming > ${MAX_STREAM_COMMITS_PER_SECOND}; streamed text is rendering on every token`);
+      }
+      if (scenario === "idle" && MAX_MOUNTED_ELEMENTS !== null && r.dom.elements > MAX_MOUNTED_ELEMENTS) {
+        failures.push(`turns=${r.turns}: ${r.dom.elements} elements mounted > ${MAX_MOUNTED_ELEMENTS}; the transcript window is not bounding the DOM`);
       }
       if (streamingScenario && MAX_FORCED_LAYOUTS_PER_TOKEN !== null) {
         if (!m.breakdown) failures.push(`turns=${r.turns} ${scenario}: --max-forced-layouts-per-token needs --trace`);

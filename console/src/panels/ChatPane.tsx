@@ -47,9 +47,19 @@ import {
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
 import { countRender } from "../lib/render-counts";
+import { useTurnWindow, type TurnWindow } from "./transcript-window";
+
+/// Test-only switch for the windowed transcript's oracle runs (see
+/// typing-lag-browser's equivalence scenario); production never sets it.
+function transcriptWindowingDefault(): boolean {
+  return (globalThis as { __consoleTranscriptWindowing?: boolean }).__consoleTranscriptWindowing !== false;
+}
 import { Icon } from "../icon";
 
 interface ChatPaneProps extends ConversationApprovalProps {
+  /** Mount only the turns near the viewport (default). Off renders every
+   * revealed turn: the oracle the windowed transcript is checked against. */
+  windowed?: boolean;
   agent: ConsoleAgent | null;
   agentLabel: string;
   identity: string;
@@ -736,6 +746,18 @@ function extendChatMessages(
 }
 
 /// Reuse the previous turn object while its rows are the same row objects.
+/// What a turn renders, for the transcript window: a rebuilt turn object with
+/// the same key renders the same height. Cached per object.
+const turnContentKeys = new WeakMap<ChatTurn, string>();
+function turnContentKey(turn: ChatTurn): string {
+  let key = turnContentKeys.get(turn);
+  if (key === undefined) {
+    key = JSON.stringify(turn.messages);
+    turnContentKeys.set(turn, key);
+  }
+  return key;
+}
+
 function internTurns(next: ChatTurn[], previous: readonly ChatTurn[]): ChatTurn[] {
   if (previous.length === 0) return next;
   const byId = new Map(previous.map((turn) => [turn.id, turn]));
@@ -1258,6 +1280,7 @@ const TranscriptView = React.memo(function TranscriptView({
   approvalSnapshot,
   onApprovalDecision,
   conversationId,
+  turnWindow,
 }: {
   identity: string;
   agentLabel: string;
@@ -1279,6 +1302,8 @@ const TranscriptView = React.memo(function TranscriptView({
   approvalSnapshot?: ConversationApprovalProps["approvalSnapshot"];
   onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
   conversationId?: string;
+  /** Mounted turns and spacers for `turns.slice(windowStart)`. */
+  turnWindow: TurnWindow;
 }) {
   countRender("TranscriptView");
   const windowedTurns = React.useMemo(
@@ -1316,6 +1341,26 @@ const TranscriptView = React.memo(function TranscriptView({
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
+  const renderTurn = (offset: number) => {
+    const turn = windowedTurns[offset];
+    return turn ? (
+      <TranscriptTurn
+        key={turn.id}
+        turn={turn}
+        turnIndex={windowStart + offset}
+        identity={identity}
+        previousDay={previousDays[offset]}
+        dayLabelNow={dayLabelNow}
+        suppressWorkedId={phase ? lastAgentMessageId : null}
+        workGraphActions={workGraphActions}
+        markdownUrlPolicy={markdownUrlPolicy}
+        approvalSnapshot={approvalSnapshot}
+        onApprovalDecision={onApprovalDecision}
+        conversationId={conversationId}
+        approvalInteractionIds={approvalInteractions[offset]}
+      />
+    ) : null;
+  };
   return (
     <div className="conv__body" onScroll={onScroll} ref={bodyRef} tabIndex={0} aria-label="Conversation transcript">
       <CopyInlineButton
@@ -1364,23 +1409,16 @@ const TranscriptView = React.memo(function TranscriptView({
           <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
         </div>
       )}
-      {windowedTurns.map((turn, offset) => (
-        <TranscriptTurn
-          key={turn.id}
-          turn={turn}
-          turnIndex={windowStart + offset}
-          identity={identity}
-          previousDay={previousDays[offset]}
-          dayLabelNow={dayLabelNow}
-          suppressWorkedId={phase ? lastAgentMessageId : null}
-          workGraphActions={workGraphActions}
-          markdownUrlPolicy={markdownUrlPolicy}
-          approvalSnapshot={approvalSnapshot}
-          onApprovalDecision={onApprovalDecision}
-          conversationId={conversationId}
-          approvalInteractionIds={approvalInteractions[offset]}
+      {turnWindow.slots.map((slot) => slot.kind === "spacer" ? (
+        // Stands for unmounted turns at their measured height (see transcript-window).
+        <div
+          aria-hidden="true"
+          className="conv__spacer"
+          data-conversation-spacer={`${windowStart + slot.from}-${windowStart + slot.to}`}
+          key={`spacer:${windowedTurns[slot.from].id}`}
+          style={{ height: slot.height, flex: "none" }}
         />
-      ))}
+      ) : renderTurn(slot.index))}
       <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} />
       {liveSpeech && liveSpeech.length > 0 && (
         <div
@@ -1542,6 +1580,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
 });
 
 export function ChatPane({
+  windowed = transcriptWindowingDefault(),
   agent,
   agentLabel,
   identity,
@@ -1713,6 +1752,9 @@ export function ChatPane({
     windowAnchor,
     (id) => turnIndexById.get(id) ?? -1,
   );
+  // Of the revealed turns, only those near the viewport are mounted.
+  const revealedTurns = React.useMemo(() => (windowStart > 0 ? turns.slice(windowStart) : turns), [turns, windowStart]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnContentKey);
   const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,
@@ -1770,7 +1812,9 @@ export function ChatPane({
   // turn window. Revealing a saved anchor is an explicit navigation request.
   revealScrollAnchorRef.current = (rowId) => {
     const index = turns.findIndex((turn) => turn.messages.some((message) => (message.scrollRowId ?? message.id) === rowId));
-    if (index < 0 || index >= windowStart) return false;
+    if (index < 0) return false;
+    // Revealed but outside the mounted window: mount it where it is.
+    if (index >= windowStart) return turnWindow.mount(index - windowStart);
     const turnId = index === 0 ? "" : turns[index]?.id ?? "";
     setRevealedFrom({ identity, turnId, mountedTurns: turns.length - index });
     return true;
@@ -1846,9 +1890,11 @@ export function ChatPane({
     activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
   }, [updateActiveTurn]);
 
+  // Also when the transcript window mounts other turns: the visible turns
+  // are read from the mounted ones.
   React.useEffect(() => {
     scheduleActiveTurnUpdate();
-  }, [scheduleActiveTurnUpdate, scrollSignature]);
+  }, [scheduleActiveTurnUpdate, scrollSignature, turnWindow.slots]);
 
   React.useEffect(() => {
     updateActiveTurn();
@@ -2237,6 +2283,7 @@ export function ChatPane({
         conversationId={conversationId}
         approvalSnapshot={approvalSnapshot}
         onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
+        turnWindow={turnWindow}
       />
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}
