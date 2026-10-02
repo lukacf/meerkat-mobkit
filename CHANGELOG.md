@@ -571,6 +571,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     callback id, never its content). When it is a reply to a pending callback,
     that callback now fails at once with "malformed callback response" instead
     of waiting out its 130 s deadline.
+- Module subprocesses are now reaped on every path that stops owning them.
+  - A module that closes stdout without exiting no longer blocks module start
+    until it exits; the start fails with `EmptyOutput` and the module is
+    killed and reaped.
+  - A bootstrap that fails after starting modules (for example on a
+    malformed memory state) now kills and reaps those modules instead of
+    leaking them.
+  - A cleanup failure after a failed start, an aborted respawn's replacement
+    and dropping a `MobkitRuntimeHandle` without `shutdown()` all kill and
+    reap the process when its owner is released.
+  - `RuntimeShutdownReport::orphan_processes` still counts children whose
+    synchronous termination failed; those children are now also reaped as
+    the shutdown releases them.
+  - On Linux and macOS the first event line is read on the calling thread
+    within the start timeout and the module's stdout is closed afterwards.
+    No reader thread is left blocked on a pipe that a descendant still
+    holds; such a descendant now gets EPIPE.
+  - Behavior change: dropping the runtime handle now terminates its live
+    module processes; previously they kept running.
 
 - Console: queued rows that did not go through now say what happened in
   plain words. A refused row reads "Not sent: this message never reached

@@ -1,6 +1,7 @@
 //! Module supervisor — process lifecycle, health monitoring, and restart logic.
 
 use super::module_boundary::{module_env_with_extra, module_uses_mcp, probe_module_mcp_tools};
+use super::module_process::{FirstLine, ModuleProcess, read_first_line};
 use super::*;
 
 pub fn run_module_boundary_once(
@@ -76,8 +77,10 @@ impl MobkitRuntimeHandle {
 
         let mut orphan_processes = 0_u32;
         let children = std::mem::take(&mut self.live_children);
+        // A child whose termination fails is still reaped when its owner drops
+        // below; the count reports that synchronous cleanup was not confirmed.
         for (_, mut child) in children {
-            if terminate_child(&mut child, false).is_err() {
+            if child.terminate(false).is_err() {
                 orphan_processes += 1;
             }
         }
@@ -209,17 +212,15 @@ impl MobkitRuntimeHandle {
                 ));
             };
             if let Some(mut existing_child) = self.live_children.remove(module_id)
-                && let Err(err) = terminate_child(
-                    &mut existing_child,
-                    self.runtime_options.supervisor_test_force_terminate_failure,
-                )
+                && let Err(err) = existing_child
+                    .terminate(self.runtime_options.supervisor_test_force_terminate_failure)
             {
                 self.live_children
                     .insert(module_id.to_string(), existing_child);
 
                 let mut error_message =
                     format!("failed to terminate existing child before respawn: {err}");
-                if let Err(replacement_err) = terminate_child(&mut child, false) {
+                if let Err(replacement_err) = child.terminate(false) {
                     error_message.push_str(&format!(
                         "; failed to terminate replacement child after aborted respawn: {replacement_err}"
                     ));
@@ -239,10 +240,8 @@ impl MobkitRuntimeHandle {
         }
 
         if let Some(mut existing_child) = self.live_children.remove(module_id)
-            && let Err(err) = terminate_child(
-                &mut existing_child,
-                self.runtime_options.supervisor_test_force_terminate_failure,
-            )
+            && let Err(err) = existing_child
+                .terminate(self.runtime_options.supervisor_test_force_terminate_failure)
         {
             self.live_children
                 .insert(module_id.to_string(), existing_child);
@@ -264,7 +263,7 @@ impl MobkitRuntimeHandle {
 
 pub(super) struct SuperviseModuleStartResult {
     pub event: Option<EventEnvelope<UnifiedEvent>>,
-    pub child: Option<Child>,
+    pub child: Option<ModuleProcess>,
     pub transitions: Vec<ModuleHealthTransition>,
     pub terminal_error: Option<RuntimeBoundaryError>,
 }
@@ -320,7 +319,7 @@ pub(super) fn supervise_module_start(
                         attempt: attempts,
                     });
                     if let Err(err) =
-                        terminate_child(&mut child, options.supervisor_test_force_terminate_failure)
+                        child.terminate(options.supervisor_test_force_terminate_failure)
                     {
                         transitions.push(ModuleHealthTransition {
                             module_id: module.id.clone(),
@@ -478,39 +477,19 @@ fn spawn_module_capture_first_event(
     pre_spawn: Option<&PreSpawnData>,
     timeout: Duration,
     force_terminate_failure: bool,
-) -> Result<(EventEnvelope<UnifiedEvent>, Child), RuntimeBoundaryError> {
+) -> Result<(EventEnvelope<UnifiedEvent>, ModuleProcess), RuntimeBoundaryError> {
     let env = module_env_with_extra(module, pre_spawn, &[]);
-
-    let mut child = Command::new(&module.command)
+    let mut command = Command::new(&module.command);
+    command
         .args(&module.args)
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| {
-            RuntimeBoundaryError::Process(ProcessBoundaryError::SpawnFailed(err.to_string()))
-        })?;
+        .envs(env.iter().map(|(k, v)| (k, v)));
+    let (mut child, stdout) =
+        ModuleProcess::spawn(command).map_err(RuntimeBoundaryError::Process)?;
 
-    let stdout = child.stdout.take().ok_or(RuntimeBoundaryError::Process(
-        ProcessBoundaryError::MissingStdout,
-    ))?;
-
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
-        let result = reader.read_line(&mut line).map_err(|err| err.to_string());
-        let _ = tx.send((result, line));
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok((Ok(0), _)) => {
-            let _ = child.wait();
-            Err(RuntimeBoundaryError::Process(
-                ProcessBoundaryError::EmptyOutput,
-            ))
-        }
-        Ok((Ok(_), mut line)) => {
+    // Every failure below terminates the child; if that fails, releasing
+    // `child` on return still kills and reaps it.
+    let failure = match read_first_line(stdout, timeout) {
+        FirstLine::Line(mut line) => {
             if line.ends_with('\n') {
                 line.pop();
                 if line.ends_with('\r') {
@@ -518,71 +497,37 @@ fn spawn_module_capture_first_event(
                 }
             }
             match normalize_event_line(&line) {
-                Ok(event) => Ok((event, child)),
-                Err(err) => {
-                    if let Err(terminate_err) = terminate_child(&mut child, force_terminate_failure)
-                    {
-                        return Err(RuntimeBoundaryError::Process(ProcessBoundaryError::Io(
-                            format!(
-                                "cleanup terminate failed after normalize error: {terminate_err}; normalize_error={err:?}"
-                            ),
-                        )));
-                    }
-                    Err(RuntimeBoundaryError::Normalize(err))
-                }
+                Ok(event) => return Ok((event, child)),
+                Err(err) => (
+                    format!("normalize error: {err:?}"),
+                    RuntimeBoundaryError::Normalize(err),
+                ),
             }
         }
-        Ok((Err(err), _)) => {
-            if let Err(terminate_err) = terminate_child(&mut child, force_terminate_failure) {
-                return Err(RuntimeBoundaryError::Process(ProcessBoundaryError::Io(
-                    format!(
-                        "cleanup terminate failed after io read error: {terminate_err}; io_error={err}"
-                    ),
-                )));
-            }
-            Err(RuntimeBoundaryError::Process(ProcessBoundaryError::Io(err)))
-        }
-        Err(_) => {
+        // Closing stdout does not mean the module exited.
+        FirstLine::Closed => (
+            "empty output".to_string(),
+            RuntimeBoundaryError::Process(ProcessBoundaryError::EmptyOutput),
+        ),
+        FirstLine::ReadFailed(err) => (
+            format!("io read error: {err}"),
+            RuntimeBoundaryError::Process(ProcessBoundaryError::Io(err)),
+        ),
+        FirstLine::TimedOut => {
             let timeout_ms = timeout.as_millis() as u64;
-            if let Err(terminate_err) = terminate_child(&mut child, force_terminate_failure) {
-                return Err(RuntimeBoundaryError::Process(ProcessBoundaryError::Io(
-                    format!(
-                        "cleanup terminate failed after timeout({timeout_ms}ms): {terminate_err}"
-                    ),
-                )));
-            }
-            Err(RuntimeBoundaryError::Process(
-                ProcessBoundaryError::Timeout { timeout_ms },
-            ))
+            (
+                format!("timeout({timeout_ms}ms)"),
+                RuntimeBoundaryError::Process(ProcessBoundaryError::Timeout { timeout_ms }),
+            )
         }
+    };
+    let (context, error) = failure;
+    if let Err(terminate_err) = child.terminate(force_terminate_failure) {
+        return Err(RuntimeBoundaryError::Process(ProcessBoundaryError::Io(
+            format!("cleanup terminate failed after {context}: {terminate_err}"),
+        )));
     }
-}
-
-fn terminate_child(child: &mut Child, force_terminate_failure: bool) -> Result<(), String> {
-    if force_terminate_failure {
-        return Err("forced terminate failure for testing".to_string());
-    }
-    match child.try_wait() {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => {
-            if let Err(kill_err) = child.kill() {
-                return match child.try_wait() {
-                    Ok(Some(_)) => Ok(()),
-                    Ok(None) => Err(format!(
-                        "kill failed while process still running: {kill_err}"
-                    )),
-                    Err(probe_err) => Err(format!(
-                        "kill failed and process status probe failed: {kill_err}; {probe_err}"
-                    )),
-                };
-            }
-            child
-                .wait()
-                .map(|_| ())
-                .map_err(|err| format!("wait after kill failed: {err}"))
-        }
-        Err(err) => Err(format!("try_wait failed: {err}")),
-    }
+    Err(error)
 }
 
 fn supervisor_warning_event(
