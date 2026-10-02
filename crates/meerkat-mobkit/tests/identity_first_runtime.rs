@@ -298,6 +298,16 @@ impl ContinuityStore for TransientBrokenContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -916,6 +926,16 @@ impl ContinuityStore for CountingContinuityStore {
             .delete_continuity_record(identity, fencing_token)
             .await
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 /// Returns one continuity snapshot only after the caller releases a gate.
@@ -1041,6 +1061,16 @@ impl ContinuityStore for GatedStaleResolveContinuityStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -1226,6 +1256,16 @@ impl ContinuityStore for IdentityScopedVersionStore {
             .retain(|(head_identity, _), _| head_identity != identity);
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[async_trait]
@@ -1330,6 +1370,16 @@ impl ContinuityStore for FaultyContinuityStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -1447,6 +1497,16 @@ impl ContinuityStore for ResolveProbeStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -4730,6 +4790,16 @@ impl ContinuityStore for RollbackFailingContinuityStore {
             .delete_continuity_record(identity, fencing_token)
             .await
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[tokio::test]
@@ -6004,6 +6074,16 @@ async fn identity_first_runtime_lazy_snapshot_missing_record_stays_materializabl
             _fencing_token: FencingToken,
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<
+                dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+            >,
+        > {
+            None
         }
     }
 
@@ -9671,6 +9751,16 @@ async fn identity_first_runtime_restore_flow_broken_fails_loudly() {
             _fencing_token: FencingToken,
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<
+                dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+            >,
+        > {
+            None
         }
     }
 

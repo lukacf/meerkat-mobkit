@@ -27,6 +27,7 @@ mod console_log;
 mod continuity;
 mod continuity_adapter;
 mod continuity_incremental;
+mod continuity_wrapper;
 mod event_log;
 mod legacy_data;
 
@@ -38,5 +39,6 @@ pub use continuity::{
 };
 pub use continuity_adapter::continuity_session_adapter;
 pub use continuity_incremental::continuity_incremental;
+pub use continuity_wrapper::continuity_wrapper_preserves_incremental_channel;
 pub use event_log::event_log;
 pub use legacy_data::{legacy_continuity_database, legacy_memory_database};

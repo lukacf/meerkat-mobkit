@@ -273,15 +273,27 @@ pub trait ContinuityStore: Send + Sync {
     ///   `(identity, generation)` version monotonicity apply per append and
     ///   per head write, not just per whole-blob save.
     ///
-    /// The default is `None`: the store persists whole snapshots only, and
-    /// `ContinuitySessionStoreAdapter::as_incremental` stays `None` (the H2
-    /// loudly-reported whole-blob degradation). The bundled
-    /// `LocalContinuityStore` advertises the channel (M4b landed: head+rows
+    /// REQUIRED, with no default. A store returning `None` persists whole
+    /// snapshots only: `ContinuitySessionStoreAdapter::as_incremental` stays
+    /// `None` and meerkat writes the whole session document at every turn
+    /// boundary. That must be a stated choice, never an inherited one: a
+    /// default `None` is how a wrapper around an incremental-capable store
+    /// (or a native store that never considered the channel) silently
+    /// degraded to O(session) writes per turn. A decorator forwards its inner
+    /// store's channel; a store without one returns `None` and says why.
+    ///
+    /// The bundled `LocalContinuityStore` advertises the channel (head+rows
     /// are its canonical durable session representation); the JSON-RPC
-    /// `GatewayContinuityStore` cannot advertise it (its wire protocol has
-    /// only whole-snapshot verbs).
-    fn as_incremental_sessions(&self) -> Option<Arc<dyn ContinuityIncrementalSessions>> {
-        None
+    /// `GatewayContinuityStore` returns `None` (its wire protocol has only
+    /// whole-snapshot verbs).
+    /// `mobkit_store_conformance::chapters::continuity_wrapper_preserves_incremental_channel`
+    /// checks that a wrapper keeps the channel.
+    fn as_incremental_sessions(&self) -> Option<Arc<dyn ContinuityIncrementalSessions>>;
+
+    /// The concrete store type, for operator-facing diagnostics such as the
+    /// startup warning when a session store degrades to whole-blob saves.
+    fn store_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
     }
 }
 

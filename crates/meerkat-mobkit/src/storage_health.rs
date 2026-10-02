@@ -567,7 +567,11 @@ pub fn probe_session_store_incremental(store: &Arc<dyn SessionStore>, store_kind
             session_store = store_kind,
             "session store does not advertise incremental persistence; \
              session persistence degrades to whole-blob saves on every turn \
-             (incremental capability absent)"
+             (incremental capability absent). Fix: implement \
+             ContinuityStore::as_incremental_sessions on the continuity store \
+             (MobKit's ContinuityIncrementalSessions channel), or forward it \
+             from the store your wrapper wraps; check wrappers with \
+             mobkit_store_conformance::chapters::continuity_wrapper_preserves_incremental_channel"
         );
     }
     incremental

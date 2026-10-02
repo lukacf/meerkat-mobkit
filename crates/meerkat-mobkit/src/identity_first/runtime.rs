@@ -15139,6 +15139,14 @@ mod reset_reprofile_tests {
                 .delete_continuity_record(identity, fencing_token)
                 .await
         }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>,
+        > {
+            None
+        }
     }
 
     impl MutableRoster {

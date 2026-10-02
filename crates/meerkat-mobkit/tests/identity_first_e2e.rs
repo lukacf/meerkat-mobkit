@@ -812,6 +812,16 @@ impl ContinuityStore for BrokenContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[tokio::test]
@@ -1016,6 +1026,17 @@ impl ContinuityStoreTrait for StubContinuity {
         _ft: FencingToken,
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
+    }
+
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 

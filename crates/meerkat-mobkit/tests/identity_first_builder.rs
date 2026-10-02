@@ -211,6 +211,16 @@ impl ContinuityStore for StubContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[async_trait]
@@ -288,6 +298,16 @@ impl ContinuityStore for BrokenContinuityStore {
         _ft: FencingToken,
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -395,6 +415,16 @@ impl ContinuityStore for CountingReadyContinuityStore {
         _ft: FencingToken,
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -862,6 +892,16 @@ impl ContinuityStore for FailNextUpsertContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 impl GatedUpsertContinuityStore {
@@ -957,6 +997,16 @@ impl ContinuityStore for GatedUpsertContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         *self.record.lock().await = None;
         Ok(())
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -4748,4 +4798,40 @@ async fn identity_persistent_builder_registers_owners_before_deferred_activation
         .expect("restored identity turn commits with its registered authority");
     let shutdown = second.shutdown().await;
     assert!(shutdown.cleanup_completed(), "{shutdown:?}");
+}
+
+/// Strict mode refuses a whole-snapshot continuity store at build time,
+/// naming the concrete store, instead of starting on the whole-blob
+/// fallback. Without the opt-in the same launch builds (see
+/// `identity_first_builder_bootstraps_and_exposes_identity_runtime`).
+#[tokio::test]
+async fn strict_incremental_persistence_refuses_whole_snapshot_continuity_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
+    let result = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .require_incremental_session_persistence(true)
+            .build(),
+    )
+    .await;
+    match result {
+        Err(meerkat_mobkit::unified_runtime::UnifiedRuntimeBuilderError::SessionStoreNotIncremental {
+            store_kind,
+        }) => {
+            assert!(
+                store_kind.contains("ContinuitySessionStoreAdapter over")
+                    && store_kind.contains("StubContinuityStore"),
+                "the refusal names the adapter and the concrete continuity store: {store_kind}"
+            );
+        }
+        Err(other) => panic!("expected SessionStoreNotIncremental, got {other}"),
+        Ok(_) => panic!("strict mode must refuse a whole-snapshot continuity store"),
+    }
 }
