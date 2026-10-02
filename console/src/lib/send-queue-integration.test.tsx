@@ -6,7 +6,7 @@ import type { MobKitConsoleTransport } from "./headless";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
-import { PendingStack, type PendingItem } from "../panels/PendingStack";
+import { ACCEPTANCE_NOTICE_GRACE_MS, PendingStack, type PendingItem } from "../panels/PendingStack";
 
 const identity = "identity:queue-agent";
 function seed(twoPanes = false) {
@@ -464,7 +464,8 @@ describe("stock durable queue integration", () => {
     const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!);
     expect(saved.attempts[0].state).toBe("attempting");
     expect(JSON.parse(saved.attempts[0].envelopeJson).content).toBe("  byte exact\n🌳  ");
-    expect(screen.getByTestId("pending-stack")).toBeTruthy();
+    // Saved, but a send in flight stays out of the stack for the grace period.
+    expect(screen.queryByTestId("pending-stack")).toBeNull();
     await act(async () => { finish({ interaction_id: "accepted", identity, input_frame_id: "canonical-frame" } as never); });
     await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
   });
@@ -606,7 +607,7 @@ describe("stock durable queue integration", () => {
     // A new transport remounts the console lifetime (and its controller).
     const newSend = vi.fn(async (input) => ({ interaction_id: "new", identity: input.identity }));
     view.rerender(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(newSend)} />);
-    await screen.findByText("Awaiting acceptance");
+    await screen.findByText("Awaiting acceptance", {}, { timeout: ACCEPTANCE_NOTICE_GRACE_MS + 1_000 });
     await act(async () => {
       if (outcome === "refused") settleOld.reject(unauthenticated());
       else settleOld.resolve({ interaction_id: "late-receipt", identity, input_frame_id: "late-frame" } as never);
@@ -646,7 +647,7 @@ describe("stock durable queue integration", () => {
     const retained = JSON.parse(window.localStorage.getItem(key)!).attempts[0];
     expect(retained.envelopeJson).toBe(frozen.envelopeJson);
     expect(retained.idempotencyKey).toBe(frozen.idempotencyKey);
-    expect(screen.getByTestId(`pending-item:${retained.id}`)).toBeInTheDocument();
+    expect(await screen.findByTestId(`pending-item:${retained.id}`, {}, { timeout: ACCEPTANCE_NOTICE_GRACE_MS + 1_000 })).toBeInTheDocument();
     expect(send).toHaveBeenCalledTimes(1);
   });
   it("clears a recovered queue storage failure before showing an unknown send outcome", async () => {
@@ -1016,7 +1017,11 @@ describe("pending recovery actions", () => {
     const props = { items: [item], agentBusy: true, onSteer: vi.fn(), onRetry: vi.fn(), onReconcile: vi.fn(),
       onRemoveContext: vi.fn(), onReorderContext: vi.fn(), onTrash: vi.fn(), onEdit: vi.fn(), onCommitEdit: vi.fn(),
       onCancelEdit: vi.fn(), onReorder: vi.fn(), onClearAll: vi.fn(), onToggleExpand: vi.fn() };
+    // A frozen attempting row is past its acceptance grace period here.
+    vi.useFakeTimers();
     render(<PendingStack {...props} />);
+    act(() => { vi.advanceTimersByTime(ACCEPTANCE_NOTICE_GRACE_MS); });
+    vi.useRealTimers();
     return { item, props };
   }
 

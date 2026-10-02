@@ -40332,6 +40332,26 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 // src/panels/PendingStack.tsx
 var import_react42 = __toESM(require("react"));
 var import_jsx_runtime55 = require("react/jsx-runtime");
+var ACCEPTANCE_NOTICE_GRACE_MS = 2e3;
+function acceptanceGraceDeadlines(items, firstSeenAttempting, now, directSendIds = /* @__PURE__ */ new Set()) {
+  const live = new Set(items.map((item) => item.id));
+  for (const id of [...firstSeenAttempting.keys()]) {
+    if (!live.has(id)) firstSeenAttempting.delete(id);
+  }
+  const deadlines = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    const directDraft = item.state === "draft" && directSendIds.has(item.id);
+    if ((item.state === "attempting" || directDraft) && !firstSeenAttempting.has(item.id)) {
+      firstSeenAttempting.set(item.id, now);
+    }
+    if (item.state !== "attempting" && item.state !== "accepted" && !directDraft) continue;
+    const seen = firstSeenAttempting.get(item.id);
+    if (seen === void 0) continue;
+    const deadline = seen + ACCEPTANCE_NOTICE_GRACE_MS;
+    if (deadline > now) deadlines.set(item.id, deadline);
+  }
+  return deadlines;
+}
 function StackHead({
   count,
   agentBusy,
@@ -40614,6 +40634,7 @@ function StackItem({
 }
 function PendingStack3({
   items,
+  directSendIds,
   agentBusy,
   reducedMotion,
   onSteer,
@@ -40638,12 +40659,22 @@ function PendingStack3({
   const [dragId, setDragId] = import_react42.default.useState(null);
   const [dropTarget, setDropTarget] = import_react42.default.useState({ id: null, where: null });
   const [collapsed, setCollapsed] = import_react42.default.useState(false);
+  const firstSeenAttempting = import_react42.default.useRef(/* @__PURE__ */ new Map());
+  const [, revealTick] = import_react42.default.useReducer((n) => n + 1, 0);
+  const graceDeadlines = acceptanceGraceDeadlines(items, firstSeenAttempting.current, Date.now(), directSendIds);
+  const nextReveal = graceDeadlines.size > 0 ? Math.min(...graceDeadlines.values()) : null;
+  import_react42.default.useEffect(() => {
+    if (nextReveal === null) return void 0;
+    const timer = window.setTimeout(revealTick, Math.max(0, nextReveal - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [nextReveal]);
+  const visibleItems = graceDeadlines.size > 0 ? items.filter((item) => !graceDeadlines.has(item.id)) : items;
   const lastCount = import_react42.default.useRef(0);
   import_react42.default.useEffect(() => {
-    if (items.length > lastCount.current) setCollapsed(false);
-    lastCount.current = items.length;
-  }, [items.length]);
-  if (items.length === 0) return null;
+    if (visibleItems.length > lastCount.current) setCollapsed(false);
+    lastCount.current = visibleItems.length;
+  }, [visibleItems.length]);
+  if (visibleItems.length === 0) return null;
   const onDragStart = (e, id) => {
     setDragId(id);
     try {
@@ -40689,14 +40720,14 @@ function PendingStack3({
         /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
           StackHead,
           {
-            count: items.length,
+            count: visibleItems.length,
             agentBusy,
             collapsed,
             onToggleCollapsed: () => setCollapsed((c) => !c),
             onClear: onClearAll
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime55.jsx)("ol", { className: "stack__list", role: "list", children: visibleItems.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime55.jsx)(
           StackItem,
           {
             item,
@@ -44992,13 +45023,23 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setActionError(errorMessage(error2));
       return false;
     }
-    if (!await setPendingStack(identity, (previous3) => [...previous3, item])) return false;
-    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) return false;
+    if (!shouldQueue) directSendIdsRef.current.add(item.id);
+    if (!await setPendingStack(identity, (previous3) => [...previous3, item])) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
+    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
     clearSubmittedContexts();
-    if (!shouldQueue) void dispatchPendingAttempt(identity, item.id, "queue");
+    if (!shouldQueue) {
+      void dispatchPendingAttempt(identity, item.id, "queue").finally(() => directSendIdsRef.current.delete(item.id));
+    }
     return true;
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
+  const directSendIdsRef = import_react45.default.useRef(/* @__PURE__ */ new Set());
   const pendingDrainOwnerRef = import_react45.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
@@ -45675,6 +45716,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         PendingStack3,
         {
           items: stackItems,
+          directSendIds: directSendIdsRef.current,
           agentBusy,
           reducedMotion,
           onSteer: (itemId2) => onStackSteer(identity, itemId2),

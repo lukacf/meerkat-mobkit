@@ -72,6 +72,7 @@ export default defineConfig({
       "console/src/lib/send-queue-integration.test.tsx",
       "console/src/lib/markdown-url-policy-integration.test.tsx",
       "console/src/panels/GatingInboxPanel.test.tsx",
+      "console/src/panels/PendingStack.test.tsx",
       "console/src/panels/Sidebar.activity.test.tsx",
       "packages/console-components/src/conversation/conversation-message-group.test.tsx",
       "packages/console-components/src/conversation/context-selection.test.tsx",
