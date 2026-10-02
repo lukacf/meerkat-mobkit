@@ -1148,6 +1148,20 @@ impl UnifiedRuntimeBuilder {
                     self.agent_memory_config.clone().unwrap_or_default(),
                 )));
         }
+        // Identity-first `customize_build` tools follow each member across
+        // meerkat-side rebuilds through one stable dispatcher per identity
+        // (#563). Composed into the single customizer slot, never replacing.
+        let customizer_tool_registry = (wants_identity_first && agent_customizer.is_some())
+            .then(crate::identity_first::CustomizerToolRegistry::new);
+        if let Some(registry) = customizer_tool_registry.as_ref() {
+            mob_spec.spawn_member_customizer =
+                Some(crate::identity_first::ComposedSpawnMemberCustomizer::over(
+                    mob_spec.spawn_member_customizer.take(),
+                    Arc::new(crate::identity_first::CustomizerToolsSpawnCustomizer::new(
+                        registry.clone(),
+                    )),
+                ));
+        }
 
         // The structural-events subscription cursor lives in the
         // persistent metadata adapter. For ephemeral builds this can be
@@ -1191,6 +1205,47 @@ impl UnifiedRuntimeBuilder {
         // attaches - their decorators read the slot per call).
         let dispatch_taint_slot = mob_spec.dispatch_taint_slot();
         let live_plan = self.live_plan(&mut mob_spec)?;
+        // A persistent mob can be restored while `bootstrap` builds it (a log
+        // that was left Running revives every member inside meerkat's own
+        // resume), before any identity activation step. Publish each roster
+        // identity's customizer tools first, so those builds carry them (#563).
+        let early_customizer_tools_pending = match (
+            customizer_tool_registry.as_ref(),
+            self.roster_provider.as_ref(),
+            agent_customizer.as_ref(),
+            storage_layout.as_ref(),
+        ) {
+            (Some(registry), Some(roster_provider), Some(customizer), Some(_)) => {
+                match roster_provider
+                    .roster(&RosterContext {
+                        mob_definition: Some(mob_spec.definition.clone()),
+                        previous_identities: Vec::new(),
+                    })
+                    .await
+                {
+                    Ok(roster) => {
+                        crate::identity_first::customizer_tools::prepublish(
+                            registry,
+                            &roster,
+                            customizer.as_ref(),
+                            AgentRuntimeServices::empty(),
+                            &[],
+                            &[],
+                        )
+                        .await
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "roster provider failed before the mob build; customizer tools are \
+                             published by each identity's materialization instead"
+                        );
+                        BTreeMap::new()
+                    }
+                }
+            }
+            _ => BTreeMap::new(),
+        };
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -1334,6 +1389,10 @@ impl UnifiedRuntimeBuilder {
             identity_runtime
                 .set_agent_customizer(agent_customizer.clone())
                 .await;
+            identity_runtime
+                .set_customizer_tool_registry(customizer_tool_registry.clone())
+                .await;
+            identity_runtime.record_customizer_tools_pending(early_customizer_tools_pending);
             identity_runtime
                 .set_agent_memory(agent_memory_injector.clone())
                 .await;

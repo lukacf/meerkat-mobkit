@@ -861,8 +861,29 @@ class MyCustomizer(AgentCustomizerProtocol):
 
 `draft` also carries `model`, `system_prompt`, `additional_instructions`,
 `labels`, `app_context`, and `provider_params`. A tool registered here rides
-the same `callback/call_tool` dispatch as `build_agent` tools, so resumed
-identities keep it.
+the same `callback/call_tool` dispatch as `build_agent` tools.
+
+Each identity member has one stable tool dispatcher for its whole life, and
+every `customize_build` publishes its tools into it. The tool list and the
+handler scope that serves it always change together. The tools therefore
+follow the member through every rebuild: a gateway restart, a member that is
+adopted instead of respawned, a respawn, and delivery-time repair. On a
+restart MobKit runs `customize_build` for each roster identity before the mob
+is restored, so every restored member starts with its tools. They are listed by
+`mobkit/identity/resolved_tools` before any turn, and a run that starts at
+activation (a queued input, a kickoff) sees them. The materialization that
+follows runs `customize_build` again and republishes. If that early call fails,
+the failure is logged for the identity and reported as
+`customizer_tools_pending` (with the reason) in its identity status. The member
+advertises no customizer tools until its materialization publishes them. A tool
+from an earlier build that the latest build no longer declares is refused,
+never routed to stale handlers.
+
+Customizer tools belong to roster identities only. Helpers, forks,
+flow-provisioned members, and members spawned under their own ids never get
+them; use profile tools or the session builder's per-spawn tools for those.
+A raw spawn that reuses a roster identity's member id does get that
+identity's current tools.
 
 ### Provider parameters (`provider_params`)
 

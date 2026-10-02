@@ -13640,6 +13640,18 @@ external_addressable = true
         (spec, temp_dir, None, workgraph_service, None, None)
     };
 
+    // `customize_build` tools follow each identity member across meerkat-side
+    // rebuilds (restart restore, adoption, respawn, delivery-time repair)
+    // through one stable dispatcher per identity (#563).
+    let customizer_tool_registry =
+        has_agent_customizer.then(meerkat_mobkit::identity_first::CustomizerToolRegistry::new);
+    let mob_spec = match customizer_tool_registry.as_ref() {
+        Some(registry) => mob_spec.with_spawn_member_customizer(Arc::new(
+            meerkat_mobkit::identity_first::CustomizerToolsSpawnCustomizer::new(registry.clone()),
+        )),
+        None => mob_spec,
+    };
+
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
     // Uses notify_reliable to avoid silent drops under backpressure.
     let mob_spec = if has_session_builder {
@@ -13866,6 +13878,8 @@ external_addressable = true
             .with_runtime_services(AgentRuntimeServices::new(mob_handle)),
         );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
+        irt.set_customizer_tool_registry(customizer_tool_registry.clone())
+            .await;
         // A member parked with a session repair hold names the exact
         // `rkat session repair-wholeblob` commands for the runtime store this
         // launch opened; an in-memory store has nothing to repair.
