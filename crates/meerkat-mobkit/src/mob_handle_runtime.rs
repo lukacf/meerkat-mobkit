@@ -5224,6 +5224,20 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.inner.load_head_canonical_metadata(authority).await
     }
 
+    async fn load_current_head_canonical_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<serde_json::Map<String, serde_json::Value>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        // The inner store reads the current boundary's authority and metadata
+        // under one snapshot (meerkat 0.8.50).
+        self.inner
+            .load_current_head_canonical_metadata(runtime_id)
+            .await
+    }
+
     async fn discard_head_canonical_provisional_tail(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -6734,6 +6748,30 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            // Forwarded exactly: the inner persistent service commits a
+            // re-presented live transcript at the turn boundary. The trait
+            // default refuses (meerkat 0.8.50).
+            async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::types::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+                represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+                self.inner
+                    .commit_live_delegation_represented_transcript_at_turn_boundary(
+                        machine,
+                        session_id,
+                        provisional,
+                        final_event,
+                        represented,
+                        bound,
+                    )
+                    .await
+            }
+
             async fn fork_persisted_session_at_turn_boundary(
                 &self,
                 source_session_id: &meerkat_core::types::SessionId,
@@ -7810,6 +7848,28 @@ impl MobSessionService for AfterCreateMobSessionService {
                 session_id,
                 provisional,
                 final_event,
+                bound,
+            )
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`.
+    async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::types::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+        represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+        self.inner
+            .commit_live_delegation_represented_transcript_at_turn_boundary(
+                machine,
+                session_id,
+                provisional,
+                final_event,
+                represented,
                 bound,
             )
             .await
