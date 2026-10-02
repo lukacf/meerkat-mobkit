@@ -2204,8 +2204,7 @@ dependencies = [
 [[package]]
 name = "meerkat"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f36cf19c115185599b2ce648b5f39bed7b6bab8db6c078a7ba9c431a8d4c022"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2250,8 +2249,7 @@ dependencies = [
 [[package]]
 name = "meerkat-anthropic"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d601ca5c93f22d57e80361c4bbb1253d86376a6b689ade18be7275e3bd334dbf"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2275,8 +2273,7 @@ dependencies = [
 [[package]]
 name = "meerkat-auth-core"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e932de36bb2d9391263ac8fcd86edff0074dd42043906265c3b98a0697c9d972"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "axum",
@@ -2308,8 +2305,7 @@ dependencies = [
 [[package]]
 name = "meerkat-capabilities"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adee771c2d0808c89ddb6966f1e4466514c0d02fe978563d6e84519fe92cf02d"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -2321,8 +2317,7 @@ dependencies = [
 [[package]]
 name = "meerkat-client"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9b9b66481bfcffe032a9538d6a2dccc4c6b0773400325fe89e90fd469abf0b7"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "meerkat-anthropic",
  "meerkat-core",
@@ -2334,8 +2329,7 @@ dependencies = [
 [[package]]
 name = "meerkat-comms"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e82e6bb50043c8bad7a035e91789a8bb46d2477ba34868cff07ad910b75c6709"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "base64",
@@ -2370,8 +2364,7 @@ dependencies = [
 [[package]]
 name = "meerkat-contracts"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1843ae0c81b3e5a87366370166a44949dd4b748b736f807c1c9a6ed5eebb11fc"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "base64",
  "chrono",
@@ -2392,8 +2385,7 @@ dependencies = [
 [[package]]
 name = "meerkat-copilot"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4c6a1208c947054eed1a6b11148d50ce9dc60695c6abb0f7e553967b9acb77b"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2415,8 +2407,7 @@ dependencies = [
 [[package]]
 name = "meerkat-core"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99d7a4e4964ae2c2702d4992c8f33fc91ed1ab68c1ddd6b2928d394008e63a7a"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "base64",
@@ -2449,8 +2440,7 @@ dependencies = [
 [[package]]
 name = "meerkat-gemini"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "605bd408458cc3d5a9b0ff97919ef48eeb51ddb53576e699f4e5d34ac1a3c2d2"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2475,8 +2465,7 @@ dependencies = [
 [[package]]
 name = "meerkat-hooks"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2b67bad29ca2694279416f27d20d3b255050f66a1f9a83634c9d154383cc2a7"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2498,8 +2487,7 @@ dependencies = [
 [[package]]
 name = "meerkat-jobs"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e6e7cccd1a09f3cd28a9d01e834feb9f9e9e3e769b4ebc80ff73f259975c9b4"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2518,8 +2506,7 @@ dependencies = [
 [[package]]
 name = "meerkat-live"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a033d505eb3c0ecf4cd699ec9cd4526ef949df796b830fd94712c7b819bff59"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "axum",
@@ -2543,8 +2530,7 @@ dependencies = [
 [[package]]
 name = "meerkat-llm-core"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c20d2a0f69821c9f0905be1e0893d69efeacb843da4819392affdecf43cf824"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2569,8 +2555,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-derive"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8218d17bf6a98318c6e85f4e6869310cd80f05bb598ee6193470f9f37c61bc42"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -2579,8 +2564,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "966233e7db4df60f3eed163d6339a2a498b32c008120f80f9c353165d506725b"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "meerkat-machine-dsl-core",
 ]
@@ -2588,8 +2572,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl-core"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b9945a83090014f34301fe8f856139647d1892e145fcf2e5f4b30f86746e592"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2599,8 +2582,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-kernels"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f2ce31bac6d7ecdbdbba54ba1e744fcfd402f64677dd90a67d82a16c6b3b586"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2612,8 +2594,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-schema"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d05f75c970217bc4e5b19c60741615eeebd03ca27298cc7fd648dbc4cd78247"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2626,8 +2607,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mcp"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c1ed61174805d7bbff44f6c059427d4591713ad74696933ad606c7e81ed0ecf"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "futures",
@@ -2651,8 +2631,7 @@ dependencies = [
 [[package]]
 name = "meerkat-memory"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "284e2b04e9e681678de7640c7741dc39be537de8a74521583b5460e2dfcf3570"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "hnsw_rs",
@@ -2674,8 +2653,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5791abba3fcabf65d31322440632ff5333f2c7e8176786b7d40d2570caa2d659"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2715,8 +2693,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob-mcp"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56f76446087ba53141aec603a1ce524312485c4491218e0521e74fbb5af42895"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2804,8 +2781,7 @@ dependencies = [
 [[package]]
 name = "meerkat-models"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cf280050359001d452119dcd0e5eff2bc942e7c6af5adc91a10f4dca15a386b"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "meerkat-core",
 ]
@@ -2813,8 +2789,7 @@ dependencies = [
 [[package]]
 name = "meerkat-openai"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ffec5789a630ad7f5e2a3c431289ba2bca1450ea1e950872a9b726f45fc03d"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2844,8 +2819,7 @@ dependencies = [
 [[package]]
 name = "meerkat-providers"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6a2ef78b12737a2efde9b0aaa270dea976daca0223c91124ce164ab5e486669"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "meerkat-auth-core",
  "meerkat-llm-core",
@@ -2854,8 +2828,7 @@ dependencies = [
 [[package]]
 name = "meerkat-runtime"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f68b4156f4ce5494f51b11068bae6bdd9c3c8dd8a4fe2e837e4fd74bb62b4d1a"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2886,8 +2859,7 @@ dependencies = [
 [[package]]
 name = "meerkat-schedule"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "372f1469e8d14a8b9ec2639607b263ca6e126ac74a5cbb3a7a88f0d3ac4d1ce0"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2912,8 +2884,7 @@ dependencies = [
 [[package]]
 name = "meerkat-session"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7b8fa48c1c6bfc93b32b62036f41cafec50f5576b07d7a191b81b84156269f4"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "futures",
@@ -2938,8 +2909,7 @@ dependencies = [
 [[package]]
 name = "meerkat-skills"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74dea3f4693985f5df050ad1281bf2ac75bc501cc2c90ca32bf9334d0c5f30ba"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -2961,8 +2931,7 @@ dependencies = [
 [[package]]
 name = "meerkat-sqlite"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d710252f5313703289a2a6f6274e59b58f51462b18095cf306c3070e37a378e"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.19",
@@ -2971,8 +2940,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40c1b053ad99a29e75f42162c051ff5c7e14414e45a62e4bc828fc553b9d2f17"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2996,8 +2964,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store-conformance"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "662e5ac853c7bdd5af2da9353f6a87933670a352d35ac94e7f95ea51aea5432c"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "meerkat-core",
@@ -3009,8 +2976,7 @@ dependencies = [
 [[package]]
 name = "meerkat-tools"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51563cd43806f32c5299867650140923765340817f58492b729d1f57d936d519"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "base64",
@@ -3050,8 +3016,7 @@ dependencies = [
 [[package]]
 name = "meerkat-workgraph"
 version = "0.8.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3fa7d161490a40ca5caf025bc42c5314502e53d8110cacfbbc7c6e2d44c3f3f"
+source = "git+https://github.com/lukacf/meerkat?branch=feat%2Fdelivery-scope-correctness#29e72e27a1d54cb7f3bc20faeb622bcc2f8cb6e3"
 dependencies = [
  "async-trait",
  "chrono",

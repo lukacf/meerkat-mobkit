@@ -2085,6 +2085,7 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/send",
                     "mobkit/interact",
                     "mobkit/dispatch",
+                    "mobkit/recover_delivery",
                     "mobkit/subscribe",
                     "mobkit/status_identity",
                     "mobkit/respawn",
@@ -3962,6 +3963,55 @@ async fn handle_unified_rpc_json_inner(
                 correlation_id,
                 idempotency_key,
             };
+            // Scope-bound dispatch: exact content to the session the caller
+            // captured from `mobkit/status_identity` and persisted. Never
+            // materializes, repairs, retargets or prepares the delivery.
+            if let Some(scope_value) = request
+                .params
+                .get("expected_scope")
+                .filter(|value| !value.is_null())
+            {
+                if rpc_track_turn_requested(&request.params) {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32602,
+                        "expected_scope does not combine with track_turn".to_string(),
+                    );
+                }
+                let scope = match crate::identity_first::DeliveryScope::from_json_value(
+                    scope_value.clone(),
+                ) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        return if is_notification {
+                            String::new()
+                        } else {
+                            serialize_response(&invalid_delivery_scope_response(
+                                response_id,
+                                "expected_scope",
+                                &error,
+                            ))
+                        };
+                    }
+                };
+                return if is_notification {
+                    String::new()
+                } else {
+                    serialize_response(&match identity_rt
+                        .dispatch_at_scope(&identity, &scope, &dispatch_input)
+                        .await
+                    {
+                        Ok(receipt) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: Some(scoped_dispatch_receipt_json(&receipt)),
+                            error: None,
+                        },
+                        Err(error) => scoped_delivery_error_response(response_id, &error),
+                    })
+                };
+            }
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
             let dispatch_result = if rpc_track_turn_requested(&request.params) {
@@ -3993,6 +4043,93 @@ async fn handle_unified_rpc_json_inner(
                     }
                 }
                 Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/recover_delivery" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &ctx.runtime,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let target =
+                match resolve_rpc_identity_control_target(runtime, identity_rt, identity_str).await
+                {
+                    Ok(target) => target,
+                    Err(e) => {
+                        return maybe_error_response(
+                            is_notification,
+                            response_id,
+                            -32602,
+                            format!("invalid identity: {e}"),
+                        );
+                    }
+                };
+            let identity = target.identity.clone();
+            let scope = match request
+                .params
+                .get("scope")
+                .filter(|value| !value.is_null())
+                .cloned()
+            {
+                Some(value) => match crate::identity_first::DeliveryScope::from_json_value(value) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        return if is_notification {
+                            String::new()
+                        } else {
+                            serialize_response(&invalid_delivery_scope_response(
+                                response_id,
+                                "scope",
+                                &error,
+                            ))
+                        };
+                    }
+                },
+                None => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32602,
+                        "missing scope".to_string(),
+                    );
+                }
+            };
+            let timeout = match rpc_wait_timeout(&request.params) {
+                Ok(timeout) => timeout,
+                Err(message) => {
+                    return maybe_error_response(is_notification, response_id, -32602, message);
+                }
+            };
+            let mut lookup = crate::identity_first::DispatchInput::system("");
+            lookup.idempotency_key = request
+                .params
+                .get("idempotency_key")
+                .and_then(|v| v.as_str())
+                .map(crate::identity_first::DispatchIdempotencyKey::new);
+            lookup.correlation_id = request
+                .params
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .map(crate::identity_first::CorrelationId::new);
+            match identity_rt
+                .recover_at_scope(&identity, &scope, &lookup, timeout)
+                .await
+            {
+                Ok(recovery) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity.as_str(),
+                        "delivery_scope": scope.to_json_value(),
+                        "recovery": scoped_recovery_json(&recovery),
+                    })),
+                    error: None,
+                },
+                Err(error) => scoped_delivery_error_response(response_id, &error),
             }
         }
         "mobkit/turn_result" | "mobkit/wait_for_turn" => {
@@ -4300,7 +4437,7 @@ async fn handle_unified_rpc_json_inner(
                 Ok(status) => {
                     let continuity_health =
                         serde_json::to_value(&status.continuity_health).unwrap_or(Value::Null);
-                    let result = serde_json::json!({
+                    let mut result = serde_json::json!({
                         "state": identity_lifecycle_state_json(status.state),
                         "identity": status.identity.as_str(),
                         "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
@@ -4319,6 +4456,10 @@ async fn handle_unified_rpc_json_inner(
                             "healthy": lease.healthy,
                         })),
                     });
+                    insert_delivery_scope(
+                        &mut result,
+                        identity_rt.capture_delivery_scope(&identity).await,
+                    );
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -6149,6 +6290,232 @@ fn turn_outcome_json(outcome: &crate::identity_first::TurnOutcome) -> Value {
             "error": reason,
         }),
         TurnOutcome::Unknown => serde_json::json!({ "state": "unknown" }),
+    }
+}
+
+/// JSON-RPC code for a delivery scope that no longer matches the identity's
+/// binding (`StaleScopeError` in the SDKs). Nothing was submitted.
+pub const STALE_DELIVERY_SCOPE_CODE: i64 = -32006;
+
+/// A scoped dispatch or recovery error: a stale scope has its own code, an
+/// unsupported bridge is a capability gap, and every class carries `data.kind`
+/// plus `data.admission_possible` (true only for an uncertain admission).
+fn scoped_delivery_error_response(
+    response_id: Value,
+    err: &crate::identity_first::ScopedDeliveryError,
+) -> JsonRpcResponse {
+    use crate::identity_first::ScopedDeliveryError;
+    let code = match err {
+        ScopedDeliveryError::StaleScope { .. } => STALE_DELIVERY_SCOPE_CODE,
+        ScopedDeliveryError::Unsupported { .. } => -32004,
+        _ => -32603,
+    };
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: err.to_string(),
+            data: Some(err.structured_data()),
+        }),
+    }
+}
+
+fn invalid_delivery_scope_response(
+    response_id: Value,
+    param: &str,
+    err: &crate::identity_first::DeliveryScopeError,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: format!("invalid {param}: {err}"),
+            data: Some(err.structured_data()),
+        }),
+    }
+}
+
+/// `mobkit/status_identity`'s `delivery_scope`: the versioned scope a host
+/// persists before a scoped dispatch, or `null` plus
+/// `delivery_scope_unavailable: {"kind", "reason"}` when none can be captured.
+fn insert_delivery_scope(
+    result: &mut Value,
+    scope: Result<crate::identity_first::DeliveryScope, crate::identity_first::ScopedDeliveryError>,
+) {
+    let Value::Object(fields) = result else {
+        return;
+    };
+    match scope {
+        Ok(scope) => {
+            fields.insert("delivery_scope".to_string(), scope.to_json_value());
+        }
+        Err(error) => {
+            fields.insert("delivery_scope".to_string(), Value::Null);
+            fields.insert(
+                "delivery_scope_unavailable".to_string(),
+                serde_json::json!({ "kind": error.kind(), "reason": error.to_string() }),
+            );
+        }
+    }
+}
+
+/// A scoped dispatch's result: meerkat's receipt (`work_ref`, the `stage` it
+/// proves, the admitted `session_id`) and the scope it was admitted under.
+fn scoped_dispatch_receipt_json(receipt: &crate::identity_first::ScopedDispatchReceipt) -> Value {
+    serde_json::json!({
+        "receipt": {
+            "work_ref": receipt.work_ref,
+            "stage": receipt.stage,
+            "session_id": receipt.session_id.to_string(),
+        },
+        "delivery_scope": receipt.scope.to_json_value(),
+        "fencing_token": receipt.scope.lease_fencing_token().get(),
+    })
+}
+
+/// `mobkit/recover_delivery`'s typed state: `absent`, `in_flight`,
+/// `completed`, `failed`, `terminal_without_run`, `broken` or `unresolved`.
+/// `absent` and `unresolved` are never permission to retry.
+fn scoped_recovery_json(recovery: &crate::identity_first::ScopedRecovery) -> Value {
+    use crate::identity_first::{ScopedRecovery, ScopedRecoveryUnresolved, TurnOutput};
+    match recovery {
+        ScopedRecovery::Absent => serde_json::json!({ "state": "absent" }),
+        ScopedRecovery::InFlight {
+            input_id,
+            phase,
+            durable_witness,
+        } => serde_json::json!({
+            "state": "in_flight",
+            "input_id": input_id,
+            "phase": phase,
+            "durable_witness": durable_witness,
+        }),
+        ScopedRecovery::Completed { input_id, output } => serde_json::json!({
+            "state": "completed",
+            "input_id": input_id,
+            "output_status": output.code(),
+            "output": output.text(),
+            "output_truncated": matches!(output, TurnOutput::Text { truncated: true, .. }),
+        }),
+        ScopedRecovery::Failed { input_id, error } => serde_json::json!({
+            "state": "failed",
+            "input_id": input_id,
+            "error": error,
+        }),
+        ScopedRecovery::TerminalWithoutRun {
+            input_id,
+            terminal,
+            last_run_id,
+        } => serde_json::json!({
+            "state": "terminal_without_run",
+            "input_id": input_id,
+            "terminal": terminal,
+            "last_run_id": last_run_id,
+        }),
+        ScopedRecovery::Broken { input_id, reason } => serde_json::json!({
+            "state": "broken",
+            "input_id": input_id,
+            "reason": reason,
+        }),
+        ScopedRecovery::Unresolved { cause } => serde_json::json!({
+            "state": "unresolved",
+            "cause": cause.code(),
+            "detail": match cause {
+                ScopedRecoveryUnresolved::OriginalOwnerUnavailable { detail } => Some(detail),
+                _ => None,
+            },
+        }),
+    }
+}
+
+#[cfg(test)]
+mod scoped_delivery_json_tests {
+    use super::scoped_recovery_json;
+    use crate::identity_first::{ScopedRecovery, ScopedRecoveryUnresolved, TurnOutput};
+
+    /// G9 at the gateway: every recovery class keeps its own wire state and
+    /// fields; none collapses into another (an unresolved read is never
+    /// absence, a run-less terminal is never completion).
+    #[test]
+    fn every_recovery_class_has_its_own_wire_state() {
+        let cases = [
+            (ScopedRecovery::Absent, "absent"),
+            (
+                ScopedRecovery::InFlight {
+                    input_id: "in-1".to_string(),
+                    phase: serde_json::json!("queued"),
+                    durable_witness: true,
+                },
+                "in_flight",
+            ),
+            (
+                ScopedRecovery::Completed {
+                    input_id: "in-1".to_string(),
+                    output: TurnOutput::Text {
+                        text: "answer".to_string(),
+                        truncated: true,
+                    },
+                },
+                "completed",
+            ),
+            (
+                ScopedRecovery::Failed {
+                    input_id: "in-1".to_string(),
+                    error: "boom".to_string(),
+                },
+                "failed",
+            ),
+            (
+                ScopedRecovery::TerminalWithoutRun {
+                    input_id: "in-1".to_string(),
+                    terminal: serde_json::json!({"outcome_type": "abandoned"}),
+                    last_run_id: None,
+                },
+                "terminal_without_run",
+            ),
+            (
+                ScopedRecovery::Broken {
+                    input_id: None,
+                    reason: "inconsistent".to_string(),
+                },
+                "broken",
+            ),
+            (
+                ScopedRecovery::Unresolved {
+                    cause: ScopedRecoveryUnresolved::OriginalOwnerUnavailable {
+                        detail: "store down".to_string(),
+                    },
+                },
+                "unresolved",
+            ),
+        ];
+        for (recovery, state) in &cases {
+            assert_eq!(
+                scoped_recovery_json(recovery)["state"],
+                *state,
+                "{recovery:?}"
+            );
+        }
+        let in_flight = scoped_recovery_json(&cases[1].0);
+        assert_eq!(in_flight["durable_witness"], true);
+        assert_eq!(in_flight["phase"], "queued");
+        let completed = scoped_recovery_json(&cases[2].0);
+        assert_eq!(completed["output_status"], "text");
+        assert_eq!(completed["output"], "answer");
+        assert_eq!(completed["output_truncated"], true);
+        let unresolved = scoped_recovery_json(&cases[6].0);
+        assert_eq!(unresolved["cause"], "original_owner_unavailable");
+        assert_eq!(unresolved["detail"], "store down");
+        let no_own_result = scoped_recovery_json(&ScopedRecovery::Completed {
+            input_id: "in-2".to_string(),
+            output: TurnOutput::NoOwnResult,
+        });
+        assert_eq!(no_own_result["output_status"], "no_own_result");
+        assert!(no_own_result["output"].is_null());
     }
 }
 

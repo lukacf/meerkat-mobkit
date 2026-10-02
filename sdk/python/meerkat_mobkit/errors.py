@@ -20,6 +20,10 @@ CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
 # failure. The message carries the remediation (the storage doctor, or the
 # explicit ephemeral declaration).
 STORAGE_RESOLUTION_CODE: int = -32014
+# A saved delivery scope no longer matches the identity's binding: nothing
+# was submitted and nothing was retargeted (`mobkit/dispatch` with
+# `expected_scope`).
+STALE_DELIVERY_SCOPE_CODE: int = -32006
 # WorkGraph service not configured on the runtime.
 WORKGRAPH_UNAVAILABLE_CODE: int = -32041
 # WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
@@ -142,6 +146,36 @@ class LeaseLostError(RpcError):
             method=method,
             data=data,
         )
+
+
+class StaleScopeError(RpcError):
+    """Raised when a scoped dispatch's saved delivery scope no longer matches.
+
+    Nothing was submitted and the delivery was not retargeted to the
+    identity's current binding. ``mismatch`` names the atom that moved:
+    ``runtime_id``, ``generation``, ``lease_fencing_token``, ``member`` or
+    ``member_binding`` (the member's session, incarnation or fence). An
+    earlier attempt under the same scope is recovered with
+    ``recover_delivery``, never by redispatching to a fresh scope.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        mismatch: str | None = None,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            STALE_DELIVERY_SCOPE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+        self.mismatch = mismatch
 
 
 class MemoryBackendUnavailableError(RpcError):

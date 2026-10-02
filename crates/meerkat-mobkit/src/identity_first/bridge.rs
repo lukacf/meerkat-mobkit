@@ -27,6 +27,7 @@ use crate::mob_handle_runtime::{
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthState};
 
 use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
+use super::delivery_scope::{ScopeMismatch, ScopedDeliveryError};
 use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
     DurableAgentSpec, FencingToken, RoleMigrationDeclaration, SessionSnapshot,
@@ -193,6 +194,76 @@ fn classify_submit_mob_error(
             }
             BridgeError::Mob(rendered)
         }
+    }
+}
+
+/// The refusal a bridge without a scoped seam returns.
+const SCOPED_DELIVERY_UNSUPPORTED: &str =
+    "this session bridge has no scoped delivery seam (custom and remote bridges are unsupported)";
+
+/// A scoped admission round trip that returned no answer. Only an actor call
+/// the probe proves was never started is a refusal; everything else leaves
+/// the admission fate unknown.
+fn classify_scoped_bound_error(error: BridgeError) -> ScopedDeliveryError {
+    match error {
+        BridgeError::ActorLoopStalled {
+            observation: ActorCallObservation::BeforeCall,
+            ..
+        }
+        | BridgeError::ActorTerminated {
+            observation: ActorCallObservation::BeforeCall,
+            ..
+        } => ScopedDeliveryError::Rejected {
+            detail: error.to_string(),
+        },
+        error => ScopedDeliveryError::Uncertain {
+            detail: error.to_string(),
+        },
+    }
+}
+
+/// Classify meerkat's answer to a scoped submit. A moved binding is a stale
+/// scope; the listed refusals happen before admission; anything else is
+/// conservatively uncertain, so a caller recovers instead of assuming the
+/// delivery never landed.
+fn classify_scoped_submit_mob_error(error: meerkat_mob::MobError) -> ScopedDeliveryError {
+    use meerkat_mob::MobError;
+    match error {
+        // The member lost its session binding entirely (it became peer-only
+        // or remotely hosted): it cannot be scope-bound at all.
+        MobError::StaleDeliveryScope {
+            actual_session: None,
+            agent_identity,
+            ..
+        }
+        | MobError::DeliveryScopeUnavailable { agent_identity, .. } => {
+            ScopedDeliveryError::Unsupported {
+                detail: format!(
+                    "member '{agent_identity}': {}",
+                    super::runtime::NO_NATIVE_SESSION_BINDING
+                ),
+            }
+        }
+        error @ (MobError::StaleDeliveryScope { .. }
+        | MobError::StaleFenceToken { .. }
+        | MobError::MemberNotFound(_)) => ScopedDeliveryError::StaleScope {
+            mismatch: ScopeMismatch::MemberBinding,
+            detail: error.to_string(),
+        },
+        error @ (MobError::UnsupportedForMode { .. }
+        | MobError::MemberReloadRequired { .. }
+        | MobError::MemberAdmissionBacklogFull { .. }
+        | MobError::MemberRuntimeDetached { .. }
+        | MobError::NotExternallyAddressable(_)
+        | MobError::InvalidTransition { .. }
+        | MobError::ActorCommandChannelClosed
+        | MobError::MemberRetirementInProgress { .. }
+        | MobError::RetirementInProgress { .. }) => ScopedDeliveryError::Rejected {
+            detail: error.to_string(),
+        },
+        error => ScopedDeliveryError::Uncertain {
+            detail: error.to_string(),
+        },
     }
 }
 
@@ -2245,22 +2316,49 @@ async fn submit_internal_bridge_work(
     // admission already in progress. Neither deadline proves nonexecution.
     let actor_deadline = deadline.deadline.into_std();
     match work.delivery_identity {
-        Some(delivery_identity) => deadline
-            .bound(
-                "deliver.submit_work",
-                member_id,
-                handle.submit_work_with_mode_and_delivery_identity_bounded(
-                    entry.agent_runtime_id.clone(),
-                    entry.fence_token,
-                    spec,
-                    handling_mode,
-                    delivery_identity.clone(),
-                    actor_deadline,
-                ),
-            )
-            .await?
-            .map(|_| None)
-            .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
+        // meerkat's bounded delivery-identity submit is scope-bound: it pins
+        // the member's current session and validates it inside admission.
+        // This generic lane scopes to whatever the member is bound to right
+        // now (a capture immediately before submit), which is the binding it
+        // always targeted; hosts that persist a scope use the scoped
+        // capability instead. A member with no session binding (a remotely
+        // hosted peer) cannot be scope-bound, so it keeps the unscoped
+        // delivery-identity submit, bounded by this admission deadline:
+        // dropping it on timeout drops the reply receiver, and the actor
+        // skips a SubmitWork whose caller left before dispatch.
+        Some(delivery_identity) => match handle.capture_member_delivery_scope(member_id).await {
+            Ok(scope) => deadline
+                .bound(
+                    "deliver.submit_work",
+                    member_id,
+                    handle.submit_work_with_mode_and_delivery_identity_bounded(
+                        &scope,
+                        spec,
+                        handling_mode,
+                        delivery_identity.clone(),
+                        actor_deadline,
+                    ),
+                )
+                .await?
+                .map(|_| None)
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
+            Err(meerkat_mob::MobError::DeliveryScopeUnavailable { .. }) => deadline
+                .bound(
+                    "deliver.submit_work",
+                    member_id,
+                    handle.submit_work_with_mode_and_delivery_identity(
+                        entry.agent_runtime_id.clone(),
+                        entry.fence_token,
+                        spec,
+                        handling_mode,
+                        delivery_identity.clone(),
+                    ),
+                )
+                .await?
+                .map(|_| None)
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
+            Err(err) => Err(classify_submit_mob_error(member_id, err, deadline)),
+        },
         None => deadline
             .bound(
                 "deliver.submit_work",
@@ -2923,6 +3021,47 @@ pub trait SessionBridge: Send + Sync {
                 "this session bridge has no local host-human input seam".to_string(),
             ),
         ))
+    }
+
+    /// Capture the native delivery scope of the member bound to
+    /// `runtime_id`. Strictly observational. Custom and remote bridges have
+    /// no scoped seam and must not fabricate one.
+    async fn capture_member_delivery_scope(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<meerkat_mob::MemberDeliveryScope, ScopedDeliveryError> {
+        Err(ScopedDeliveryError::Unsupported {
+            detail: SCOPED_DELIVERY_UNSUPPORTED.to_string(),
+        })
+    }
+
+    /// Submit exactly one delivery to the member session `scope` pins,
+    /// returning meerkat's receipt. Never materializes, repairs, retargets or
+    /// prepares the delivery: a moved scope is refused typed.
+    async fn submit_at_scope(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _scope: &meerkat_mob::MemberDeliveryScope,
+        _content: &meerkat_core::ContentInput,
+        _handling_mode: HandlingMode,
+        _delivery_identity: &meerkat_mob::MobDeliveryIdentity,
+    ) -> Result<meerkat_mob::WorkDeliveryReceipt, ScopedDeliveryError> {
+        Err(ScopedDeliveryError::Unsupported {
+            detail: SCOPED_DELIVERY_UNSUPPORTED.to_string(),
+        })
+    }
+
+    /// Read one delivery's state from the ORIGINAL session `scope` pins,
+    /// never from the member's current session.
+    async fn recover_at_scope(
+        &self,
+        _scope: &meerkat_mob::MemberDeliveryScope,
+        _delivery_identity: &meerkat_mob::MobDeliveryIdentity,
+        _deadline: std::time::Instant,
+    ) -> Result<meerkat_mob::ScopedWorkRecovery, ScopedDeliveryError> {
+        Err(ScopedDeliveryError::Unsupported {
+            detail: SCOPED_DELIVERY_UNSUPPORTED.to_string(),
+        })
     }
 
     /// Deliver content to an active mob member.
@@ -6141,6 +6280,107 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map_err(BridgeError::from)?;
         receipt.wait().await.map_err(BridgeError::from)
+    }
+
+    async fn capture_member_delivery_scope(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Result<meerkat_mob::MemberDeliveryScope, ScopedDeliveryError> {
+        let mid = self
+            .member_id_for_runtime_id(runtime_id)
+            .await
+            .map_err(|error| ScopedDeliveryError::Rejected {
+                detail: error.to_string(),
+            })?;
+        self.handle
+            .capture_member_delivery_scope(&mid)
+            .await
+            .map_err(|error| match error {
+                // A member with no session binding (peer-only or remotely
+                // hosted) cannot be scope-bound at all.
+                meerkat_mob::MobError::DeliveryScopeUnavailable { agent_identity, .. } => {
+                    ScopedDeliveryError::Unsupported {
+                        detail: format!(
+                            "member '{agent_identity}': {}",
+                            super::runtime::NO_NATIVE_SESSION_BINDING
+                        ),
+                    }
+                }
+                error => ScopedDeliveryError::Rejected {
+                    detail: error.to_string(),
+                },
+            })
+    }
+
+    async fn submit_at_scope(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        scope: &meerkat_mob::MemberDeliveryScope,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        delivery_identity: &meerkat_mob::MobDeliveryIdentity,
+    ) -> Result<meerkat_mob::WorkDeliveryReceipt, ScopedDeliveryError> {
+        let mid = self
+            .member_id_for_runtime_id(runtime_id)
+            .await
+            .map_err(|error| ScopedDeliveryError::StaleScope {
+                mismatch: ScopeMismatch::RuntimeId,
+                detail: error.to_string(),
+            })?;
+        if scope.agent_identity() != &mid {
+            return Err(ScopedDeliveryError::StaleScope {
+                mismatch: ScopeMismatch::Member,
+                detail: format!(
+                    "scope names member '{}', the identity is bound to member '{mid}'",
+                    scope.agent_identity()
+                ),
+            });
+        }
+        // Exact content only: no system prompt, no injected context. The
+        // correlation id rides as the interaction id, which meerkat requires
+        // to agree with the delivery identity.
+        let spec = internal_bridge_work_spec(
+            content,
+            None,
+            &[],
+            Some(delivery_identity.correlation_id.as_str()),
+        );
+        let deadline = self.admission_deadline();
+        let submitted = deadline
+            .bound(
+                "deliver.submit_work_at_scope",
+                &mid,
+                self.handle
+                    .submit_work_with_mode_and_delivery_identity_bounded(
+                        scope,
+                        spec,
+                        handling_mode,
+                        delivery_identity.clone(),
+                        deadline.deadline.into_std(),
+                    ),
+            )
+            .await
+            .map_err(classify_scoped_bound_error)?;
+        submitted.map_err(classify_scoped_submit_mob_error)
+    }
+
+    async fn recover_at_scope(
+        &self,
+        scope: &meerkat_mob::MemberDeliveryScope,
+        delivery_identity: &meerkat_mob::MobDeliveryIdentity,
+        deadline: std::time::Instant,
+    ) -> Result<meerkat_mob::ScopedWorkRecovery, ScopedDeliveryError> {
+        let spec =
+            meerkat_mob::BoundedResultSpec::new("turn_output", super::types::TURN_OUTPUT_MAX_BYTES)
+                .map_err(|error| ScopedDeliveryError::Rejected {
+                    detail: error.to_string(),
+                })?;
+        self.handle
+            .recover_bounded_work_at_scope(scope, delivery_identity, &spec, deadline)
+            .await
+            .map_err(|error| ScopedDeliveryError::Rejected {
+                detail: error.to_string(),
+            })
     }
 
     async fn deliver_host_human_input(
@@ -9708,6 +9948,58 @@ mod tests {
                 assert!(error.to_string().contains("roster read failed"));
             }
             other => panic!("a failed roster read must stay unobservable, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod scoped_classification_tests {
+    use super::{ScopeMismatch, ScopedDeliveryError, classify_scoped_submit_mob_error};
+
+    /// A member that lost (or never had) a native session binding is
+    /// Unsupported for scope-bound delivery, never a stale scope a caller
+    /// could "re-capture", and never a fallback to the unscoped submit. A
+    /// session that moved to another session is a stale member binding.
+    #[test]
+    fn an_unbound_member_is_unsupported_and_a_moved_session_is_stale() {
+        let identity = meerkat_mob::ids::AgentIdentity::from("peer");
+        let expected = meerkat_core::types::SessionId::new();
+        let unbound = classify_scoped_submit_mob_error(meerkat_mob::MobError::StaleDeliveryScope {
+            agent_identity: identity.clone(),
+            expected_session: expected.clone(),
+            actual_session: None,
+        });
+        assert!(
+            matches!(&unbound, ScopedDeliveryError::Unsupported { detail }
+                if detail.contains("no native session binding")),
+            "{unbound:?}"
+        );
+        let unavailable =
+            classify_scoped_submit_mob_error(meerkat_mob::MobError::DeliveryScopeUnavailable {
+                agent_identity: identity.clone(),
+                reason: "member has no session binding".to_string(),
+            });
+        assert!(
+            matches!(&unavailable, ScopedDeliveryError::Unsupported { .. }),
+            "{unavailable:?}"
+        );
+        let moved = classify_scoped_submit_mob_error(meerkat_mob::MobError::StaleDeliveryScope {
+            agent_identity: identity,
+            expected_session: expected,
+            actual_session: Some(meerkat_core::types::SessionId::new()),
+        });
+        assert!(
+            matches!(
+                &moved,
+                ScopedDeliveryError::StaleScope {
+                    mismatch: ScopeMismatch::MemberBinding,
+                    ..
+                }
+            ),
+            "{moved:?}"
+        );
+        for refusal in [&unbound, &unavailable, &moved] {
+            assert!(!refusal.admission_possible(), "{refusal:?}");
         }
     }
 }

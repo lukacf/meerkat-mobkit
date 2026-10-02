@@ -27,6 +27,7 @@ import {
   CAPABILITY_UNAVAILABLE_CODE,
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
   LEASE_LOST_CODE,
+  STALE_DELIVERY_SCOPE_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   STORAGE_RESOLUTION_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
@@ -34,6 +35,7 @@ import {
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
   LeaseLostError,
+  StaleScopeError,
   MemoryBackendUnavailableError,
   MobEventsStaleError,
   NotConnectedError,
@@ -153,6 +155,9 @@ import {
   completionCursorToDict,
   parseSendResult,
   parseDispatchResult,
+  parseScopedDispatchResult,
+  parseScopedRecovery,
+  deliveryScopeToDict,
   parseTurnResult,
   completionProgressSince,
   parseBlobGetResult,
@@ -243,6 +248,9 @@ import {
   type AwaitedTurn,
   type SendResult,
   type DispatchResult,
+  type DeliveryScope,
+  type ScopedDispatchResult,
+  type ScopedRecovery,
   type TurnResult,
   type CompletionCursor,
   type BlobGetResult,
@@ -1017,6 +1025,9 @@ export class MobKitRuntime {
       if (code === LEASE_LOST_CODE) {
         throw new LeaseLostError(message, rid, method, err.data);
       }
+      if (code === STALE_DELIVERY_SCOPE_CODE) {
+        throw new StaleScopeError(message, rid, method, err.data);
+      }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, rid, method, err.data);
       }
@@ -1163,14 +1174,64 @@ export class MobKitRuntime {
   async dispatch(
     identity: string,
     input: DispatchInput,
-    options: { trackTurn?: boolean } = {},
-  ): Promise<DispatchResult> {
+    options?: { trackTurn?: boolean; expectedScope?: undefined },
+  ): Promise<DispatchResult>;
+  /**
+   * Scope-bound dispatch: exact content to the session `expectedScope` (a
+   * {@link DeliveryScope} from {@link status}, persisted beforehand) pins,
+   * never materialized, repaired, retargeted or prepared. Needs both
+   * `idempotencyKey` and `correlationId`, does not combine with `trackTurn`,
+   * resolves the admission receipt, and throws {@link StaleScopeError} when
+   * the scope moved. Recover a lost reply with {@link recoverDelivery} and
+   * the same scope.
+   */
+  async dispatch(
+    identity: string,
+    input: DispatchInput,
+    options: { trackTurn?: false; expectedScope: DeliveryScope },
+  ): Promise<ScopedDispatchResult>;
+  async dispatch(
+    identity: string,
+    input: DispatchInput,
+    options: { trackTurn?: boolean; expectedScope?: DeliveryScope } = {},
+  ): Promise<DispatchResult | ScopedDispatchResult> {
     const params: Record<string, unknown> = {
       identity,
       dispatch_input: dispatchInputToDict(input),
     };
+    if (options.expectedScope !== undefined) {
+      if (options.trackTurn) {
+        throw new TypeError("expectedScope does not combine with trackTurn");
+      }
+      params.expected_scope = deliveryScopeToDict(options.expectedScope);
+      return parseScopedDispatchResult(await this._rpc("mobkit/dispatch", params));
+    }
     if (options.trackTurn) params.track_turn = true;
     return parseDispatchResult(await this._rpc("mobkit/dispatch", params));
+  }
+
+  /**
+   * Read one scoped delivery's state from the scope's ORIGINAL session.
+   * Never reads the identity's current session and never resubmits. `absent`
+   * is an authoritative point-in-time miss and `unresolved` an unreachable
+   * original owner; neither is permission to retry. `timeoutMs` bounds the
+   * evidence read (gateway default when omitted).
+   */
+  async recoverDelivery(
+    identity: string,
+    scope: DeliveryScope,
+    options: { idempotencyKey: string; correlationId: string; timeoutMs?: number },
+  ): Promise<ScopedRecovery> {
+    const params: Record<string, unknown> = {
+      identity,
+      scope: deliveryScopeToDict(scope),
+      idempotency_key: options.idempotencyKey,
+      correlation_id: options.correlationId,
+    };
+    if (options.timeoutMs !== undefined) {
+      params.timeout_ms = Math.max(0, Math.floor(options.timeoutMs));
+    }
+    return parseScopedRecovery(await this._rpc("mobkit/recover_delivery", params));
   }
 
   /**
@@ -2378,6 +2439,9 @@ export class MobHandle {
       }
       if (code === LEASE_LOST_CODE) {
         throw new LeaseLostError(message, id, method, err.data);
+      }
+      if (code === STALE_DELIVERY_SCOPE_CODE) {
+        throw new StaleScopeError(message, id, method, err.data);
       }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, id, method, err.data);

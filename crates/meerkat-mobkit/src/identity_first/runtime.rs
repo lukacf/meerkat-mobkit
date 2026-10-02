@@ -30,6 +30,9 @@ use super::bridge::{
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
+use super::delivery_scope::{
+    DeliveryScope, ScopeMismatch, ScopedDeliveryError, ScopedDispatchReceipt, ScopedRecovery,
+};
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
     AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress, CompletionWait,
@@ -78,6 +81,30 @@ fn interaction_id_for_delivery<'a>(
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
+
+/// Why a member without a session binding cannot take scope-bound delivery.
+pub(crate) const NO_NATIVE_SESSION_BINDING: &str =
+    "no native session binding; scope-bound delivery is unsupported for this member";
+
+/// A scoped delivery's identity pair, exactly as supplied: both halves are
+/// required and nothing is canonicalized, so the key a host persisted is the
+/// key the runtime ledger records.
+fn scoped_delivery_identity(
+    input: &DispatchInput,
+) -> Result<meerkat_mob::MobDeliveryIdentity, ScopedDeliveryError> {
+    let (Some(idempotency_key), Some(correlation_id)) =
+        (&input.idempotency_key, &input.correlation_id)
+    else {
+        return Err(ScopedDeliveryError::Rejected {
+            detail: "scoped delivery requires both an idempotency key and a correlation id"
+                .to_string(),
+        });
+    };
+    meerkat_mob::MobDeliveryIdentity::new(idempotency_key.as_str(), correlation_id.as_str())
+        .map_err(|error| ScopedDeliveryError::Rejected {
+            detail: format!("invalid delivery identity: {error}"),
+        })
+}
 
 /// The identity embodiment a completion-bearing delivery was admitted onto.
 ///
@@ -10610,6 +10637,250 @@ impl IdentityRuntime {
             generation: entry.continuity.as_ref().map(|c| c.generation.get()),
             fencing_token: entry.lease.as_ref().map(|lease| lease.fencing_token),
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Scope-bound delivery
+    // -----------------------------------------------------------------------
+
+    /// Capture `identity`'s exact delivery scope: its MobKit continuity
+    /// (runtime id, generation, lease fencing token) and meerkat's native
+    /// member scope (runtime incarnation, fence, session).
+    ///
+    /// Strictly observational: it materializes nothing, renews nothing and
+    /// submits nothing. A host persists the scope before dispatching against
+    /// it with [`Self::dispatch_at_scope`].
+    ///
+    /// # Errors
+    ///
+    /// [`ScopedDeliveryError::Unsupported`] without a scoped bridge seam or
+    /// for a member that cannot be scope-bound; `Rejected` for an unknown or
+    /// inactive identity, or one without continuity or a held lease.
+    pub async fn capture_delivery_scope(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<DeliveryScope, ScopedDeliveryError> {
+        let bridge = self.scoped_bridge()?;
+        self.refuse_unscopable_identity(identity).await?;
+        // No lifecycle lock: a capture racing a rebind can at worst pair atoms
+        // from two bindings, and such a scope fails the dispatch's own
+        // re-validation typed. A status read never waits behind a delivery.
+        let (runtime_id, generation, lease_fencing_token) =
+            self.active_scope_continuity(identity).await?;
+        let member = bridge.capture_member_delivery_scope(&runtime_id).await?;
+        Ok(DeliveryScope::new(
+            identity.clone(),
+            runtime_id,
+            generation,
+            lease_fencing_token,
+            member,
+        ))
+    }
+
+    /// Dispatch exact content to the member session a host captured with
+    /// [`Self::capture_delivery_scope`] and persisted beforehand.
+    ///
+    /// Requires a full delivery identity pair, used exactly as supplied (no
+    /// canonicalization). Never materializes, repairs or retargets the
+    /// identity and applies no delivery preparation (no defang, no ambient
+    /// memory, no injected context). Every scope atom is re-validated: the
+    /// MobKit continuity here, the native session, incarnation and fence
+    /// inside meerkat's admission. A moved scope is refused as
+    /// [`ScopedDeliveryError::StaleScope`] with nothing submitted.
+    ///
+    /// `input.origin` is not consulted: the scoped path has no origin-specific
+    /// handling.
+    ///
+    /// # Errors
+    ///
+    /// See [`ScopedDeliveryError`]. Only `Uncertain` leaves the admission
+    /// fate open; recover it with [`Self::recover_at_scope`] and the same
+    /// scope.
+    pub async fn dispatch_at_scope(
+        &self,
+        identity: &AgentIdentity,
+        scope: &DeliveryScope,
+        input: &DispatchInput,
+    ) -> Result<ScopedDispatchReceipt, ScopedDeliveryError> {
+        Self::ensure_scope_identity(identity, scope)?;
+        let delivery_identity = scoped_delivery_identity(input)?;
+        let bridge = self.scoped_bridge()?;
+        self.refuse_unscopable_identity(identity).await?;
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let (runtime_id, generation, _) = self.active_scope_continuity(identity).await?;
+        if &runtime_id != scope.agent_runtime_id() {
+            return Err(ScopedDeliveryError::StaleScope {
+                mismatch: ScopeMismatch::RuntimeId,
+                detail: format!(
+                    "identity '{identity}' runs as '{runtime_id}', the scope names '{}'",
+                    scope.agent_runtime_id()
+                ),
+            });
+        }
+        if generation != scope.generation() {
+            return Err(ScopedDeliveryError::StaleScope {
+                mismatch: ScopeMismatch::Generation,
+                detail: format!(
+                    "identity '{identity}' is at generation {generation}, the scope names {}",
+                    scope.generation()
+                ),
+            });
+        }
+        // The same ownership check every delivery runs. A renewal that keeps
+        // the token is the same owner; any other token is not this scope.
+        let token = self.ensure_active_lease(identity).await.map_err(|error| {
+            ScopedDeliveryError::Rejected {
+                detail: error.to_string(),
+            }
+        })?;
+        if token != scope.lease_fencing_token() {
+            return Err(ScopedDeliveryError::StaleScope {
+                mismatch: ScopeMismatch::LeaseFencingToken,
+                detail: format!(
+                    "identity '{identity}' holds lease token {token}, the scope names {}",
+                    scope.lease_fencing_token()
+                ),
+            });
+        }
+        let receipt = bridge
+            .submit_at_scope(
+                &runtime_id,
+                scope.member(),
+                &input.content,
+                HandlingMode::Queue,
+                &delivery_identity,
+            )
+            .await?;
+        // meerkat names the admitted session on every scope-bound receipt;
+        // it is the scope's session, validated inside admission.
+        let session_id = receipt
+            .session_id
+            .clone()
+            .unwrap_or_else(|| scope.session_id().clone());
+        Ok(ScopedDispatchReceipt::new(
+            scope.clone(),
+            receipt.work_ref.to_string(),
+            receipt.stage,
+            session_id,
+        ))
+    }
+
+    /// Read one delivery's state from the ORIGINAL session `scope` pins,
+    /// never from the identity's current session. Works for an identity in
+    /// any lifecycle state; takes no lock and changes nothing.
+    ///
+    /// An authoritative miss is [`ScopedRecovery::Absent`], which is never
+    /// permission to retry; an unreachable original owner is
+    /// [`ScopedRecovery::Unresolved`].
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` without a scoped bridge seam; `Rejected` for a scope of
+    /// another identity or an invalid delivery identity.
+    pub async fn recover_at_scope(
+        &self,
+        identity: &AgentIdentity,
+        scope: &DeliveryScope,
+        input: &DispatchInput,
+        timeout: Duration,
+    ) -> Result<ScopedRecovery, ScopedDeliveryError> {
+        Self::ensure_scope_identity(identity, scope)?;
+        let delivery_identity = scoped_delivery_identity(input)?;
+        let bridge = self.scoped_bridge()?;
+        self.refuse_unscopable_identity(identity).await?;
+        let recovery = bridge
+            .recover_at_scope(scope.member(), &delivery_identity, Instant::now() + timeout)
+            .await?;
+        Ok(ScopedRecovery::from_native(recovery.into_parts().1))
+    }
+
+    fn scoped_bridge(&self) -> Result<&Arc<dyn SessionBridge>, ScopedDeliveryError> {
+        self.bridge
+            .as_ref()
+            .ok_or_else(|| ScopedDeliveryError::Unsupported {
+                detail: "no session bridge is installed".to_string(),
+            })
+    }
+
+    /// An externally bound (remotely hosted or peer-only) identity has no
+    /// native session binding, so it cannot be scope-bound. The scoped
+    /// capability refuses it typed and never falls back to the unscoped
+    /// submit: a caller that asked for scope correctness must not silently
+    /// get a weaker guarantee. An identity this runtime no longer knows is
+    /// left to the scope itself (recovery reads the scope's own session).
+    async fn refuse_unscopable_identity(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), ScopedDeliveryError> {
+        let entries = self.entries.read().await;
+        match entries.get(identity) {
+            Some(entry) if durable_spec_uses_external_binding(&entry.spec) => {
+                Err(ScopedDeliveryError::Unsupported {
+                    detail: format!(
+                        "identity '{identity}' is externally bound: {NO_NATIVE_SESSION_BINDING}"
+                    ),
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn ensure_scope_identity(
+        identity: &AgentIdentity,
+        scope: &DeliveryScope,
+    ) -> Result<(), ScopedDeliveryError> {
+        if scope.identity() == identity {
+            Ok(())
+        } else {
+            Err(ScopedDeliveryError::Rejected {
+                detail: format!(
+                    "the delivery scope belongs to identity '{}', not '{identity}'",
+                    scope.identity()
+                ),
+            })
+        }
+    }
+
+    /// The continuity atoms of an ACTIVE identity, read without changing
+    /// anything: the scoped path never materializes an inactive identity.
+    async fn active_scope_continuity(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(AgentRuntimeId, ContinuityGeneration, FencingToken), ScopedDeliveryError> {
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| ScopedDeliveryError::Rejected {
+                detail: format!("unknown identity: {identity}"),
+            })?;
+        if entry.state != IdentityLifecycleState::Active {
+            return Err(ScopedDeliveryError::Rejected {
+                detail: format!(
+                    "identity '{identity}' is {:?}, not active; scoped delivery never \
+                     materializes an identity",
+                    entry.state
+                ),
+            });
+        }
+        let continuity =
+            entry
+                .continuity
+                .as_ref()
+                .ok_or_else(|| ScopedDeliveryError::Rejected {
+                    detail: format!("identity '{identity}' has no continuity record"),
+                })?;
+        let lease = entry
+            .lease
+            .as_ref()
+            .ok_or_else(|| ScopedDeliveryError::Rejected {
+                detail: format!("identity '{identity}' holds no lease"),
+            })?;
+        Ok((
+            continuity.agent_runtime_id.clone(),
+            continuity.generation,
+            lease.fencing_token,
+        ))
     }
 
     // -----------------------------------------------------------------------

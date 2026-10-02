@@ -133,6 +133,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32012` | `memory/index` backend persistence failed | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 | `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response and exits. | none |
+| `-32006` | `mobkit/dispatch` with `expected_scope`: the saved delivery scope no longer matches the identity's binding. Nothing was submitted and nothing was retargeted. Reified as `StaleScopeError` in both SDKs (`STALE_DELIVERY_SCOPE_CODE`). | `{kind: "stale_delivery_scope", admission_possible: false, mismatch}` |
 | `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 | `-32017` | a covered unified/stdin read arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the wrapped arms (`identity/resolved_tools`, `identity/routing_status`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). The independent HTTP console dispatcher does not apply this wrapper. | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
@@ -1241,6 +1242,113 @@ was delivered. Do not mix ticket waits and cursor waits on one identity: a
 ticket can settle before the identity health monitor counts the same turn on
 `completion_cursor`, so a later cursor wait can be satisfied by that earlier
 turn.
+
+---
+
+## Scope-bound dispatch
+
+A host that must never admit a delivery to a session other than the one it
+recorded captures the identity's delivery scope, persists it, and dispatches
+against it. The scoped path never materializes, repairs, retargets or
+prepares a delivery (no defang, no ambient memory, no injected context), and
+a lost reply is recovered from the scope's ORIGINAL session ledger, never
+from the identity's current session.
+
+### Capturing a scope
+
+`mobkit/status_identity` carries `delivery_scope`, captured observationally
+(nothing is submitted, renewed or materialized):
+
+```json
+{
+  "version": 1,
+  "identity": "personal:alice",
+  "agent_runtime_id": "rt-...",
+  "generation": 2,
+  "lease_fencing_token": 5,
+  "member": {"version": 1, "runtime_id": {...}, "fence_token": 7, "session_id": "..."}
+}
+```
+
+`member` is meerkat's own versioned member scope; carry it opaque. When no
+scope can be captured (an inactive identity, no lease, a member without a
+session binding, a bridge without the scoped seam), `delivery_scope` is
+`null` and `delivery_scope_unavailable` is `{kind, reason}`. Persist the
+object byte-exact; a scope with a `version` this gateway or SDK does not read
+is refused, never guessed at.
+
+### `mobkit/dispatch` with `expected_scope`
+
+Pass the saved scope as `expected_scope`. `dispatch_input` must carry both
+`idempotency_key` and `correlation_id`; they are used verbatim (no
+canonicalization). `expected_scope` does not combine with `track_turn`. The
+gateway re-validates every atom: the MobKit continuity (runtime id,
+generation, lease fencing token) here, and the member's session, incarnation
+and fence inside meerkat's admission authority, atomically with the
+admission. The result is the native receipt:
+
+```json
+{
+  "receipt": {"work_ref": "...", "stage": "ingress_accepted", "session_id": "..."},
+  "delivery_scope": {...},
+  "fencing_token": 5
+}
+```
+
+`stage` is the admission stage the receipt proves; `ingress_accepted` means
+the member's work lane accepted the delivery, not that a durable runtime
+input exists. A replay of the same key at the same scope is deduplicated
+onto the original input; a replay with changed content is never a second
+effect and never overwrites the original (rejecting such a conflict is not
+part of this release).
+
+Every refusal carries `data.kind` and `data.admission_possible`:
+
+| `data.kind` | Code | Meaning |
+|-------------|------|---------|
+| `stale_delivery_scope` | `-32006` | The scope moved; `data.mismatch` is `runtime_id`, `generation`, `lease_fencing_token`, `member` or `member_binding`. Nothing was submitted. |
+| `scoped_delivery_unsupported` | `-32004` | The session bridge has no scoped seam (custom and remote bridges), or the member has no native session binding (remotely hosted or peer-only). Nothing was submitted, and the scoped path never falls back to the unscoped submit. |
+| `scoped_delivery_rejected` | `-32603` | Refused before admission (inactive identity, missing or invalid delivery identity, scope of another identity, lost lease, a typed meerkat refusal). Nothing was submitted. |
+| `scoped_delivery_uncertain` | `-32603` | The admission round trip returned no answer; `admission_possible` is `true`. Recover with the same scope. |
+
+A malformed or unsupported-version `expected_scope` is `-32602` with
+`data: {kind: "invalid_delivery_scope", unsupported_version}`.
+
+### `mobkit/recover_delivery`
+
+Read one delivery's state from the scope's original session. Never
+resubmits, never reads the current session, and works for an identity in any
+lifecycle state.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | The identity the scope belongs to |
+| `scope` | `object` | yes | The saved delivery scope |
+| `idempotency_key` | `string` | yes | The delivery's idempotency key |
+| `correlation_id` | `string` | yes | The delivery's correlation id |
+| `timeout_ms` | `number` | no | Bound on the evidence read (default 60 000, clamped to 600 000) |
+</Accordion>
+
+The result is `{identity, delivery_scope, recovery}`. `recovery.state` is:
+
+- `absent`: an authoritative point-in-time miss in the original session. An
+  outstanding admission can still land later; this is never permission to
+  retry.
+- `in_flight`: the original session holds the input, not yet terminal, with
+  `input_id`, `phase` and `durable_witness` (`true` only when a committed
+  store row backs it).
+- `completed`: the delivery's turn completed, with `input_id`,
+  `output_status`, `output` and `output_truncated` as for
+  `mobkit/turn_result`.
+- `failed`: the turn reached a failed terminal, with `error`.
+- `terminal_without_run`: a terminal disposition without a run of its own,
+  with `terminal` and `last_run_id`.
+- `broken`: inconsistent evidence, with `reason`.
+- `unresolved`: the original owner could not establish the state; `cause` is
+  `runtime_adapter_unavailable`, `original_session_unknown`,
+  `original_owner_unavailable` (with `detail`) or `evidence_read_timed_out`.
+  Never absence.
 
 ---
 

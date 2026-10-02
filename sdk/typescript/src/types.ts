@@ -7,6 +7,8 @@
 
 // Type-only import (erased at runtime — no module cycle).
 import type { ToolHandler } from "./models.js";
+// errors.ts imports nothing, so this runtime import adds no cycle.
+import { ContractMismatchError } from "./errors.js";
 
 // -- Helpers (internal) ---------------------------------------------------
 
@@ -3031,6 +3033,206 @@ export function parseDispatchResult(raw: unknown): DispatchResult {
   };
 }
 
+/** Serialized format version of {@link DeliveryScope} this SDK reads. */
+export const DELIVERY_SCOPE_VERSION = 1 as const;
+
+/**
+ * One identity's exact delivery scope, from `status()`.
+ *
+ * Persist it ({@link deliveryScopeToDict}) before a scoped dispatch, and pass
+ * the same scope to `dispatch(..., { expectedScope })` and
+ * `recoverDelivery`. It pins the MobKit continuity (runtime id, generation,
+ * lease fencing token) and meerkat's native member scope (`member`, opaque
+ * and versioned on its own). A selector and stale-binding guard: the gateway
+ * re-validates every atom and refuses a moved scope with `StaleScopeError`.
+ */
+export interface DeliveryScope {
+  readonly version: number;
+  readonly identity: string;
+  readonly agentRuntimeId: string;
+  readonly generation: number;
+  readonly leaseFencingToken: number;
+  readonly member: Readonly<Record<string, unknown>>;
+  /** The member session the scope pins. */
+  readonly sessionId: string | null;
+}
+
+function nonNegativeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new TypeError(`delivery scope ${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
+/**
+ * Decode a persisted scope. Throws `ContractMismatchError` for a scope
+ * version this SDK does not read and `TypeError` for a malformed scope;
+ * neither is ever read as a guess.
+ */
+export function parseDeliveryScope(raw: unknown): DeliveryScope {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new TypeError("delivery scope must be an object");
+  }
+  const d = raw as Record<string, unknown>;
+  if (typeof d.version !== "number" || !Number.isInteger(d.version)) {
+    throw new TypeError("delivery scope has no integer version");
+  }
+  if (d.version !== DELIVERY_SCOPE_VERSION) {
+    throw new ContractMismatchError(
+      `unsupported delivery scope version ${d.version} (this SDK reads version ${DELIVERY_SCOPE_VERSION})`,
+    );
+  }
+  if (typeof d.identity !== "string" || d.identity === "") {
+    throw new TypeError("delivery scope identity must be a non-empty string");
+  }
+  if (typeof d.agent_runtime_id !== "string" || d.agent_runtime_id === "") {
+    throw new TypeError("delivery scope agent_runtime_id must be a non-empty string");
+  }
+  const member = d.member;
+  if (member === null || typeof member !== "object" || Array.isArray(member)) {
+    throw new TypeError("delivery scope member must be an object");
+  }
+  const memberCopy = JSON.parse(JSON.stringify(member)) as Record<string, unknown>;
+  return {
+    version: d.version,
+    identity: d.identity,
+    agentRuntimeId: d.agent_runtime_id,
+    generation: nonNegativeInteger(d.generation, "generation"),
+    leaseFencingToken: nonNegativeInteger(d.lease_fencing_token, "lease_fencing_token"),
+    member: memberCopy,
+    sessionId: typeof memberCopy.session_id === "string" ? memberCopy.session_id : null,
+  };
+}
+
+/** The exact persisted form the gateway expects back. */
+export function deliveryScopeToDict(scope: DeliveryScope): Record<string, unknown> {
+  return {
+    version: scope.version,
+    identity: scope.identity,
+    agent_runtime_id: scope.agentRuntimeId,
+    generation: scope.generation,
+    lease_fencing_token: scope.leaseFencingToken,
+    member: JSON.parse(JSON.stringify(scope.member)) as Record<string, unknown>,
+  };
+}
+
+/**
+ * What a scoped dispatch's admission proved. `stage` is the admission stage
+ * the receipt proves (`ingress_accepted` for this path: the member's work
+ * lane accepted the delivery; not a durable runtime-input claim).
+ * `sessionId` is the scope's session, validated inside meerkat's admission.
+ */
+export interface DeliveryReceipt {
+  readonly workRef: string;
+  readonly stage: string;
+  readonly sessionId: string;
+}
+
+/** Result of `dispatch(..., { expectedScope })`. */
+export interface ScopedDispatchResult {
+  readonly receipt: DeliveryReceipt;
+  readonly deliveryScope: DeliveryScope;
+  readonly fencingToken: number;
+}
+
+export function parseScopedDispatchResult(raw: unknown): ScopedDispatchResult {
+  const d = asRecord(raw);
+  const receipt = asRecord(d.receipt);
+  return {
+    receipt: {
+      workRef: String(receipt.work_ref ?? ""),
+      stage: String(receipt.stage ?? ""),
+      sessionId: String(receipt.session_id ?? ""),
+    },
+    deliveryScope: parseDeliveryScope(d.delivery_scope),
+    fencingToken: Number(d.fencing_token ?? 0),
+  };
+}
+
+/**
+ * What `recoverDelivery` established, from the ORIGINAL session only.
+ * `absent` is an authoritative point-in-time miss and `unresolved` an
+ * unreachable original owner: neither is permission to retry.
+ */
+export type ScopedRecoveryState =
+  | "absent"
+  | "in_flight"
+  | "completed"
+  | "failed"
+  | "terminal_without_run"
+  | "broken"
+  | "unresolved";
+
+const SCOPED_RECOVERY_STATES: ReadonlySet<string> = new Set([
+  "absent",
+  "in_flight",
+  "completed",
+  "failed",
+  "terminal_without_run",
+  "broken",
+  "unresolved",
+]);
+
+/** Result of `recoverDelivery`. Only `state` is always set. */
+export interface ScopedRecovery {
+  readonly state: ScopedRecoveryState;
+  readonly deliveryScope: DeliveryScope | null;
+  readonly inputId: string | null;
+  /** `in_flight`: the runtime input phase. */
+  readonly phase: unknown;
+  /** `in_flight`: whether a committed store row backs it. */
+  readonly durableWitness: boolean | null;
+  /** `completed`: as for {@link TurnResult}. */
+  readonly outputStatus: string | null;
+  readonly output: string | null;
+  readonly outputTruncated: boolean;
+  /** `failed`. */
+  readonly error: string | null;
+  /** `terminal_without_run`. */
+  readonly terminal: unknown;
+  readonly lastRunId: string | null;
+  /** `broken`. */
+  readonly reason: string | null;
+  /**
+   * `unresolved`: `runtime_adapter_unavailable`, `original_session_unknown`,
+   * `original_owner_unavailable` or `evidence_read_timed_out`.
+   */
+  readonly cause: string | null;
+  readonly detail: string | null;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+export function parseScopedRecovery(raw: unknown): ScopedRecovery {
+  const d = asRecord(raw);
+  const r = asRecord(d.recovery ?? d);
+  const rawState = String(r.state ?? "unresolved");
+  // A state this SDK does not know is unknown, never absence.
+  const known = SCOPED_RECOVERY_STATES.has(rawState);
+  const state = (known ? rawState : "unresolved") as ScopedRecoveryState;
+  return {
+    state,
+    deliveryScope:
+      d.delivery_scope !== null && typeof d.delivery_scope === "object"
+        ? parseDeliveryScope(d.delivery_scope)
+        : null,
+    inputId: optionalString(r.input_id),
+    phase: r.phase ?? null,
+    durableWitness: typeof r.durable_witness === "boolean" ? r.durable_witness : null,
+    outputStatus: optionalString(r.output_status),
+    output: optionalString(r.output),
+    outputTruncated: Boolean(r.output_truncated ?? false),
+    error: optionalString(r.error),
+    terminal: r.terminal ?? null,
+    lastRunId: optionalString(r.last_run_id),
+    reason: optionalString(r.reason),
+    cause: known ? optionalString(r.cause) : `unknown_state:${rawState}`,
+    detail: optionalString(r.detail),
+  };
+}
+
 export function dispatchResultToDict(
   result: DispatchResult,
 ): Record<string, unknown> {
@@ -3211,11 +3413,48 @@ export interface IdentityStatus {
   readonly checkpointVersion: number;
   readonly lease: LeaseInfo | null;
   readonly continuityHealth: ContinuityHealth | null;
+  /**
+   * The exact delivery scope to persist before a scoped dispatch
+   * (`dispatch(..., { expectedScope })`); `null` when none can be captured,
+   * with the reason in `deliveryScopeUnavailable`.
+   */
+  readonly deliveryScope?: DeliveryScope | null;
+  /** `{ kind, reason }` when `deliveryScope` is `null`. */
+  readonly deliveryScopeUnavailable?: DeliveryScopeUnavailable | null;
+}
+
+export interface DeliveryScopeUnavailable {
+  readonly kind: string;
+  readonly reason: string;
 }
 
 export function parseIdentityStatus(raw: unknown): IdentityStatus {
   const d = asRecord(raw);
+  let deliveryScope: DeliveryScope | null = null;
+  const unavailableRaw = d.delivery_scope_unavailable;
+  let deliveryScopeUnavailable: DeliveryScopeUnavailable | null =
+    unavailableRaw !== null && typeof unavailableRaw === "object"
+      ? {
+          kind: String(asRecord(unavailableRaw).kind ?? ""),
+          reason: String(asRecord(unavailableRaw).reason ?? ""),
+        }
+      : null;
+  if (d.delivery_scope !== null && typeof d.delivery_scope === "object") {
+    try {
+      deliveryScope = parseDeliveryScope(d.delivery_scope);
+    } catch (error) {
+      if (!(error instanceof ContractMismatchError)) throw error;
+      // A scope this SDK cannot read is never guessed at; the rest of the
+      // status stays usable.
+      deliveryScopeUnavailable = {
+        kind: "unsupported_delivery_scope_version",
+        reason: error.message,
+      };
+    }
+  }
   return {
+    deliveryScope,
+    deliveryScopeUnavailable,
     identity: String(d.identity ?? ""),
     lifecycleState: String(d.state ?? ""),
     agentRuntimeId: String(d.agent_runtime_id ?? ""),
