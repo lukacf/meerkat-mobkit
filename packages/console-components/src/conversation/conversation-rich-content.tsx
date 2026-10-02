@@ -1,4 +1,4 @@
-import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, groupRoutineToolRows, peerDisplayLabel, useConversationDisplayLabels, useInsideCompletedToolDisclosure } from "./presentation-policy";
+import { canFoldCompletedTools, CompletedToolDisclosure, explicitDisplayLabel, groupRoutineToolRows, peerDisplayLabel, useConversationDisplayLabels, useInsideCompletedToolDisclosure, useRowState } from "./presentation-policy";
 import clsx from "clsx";
 
 import {
@@ -61,13 +61,14 @@ function alignmentAttr(alignment: ConversationTableAlignment | null | undefined)
   return alignment || "left";
 }
 
-function ThinkingBlock({ block, displayNormalization = true }: { block: ConversationRichThinkingBlock; displayNormalization?: boolean }) {
+function ThinkingBlock({ block, index, displayNormalization = true }: { block: ConversationRichThinkingBlock; index: number; displayNormalization?: boolean }) {
   // Hydration changes provenance, not the reader's disclosure choice.
-  const initiallyOpen = useRef(!(block.final && block.persisted));
+  const [initiallyOpen] = useRowState(`thinking-initial:${index}`, () => !(block.final && block.persisted));
+  const [open, setOpen] = useRowState(`thinking:${index}`, () => initiallyOpen);
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
-  const collapsedByDefault = !initiallyOpen.current;
+  const collapsedByDefault = !initiallyOpen;
   return (
     <details
       className={clsx(
@@ -76,7 +77,8 @@ function ThinkingBlock({ block, displayNormalization = true }: { block: Conversa
         block.persisted && "cc-rich-thinking--persisted",
         collapsedByDefault && "cc-rich-thinking--collapsed",
       )}
-      open={initiallyOpen.current}
+      open={open}
+      onToggle={(event) => { if (event.currentTarget.open !== open) setOpen(event.currentTarget.open); }}
     >
       <summary className="cc-rich-thinking__label">{block.label?.trim() ? block.label : "Thinking"}</summary>
       <p className="cc-rich-paragraph cc-rich-thinking__body" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} />
@@ -275,7 +277,7 @@ function renderBlock(
     return <ToolCallBlock block={block} key={`tool-call-${index}`} />;
   }
 
-  return <div key={`thinking-${index}`}><ThinkingBlock block={block} displayNormalization={displayNormalization} /></div>;
+  return <div key={`thinking-${index}`}><ThinkingBlock block={block} index={index} displayNormalization={displayNormalization} /></div>;
 }
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
@@ -453,7 +455,7 @@ function toolAttentionKey(block: ConversationRichToolCallBlock): string | null {
 function useToolDisclosure(blocks: ConversationRichToolCallBlock[], initiallyOpen: boolean) {
   const keys = blocks.map(toolAttentionKey).filter((key): key is string => key !== null);
   const signature = JSON.stringify(keys);
-  const [state, setState] = useState(() => ({ signature, keys, expanded: initiallyOpen }));
+  const [state, setState] = useRowState(`tool:${JSON.stringify(blocks.map((block) => block.toolCallId))}`, () => ({ signature, keys, expanded: initiallyOpen }));
   const expanded = state.expanded || (state.signature !== signature && keys.some((key) => !state.keys.includes(key)));
   if (state.signature !== signature) setState({ signature, keys, expanded });
   const toggle = () => setState({ signature, keys, expanded: !expanded });

@@ -79,6 +79,7 @@ export default defineConfig({
       "packages/console-components/src/conversation/context-selection.test.tsx",
       "packages/console-components/src/conversation/approval-card.test.tsx",
       "packages/console-components/src/conversation/presentation-policy.test.tsx",
+      "packages/console-components/src/conversation/row-state.test.tsx",
       "packages/console-components/src/conversation/transport-status.test.tsx",
       "packages/console-components/src/conversation/scroll-controller.test.tsx",
       "packages/console-components/src/conversation/conversation-pane.test.tsx",

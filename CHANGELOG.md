@@ -860,6 +860,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
 
+- Console: a transcript row keeps what the reader opened if it unmounts and
+  mounts again. Disclosure state lived in the DOM or in component state, so
+  a remounted row reset it: event payloads, thinking blocks, tool calls,
+  approval details and flow-run cards. Rows now name a scope by their stable
+  row id (`ConversationRowStateScope`), and their parts keep that state in
+  the pane's presentation store through `useRowState` and `RowDetails`.
+  The first render records its initial value, so a thinking block that was
+  open while it streamed stays open. The store is per pane, bounded at 2,000
+  entries and cleared with the pane's authority, like completed-tool
+  disclosures. Nothing changes for a row that stays mounted; this prepares
+  the windowed transcript (#544). A flow-run card still applies its status
+  default when the run's status changes, but no longer resets the reader's
+  choice when it mounts again.
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in

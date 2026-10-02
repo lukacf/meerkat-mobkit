@@ -5,7 +5,7 @@ import { JumpToLatest } from "../../../packages/console-components/src/conversat
 import { approvalInteractionIdsByTurn, ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
 import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
 import type { MarkdownUrlPolicy } from "../../../packages/console-components/src/conversation/conversation-markdown";
-import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
+import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, ConversationRowStateScope, RowDetails, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
 import React from "react";
 import type {
   ConversationTimelineEntry,
@@ -1077,10 +1077,10 @@ function EventRow({ message: m }: { message: Msg }) {
           <MessageTime message={m} />
         </div>
         {payloadJson ? (
-          <details className="msg__event-details">
+          <RowDetails part="event-details" className="msg__event-details">
             <summary>Event details</summary>
             <pre>{payloadJson}</pre>
-          </details>
+          </RowDetails>
         ) : null}
       </div>
     </div>
@@ -1110,6 +1110,19 @@ const MessageRow = React.memo(function MessageRow({
   markdownUrlPolicy,
 }: MessageRowProps) {
   countRender("MessageRow");
+  // Row parts keep reader state (open disclosures) per pane under this id,
+  // so the row shows the same thing if it unmounts and mounts again.
+  return <ConversationRowStateScope rowId={m.scrollRowId ?? m.id}>
+    <MessageRowBody message={m} suppressWorked={suppressWorked} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+  </ConversationRowStateScope>;
+}, messageRowPropsEqual);
+
+function MessageRowBody({
+  message: m,
+  suppressWorked,
+  workGraphActions,
+  markdownUrlPolicy,
+}: MessageRowProps) {
   if (m.kind === "event" || m.kind === "origin") {
     return <EventRow message={m} />;
   }
@@ -1147,7 +1160,7 @@ const MessageRow = React.memo(function MessageRow({
       </div>
     </div>
   );
-}, messageRowPropsEqual);
+}
 
 /// The scrolling transcript. Memoised so composer keystrokes, which re-render
 /// the owning ChatPane, never touch a transcript row: only a change in the
@@ -1217,7 +1230,9 @@ const TranscriptTurn = React.memo(function TranscriptTurn({
         </React.Fragment>);
         return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
       })}
-      <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractionIds} />
+      <ConversationRowStateScope rowId={`approvals:${turn.id}`}>
+        <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractionIds} />
+      </ConversationRowStateScope>
     </div>
   );
 });

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type CSSProperties } from "react";
+import { useId, type CSSProperties } from "react";
 
 import {
   parseConversationRichBlocks,
@@ -9,6 +9,7 @@ import {
 
 import { ConversationRichContent } from "./conversation-rich-content";
 import { ConversationTranscript } from "./conversation-transcript";
+import { useRowState } from "./presentation-policy";
 import type { IconRenderer } from "../shared";
 
 export type FlowRunRestoreHandler = (
@@ -44,7 +45,7 @@ function MemberRow({
   onMessageMember?: ((memberKey: string) => void) | null;
 }) {
   const detailId = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useRowState(`flow-member:${row.memberKey}`, () => false);
   const hasDetail = Boolean(row.subView && row.subView.groups.length);
   const style = (row.tone?.variables || undefined) as CSSProperties | undefined;
   const rowContent = (
@@ -72,7 +73,7 @@ function MemberRow({
             className="cc-flow-run__member-row"
             aria-controls={detailId}
             aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
+            onClick={() => setExpanded(!expanded)}
           >
             {rowContent}
           </button>
@@ -132,19 +133,21 @@ export function FlowRunCard({
   const detailsId = useId();
   const terminal = isTerminalStatus(entry.status);
   const hasDetails = Boolean(entry.rows.length);
-  const [detailsExpanded, setDetailsExpanded] = useState(
-    () => !terminal || entry.status !== "completed",
-  );
-
   // Active work must remain inspectable without another click. Conversely,
   // collapse a card when a live run COMPLETES so finished crews stop
   // dominating the transcript — but failed/stopped runs keep their details
   // open: per-member failure detail matters most at the moment of failure.
   // A user's choice is preserved for subsequent renders while the card
-  // remains in the same state class.
-  useEffect(() => {
-    setDetailsExpanded(!terminal || entry.status !== "completed");
-  }, [terminal, entry.status]);
+  // remains in the same state class, including when its row mounts again.
+  const defaultExpanded = !terminal || entry.status !== "completed";
+  const [details, setDetails] = useRowState(`flow-run-details:${entry.helperId ?? ""}`,
+    () => ({ status: entry.status, expanded: defaultExpanded }));
+  if (details.status !== entry.status) setDetails({ status: entry.status, expanded: defaultExpanded });
+  const detailsExpanded = details.status === entry.status ? details.expanded : defaultExpanded;
+  const setDetailsExpanded = (next: boolean | ((current: boolean) => boolean)) => setDetails({
+    status: entry.status,
+    expanded: typeof next === "function" ? next(detailsExpanded) : next,
+  });
 
   return (
     <section
