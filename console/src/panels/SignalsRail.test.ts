@@ -146,10 +146,10 @@ test("signals rail previews never leak the meerkat 0.7.1 peer transport projecti
   ];
 
   const groups = buildSignalGroupsForTest(frames);
-  const received = groups.find((group) => group.title.startsWith("Received from"));
+  const kickoff = groups.find((group) => group.title === "Kickoff started");
 
-  assert.ok(received, "incoming comms notice should produce a Received from signal");
-  assert.equal(received?.detail, "Peer request: mob.kickoff_started");
+  assert.ok(kickoff, "a kickoff notice produces its typed kickoff signal");
+  assert.equal(kickoff?.detail, "Incident Commander");
   for (const group of groups) {
     for (const item of group.items) {
       assert.ok(
@@ -248,4 +248,46 @@ test("signals rail names a provider failure from meerkat's typed error_report", 
   const [signal] = groups[0].items;
   assert.equal(signal.label, "Agent turn failed");
   assert.equal(signal.detail, "LLM error: authentication failed (401) (llm_auth_error)");
+});
+
+test("signals rail shows a typed kickoff lifecycle notice by its phase, never its notice text", () => {
+  const frames: ConsoleFrame[] = [{
+    id: "kickoff-failed",
+    event: "system_notice",
+    identity: "scribe",
+    timestampMs: Date.now(),
+    sourceKind: "session_history",
+    data: {
+      kind: "comms",
+      blocks: [{
+        type: "comms",
+        kind: "lifecycle",
+        direction: "incoming",
+        peer: {
+          id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+          display_name: "incident-command-center/commander/incident-commander",
+        },
+        intent: "mob.kickoff_failed",
+        summary: "Peer lifecycle: mob.kickoff_failed",
+        payload: { peer: "incident-commander", role: "commander" },
+        content: [{
+          type: "text",
+          text: "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c\nKind: mob.kickoff_failed\n"
+            + "This is a one-way status notice, not a request. There is nothing to answer: do not call send_response or send_message for it.",
+        }],
+      }],
+    },
+  }];
+  const groups = buildSignalGroupsForTest(frames);
+  const failed = groups.find((group) => group.title === "Kickoff failed");
+  assert.ok(failed, "a failed kickoff produces its typed signal");
+  assert.equal(failed?.detail, "Incident Commander (commander)");
+  for (const group of groups) {
+    for (const item of group.items) {
+      assert.ok(
+        !/peer_id|send_response|nothing to answer/i.test(`${item.label} ${item.detail}`),
+        `signal preview must not surface lifecycle notice text: ${item.label} ${item.detail}`,
+      );
+    }
+  }
 });

@@ -2,6 +2,13 @@ export { realtimeMessageOrigin, hasRealtimeMessageOriginCarrier, isRealtimeHisto
 export { conversationPresentationRows } from "./assistant-presentation";
 export { assistantMessageId, assistantMessageKey, hasAssistantMessageIdCarrier, assistantMessageCursorSequence, assistantHistorySnapshot } from "./assistant-message-identity";
 export type { AssistantHistorySnapshot } from "./assistant-message-identity";
+export {
+  MEMBER_KICKOFF_PHASES,
+  memberKickoffNotice,
+  memberKickoffPhaseLabel,
+  type MemberKickoffNotice,
+  type MemberKickoffPhase,
+} from "./member-kickoff";
 export type {
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,
@@ -288,6 +295,7 @@ export type {
   ConversationParsedSummaryFile,
   ConversationRichBlock,
   ConversationRichBackgroundJobBlock,
+  ConversationRichMemberKickoffBlock,
   ConversationRichMarkdownBlock,
   ConversationTextMode,
   ConversationRichCodeBlock,
