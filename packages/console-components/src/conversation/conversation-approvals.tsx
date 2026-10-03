@@ -15,6 +15,19 @@ export function approvalInteractionIdsByTurn(turns: readonly (readonly string[])
   return turns.map((ids, index) => [...new Set(ids)].filter((id) => latest.get(id) === index));
 }
 
+/** Indexes of the turns that hold a pending request, placed as
+ * `ConversationApprovals` places them with `approvalInteractionIdsByTurn`. */
+export function pendingApprovalTurns(
+  turns: readonly (readonly string[])[],
+  { approvalSnapshot, approvalIdentity, conversationId }: Pick<ConversationApprovalProps, "approvalSnapshot" | "approvalIdentity"> & { conversationId?: string },
+): number[] {
+  if (!approvalSnapshot || !approvalIdentity || approvalSnapshot.requests.length === 0) return [];
+  return approvalInteractionIdsByTurn(turns).flatMap((interactionIds, index) => (
+    interactionIds.length > 0 && approvalSnapshot.requests.some((request) => Boolean(request.origin?.interactionId)
+      && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }))
+      ? [index] : []));
+}
+
 export function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }: ConversationApprovalProps & {
   conversationId?: string;
   /** Omit for conversation-only provenance, supply exact IDs for turn placement. */
