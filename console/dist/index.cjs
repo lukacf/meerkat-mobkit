@@ -6117,6 +6117,10 @@ function approvalInteractionIdsByTurn(turns) {
   turns.forEach((ids, index2) => ids.forEach((id) => latest.set(id, index2)));
   return turns.map((ids, index2) => [...new Set(ids)].filter((id) => latest.get(id) === index2));
 }
+function pendingApprovalTurns(turns, { approvalSnapshot, approvalIdentity, conversationId }) {
+  if (!approvalSnapshot || !approvalIdentity || approvalSnapshot.requests.length === 0) return [];
+  return approvalInteractionIdsByTurn(turns).flatMap((interactionIds, index2) => interactionIds.length > 0 && approvalSnapshot.requests.some((request) => Boolean(request.origin?.interactionId) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds })) ? [index2] : []);
+}
 function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }) {
   if (!approvalSnapshot || !approvalIdentity) return null;
   const requests = approvalSnapshot.requests.filter((request) => Boolean(request.origin?.interactionId) === Boolean(interactionIds) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
@@ -38610,7 +38614,8 @@ function turnSlots(turns, mounted, measurements, gap) {
   spacer(next, turns.length);
   return slots;
 }
-function useTurnWindow(bodyRef, turns, enabled, renderKey) {
+var NO_ACTIONABLE_TURNS = /* @__PURE__ */ new Set();
+function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIONABLE_TURNS) {
   const measurements = React24.useRef(/* @__PURE__ */ new Map());
   const geometry = React24.useRef({ width: 0, gap: 0, top: 0, viewportHeight: 0 });
   const turnsRef = React24.useRef(turns);
@@ -38619,6 +38624,8 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey) {
   const keysRef = React24.useRef(keys2);
   keysRef.current = keys2;
   const pins = React24.useRef({ selection: /* @__PURE__ */ new Set(), focus: /* @__PURE__ */ new Set(), jump: /* @__PURE__ */ new Set() });
+  const actionableRef = React24.useRef(actionable);
+  actionableRef.current = actionable;
   const [plan, setPlan] = React24.useState(null);
   const planRef = React24.useRef(plan);
   planRef.current = plan;
@@ -38627,6 +38634,11 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey) {
     if (!enabled || !body) return;
     const current = turnsRef.current;
     const pinned = /* @__PURE__ */ new Set([...pins.current.selection, ...pins.current.focus, ...pins.current.jump]);
+    if (actionableRef.current.size > 0) {
+      current.forEach((turn, index2) => {
+        if (actionableRef.current.has(turn.id)) pinned.add(index2);
+      });
+    }
     const next = planTurnWindow({
       turns: current,
       measurements: measurements.current,
@@ -38743,6 +38755,13 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey) {
       }
     }
   }, [turns, keys2, enabled, bodyRef]);
+  const actionableKey = [...actionable].sort().join("\n");
+  const actionableKeyRef = React24.useRef(actionableKey);
+  React24.useEffect(() => {
+    if (actionableKeyRef.current === actionableKey) return;
+    actionableKeyRef.current = actionableKey;
+    replan();
+  }, [actionableKey, replan]);
   const mount = React24.useCallback((index2) => {
     if (index2 < 0 || index2 >= turnsRef.current.length) return false;
     pins.current.jump = /* @__PURE__ */ new Set([index2]);
@@ -38773,6 +38792,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey) {
 
 // src/panels/ChatPane.tsx
 var import_jsx_runtime53 = require("react/jsx-runtime");
+var NO_TURN_IDS = /* @__PURE__ */ new Set();
 function transcriptWindowingDefault() {
   return globalThis.__consoleTranscriptWindowing !== false;
 }
@@ -39928,7 +39948,15 @@ function ChatPane({
     });
     return (turn, index2) => `${previous3[index2] ?? ""}\0${turnContentKey(turn)}`;
   }, [revealedTurns]);
-  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey);
+  const actionableTurnIds = import_react40.default.useMemo(() => {
+    if (!approvalSnapshot?.requests.length) return NO_TURN_IDS;
+    const indexes = pendingApprovalTurns(
+      revealedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])),
+      { approvalSnapshot, approvalIdentity: identity, conversationId }
+    );
+    return indexes.length > 0 ? new Set(indexes.map((index2) => revealedTurns[index2].id)) : NO_TURN_IDS;
+  }, [approvalSnapshot, revealedTurns, identity, conversationId]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey, actionableTurnIds);
   const revealScrollAnchorRef = import_react40.default.useRef(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef,
