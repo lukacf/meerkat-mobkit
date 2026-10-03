@@ -810,6 +810,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--trace`, and `--trace-invalidations` names the source) and lowers the
   rect-read limit to 12 per token (about 9 now, 13 before).
 
+- Console: a streaming reply no longer re-parses its whole Markdown source on
+  every token. While a reply streams, its document renders as closed blocks,
+  each parsed once, plus the open tail. A boundary is a blank line outside a
+  fenced code or HTML block, followed by an unindented line that does not
+  continue a list, so the blocks before it cannot change. Only the tail is
+  parsed again as text arrives (about 160 characters per token in the typing
+  harness, where the whole reply was parsed before), and closing a block
+  changes no rendered node. A completed reply keeps that rendering, so its
+  nodes and any selection survive completion; tests assert it is
+  DOM-identical to a whole parse. A source with link-reference or footnote
+  definitions, which resolve across blocks, renders as a whole parse on
+  completion. `npm run perf:typing:browser` fails on more than 500 Markdown
+  source characters parsed per streamed token.
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in

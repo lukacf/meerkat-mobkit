@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { buildConversationMarkdownBlocks, conversationRichBlockCopyText, conversationEntryText } from "@console-core";
 import { mapFramesToTimelineEntries } from "../../../console-core/src/adapters";
 import { buildConversationViewState } from "../../../console-core/src/adapters";
-import { ConversationMarkdown, resolveMarkdownImage, resolveMarkdownLink } from "./conversation-markdown";
+import { ConversationMarkdown, resolveMarkdownImage, resolveMarkdownLink, splitMarkdownChunks } from "./conversation-markdown";
 import { ConversationRichContent } from "./conversation-rich-content";
 import { ConversationTranscript } from "./conversation-transcript";
 import { MARKDOWN_CORPUS, markdownEditSequence } from "./markdown-corpus";
@@ -111,4 +111,79 @@ describe("Markdown document renderer", () => {
     expect(container.querySelector("h1")).toBeNull();
     expect(container.querySelector("img")?.src).toBe("https://example.test/typed.png");
   });
+});
+
+/** Replies shaped like streamed assistant output: headings, loose and tight
+ * lists, fences holding blank lines, tables, quotes, an HTML comment, CRLF. */
+const STREAMED_REPLIES = [
+  ...MARKDOWN_CORPUS.filter((fixture) => fixture.id !== "json").map((fixture) => fixture.source),
+  "## Status\n\nHere is a **summary** with `code` and a [link](https://example.test).\n\n- first\n- second\n\n- loose third\n\n  continued paragraph\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n> quoted\n\n> again\n\nDone.",
+  "1. one\n2. two\n\n3. three\n\n    indented code\n\nafter\n\n<!-- note\n\nstill a comment -->\n\ntail *text*",
+  "# Title\r\n\r\nFirst paragraph.\r\n\r\n~~~\r\nfenced\r\n\r\nmore\r\n~~~\r\n\r\nLast.\r\n",
+];
+
+function renderCounts(): Record<string, number> {
+  const sink: Record<string, number> = {};
+  (globalThis as { __consoleRenderCounts?: Record<string, number> }).__consoleRenderCounts = sink;
+  return sink;
+}
+
+describe("Streaming Markdown chunks", () => {
+  it("splits only where every earlier block is closed, and boundaries survive growth", () => {
+    expect(splitMarkdownChunks("a\n\nb\n\nc").map((chunk) => chunk.source)).toEqual(["a\n\n", "b\n\n", "c"]);
+    // Fences, list continuations, list items and HTML blocks span blank lines.
+    expect(splitMarkdownChunks("```\nx\n\ny\n```\n\nz").map((chunk) => chunk.source)).toEqual(["```\nx\n\ny\n```\n\n", "z"]);
+    expect(splitMarkdownChunks("- a\n\n  more\n\n- b\n\nend")).toHaveLength(2);
+    expect(splitMarkdownChunks("<!-- a\n\nb -->\n\nc").map((chunk) => chunk.source)).toEqual(["<!-- a\n\nb -->\n\n", "c"]);
+    // An open line that may still become a list marker closes nothing yet.
+    expect(splitMarkdownChunks("a\n\n-")).toHaveLength(1);
+    expect(splitMarkdownChunks("a\n\n1")).toHaveLength(1);
+    for (const reply of STREAMED_REPLIES) {
+      const full = splitMarkdownChunks(reply);
+      expect(full.map((chunk) => chunk.source).join("")).toBe(reply);
+      for (let cut = 0; cut <= reply.length; cut += 1) {
+        const closed = splitMarkdownChunks(reply.slice(0, cut)).slice(0, -1);
+        expect(closed).toEqual(full.slice(0, closed.length));
+      }
+    }
+  });
+
+  it("parses only the open tail per streamed token", () => {
+    const reply = STREAMED_REPLIES.at(-3)!;
+    const prefix = reply.slice(0, reply.lastIndexOf("Done"));
+    const counts = renderCounts();
+    try {
+      const { rerender } = render(<ConversationMarkdown block={doc(prefix, true)} />);
+      counts.MarkdownSourceChars = 0;
+      rerender(<ConversationMarkdown block={doc(`${prefix}Do`, true)} />);
+      expect(counts.MarkdownSourceChars).toBe("Do".length);
+    } finally {
+      delete (globalThis as { __consoleRenderCounts?: unknown }).__consoleRenderCounts;
+    }
+  });
+
+  it("closing a block changes no rendered node: the open tail was already Markdown", () => {
+    const { container, rerender } = render(<ConversationMarkdown block={doc("Intro with **bold**\n\n", true)} />);
+    const intro = container.querySelector("p")!;
+    const bold = intro.querySelector("strong")!;
+    rerender(<ConversationMarkdown block={doc("Intro with **bold**\n\nNext", true)} />);
+    expect(container.querySelector("p")).toBe(intro);
+    expect(intro.querySelector("strong")).toBe(bold);
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+  });
+
+  for (const [index, reply] of STREAMED_REPLIES.entries()) {
+    it(`a streamed reply completes to the DOM of a whole parse (${index})`, () => {
+      const { container, rerender } = render(<ConversationMarkdown block={doc(reply.slice(0, 1), true)} />);
+      for (let cut = 2; cut <= reply.length; cut += 7) rerender(<ConversationMarkdown block={doc(reply.slice(0, cut), true)} />);
+      rerender(<ConversationMarkdown block={doc(reply, true)} />);
+      const firstBlock = container.querySelector(".cc-markdown-document")!.firstElementChild;
+      rerender(<ConversationMarkdown block={doc(reply)} />);
+      // A client render, as static markup through innerHTML folds CRLF.
+      const whole = render(<ConversationMarkdown block={doc(reply)} />).container;
+      expect(normalizedDom(container.querySelector(".cc-markdown-document")!)).toEqual(normalizedDom(whole.querySelector(".cc-markdown-document")!));
+      // Completion keeps the rendered nodes unless definitions resolve across blocks.
+      if (!/^ {0,3}\[[^\]\n]+\]:/mu.test(reply)) expect(container.querySelector(".cc-markdown-document")!.firstElementChild).toBe(firstBlock);
+    });
+  }
 });
