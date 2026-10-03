@@ -38546,6 +38546,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
 var React24 = __toESM(require("react"));
 var TURN_WINDOW_OVERSCAN = 1.5;
 var TURN_WINDOW_MARGIN = 0.5;
+var TURN_FIND_BAND = 20;
 function measured(input, index2) {
   const turn = input.turns[index2];
   const measurement = input.measurements.get(turn.id);
@@ -38553,7 +38554,7 @@ function measured(input, index2) {
 }
 function planTurnWindow(input) {
   const count = input.turns.length;
-  if (count === 0) return { range: { from: 0, to: 0 }, mounted: [] };
+  if (count === 0) return { range: { from: 0, to: 0 }, mounted: [], parked: [] };
   const tops = new Array(count + 1);
   tops[0] = input.top;
   let anyUnmeasured = false;
@@ -38592,12 +38593,14 @@ function planTurnWindow(input) {
   const current = input.current;
   const range = !anyUnmeasured && current && current.from <= needed.from && current.to >= needed.to && current.to <= count ? current : span(TURN_WINDOW_OVERSCAN, TURN_WINDOW_OVERSCAN);
   const mounted = [];
+  const parked = [];
   for (let i = 0; i < count; i += 1) {
     if (i >= range.from && i < range.to || i === count - 1 || input.pinned.has(i) || !measured(input, i)) mounted.push(i);
+    else if (i >= range.from - TURN_FIND_BAND && i < range.to + TURN_FIND_BAND) parked.push(i);
   }
-  return { range, mounted };
+  return { range, mounted, parked };
 }
-function turnSlots(turns, mounted, measurements, gap) {
+function turnSlots(turns, mounted, measurements, gap, parked = []) {
   const slots = [];
   let next = 0;
   const spacer = (from, to) => {
@@ -38606,9 +38609,10 @@ function turnSlots(turns, mounted, measurements, gap) {
     for (let i = from; i < to; i += 1) height += measurements.get(turns[i].id)?.height ?? 0;
     slots.push({ kind: "spacer", from, to, height });
   };
-  for (const index2 of mounted) {
+  const isMounted = new Set(mounted);
+  for (const index2 of [.../* @__PURE__ */ new Set([...mounted, ...parked])].sort((a, b) => a - b)) {
     spacer(next, index2);
-    slots.push({ kind: "turn", index: index2 });
+    slots.push(isMounted.has(index2) ? { kind: "turn", index: index2 } : { kind: "parked", index: index2, height: measurements.get(turns[index2].id)?.height ?? 0 });
     next = index2 + 1;
   }
   spacer(next, turns.length);
@@ -38669,7 +38673,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
         const id = indexOf.get(entry.target);
         if (id === void 0) continue;
         const index2 = indexById.get(id);
-        if (index2 === void 0 || !entry.target.isConnected) continue;
+        if (index2 === void 0 || !entry.target.isConnected || entry.target.hasAttribute("hidden")) continue;
         const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.offsetHeight;
         measurements.current.set(id, { height, key: keysRef.current[index2], width });
       }
@@ -38730,6 +38734,13 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
       pins.current.focus = index2 >= 0 ? /* @__PURE__ */ new Set([index2]) : /* @__PURE__ */ new Set();
       replan();
     };
+    const onBeforeMatch = (event) => {
+      const index2 = turnIndex(event.target);
+      if (index2 < 0) return;
+      pins.current.jump = /* @__PURE__ */ new Set([index2]);
+      replan();
+    };
+    body.addEventListener("beforematch", onBeforeMatch, true);
     body.ownerDocument.addEventListener("selectionchange", onSelection);
     body.addEventListener("focusin", onFocus);
     body.addEventListener("focusout", onFocus);
@@ -38738,6 +38749,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
       mutation.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
       body.removeEventListener("scroll", onScroll);
+      body.removeEventListener("beforematch", onBeforeMatch, true);
       body.ownerDocument.removeEventListener("selectionchange", onSelection);
       body.removeEventListener("focusin", onFocus);
       body.removeEventListener("focusout", onFocus);
@@ -38751,7 +38763,7 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
       for (const element2 of body.querySelectorAll(":scope > [data-conversation-turn-id]")) {
         const index2 = indexById.get(element2.dataset.conversationTurnId);
         const measurement = index2 === void 0 ? void 0 : measurements.current.get(turns[index2].id);
-        if (index2 !== void 0 && measurement) measurement.key = keys2[index2];
+        if (index2 !== void 0 && measurement && !element2.hasAttribute("hidden")) measurement.key = keys2[index2];
       }
     }
   }, [turns, keys2, enabled, bodyRef]);
@@ -38778,6 +38790,20 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
     body?.addEventListener("keydown", release);
     return true;
   }, [bodyRef, replan]);
+  const pendingFocus = React24.useRef(null);
+  const focusTurn = React24.useCallback((id) => {
+    pendingFocus.current = id;
+    const index2 = turnsRef.current.findIndex((turn) => turn.id === id);
+    if (index2 >= 0) {
+      pins.current.focus = /* @__PURE__ */ new Set([index2]);
+      mount(index2);
+    }
+    const element2 = bodyRef.current?.querySelector(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    if (element2) {
+      pendingFocus.current = null;
+      element2.focus();
+    }
+  }, [bodyRef, mount]);
   const slots = React24.useMemo(() => {
     if (!enabled || !plan) return turns.map((_, index2) => ({ kind: "turn", index: index2 }));
     const mounted = new Set(plan.mounted.filter((index2) => index2 < turns.length));
@@ -38785,9 +38811,18 @@ function useTurnWindow(bodyRef, turns, enabled, renderKey, actionable = NO_ACTIO
       const measurement = measurements.current.get(turns[i].id);
       if (!measurement || measurement.key !== keys2[i] || measurement.width !== geometry.current.width) mounted.add(i);
     }
-    return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap);
+    const parked = plan.parked.filter((index2) => index2 < turns.length && !mounted.has(index2));
+    return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap, parked);
   }, [enabled, plan, turns, keys2]);
-  return React24.useMemo(() => ({ slots, mount }), [slots, mount]);
+  React24.useLayoutEffect(() => {
+    const id = pendingFocus.current;
+    if (!id) return;
+    const element2 = bodyRef.current?.querySelector(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    if (!element2) return;
+    pendingFocus.current = null;
+    element2.focus();
+  });
+  return React24.useMemo(() => ({ slots, mount, focusTurn }), [slots, mount, focusTurn]);
 }
 
 // src/panels/ChatPane.tsx
@@ -39485,9 +39520,25 @@ var TranscriptTurn = import_react40.default.memo(function TranscriptTurn2({
   approvalSnapshot,
   onApprovalDecision,
   conversationId,
-  approvalInteractionIds
+  approvalInteractionIds,
+  setSize,
+  parkedHeight
 }) {
   countRender("TranscriptTurn");
+  const turnRef = import_react40.default.useRef(null);
+  import_react40.default.useLayoutEffect(() => {
+    const element2 = turnRef.current;
+    if (!element2) return;
+    if (parkedHeight === void 0) {
+      element2.removeAttribute("hidden");
+      element2.style.removeProperty("contain-intrinsic-block-size");
+      element2.style.removeProperty("flex-shrink");
+    } else {
+      element2.style.setProperty("flex-shrink", "0");
+      element2.style.setProperty("contain-intrinsic-block-size", `${parkedHeight}px`);
+      element2.setAttribute("hidden", "until-found");
+    }
+  }, [parkedHeight]);
   let day = previousDay;
   const daySeparator = (message) => {
     const next = message.dayKey ?? null;
@@ -39510,10 +39561,15 @@ var TranscriptTurn = import_react40.default.memo(function TranscriptTurn2({
     "div",
     {
       "aria-label": `Turn ${turnIndex + 1}`,
+      "aria-posinset": turnIndex + 1,
+      "aria-setsize": setSize,
       className: "conv-turn",
       "data-chat-turn-index": turnIndex,
       "data-conversation-turn-id": turn.id,
       "data-testid": `chat-turn:${identity}:${turnIndex}`,
+      ref: turnRef,
+      role: "article",
+      tabIndex: -1,
       children: [
         groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : void 0).map((run) => {
           const rows = run.rows.map((m) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_react40.default.Fragment, { children: [
@@ -39548,7 +39604,8 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
   approvalSnapshot,
   onApprovalDecision,
   conversationId,
-  turnWindow
+  turnWindow,
+  onTranscriptKeyDown
 }) {
   countRender("TranscriptView");
   const windowedTurns = import_react40.default.useMemo(
@@ -39580,7 +39637,8 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
   const todayKey = transcriptDayKey((/* @__PURE__ */ new Date()).toISOString());
   const dayLabelNow = import_react40.default.useMemo(() => /* @__PURE__ */ new Date(), [todayKey]);
   const getTranscriptText = import_react40.default.useCallback(() => transcriptCopyText(messages), [messages]);
-  const renderTurn = (offset) => {
+  const setSize = windowStart > 0 || hasOlderHistory ? -1 : turns.length;
+  const renderTurn = (offset, parkedHeight) => {
     const turn = windowedTurns[offset];
     return turn ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       TranscriptTurn,
@@ -39596,117 +39654,132 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
         approvalSnapshot,
         onApprovalDecision,
         conversationId,
-        approvalInteractionIds: approvalInteractions[offset]
+        approvalInteractionIds: approvalInteractions[offset],
+        setSize,
+        parkedHeight
       },
       turn.id
     ) : null;
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__body", onScroll, ref: bodyRef, tabIndex: 0, "aria-label": "Conversation transcript", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      CopyInlineButton,
-      {
-        className: "msg__copy--transcript",
-        label: "Copy transcript",
-        getText: getTranscriptText
-      }
-    ),
-    windowStart > 0 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      "button",
-      {
-        className: "conv__history",
-        "data-testid": `chat-reveal-earlier:${identity}`,
-        onClick: onRevealEarlier,
-        type: "button",
-        children: "Show earlier messages"
-      }
-    ) : hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      "button",
-      {
-        className: "conv__history",
-        disabled: loadingOlderHistory,
-        onClick: onRequestOlderHistory,
-        type: "button",
-        children: loadingOlderHistory ? "Loading history" : "Load older history"
-      }
-    ),
-    messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      "div",
-      {
-        className: "msg msg--origin",
-        "data-testid": `chat-loading-history:${identity}`,
-        "aria-live": "polite",
-        "aria-busy": "true",
-        children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {})
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
-        ] }) })
-      }
-    ),
-    messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg msg--origin", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__text", children: [
-      "No messages yet. Say hello to ",
-      agentLabel,
-      "."
-    ] }) }) }),
-    turnWindow.slots.map((slot) => slot.kind === "spacer" ? (
-      // Stands for unmounted turns at their measured height (see transcript-window).
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-        "div",
-        {
-          "aria-hidden": "true",
-          className: "conv__spacer",
-          "data-conversation-spacer": `${windowStart + slot.from}-${windowStart + slot.to}`,
-          style: { height: slot.height, flex: "none" }
-        },
-        `spacer:${windowedTurns[slot.from].id}`
-      )
-    ) : renderTurn(slot.index)),
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId }),
-    liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      "div",
-      {
-        "aria-label": "Live speech",
-        className: "conv-turn conv-turn--live",
-        "data-testid": `chat-live-speech:${identity}`,
-        children: liveSpeech.map((item) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+    "div",
+    {
+      "aria-busy": isLoadingHistory || loadingOlderHistory,
+      "aria-label": "Conversation transcript",
+      className: "conv__body",
+      onKeyDown: onTranscriptKeyDown,
+      onScroll,
+      ref: bodyRef,
+      role: "feed",
+      tabIndex: 0,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          CopyInlineButton,
+          {
+            className: "msg__copy--transcript",
+            label: "Copy transcript",
+            getText: getTranscriptText
+          }
+        ),
+        windowStart > 0 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          "button",
+          {
+            className: "conv__history",
+            "data-testid": `chat-reveal-earlier:${identity}`,
+            onClick: onRevealEarlier,
+            type: "button",
+            children: "Show earlier messages"
+          }
+        ) : hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          "button",
+          {
+            className: "conv__history",
+            disabled: loadingOlderHistory,
+            onClick: onRequestOlderHistory,
+            type: "button",
+            children: loadingOlderHistory ? "Loading history" : "Load older history"
+          }
+        ),
+        messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
           "div",
           {
-            className: `msg msg--live msg--live-${item.speaker}`,
-            "data-live-final": item.final ? "true" : "false",
-            "data-testid": `chat-live-row:${identity}:${item.itemId}`,
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "msg__head", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__source", children: item.speaker === "user" ? "Operator (voice)" : "Assistant (voice)" }),
-                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__live-label", children: "live" })
+            className: "msg msg--origin",
+            "data-testid": `chat-loading-history:${identity}`,
+            "aria-live": "polite",
+            "aria-busy": "true",
+            children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {})
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__text", children: item.text }) })
-            ]
-          },
-          `${item.speaker}:${item.itemId}`
-        ))
-      }
-    ),
-    phase2 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      "div",
-      {
-        className: "msg msg--typing",
-        "data-testid": `chat-typing:${identity}`,
-        "aria-live": "polite",
-        "aria-label": `${agentLabel} is ${phaseLabel(phase2)}`,
-        children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {})
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase2) })
-        ] }) })
-      }
-    )
-  ] });
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+            ] }) })
+          }
+        ),
+        messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg msg--origin", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__text", children: [
+          "No messages yet. Say hello to ",
+          agentLabel,
+          "."
+        ] }) }) }),
+        turnWindow.slots.map((slot) => slot.kind === "spacer" ? (
+          // Stands for unmounted turns at their measured height (see transcript-window).
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+            "div",
+            {
+              "aria-hidden": "true",
+              className: "conv__spacer",
+              "data-conversation-spacer": `${windowStart + slot.from}-${windowStart + slot.to}`,
+              style: { height: slot.height, flex: "none" }
+            },
+            `spacer:${windowedTurns[slot.from].id}`
+          )
+        ) : renderTurn(slot.index, slot.kind === "parked" ? slot.height : void 0)),
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId }),
+        liveSpeech && liveSpeech.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          "div",
+          {
+            "aria-label": "Live speech",
+            className: "conv-turn conv-turn--live",
+            "data-testid": `chat-live-speech:${identity}`,
+            children: liveSpeech.map((item) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+              "div",
+              {
+                className: `msg msg--live msg--live-${item.speaker}`,
+                "data-live-final": item.final ? "true" : "false",
+                "data-testid": `chat-live-row:${identity}:${item.itemId}`,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "msg__head", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__source", children: item.speaker === "user" ? "Operator (voice)" : "Assistant (voice)" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__live-label", children: "live" })
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__text", children: item.text }) })
+                ]
+              },
+              `${item.speaker}:${item.itemId}`
+            ))
+          }
+        ),
+        phase2 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          "div",
+          {
+            className: "msg msg--typing",
+            "data-testid": `chat-typing:${identity}`,
+            "aria-live": "polite",
+            "aria-label": `${agentLabel} is ${phaseLabel(phase2)}`,
+            children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", {})
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase2) })
+            ] }) })
+          }
+        )
+      ]
+    }
+  );
 });
 var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
   identity,
@@ -40104,6 +40177,27 @@ function ChatPane({
   windowStartRef.current = windowStart;
   const revealEarlierRef = import_react40.default.useRef(revealEarlier);
   revealEarlierRef.current = revealEarlier;
+  const turnsRefForKeys = import_react40.default.useRef(turns);
+  turnsRefForKeys.current = turns;
+  const turnWindowRef = import_react40.default.useRef(turnWindow);
+  turnWindowRef.current = turnWindow;
+  const onTranscriptKeyDown = import_react40.default.useCallback((event) => {
+    const target = event.target;
+    if (!target.matches?.("[data-conversation-turn-id]") || event.altKey || event.metaKey || event.shiftKey) return;
+    if (event.ctrlKey && event.key === "End") {
+      event.preventDefault();
+      bodyRef.current?.parentElement?.querySelector('textarea[data-testid^="chat-composer"]')?.focus();
+      return;
+    }
+    if (event.ctrlKey || event.key !== "PageDown" && event.key !== "PageUp") return;
+    const all2 = turnsRefForKeys.current;
+    const index2 = all2.findIndex((turn) => turn.id === target.dataset.conversationTurnId);
+    const next = index2 + (event.key === "PageDown" ? 1 : -1);
+    if (index2 < 0 || next < 0 || next >= all2.length) return;
+    event.preventDefault();
+    if (next < windowStartRef.current) revealEarlierRef.current();
+    turnWindowRef.current.focusTurn(all2[next].id);
+  }, []);
   const onBodyScroll = import_react40.default.useCallback(
     (event) => {
       if (event.currentTarget.scrollLeft !== 0) {
@@ -40434,7 +40528,8 @@ function ChatPane({
         conversationId,
         approvalSnapshot,
         onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0,
-        turnWindow
+        turnWindow,
+        onTranscriptKeyDown
       }
     ),
     turnRail,

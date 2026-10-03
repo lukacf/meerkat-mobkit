@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { planTurnWindow, turnSlots, type TurnMeasurement, type TurnWindowInput } from "./transcript-window";
+import { TURN_FIND_BAND, planTurnWindow, turnSlots, type TurnMeasurement, type TurnWindowInput } from "./transcript-window";
 
 const turns = Array.from({ length: 60 }, (_, i) => ({ id: `t${i}` }));
 const heights = turns.map((_, i) => 80 + ((i * 37) % 160));
@@ -61,6 +61,19 @@ describe("planTurnWindow", () => {
     expect(planTurnWindow(input({ keys })).mounted).toContain(5);
   });
 
+  it("parks the measured turns within the find band around the window, and nothing beyond it", () => {
+    const plan = planTurnWindow(input());
+    const mounted = new Set(plan.mounted);
+    for (const index of plan.parked) {
+      expect(mounted.has(index)).toBe(false);
+      expect(index).toBeGreaterThanOrEqual(plan.range.from - TURN_FIND_BAND);
+      expect(index).toBeLessThan(plan.range.to + TURN_FIND_BAND);
+    }
+    const expected = turns.map((_, i) => i)
+      .filter((i) => !mounted.has(i) && i >= plan.range.from - TURN_FIND_BAND && i < plan.range.to + TURN_FIND_BAND);
+    expect(plan.parked).toEqual(expected);
+  });
+
   it("mounts pinned turns wherever they are", () => {
     const plan = planTurnWindow(input({ pinned: new Set([0, 1]) }));
     expect(plan.mounted.slice(0, 2)).toEqual([0, 1]);
@@ -68,6 +81,13 @@ describe("planTurnWindow", () => {
 });
 
 describe("turnSlots", () => {
+  it("lays parked turns out at their measured heights between spacers", () => {
+    const slots = turnSlots(turns, [20, turns.length - 1], measurements(), GAP, [15, 16, 25]);
+    expect(slots.map((slot) => slot.kind === "spacer" ? `${slot.from}-${slot.to}` : `${slot.kind}:${slot.index}`))
+      .toEqual(["0-15", "parked:15", "parked:16", "17-20", "turn:20", "21-25", "parked:25", `26-${turns.length - 1}`, `turn:${turns.length - 1}`]);
+    for (const slot of slots) if (slot.kind === "parked") expect(slot.height).toBe(heights[slot.index]);
+  });
+
   it("replaces each run of unmounted turns with one spacer of their heights and inner gaps", () => {
     const mounted = [10, 11, 30, turns.length - 1];
     const slots = turnSlots(turns, mounted, measurements(), GAP);

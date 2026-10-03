@@ -14,6 +14,10 @@ import * as React from "react";
 export const TURN_WINDOW_OVERSCAN = 1.5;
 /** The window moves once the viewport comes this close (in viewport heights) to its edge. */
 export const TURN_WINDOW_MARGIN = 0.5;
+/** Measured turns this many either side of the window stay in the DOM,
+ * parked (`hidden="until-found"` at their measured size), so the browser's
+ * find-in-page still reaches them. */
+export const TURN_FIND_BAND = 20;
 
 export interface TurnMeasurement {
   /** Border-box block size in CSS pixels. */
@@ -50,6 +54,8 @@ export interface TurnWindowPlan {
   range: { from: number; to: number };
   /** Every mounted index, ascending. */
   mounted: number[];
+  /** Measured indexes kept in the DOM but parked, ascending. */
+  parked: number[];
 }
 
 function measured(input: TurnWindowInput, index: number): TurnMeasurement | null {
@@ -61,7 +67,7 @@ function measured(input: TurnWindowInput, index: number): TurnMeasurement | null
 /// Which turns to mount. Pure: the hook supplies geometry it read after layout.
 export function planTurnWindow(input: TurnWindowInput): TurnWindowPlan {
   const count = input.turns.length;
-  if (count === 0) return { range: { from: 0, to: 0 }, mounted: [] };
+  if (count === 0) return { range: { from: 0, to: 0 }, mounted: [], parked: [] };
   // Turn tops from measured heights. A turn without a valid measurement is
   // mounted regardless, so its slot is only used for placing the viewport.
   const tops = new Array<number>(count + 1);
@@ -105,15 +111,18 @@ export function planTurnWindow(input: TurnWindowInput): TurnWindowPlan {
     ? current
     : span(TURN_WINDOW_OVERSCAN, TURN_WINDOW_OVERSCAN);
   const mounted: number[] = [];
+  const parked: number[] = [];
   for (let i = 0; i < count; i += 1) {
     if ((i >= range.from && i < range.to) || i === count - 1 || input.pinned.has(i) || !measured(input, i)) mounted.push(i);
+    else if (i >= range.from - TURN_FIND_BAND && i < range.to + TURN_FIND_BAND) parked.push(i);
   }
-  return { range, mounted };
+  return { range, mounted, parked };
 }
 
 /** A transcript slot: a mounted turn, or a spacer standing for a run of turns. */
 export type TurnSlot =
   | { kind: "turn"; index: number }
+  | { kind: "parked"; index: number; height: number }
   | { kind: "spacer"; from: number; to: number; height: number };
 
 /// Slots in order. A spacer for turns [from, to) is their heights plus the
@@ -123,6 +132,7 @@ export function turnSlots(
   mounted: readonly number[],
   measurements: ReadonlyMap<string, TurnMeasurement>,
   gap: number,
+  parked: readonly number[] = [],
 ): TurnSlot[] {
   const slots: TurnSlot[] = [];
   let next = 0;
@@ -132,9 +142,12 @@ export function turnSlots(
     for (let i = from; i < to; i += 1) height += measurements.get(turns[i].id)?.height ?? 0;
     slots.push({ kind: "spacer", from, to, height });
   };
-  for (const index of mounted) {
+  const isMounted = new Set(mounted);
+  for (const index of [...new Set([...mounted, ...parked])].sort((a, b) => a - b)) {
     spacer(next, index);
-    slots.push({ kind: "turn", index });
+    slots.push(isMounted.has(index)
+      ? { kind: "turn", index }
+      : { kind: "parked", index, height: measurements.get(turns[index].id)?.height ?? 0 });
     next = index + 1;
   }
   spacer(next, turns.length);
@@ -147,6 +160,8 @@ export interface TurnWindow {
   slots: TurnSlot[];
   /** Mount a turn now (a jump or restore); false when it is not in the revealed range. */
   mount: (index: number) => boolean;
+  /** Mount the turn with this id (once it is revealed) and move keyboard focus to it. */
+  focusTurn: (id: string) => void;
 }
 
 /// Window the turns rendered into `bodyRef`, a flex column whose direct
@@ -223,7 +238,8 @@ export function useTurnWindow<T extends { id: string }>(
         const id = indexOf.get(entry.target);
         if (id === undefined) continue;
         const index = indexById.get(id);
-        if (index === undefined || !entry.target.isConnected) continue;
+        // A parked turn reports its placeholder size, not a measurement.
+        if (index === undefined || !entry.target.isConnected || entry.target.hasAttribute("hidden")) continue;
         const height = entry.borderBoxSize?.[0]?.blockSize ?? (entry.target as HTMLElement).offsetHeight;
         measurements.current.set(id, { height, key: keysRef.current[index], width });
       }
@@ -284,6 +300,14 @@ export function useTurnWindow<T extends { id: string }>(
       pins.current.focus = index >= 0 ? new Set([index]) : new Set();
       replan();
     };
+    // Find-in-page reveals a parked turn: keep it mounted where the match is.
+    const onBeforeMatch = (event: Event) => {
+      const index = turnIndex(event.target as Node);
+      if (index < 0) return;
+      pins.current.jump = new Set([index]);
+      replan();
+    };
+    body.addEventListener("beforematch", onBeforeMatch, true);
     body.ownerDocument.addEventListener("selectionchange", onSelection);
     body.addEventListener("focusin", onFocus);
     body.addEventListener("focusout", onFocus);
@@ -292,6 +316,7 @@ export function useTurnWindow<T extends { id: string }>(
       mutation.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
       body.removeEventListener("scroll", onScroll);
+      body.removeEventListener("beforematch", onBeforeMatch, true);
       body.ownerDocument.removeEventListener("selectionchange", onSelection);
       body.removeEventListener("focusin", onFocus);
       body.removeEventListener("focusout", onFocus);
@@ -309,7 +334,7 @@ export function useTurnWindow<T extends { id: string }>(
       for (const element of body.querySelectorAll<HTMLElement>(":scope > [data-conversation-turn-id]")) {
         const index = indexById.get(element.dataset.conversationTurnId!);
         const measurement = index === undefined ? undefined : measurements.current.get(turns[index].id);
-        if (index !== undefined && measurement) measurement.key = keys[index];
+        if (index !== undefined && measurement && !element.hasAttribute("hidden")) measurement.key = keys[index];
       }
     }
     // No replan here: reading scrollTop mid-commit forces layout. Changed
@@ -344,6 +369,20 @@ export function useTurnWindow<T extends { id: string }>(
     return true;
   }, [bodyRef, replan]);
 
+  // Keyboard focus moving to a turn that is not mounted yet lands once it is.
+  const pendingFocus = React.useRef<string | null>(null);
+  const focusTurn = React.useCallback((id: string) => {
+    pendingFocus.current = id;
+    const index = turnsRef.current.findIndex((turn) => turn.id === id);
+    if (index >= 0) {
+      pins.current.focus = new Set([index]);
+      mount(index);
+    }
+    // Already mounted: focus now; otherwise the layout effect below does.
+    const element = bodyRef.current?.querySelector<HTMLElement>(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    if (element) { pendingFocus.current = null; element.focus(); }
+  }, [bodyRef, mount]);
+
   const slots = React.useMemo(() => {
     if (!enabled || !plan) return turns.map((_, index): TurnSlot => ({ kind: "turn", index }));
     // Indexes from a plan for an older turn list are re-derived next replan;
@@ -353,8 +392,18 @@ export function useTurnWindow<T extends { id: string }>(
       const measurement = measurements.current.get(turns[i].id);
       if (!measurement || measurement.key !== keys[i] || measurement.width !== geometry.current.width) mounted.add(i);
     }
-    return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap);
+    const parked = plan.parked.filter((index) => index < turns.length && !mounted.has(index));
+    return turnSlots(turns, [...mounted].sort((a, b) => a - b), measurements.current, geometry.current.gap, parked);
   }, [enabled, plan, turns, keys]);
 
-  return React.useMemo(() => ({ slots, mount }), [slots, mount]);
+  React.useLayoutEffect(() => {
+    const id = pendingFocus.current;
+    if (!id) return;
+    const element = bodyRef.current?.querySelector<HTMLElement>(`:scope > [data-conversation-turn-id="${CSS.escape(id)}"]:not([hidden])`);
+    if (!element) return;
+    pendingFocus.current = null;
+    element.focus();
+  });
+
+  return React.useMemo(() => ({ slots, mount, focusTurn }), [slots, mount, focusTurn]);
 }

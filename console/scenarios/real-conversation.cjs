@@ -59,26 +59,50 @@ async function anchorAt(viewport, row, offset = 100) {
   }, id);
 }
 
+const isOlderHistoryPage = (response) => {
+  if (!response.url().endsWith("/console/rpc")) return false;
+  const request = response.request().postDataJSON();
+  return request?.method === "mobkit/console/query_timeline" && Boolean(request.params?.before);
+};
+
+/// Scroll the transcript to its start once, as a reader does. That scroll is
+/// itself the stock pane's paging action (ChatPane onBodyScroll reveals
+/// earlier turns or requests the next older page), so this waits for what it
+/// started instead of racing it: history idle first, and when a page is due
+/// (every revealed turn shown, older history left) the response to exactly
+/// that request, then idle again. Returns the page response, or null.
+async function scrollToStart(viewport) {
+  const page = viewport.page();
+  const loading = viewport.getByRole("button", { name: "Loading history", exact: true });
+  const idle = () => eventually(async () => !(await loading.count()), "transcript history is idle");
+  await idle();
+  const loadOlder = viewport.getByRole("button", { name: "Load older history", exact: true });
+  const reveal = viewport.getByRole("button", { name: "Show earlier messages", exact: true });
+  const pageDue = !(await reveal.count()) && await loadOlder.count() > 0 && await loadOlder.first().isEnabled();
+  const responsePromise = pageDue ? page.waitForResponse(isOlderHistoryPage) : null;
+  await viewport.evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+  const response = responsePromise ? await responsePromise : null;
+  if (response) await idle();
+  await waitForMountedView(viewport);
+  return response;
+}
+
 /// The stock transcript mounts only the turns near the viewport, so an early
 /// row exists only once a reader scrolls back to it. Jump to the start in one
 /// step, as Home does, and wait for the row itself to mount there.
 async function mountEarlyRow(viewport, row) {
-  if (await row.count() === 0) {
-    await viewport.evaluate((node) => {
-      node.scrollTop = 0;
-      node.dispatchEvent(new Event("scroll"));
-    });
-  }
+  // A parked turn (hidden until found) keeps its rows in the DOM, unseen.
+  if (!await row.isVisible()) await scrollToStart(viewport);
   await row.waitFor();
 }
 
-/// Wait until no spacer standing for unmounted turns overlaps the viewport:
-/// the window has mounted every turn a reader can see at this position.
+/// Wait until no spacer or parked turn (hidden until found) overlaps the
+/// viewport: the window has mounted every turn a reader can see here.
 async function waitForMountedView(viewport) {
   await viewport.page().waitForFunction((node) => {
     const view = node.getBoundingClientRect();
-    return [...node.querySelectorAll(":scope > [data-conversation-spacer]")].every((spacer) => {
-      const rect = spacer.getBoundingClientRect();
+    return [...node.querySelectorAll(":scope > [data-conversation-spacer], :scope > [data-conversation-turn-id][hidden]")].every((slot) => {
+      const rect = slot.getBoundingClientRect();
       return rect.bottom <= view.top || rect.top >= view.bottom;
     });
   }, await viewport.elementHandle());
@@ -88,7 +112,9 @@ async function waitForMountedView(viewport) {
 /// scrolling through it does, and return `collect(node, arg)` for each
 /// position. The stock transcript mounts only the turns near the viewport, so
 /// an inventory of every row has to read it through; callers dedupe by row id
-/// because neighbouring positions share rows. The position is restored after.
+/// because neighbouring positions share rows, and skip rows of parked turns
+/// (hidden until found), which are in the DOM but not rendered. The position
+/// is restored after.
 async function readThrough(viewport, collect, arg) {
   const start = await viewport.evaluate((node) => node.scrollTop);
   const scrollTo = async (top) => {
@@ -100,6 +126,9 @@ async function readThrough(viewport, collect, arg) {
     await waitForMountedView(viewport);
     return geometry;
   };
+  // Reaching the start may page older history; read only once nothing more
+  // arrives above, so no row is prepended behind the read.
+  while (await scrollToStart(viewport));
   const results = [];
   for (let top = 0; ;) {
     const { end, step } = await scrollTo(top);
@@ -574,37 +603,32 @@ async function presentation(host) {
     const originalPrompt = reloadedViewport.getByText(originalInstruction, { exact: true });
     geometry.reloadPages = [];
     // The long stream can push the first turn outside the recent 200-frame
-    // seed. Recover it through the same bounded history action as a reader.
-    // The windowed stock transcript mounts the first turn only near the top,
-    // where that reader is.
-    const toTop = async () => {
-      await reloadedViewport.evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
-      await waitForMountedView(reloadedViewport);
-    };
-    await toTop();
-    for (let index = 0; await originalPrompt.count() === 0 && index < 16; index += 1) {
-      const reveal = reloadedViewport.getByRole("button", { name: "Show earlier messages", exact: true });
-      if (await reveal.count()) await reveal.dispatchEvent("click");
-      await settle(page);
-      await toTop();
-      if (await originalPrompt.count()) break;
-      const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
-      await older.waitFor({ state: "attached", timeout: 5000 });
-      await eventually(() => older.isEnabled(), "reload history action is ready");
-      const responsePromise = page.waitForResponse(response => {
-        if (!response.url().endsWith("/console/rpc")) return false;
-        const request = response.request().postDataJSON();
-        return request?.method === "mobkit/console/query_timeline" && Boolean(request.params?.before);
-      });
-      await older.dispatchEvent("click");
-      const response = await responsePromise;
-      const body = await response.json();
-      assert.equal(response.status(), 200, "reload older-history request succeeds");
-      assert(Array.isArray(body.result?.frames), "reload receives an owner history page");
-      geometry.reloadPages.push({ request: response.request().postDataJSON().params, frameCount: body.result.frames.length, exhausted: body.result.exhausted === true });
-      await eventually(async () => !(await page.getByRole("button", { name: "Loading history", exact: true }).count()), "reload applies the older page");
-      await settle(page);
-      await toTop();
+    // seed. Recover it through the host's own history action, as a reader
+    // does. Stock pages by scrolling to the start (where its windowed
+    // transcript also mounts the first turn); the shared host has an explicit
+    // Load older history control and does not page on scroll.
+    const reveal = reloadedViewport.getByRole("button", { name: "Show earlier messages", exact: true });
+    for (let index = 0; index < 16; index += 1) {
+      let response = null;
+      if (host === "shared") {
+        if (await originalPrompt.count()) break;
+        const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
+        await eventually(() => older.isEnabled(), "reload history action is ready");
+        const responsePromise = page.waitForResponse(isOlderHistoryPage);
+        await older.dispatchEvent("click");
+        response = await responsePromise;
+      } else {
+        response = await scrollToStart(reloadedViewport);
+      }
+      if (response) {
+        const body = await response.json();
+        assert.equal(response.status(), 200, "reload older-history request succeeds");
+        assert(Array.isArray(body.result?.frames), "reload receives an owner history page");
+        geometry.reloadPages.push({ request: response.request().postDataJSON().params, frameCount: body.result.frames.length, exhausted: body.result.exhausted === true });
+        if (host === "shared") await settle(page);
+      }
+      if (await originalPrompt.isVisible()) break;
+      if (host !== "shared" && !response && !(await reveal.count())) break;
     }
     await originalPrompt.waitFor();
     assert.equal(await originalPrompt.count(), 1, `${host} the original authored input remains rendered exactly once after history paging`);
@@ -1135,7 +1159,7 @@ async function olderHistory(host) {
     await settle(page);
     // Reachable means a reader scrolling through finds it: the windowed stock
     // transcript mounts only the turns near the viewport.
-    const positions = await readThrough(viewport, (node) => [...node.querySelectorAll("[data-conversation-row-id]")].map((row) => ({
+    const positions = await readThrough(viewport, (node) => [...node.querySelectorAll("[data-conversation-row-id]")].filter((row) => !row.closest("[hidden]")).map((row) => ({
       id: row.dataset.conversationRowId,
       sources: [...(row.matches("[data-quote-source]") ? [row] : []), ...row.querySelectorAll("[data-quote-source]")]
         .map((quote) => quote.getAttribute("data-quote-source")),

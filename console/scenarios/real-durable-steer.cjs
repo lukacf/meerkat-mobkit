@@ -176,7 +176,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
         // The peer rows belong to earlier turns, which the windowed stock
         // transcript mounts only near the viewport. Once the run settled,
         // read the transcript through as a reader scrolling it does.
-        const positions = await geometry.readThrough(viewport(), (root, expected) => [...root.querySelectorAll("[data-conversation-row-id]")].map((row) => ({
+        const positions = await geometry.readThrough(viewport(), (root, expected) => [...root.querySelectorAll("[data-conversation-row-id]")].filter((row) => !row.closest("[hidden]")).map((row) => ({
           id: row.dataset.conversationRowId,
           notice: row.textContent.includes(expected),
           peers: [...row.querySelectorAll(".cc-tool-call--incoming .cc-tool-call__name")]
