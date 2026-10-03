@@ -131,10 +131,14 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   runtimeEvent?: ConversationRuntimeEvent | null;
   /** Display-only projection of an explicit runtime refusal or audit diagnostic. */
   operationFeedback?: {
-    kind: "permission-refused" | "audit-unavailable";
+    kind: "permission-refused" | "audit-unavailable" | "confinement-refused" | "hook-denied" | "hook-launch-failed";
     title: string;
     detail: string;
     operationId?: string;
+    toolCallId?: string;
+    hookId?: string;
+    confinementRefusal?: "invalid_requirement" | "invalid_launch" | "unsupported_requirement" | "backend_unavailable" | "preparation_failed";
+    hookReasonCode?: "policy_violation" | "safety_violation" | "schema_violation" | "timeout" | "runtime_error";
   };
 }
 

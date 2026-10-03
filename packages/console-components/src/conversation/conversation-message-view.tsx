@@ -40,6 +40,9 @@ export function OperationFeedbackView({ feedback, createdAt }: {
       {feedback.operationId ? (
         <span className="cc-operation-feedback__reference">Operation {feedback.operationId}</span>
       ) : null}
+      {feedback.toolCallId ? (
+        <span className="cc-operation-feedback__reference">Call {feedback.toolCallId}</span>
+      ) : null}
     </article>
   );
 }

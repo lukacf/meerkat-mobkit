@@ -3752,7 +3752,7 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const key = JSON.stringify([frame.runtimeKey, frame.identity, frame.sessionId,
         frame.runId, frame.interactionId, operationFeedback.kind,
-        operationFeedback.operationId ?? parseToolCallId(frame) ?? entryId]);
+        operationFeedback.operationId ?? operationFeedback.toolCallId ?? parseToolCallId(frame) ?? entryId]);
       if (!emittedOperationFeedback.has(key)) {
         emittedOperationFeedback.add(key);
         entries.push({ kind: "message", id: entryId, identity: SYSTEM_IDENTITY,

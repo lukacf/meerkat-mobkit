@@ -74,6 +74,125 @@ import {
   conversationRichBlockCopyText,
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
+const confinementCauses = ["invalid_requirement", "invalid_launch", "unsupported_requirement",
+  "backend_unavailable", "preparation_failed"] as const;
+
+for (const [name, map, phase] of [
+  ["stock", mapFramesToTimelineEntries, inferResponsePhaseFromFrames],
+  ["shared", mapFramesToTimelineEntriesShared, inferResponsePhaseFromFramesShared],
+] as const) {
+  test(`${name} local confinement feedback preserves every cause and exact call without ending the run`, () => {
+    for (const refusal of confinementCauses) {
+      for (const reverse of [false, true]) {
+        const launch = { id: "launch", event: "hook_launch_refused", runId: "run", data: {
+          hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+          reason: { reason_code: "confinement_refused", refusal },
+        } };
+        const result = { id: "result", event: "tool_result_received", runId: "run", data: {
+          id: "blocked", name: "write_file", is_error: true,
+          content: [{ type: "text", text: JSON.stringify({ error: "confinement_refused",
+            message: "permission denied private-canary", data: { refusal } }) }],
+        } };
+        const local = reverse ? [result, launch] : [launch, result];
+        const frames = [{ id: "start", event: "run_started", runId: "run", data: {} }, ...local,
+          { id: "sibling-start", event: "tool_execution_started", runId: "run", data: { id: "permitted", name: "read_file" } },
+          { id: "sibling", event: "tool_execution_completed", runId: "run", data: {
+            id: "permitted", name: "read_file", is_error: false,
+            content: [{ type: "text", text: "Sibling completed" }],
+          } }];
+        const feedback = map(null, frames).flatMap(entry => entry.kind === "message" && entry.operationFeedback ? [entry.operationFeedback] : []);
+        assert.equal(feedback.length, 1);
+        assert.equal(feedback[0].kind, "confinement-refused");
+        assert.equal(feedback[0].confinementRefusal, refusal);
+        assert.equal(feedback[0].toolCallId, "blocked");
+        for (const id of ["  exact-call  ", "call-".repeat(80), " \t  "]) {
+          const exact = map(null, [{ ...result, data: { ...result.data, id } }]).find(entry => entry.kind === "message" && entry.operationFeedback);
+          assert.equal(exact?.kind === "message" ? exact.operationFeedback?.toolCallId : undefined, id);
+        }
+        for (const event of ["tool_result_received", "tool_execution_completed"]) {
+          const canonical = map(null, [{ ...result, event }]).find(entry => entry.kind === "message" && entry.operationFeedback);
+          assert.equal(canonical?.kind, "message");
+          if (canonical?.kind !== "message") throw new Error("missing canonical refusal feedback");
+          assert.equal(canonical.operationFeedback?.confinementRefusal, refusal);
+          assert.equal(canonical.operationFeedback?.toolCallId, "blocked");
+        }
+        assert.match(feedback[0].detail, /did not run/);
+        assert.doesNotMatch(JSON.stringify(feedback), /Permission denied|private-canary/);
+        assert.equal(phase(frames, null), "waiting");
+        const continued = [...frames, { id: "answer", event: "text_delta", runId: "run", data: { delta: "Continuing after the permitted sibling." } }];
+        assert.equal(phase(continued, null), "generating");
+        assert.match(JSON.stringify(map(null, continued)), /Sibling completed/);
+        assert.match(JSON.stringify(map(null, continued)), /Continuing after the permitted sibling/);
+        assert.equal(phase([...continued, { id: "done", event: "run_completed", runId: "run", data: {} }], null), null);
+      }
+    }
+  });
+
+  test(`${name} explicit hook denial keeps its owner and reason distinct from permission feedback`, () => {
+    for (const reason_code of ["policy_violation", "safety_violation", "schema_violation", "timeout", "runtime_error"]) {
+      const frames = [{ id: "start", event: "run_started", data: {} }, {
+        id: "denied", event: "tool_execution_completed", data: { id: "blocked", is_error: true,
+          content: [{ type: "text", text: JSON.stringify({ error: "hook_denied", message: "private-denial-canary",
+            data: { hook_id: "guard", point: "pre_tool_execution", reason_code, payload: { secret: "private-payload-canary" } } }) }],
+        },
+      }];
+      const feedback = map(null, frames).find(entry => entry.kind === "message" && entry.operationFeedback);
+      assert.equal(feedback?.kind, "message");
+      if (feedback?.kind !== "message") throw new Error("missing hook feedback");
+      assert.equal(feedback.operationFeedback?.kind, "hook-denied");
+      assert.equal(feedback.operationFeedback?.hookId, "guard");
+      assert.equal(feedback.operationFeedback?.hookReasonCode, reason_code);
+      assert.equal(feedback.operationFeedback?.toolCallId, "blocked");
+      assert.doesNotMatch(JSON.stringify(feedback.operationFeedback), /Permission denied|private-.*-canary/);
+      assert.equal(phase(frames, null), "waiting");
+    }
+  });
+
+  test(`${name} actual hook launch IO remains infrastructure feedback without an invented confinement cause`, () => {
+    const frames = [{ id: "start", event: "run_started", data: {} }, {
+      id: "launch-io", event: "hook_launch_refused", data: { hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+        reason: { reason_code: "execution_failed", message: "permission denied private-io-canary" },
+      },
+    }];
+    const entry = map(null, frames).find(entry => entry.kind === "message" && entry.operationFeedback);
+    assert.equal(entry?.kind, "message");
+    if (entry?.kind !== "message") throw new Error("missing launch feedback");
+    assert.equal(entry.operationFeedback?.kind, "hook-launch-failed");
+    assert.equal(entry.operationFeedback?.toolCallId, "blocked");
+    assert.equal(entry.operationFeedback?.confinementRefusal, undefined);
+    assert.doesNotMatch(JSON.stringify(entry.operationFeedback), /Permission denied|private-io-canary/);
+    assert.equal(phase(frames, null), "waiting");
+  });
+
+  test(`${name} malformed, unrelated and entered failures do not fabricate local refusal facts`, () => {
+    const invalidPayloads = [
+      { error: "confinement_refused", data: { refusal: "future_cause" } },
+      { error: "confinement_refused", data: { refusal: null } },
+      { error: "hook_denied", data: { hook_id: "guard", point: "pre_tool_execution", reason_code: "future_reason" } },
+      { error: "hook_denied", data: { hook_id: "guard", point: "run_completed", reason_code: "runtime_error" } },
+      { error: "execution_failed", message: "confinement_refused operation_refused permission denied" },
+      { error: "operation_authorization_unavailable" },
+      { error: "operation_observation_unavailable" },
+    ];
+    for (const payload of invalidPayloads) {
+      const entries = map(null, [{ id: "bad", event: "tool_result_received", data: { id: "call", is_error: true,
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+      } }]);
+      assert.equal(entries.some(entry => entry.kind === "message" && entry.operationFeedback), false);
+    }
+    for (const event of ["hook_failed", "run_failed"]) {
+      const frame = { id: event, event, data: { hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked",
+        reason: { reason_code: "confinement_refused", refusal: "invalid_launch" },
+      } };
+      assert.equal(map(null, [frame]).some(entry => entry.kind === "message" && entry.operationFeedback), false);
+    }
+    const missingCall = { id: "unbound", event: "hook_launch_refused", data: {
+      hook_id: "guard", point: "pre_tool_execution", reason: { reason_code: "execution_failed", message: "failed" },
+    } };
+    assert.equal(map(null, [missingCall]).some(entry => entry.kind === "message" && entry.operationFeedback), false);
+  });
+}
+
 function typedCommsNotice(args: {
   peer: string;
   body: string;

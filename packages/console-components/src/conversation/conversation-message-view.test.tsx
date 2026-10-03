@@ -14,6 +14,30 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationMessageView", () => {
+  test("stock and shared local hook feedback names the blocked call without presenting a run failure", () => {
+    const frames = [{ id: "start", event: "run_started", runId: "run", data: {} }, {
+      id: "refused", event: "hook_launch_refused", runId: "run", data: {
+        hook_id: "guard", point: "pre_tool_execution", tool_use_id: "blocked-call",
+        reason: { reason_code: "confinement_refused", refusal: "backend_unavailable" },
+      },
+    }];
+    for (const map of [mapShared, mapStock]) {
+      const entry = map(null, frames).find(item => item.kind === "message" && item.operationFeedback)!;
+      expect(entry).toBeDefined();
+      const shared = render(<ConversationMessageView entry={entry} />);
+      const stock = render(<ChatPane agent={null} agentLabel="Agent" identity="agent" entries={[entry]} phase="waiting" draft="" sending={false} staged={[]} onDraftChange={() => {}} onStagedChange={() => {}} onSend={() => false} />);
+      for (const view of [shared, stock]) {
+        const feedback = view.container.querySelector('[data-feedback-kind="confinement-refused"]');
+        expect(feedback?.getAttribute("role")).toBe("status");
+        expect(feedback?.textContent).toContain("Action could not start");
+        expect(feedback?.textContent).toContain("required confinement backend is unavailable");
+        expect(feedback?.textContent).toContain("Call blocked-call");
+        expect(feedback?.textContent).not.toMatch(/Permission denied|Run failed/);
+      }
+      shared.unmount(); stock.unmount();
+    }
+  });
+
   test("typed background jobs show a named status chip and exact escaped detail", () => {
     const detail = "  Keep A\u030A and <admin>.\nSecond line.  ";
     const statuses = { completed: "Completed", failed: "Failed", aborted: "Aborted",
