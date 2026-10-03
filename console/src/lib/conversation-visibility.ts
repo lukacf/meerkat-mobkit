@@ -8,6 +8,11 @@ function richBlockHasVisibleContent(block: unknown): boolean {
     return typeof record.jobId === "string" && record.jobId.trim().length > 0
       && typeof record.status === "string" && record.status.trim().length > 0;
   }
+  // A typed member-kickoff status is visible by its member and phase.
+  if (record.type === "member-kickoff") {
+    return typeof record.member === "string" && record.member.trim().length > 0
+      && typeof record.phase === "string" && record.phase.trim().length > 0;
+  }
   if (record.type === "markdown") return typeof record.source === "string" && record.source.trim().length > 0;
   const scalarText = [
     typeof record.text === "string" ? record.text : "",

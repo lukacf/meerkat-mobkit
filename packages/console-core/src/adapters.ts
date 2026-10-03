@@ -7,6 +7,7 @@ import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runti
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "./tool-completion";
 import { parseConsoleContextMessage } from "./context-record";
 import { settledHistoryActivity } from "./settled-history-activity";
+import { memberKickoffNotice, memberKickoffPhaseLabel } from "./member-kickoff";
 import {
   decodeMemberAlias,
   entryOriginFromFrameData,
@@ -3179,6 +3180,21 @@ function typedSystemNoticeBlocksToRich(
       const dedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
         consumedDuplicateCommsBlock = true;
+        continue;
+      }
+      // A member-kickoff status (`mob.kickoff_<phase>`, typed lifecycle or
+      // the older request form) renders as its typed status, never as a peer
+      // message: its content is model-facing routing text.
+      const kickoff = memberKickoffNotice(record);
+      if (kickoff) {
+        const member = decodeMemberAlias(kickoff.member);
+        rich.push({
+          type: "member-kickoff",
+          phase: kickoff.phase,
+          member,
+          ...(kickoff.role ? { role: kickoff.role } : {}),
+          copyText: `Kickoff ${memberKickoffPhaseLabel(kickoff.phase).toLowerCase()}: ${member}`,
+        });
         continue;
       }
       const peer = record.peer && typeof record.peer === "object"
