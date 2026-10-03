@@ -871,7 +871,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   never estimated: a turn not measured at the current width with its current
   content stays mounted. The newest turn, a selection's turns and the turn
   holding keyboard focus stay mounted, and a rail jump or a restored anchor
-  mounts its turn. In the typing harness the transcript mounts about 1,100
+  mounts its turn. A turn holding a pending approval stays mounted wherever
+  the reader is: the request blocks the agent, so windowing must never hide
+  its card. In the typing harness the transcript mounts about 1,100
   elements after a full fill (16,000 before), and CPU per key falls to about
   1.6-2.5 ms idle and 2.5-4 ms while a reply streams. `npm run
   perf:typing:browser` fails above 3,000 mounted elements and adds an

@@ -141,6 +141,8 @@ export function turnSlots(
   return slots;
 }
 
+const NO_ACTIONABLE_TURNS: ReadonlySet<string> = new Set();
+
 export interface TurnWindow {
   slots: TurnSlot[];
   /** Mount a turn now (a jump or restore); false when it is not in the revealed range. */
@@ -156,6 +158,9 @@ export function useTurnWindow<T extends { id: string }>(
   enabled: boolean,
   /** A turn's render key: equal keys render equal heights at one width. */
   renderKey: (turn: T, index: number) => string,
+  /** Turns holding something the reader must act on, such as a pending
+   * approval: mounted wherever the reader is, so windowing never hides it. */
+  actionable: ReadonlySet<string> = NO_ACTIONABLE_TURNS,
 ): TurnWindow {
   const measurements = React.useRef(new Map<string, TurnMeasurement>());
   const geometry = React.useRef({ width: 0, gap: 0, top: 0, viewportHeight: 0 });
@@ -168,6 +173,8 @@ export function useTurnWindow<T extends { id: string }>(
   const keysRef = React.useRef(keys);
   keysRef.current = keys;
   const pins = React.useRef({ selection: new Set<number>(), focus: new Set<number>(), jump: new Set<number>() });
+  const actionableRef = React.useRef(actionable);
+  actionableRef.current = actionable;
   const [plan, setPlan] = React.useState<TurnWindowPlan | null>(null);
   const planRef = React.useRef(plan);
   planRef.current = plan;
@@ -177,6 +184,9 @@ export function useTurnWindow<T extends { id: string }>(
     if (!enabled || !body) return;
     const current = turnsRef.current;
     const pinned = new Set<number>([...pins.current.selection, ...pins.current.focus, ...pins.current.jump]);
+    if (actionableRef.current.size > 0) {
+      current.forEach((turn, index) => { if (actionableRef.current.has(turn.id)) pinned.add(index); });
+    }
     const next = planTurnWindow({
       turns: current,
       measurements: measurements.current,
@@ -305,6 +315,16 @@ export function useTurnWindow<T extends { id: string }>(
     // No replan here: reading scrollTop mid-commit forces layout. Changed
     // turns mount (see slots) and the observer replans after layout.
   }, [turns, keys, enabled, bodyRef]);
+
+  // A card that appears inside an unmounted turn changes no mounted element,
+  // so nothing else would replan to mount it.
+  const actionableKey = [...actionable].sort().join("\n");
+  const actionableKeyRef = React.useRef(actionableKey);
+  React.useEffect(() => {
+    if (actionableKeyRef.current === actionableKey) return;
+    actionableKeyRef.current = actionableKey;
+    replan();
+  }, [actionableKey, replan]);
 
   const mount = React.useCallback((index: number) => {
     if (index < 0 || index >= turnsRef.current.length) return false;

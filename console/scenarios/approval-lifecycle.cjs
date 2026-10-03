@@ -154,6 +154,14 @@ async function lateApprovalGeometry(host) {
     }, `${host} late correlated approval preserves reading position`);
     await capture(page, `${host}-late-approval-reading-1600`);
     assert.equal(decisions(fixture, result.created.pending_id).length, 0, "merely receiving a late approval never decides it");
+    // A pending approval blocks the agent, so windowing must never hide it.
+    // From the unchanged reading position the reader is told it is waiting
+    // and can open it, and its card stays in the transcript (the windowed
+    // stock transcript keeps that turn mounted) without scrolling to it.
+    const needsYou = host === "shared" ? /^Needs you \(1\)$/ : /^Needs you, 1 pending approval$/;
+    await page.getByRole("button", { name: needsYou }).first().waitFor();
+    assert.equal(await viewport.getByTestId(`gating-pending:${result.created.pending_id}`)
+      .getByRole("button", { name: "Approve", exact: true }).count(), 1, "the late approval's card is actionable where it belongs");
     // Explicit navigation is allowed to move the reader so the actual card can be inspected.
     const card = viewport.getByTestId(`gating-pending:${result.created.pending_id}`);
     await card.scrollIntoViewIfNeeded(); await geometry.settle(page);

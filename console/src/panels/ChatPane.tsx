@@ -2,7 +2,7 @@ import { QuoteSelectionAction } from "../../../packages/console-components/src/c
 import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
 import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import { JumpToLatest } from "../../../packages/console-components/src/conversation/jump-to-latest";
-import { approvalInteractionIdsByTurn, ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
+import { approvalInteractionIdsByTurn, ConversationApprovals, pendingApprovalTurns, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
 import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
 import type { MarkdownUrlPolicy } from "../../../packages/console-components/src/conversation/conversation-markdown";
 import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, ConversationRowStateScope, RowDetails, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
@@ -48,6 +48,8 @@ import {
 } from "../lib/composer-attachment-text";
 import { countRender } from "../lib/render-counts";
 import { useTurnWindow, type TurnWindow } from "./transcript-window";
+
+const NO_TURN_IDS: ReadonlySet<string> = new Set();
 
 /// Test-only switch for the windowed transcript's oracle runs (see
 /// typing-lag-browser's equivalence scenario); production never sets it.
@@ -1764,7 +1766,17 @@ export function ChatPane({
     });
     return (turn: ChatTurn, index: number) => `${previous[index] ?? ""}\u0000${turnContentKey(turn)}`;
   }, [revealedTurns]);
-  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey);
+  // A pending approval blocks the agent until someone decides it, so its
+  // turn stays mounted however far away the reader is.
+  const actionableTurnIds = React.useMemo(() => {
+    if (!approvalSnapshot?.requests.length) return NO_TURN_IDS;
+    const indexes = pendingApprovalTurns(
+      revealedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])),
+      { approvalSnapshot, approvalIdentity: identity, conversationId },
+    );
+    return indexes.length > 0 ? new Set(indexes.map((index) => revealedTurns[index].id)) : NO_TURN_IDS;
+  }, [approvalSnapshot, revealedTurns, identity, conversationId]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey, actionableTurnIds);
   const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,
