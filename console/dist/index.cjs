@@ -31,9 +31,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/inline-style-parser/cjs/index.js
+// node_modules/inline-style-parser/cjs/index.js
 var require_cjs = __commonJS({
-  "../../../e57f/meerkat-mobkit/console/node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
+  "node_modules/inline-style-parser/cjs/index.js"(exports, module2) {
     "use strict";
     var COMMENT_REGEX = /\/\*[^*]*\*+([^/*][^*]*\*+)*\//g;
     var NEWLINE_REGEX = /\n/g;
@@ -170,9 +170,9 @@ var require_cjs = __commonJS({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/style-to-object/cjs/index.js
+// node_modules/style-to-object/cjs/index.js
 var require_cjs2 = __commonJS({
-  "../../../e57f/meerkat-mobkit/console/node_modules/style-to-object/cjs/index.js"(exports) {
+  "node_modules/style-to-object/cjs/index.js"(exports) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -204,9 +204,9 @@ var require_cjs2 = __commonJS({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/style-to-js/cjs/utilities.js
+// node_modules/style-to-js/cjs/utilities.js
 var require_utilities = __commonJS({
-  "../../../e57f/meerkat-mobkit/console/node_modules/style-to-js/cjs/utilities.js"(exports) {
+  "node_modules/style-to-js/cjs/utilities.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.camelCase = void 0;
@@ -243,9 +243,9 @@ var require_utilities = __commonJS({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/style-to-js/cjs/index.js
+// node_modules/style-to-js/cjs/index.js
 var require_cjs3 = __commonJS({
-  "../../../e57f/meerkat-mobkit/console/node_modules/style-to-js/cjs/index.js"(exports, module2) {
+  "node_modules/style-to-js/cjs/index.js"(exports, module2) {
     "use strict";
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -269,9 +269,9 @@ var require_cjs3 = __commonJS({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/extend/index.js
+// node_modules/extend/index.js
 var require_extend = __commonJS({
-  "../../../e57f/meerkat-mobkit/console/node_modules/extend/index.js"(exports, module2) {
+  "node_modules/extend/index.js"(exports, module2) {
     "use strict";
     var hasOwn = Object.prototype.hasOwnProperty;
     var toStr = Object.prototype.toString;
@@ -418,7 +418,7 @@ async function withConsoleSendStorageLock(key, update) {
 // src/ConsoleApp.tsx
 var import_react45 = __toESM(require("react"));
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/clsx/dist/clsx.mjs
+// node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -6643,13 +6643,13 @@ var import_react7 = require("react");
 // ../packages/console-components/src/conversation/conversation-markdown.tsx
 var import_react6 = require("react");
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/devlop/lib/default.js
+// node_modules/devlop/lib/default.js
 function ok() {
 }
 function unreachable() {
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/comma-separated-tokens/index.js
+// node_modules/comma-separated-tokens/index.js
 function stringify(values, options) {
   const settings = options || {};
   const input = values[values.length - 1] === "" ? [...values, ""] : values;
@@ -6658,7 +6658,7 @@ function stringify(values, options) {
   ).trim();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/estree-util-is-identifier-name/lib/index.js
+// node_modules/estree-util-is-identifier-name/lib/index.js
 var nameRe = /^[$_\p{ID_Start}][$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var nameReJsx = /^[$_\p{ID_Start}][-$_\u{200C}\u{200D}\p{ID_Continue}]*$/u;
 var emptyOptions = {};
@@ -6668,7 +6668,7 @@ function name(name2, options) {
   return re2.test(name2);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/hast-util-whitespace/lib/index.js
+// node_modules/hast-util-whitespace/lib/index.js
 var re = /[ \t\n\f\r]/g;
 function whitespace(thing) {
   return typeof thing === "object" ? thing.type === "text" ? empty(thing.value) : false : empty(thing);
@@ -6677,7 +6677,7 @@ function empty(value) {
   return value.replace(re, "") === "";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/schema.js
+// node_modules/property-information/lib/util/schema.js
 var Schema = class {
   /**
    * @param {SchemaType['property']} property
@@ -6701,7 +6701,7 @@ Schema.prototype.normal = {};
 Schema.prototype.property = {};
 Schema.prototype.space = void 0;
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/merge.js
+// node_modules/property-information/lib/util/merge.js
 function merge(definitions, space2) {
   const property = {};
   const normal = {};
@@ -6712,12 +6712,12 @@ function merge(definitions, space2) {
   return new Schema(property, normal, space2);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/normalize.js
+// node_modules/property-information/lib/normalize.js
 function normalize(value) {
   return value.toLowerCase();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/info.js
+// node_modules/property-information/lib/util/info.js
 var Info = class {
   /**
    * @param {string} property
@@ -6745,7 +6745,7 @@ Info.prototype.property = "";
 Info.prototype.spaceSeparated = false;
 Info.prototype.space = void 0;
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/types.js
+// node_modules/property-information/lib/util/types.js
 var types_exports = {};
 __export(types_exports, {
   boolean: () => boolean2,
@@ -6768,7 +6768,7 @@ function increment() {
   return 2 ** ++powers;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/defined-info.js
+// node_modules/property-information/lib/util/defined-info.js
 var checks = (
   /** @type {ReadonlyArray<keyof typeof types>} */
   Object.keys(types_exports)
@@ -6806,7 +6806,7 @@ function mark(values, key, value) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/create.js
+// node_modules/property-information/lib/util/create.js
 function create(definition3) {
   const properties = {};
   const normals = {};
@@ -6827,7 +6827,7 @@ function create(definition3) {
   return new Schema(properties, normals, definition3.space);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/aria.js
+// node_modules/property-information/lib/aria.js
 var aria = create({
   properties: {
     ariaActiveDescendant: null,
@@ -6885,17 +6885,17 @@ var aria = create({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/case-sensitive-transform.js
+// node_modules/property-information/lib/util/case-sensitive-transform.js
 function caseSensitiveTransform(attributes, attribute) {
   return attribute in attributes ? attributes[attribute] : attribute;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/util/case-insensitive-transform.js
+// node_modules/property-information/lib/util/case-insensitive-transform.js
 function caseInsensitiveTransform(attributes, property) {
   return caseSensitiveTransform(attributes, property.toLowerCase());
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/html.js
+// node_modules/property-information/lib/html.js
 var html = create({
   attributes: {
     acceptcharset: "accept-charset",
@@ -7269,7 +7269,7 @@ var html = create({
   transform: caseInsensitiveTransform
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/svg.js
+// node_modules/property-information/lib/svg.js
 var svg = create({
   attributes: {
     accentHeight: "accent-height",
@@ -7833,7 +7833,7 @@ var svg = create({
   transform: caseSensitiveTransform
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/xlink.js
+// node_modules/property-information/lib/xlink.js
 var xlink = create({
   properties: {
     xLinkActuate: null,
@@ -7850,7 +7850,7 @@ var xlink = create({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/xmlns.js
+// node_modules/property-information/lib/xmlns.js
 var xmlns = create({
   attributes: { xmlnsxlink: "xmlns:xlink" },
   properties: { xmlnsXLink: null, xmlns: null },
@@ -7858,7 +7858,7 @@ var xmlns = create({
   transform: caseInsensitiveTransform
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/xml.js
+// node_modules/property-information/lib/xml.js
 var xml = create({
   properties: { xmlBase: null, xmlLang: null, xmlSpace: null },
   space: "xml",
@@ -7867,7 +7867,7 @@ var xml = create({
   }
 });
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/hast-to-react.js
+// node_modules/property-information/lib/hast-to-react.js
 var hastToReact = {
   classId: "classID",
   dataType: "datatype",
@@ -7888,7 +7888,7 @@ var hastToReact = {
   xmlnsXLink: "xmlnsXlink"
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/lib/find.js
+// node_modules/property-information/lib/find.js
 var cap = /[A-Z]/g;
 var dash = /-[a-z]/g;
 var valid = /^data[-\w.:]+$/i;
@@ -7924,19 +7924,19 @@ function camelcase($0) {
   return $0.charAt(1).toUpperCase();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/property-information/index.js
+// node_modules/property-information/index.js
 var html2 = merge([aria, html, xlink, xmlns, xml], "html");
 var svg2 = merge([aria, svg, xlink, xmlns, xml], "svg");
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/space-separated-tokens/index.js
+// node_modules/space-separated-tokens/index.js
 function stringify2(values) {
   return values.join(" ").trim();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/hast-util-to-jsx-runtime/lib/index.js
+// node_modules/hast-util-to-jsx-runtime/lib/index.js
 var import_style_to_js = __toESM(require_cjs3(), 1);
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-position/lib/index.js
+// node_modules/unist-util-position/lib/index.js
 var pointEnd = point("end");
 var pointStart = point("start");
 function point(type) {
@@ -7960,7 +7960,7 @@ function position(node2) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -7986,7 +7986,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile-message/lib/index.js
+// node_modules/vfile-message/lib/index.js
 var VFileMessage = class extends Error {
   /**
    * Create a message for `reason`.
@@ -8122,7 +8122,7 @@ VFileMessage.prototype.place = void 0;
 VFileMessage.prototype.ruleId = void 0;
 VFileMessage.prototype.source = void 0;
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/hast-util-to-jsx-runtime/lib/index.js
+// node_modules/hast-util-to-jsx-runtime/lib/index.js
 var own = {}.hasOwnProperty;
 var emptyMap = /* @__PURE__ */ new Map();
 var cap2 = /[A-Z]/g;
@@ -8501,7 +8501,7 @@ function toDash($0) {
   return "-" + $0.toLowerCase();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/html-url-attributes/lib/index.js
+// node_modules/html-url-attributes/lib/index.js
 var urlAttributes = {
   action: ["form"],
   cite: ["blockquote", "del", "ins", "q"],
@@ -8526,11 +8526,11 @@ var urlAttributes = {
   ]
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/react-markdown/lib/index.js
+// node_modules/react-markdown/lib/index.js
 var import_jsx_runtime11 = require("react/jsx-runtime");
 var import_react5 = require("react");
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions2 = {};
 function toString(value, options) {
   const settings = options || emptyOptions2;
@@ -8567,7 +8567,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -10696,13 +10696,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own2 = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own2.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list4, start2, remove, items) {
   const end = list4.length;
   let chunkStart = 0;
@@ -10736,7 +10736,7 @@ function push(list4, items) {
   return items;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -10776,7 +10776,7 @@ function constructs(existing, list4) {
   splice(existing, 0, 0, before);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code4 = Number.parseInt(value, base);
   if (
@@ -10794,12 +10794,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code4);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -10831,7 +10831,7 @@ function regexCheck(regex) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-sanitize-uri/index.js
+// node_modules/micromark-util-sanitize-uri/index.js
 function normalizeUri(value) {
   const result = [];
   let index2 = -1;
@@ -10870,7 +10870,7 @@ function normalizeUri(value) {
   return result.join("") + value.slice(start2);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok3, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -10892,7 +10892,7 @@ function factorySpace(effects, ok3, type, max) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -10942,7 +10942,7 @@ function initializeContent(effects) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document2 = {
   tokenize: initializeDocument
 };
@@ -11124,7 +11124,7 @@ function tokenizeContainer(effects, ok3, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok3, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code4) {
   if (code4 === null || markdownLineEndingOrSpace(code4) || unicodeWhitespace(code4)) {
     return 1;
@@ -11134,7 +11134,7 @@ function classifyCharacter(code4) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -11148,7 +11148,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -11279,7 +11279,7 @@ function movePoint(point4, offset) {
   point4._bufferIndex += offset;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -11380,7 +11380,7 @@ function tokenizeAutolink(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -11395,7 +11395,7 @@ function tokenizeBlankLine(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -11453,7 +11453,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -11479,7 +11479,7 @@ function tokenizeCharacterEscape(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -11544,7 +11544,7 @@ function tokenizeCharacterReference(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -11727,7 +11727,7 @@ function tokenizeNonLazyContinuation(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -11791,7 +11791,7 @@ function tokenizeFurtherStart(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -11906,7 +11906,7 @@ function tokenizeCodeText(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -12099,7 +12099,7 @@ function chunkedPush(list4, right) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -12252,7 +12252,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -12323,7 +12323,7 @@ function tokenizeContinuation(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -12415,7 +12415,7 @@ function factoryDestination(effects, ok3, nok, type, literalType, literalMarkerT
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   const self2 = this;
   let size = 0;
@@ -12476,7 +12476,7 @@ function factoryLabel(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   let marker;
   return start2;
@@ -12538,7 +12538,7 @@ function factoryTitle(effects, ok3, nok, type, markerType, stringType) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok3) {
   let seen;
   return start2;
@@ -12557,7 +12557,7 @@ function factoryWhitespace(effects, ok3) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -12643,7 +12643,7 @@ function tokenizeTitleBefore(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -12664,7 +12664,7 @@ function tokenizeHardBreakEscape(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -12755,7 +12755,7 @@ function tokenizeHeadingAtx(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -12822,7 +12822,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -13201,7 +13201,7 @@ function tokenizeBlankLineBefore(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -13507,7 +13507,7 @@ function tokenizeHtmlText(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -13733,7 +13733,7 @@ function tokenizeReferenceCollapsed(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -13764,7 +13764,7 @@ function tokenizeLabelStartImage(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -13786,7 +13786,7 @@ function tokenizeLabelStartLink(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -13801,7 +13801,7 @@ function tokenizeLineEnding(effects, ok3) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -13840,7 +13840,7 @@ function tokenizeThematicBreak(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -13970,7 +13970,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -14062,7 +14062,7 @@ function tokenizeSetextUnderline(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -14100,7 +14100,7 @@ function initializeFlow(effects) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -14239,7 +14239,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -14314,7 +14314,7 @@ var disable = {
   null: []
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point4 = {
     _bufferIndex: -1,
@@ -14637,7 +14637,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse2(options) {
   const settings = options || {};
   const constructs2 = (
@@ -14663,14 +14663,14 @@ function parse2(options) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -14749,7 +14749,7 @@ function preprocess() {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -14767,7 +14767,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own3 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -15476,7 +15476,7 @@ function defaultOnError(left, right) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/remark-parse/lib/index.js
+// node_modules/remark-parse/lib/index.js
 function remarkParse(options) {
   const self2 = this;
   self2.parser = parser;
@@ -15493,7 +15493,7 @@ function remarkParse(options) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
+// node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
 function blockquote(state, node2) {
   const result = {
     type: "element",
@@ -15505,14 +15505,14 @@ function blockquote(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/break.js
+// node_modules/mdast-util-to-hast/lib/handlers/break.js
 function hardBreak(state, node2) {
   const result = { type: "element", tagName: "br", properties: {}, children: [] };
   state.patch(node2, result);
   return [state.applyData(node2, result), { type: "text", value: "\n" }];
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/code.js
+// node_modules/mdast-util-to-hast/lib/handlers/code.js
 function code(state, node2) {
   const value = node2.value ? node2.value + "\n" : "";
   const properties = {};
@@ -15536,7 +15536,7 @@ function code(state, node2) {
   return result;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/delete.js
+// node_modules/mdast-util-to-hast/lib/handlers/delete.js
 function strikethrough(state, node2) {
   const result = {
     type: "element",
@@ -15548,7 +15548,7 @@ function strikethrough(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
+// node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
 function emphasis(state, node2) {
   const result = {
     type: "element",
@@ -15560,7 +15560,7 @@ function emphasis(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
 function footnoteReference(state, node2) {
   const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
   const id = String(node2.identifier).toUpperCase();
@@ -15599,7 +15599,7 @@ function footnoteReference(state, node2) {
   return state.applyData(node2, sup);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/heading.js
+// node_modules/mdast-util-to-hast/lib/handlers/heading.js
 function heading(state, node2) {
   const result = {
     type: "element",
@@ -15611,7 +15611,7 @@ function heading(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/html.js
+// node_modules/mdast-util-to-hast/lib/handlers/html.js
 function html3(state, node2) {
   if (state.options.allowDangerousHtml) {
     const result = { type: "raw", value: node2.value };
@@ -15621,7 +15621,7 @@ function html3(state, node2) {
   return void 0;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/revert.js
+// node_modules/mdast-util-to-hast/lib/revert.js
 function revert(state, node2) {
   const subtype = node2.referenceType;
   let suffix = "]";
@@ -15649,7 +15649,7 @@ function revert(state, node2) {
   return contents;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
 function imageReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -15665,7 +15665,7 @@ function imageReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/image.js
+// node_modules/mdast-util-to-hast/lib/handlers/image.js
 function image(state, node2) {
   const properties = { src: normalizeUri(node2.url) };
   if (node2.alt !== null && node2.alt !== void 0) {
@@ -15679,7 +15679,7 @@ function image(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
+// node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
 function inlineCode(state, node2) {
   const text8 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
   state.patch(node2, text8);
@@ -15693,7 +15693,7 @@ function inlineCode(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
+// node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
 function linkReference(state, node2) {
   const id = String(node2.identifier).toUpperCase();
   const definition3 = state.definitionById.get(id);
@@ -15714,7 +15714,7 @@ function linkReference(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/link.js
+// node_modules/mdast-util-to-hast/lib/handlers/link.js
 function link(state, node2) {
   const properties = { href: normalizeUri(node2.url) };
   if (node2.title !== null && node2.title !== void 0) {
@@ -15730,7 +15730,7 @@ function link(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/list-item.js
+// node_modules/mdast-util-to-hast/lib/handlers/list-item.js
 function listItem(state, node2, parent) {
   const results = state.all(node2);
   const loose = parent ? listLoose(parent) : listItemLoose(node2);
@@ -15793,7 +15793,7 @@ function listItemLoose(node2) {
   return spread === null || spread === void 0 ? node2.children.length > 1 : spread;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/list.js
+// node_modules/mdast-util-to-hast/lib/handlers/list.js
 function list2(state, node2) {
   const properties = {};
   const results = state.all(node2);
@@ -15818,7 +15818,7 @@ function list2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
+// node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
 function paragraph(state, node2) {
   const result = {
     type: "element",
@@ -15830,14 +15830,14 @@ function paragraph(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/root.js
+// node_modules/mdast-util-to-hast/lib/handlers/root.js
 function root2(state, node2) {
   const result = { type: "root", children: state.wrap(state.all(node2)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/strong.js
+// node_modules/mdast-util-to-hast/lib/handlers/strong.js
 function strong(state, node2) {
   const result = {
     type: "element",
@@ -15849,7 +15849,7 @@ function strong(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table.js
+// node_modules/mdast-util-to-hast/lib/handlers/table.js
 function table(state, node2) {
   const rows = state.all(node2);
   const firstRow = rows.shift();
@@ -15886,7 +15886,7 @@ function table(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table-row.js
+// node_modules/mdast-util-to-hast/lib/handlers/table-row.js
 function tableRow(state, node2, parent) {
   const siblings = parent ? parent.children : void 0;
   const rowIndex = siblings ? siblings.indexOf(node2) : 1;
@@ -15920,7 +15920,7 @@ function tableRow(state, node2, parent) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
+// node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
 function tableCell(state, node2) {
   const result = {
     type: "element",
@@ -15933,7 +15933,7 @@ function tableCell(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/trim-lines/index.js
+// node_modules/trim-lines/index.js
 var tab = 9;
 var space = 32;
 function trimLines(value) {
@@ -15973,14 +15973,14 @@ function trimLine(value, start2, end) {
   return endIndex > startIndex ? value.slice(startIndex, endIndex) : "";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/text.js
+// node_modules/mdast-util-to-hast/lib/handlers/text.js
 function text5(state, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
+// node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
 function thematicBreak2(state, node2) {
   const result = {
     type: "element",
@@ -15992,7 +15992,7 @@ function thematicBreak2(state, node2) {
   return state.applyData(node2, result);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/handlers/index.js
+// node_modules/mdast-util-to-hast/lib/handlers/index.js
 var handlers = {
   blockquote,
   break: hardBreak,
@@ -16027,7 +16027,7 @@ function ignore() {
   return void 0;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/types.js
+// node_modules/@ungap/structured-clone/esm/types.js
 var VOID = -1;
 var PRIMITIVE = 0;
 var ARRAY = 1;
@@ -16039,7 +16039,7 @@ var SET = 6;
 var ERROR = 7;
 var BIGINT = 8;
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/deserialize.js
+// node_modules/@ungap/structured-clone/esm/deserialize.js
 var { defineProperty } = Object;
 var env = typeof self === "object" ? self : globalThis;
 var guard = (name2, init) => {
@@ -16131,7 +16131,7 @@ var deserializer = ($, _) => {
 };
 var deserialize = (serialized) => deserializer(/* @__PURE__ */ new Map(), serialized)(0);
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/serialize.js
+// node_modules/@ungap/structured-clone/esm/serialize.js
 var EMPTY = "";
 var { toString: toString2 } = {};
 var { keys, is } = Object;
@@ -16268,13 +16268,13 @@ var serialize = (value, { json, lossy } = {}) => {
   return serializer(!(json || lossy), !!json, /* @__PURE__ */ new Map(), _)(value), _;
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/@ungap/structured-clone/esm/index.js
+// node_modules/@ungap/structured-clone/esm/index.js
 var esm_default = typeof structuredClone === "function" ? (
   /* c8 ignore start */
   (any, options) => options && ("json" in options || "lossy" in options) ? deserialize(serialize(any, options)) : structuredClone(any)
 ) : (any, options) => deserialize(serialize(any, options));
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/footer.js
+// node_modules/mdast-util-to-hast/lib/footer.js
 function defaultFootnoteBackContent(_, rereferenceIndex) {
   const result = [{ type: "text", value: "\u21A9" }];
   if (rereferenceIndex > 1) {
@@ -16384,7 +16384,7 @@ function footer(state) {
   };
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-is/lib/index.js
+// node_modules/unist-util-is/lib/index.js
 var convert = (
   // Note: overloads in JSDoc can’t yet use different `@template`s.
   /**
@@ -16483,12 +16483,12 @@ function looksLikeANode(value) {
   return value !== null && typeof value === "object" && "type" in value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-visit-parents/lib/color.js
+// node_modules/unist-util-visit-parents/lib/color.js
 function color(d) {
   return d;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-visit-parents/lib/index.js
+// node_modules/unist-util-visit-parents/lib/index.js
 var empty2 = [];
 var CONTINUE = true;
 var EXIT = false;
@@ -16565,7 +16565,7 @@ function toResult(value) {
   return value === null || value === void 0 ? empty2 : [value];
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unist-util-visit/lib/index.js
+// node_modules/unist-util-visit/lib/index.js
 function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   let reverse;
   let test;
@@ -16587,7 +16587,7 @@ function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/state.js
+// node_modules/mdast-util-to-hast/lib/state.js
 var own4 = {}.hasOwnProperty;
 var emptyOptions3 = {};
 function createState(tree, options) {
@@ -16729,7 +16729,7 @@ function trimMarkdownSpaceStart(value) {
   return value.slice(index2);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-hast/lib/index.js
+// node_modules/mdast-util-to-hast/lib/index.js
 function toHast(tree, options) {
   const state = createState(tree, options);
   const node2 = state.one(tree, void 0);
@@ -16742,7 +16742,7 @@ function toHast(tree, options) {
   return result;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/remark-rehype/lib/index.js
+// node_modules/remark-rehype/lib/index.js
 function remarkRehype(destination, options) {
   if (destination && "run" in destination) {
     return async function(tree, file) {
@@ -16761,17 +16761,17 @@ function remarkRehype(destination, options) {
   };
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/bail/index.js
+// node_modules/bail/index.js
 function bail(error) {
   if (error) {
     throw error;
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unified/lib/index.js
+// node_modules/unified/lib/index.js
 var import_extend = __toESM(require_extend(), 1);
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/is-plain-obj/index.js
+// node_modules/is-plain-obj/index.js
 function isPlainObject(value) {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -16780,7 +16780,7 @@ function isPlainObject(value) {
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/trough/lib/index.js
+// node_modules/trough/lib/index.js
 function trough() {
   const fns = [];
   const pipeline = { run, use };
@@ -16864,7 +16864,7 @@ function wrap2(middleware, callback) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile/lib/minpath.browser.js
+// node_modules/vfile/lib/minpath.browser.js
 var minpath = { basename, dirname, extname, join, sep: "/" };
 function basename(path2, extname2) {
   if (extname2 !== void 0 && typeof extname2 !== "string") {
@@ -17077,13 +17077,13 @@ function assertPath(path2) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile/lib/minproc.browser.js
+// node_modules/vfile/lib/minproc.browser.js
 var minproc = { cwd };
 function cwd() {
   return "/";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile/lib/minurl.shared.js
+// node_modules/vfile/lib/minurl.shared.js
 function isUrl(fileUrlOrPath) {
   return Boolean(
     fileUrlOrPath !== null && typeof fileUrlOrPath === "object" && "href" in fileUrlOrPath && fileUrlOrPath.href && "protocol" in fileUrlOrPath && fileUrlOrPath.protocol && // @ts-expect-error: indexing is fine.
@@ -17091,7 +17091,7 @@ function isUrl(fileUrlOrPath) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile/lib/minurl.browser.js
+// node_modules/vfile/lib/minurl.browser.js
 function urlToPath(path2) {
   if (typeof path2 === "string") {
     path2 = new URL(path2);
@@ -17134,7 +17134,7 @@ function getPathFromURLPosix(url) {
   return decodeURIComponent(pathname);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/vfile/lib/index.js
+// node_modules/vfile/lib/index.js
 var order = (
   /** @type {const} */
   [
@@ -17590,7 +17590,7 @@ function isUint8Array(value) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unified/lib/callable-instance.js
+// node_modules/unified/lib/callable-instance.js
 var CallableInstance = (
   /**
    * @type {new <Parameters extends Array<unknown>, Result>(property: string | symbol) => (...parameters: Parameters) => Result}
@@ -17619,7 +17619,7 @@ var CallableInstance = (
   })
 );
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/unified/lib/index.js
+// node_modules/unified/lib/index.js
 var own5 = {}.hasOwnProperty;
 var Processor = class _Processor extends CallableInstance {
   /**
@@ -18255,7 +18255,7 @@ function isUint8Array2(value) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/react-markdown/lib/index.js
+// node_modules/react-markdown/lib/index.js
 var changelog = "https://github.com/remarkjs/react-markdown/blob/main/changelog.md";
 var emptyPlugins = [];
 var emptyRemarkRehypeOptions = { allowDangerousHtml: true };
@@ -18401,7 +18401,7 @@ function defaultUrlTransform(value) {
   return "";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/ccount/index.js
+// node_modules/ccount/index.js
 function ccount(value, character) {
   const source = String(value);
   if (typeof character !== "string") {
@@ -18416,7 +18416,7 @@ function ccount(value, character) {
   return count;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/escape-string-regexp/index.js
+// node_modules/escape-string-regexp/index.js
 function escapeStringRegexp(string4) {
   if (typeof string4 !== "string") {
     throw new TypeError("Expected a string");
@@ -18424,7 +18424,7 @@ function escapeStringRegexp(string4) {
   return string4.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&").replace(/-/g, "\\x2d");
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-find-and-replace/lib/index.js
+// node_modules/mdast-util-find-and-replace/lib/index.js
 function findAndReplace(tree, list4, options) {
   const settings = options || {};
   const ignored = convert(settings.ignore || []);
@@ -18529,7 +18529,7 @@ function toFunction(replace2) {
   };
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+// node_modules/mdast-util-gfm-autolink-literal/lib/index.js
 var inConstruct = "phrasing";
 var notInConstruct = ["autolink", "link", "image", "label"];
 function gfmAutolinkLiteralFromMarkdown() {
@@ -18679,7 +18679,7 @@ function previous2(match, email) {
   (!email || code4 !== 47);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm-footnote/lib/index.js
+// node_modules/mdast-util-gfm-footnote/lib/index.js
 footnoteReference2.peek = footnoteReferencePeek;
 function enterFootnoteCallString() {
   this.buffer();
@@ -18792,7 +18792,7 @@ function mapAll(line, index2, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm-strikethrough/lib/index.js
+// node_modules/mdast-util-gfm-strikethrough/lib/index.js
 var constructsWithoutStrikethrough = [
   "autolink",
   "destinationLiteral",
@@ -18844,7 +18844,7 @@ function peekDelete() {
   return "~";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/markdown-table/index.js
+// node_modules/markdown-table/index.js
 function defaultStringLength(value) {
   return value.length;
 }
@@ -18985,7 +18985,7 @@ function toAlignment(value) {
   return code4 === 67 || code4 === 99 ? 99 : code4 === 76 || code4 === 108 ? 108 : code4 === 82 || code4 === 114 ? 114 : 0;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
+// node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
 function blockquote2(node2, _, state, info) {
   const exit3 = state.enter("blockquote");
   const tracker = state.createTracker(info);
@@ -19002,7 +19002,7 @@ function map(line, _, blank) {
   return ">" + (blank ? "" : " ") + line;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
+// node_modules/mdast-util-to-markdown/lib/util/pattern-in-scope.js
 function patternInScope(stack, pattern) {
   return listInScope(stack, pattern.inConstruct, true) && !listInScope(stack, pattern.notInConstruct, false);
 }
@@ -19022,7 +19022,7 @@ function listInScope(stack, list4, none) {
   return false;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/break.js
+// node_modules/mdast-util-to-markdown/lib/handle/break.js
 function hardBreak2(_, _1, state, info) {
   let index2 = -1;
   while (++index2 < state.unsafe.length) {
@@ -19033,7 +19033,7 @@ function hardBreak2(_, _1, state, info) {
   return "\\\n";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/longest-streak/index.js
+// node_modules/longest-streak/index.js
 function longestStreak(value, substring) {
   const source = String(value);
   let index2 = source.indexOf(substring);
@@ -19057,7 +19057,7 @@ function longestStreak(value, substring) {
   return max;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
+// node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
 function formatCodeAsIndented(node2, state) {
   return Boolean(
     state.options.fences === false && node2.value && // If there’s no info…
@@ -19067,7 +19067,7 @@ function formatCodeAsIndented(node2, state) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-fence.js
+// node_modules/mdast-util-to-markdown/lib/util/check-fence.js
 function checkFence(state) {
   const marker = state.options.fence || "`";
   if (marker !== "`" && marker !== "~") {
@@ -19078,7 +19078,7 @@ function checkFence(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/code.js
+// node_modules/mdast-util-to-markdown/lib/handle/code.js
 function code2(node2, _, state, info) {
   const marker = checkFence(state);
   const raw = node2.value || "";
@@ -19130,7 +19130,7 @@ function map2(line, _, blank) {
   return (blank ? "" : "    ") + line;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-quote.js
+// node_modules/mdast-util-to-markdown/lib/util/check-quote.js
 function checkQuote(state) {
   const marker = state.options.quote || '"';
   if (marker !== '"' && marker !== "'") {
@@ -19141,7 +19141,7 @@ function checkQuote(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/definition.js
+// node_modules/mdast-util-to-markdown/lib/handle/definition.js
 function definition2(node2, _, state, info) {
   const quote = checkQuote(state);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
@@ -19197,7 +19197,7 @@ function definition2(node2, _, state, info) {
   return value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
+// node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
 function checkEmphasis(state) {
   const marker = state.options.emphasis || "*";
   if (marker !== "*" && marker !== "_") {
@@ -19208,12 +19208,12 @@ function checkEmphasis(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
+// node_modules/mdast-util-to-markdown/lib/util/encode-character-reference.js
 function encodeCharacterReference(code4) {
   return "&#x" + code4.toString(16).toUpperCase() + ";";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/encode-info.js
+// node_modules/mdast-util-to-markdown/lib/util/encode-info.js
 function encodeInfo(outside, inside, marker) {
   const outsideKind = classifyCharacter(outside);
   const insideKind = classifyCharacter(inside);
@@ -19255,7 +19255,7 @@ function encodeInfo(outside, inside, marker) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
+// node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
 emphasis2.peek = emphasisPeek;
 function emphasis2(node2, _, state, info) {
   const marker = checkEmphasis(state);
@@ -19295,7 +19295,7 @@ function emphasisPeek(_, _1, state) {
   return state.options.emphasis || "*";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
+// node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
 function formatHeadingAsSetext(node2, state) {
   let literalWithBreak = false;
   visit(node2, function(node3) {
@@ -19309,7 +19309,7 @@ function formatHeadingAsSetext(node2, state) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/heading.js
+// node_modules/mdast-util-to-markdown/lib/handle/heading.js
 function heading2(node2, _, state, info) {
   const rank = Math.max(Math.min(6, node2.depth || 1), 1);
   const tracker = state.createTracker(info);
@@ -19351,7 +19351,7 @@ function heading2(node2, _, state, info) {
   return value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/html.js
+// node_modules/mdast-util-to-markdown/lib/handle/html.js
 html4.peek = htmlPeek;
 function html4(node2) {
   return node2.value || "";
@@ -19360,7 +19360,7 @@ function htmlPeek() {
   return "<";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/image.js
+// node_modules/mdast-util-to-markdown/lib/handle/image.js
 image2.peek = imagePeek;
 function image2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -19417,7 +19417,7 @@ function imagePeek() {
   return "!";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
+// node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
 imageReference2.peek = imageReferencePeek;
 function imageReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -19456,7 +19456,7 @@ function imageReferencePeek() {
   return "!";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
+// node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
 inlineCode2.peek = inlineCodePeek;
 function inlineCode2(node2, _, state) {
   let value = node2.value || "";
@@ -19487,7 +19487,7 @@ function inlineCodePeek() {
   return "`";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
+// node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
 function formatLinkAsAutolink(node2, state) {
   const raw = toString(node2);
   return Boolean(
@@ -19502,7 +19502,7 @@ function formatLinkAsAutolink(node2, state) {
   );
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/link.js
+// node_modules/mdast-util-to-markdown/lib/handle/link.js
 link2.peek = linkPeek;
 function link2(node2, _, state, info) {
   const quote = checkQuote(state);
@@ -19582,7 +19582,7 @@ function linkPeek(node2, _, state) {
   return formatLinkAsAutolink(node2, state) ? "<" : "[";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
+// node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
 linkReference2.peek = linkReferencePeek;
 function linkReference2(node2, _, state, info) {
   const type = node2.referenceType;
@@ -19621,7 +19621,7 @@ function linkReferencePeek() {
   return "[";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
 function checkBullet(state) {
   const marker = state.options.bullet || "*";
   if (marker !== "*" && marker !== "+" && marker !== "-") {
@@ -19632,7 +19632,7 @@ function checkBullet(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
 function checkBulletOther(state) {
   const bullet = checkBullet(state);
   const bulletOther = state.options.bulletOther;
@@ -19652,7 +19652,7 @@ function checkBulletOther(state) {
   return bulletOther;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
+// node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
 function checkBulletOrdered(state) {
   const marker = state.options.bulletOrdered || ".";
   if (marker !== "." && marker !== ")") {
@@ -19663,7 +19663,7 @@ function checkBulletOrdered(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-rule.js
+// node_modules/mdast-util-to-markdown/lib/util/check-rule.js
 function checkRule(state) {
   const marker = state.options.rule || "*";
   if (marker !== "*" && marker !== "-" && marker !== "_") {
@@ -19674,7 +19674,7 @@ function checkRule(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/list.js
+// node_modules/mdast-util-to-markdown/lib/handle/list.js
 function list3(node2, parent, state, info) {
   const exit3 = state.enter("list");
   const bulletCurrent = state.bulletCurrent;
@@ -19714,7 +19714,7 @@ function list3(node2, parent, state, info) {
   return value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
+// node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
 function checkListItemIndent(state) {
   const style = state.options.listItemIndent || "one";
   if (style !== "tab" && style !== "one" && style !== "mixed") {
@@ -19725,7 +19725,7 @@ function checkListItemIndent(state) {
   return style;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/list-item.js
+// node_modules/mdast-util-to-markdown/lib/handle/list-item.js
 function listItem2(node2, parent, state, info) {
   const listItemIndent = checkListItemIndent(state);
   let bullet = state.bulletCurrent || checkBullet(state);
@@ -19754,7 +19754,7 @@ function listItem2(node2, parent, state, info) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
+// node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
 function paragraph2(node2, _, state, info) {
   const exit3 = state.enter("paragraph");
   const subexit = state.enter("phrasing");
@@ -19764,7 +19764,7 @@ function paragraph2(node2, _, state, info) {
   return value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-phrasing/lib/index.js
+// node_modules/mdast-util-phrasing/lib/index.js
 var phrasing = (
   /** @type {(node?: unknown) => node is Exclude<PhrasingContent, Html>} */
   convert([
@@ -19792,7 +19792,7 @@ var phrasing = (
   ])
 );
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/root.js
+// node_modules/mdast-util-to-markdown/lib/handle/root.js
 function root3(node2, _, state, info) {
   const hasPhrasing = node2.children.some(function(d) {
     return phrasing(d);
@@ -19801,7 +19801,7 @@ function root3(node2, _, state, info) {
   return container.call(state, node2, info);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-strong.js
+// node_modules/mdast-util-to-markdown/lib/util/check-strong.js
 function checkStrong(state) {
   const marker = state.options.strong || "*";
   if (marker !== "*" && marker !== "_") {
@@ -19812,7 +19812,7 @@ function checkStrong(state) {
   return marker;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/strong.js
+// node_modules/mdast-util-to-markdown/lib/handle/strong.js
 strong2.peek = strongPeek;
 function strong2(node2, _, state, info) {
   const marker = checkStrong(state);
@@ -19852,12 +19852,12 @@ function strongPeek(_, _1, state) {
   return state.options.strong || "*";
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/text.js
+// node_modules/mdast-util-to-markdown/lib/handle/text.js
 function text6(node2, _, state, info) {
   return state.safe(node2.value, info);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
+// node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
 function checkRuleRepetition(state) {
   const repetition = state.options.ruleRepetition || 3;
   if (repetition < 3) {
@@ -19868,13 +19868,13 @@ function checkRuleRepetition(state) {
   return repetition;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
+// node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
 function thematicBreak3(_, _1, state) {
   const value = (checkRule(state) + (state.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state));
   return state.options.ruleSpaces ? value.slice(0, -1) : value;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-to-markdown/lib/handle/index.js
+// node_modules/mdast-util-to-markdown/lib/handle/index.js
 var handle = {
   blockquote: blockquote2,
   break: hardBreak2,
@@ -19898,7 +19898,7 @@ var handle = {
   thematicBreak: thematicBreak3
 };
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm-table/lib/index.js
+// node_modules/mdast-util-gfm-table/lib/index.js
 function gfmTableFromMarkdown() {
   return {
     enter: {
@@ -20051,7 +20051,7 @@ function gfmTableToMarkdown(options) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm-task-list-item/lib/index.js
+// node_modules/mdast-util-gfm-task-list-item/lib/index.js
 function gfmTaskListItemFromMarkdown() {
   return {
     exit: {
@@ -20124,7 +20124,7 @@ function listItemWithTaskListItem(node2, parent, state, info) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/mdast-util-gfm/lib/index.js
+// node_modules/mdast-util-gfm/lib/index.js
 function gfmFromMarkdown() {
   return [
     gfmAutolinkLiteralFromMarkdown(),
@@ -20146,7 +20146,7 @@ function gfmToMarkdown(options) {
   };
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
+// node_modules/micromark-extension-gfm-autolink-literal/lib/syntax.js
 var wwwPrefix = {
   tokenize: tokenizeWwwPrefix,
   partial: true
@@ -20488,7 +20488,7 @@ function previousUnbalanced(events) {
   return result;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-footnote/lib/syntax.js
+// node_modules/micromark-extension-gfm-footnote/lib/syntax.js
 var indent = {
   tokenize: tokenizeIndent2,
   partial: true
@@ -20763,7 +20763,7 @@ function tokenizeIndent2(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
+// node_modules/micromark-extension-gfm-strikethrough/lib/syntax.js
 function gfmStrikethrough(options) {
   const options_ = options || {};
   let single = options_.singleTilde;
@@ -20857,7 +20857,7 @@ function gfmStrikethrough(options) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/edit-map.js
+// node_modules/micromark-extension-gfm-table/lib/edit-map.js
 var EditMap = class {
   /**
    * Create a new edit map.
@@ -20943,7 +20943,7 @@ function addImplementation(editMap, at, remove, add) {
   editMap.index.set(at, change);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/infer.js
+// node_modules/micromark-extension-gfm-table/lib/infer.js
 function gfmTableAlign(events, index2) {
   let inDelimiterRow = false;
   const align = [];
@@ -20970,7 +20970,7 @@ function gfmTableAlign(events, index2) {
   return align;
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-table/lib/syntax.js
+// node_modules/micromark-extension-gfm-table/lib/syntax.js
 function gfmTable() {
   return {
     flow: {
@@ -21361,7 +21361,7 @@ function getPoint(events, index2) {
   return event[1][side];
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
+// node_modules/micromark-extension-gfm-task-list-item/lib/syntax.js
 var tasklistCheck = {
   name: "tasklistCheck",
   tokenize: tokenizeTasklistCheck
@@ -21435,7 +21435,7 @@ function spaceThenNonSpace(effects, ok3, nok) {
   }
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/micromark-extension-gfm/index.js
+// node_modules/micromark-extension-gfm/index.js
 function gfm(options) {
   return combineExtensions([
     gfmAutolinkLiteral(),
@@ -21446,7 +21446,7 @@ function gfm(options) {
   ]);
 }
 
-// ../../../e57f/meerkat-mobkit/console/node_modules/remark-gfm/lib/index.js
+// node_modules/remark-gfm/lib/index.js
 var emptyOptions4 = {};
 function remarkGfm(options) {
   const self2 = (
