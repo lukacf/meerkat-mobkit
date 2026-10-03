@@ -381,6 +381,71 @@ describe("console typing lag benchmark", () => {
     view.unmount();
   }, 30_000);
 
+  it("renders streamed text on every third animation frame, other frames on the next, completion at once", async () => {
+    const frames = transcript(CHAT_IDENTITY, 5);
+    const transport = fakeTransport(frames);
+    seedDockedChat(1);
+    const counts = installRenderCounts();
+    const view = render(<ConsoleApp baseUrl="" transport={transport} />);
+    await settle(() => view.container.querySelectorAll(".conv-turn").length >= 5, "transcript render");
+    await flush();
+    const scheduled = new Map<number, FrameRequestCallback>();
+    const raf = window.requestAnimationFrame;
+    const caf = window.cancelAnimationFrame;
+    let nextId = -1;
+    window.requestAnimationFrame = (callback) => { const id = nextId--; scheduled.set(id, callback); return id; };
+    window.cancelAnimationFrame = (id) => { scheduled.delete(id); };
+    const animationFrame = () => act(async () => {
+      const callbacks = [...scheduled.values()];
+      scheduled.clear();
+      callbacks.forEach((callback) => callback(performance.now()));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    let seq = 0;
+    const live = (event: string, data?: unknown) => act(async () => {
+      seq += 1;
+      data ??= `token ${seq} `;
+      transport.live?.({ id: `cadence:${seq}`, event, identity: CHAT_IDENTITY, interactionId: "cadence-turn", timestampMs: 1_950_000_000_000 + seq, cursor: `console:${950_000 + seq}`, data });
+    });
+    const flushes = () => counts["LiveRenderFlush"] ?? 0;
+    try {
+      // Let mount-time refreshes settle: no render for a quiet window.
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        resetRenderCounts();
+        for (let frame = 0; frame < 3; frame += 1) await animationFrame();
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+        if (flushes() === 0 && scheduled.size === 0) break;
+      }
+      resetRenderCounts();
+      await live("text_delta");
+      await live("text_delta");
+      await animationFrame();
+      await animationFrame();
+      expect(flushes()).toBe(0);
+      await animationFrame();
+      expect(flushes()).toBe(1);
+      expect(view.container.textContent).toContain(`token ${seq}`);
+      // Any other frame ends the text cadence: it renders on the next frame.
+      await live("text_delta");
+      await animationFrame();
+      await live("tool_call_requested", { id: "call-1", name: "read_file", args: {} });
+      expect(flushes()).toBe(1);
+      await animationFrame();
+      expect(flushes()).toBe(2);
+      // A stream's completion renders without waiting for a frame.
+      await live("text_delta");
+      await live("interaction_complete", { result: "done" });
+      expect(flushes()).toBe(3);
+      // It also replaced the paced text render that was waiting.
+      for (let frame = 0; frame < 3; frame += 1) await animationFrame();
+      expect(flushes()).toBe(3);
+    } finally {
+      window.requestAnimationFrame = raf;
+      window.cancelAnimationFrame = caf;
+      view.unmount();
+    }
+  }, 30_000);
+
   it("flushes coalesced frames on a bounded timer while the tab is hidden", async () => {
     const frames = transcript(CHAT_IDENTITY, 5);
     const transport = fakeTransport(frames);

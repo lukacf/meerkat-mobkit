@@ -848,6 +848,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   active-run frames read per token and fails on more than 0.05 day-label
   formats per streamed token.
 
+- Console: streamed text renders on every third animation frame instead of
+  every frame, as a React transition. A frame that only adds streamed text
+  waits for the third animation frame (counted in frames, so the pace slows
+  with the frame rate instead of fighting it) and commits as a transition,
+  which a keystroke always preempts. Any other frame still renders on the
+  next animation frame, and a stream's completion (`text_complete`, a run or
+  interaction terminal, or a terminal turn) renders at once. In the typing
+  harness the console renders about 19 times per second while a reply
+  streams instead of about once per token, and main-thread time per streamed
+  token falls by about a third. `npm run perf:typing:browser` fails on more
+  than 25 console renders per second while streaming.
+
 - Console and example acceptance fixtures no longer race other processes for
   their port. Harnesses reserved a free port, closed it and handed the number
   to the fixture, which bound it later; anything on the host could take it in
