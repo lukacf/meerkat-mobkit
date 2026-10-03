@@ -3189,9 +3189,56 @@ var refused = () => ({
   title: "Permission denied",
   detail: "This action is not permitted for this request. The agent can continue with permitted work."
 });
+var confinementDetails = {
+  invalid_requirement: "The confinement requirement is invalid.",
+  invalid_launch: "The confined process launch is invalid.",
+  unsupported_requirement: "This backend does not support the required confinement.",
+  backend_unavailable: "The required confinement backend is unavailable.",
+  preparation_failed: "Confined process preparation failed."
+};
+var hookReasons = {
+  policy_violation: "Policy violation",
+  safety_violation: "Safety violation",
+  schema_violation: "Schema violation",
+  timeout: "Timeout",
+  runtime_error: "Runtime error"
+};
+function identifier2(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+function confinementFeedback(value, toolCallId) {
+  if (typeof value !== "string" || !Object.hasOwn(confinementDetails, value)) return null;
+  const refusal = value;
+  return {
+    kind: "confinement-refused",
+    title: "Action could not start",
+    detail: `${confinementDetails[refusal]} This action did not run. The agent can continue with other work.`,
+    toolCallId,
+    confinementRefusal: refusal
+  };
+}
 function operationFeedbackFromFrame(frame) {
   const data = record2(frame.data);
   if (!data) return null;
+  if (frame.event === "hook_launch_refused" && data.point === "pre_tool_execution") {
+    const toolCallId = identifier2(data.tool_use_id);
+    const hookId = identifier2(data.hook_id);
+    const reason = record2(data.reason);
+    if (!toolCallId || !hookId || !reason) return null;
+    if (reason.reason_code === "confinement_refused") {
+      return confinementFeedback(reason.refusal, toolCallId);
+    }
+    if (reason.reason_code === "execution_failed" && typeof reason.message === "string") {
+      return {
+        kind: "hook-launch-failed",
+        title: "Hook could not start",
+        detail: "The hook could not start, so this action did not run. The agent can continue with other work.",
+        toolCallId,
+        hookId
+      };
+    }
+    return null;
+  }
   if (frame.event === "operation_observation_failed" && data.phase === "outcome" && typeof data.operation_id === "string" && data.operation_id.length > 0 && data.operation_id.length <= 256) {
     return {
       kind: "audit-unavailable",
@@ -3211,7 +3258,28 @@ function operationFeedbackFromFrame(frame) {
     const block = record2(data.content[0]);
     if (block?.type !== "text" || typeof block.text !== "string") return null;
     try {
-      if (record2(JSON.parse(block.text))?.error === "operation_refused") return refused();
+      const payload = record2(JSON.parse(block.text));
+      if (payload?.error === "operation_refused") return refused();
+      const toolCallId = identifier2(data.tool_call_id ?? data.id);
+      if (!toolCallId) return null;
+      const detail = record2(payload?.data);
+      if (payload?.error === "confinement_refused") {
+        return confinementFeedback(detail?.refusal, toolCallId);
+      }
+      if (payload?.error === "hook_denied" && detail?.point === "pre_tool_execution") {
+        const hookId = identifier2(detail.hook_id);
+        const reason = detail.reason_code;
+        if (!hookId || typeof reason !== "string" || !Object.hasOwn(hookReasons, reason)) return null;
+        const hookReasonCode = reason;
+        return {
+          kind: "hook-denied",
+          title: "Action blocked by hook",
+          detail: `A hook denied this action (${hookReasons[hookReasonCode]}). The agent can continue with other work.`,
+          toolCallId,
+          hookId,
+          hookReasonCode
+        };
+      }
     } catch {
     }
   }
@@ -3401,7 +3469,7 @@ function reconcileAssistantMessageFrames(frames) {
 function record3(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-function identifier2(value) {
+function identifier3(value) {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
 }
 function ordinal(value) {
@@ -3508,10 +3576,10 @@ function consoleCursor(value) {
 }
 function originOf(message) {
   const origin = record3(message?.runtime_origin);
-  return origin && identifier2(origin.session_id) && identifier2(origin.run_id) && identifier2(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
+  return origin && identifier3(origin.session_id) && identifier3(origin.run_id) && identifier3(origin.input_id) && ordinal(origin.append_ordinal) ? origin : null;
 }
 function scopeOf(frame) {
-  return identifier2(frame.runtimeKey) && identifier2(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
+  return identifier3(frame.runtimeKey) && identifier3(frame.sessionId) ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
 }
 function logicalKey(frame, origin) {
   return `runtime-notice:${JSON.stringify([
@@ -3548,7 +3616,7 @@ function noticeSnapshot(frame) {
   const settled = /* @__PURE__ */ new Set();
   for (const value of data.settled_attempts) {
     const attempt = record3(value);
-    if (!attempt || !identifier2(attempt.run_id) || !identifier2(attempt.input_id)) return null;
+    if (!attempt || !identifier3(attempt.run_id) || !identifier3(attempt.input_id)) return null;
     settled.add(attemptKey(scope, attempt.run_id, attempt.input_id));
   }
   let historyPositions;
@@ -3558,7 +3626,7 @@ function noticeSnapshot(frame) {
     for (const value of data.history_positions) {
       const row = record3(value);
       const position3 = positionFromCursor(frame.sessionId, row?.source_cursor);
-      if (!row || !identifier2(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
+      if (!row || !identifier3(row.frame_id) || !position3 || historyPositions.has(row.frame_id)) return null;
       historyPositions.set(row.frame_id, position3);
     }
   }
@@ -3568,7 +3636,7 @@ function noticeSnapshot(frame) {
   if (sparseHistoryPositions) {
     if (!historyPositions || !Array.isArray(data.removed_history_frame_ids)) return null;
     for (const id of data.removed_history_frame_ids) {
-      if (!identifier2(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
+      if (!identifier3(id) || removedHistoryFrameIds.has(id) || historyPositions.has(id)) return null;
       removedHistoryFrameIds.add(id);
     }
   } else if (data.removed_history_frame_ids !== void 0) return null;
@@ -3669,7 +3737,7 @@ function positionFromCursor(sessionId, sourceCursor) {
   return parts.map((part) => /^\d+$/.test(part) ? Number(part) : part);
 }
 function canonicalPosition(frame) {
-  return frame.sourceKind === "session_history" && identifier2(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
+  return frame.sourceKind === "session_history" && identifier3(frame.sessionId) ? positionFromCursor(frame.sessionId, frame.sourceCursor) : void 0;
 }
 function sourceSequence(frame) {
   const value = record3(frame.data)?.source_sequence;
@@ -3711,7 +3779,7 @@ function toolCounterpartKey(item) {
   if (!call && !result) return null;
   const data = record3(item.frame.data);
   const id = data?.tool_call_id ?? data?.id;
-  return identifier2(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
+  return identifier3(id) ? JSON.stringify([item.scope, call ? "call" : "result", id]) : null;
 }
 function userCounterpartKey(item) {
   const id = item.frame.interactionId;
@@ -3803,8 +3871,8 @@ function reconcileRuntimeAppendFrames(frames) {
   for (const frame of frames) {
     if (frame.event !== "boundary_appends_discarded" || frame.sourceKind !== "console_event") continue;
     const data = record3(frame.data), scope = scopeOf(frame);
-    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier2(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
-    for (const input of data.input_ids) if (identifier2(input)) discarded.add(attemptKey(scope, data.run_id, input));
+    if (!scope || data?.session_id !== frame.sessionId || data?.run_id !== frame.runId || !identifier3(data?.run_id) || !Array.isArray(data?.input_ids)) continue;
+    for (const input of data.input_ids) if (identifier3(input)) discarded.add(attemptKey(scope, data.run_id, input));
   }
   const nodes = [];
   const candidates = /* @__PURE__ */ new Map();
@@ -3824,7 +3892,7 @@ function reconcileRuntimeAppendFrames(frames) {
     const observed = snapshot && cursor !== null && cursor <= snapshot.observedThrough;
     if (frame.event === "boundary_append_applied") {
       if (!Array.isArray(data?.notices) || !data.notices.length) continue;
-      if (frame.sourceKind !== "console_event" || !scope || !identifier2(frame.runId) || data.run_id !== frame.runId || !identifier2(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
+      if (frame.sourceKind !== "console_event" || !scope || !identifier3(frame.runId) || data.run_id !== frame.runId || !identifier3(data.input_id) || !ordinal(data.append_count) || !ordinal(data.transcript_start)) continue;
       for (const value of data.notices) {
         const message = record3(value), origin = originOf(message);
         if (!message || !origin || origin.session_id !== frame.sessionId || origin.run_id !== frame.runId || origin.input_id !== data.input_id || origin.append_ordinal >= data.append_count || !ordinal(data.transcript_start + origin.append_ordinal)) continue;
@@ -12312,7 +12380,7 @@ var titleBefore = {
 };
 function tokenizeDefinition(effects, ok3, nok) {
   const self2 = this;
-  let identifier3;
+  let identifier4;
   return start2;
   function start2(code4) {
     effects.enter("definition");
@@ -12331,7 +12399,7 @@ function tokenizeDefinition(effects, ok3, nok) {
     )(code4);
   }
   function labelAfter(code4) {
-    identifier3 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
+    identifier4 = normalizeIdentifier(self2.sliceSerialize(self2.events[self2.events.length - 1][1]).slice(1, -1));
     if (code4 === 58) {
       effects.enter("definitionMarker");
       effects.consume(code4);
@@ -12365,7 +12433,7 @@ function tokenizeDefinition(effects, ok3, nok) {
   function afterWhitespace(code4) {
     if (code4 === null || markdownLineEnding(code4)) {
       effects.exit("definition");
-      self2.parser.defined.push(identifier3);
+      self2.parser.defined.push(identifier4);
       return ok3(code4);
     }
     return nok(code4);
@@ -20418,7 +20486,7 @@ function tokenizeGfmFootnoteCall(effects, ok3, nok) {
 function tokenizeDefinitionStart(effects, ok3, nok) {
   const self2 = this;
   const defined = self2.parser.gfmFootnotes || (self2.parser.gfmFootnotes = []);
-  let identifier3;
+  let identifier4;
   let size = 0;
   let data;
   return start2;
@@ -20454,7 +20522,7 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
     if (code4 === 93) {
       effects.exit("chunkString");
       const token = effects.exit("gfmFootnoteDefinitionLabelString");
-      identifier3 = normalizeIdentifier(self2.sliceSerialize(token));
+      identifier4 = normalizeIdentifier(self2.sliceSerialize(token));
       effects.enter("gfmFootnoteDefinitionLabelMarker");
       effects.consume(code4);
       effects.exit("gfmFootnoteDefinitionLabelMarker");
@@ -20481,8 +20549,8 @@ function tokenizeDefinitionStart(effects, ok3, nok) {
       effects.enter("definitionMarker");
       effects.consume(code4);
       effects.exit("definitionMarker");
-      if (!defined.includes(identifier3)) {
-        defined.push(identifier3);
+      if (!defined.includes(identifier4)) {
+        defined.push(identifier4);
       }
       return factorySpace(effects, whitespaceAfter, "gfmFootnoteDefinitionWhitespace");
     }
@@ -22546,6 +22614,10 @@ function OperationFeedbackView({ feedback, createdAt }) {
         feedback.operationId ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "cc-operation-feedback__reference", children: [
           "Operation ",
           feedback.operationId
+        ] }) : null,
+        feedback.toolCallId ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "cc-operation-feedback__reference", children: [
+          "Call ",
+          feedback.toolCallId
         ] }) : null
       ]
     }
@@ -28775,7 +28847,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
         frame.runId,
         frame.interactionId,
         operationFeedback.kind,
-        operationFeedback.operationId ?? parseToolCallId(frame) ?? entryId
+        operationFeedback.operationId ?? operationFeedback.toolCallId ?? parseToolCallId(frame) ?? entryId
       ]);
       if (!emittedOperationFeedback.has(key)) {
         emittedOperationFeedback.add(key);
