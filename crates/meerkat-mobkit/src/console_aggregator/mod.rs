@@ -6397,11 +6397,11 @@ fn arm_drain_redrive_with(
             // change, a member that is no longer bound to the session and live
             // will not drain it: read what is durable now.
             if std::mem::take(&mut lifecycle_changed)
-                && !assistant_history_refresh::member_still_progressing(
+                && !Box::pin(assistant_history_refresh::member_still_progressing(
                     &target.entry,
                     &target.record,
                     &session_id,
-                )
+                ))
                 .await
             {
                 break true;
@@ -6442,8 +6442,12 @@ fn arm_drain_redrive_with(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&retry_key);
         if fire
-            && let Err(error) =
-                run_targeted_session_history_backfill(redrive_inner, target, false).await
+            && let Err(error) = Box::pin(run_targeted_session_history_backfill(
+                redrive_inner,
+                target,
+                false,
+            ))
+            .await
         {
             tracing::warn!(error = %error, "console drained assistant-history re-drive failed");
         }
@@ -6490,8 +6494,12 @@ fn arm_epoch_redrive(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&retry_key);
         if runtime_entry_is_current(&redrive_inner, &target.entry)
-            && let Err(error) =
-                run_targeted_session_history_backfill(redrive_inner, target, true).await
+            && let Err(error) = Box::pin(run_targeted_session_history_backfill(
+                redrive_inner,
+                target,
+                true,
+            ))
+            .await
         {
             tracing::warn!(error = %error, "console moved-epoch session-history re-drive failed");
         }

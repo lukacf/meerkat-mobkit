@@ -140,7 +140,11 @@ pub(super) async fn observe(
     observe_with(
         requested,
         session_id,
-        || read_member_status(entry, record, session_id, deadline, false),
+        || {
+            Box::pin(read_member_status(
+                entry, record, session_id, deadline, false,
+            ))
+        },
         || async {
             tokio::time::timeout_at(deadline, entry.runtime.session_commit_pending(session_id))
                 .await
@@ -150,7 +154,7 @@ pub(super) async fn observe(
         || async {
             tokio::time::timeout_at(
                 deadline,
-                entry.runtime.session_has_active_inputs(session_id),
+                Box::pin(entry.runtime.session_has_active_inputs(session_id)),
             )
             .await
             .ok()
@@ -251,7 +255,7 @@ pub(super) async fn member_still_progressing(
 ) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     matches!(
-        read_member_status(entry, record, session_id, deadline, true).await,
+        Box::pin(read_member_status(entry, record, session_id, deadline, true)).await,
         MemberStatusRead::Observed(current, MemberRunState::Idle | MemberRunState::RunOpen)
             if current == session_id
     )
@@ -287,10 +291,12 @@ pub(super) enum DrainState {
 impl SessionDrainTracker {
     pub(super) async fn state(&mut self, entry: &RuntimeEntry, session_id: &str) -> DrainState {
         let watched = self.watched.iter().copied().collect::<Vec<_>>();
-        match entry
-            .runtime
-            .session_drain_observation(session_id, &watched)
-            .await
+        match Box::pin(
+            entry
+                .runtime
+                .session_drain_observation(session_id, &watched),
+        )
+        .await
         {
             crate::mob_handle_runtime::SessionDrainRead::Observed(observation) => {
                 self.watched = observation
