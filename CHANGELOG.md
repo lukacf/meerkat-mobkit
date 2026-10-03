@@ -902,8 +902,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   perf:typing:browser` fails above 3,000 mounted elements and adds an
   equivalence run: the same history windowed and unwindowed
   (`windowed=false`) must match in scroll height, visible rows and their
-  offsets, turn rail and pixels at 17 scroll positions including after a
-  resize, and a selection, a focused control, an opened tool call and a rail
+  offsets, turn rail and pixels (exactly: the compared pages render local
+  fonts, without LCD text or subpixel glyph positions) at 17 scroll
+  positions including after a resize, and a selection, a focused control, an opened tool call and a rail
   jump must survive.
 
 - Console: a transcript row keeps what the reader opened if it unmounts and

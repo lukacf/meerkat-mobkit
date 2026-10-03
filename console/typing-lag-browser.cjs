@@ -619,29 +619,26 @@ function decodePng(buffer) {
   return { width, height, channels, pixels };
 }
 
-/// Pixels that differ at all, the largest channel difference, and pixels
-/// that differ by more than `visible` levels in any channel. One level is
-/// tolerated for renderer noise. Every equivalence run measures that noise
-/// floor again (noiseFloor) and fails if it exceeds the tolerance, so the
-/// tolerance cannot silently hide a growing difference. With the console's
-/// web fonts blocked (openFilled) and text rastered as below, identical
-/// pages measure 0 pixels here; with LCD text and subpixel glyph positions,
-/// Chromium rasterised text differently around scrolling, about ten pixels
-/// at one level.
-const NOISE_FLOOR_MAX_PIXELS = 100;
+/// Pixels that differ at all and the largest channel difference. Compared
+/// pages must be pixel-identical: with the console's web fonts blocked
+/// (openFilled) and text rastered as below, two identical pages measure 0
+/// pixels. Every equivalence run measures that noise floor again
+/// (noiseFloor), so a renderer that stops being pixel-stable fails there,
+/// by name, rather than in the windowed comparison. With network fonts, LCD
+/// text and subpixel glyph positions, identical pages differed by about ten
+/// pixels at one level, and by hundreds when a font swap raced the capture.
 const PIXEL_STABLE_TEXT = ["--disable-lcd-text", "--disable-font-subpixel-positioning"];
-function differingPixels(left, right, visible = 1) {
+function differingPixels(left, right) {
   const a = decodePng(left), b = decodePng(right);
-  if (a.width !== b.width || a.height !== b.height) return { any: Infinity, visible: Infinity, maxDelta: 255 };
-  let any = 0, over = 0, maxDelta = 0;
+  if (a.width !== b.width || a.height !== b.height) return { any: Infinity, maxDelta: 255 };
+  let any = 0, maxDelta = 0;
   for (let i = 0; i < a.width * a.height; i += 1) {
     let delta = 0;
     for (let k = 0; k < Math.min(a.channels, b.channels, 3); k += 1) delta = Math.max(delta, Math.abs(a.pixels[i * a.channels + k] - b.pixels[i * b.channels + k]));
     if (delta > 0) any += 1;
-    if (delta > visible) over += 1;
     maxDelta = Math.max(maxDelta, delta);
   }
-  return { any, visible: over, maxDelta };
+  return { any, maxDelta };
 }
 
 async function openFilled(browser, baseUrl, turns, windowed) {
@@ -691,8 +688,9 @@ function transcriptState(page) {
 /// visible rows and their offsets, and a pixel-identical transcript.
 const contentClip = (state) => ({ x: state.box.x + state.contentLeft + 1, y: state.box.y, width: state.box.width - state.contentLeft - 1, height: state.box.height });
 
-/// Two identical unwindowed pages compared the same way: the renderer's own
-/// noise, which bounds what the windowed comparison may tolerate.
+/// Two identical unwindowed pages compared the same way: the renderer must be
+/// pixel-stable (0 differing pixels) before the windowed comparison means
+/// anything.
 async function noiseFloor(left, right, turns, clipOf, positions) {
   const failures = [];
   let worst = { any: 0, maxDelta: 0 };
@@ -702,13 +700,13 @@ async function noiseFloor(left, right, turns, clipOf, positions) {
     await settled(left); await settled(right);
     const clip = clipOf(await transcriptState(right));
     const [a, b] = [await left.screenshot({ clip }), await right.screenshot({ clip })];
-    const diff = a.equals(b) ? { any: 0, visible: 0, maxDelta: 0 } : differingPixels(a, b);
+    const diff = a.equals(b) ? { any: 0, maxDelta: 0 } : differingPixels(a, b);
     worst = { any: Math.max(worst.any, diff.any), maxDelta: Math.max(worst.maxDelta, diff.maxDelta) };
     total += diff.any;
-    if (diff.visible > 0 || diff.any > NOISE_FLOOR_MAX_PIXELS) {
+    if (diff.any > 0) {
       await fs.writeFile(path.join(outDir, `noise-${turns}-${y}-a.png`), a);
       await fs.writeFile(path.join(outDir, `noise-${turns}-${y}-b.png`), b);
-      failures.push(`turns=${turns} scrollTop=${y}: two identical unwindowed pages differ (${diff.any} pixels, max channel delta ${diff.maxDelta}); the renderer noise floor grew past the equivalence tolerance (screenshots in ${outDir})`);
+      failures.push(`turns=${turns} scrollTop=${y}: two identical unwindowed pages differ (${diff.any} pixels, max channel delta ${diff.maxDelta}); the renderer is no longer pixel-stable (screenshots in ${outDir})`);
     }
   }
   process.stdout.write(`[typing-lag-browser] noise floor turns=${turns}: identical pages differ by ${total} pixels over ${positions.length} positions (at most ${worst.any} per position), max channel delta ${worst.maxDelta}\n`);
@@ -729,7 +727,7 @@ async function equivalence(browser, baseUrl, turns) {
   await twin.context().close();
   let checked = 0;
   let maxElements = 0;
-  const antialias = { any: 0, maxDelta: 0 };
+  const differing = { any: 0, maxDelta: 0 };
   for (const y of positions) {
     if (y === "resize") {
       for (const page of [windowed, oracle]) await page.setViewportSize({ width: 1180, height: 820 });
@@ -765,13 +763,11 @@ async function equivalence(browser, baseUrl, turns) {
     const [shotA, shotB] = [await windowed.screenshot({ clip }), await oracle.screenshot({ clip })];
     if (!shotA.equals(shotB)) {
       const diff = differingPixels(shotA, shotB);
-      antialias.any += diff.any;
-      antialias.maxDelta = Math.max(antialias.maxDelta, diff.maxDelta);
-      if (diff.visible > 0) {
-        await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-windowed.png`), shotA);
-        await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-oracle.png`), shotB);
-        failures.push(`${where}: ${diff.visible} pixels differ by more than one level, max channel delta ${diff.maxDelta} (screenshots in ${outDir})`);
-      }
+      differing.any += diff.any;
+      differing.maxDelta = Math.max(differing.maxDelta, diff.maxDelta);
+      await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-windowed.png`), shotA);
+      await fs.writeFile(path.join(outDir, `equivalence-${turns}-${y}-oracle.png`), shotB);
+      failures.push(`${where}: ${diff.any} pixels differ, max channel delta ${diff.maxDelta} (screenshots in ${outDir})`);
     }
     checked += 1;
   }
@@ -779,7 +775,7 @@ async function equivalence(browser, baseUrl, turns) {
   failures.push(...await pinning(windowed, turns));
   failures.push(...await feedNavigation(windowed, turns));
   failures.push(...await inAppFind(windowed, turns));
-  process.stdout.write(`[typing-lag-browser] equivalence turns=${turns}: ${checked} scroll positions, windowed elements<=${maxElements} mounted turns=${(await transcriptState(windowed)).mountedTurns} vs unwindowed elements=${base.elements} turns=${base.mountedTurns}; pixels differing by one level ${antialias.any} (max channel delta ${antialias.maxDelta})\n`);
+  process.stdout.write(`[typing-lag-browser] equivalence turns=${turns}: ${checked} scroll positions, windowed elements<=${maxElements} mounted turns=${(await transcriptState(windowed)).mountedTurns} vs unwindowed elements=${base.elements} turns=${base.mountedTurns}; pixels differing ${differing.any} (max channel delta ${differing.maxDelta})\n`);
   if (MAX_MOUNTED_ELEMENTS !== null && maxElements > MAX_MOUNTED_ELEMENTS) failures.push(`turns=${turns}: windowed transcript mounted ${maxElements} elements > ${MAX_MOUNTED_ELEMENTS}`);
   await windowed.context().close();
   await oracle.context().close();
