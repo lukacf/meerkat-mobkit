@@ -9,6 +9,7 @@ import {
   TURN_RAIL_MAX_TICKS,
   TURN_RAIL_TICK_PX,
   __chatPaneTest,
+  transcriptFindMatches,
   windowTurnRail,
 } from "./ChatPane";
 import { normalizePendingApproval, type PendingApprovalSnapshot } from "../../../packages/console-core/src/pending-approvals";
@@ -38,6 +39,20 @@ function message(args: {
     ...(args.runDurationMs !== undefined ? { runDurationMs: args.runDurationMs } : {}),
   };
 }
+
+test("find in transcript matches every loaded message's text, case-insensitively, in order", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({ id: "q1", role: "user", createdAt: "2026-05-20T04:58:01.000Z", text: "Where is the Retry policy?" }),
+    message({ id: "a1", role: "assistant", createdAt: "2026-05-20T04:58:05.000Z", text: "The retry policy lives in config." }),
+    message({ id: "q2", role: "user", createdAt: "2026-05-20T04:59:01.000Z", text: "Thanks." }),
+  ]);
+  const rows = (query: string) => transcriptFindMatches(messages, query);
+  const rowOf = (id: string) => messages.find((entry) => entry.id === id)!.scrollRowId ?? id;
+  assert.deepEqual(rows("retry policy"), [rowOf("q1"), rowOf("a1")]);
+  assert.deepEqual(rows("  THANKS "), [rowOf("q2")]);
+  assert.deepEqual(rows(""), []);
+  assert.deepEqual(rows("absent"), []);
+});
 
 test("chat pane does not count spawn scaffolding as user work", () => {
   const messages = __chatPaneTest.buildChatMessages([

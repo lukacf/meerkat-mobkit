@@ -860,6 +860,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token falls by about a third. `npm run perf:typing:browser` fails on more
   than 25 console renders per second while streaming.
 
+- Console: Find in transcript searches every loaded message, including turns
+  the windowed transcript keeps out of the DOM where the browser's
+  find-in-page cannot reach. Open it from the search button beside Copy
+  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
+  step through matching rows (newest first), each brought into view (and
+  revealed when it is behind Show earlier messages) and highlighted with
+  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
+
 - Console: browser find-in-page and keyboard and screen-reader navigation
   still reach the windowed transcript. Measured turns within 20 turns of the
   mounted window stay in the DOM, parked as `hidden="until-found"` at their
@@ -894,8 +902,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   perf:typing:browser` fails above 3,000 mounted elements and adds an
   equivalence run: the same history windowed and unwindowed
   (`windowed=false`) must match in scroll height, visible rows and their
-  offsets, turn rail and pixels at 17 scroll positions including after a
-  resize, and a selection, a focused control, an opened tool call and a rail
+  offsets, turn rail and pixels (exactly: the compared pages render local
+  fonts, without LCD text or subpixel glyph positions) at 17 scroll
+  positions including after a resize, and a selection, a focused control, an opened tool call and a rail
   jump must survive.
 
 - Console: a transcript row keeps what the reader opened if it unmounts and

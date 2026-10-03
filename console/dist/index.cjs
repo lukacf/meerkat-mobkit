@@ -38943,6 +38943,105 @@ function chatTurnPreview(turn) {
   }
   return { title, body };
 }
+function transcriptFindMatches(messages, query) {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  const rows = [];
+  for (const message of messages) {
+    const text8 = message.kind === "event" || message.kind === "origin" ? `${message.source?.sentence ?? ""} ${msgCopyText(message)}` : msgCopyText(message);
+    if (text8.toLocaleLowerCase().includes(needle)) rows.push(message.scrollRowId ?? message.id);
+  }
+  return rows;
+}
+var FIND_HIGHLIGHT = "transcript-find";
+function highlightRow(body, rowId, query) {
+  const registry = globalThis.CSS?.highlights;
+  const HighlightCtor = globalThis.Highlight;
+  const row = [...body.querySelectorAll("[data-conversation-row-id]")].find((candidate) => candidate.dataset.conversationRowId === rowId);
+  if (!row) return false;
+  if (!registry || !HighlightCtor) return true;
+  const needle = query.trim().toLocaleLowerCase();
+  const ranges = [];
+  const walker = body.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  for (let node2 = walker.nextNode(); node2; node2 = walker.nextNode()) {
+    const text8 = (node2.textContent ?? "").toLocaleLowerCase();
+    for (let at = text8.indexOf(needle); needle && at >= 0; at = text8.indexOf(needle, at + needle.length)) {
+      const range = body.ownerDocument.createRange();
+      range.setStart(node2, at);
+      range.setEnd(node2, at + needle.length);
+      ranges.push(range);
+    }
+  }
+  registry.set(FIND_HIGHLIGHT, new HighlightCtor(...ranges));
+  return true;
+}
+function clearFindHighlight() {
+  globalThis.CSS?.highlights?.delete(FIND_HIGHLIGHT);
+}
+function TranscriptFindBar({
+  identity,
+  messages,
+  bodyRef,
+  onJump,
+  onClose
+}) {
+  const [query, setQuery] = import_react40.default.useState("");
+  const matches = import_react40.default.useMemo(() => transcriptFindMatches(messages, query), [messages, query]);
+  const [current, setCurrent] = import_react40.default.useState(-1);
+  import_react40.default.useEffect(() => {
+    setCurrent(matches.length ? matches.length - 1 : -1);
+  }, [query]);
+  const target = current >= 0 && current < matches.length ? matches[current] : null;
+  import_react40.default.useEffect(() => {
+    if (!target) {
+      clearFindHighlight();
+      return;
+    }
+    onJump(target);
+    let frames = 0;
+    let handle2 = 0;
+    const tryHighlight = () => {
+      const body = bodyRef.current;
+      if (!body || highlightRow(body, target, query) || ++frames > 30) return;
+      handle2 = window.requestAnimationFrame(tryHighlight);
+    };
+    handle2 = window.requestAnimationFrame(tryHighlight);
+    return () => window.cancelAnimationFrame(handle2);
+  }, [target]);
+  import_react40.default.useEffect(() => clearFindHighlight, []);
+  const step = (delta) => {
+    if (!matches.length) return;
+    setCurrent((index2) => ((index2 < 0 ? 0 : index2) + delta + matches.length) % matches.length);
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__find", role: "search", "aria-label": "Find in transcript", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+      "input",
+      {
+        "aria-label": "Find in transcript",
+        autoFocus: true,
+        "data-testid": `chat-find:${identity}`,
+        onChange: (event) => setQuery(event.target.value),
+        onKeyDown: (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            step(event.shiftKey ? -1 : 1);
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        },
+        placeholder: "Find in transcript",
+        type: "search",
+        value: query
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { "aria-live": "polite", className: "conv__find-count", "data-testid": `chat-find-count:${identity}`, children: query.trim() ? matches.length ? `${current + 1} of ${matches.length}` : "No matches" : "" }),
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("button", { "aria-label": "Previous match", disabled: !matches.length, onClick: () => step(-1), type: "button", children: "\u2191" }),
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("button", { "aria-label": "Next match", disabled: !matches.length, onClick: () => step(1), type: "button", children: "\u2193" }),
+    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("button", { "aria-label": "Close find", onClick: onClose, type: "button", children: "\xD7" })
+  ] });
+}
 function transcriptCopyText(messages) {
   return messages.map((message) => {
     const text8 = message.kind === "event" || message.kind === "origin" ? message.source?.sentence || msgCopyText(message) : msgCopyText(message);
@@ -39605,7 +39704,8 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
   onApprovalDecision,
   conversationId,
   turnWindow,
-  onTranscriptKeyDown
+  onTranscriptKeyDown,
+  onOpenFind
 }) {
   countRender("TranscriptView");
   const windowedTurns = import_react40.default.useMemo(
@@ -39673,14 +39773,27 @@ var TranscriptView = import_react40.default.memo(function TranscriptView2({
       role: "feed",
       tabIndex: 0,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-          CopyInlineButton,
-          {
-            className: "msg__copy--transcript",
-            label: "Copy transcript",
-            getText: getTranscriptText
-          }
-        ),
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__tools", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+            "button",
+            {
+              "aria-label": "Find in transcript",
+              className: "msg__copy",
+              "data-testid": `chat-find-open:${identity}`,
+              onClick: onOpenFind,
+              title: "Find in transcript (Ctrl+Shift+F)",
+              type: "button",
+              children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(Icon, { name: "i-search" })
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+            CopyInlineButton,
+            {
+              label: "Copy transcript",
+              getText: getTranscriptText
+            }
+          )
+        ] }),
         windowStart > 0 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
           "button",
           {
@@ -40177,6 +40290,18 @@ function ChatPane({
   windowStartRef.current = windowStart;
   const revealEarlierRef = import_react40.default.useRef(revealEarlier);
   revealEarlierRef.current = revealEarlier;
+  const [findOpen, setFindOpen] = import_react40.default.useState(false);
+  const openFind = import_react40.default.useCallback(() => setFindOpen(true), []);
+  const closeFind = import_react40.default.useCallback(() => {
+    setFindOpen(false);
+    bodyRef.current?.focus();
+  }, []);
+  const jumpToFoundRef = import_react40.default.useRef(() => {
+  });
+  jumpToFoundRef.current = (rowId) => {
+    scroll.jumpToRow(rowId);
+  };
+  const jumpToFound = import_react40.default.useCallback((rowId) => jumpToFoundRef.current(rowId), []);
   const turnsRefForKeys = import_react40.default.useRef(turns);
   turnsRefForKeys.current = turns;
   const turnWindowRef = import_react40.default.useRef(turnWindow);
@@ -40472,184 +40597,208 @@ function ChatPane({
       publishDraft();
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationPresentationProvider, { labels: presentationLabels, viewportKey, autoFold: scroll.mode === "following-end", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__head-frame", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: `conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__avatar", children: initial }),
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__target", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__title", title: identity, children: agentLabel }),
-        headerVariant === "full" ? /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__identity", children: [
-          identity,
-          agent?.role ? ` \xB7 ${agent.role}` : ""
-        ] }) : null
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__actions", children: [
-        { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
-        { id: "stop-run", label: stopRunLabel, icon: "i-stop", onClick: onStopRun },
-        { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : void 0 },
-        { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : void 0 }
-      ].filter((action) => action.onClick).map((action) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
-        "button",
-        {
-          type: "button",
-          className: "conv__action",
-          onClick: action.onClick,
-          "aria-label": action.label,
-          title: `${action.label} - ${identity}`,
-          "data-testid": `conv-action:${action.id}`,
-          children: [
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "conv__action-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(Icon, { name: action.icon }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "conv__action-label", children: action.label })
-          ]
-        },
-        action.id
-      )) })
-    ] }) }),
-    runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__notice", role: "status", "data-testid": `run-stop-notice:${identity}`, children: runStopNotice }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-      TranscriptView,
-      {
-        identity,
-        agentLabel,
-        turns,
-        messages,
-        phase: phase2,
-        liveSpeech: visibleLiveSpeech,
-        lastAgentMessageId,
-        workGraphActions,
-        isLoadingHistory,
-        hasOlderHistory,
-        loadingOlderHistory,
-        windowStart,
-        onRevealEarlier: revealEarlier,
-        bodyRef,
-        onScroll: onBodyScroll,
-        onRequestOlderHistory: requestOlderHistory,
-        markdownUrlPolicy,
-        conversationId,
-        approvalSnapshot,
-        onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0,
-        turnWindow,
-        onTranscriptKeyDown
-      }
-    ),
-    turnRail,
-    scroll.revealingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__history-status", role: "status", children: "Restoring earlier position..." }) : null,
-    scroll.missingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__history-status", role: "status", children: "Earlier position is unavailable. Load older history to see more." }) : null,
-    onQuoteSelection ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(QuoteSelectionAction, { viewportRef: bodyRef, onQuote: onQuoteSelection, onError: setQuoteError, disabled: readOnly }, `${identity}:${conversationId ?? ""}:${viewportKey?.authority ?? ""}`) : null,
-    scroll.awayFromEnd ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(JumpToLatest, { onClick: scroll.jumpToLatest, working: phase2 !== null }) : null,
-    stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer", children: [
-      quoteError ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("p", { role: "alert", children: quoteError }) : null,
-      contextSlot,
-      voiceSlot,
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
-        "div",
-        {
-          className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
-          onDragLeave: () => setDragActive(false),
-          onDragOver: (event) => {
-            if (!canAttachImages) return;
-            event.preventDefault();
-            setDragActive(true);
-          },
-          onDrop: (event) => {
-            if (!canAttachImages) return;
-            event.preventDefault();
-            setDragActive(false);
-            const payload = collectImageTransferPayload(event.dataTransfer);
-            void imageFilesFromTransferPayload(payload).then((files) => {
-              if (files.length > 0) {
-                addFiles(files);
-              } else {
-                setAttachmentError("No usable image found");
-              }
-            });
-          },
-          onPaste: (event) => {
-            if (!canAttachImages) return;
-            const payload = collectImageTransferPayload(event.clipboardData);
-            if (imageTransferPayloadHasImage(payload)) {
-              event.preventDefault();
-              void imageFilesFromTransferPayload(payload).then((files) => {
-                if (files.length > 0) {
-                  addFiles(files);
-                } else {
-                  setAttachmentError("No usable image found");
-                }
-              });
-            }
-          },
-          children: [
-            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer__attachment", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("img", { alt: "", src: item.previewUrl }),
-              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
-            ] }, item.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
-              ComposerTextarea,
-              {
-                identity,
-                agentLabel,
-                agentRole: agent?.role ?? null,
-                initialValue: draft,
-                externalValue,
-                readOnly,
-                sendWithheld,
-                voiceActive,
-                voiceDisabled,
-                voiceChecking,
-                onVoiceToggle,
-                stagedCount: staged.length,
-                canAttachImages,
-                sending,
-                sendLabel,
-                onLiveChange,
-                onBlur: publishDraft,
-                onSubmit: submitComposer
-              }
-            )
-          ]
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationPresentationProvider, { labels: presentationLabels, viewportKey, autoFold: scroll.mode === "following-end", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+    "div",
+    {
+      className: "conv",
+      "data-testid": `chat-pane:${identity}`,
+      onKeyDown: (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          setFindOpen(true);
         }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer__footer", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { children: [
-          "To: ",
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
-        ] }),
-        voiceActive && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7 text to background agent" }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "mono", children: identity }),
-        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: agent.role })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "dot", style: {
-          background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
-        } }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: state }),
-        phase2 && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { style: { color: "var(--accent)" }, children: phase2 })
-        ] }),
-        readOnly && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "view only" })
-        ] }),
-        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "send not permitted" })
-        ] }),
-        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "model cannot see images" })
-        ] }),
-        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+      },
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__head-frame", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: `conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__avatar", children: initial }),
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__target", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__title", title: identity, children: agentLabel }),
+            headerVariant === "full" ? /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "conv__identity", children: [
+              identity,
+              agent?.role ? ` \xB7 ${agent.role}` : ""
+            ] }) : null
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__actions", children: [
+            { id: "details", label: inspectLabel, icon: "i-info", onClick: onInspect },
+            { id: "stop-run", label: stopRunLabel, icon: "i-stop", onClick: onStopRun },
+            { id: "respawn", label: respawnLabel, icon: "i-refresh", onClick: agent?.affordances?.can_respawn ? onRespawn : void 0 },
+            { id: "retire", label: retireLabel, icon: "i-archive", onClick: agent?.affordances?.can_retire ? onRetire : void 0 }
+          ].filter((action) => action.onClick).map((action) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+            "button",
+            {
+              type: "button",
+              className: "conv__action",
+              onClick: action.onClick,
+              "aria-label": action.label,
+              title: `${action.label} - ${identity}`,
+              "data-testid": `conv-action:${action.id}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "conv__action-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(Icon, { name: action.icon }) }),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "conv__action-label", children: action.label })
+              ]
+            },
+            action.id
+          )) })
+        ] }) }),
+        runStopNotice ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__notice", role: "status", "data-testid": `run-stop-notice:${identity}`, children: runStopNotice }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          TranscriptView,
+          {
+            identity,
+            agentLabel,
+            turns,
+            messages,
+            phase: phase2,
+            liveSpeech: visibleLiveSpeech,
+            lastAgentMessageId,
+            workGraphActions,
+            isLoadingHistory,
+            hasOlderHistory,
+            loadingOlderHistory,
+            windowStart,
+            onRevealEarlier: revealEarlier,
+            bodyRef,
+            onScroll: onBodyScroll,
+            onRequestOlderHistory: requestOlderHistory,
+            markdownUrlPolicy,
+            conversationId,
+            approvalSnapshot,
+            onApprovalDecision: onApprovalDecision ? stableApprovalDecision : void 0,
+            turnWindow,
+            onTranscriptKeyDown,
+            onOpenFind: openFind
+          }
+        ),
+        findOpen ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+          TranscriptFindBar,
+          {
+            identity,
+            messages,
+            bodyRef,
+            onJump: jumpToFound,
+            onClose: closeFind
+          }
+        ) : null,
+        turnRail,
+        scroll.revealingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__history-status", role: "status", children: "Restoring earlier position..." }) : null,
+        scroll.missingAnchor ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "conv__history-status", role: "status", children: "Earlier position is unavailable. Load older history to see more." }) : null,
+        onQuoteSelection ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(QuoteSelectionAction, { viewportRef: bodyRef, onQuote: onQuoteSelection, onError: setQuoteError, disabled: readOnly }, `${identity}:${conversationId ?? ""}:${viewportKey?.authority ?? ""}`) : null,
+        scroll.awayFromEnd ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(JumpToLatest, { onClick: scroll.jumpToLatest, working: phase2 !== null }) : null,
+        stackSlot,
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer", children: [
+          quoteError ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("p", { role: "alert", children: quoteError }) : null,
+          contextSlot,
+          voiceSlot,
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(
+            "div",
+            {
+              className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
+              onDragLeave: () => setDragActive(false),
+              onDragOver: (event) => {
+                if (!canAttachImages) return;
+                event.preventDefault();
+                setDragActive(true);
+              },
+              onDrop: (event) => {
+                if (!canAttachImages) return;
+                event.preventDefault();
+                setDragActive(false);
+                const payload = collectImageTransferPayload(event.dataTransfer);
+                void imageFilesFromTransferPayload(payload).then((files) => {
+                  if (files.length > 0) {
+                    addFiles(files);
+                  } else {
+                    setAttachmentError("No usable image found");
+                  }
+                });
+              },
+              onPaste: (event) => {
+                if (!canAttachImages) return;
+                const payload = collectImageTransferPayload(event.clipboardData);
+                if (imageTransferPayloadHasImage(payload)) {
+                  event.preventDefault();
+                  void imageFilesFromTransferPayload(payload).then((files) => {
+                    if (files.length > 0) {
+                      addFiles(files);
+                    } else {
+                      setAttachmentError("No usable image found");
+                    }
+                  });
+                }
+              },
+              children: [
+                staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer__attachment", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("img", { alt: "", src: item.previewUrl }),
+                  /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+                ] }, item.id)) }),
+                /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
+                  ComposerTextarea,
+                  {
+                    identity,
+                    agentLabel,
+                    agentRole: agent?.role ?? null,
+                    initialValue: draft,
+                    externalValue,
+                    readOnly,
+                    sendWithheld,
+                    voiceActive,
+                    voiceDisabled,
+                    voiceChecking,
+                    onVoiceToggle,
+                    stagedCount: staged.length,
+                    canAttachImages,
+                    sending,
+                    sendLabel,
+                    onLiveChange,
+                    onBlur: publishDraft,
+                    onSubmit: submitComposer
+                  }
+                )
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("div", { className: "composer__footer", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("span", { children: [
+              "To: ",
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+            ] }),
+            voiceActive && /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7 text to background agent" }),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "mono", children: identity }),
+            agent?.role && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: agent.role })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { className: "dot", style: {
+              background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
+            } }),
+            /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: state }),
+            phase2 && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { style: { color: "var(--accent)" }, children: phase2 })
+            ] }),
+            readOnly && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "view only" })
+            ] }),
+            !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "send not permitted" })
+            ] }),
+            !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "model cannot see images" })
+            ] }),
+            attachmentError && /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { children: "\xB7" }),
+              /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+            ] })
+          ] })
         ] })
-      ] })
-    ] })
-  ] }) });
+      ]
+    }
+  ) });
 }
 
 // src/panels/MobKitDock.tsx
