@@ -6042,6 +6042,7 @@ comms = true
                     grant_count: 1,
                 },
                 retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+                mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
             }
         }
         fn diagnostics(report: &UnifiedRuntimeShutdownReport) -> Value {
@@ -6160,6 +6161,7 @@ comms = true
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
             retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+            mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
         };
         let response = gateway_shutdown_response(json!("shutdown"), Some(&report));
         assert_eq!(response["result"]["shutdown"], true);
@@ -6199,6 +6201,7 @@ comms = true
                     grant_count: 1,
                 },
                 retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+                mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
             }
         }
 
@@ -6209,7 +6212,7 @@ comms = true
         }
 
         assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
-        let mob_quiesce_window = Duration::from_secs(10);
+        let mob_quiesce_window = meerkat_mobkit::MOB_STOP_FLOW_SETTLE_BUDGET;
         let scheduler_overhead = Duration::from_secs(10);
         assert_eq!(
             meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,

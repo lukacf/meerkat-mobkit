@@ -1275,6 +1275,13 @@ impl UnifiedRuntimeBuilder {
             }
             _ => BTreeMap::new(),
         };
+        // A restored member without its tools must not start a run before its
+        // materialization publishes them: meerkat holds its run starts from
+        // registration until the identity runtime releases the hold.
+        mob_spec.restored_members_awaiting_tools = early_customizer_tools_pending
+            .keys()
+            .map(|identity| crate::member_comms_id::mob_member_id(identity.as_str()))
+            .collect();
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,

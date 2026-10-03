@@ -2811,6 +2811,18 @@ pub trait SessionBridge: Send + Sync {
         Ok(None)
     }
 
+    /// Release the `ToolsNotPublished` run-start hold the mob build placed on
+    /// a restored member whose customizer tools were not published before the
+    /// build (#563): its tools are published now, so it may start runs.
+    /// Bridges without run-start holds have nothing to release. A member that
+    /// is not in the mob, or does not hold the reason, is a no-op.
+    async fn release_member_run_starts_for_published_tools(
+        &self,
+        _member_id: &MobAgentIdentity,
+    ) -> Result<(), BridgeError> {
+        Ok(())
+    }
+
     /// meerkat's durability verdict for the member's live registration
     /// (`MeerkatMachine::durability_reload_required`, 0.8.34), or `None` when
     /// this bridge cannot observe it.
@@ -5525,6 +5537,26 @@ impl SessionBridge for MobSessionBridge {
             .await?
             .map_err(|error| classify_reload_mob_error(&mid, error, &deadline))?;
         Ok(Some(bridge_member_reload(outcome)))
+    }
+
+    async fn release_member_run_starts_for_published_tools(
+        &self,
+        member_id: &MobAgentIdentity,
+    ) -> Result<(), BridgeError> {
+        match self
+            .handle
+            .release_member_run_starts(
+                member_id,
+                meerkat_mob::HostRunStartHoldReason::ToolsNotPublished,
+            )
+            .await
+        {
+            // Not a member of this mob: nothing holds it.
+            Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => Ok(()),
+            Err(error) => Err(BridgeError::Mob(format!(
+                "releasing the ToolsNotPublished run-start hold of {member_id} failed: {error}"
+            ))),
+        }
     }
 
     async fn member_durability(

@@ -3733,10 +3733,32 @@ impl IdentityRuntime {
         };
         let entry = registry.publish(identity, draft.local_external_tools.dispatcher());
         draft.local_external_tools = super::types::LocalExternalToolOverlay::new(entry);
-        self.customizer_tools_pending
+        let was_pending = self
+            .customizer_tools_pending
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(identity);
+            .remove(identity)
+            .is_some();
+        // The mob build held this restored member's run starts while its
+        // tools were unpublished; they are published now, so release it.
+        if was_pending && let Some(bridge) = self.bridge.as_ref() {
+            let member_id = crate::member_comms_id::mob_member_id(identity.as_str());
+            if let Err(error) = bridge
+                .release_member_run_starts_for_published_tools(&member_id)
+                .await
+            {
+                let reason = format!("customizer tools published, but {error}");
+                tracing::error!(
+                    %identity,
+                    %reason,
+                    "restored member stays held: it starts no run until the hold is released"
+                );
+                self.customizer_tools_pending
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(identity.clone(), CustomizerToolsPending { reason });
+            }
+        }
     }
 
     fn customizer_tools_pending_for(
@@ -15863,6 +15885,163 @@ mod reset_reprofile_tests {
         async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
             Ok(())
         }
+    }
+
+    /// Records the run-start hold releases the identity runtime asks for;
+    /// `fail` makes each release fail like a refused mob command.
+    #[derive(Default)]
+    struct RunStartReleaseBridge {
+        fail: bool,
+        released: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RunStartReleaseBridge {
+        fn released(&self) -> Vec<String> {
+            self.released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for RunStartReleaseBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "create not used in release test".to_string(),
+            ))
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Err(BridgeError::Mob(
+                "resume not used in release test".to_string(),
+            ))
+        }
+
+        async fn deliver_admitted(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _delivery: BridgeDelivery,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in release test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in release test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+
+        async fn release_member_run_starts_for_published_tools(
+            &self,
+            member_id: &meerkat_mob::AgentIdentity,
+        ) -> Result<(), BridgeError> {
+            self.released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(member_id.to_string());
+            if self.fail {
+                return Err(BridgeError::Mob("mob refused the release".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    /// #563 follow-up: a restored member whose early `customize_build` failed
+    /// is held by the mob build (`ToolsNotPublished`). The publication that
+    /// clears its pending record releases that hold exactly once; publishing
+    /// for an identity that was not pending releases nothing; a failed
+    /// release keeps the identity pending with the error, so a member left
+    /// held is visible in its status.
+    #[tokio::test]
+    async fn publishing_a_pending_identitys_tools_releases_its_run_start_hold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for fail in [false, true] {
+            let identity = AgentIdentity::parse("personal:alice")?;
+            let spec = durable_spec(identity.clone(), "personal");
+            let bridge = Arc::new(RunStartReleaseBridge {
+                fail,
+                ..Default::default()
+            });
+            let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "run-start-release-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge.clone()),
+                default_timeout: None,
+            });
+            runtime
+                .set_customizer_tool_registry(Some(
+                    super::super::customizer_tools::CustomizerToolRegistry::new(),
+                ))
+                .await;
+            runtime.record_customizer_tools_pending(BTreeMap::from([(
+                identity.clone(),
+                CustomizerToolsPending {
+                    reason: "pre-activation customize_build failed: host down".to_string(),
+                },
+            )]));
+            let draft = || AgentBuildDraft {
+                model: None,
+                system_prompt: None,
+                additional_instructions: spec.additional_instructions.clone(),
+                labels: spec.labels.clone(),
+                app_context: spec.context.clone(),
+                external_tools: Vec::new(),
+                local_external_tools: Default::default(),
+                provider_params: None,
+                compaction_curator: Default::default(),
+            };
+            runtime
+                .publish_customizer_tools(&identity, &mut draft())
+                .await;
+            let member = crate::member_comms_id::mob_member_id(identity.as_str()).to_string();
+            assert_eq!(bridge.released(), vec![member.clone()]);
+            let pending = runtime.customizer_tools_pending_for(&identity);
+            if fail {
+                let pending = pending.ok_or("a failed release keeps the identity pending")?;
+                assert!(
+                    pending.reason.contains("customizer tools published, but")
+                        && pending.reason.contains("mob refused the release"),
+                    "{pending:?}"
+                );
+            } else {
+                assert!(pending.is_none(), "{pending:?}");
+                // Not pending any more: a later publication releases nothing.
+                runtime
+                    .publish_customizer_tools(&identity, &mut draft())
+                    .await;
+                assert_eq!(bridge.released(), vec![member]);
+            }
+        }
+        Ok(())
     }
 
     /// Always answers create with meerkat's typed provider-auth refusal for
