@@ -640,7 +640,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     drains the session: the waiter wakes on the session's durable writes (a
     new change channel on the write-epoch witness, not a timer) and fires
     once no commit is pending, no input is active, and every input it saw
-    active has a finalized receipt.
+    active has a finalized receipt. A refresh that lands while a run is open
+    on the session still restores positive frames and arms the same
+    re-drive, so the settled refresh follows the run's end, not a tick.
+  - No exit path leaves that waiter armed: it also wakes on the mob's
+    lifecycle changes and refreshes at once, from what is durable, when the
+    member is no longer bound to the session and live in a running mob (a
+    stop, retire or destroy with inputs still active), when the runtime no
+    longer holds or can progress the session, or when either change source
+    closes. A restarted gateway re-runs registration's recovery pass.
   - A completed pass whose session write epoch moved during its read
     re-reads once at once, instead of waiting for a tick and watermark
     expiry. It runs only because the epoch moved, so it cannot loop.

@@ -2036,8 +2036,12 @@ async fn draining_refresh_is_redriven_by_the_drain_transition_not_a_tick() -> Co
         let drained = Arc::clone(&drained);
         Arc::new(move |_entry, _session| {
             let _ = checked_tx.send(());
-            let drained = drained.load(std::sync::atomic::Ordering::SeqCst);
-            Box::pin(std::future::ready(Some(drained)))
+            let state = if drained.load(std::sync::atomic::Ordering::SeqCst) {
+                assistant_history_refresh::DrainState::Drained
+            } else {
+                assistant_history_refresh::DrainState::Draining
+            };
+            Box::pin(std::future::ready(state))
         })
     };
     *inner
@@ -2206,6 +2210,155 @@ async fn an_epoch_that_moves_mid_read_redrives_exactly_once() -> ConsoleLogResul
         "an unchanged epoch is not read again"
     );
     assert!(EpochFixture::take_tasks(&inner.epoch_redrive_tasks)?.is_empty());
+    fixture.runtime.mob_handle().stop().await?;
+    Ok(())
+}
+
+/// Liveness (#570 review): a member can leave the draining state without its
+/// queue ever draining, for example its mob is stopped with inputs still
+/// active. The drain re-drive also wakes on the mob's lifecycle change and
+/// hands the decision back to the refresh gate, which reads what is durable,
+/// so the session's history is still read and no waiter stays armed: the
+/// console converges. A session no runtime holds reads `Stalled`, never an
+/// inconclusive `NoAnswer` to wait out.
+#[tokio::test]
+async fn a_member_stopped_with_inputs_still_active_is_refreshed_and_converges()
+-> ConsoleLogResult<()> {
+    let fixture = EpochFixture::seated().await?;
+    let inner = fixture.aggregator.inner.clone();
+    // The queue never drains: every check reports inputs still active.
+    let (checked_tx, mut checked) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let probe: DrainProbe = Arc::new(move |_entry, _session| {
+        let _ = checked_tx.send(());
+        Box::pin(std::future::ready(
+            assistant_history_refresh::DrainState::Draining,
+        ))
+    });
+    *inner
+        .drain_probe_override
+        .lock()
+        .map_err(|_| std::io::Error::other("fixture probe lock"))? = Some(probe);
+    fixture
+        .service
+        .script_history([super::tests::ScriptedHistoryRead {
+            page: Some(history_page(&fixture.session_id, &[MESSAGE_A])?),
+            gate: None,
+        }]);
+    let reads = fixture.service.read_calls();
+
+    backfill_one_session_history_with_refresh_observer(
+        inner.clone(),
+        fixture.target(),
+        false,
+        |_, _, _, _| {
+            Box::pin(std::future::ready(
+                assistant_history_refresh::AssistantHistoryRefreshGate::Draining,
+            ))
+        },
+    )
+    .await?;
+    let mut redrives = EpochFixture::take_tasks(&inner.drain_redrive_tasks)?;
+    assert_eq!(redrives.len(), 1, "exactly one drain re-drive is armed");
+    let redrive = redrives.remove(0);
+    tokio::time::timeout(Duration::from_secs(10), checked.recv())
+        .await
+        .map_err(|_| std::io::Error::other("first drained check"))?;
+    assert!(
+        !redrive.is_finished(),
+        "the re-drive waits while inputs are active"
+    );
+    assert_eq!(
+        fixture.service.read_calls(),
+        reads,
+        "no read while draining"
+    );
+
+    // The mob stops with the inputs still active: no drain will ever come.
+    fixture.runtime.mob_handle().stop().await?;
+    tokio::time::timeout(Duration::from_secs(30), redrive)
+        .await
+        .map_err(|_| std::io::Error::other("the re-drive did not fire after the stop"))?
+        .map_err(|error| std::io::Error::other(format!("drain re-drive task: {error}")))?;
+    assert_eq!(
+        fixture.service.read_calls(),
+        reads + 1,
+        "the stopped member's durable history is read once"
+    );
+    assert!(
+        inner
+            .drain_redrives
+            .lock()
+            .map_err(|_| std::io::Error::other("fixture re-drive lock"))?
+            .is_empty(),
+        "no drain waiter stays armed"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        fixture.aggregator.history_backfill_converged(),
+    )
+    .await
+    .map_err(|_| std::io::Error::other("the console did not converge after the stop"))?;
+
+    // A session no runtime holds is stalled, not an inconclusive read.
+    let unheld = meerkat_core::types::SessionId::new().to_string();
+    assert_eq!(
+        fixture
+            .entry
+            .runtime
+            .session_drain_observation(&unheld, &[])
+            .await,
+        crate::mob_handle_runtime::SessionDrainRead::Stalled
+    );
+    Ok(())
+}
+
+/// A refresh that lands while a run is open on the session (`Running`) still
+/// restores positive frames with one read, as before, and also arms the
+/// drain re-drive, so the settled refresh follows the run's end instead of a
+/// discovery tick (idle_cpu_gate caught the tick doing that read inside its
+/// measured window).
+#[tokio::test]
+async fn running_refresh_reads_once_and_arms_the_drain_redrive() -> ConsoleLogResult<()> {
+    let fixture = EpochFixture::seated().await?;
+    let inner = fixture.aggregator.inner.clone();
+    let probe: DrainProbe = Arc::new(|_entry, _session| {
+        Box::pin(std::future::ready(
+            assistant_history_refresh::DrainState::Draining,
+        ))
+    });
+    *inner
+        .drain_probe_override
+        .lock()
+        .map_err(|_| std::io::Error::other("fixture probe lock"))? = Some(probe);
+    fixture
+        .service
+        .script_history([super::tests::ScriptedHistoryRead {
+            page: Some(history_page(&fixture.session_id, &[MESSAGE_A])?),
+            gate: None,
+        }]);
+    let reads = fixture.service.read_calls();
+    backfill_one_session_history_with_refresh_observer(
+        inner.clone(),
+        fixture.target(),
+        false,
+        |_, _, _, _| {
+            Box::pin(std::future::ready(
+                assistant_history_refresh::AssistantHistoryRefreshGate::Running,
+            ))
+        },
+    )
+    .await?;
+    assert_eq!(
+        fixture.service.read_calls(),
+        reads + 1,
+        "a running pass still restores positive frames"
+    );
+    let redrives = EpochFixture::take_tasks(&inner.drain_redrive_tasks)?;
+    assert_eq!(redrives.len(), 1, "and arms exactly one drain re-drive");
+    assert!(
+        !redrives[0].is_finished(),
+        "which waits for the run to drain"
+    );
     fixture.runtime.mob_handle().stop().await?;
     Ok(())
 }

@@ -5633,6 +5633,7 @@ where
             assistant_history_refresh::AssistantHistoryRefreshGate::Pending
                 | assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
                 | assistant_history_refresh::AssistantHistoryRefreshGate::Draining
+                | assistant_history_refresh::AssistantHistoryRefreshGate::Running
         ) {
             completed_cleanly = false;
             unsettled_refresh = true;
@@ -5653,11 +5654,14 @@ where
                 },
             );
         }
-        // Durable work is still landing: a read now would be read again once
-        // it lands. Skip it, keep the retry, and let the drain re-drive it.
-        if assistant_refresh_gate
-            == assistant_history_refresh::AssistantHistoryRefreshGate::Draining
-        {
+        // Durable work is still landing: the drain re-drives the settled
+        // refresh. A draining pass skips its read, which would be read again
+        // once that work lands; a running pass still restores positive frames.
+        if matches!(
+            assistant_refresh_gate,
+            assistant_history_refresh::AssistantHistoryRefreshGate::Draining
+                | assistant_history_refresh::AssistantHistoryRefreshGate::Running
+        ) {
             if runtime_entry_is_current(&inner, &entry) {
                 arm_drain_redrive(
                     &inner,
@@ -5673,7 +5677,11 @@ where
                     },
                 );
             }
-            break;
+            if assistant_refresh_gate
+                == assistant_history_refresh::AssistantHistoryRefreshGate::Draining
+            {
+                break;
+            }
         }
         cache_notice_observation(
             &inner,
@@ -5718,6 +5726,7 @@ where
                 assistant_refresh_gate,
                 assistant_history_refresh::AssistantHistoryRefreshGate::Pending
                     | assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
+                    | assistant_history_refresh::AssistantHistoryRefreshGate::Running
             )
             && let Some(epoch) = write_epoch
             && inner
@@ -6289,10 +6298,15 @@ fn backfill_owner(inner: &Arc<AggregatorInner>) -> &Arc<AggregatorInner> {
     inner.projection_owner.as_ref().unwrap_or(inner)
 }
 
-/// Whether the session's durable work has landed, read when a drain
-/// re-drive wakes. Injected in tests.
+/// Where the session's durable work stands, read when a drain re-drive
+/// wakes. Injected in tests.
 type DrainProbe = Arc<
-    dyn Fn(RuntimeEntry, String) -> futures::future::BoxFuture<'static, Option<bool>> + Send + Sync,
+    dyn Fn(
+            RuntimeEntry,
+            String,
+        ) -> futures::future::BoxFuture<'static, assistant_history_refresh::DrainState>
+        + Send
+        + Sync,
 >;
 
 /// Arm one re-drive for a refresh whose gate read `Draining`: the member is
@@ -6301,8 +6315,11 @@ type DrainProbe = Arc<
 /// finalization lands through a session-scoped durable write, so the waiter
 /// wakes on the session's write epoch (a typed transition, never a timer),
 /// re-reads whether the session has drained (see `SessionDrainTracker`), and
-/// re-drives the refresh once it has. Without a write-epoch witness the
-/// member's own events and machine changes re-drive it.
+/// re-drives the refresh once it has. A mob lifecycle change (stop, retire,
+/// destroy) wakes it too: a member no longer bound to the session and live,
+/// or a session the runtime no longer holds or can progress, is refreshed at
+/// once from what is durable, so no exit path leaves a waiter armed forever. Without a write-epoch witness the member's
+/// own events and machine changes re-drive it.
 fn arm_drain_redrive(
     inner: &Arc<AggregatorInner>,
     retry_key: (uuid::Uuid, String, String, String),
@@ -6317,7 +6334,7 @@ fn arm_drain_redrive(
     ));
     let probe: DrainProbe = Arc::new(move |entry, session_id| {
         let tracker = Arc::clone(&tracker);
-        Box::pin(async move { tracker.lock().await.drained(&entry, &session_id).await })
+        Box::pin(async move { tracker.lock().await.state(&entry, &session_id).await })
     });
     #[cfg(test)]
     let probe = inner
@@ -6347,10 +6364,14 @@ fn arm_drain_redrive_with(
     {
         return;
     }
-    // Mark the current generation seen BEFORE the first drained read: a write
-    // landing after that read still wakes the waiter, so the drain cannot slip
-    // between the gate's read and this arm.
+    // Mark both change sources seen BEFORE the first read: a write or a
+    // lifecycle change after that read still wakes the waiter, so neither the
+    // drain nor a stop can slip between the gate's read and this arm.
     changes.borrow_and_update();
+    let mut lifecycle = target.entry.runtime.handle().machine_state_changes();
+    // The cloned receiver starts from the handle's last-seen version: consume
+    // the change it has not seen yet (as `arm_status_unknown_redrive` does).
+    let _ = futures::FutureExt::now_or_never(lifecycle.changed());
     let redrive_inner = Arc::clone(inner);
     let activity = BackfillActivity::begin(inner);
     let task = tokio::spawn(async move {
@@ -6360,31 +6381,59 @@ fn arm_drain_redrive_with(
             .entry
             .runtime
             .session_document_write_epoch(&session_id);
-        let drained_now = loop {
+        let mut lifecycle_changed = false;
+        let fire = loop {
             if !runtime_entry_is_current(&redrive_inner, &target.entry) {
                 break false;
             }
-            if drained(target.entry.clone(), session_id.clone()).await == Some(true) {
+            match drained(target.entry.clone(), session_id.clone()).await {
+                assistant_history_refresh::DrainState::Drained
+                | assistant_history_refresh::DrainState::Stalled => break true,
+                assistant_history_refresh::DrainState::Draining
+                | assistant_history_refresh::DrainState::NoAnswer => {}
+            }
+            // A stop, retire or destroy abandons the queue and may unregister
+            // the session without a write this process sees. After a lifecycle
+            // change, a member that is no longer bound to the session and live
+            // will not drain it: read what is durable now.
+            if std::mem::take(&mut lifecycle_changed)
+                && !assistant_history_refresh::member_still_progressing(
+                    &target.entry,
+                    &target.record,
+                    &session_id,
+                )
+                .await
+            {
                 break true;
             }
-            // Wait for this session's next durable write. Writes to other
-            // sessions wake the receiver too; their epoch for this session is
-            // unchanged, so the waiter does not re-read on them.
-            let woke = loop {
-                if changes.changed().await.is_err() {
-                    break false;
-                }
-                let epoch = target
-                    .entry
-                    .runtime
-                    .session_document_write_epoch(&session_id);
-                if epoch != seen_epoch {
-                    seen_epoch = epoch;
-                    break true;
+            // Wait for this session's next durable write (its inputs, commits
+            // and receipts land through one) or a mob lifecycle change. Writes
+            // to other sessions wake the epoch receiver but leave this
+            // session's epoch unchanged, so they are skipped. A closed source
+            // can report nothing more: read what is durable now.
+            let closed = loop {
+                tokio::select! {
+                    changed = changes.changed() => {
+                        if changed.is_err() {
+                            break true;
+                        }
+                        let epoch = target.entry.runtime.session_document_write_epoch(&session_id);
+                        if epoch != seen_epoch {
+                            seen_epoch = epoch;
+                            break false;
+                        }
+                    }
+                    changed = lifecycle.changed() => {
+                        if changed.is_err() {
+                            break true;
+                        }
+                        lifecycle_changed = true;
+                        break false;
+                    }
                 }
             };
-            if !woke {
-                break false;
+            if closed {
+                break runtime_entry_is_current(&redrive_inner, &target.entry);
             }
         };
         redrive_inner
@@ -6392,7 +6441,7 @@ fn arm_drain_redrive_with(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&retry_key);
-        if drained_now
+        if fire
             && let Err(error) =
                 run_targeted_session_history_backfill(redrive_inner, target, false).await
         {

@@ -2742,6 +2742,16 @@ impl SessionSnapshotWriteEpochs {
 }
 
 /// See [`MobRuntime::session_drain_observation`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionDrainRead {
+    Observed(SessionDrainObservation),
+    /// The runtime answered that it cannot hold or progress the session.
+    Stalled,
+    /// A read did not answer within its bound.
+    NoAnswer,
+}
+
+/// See [`MobRuntime::session_drain_observation`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SessionDrainObservation {
     /// A run input awaits its boundary commit.
@@ -11006,17 +11016,39 @@ impl MobRuntime {
     /// inputs are still active, and which of `watched` (inputs seen active
     /// earlier) have no finalized terminal receipt yet. An input leaves the
     /// active set once its boundary commits, but its receipt is finalized in
-    /// a later durable write. `None` when a read does not answer within its
-    /// bound (inconclusive).
+    /// a later durable write.
+    ///
+    /// A runtime that answers with an error (no runtime holds the session any
+    /// more, it was given a new driver, or its durability is blocked) is
+    /// `Stalled`: this session's queue cannot drain through writes this
+    /// process will observe. Only a read that outlasts its bound is
+    /// `NoAnswer`.
     pub(crate) async fn session_drain_observation(
         &self,
         session_id: &str,
         watched: &[uuid::Uuid],
-    ) -> Option<SessionDrainObservation> {
-        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
-        let typed = meerkat_core::types::SessionId::parse(session_id).ok()?;
-        let commit_pending = self.session_commit_pending(session_id).await?;
-        let active = tokio::time::timeout(
+    ) -> SessionDrainRead {
+        let Some(runtime_adapter) = self
+            .session_service
+            .as_ref()
+            .and_then(|service| service.runtime_adapter())
+        else {
+            return SessionDrainRead::Stalled;
+        };
+        let Ok(typed) = meerkat_core::types::SessionId::parse(session_id) else {
+            return SessionDrainRead::Stalled;
+        };
+        let commit_pending = match tokio::time::timeout(
+            SESSION_COMMIT_PENDING_READ_BOUND,
+            runtime_adapter.session_has_uncommitted_run_input(&typed),
+        )
+        .await
+        {
+            Ok(Ok(pending)) => pending,
+            Ok(Err(_)) => return SessionDrainRead::Stalled,
+            Err(_) => return SessionDrainRead::NoAnswer,
+        };
+        let active = match tokio::time::timeout(
             SESSION_COMMIT_PENDING_READ_BOUND,
             meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
                 runtime_adapter.as_ref(),
@@ -11024,11 +11056,11 @@ impl MobRuntime {
             ),
         )
         .await
-        .ok()?
-        .ok()?
-        .into_iter()
-        .map(|input| input.0)
-        .collect::<Vec<_>>();
+        {
+            Ok(Ok(inputs)) => inputs.into_iter().map(|input| input.0).collect::<Vec<_>>(),
+            Ok(Err(_)) => return SessionDrainRead::Stalled,
+            Err(_) => return SessionDrainRead::NoAnswer,
+        };
         let mut unfinalized = Vec::new();
         for id in watched {
             if active.contains(id) {
@@ -11048,10 +11080,10 @@ impl MobRuntime {
                 // Finalized, or terminal with no receipt to wait for: an error
                 // here cannot later turn into a receipt this waiter needs.
                 Ok(Ok(Some(_)) | Err(_)) => {}
-                Err(_) => return None,
+                Err(_) => return SessionDrainRead::NoAnswer,
             }
         }
-        Some(SessionDrainObservation {
+        SessionDrainRead::Observed(SessionDrainObservation {
             commit_pending,
             active,
             unfinalized,
