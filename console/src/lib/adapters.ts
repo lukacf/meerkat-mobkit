@@ -4343,7 +4343,13 @@ function typedSystemNoticeBlocksToRich(
       // a pure-scaffold content block falls back to the parsed summary
       // (`Peer request: <intent>`) instead of leaking pubkey bytes and
       // protocol coaching into the chat preview.
-      const displayBodySource = stripPeerTransportScaffold(contentText)
+      // A runtime notice's content is model-facing routing text, never an
+      // authored message: every member-kickoff request (`mob.kickoff_*`, which
+      // carries the full peer transport projection) and every typed lifecycle
+      // notice. Its typed summary describes the operation.
+      const runtimeNotice = kind === "lifecycle"
+        || (kind === "request" && intent.startsWith("mob.kickoff_"));
+      const displayBodySource = (runtimeNotice ? "" : stripPeerTransportScaffold(contentText))
         || stripPeerTransportScaffold(typedCommsStableBodyText(record))
         || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
@@ -4364,10 +4370,7 @@ function typedSystemNoticeBlocksToRich(
               : typeof textPart.content === "string" ? textPart.content : "";
           }).join("")
           : "";
-      // This typed runtime request's content is model-facing routing guidance,
-      // not an authored message. Its summary already describes the operation.
-      const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
-      const exactDisplayBody = (!runtimeKickoff && ownerContentText)
+      const exactDisplayBody = (!runtimeNotice && ownerContentText)
         || [record.summary, record.body, record.detail].filter((part): part is string => typeof part === "string").join("\n")
         || (typeof body === "string" ? body : "");
       const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
