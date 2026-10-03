@@ -1943,12 +1943,15 @@ async function runChatPaneTurnRailProof() {
           height: Math.round(rect.height),
         };
       });
-      const firstBubble = node.querySelector('[data-testid="chat-turn:person-worker-alpha:0"] .msg__bubble');
+      // The transcript mounts only the turns near the viewport, so turn 0 is
+      // a spacer here at the live edge; any mounted bubble shows the gutter,
+      // and the leftmost is the one nearest the rail.
+      const bubbleLefts = [...node.querySelectorAll('[data-testid^="chat-turn:person-worker-alpha:"] .msg__bubble')]
+        .map((bubble) => bubble.getBoundingClientRect().left);
       const railRect = rail?.getBoundingClientRect();
-      const bubbleRect = firstBubble?.getBoundingClientRect();
       return {
         railRight: railRect?.right ?? 0,
-        bubbleLeft: bubbleRect?.left ?? 0,
+        bubbleLeft: bubbleLefts.length > 0 ? Math.min(...bubbleLefts) : 0,
         markerDeltas: railYs.slice(1).map((y, index) => y - railYs[index]),
         buttonSizes,
       };
