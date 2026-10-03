@@ -12565,7 +12565,22 @@ external_addressable = true
     let compiled_tool_policies =
         meerkat_mobkit::member_tool_policy::compiled_policy_payloads_from_init_params(&params)
             .unwrap_or_else(|error| fail_init(&request_id, -32602, format!("{error}")));
+    // The application tool policy for child mob members (agent `mob_create`,
+    // delegate's implicit mob). With a registry installed, meerkat refuses
+    // agent `mob_create` and delegate until one is chosen, possibly the
+    // explicit `{"kind":"unmanaged"}` opt-out. A binding nothing here could
+    // resolve refuses the boot below rather than every later delegate.
+    let child_application_tool_policy =
+        meerkat_mobkit::member_tool_policy::child_application_tool_policy_from_init_params(&params)
+            .unwrap_or_else(|error| fail_init(&request_id, -32602, format!("{error}")));
     let tool_consequence_policy_registry = if compiled_tool_policies.is_empty() {
+        if let Some(binding) = &child_application_tool_policy {
+            meerkat_mobkit::member_tool_policy::validate_child_application_tool_policy(
+                binding,
+                &[],
+            )
+            .unwrap_or_else(|error| fail_init(&request_id, -32602, format!("{error}")));
+        }
         None
     } else {
         // One provider per provider id CARRIED by the artifacts. The gateway
@@ -12587,6 +12602,12 @@ external_addressable = true
                     provider as std::sync::Arc<dyn meerkat_core::ToolConsequenceNarrowingPolicy>
                 })
                 .collect();
+        if let Some(binding) = &child_application_tool_policy {
+            meerkat_mobkit::member_tool_policy::validate_child_application_tool_policy(
+                binding, &providers,
+            )
+            .unwrap_or_else(|error| fail_init(&request_id, -32602, format!("{error}")));
+        }
         let registry = meerkat_core::ToolConsequencePolicyRegistry::new(
             providers,
             meerkat_core::PolicyEvaluationSupervisorConfig::default(),
@@ -13198,6 +13219,7 @@ external_addressable = true
             .with_optional_tool_consequence_policy_registry(
                 tool_consequence_policy_registry.clone(),
             )
+            .with_optional_child_application_tool_policy(child_application_tool_policy.clone())
             .with_session_write_epochs(&session_write_epochs)
             // The SAME facade handed to MeerkatMachine::persistent above.
             // The durable-authority convergence memo is per-facade, so a
@@ -13536,6 +13558,7 @@ external_addressable = true
             .with_optional_tool_consequence_policy_registry(
                 tool_consequence_policy_registry.clone(),
             )
+            .with_optional_child_application_tool_policy(child_application_tool_policy.clone())
             .with_session_write_epochs(&session_write_epochs)
             // The SAME facade handed to MeerkatMachine::persistent above.
             // The durable-authority convergence memo is per-facade, so a

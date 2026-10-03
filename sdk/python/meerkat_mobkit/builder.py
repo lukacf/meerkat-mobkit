@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from .identity_first_models import IdentityBootstrapMode, RoleMigrationDeclaration
 from .live import ExperimentalLiveGatewayConfig, OpenAiLiveGatewayConfig
@@ -54,6 +54,7 @@ class MobKitBuilderConfig:
     roster_provider: Any | None = None
     role_migrations: list[dict[str, str]] | None = None
     application_tool_policies: list[str] | None = None
+    child_application_tool_policy: dict[str, str] | None = None
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
@@ -844,6 +845,60 @@ class MobKitBuilder:
                 )
             normalized.append(decoded)
         self._config.application_tool_policies = normalized
+        return self
+
+    def child_application_tool_policy(
+        self, binding: Mapping[str, str]
+    ) -> MobKitBuilder:
+        """Choose the application tool policy child mob members are built with.
+
+        Child mobs are the mobs a governed member creates with ``mob_create``
+        and the implicit mob its ``delegate`` helpers run in. ``binding`` is an
+        ``ApplicationToolPolicyBinding``::
+
+            .child_application_tool_policy(
+                {"kind": "provider", "provider_id": "homecore", "policy_id": "child-tools"}
+            )
+
+        or the explicit opt-out ``{"kind": "unmanaged"}``, which lets child
+        members run without the host's tool policy.
+
+        Once ``application_tool_policies`` are served, Meerkat refuses
+        ``mob_create`` and ``delegate`` with a typed tool error
+        (``child_tool_policy_required``) until a child policy is chosen; there
+        is no implicit default. Same-mob ``fork_off``, ``mob_spawn_member`` and
+        councils are not affected. The gateway refuses the boot when a provider
+        binding names a provider or policy no served policy carries.
+        """
+        if not isinstance(binding, Mapping):
+            raise TypeError(
+                "child_application_tool_policy must be a mapping, "
+                f"got {type(binding).__name__}"
+            )
+        kind = binding.get("kind")
+        if kind == "unmanaged":
+            if set(binding) != {"kind"}:
+                raise ValueError(
+                    "an unmanaged child_application_tool_policy takes no other keys"
+                )
+        elif kind == "provider":
+            if set(binding) != {"kind", "provider_id", "policy_id"}:
+                raise ValueError(
+                    "a provider child_application_tool_policy needs exactly "
+                    "kind, provider_id and policy_id"
+                )
+            for key in ("provider_id", "policy_id"):
+                value = binding[key]
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"child_application_tool_policy {key} must be a non-empty string"
+                    )
+        else:
+            raise ValueError(
+                "child_application_tool_policy kind must be 'provider' or 'unmanaged' "
+                f"(inherit is not valid for child mobs), got {kind!r}"
+            )
+        self._config.child_application_tool_policy = dict(binding)
         return self
 
     def roster(self, provider: Any) -> MobKitBuilder:
