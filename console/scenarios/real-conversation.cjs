@@ -63,7 +63,8 @@ async function anchorAt(viewport, row, offset = 100) {
 /// row exists only once a reader scrolls back to it. Jump to the start in one
 /// step, as Home does, and wait for the row itself to mount there.
 async function mountEarlyRow(viewport, row) {
-  if (await row.count() === 0) {
+  // A parked turn (hidden until found) keeps its rows in the DOM, unseen.
+  if (!await row.isVisible()) {
     await viewport.evaluate((node) => {
       node.scrollTop = 0;
       node.dispatchEvent(new Event("scroll"));
@@ -72,13 +73,13 @@ async function mountEarlyRow(viewport, row) {
   await row.waitFor();
 }
 
-/// Wait until no spacer standing for unmounted turns overlaps the viewport:
-/// the window has mounted every turn a reader can see at this position.
+/// Wait until no spacer or parked turn (hidden until found) overlaps the
+/// viewport: the window has mounted every turn a reader can see here.
 async function waitForMountedView(viewport) {
   await viewport.page().waitForFunction((node) => {
     const view = node.getBoundingClientRect();
-    return [...node.querySelectorAll(":scope > [data-conversation-spacer]")].every((spacer) => {
-      const rect = spacer.getBoundingClientRect();
+    return [...node.querySelectorAll(":scope > [data-conversation-spacer], :scope > [data-conversation-turn-id][hidden]")].every((slot) => {
+      const rect = slot.getBoundingClientRect();
       return rect.bottom <= view.top || rect.top >= view.bottom;
     });
   }, await viewport.elementHandle());
@@ -88,7 +89,9 @@ async function waitForMountedView(viewport) {
 /// scrolling through it does, and return `collect(node, arg)` for each
 /// position. The stock transcript mounts only the turns near the viewport, so
 /// an inventory of every row has to read it through; callers dedupe by row id
-/// because neighbouring positions share rows. The position is restored after.
+/// because neighbouring positions share rows, and skip rows of parked turns
+/// (hidden until found), which are in the DOM but not rendered. The position
+/// is restored after.
 async function readThrough(viewport, collect, arg) {
   const start = await viewport.evaluate((node) => node.scrollTop);
   const scrollTo = async (top) => {
@@ -1135,7 +1138,7 @@ async function olderHistory(host) {
     await settle(page);
     // Reachable means a reader scrolling through finds it: the windowed stock
     // transcript mounts only the turns near the viewport.
-    const positions = await readThrough(viewport, (node) => [...node.querySelectorAll("[data-conversation-row-id]")].map((row) => ({
+    const positions = await readThrough(viewport, (node) => [...node.querySelectorAll("[data-conversation-row-id]")].filter((row) => !row.closest("[hidden]")).map((row) => ({
       id: row.dataset.conversationRowId,
       sources: [...(row.matches("[data-quote-source]") ? [row] : []), ...row.querySelectorAll("[data-quote-source]")]
         .map((quote) => quote.getAttribute("data-quote-source")),
