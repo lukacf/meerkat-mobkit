@@ -627,6 +627,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now shows its typed summary (`Peer request: mob.kickoff_failed`); an
   ordinary peer request still shows its authored content.
 
+- The console renders the typed comms `lifecycle` notice kind. Meerkat sends
+  member-kickoff status (`mob.kickoff_*`) as one-way lifecycle notices
+  instead of peer requests (meerkat #1608). A lifecycle notice's content is
+  model-facing notice text, so the timeline shows its summary
+  (`Peer lifecycle: <kind>`) as a `peer_lifecycle` entry and never leaks that
+  text. Kickoff notices sent as requests by older Meerkat still render as
+  before.
+
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled
