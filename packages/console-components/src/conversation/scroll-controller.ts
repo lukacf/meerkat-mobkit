@@ -97,6 +97,14 @@ function rowGeometryOf(viewport: HTMLElement, ids: readonly string[]): Conversat
   return rows;
 }
 
+/** A session that changes position only when rows or the viewport resize:
+ * following the live edge, or holding an anchor, with no submission or
+ * reveal pending. */
+function steadySession(session: Session): boolean {
+  return !session.pendingSubmittedRow && !session.awaitingAnchor && !session.reveal
+    && (session.mode === "following-end" || session.anchor !== null);
+}
+
 /** Preserve intent across streaming and layout without moving an outer document. */
 export function useConversationScrollController(options: ConversationScrollControllerOptions) {
   const optionsRef = useRef(options);
@@ -105,6 +113,10 @@ export function useConversationScrollController(options: ConversationScrollContr
   const sessionRef = useRef<Session | null>(null);
   const frameRef = useRef<number | null>(null);
   const applyLayoutRef = useRef<() => void>(() => {});
+  /// True while a ResizeObserver delivers row and viewport size changes. Its
+  /// callbacks run after the frame's layout, so geometry read there is
+  /// already computed instead of forcing a layout from script.
+  const observingResizeRef = useRef(false);
   const [state, setState] = useState({ mode: "following-end" as ConversationScrollMode, awayFromEnd: false, missingAnchor: false, revealingAnchor: false });
   const key = options.viewportKey
     ? JSON.stringify([options.viewportKey.authority, options.viewportKey.identity, options.viewportKey.conversation, options.viewportKey.pane])
@@ -130,6 +142,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     const session = sessionRef.current;
     if (!viewport || !session) return;
     const bounded = Math.max(0, Math.min(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight), top));
+    // This controller owns scroll position, so snapping and browser scroll
+    // anchoring stay off while it writes. On a session change the observer
+    // effect's cleanup restores them before its setup turns them off again,
+    // and a restore written in between snapped to the nearest turn start.
+    if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
+    if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
     session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
   }, []);
@@ -307,11 +325,16 @@ export function useConversationScrollController(options: ConversationScrollContr
       };
     }
     const session = sessionRef.current!;
+    const sessionChanged = session !== previous;
     if (options.submittedRowId && session.lastSubmittedRow !== options.submittedRowId) {
       session.lastSubmittedRow = options.submittedRowId;
       session.pendingSubmittedRow = options.submittedRowId;
     }
-    applyLayout();
+    // A steady session (following the live edge, or holding an anchor) only
+    // moves when a row or the viewport changes size, which the resize
+    // observer reports after layout. Applying it here on every commit read
+    // geometry with layout dirty: one forced layout per streamed token.
+    if (sessionChanged || !observingResizeRef.current || !steadySession(session)) applyLayout();
   });
 
   useLayoutEffect(() => {
@@ -342,7 +365,10 @@ export function useConversationScrollController(options: ConversationScrollContr
       session.requestedAnchor = null;
       cancelReveal(session);
       session.missingAnchor = false;
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      // Following keeps no anchor (see applyLayout), so a scroll that lands
+      // at the live edge, such as a clamp after the content shrinks, need not
+      // measure every mounted row.
+      session.anchor = session.mode === "following-end" ? null : captureConversationAnchor(rowGeometry(viewport));
       publish();
     };
     const canLeaveLiveEdge = (delta: number) => sessionRef.current?.mode !== "following-end"
@@ -382,7 +408,10 @@ export function useConversationScrollController(options: ConversationScrollContr
     viewport.addEventListener("load", notifyLayoutChange, true);
     viewport.ownerDocument.addEventListener("selectionchange", onSelection);
     window.addEventListener("resize", notifyLayoutChange);
-    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(notifyLayoutChange);
+    // Delivered after layout: apply at once, reading geometry layout already
+    // computed, and correcting the scroll position before this frame paints.
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => applyLayoutRef.current());
+    observingResizeRef.current = resize !== null;
     const observeRows = () => {
       resize?.disconnect();
       resize?.observe(viewport);
@@ -395,10 +424,19 @@ export function useConversationScrollController(options: ConversationScrollContr
     // DOM require it.
     const touchesRows = (nodes: NodeList) => Array.from(nodes).some((node) => node instanceof Element
       && (node.matches(ROW_SELECTOR) || node.querySelector(ROW_SELECTOR) !== null));
+    const outsideRows = (node: Node) => !(node instanceof Element ? node : node.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record) => record.type === "childList"
-        && (touchesRows(record.addedNodes) || touchesRows(record.removedNodes)))) observeRows();
-      notifyLayoutChange();
+      const rowsChanged = records.some((record) => record.type === "childList"
+        && (touchesRows(record.addedNodes) || touchesRows(record.removedNodes)));
+      if (rowsChanged) observeRows();
+      // Text streaming inside a row resizes that row, which the resize
+      // observer reports after layout; a frame callback here would read
+      // geometry before layout instead. A change outside the rows, such as
+      // the older-history control appearing above them, moves rows without
+      // resizing any, so it still schedules a pass.
+      const moved = rowsChanged || records.some((record) => outsideRows(record.target));
+      const session = sessionRef.current;
+      if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
     return () => {
@@ -416,6 +454,7 @@ export function useConversationScrollController(options: ConversationScrollContr
       viewport.ownerDocument.removeEventListener("selectionchange", onSelection);
       window.removeEventListener("resize", notifyLayoutChange);
       resize?.disconnect();
+      observingResizeRef.current = false;
       mutation?.disconnect();
       viewport.style.overflowAnchor = previousOverflowAnchor;
       viewport.style.scrollSnapType = previousSnap;

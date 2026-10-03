@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useLayoutEffect, useRef } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   CONVERSATION_POSITION_LIMIT,
@@ -58,18 +58,31 @@ type Row = { id: string; height: number; text?: string };
 const baseRows: Row[] = Array.from({ length: 10 }, (_, i) => ({ id: `row-${i}`, height: 100 }));
 /** Row rect reads by row id, for asserting how much of the transcript a layout pass measures. */
 const rowReads = new Map<string, number>();
-function Harness({ rows = baseRows, conversation = "test", viewportKey, submittedRowId, revealAnchor, revealTimeoutMs, height = 200 }: {
+/** Resize observer callbacks, delivered by the test as a browser does after layout. */
+const resizeCallbacks = new Set<() => void>();
+class DeliveredResizeObserver {
+  constructor(private readonly callback: () => void) {}
+  observe() { resizeCallbacks.add(this.callback); }
+  unobserve() {}
+  disconnect() { resizeCallbacks.delete(this.callback); }
+}
+function deliverResize() { for (const callback of [...resizeCallbacks]) callback(); }
+function Harness({ rows = baseRows, conversation = "test", viewportKey, submittedRowId, revealAnchor, revealTimeoutMs, height = 200, resizeEachCommit = true, header = 0 }: {
   rows?: Row[]; conversation?: string; viewportKey?: ConversationViewportKey; submittedRowId?: string | null; revealAnchor?: ConversationScrollControllerOptions["revealAnchor"]; revealTimeoutMs?: number; height?: number;
+  /** Deliver a resize after every commit, as rows and the viewport change size here. */
+  resizeEachCommit?: boolean;
+  /** Height of a non-row element above the rows, absent when 0. */
+  header?: number;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const viewport = viewportRef.current!;
     Object.defineProperties(viewport, {
-      scrollHeight: { configurable: true, get: () => rows.reduce((sum, row) => sum + row.height, 0) },
+      scrollHeight: { configurable: true, get: () => header + rows.reduce((sum, row) => sum + row.height, 0) },
       clientHeight: { configurable: true, get: () => height },
     });
     viewport.getBoundingClientRect = () => rect(0, height);
-    let top = 0;
+    let top = header;
     for (const row of rows) {
       const node = Array.from(viewport.querySelectorAll<HTMLElement>("[data-conversation-row-id]")).find((node) => node.dataset.conversationRowId === row.id)!;
       const rowTop = top;
@@ -81,8 +94,9 @@ function Harness({ rows = baseRows, conversation = "test", viewportKey, submitte
     }
   });
   const scroll = useConversationScrollController({ viewportRef, viewportKey, conversationId: conversation, contentVersion: rows, submittedRowId, revealAnchor, revealTimeoutMs });
+  useLayoutEffect(() => { if (resizeEachCommit) deliverResize(); });
   return <>
-    <div data-testid="viewport" tabIndex={0} ref={viewportRef}>{rows.map((row) => <div data-conversation-row-id={row.id} key={row.id}>{row.text ?? row.id}</div>)}</div>
+    <div data-testid="viewport" tabIndex={0} ref={viewportRef}>{header ? <button>Load older</button> : null}{rows.map((row) => <div data-conversation-row-id={row.id} key={row.id}>{row.text ?? row.id}</div>)}</div>
     <span data-testid="mode">{scroll.mode}</span>
     {scroll.missingAnchor ? <div role="status">Earlier position is unavailable</div> : null}
     {scroll.revealingAnchor ? <div role="status">Restoring earlier position</div> : null}
@@ -93,7 +107,8 @@ function Harness({ rows = baseRows, conversation = "test", viewportKey, submitte
   </>;
 }
 function userScroll(viewport: HTMLElement, top: number) { viewport.scrollTop = top; fireEvent.scroll(viewport); }
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+beforeEach(() => { vi.stubGlobal("ResizeObserver", DeliveredResizeObserver); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); resizeCallbacks.clear(); });
 
 describe("conversation scroll intent", () => {
   test("a pending browser reveal scroll after a live-edge tool expands keeps following", () => {
@@ -261,6 +276,41 @@ describe("conversation scroll intent", () => {
     expect([...rowReads.keys()]).toEqual(["accepted"]);
     // One pass per commit, plus at most one follow-up pass from its publish.
     expect(rowReads.get("accepted")).toBeLessThanOrEqual(10);
+  });
+  test("steady streaming commits read no geometry; the post-layout resize pass restores", () => {
+    // Resize callbacks run after the frame's layout, so geometry read there
+    // is already computed. A read in the commit's layout effect forced a
+    // synchronous layout of the whole transcript on every streamed token.
+    const resized = () => act(deliverResize);
+    const view = render(<Harness resizeEachCommit={false} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    // Following the live edge: growth lands when the observer reports it.
+    view.rerender(<Harness resizeEachCommit={false} rows={baseRows.map((row, index) => index === 9 ? { ...row, height: 150 } : row)} />);
+    resized();
+    expect(viewport.scrollTop).toBe(850);
+    const withReply = (text: string, height: number, above = 100) => [
+      ...baseRows.map((row, index) => index === 9 ? { ...row, height: above } : row),
+      { id: "accepted", height: 100 },
+      { id: "response", height, text },
+    ];
+    view.rerender(<Harness resizeEachCommit={false} submittedRowId="accepted" rows={withReply("", 50)} />);
+    expect(screen.getByTestId("mode")).toHaveTextContent("anchoring-submitted-turn");
+    const anchored = viewport.scrollTop;
+    rowReads.clear();
+    for (let token = 1; token <= 5; token += 1) {
+      view.rerender(<Harness resizeEachCommit={false} submittedRowId="accepted" rows={withReply("token ".repeat(token), 50 + token * 40)} />);
+    }
+    expect(rowReads.size).toBe(0);
+    resized();
+    expect(viewport.scrollTop).toBe(anchored);
+    expect([...rowReads.keys()]).toEqual(["accepted"]);
+    // A row above the anchor grows: the resize pass restores the anchor
+    // before the frame paints.
+    view.rerender(<Harness resizeEachCommit={false} submittedRowId="accepted" rows={withReply("token ".repeat(5), 250, 160)} />);
+    resized();
+    expect(viewport.scrollTop).toBe(anchored + 60);
+    expect(screen.getByTestId("mode")).toHaveTextContent("anchoring-submitted-turn");
   });
   test("does not treat a consumed acceptance as a new send after remount or identity return", () => {
     const key = { authority: "accepted-remount", identity: "agent", conversation: "one", pane: "left" };
@@ -455,5 +505,75 @@ describe("conversation scroll intent", () => {
     expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
     view.rerender(<Harness rows={[...baseRows, { id: "new", height: 100 }]} />);
     expect(viewport.scrollTop).toBe(900);
+  });
+  test("a scroll away from the live edge is not pinned back by a commit before its event arrives", () => {
+    // Browser order: a scroll lands, a streamed commit can run in a task
+    // before the next frame delivers the scroll event, and the post-layout
+    // resize pass runs after it. Re-pinning on that commit snapped a reader
+    // (or a test's scrollIntoView) back to the bottom before the controller
+    // saw the scroll (console e2e chat-pane-older-history-demand-paging).
+    const view = render(<Harness resizeEachCommit={false} />);
+    const viewport = screen.getByTestId("viewport");
+    expect(viewport.scrollTop).toBe(800);
+    viewport.scrollTop = 0;
+    view.rerender(<Harness resizeEachCommit={false} rows={baseRows.map((row, index) => index === 9 ? { ...row, text: "streamed" } : row)} />);
+    expect(viewport.scrollTop).toBe(0);
+    fireEvent.scroll(viewport);
+    act(deliverResize);
+    expect(viewport.scrollTop).toBe(0);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("an element inserted above the rows keeps a reader's anchor, though no row resizes", async () => {
+    // Rows that only move, as when the older-history control appears above
+    // them, report no resize; the controller still restores the anchor
+    // instead of leaving the shift for the next resize to correct
+    // (console e2e real-stock-presentation).
+    const view = render(<Harness resizeEachCommit={false} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 300);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    view.rerender(<Harness resizeEachCommit={false} header={36} />);
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(null))); });
+    expect(viewport.scrollTop).toBe(336);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("every scroll write, including a restore on a session change, runs with snapping and scroll anchoring off", () => {
+    // A session change re-runs the observer effect, whose cleanup restores
+    // the viewport's own scroll-snap-type and overflow-anchor before its
+    // setup turns them off again; a restore written in between snapped to a
+    // turn start 62 px away (console e2e real-stock-reading-intent).
+    const view = render(<Harness conversation="one" />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 225);
+    view.rerender(<Harness conversation="two" />);
+    const writes: Array<{ top: number; snap: string; anchor: string }> = [];
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => descriptor.get!.call(viewport),
+      set: (top: number) => {
+        writes.push({ top, snap: viewport.style.scrollSnapType, anchor: viewport.style.overflowAnchor });
+        descriptor.set!.call(viewport, top);
+      },
+    });
+    // Back to the first conversation: its remembered anchor is restored.
+    view.rerender(<Harness conversation="one" />);
+    expect(writes.length).toBeGreaterThan(0);
+    for (const write of writes) expect(write).toMatchObject({ snap: "none", anchor: "none" });
+    expect(viewport.scrollTop).toBe(225);
+  });
+
+  test("a scroll that lands at the live edge keeps following without measuring rows", () => {
+    // A clamp after the content shrinks emits a native scroll the controller
+    // did not write. Following keeps no anchor, so reading every mounted row
+    // to capture one was wasted.
+    render(<Harness />);
+    const viewport = screen.getByTestId("viewport");
+    rowReads.clear();
+    userScroll(viewport, 780);
+    expect(screen.getByTestId("mode")).toHaveTextContent("following-end");
+    expect(rowReads.size).toBe(0);
   });
 });

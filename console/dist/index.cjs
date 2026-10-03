@@ -6160,6 +6160,9 @@ function rowGeometryOf(viewport, ids) {
   }
   return rows;
 }
+function steadySession(session) {
+  return !session.pendingSubmittedRow && !session.awaitingAnchor && !session.reveal && (session.mode === "following-end" || session.anchor !== null);
+}
 function useConversationScrollController(options) {
   const optionsRef = (0, import_react4.useRef)(options);
   optionsRef.current = options;
@@ -6168,6 +6171,7 @@ function useConversationScrollController(options) {
   const frameRef = (0, import_react4.useRef)(null);
   const applyLayoutRef = (0, import_react4.useRef)(() => {
   });
+  const observingResizeRef = (0, import_react4.useRef)(false);
   const [state, setState] = (0, import_react4.useState)({ mode: "following-end", awayFromEnd: false, missingAnchor: false, revealingAnchor: false });
   const key = options.viewportKey ? JSON.stringify([options.viewportKey.authority, options.viewportKey.identity, options.viewportKey.conversation, options.viewportKey.pane]) : options.conversationId;
   const authority = options.viewportKey?.authority;
@@ -6188,6 +6192,8 @@ function useConversationScrollController(options) {
     const session = sessionRef.current;
     if (!viewport || !session) return;
     const bounded = Math.max(0, Math.min(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight), top));
+    if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
+    if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
     session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
   }, []);
@@ -6343,11 +6349,12 @@ function useConversationScrollController(options) {
       };
     }
     const session = sessionRef.current;
+    const sessionChanged = session !== previous3;
     if (options.submittedRowId && session.lastSubmittedRow !== options.submittedRowId) {
       session.lastSubmittedRow = options.submittedRowId;
       session.pendingSubmittedRow = options.submittedRowId;
     }
-    applyLayout();
+    if (sessionChanged || !observingResizeRef.current || !steadySession(session)) applyLayout();
   });
   (0, import_react4.useLayoutEffect)(() => {
     const viewport = options.viewportRef.current;
@@ -6374,7 +6381,7 @@ function useConversationScrollController(options) {
       session.requestedAnchor = null;
       cancelReveal(session);
       session.missingAnchor = false;
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      session.anchor = session.mode === "following-end" ? null : captureConversationAnchor(rowGeometry(viewport));
       publish();
     };
     const canLeaveLiveEdge = (delta) => sessionRef.current?.mode !== "following-end" || (delta < 0 ? viewport.scrollTop > 0 : !conversationIsAtEnd(viewport.scrollTop, viewport.scrollHeight, viewport.clientHeight));
@@ -6404,7 +6411,8 @@ function useConversationScrollController(options) {
     viewport.addEventListener("load", notifyLayoutChange, true);
     viewport.ownerDocument.addEventListener("selectionchange", onSelection);
     window.addEventListener("resize", notifyLayoutChange);
-    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(notifyLayoutChange);
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => applyLayoutRef.current());
+    observingResizeRef.current = resize !== null;
     const observeRows = () => {
       resize?.disconnect();
       resize?.observe(viewport);
@@ -6413,9 +6421,13 @@ function useConversationScrollController(options) {
     };
     observeRows();
     const touchesRows = (nodes) => Array.from(nodes).some((node2) => node2 instanceof Element && (node2.matches(ROW_SELECTOR) || node2.querySelector(ROW_SELECTOR) !== null));
+    const outsideRows = (node2) => !(node2 instanceof Element ? node2 : node2.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record5) => record5.type === "childList" && (touchesRows(record5.addedNodes) || touchesRows(record5.removedNodes)))) observeRows();
-      notifyLayoutChange();
+      const rowsChanged = records.some((record5) => record5.type === "childList" && (touchesRows(record5.addedNodes) || touchesRows(record5.removedNodes)));
+      if (rowsChanged) observeRows();
+      const moved = rowsChanged || records.some((record5) => outsideRows(record5.target));
+      const session = sessionRef.current;
+      if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
     return () => {
@@ -6433,6 +6445,7 @@ function useConversationScrollController(options) {
       viewport.ownerDocument.removeEventListener("selectionchange", onSelection);
       window.removeEventListener("resize", notifyLayoutChange);
       resize?.disconnect();
+      observingResizeRef.current = false;
       mutation?.disconnect();
       viewport.style.overflowAnchor = previousOverflowAnchor;
       viewport.style.scrollSnapType = previousSnap;
@@ -39255,12 +39268,11 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
 }) {
   countRender("ComposerTextarea");
   const [value, setValue] = import_react40.default.useState(initialValue);
-  const appliedExternalRef = import_react40.default.useRef(null);
-  import_react40.default.useEffect(() => {
-    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
-    appliedExternalRef.current = externalValue.at;
+  const [appliedExternal, setAppliedExternal] = import_react40.default.useState(null);
+  if (externalValue && appliedExternal !== externalValue.at) {
+    setAppliedExternal(externalValue.at);
     setValue(externalValue.value);
-  }, [externalValue]);
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "composer__input", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       "textarea",
@@ -39364,6 +39376,8 @@ function ChatPane({
 }) {
   countRender("ChatPane");
   const [quoteError, setQuoteError] = import_react40.default.useState(null);
+  const quoteErrorRef = import_react40.default.useRef(quoteError);
+  quoteErrorRef.current = quoteError;
   import_react40.default.useEffect(() => {
     setQuoteError(null);
   }, [submittedRowId, identity, conversationId, viewportKey?.authority, viewportKey?.pane]);
@@ -39386,7 +39400,7 @@ function ChatPane({
   const [liveDraftTick, setLiveDraftTick] = import_react40.default.useState(0);
   const onLiveChange = import_react40.default.useCallback(
     (value) => {
-      setQuoteError(null);
+      if (quoteErrorRef.current !== null) setQuoteError(null);
       liveDraftRef.current = value;
       liveDraftRevisionRef.current += 1;
       if (publishDraftTimerRef.current !== null) {
@@ -39662,8 +39676,10 @@ function ChatPane({
     const body = bodyRef.current;
     if (!body) return;
     const measure = () => setTranscriptOverflows(body.scrollHeight > body.clientHeight + 1);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") {
+      measure();
+      return;
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
