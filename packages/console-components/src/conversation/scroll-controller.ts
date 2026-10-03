@@ -424,15 +424,19 @@ export function useConversationScrollController(options: ConversationScrollContr
     // DOM require it.
     const touchesRows = (nodes: NodeList) => Array.from(nodes).some((node) => node instanceof Element
       && (node.matches(ROW_SELECTOR) || node.querySelector(ROW_SELECTOR) !== null));
+    const outsideRows = (node: Node) => !(node instanceof Element ? node : node.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
       const rowsChanged = records.some((record) => record.type === "childList"
         && (touchesRows(record.addedNodes) || touchesRows(record.removedNodes)));
       if (rowsChanged) observeRows();
       // Text streaming inside a row resizes that row, which the resize
       // observer reports after layout; a frame callback here would read
-      // geometry before layout instead.
+      // geometry before layout instead. A change outside the rows, such as
+      // the older-history control appearing above them, moves rows without
+      // resizing any, so it still schedules a pass.
+      const moved = rowsChanged || records.some((record) => outsideRows(record.target));
       const session = sessionRef.current;
-      if (rowsChanged || !resize || !session || !steadySession(session)) notifyLayoutChange();
+      if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
     return () => {

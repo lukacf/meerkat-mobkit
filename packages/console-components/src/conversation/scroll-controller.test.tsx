@@ -67,20 +67,22 @@ class DeliveredResizeObserver {
   disconnect() { resizeCallbacks.delete(this.callback); }
 }
 function deliverResize() { for (const callback of [...resizeCallbacks]) callback(); }
-function Harness({ rows = baseRows, conversation = "test", viewportKey, submittedRowId, revealAnchor, revealTimeoutMs, height = 200, resizeEachCommit = true }: {
+function Harness({ rows = baseRows, conversation = "test", viewportKey, submittedRowId, revealAnchor, revealTimeoutMs, height = 200, resizeEachCommit = true, header = 0 }: {
   rows?: Row[]; conversation?: string; viewportKey?: ConversationViewportKey; submittedRowId?: string | null; revealAnchor?: ConversationScrollControllerOptions["revealAnchor"]; revealTimeoutMs?: number; height?: number;
   /** Deliver a resize after every commit, as rows and the viewport change size here. */
   resizeEachCommit?: boolean;
+  /** Height of a non-row element above the rows, absent when 0. */
+  header?: number;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const viewport = viewportRef.current!;
     Object.defineProperties(viewport, {
-      scrollHeight: { configurable: true, get: () => rows.reduce((sum, row) => sum + row.height, 0) },
+      scrollHeight: { configurable: true, get: () => header + rows.reduce((sum, row) => sum + row.height, 0) },
       clientHeight: { configurable: true, get: () => height },
     });
     viewport.getBoundingClientRect = () => rect(0, height);
-    let top = 0;
+    let top = header;
     for (const row of rows) {
       const node = Array.from(viewport.querySelectorAll<HTMLElement>("[data-conversation-row-id]")).find((node) => node.dataset.conversationRowId === row.id)!;
       const rowTop = top;
@@ -94,7 +96,7 @@ function Harness({ rows = baseRows, conversation = "test", viewportKey, submitte
   const scroll = useConversationScrollController({ viewportRef, viewportKey, conversationId: conversation, contentVersion: rows, submittedRowId, revealAnchor, revealTimeoutMs });
   useLayoutEffect(() => { if (resizeEachCommit) deliverResize(); });
   return <>
-    <div data-testid="viewport" tabIndex={0} ref={viewportRef}>{rows.map((row) => <div data-conversation-row-id={row.id} key={row.id}>{row.text ?? row.id}</div>)}</div>
+    <div data-testid="viewport" tabIndex={0} ref={viewportRef}>{header ? <button>Load older</button> : null}{rows.map((row) => <div data-conversation-row-id={row.id} key={row.id}>{row.text ?? row.id}</div>)}</div>
     <span data-testid="mode">{scroll.mode}</span>
     {scroll.missingAnchor ? <div role="status">Earlier position is unavailable</div> : null}
     {scroll.revealingAnchor ? <div role="status">Restoring earlier position</div> : null}
@@ -519,6 +521,21 @@ describe("conversation scroll intent", () => {
     fireEvent.scroll(viewport);
     act(deliverResize);
     expect(viewport.scrollTop).toBe(0);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+  });
+
+  test("an element inserted above the rows keeps a reader's anchor, though no row resizes", async () => {
+    // Rows that only move, as when the older-history control appears above
+    // them, report no resize; the controller still restores the anchor
+    // instead of leaving the shift for the next resize to correct
+    // (console e2e real-stock-presentation).
+    const view = render(<Harness resizeEachCommit={false} />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 300);
+    expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
+    view.rerender(<Harness resizeEachCommit={false} header={36} />);
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(null))); });
+    expect(viewport.scrollTop).toBe(336);
     expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
   });
 
