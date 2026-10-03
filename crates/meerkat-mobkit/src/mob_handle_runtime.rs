@@ -2693,9 +2693,22 @@ fn build_persistent_runtime_store(
 /// Correct only while this process is the sole writer of the underlying
 /// runtime store (the identity single-embodiment lease guard already enforces
 /// one live gateway per store; storage doctor tooling opens stores read-only).
-#[derive(Default)]
 pub(crate) struct SessionSnapshotWriteEpochs {
     epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Bumped after every advance: a typed transition for readers that wait
+    /// on durable progress (a backfill waiting for a member's queued inputs
+    /// to commit) instead of polling. Wakes on any session's write; waiters
+    /// compare their own session's epoch.
+    changes: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for SessionSnapshotWriteEpochs {
+    fn default() -> Self {
+        Self {
+            epochs: std::sync::Mutex::new(BTreeMap::new()),
+            changes: tokio::sync::watch::Sender::new(0),
+        }
+    }
 }
 
 impl SessionSnapshotWriteEpochs {
@@ -2703,11 +2716,18 @@ impl SessionSnapshotWriteEpochs {
     /// partially applied in an unknown store, so over-invalidation is the
     /// safe direction.
     fn advance(&self, runtime_id: &meerkat_runtime::LogicalRuntimeId) {
-        let mut epochs = self
-            .epochs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+        {
+            let mut epochs = self
+                .epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+        }
+        self.changes.send_modify(|generation| *generation += 1);
+    }
+
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     fn observe(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
@@ -2719,6 +2739,17 @@ impl SessionSnapshotWriteEpochs {
             .copied()
             .unwrap_or(0)
     }
+}
+
+/// See [`MobRuntime::session_drain_observation`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionDrainObservation {
+    /// A run input awaits its boundary commit.
+    pub(crate) commit_pending: bool,
+    /// Inputs that are not terminal yet.
+    pub(crate) active: Vec<uuid::Uuid>,
+    /// Watched inputs, no longer active, whose receipt is not finalized yet.
+    pub(crate) unfinalized: Vec<uuid::Uuid>,
 }
 
 /// Public handle to this process's per-session durable write-epoch witness
@@ -10761,6 +10792,25 @@ impl MobRuntime {
         Some(epochs.observe(&session_id))
     }
 
+    /// A receiver that changes after every session-scoped durable write in
+    /// this process, when this runtime owns the write-epoch seam. `None`
+    /// means no such witness exists.
+    pub(crate) fn session_write_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.session_write_epochs.as_ref()?.subscribe())
+    }
+
+    /// Test seam: record a durable write for `session_id`, as the witnessed
+    /// store does, without composing a store under the fixture.
+    #[cfg(test)]
+    pub(crate) fn note_session_write_for_test(&self, session_id_str: &str) {
+        if let (Some(epochs), Ok(session_id)) = (
+            self.session_write_epochs.as_ref(),
+            meerkat_core::types::SessionId::parse(session_id_str),
+        ) {
+            epochs.advance(&meerkat_runtime::LogicalRuntimeId::for_session(&session_id));
+        }
+    }
+
     /// Converge each supplied session's durable runtime authority BEFORE the
     /// bounded explicit resume has to read it.
     ///
@@ -10928,6 +10978,84 @@ impl MobRuntime {
             SESSION_COMMIT_PENDING_READ_BOUND,
         )
         .await
+    }
+
+    /// Whether `session_id` has any non-terminal input: queued behind the
+    /// current run, staged, or applied and awaiting its boundary commit.
+    /// `None` when the runtime adapter does not answer within the bound
+    /// (inconclusive, never a guessed `false`).
+    pub async fn session_has_active_inputs(&self, session_id: &str) -> Option<bool> {
+        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
+        bounded_commit_pending(
+            async {
+                meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
+                    runtime_adapter.as_ref(),
+                    &session_id,
+                )
+                .await
+                .map(|inputs| !inputs.is_empty())
+            },
+            SESSION_COMMIT_PENDING_READ_BOUND,
+        )
+        .await
+    }
+
+    /// What is still landing for `session_id`'s durable work, in one bounded
+    /// observation: whether a run input awaits its boundary commit, which
+    /// inputs are still active, and which of `watched` (inputs seen active
+    /// earlier) have no finalized terminal receipt yet. An input leaves the
+    /// active set once its boundary commits, but its receipt is finalized in
+    /// a later durable write. `None` when a read does not answer within its
+    /// bound (inconclusive).
+    pub(crate) async fn session_drain_observation(
+        &self,
+        session_id: &str,
+        watched: &[uuid::Uuid],
+    ) -> Option<SessionDrainObservation> {
+        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let typed = meerkat_core::types::SessionId::parse(session_id).ok()?;
+        let commit_pending = self.session_commit_pending(session_id).await?;
+        let active = tokio::time::timeout(
+            SESSION_COMMIT_PENDING_READ_BOUND,
+            meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
+                runtime_adapter.as_ref(),
+                &typed,
+            ),
+        )
+        .await
+        .ok()?
+        .ok()?
+        .into_iter()
+        .map(|input| input.0)
+        .collect::<Vec<_>>();
+        let mut unfinalized = Vec::new();
+        for id in watched {
+            if active.contains(id) {
+                continue;
+            }
+            match tokio::time::timeout(
+                SESSION_COMMIT_PENDING_READ_BOUND,
+                meerkat_runtime::service_ext::SessionServiceRuntimeExt::input_terminal_completion(
+                    runtime_adapter.as_ref(),
+                    &typed,
+                    &meerkat_core::lifecycle::InputId(*id),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(None)) => unfinalized.push(*id),
+                // Finalized, or terminal with no receipt to wait for: an error
+                // here cannot later turn into a receipt this waiter needs.
+                Ok(Ok(Some(_)) | Err(_)) => {}
+                Err(_) => return None,
+            }
+        }
+        Some(SessionDrainObservation {
+            commit_pending,
+            active,
+            unfinalized,
+        })
     }
 
     #[allow(dead_code)]

@@ -189,6 +189,26 @@ struct AggregatorInner {
     status_unknown_redrives: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
     #[cfg(test)]
     status_unknown_redrive_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Retry keys with an armed drain re-drive (one waiter per key): the
+    /// member was idle with durable work still landing (`Draining`), and the
+    /// session's next durable write that leaves it drained re-drives the
+    /// refresh. Trailing commits raise no member event of their own.
+    drain_redrives: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
+    #[cfg(test)]
+    drain_redrive_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Test seam: replaces the runtime's drained read for drain re-drives.
+    #[cfg(test)]
+    drain_probe_override: std::sync::Mutex<Option<DrainProbe>>,
+    /// Retry keys with a queued epoch re-drive: a completed pass whose
+    /// session write epoch moved during its read re-reads once at the new
+    /// epoch instead of waiting for a discovery tick and watermark expiry.
+    epoch_redrives: std::sync::Mutex<BTreeSet<(uuid::Uuid, String, String, String)>>,
+    #[cfg(test)]
+    epoch_redrive_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Session-history backfill jobs spawned or armed and not yet finished
+    /// (see [`BackfillActivity`]). Zero means every pass the aggregator owes
+    /// has run: [`MobKitConsoleAggregator::history_backfill_converged`].
+    backfill_activity: tokio::sync::watch::Sender<usize>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -651,6 +671,17 @@ pub struct ConsoleRuntimeRegistration {
 }
 
 impl MobKitConsoleAggregator {
+    /// Resolve once no session-history backfill is running, queued, or armed
+    /// to run again: every pass owed after registration, a durable write, or
+    /// a member event has finished, including re-drives waiting for a member
+    /// to settle or its queued work to land. A converged console re-reads
+    /// nothing until something durable changes. Never resolves while a
+    /// backfill stays owed; callers bound the wait with their own deadline.
+    pub async fn history_backfill_converged(&self) {
+        let mut activity = backfill_owner(&self.inner).backfill_activity.subscribe();
+        let _ = activity.wait_for(|in_flight| *in_flight == 0).await;
+    }
+
     pub fn new(store: Arc<dyn ConsoleLogStore>) -> Self {
         Self::new_with_options(store, ConsoleAggregatorOptions::default())
     }
@@ -687,6 +718,15 @@ impl MobKitConsoleAggregator {
                 status_unknown_redrives: std::sync::Mutex::new(BTreeSet::new()),
                 #[cfg(test)]
                 status_unknown_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                drain_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                drain_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                #[cfg(test)]
+                drain_probe_override: std::sync::Mutex::new(None),
+                epoch_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                epoch_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                backfill_activity: tokio::sync::watch::Sender::new(0),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -767,6 +807,15 @@ impl MobKitConsoleAggregator {
                 status_unknown_redrives: std::sync::Mutex::new(BTreeSet::new()),
                 #[cfg(test)]
                 status_unknown_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                drain_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                drain_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                #[cfg(test)]
+                drain_probe_override: std::sync::Mutex::new(None),
+                epoch_redrives: std::sync::Mutex::new(BTreeSet::new()),
+                #[cfg(test)]
+                epoch_redrive_tasks: std::sync::Mutex::new(Vec::new()),
+                backfill_activity: tokio::sync::watch::Sender::new(0),
                 notice_observations: std::sync::Mutex::new(NoticeObservationCache::new(
                     NOTICE_OBSERVATION_CACHE_LIMIT,
                 )),
@@ -995,7 +1044,11 @@ impl MobKitConsoleAggregator {
         let inner = self.inner.clone();
         let events_for_replay = console_events;
         let runtime_key_for_replay = runtime_key;
+        // Registration owes a recovery pass from this moment: count it before
+        // the replay task first runs, until that pass has been spawned.
+        let registration_activity = BackfillActivity::begin(&inner);
         tokio::spawn(async move {
+            let _registration_activity = registration_activity;
             let mut ingestion_state = SourceIngestionState::Registered;
             if let Ok((next, _effects)) =
                 ingestion_state.apply(SourceIngestionTransition::StartBackfill)
@@ -5579,6 +5632,7 @@ where
             assistant_refresh_gate,
             assistant_history_refresh::AssistantHistoryRefreshGate::Pending
                 | assistant_history_refresh::AssistantHistoryRefreshGate::StatusUnknown
+                | assistant_history_refresh::AssistantHistoryRefreshGate::Draining
         ) {
             completed_cleanly = false;
             unsettled_refresh = true;
@@ -5598,6 +5652,28 @@ where
                     session_id: session_id.clone(),
                 },
             );
+        }
+        // Durable work is still landing: a read now would be read again once
+        // it lands. Skip it, keep the retry, and let the drain re-drive it.
+        if assistant_refresh_gate
+            == assistant_history_refresh::AssistantHistoryRefreshGate::Draining
+        {
+            if runtime_entry_is_current(&inner, &entry) {
+                arm_drain_redrive(
+                    &inner,
+                    assistant_retry_key.clone(),
+                    SessionBackfillTarget {
+                        assistant_refresh: AssistantHistoryRefreshReason::SessionBoundary {
+                            session_id: session_id.clone(),
+                        },
+                        provenance: None,
+                        entry: entry.clone(),
+                        record: record.clone(),
+                        session_id: session_id.clone(),
+                    },
+                );
+            }
+            break;
         }
         cache_notice_observation(
             &inner,
@@ -6018,6 +6094,26 @@ where
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(watermark_runtime_key, epoch);
+        // The image this pass verified is older than the durable document if
+        // the session's epoch moved during the read: re-read now, not on a
+        // later tick once the fresh watermark expires.
+        if entry
+            .runtime
+            .session_document_write_epoch(&session_id)
+            .is_some_and(|now| now != epoch)
+        {
+            arm_epoch_redrive(
+                &inner,
+                assistant_retry_key,
+                SessionBackfillTarget {
+                    assistant_refresh,
+                    provenance: None,
+                    entry,
+                    record,
+                    session_id,
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -6059,7 +6155,9 @@ fn spawn_session_history_backfill(
     if !inner.options.session_history_backfill_enabled {
         return;
     }
+    let activity = BackfillActivity::begin(&inner);
     tokio::spawn(async move {
+        let _activity = activity;
         {
             let mut active = inner.active_session_backfills.lock().await;
             if !assistant_history_refresh::admit_runtime_refresh(
@@ -6140,7 +6238,9 @@ fn spawn_session_history_backfill_target(
     if !inner.options.session_history_backfill_enabled {
         return;
     }
+    let activity = BackfillActivity::begin(&inner);
     tokio::spawn(async move {
+        let _activity = activity;
         let active_key = targeted_session_history_active_key(&target, force_refresh);
         let result =
             run_targeted_session_history_backfill(inner.clone(), target, force_refresh).await;
@@ -6163,6 +6263,200 @@ fn spawn_session_history_backfill_target(
 /// runs one targeted backfill; the retained retry key makes that pass request
 /// the assistant refresh again. The discovery loop stays the backup (a
 /// member outside the primary mob, or a mob with no further activity).
+/// One spawned or armed session-history backfill job. It counts from the
+/// moment it is spawned, before its task first runs, until it finishes, so a
+/// convergence wait started right after registration already sees the
+/// registration's recovery pass.
+struct BackfillActivity(tokio::sync::watch::Sender<usize>);
+
+impl BackfillActivity {
+    fn begin(inner: &Arc<AggregatorInner>) -> Self {
+        let sender = backfill_owner(inner).backfill_activity.clone();
+        sender.send_modify(|in_flight| *in_flight += 1);
+        Self(sender)
+    }
+}
+
+impl Drop for BackfillActivity {
+    fn drop(&mut self) {
+        self.0
+            .send_modify(|in_flight| *in_flight = in_flight.saturating_sub(1));
+    }
+}
+
+/// The aggregator that owns session-history projection for `inner`.
+fn backfill_owner(inner: &Arc<AggregatorInner>) -> &Arc<AggregatorInner> {
+    inner.projection_owner.as_ref().unwrap_or(inner)
+}
+
+/// Whether the session's durable work has landed, read when a drain
+/// re-drive wakes. Injected in tests.
+type DrainProbe = Arc<
+    dyn Fn(RuntimeEntry, String) -> futures::future::BoxFuture<'static, Option<bool>> + Send + Sync,
+>;
+
+/// Arm one re-drive for a refresh whose gate read `Draining`: the member is
+/// idle on the session but inputs are still queued or a commit is pending.
+/// Each run of a queued burst, each trailing commit, and each receipt
+/// finalization lands through a session-scoped durable write, so the waiter
+/// wakes on the session's write epoch (a typed transition, never a timer),
+/// re-reads whether the session has drained (see `SessionDrainTracker`), and
+/// re-drives the refresh once it has. Without a write-epoch witness the
+/// member's own events and machine changes re-drive it.
+fn arm_drain_redrive(
+    inner: &Arc<AggregatorInner>,
+    retry_key: (uuid::Uuid, String, String, String),
+    target: SessionBackfillTarget,
+) {
+    let Some(changes) = target.entry.runtime.session_write_epoch_changes() else {
+        arm_status_unknown_redrive(inner, retry_key, target);
+        return;
+    };
+    let tracker = Arc::new(tokio::sync::Mutex::new(
+        assistant_history_refresh::SessionDrainTracker::default(),
+    ));
+    let probe: DrainProbe = Arc::new(move |entry, session_id| {
+        let tracker = Arc::clone(&tracker);
+        Box::pin(async move { tracker.lock().await.drained(&entry, &session_id).await })
+    });
+    #[cfg(test)]
+    let probe = inner
+        .drain_probe_override
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or(probe);
+    arm_drain_redrive_with(inner, retry_key, target, changes, probe);
+}
+
+fn arm_drain_redrive_with(
+    inner: &Arc<AggregatorInner>,
+    retry_key: (uuid::Uuid, String, String, String),
+    target: SessionBackfillTarget,
+    mut changes: tokio::sync::watch::Receiver<u64>,
+    drained: DrainProbe,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    if !inner
+        .drain_redrives
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(retry_key.clone())
+    {
+        return;
+    }
+    // Mark the current generation seen BEFORE the first drained read: a write
+    // landing after that read still wakes the waiter, so the drain cannot slip
+    // between the gate's read and this arm.
+    changes.borrow_and_update();
+    let redrive_inner = Arc::clone(inner);
+    let activity = BackfillActivity::begin(inner);
+    let task = tokio::spawn(async move {
+        let _activity = activity;
+        let session_id = target.session_id.clone();
+        let mut seen_epoch = target
+            .entry
+            .runtime
+            .session_document_write_epoch(&session_id);
+        let drained_now = loop {
+            if !runtime_entry_is_current(&redrive_inner, &target.entry) {
+                break false;
+            }
+            if drained(target.entry.clone(), session_id.clone()).await == Some(true) {
+                break true;
+            }
+            // Wait for this session's next durable write. Writes to other
+            // sessions wake the receiver too; their epoch for this session is
+            // unchanged, so the waiter does not re-read on them.
+            let woke = loop {
+                if changes.changed().await.is_err() {
+                    break false;
+                }
+                let epoch = target
+                    .entry
+                    .runtime
+                    .session_document_write_epoch(&session_id);
+                if epoch != seen_epoch {
+                    seen_epoch = epoch;
+                    break true;
+                }
+            };
+            if !woke {
+                break false;
+            }
+        };
+        redrive_inner
+            .drain_redrives
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&retry_key);
+        if drained_now
+            && let Err(error) =
+                run_targeted_session_history_backfill(redrive_inner, target, false).await
+        {
+            tracing::warn!(error = %error, "console drained assistant-history re-drive failed");
+        }
+    });
+    #[cfg(test)]
+    inner
+        .drain_redrive_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(task);
+    #[cfg(not(test))]
+    drop(task);
+}
+
+/// Queue one re-read for a completed pass whose session write epoch moved
+/// during its read: the image it verified is already behind the durable
+/// document. The re-drive reads at once (forced past the epoch and
+/// watermark gates, which would otherwise hold it until a discovery tick and
+/// watermark expiry) and runs only because the epoch moved, so it cannot
+/// loop: a pass that ends at the epoch it read queues nothing.
+fn arm_epoch_redrive(
+    inner: &Arc<AggregatorInner>,
+    retry_key: (uuid::Uuid, String, String, String),
+    target: SessionBackfillTarget,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    if !inner
+        .epoch_redrives
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(retry_key.clone())
+    {
+        return;
+    }
+    let redrive_inner = Arc::clone(inner);
+    let activity = BackfillActivity::begin(inner);
+    let task = tokio::spawn(async move {
+        let _activity = activity;
+        redrive_inner
+            .epoch_redrives
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&retry_key);
+        if runtime_entry_is_current(&redrive_inner, &target.entry)
+            && let Err(error) =
+                run_targeted_session_history_backfill(redrive_inner, target, true).await
+        {
+            tracing::warn!(error = %error, "console moved-epoch session-history re-drive failed");
+        }
+    });
+    #[cfg(test)]
+    inner
+        .epoch_redrive_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(task);
+    #[cfg(not(test))]
+    drop(task);
+}
+
 fn arm_status_unknown_redrive(
     inner: &Arc<AggregatorInner>,
     retry_key: (uuid::Uuid, String, String, String),
@@ -6189,7 +6483,9 @@ fn arm_status_unknown_redrive(
     // back-to-back instead of on the next typed change).
     let _ = futures::FutureExt::now_or_never(changes.changed());
     let redrive_inner = Arc::clone(inner);
+    let activity = BackfillActivity::begin(inner);
     let task = tokio::spawn(async move {
+        let _activity = activity;
         use futures::StreamExt as _;
         let woke = match handle.subscribe_agent_events(&member).await {
             Ok(mut events) => tokio::select! {
@@ -6310,7 +6606,9 @@ fn spawn_session_history_backfill_for_identity(
     if !inner.options.session_history_backfill_enabled {
         return;
     }
+    let activity = BackfillActivity::begin(&inner);
     tokio::spawn(async move {
+        let _activity = activity;
         for mut target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
             target.assistant_refresh = assistant_refresh.clone();
             spawn_session_history_backfill_target(inner.clone(), target, force_refresh);
@@ -6326,7 +6624,9 @@ fn spawn_opportunistic_session_history_backfill_for_identity(
     if !inner.options.session_history_backfill_enabled {
         return;
     }
+    let activity = BackfillActivity::begin(&inner);
     tokio::spawn(async move {
+        let _activity = activity;
         for target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
             let active_key = format!(
                 "{}:session-history:{}",
@@ -8815,14 +9115,18 @@ mod tests {
     }
 
     impl HistoryReadGate {
-        fn new() -> Arc<Self> {
+        pub(super) fn new() -> Arc<Self> {
             Arc::new(Self {
                 entered: Semaphore::new(0),
                 release: Semaphore::new(0),
             })
         }
 
-        async fn wait_until_entered(&self) {
+        pub(super) fn release(&self) {
+            self.release.add_permits(1);
+        }
+
+        pub(super) async fn wait_until_entered(&self) {
             tokio::time::timeout(Duration::from_secs(10), self.entered.acquire())
                 .await
                 .expect("scripted history read entered")

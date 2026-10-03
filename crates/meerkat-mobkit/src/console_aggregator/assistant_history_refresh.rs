@@ -79,6 +79,12 @@ pub(super) enum AssistantHistoryRefreshGate {
     /// emits no event of its own that would re-drive it, so the backfill arms
     /// a re-drive on the next typed change.
     StatusUnknown,
+    /// The member is idle on this session but its durable work has not
+    /// landed: inputs are still queued, staged or awaiting their boundary
+    /// commit (a burst draining between runs, or trailing commits). Not
+    /// settled, and a read now would only be read again once the queue
+    /// drains, so the backfill skips it and arms a re-drive on that drain.
+    Draining,
     Settled,
 }
 
@@ -200,21 +206,69 @@ pub(super) async fn observe(
                 .ok()
                 .flatten()
         },
+        || async {
+            tokio::time::timeout_at(
+                deadline,
+                entry.runtime.session_has_active_inputs(session_id),
+            )
+            .await
+            .ok()
+            .flatten()
+        },
     )
     .await
 }
 
-async fn observe_with<StatusRead, StatusFuture, CommitRead, CommitFuture>(
+/// A session's durable work, tracked across one drain re-drive's checks. An
+/// input leaves the active set when its boundary commits, but its terminal
+/// receipt is finalized in a later durable write: a refresh started in
+/// between reads an image the receipt write then moves past. The tracker
+/// keeps every input it has seen active until its receipt is final.
+#[derive(Default)]
+pub(super) struct SessionDrainTracker {
+    watched: std::collections::BTreeSet<uuid::Uuid>,
+}
+
+impl SessionDrainTracker {
+    /// `Some(true)` once no commit is pending, no input is active, and every
+    /// input seen active has its receipt finalized; `None` when inconclusive.
+    pub(super) async fn drained(&mut self, entry: &RuntimeEntry, session_id: &str) -> Option<bool> {
+        let watched = self.watched.iter().copied().collect::<Vec<_>>();
+        let observation = entry
+            .runtime
+            .session_drain_observation(session_id, &watched)
+            .await?;
+        self.watched = observation
+            .active
+            .iter()
+            .chain(&observation.unfinalized)
+            .copied()
+            .collect();
+        Some(!observation.commit_pending && self.watched.is_empty())
+    }
+}
+
+async fn observe_with<
+    StatusRead,
+    StatusFuture,
+    CommitRead,
+    CommitFuture,
+    ActiveRead,
+    ActiveFuture,
+>(
     requested: bool,
     session_id: &str,
     read_status: StatusRead,
     read_commit: CommitRead,
+    read_active: ActiveRead,
 ) -> AssistantHistoryRefreshGate
 where
     StatusRead: FnOnce() -> StatusFuture,
     StatusFuture: Future<Output = MemberStatusRead>,
     CommitRead: FnOnce() -> CommitFuture,
     CommitFuture: Future<Output = Option<bool>>,
+    ActiveRead: FnOnce() -> ActiveFuture,
+    ActiveFuture: Future<Output = Option<bool>>,
 {
     if !requested {
         return AssistantHistoryRefreshGate::PositiveOnly;
@@ -228,10 +282,16 @@ where
             return AssistantHistoryRefreshGate::StatusUnknown;
         }
     };
-    if current_session != session_id || read_commit().await != Some(false) {
+    if current_session != session_id {
         return AssistantHistoryRefreshGate::Pending;
     }
-    AssistantHistoryRefreshGate::Settled
+    // Idle between runs is not settled while durable work is still landing:
+    // a queued burst drains run by run, and each run's commits trail it.
+    match (read_commit().await, read_active().await) {
+        (Some(false), Some(false)) => AssistantHistoryRefreshGate::Settled,
+        (Some(true), _) | (_, Some(true)) => AssistantHistoryRefreshGate::Draining,
+        _ => AssistantHistoryRefreshGate::Pending,
+    }
 }
 
 #[cfg(test)]
@@ -342,10 +402,60 @@ mod tests {
                 calls.borrow_mut().push("commit");
                 ready(Some(false))
             },
+            || {
+                calls.borrow_mut().push("active");
+                ready(Some(false))
+            },
         )
         .await;
         assert_eq!(gate, AssistantHistoryRefreshGate::PositiveOnly);
         assert!(calls.borrow().is_empty());
+    }
+
+    /// An idle member whose queued burst is still draining (or whose commits
+    /// still trail) is not settled: the gate reads `Draining` until both its
+    /// active inputs and its pending commit have landed, and only an
+    /// inconclusive read is `Pending`.
+    #[tokio::test]
+    async fn an_idle_member_with_queued_inputs_is_draining_not_settled() {
+        let gate = |commit: Option<bool>, active: Option<bool>| {
+            observe_with(
+                true,
+                "session-a",
+                || {
+                    ready(MemberStatusRead::Observed(
+                        "session-a".into(),
+                        MemberRunState::Idle,
+                    ))
+                },
+                move || ready(commit),
+                move || ready(active),
+            )
+        };
+        assert_eq!(
+            gate(Some(false), Some(true)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(true), Some(false)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(true), Some(true)).await,
+            AssistantHistoryRefreshGate::Draining
+        );
+        assert_eq!(
+            gate(Some(false), None).await,
+            AssistantHistoryRefreshGate::Pending
+        );
+        assert_eq!(
+            gate(None, Some(false)).await,
+            AssistantHistoryRefreshGate::Pending
+        );
+        assert_eq!(
+            gate(Some(false), Some(false)).await,
+            AssistantHistoryRefreshGate::Settled
+        );
     }
 
     #[tokio::test]
@@ -548,6 +658,10 @@ realm_profile = "worker"
                     calls.borrow_mut().push("commit");
                     ready(Some(false))
                 },
+                || {
+                    calls.borrow_mut().push("active");
+                    ready(Some(false))
+                },
             )
             .await;
             assert_eq!(gate, expected);
@@ -573,15 +687,21 @@ realm_profile = "worker"
                     calls.borrow_mut().push("commit");
                     ready(pending)
                 },
+                || {
+                    calls.borrow_mut().push("active");
+                    ready(Some(false))
+                },
             )
             .await;
-            assert_eq!(*calls.borrow(), ["status", "commit"]);
+            assert_eq!(*calls.borrow(), ["status", "commit", "active"]);
+            // A pending commit is durable work still landing: draining, not
+            // settled. Only an inconclusive read stays plainly pending.
             assert_eq!(
                 gate,
-                if pending == Some(false) {
-                    AssistantHistoryRefreshGate::Settled
-                } else {
-                    AssistantHistoryRefreshGate::Pending
+                match pending {
+                    Some(false) => AssistantHistoryRefreshGate::Settled,
+                    Some(true) => AssistantHistoryRefreshGate::Draining,
+                    None => AssistantHistoryRefreshGate::Pending,
                 }
             );
         }
