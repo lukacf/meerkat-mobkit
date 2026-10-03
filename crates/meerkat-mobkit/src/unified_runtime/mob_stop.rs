@@ -14,15 +14,12 @@
 //! 3. Re-send Stop. A run's terminal event is appended before the actor
 //!    applies the run's `FinishRun` (which is what admits Stop), and no
 //!    public signal follows `FinishRun` except the machine-state wake. So a
-//!    refused re-send is re-issued only after the next machine commit, and
-//!    at most once per settled run plus once for the first refused Stop's own
-//!    commit (it begins the placed-completion quiesce). Past that cap the
-//!    refusal is returned as is: the public API cannot tell a run's
-//!    `FinishRun` from an unrelated commit, so the cap keeps another guard's
-//!    refusal from spinning on unrelated commits. A re-issued Stop refused
-//!    after every settled run's `FinishRun` already landed has no commit to
-//!    wait for; it surfaces at the hang guard, in the typed error's
-//!    `last_refusal`.
+//!    refused re-send is re-issued after each machine commit, with the next
+//!    wake armed before each Stop, until Stop is admitted. Unrelated commits
+//!    (member-turn interrupts, roster changes) can land before `FinishRun`,
+//!    so the re-issue is not capped by count: a refusal from another guard
+//!    after the settled runs left surfaces at the hang guard, in the typed
+//!    error's `last_refusal`.
 //!
 //! Everything is bounded by [`MOB_STOP_FLOW_SETTLE_BUDGET`]; past it the
 //! typed [`MobStopFlowRunsUnsettled`] names the unsettled runs and the last
@@ -149,13 +146,13 @@ pub(crate) async fn settle_flow_runs_then_stop<T: MobStopTarget>(
             let Some(run_id) = terminals.next_terminal().await else {
                 return Err(MobError::ActorCommandChannelClosed);
             };
-            if unsettled.remove(&run_id) {
-                settled += 1;
-            }
+            unsettled.remove(&run_id);
         }
-        // One re-issue per settled run, plus one for the first refused
-        // Stop's own quiesce commit (module docs; meerkat#1593).
-        let mut reissues_left = settled + 1;
+        // Re-issue on machine commits until the settled runs' `FinishRun`
+        // admits Stop, bounded by the hang guard. meerkat#1593: a public
+        // post-`FinishRun` signal (a `FlowRunRetired` event or an active-run
+        // projection) replaces this commit wake with an exact wait, and an
+        // unrelated refusal then returns at once.
         loop {
             if commits.changed().await.is_err() {
                 return Err(MobError::ActorCommandChannelClosed);
@@ -166,10 +163,6 @@ pub(crate) async fn settle_flow_runs_then_stop<T: MobStopTarget>(
             match target.stop().await {
                 Ok(()) => return Ok(()),
                 Err(refusal @ MobError::InvalidTransition { .. }) => {
-                    reissues_left -= 1;
-                    if reissues_left == 0 {
-                        return Err(refusal);
-                    }
                     last_refusal = Some(refusal);
                 }
                 Err(error) => return Err(error),
@@ -285,12 +278,14 @@ mod tests {
         }
     }
 
-    /// A mob double: scripted Stop answers, listed flow runs, and a machine
-    /// commit after every refused Stop (the first refusal's own quiesce
-    /// commit, or a run's `FinishRun` landing after it).
+    /// A mob double: scripted Stop answers (a refusal once the script is
+    /// spent), listed flow runs, and a machine commit after a refused Stop
+    /// while `refusal_commits` lasts (the first refusal's own quiesce commit,
+    /// an unrelated commit, or a run's `FinishRun` landing after it).
     struct FakeTarget {
         runs: Vec<RunId>,
         cancel_ends_run: bool,
+        refusal_commits: AtomicUsize,
         stop_answers: Mutex<VecDeque<Result<(), MobError>>>,
         stop_calls: AtomicUsize,
         cancels: AtomicUsize,
@@ -309,6 +304,7 @@ mod tests {
             Self {
                 runs,
                 cancel_ends_run,
+                refusal_commits: AtomicUsize::new(usize::MAX),
                 stop_answers: Mutex::new(stop_answers.into()),
                 stop_calls: AtomicUsize::new(0),
                 cancels: AtomicUsize::new(0),
@@ -376,8 +372,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .expect("a scripted stop answer");
-            if answer.is_err() {
+                .unwrap_or_else(|| Err(refusal()));
+            if answer.is_err()
+                && self
+                    .refusal_commits
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+            {
                 self.commits.send_modify(|commit| *commit += 1);
             }
             answer
@@ -434,27 +437,53 @@ mod tests {
         );
     }
 
-    /// A refusal that settling the flow runs did not clear (another guard)
-    /// is re-issued at most once per settled run plus once, then returned as
-    /// is, instead of spinning on unrelated commits until the hang guard.
+    /// The CI failure of the capped re-issue: unrelated commits (member-turn
+    /// interrupts, roster changes) land before the settled run's `FinishRun`.
+    /// Each wakes a re-issue that is refused; the Stop is admitted once the
+    /// run has left the machine, however many commits came first.
     #[tokio::test(start_paused = true)]
-    async fn a_refusal_that_outlives_the_settled_runs_is_returned_after_the_cap() {
+    async fn a_finish_run_after_unrelated_commits_still_admits_the_stop() {
         let target = FakeTarget::new(
             vec![RunId::new()],
             true,
-            vec![Err(refusal()), Err(refusal()), Err(refusal())],
+            vec![
+                Err(refusal()),
+                Err(refusal()),
+                Err(refusal()),
+                Err(refusal()),
+                Err(refusal()),
+                Ok(()),
+            ],
         );
+        settle_flow_runs_then_stop(&target, MOB_STOP_FLOW_SETTLE_BUDGET)
+            .await
+            .expect("stopped once the run left the machine");
+        assert_eq!(target.stop_calls.load(Ordering::SeqCst), 6);
+    }
+
+    /// A refusal that settling the flow runs did not clear (another guard)
+    /// and that no further commit can lift surfaces at the hang guard, as the
+    /// typed error carrying that refusal.
+    #[tokio::test(start_paused = true)]
+    async fn an_unrelated_refusal_after_the_settled_runs_surfaces_at_the_guard() {
+        let target = FakeTarget::new(vec![RunId::new()], true, Vec::new());
+        target.refusal_commits.store(3, Ordering::SeqCst);
         let error = settle_flow_runs_then_stop(&target, MOB_STOP_FLOW_SETTLE_BUDGET)
             .await
             .expect_err("still refused");
-        assert!(
-            matches!(
-                error,
-                MobRuntimeError::Mob(MobError::InvalidTransition { .. })
-            ),
-            "the refusal, not the hang guard: {error:?}"
+        let MobRuntimeError::MobStopFlowRunsUnsettled(unsettled) = &error else {
+            panic!("the typed hang-guard error: {error:?}");
+        };
+        assert!(unsettled.runs.is_empty(), "the run itself settled");
+        assert!(matches!(
+            unsettled.last_refusal,
+            Some(MobError::InvalidTransition { .. })
+        ));
+        assert_eq!(
+            target.stop_calls.load(Ordering::SeqCst),
+            4,
+            "the first Stop and one re-issue per commit, no more"
         );
-        assert_eq!(target.stop_calls.load(Ordering::SeqCst), 3);
     }
 
     /// A flow run that never terminates trips the named hang guard, whose

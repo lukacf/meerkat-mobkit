@@ -161,13 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     - When an active flow run refuses the Stop (meerkat's `no_active_runs`
       guard), teardown cancels each non-terminal run, awaits its terminal
       event on the mob event ledger, and stops the mob.
-    - It re-issues the Stop only after a machine commit, at most once per
-      settled run plus once: a run's terminal event lands before the actor
-      retires the run. meerkat#1593 tracks removing this step.
+    - A run's terminal event lands before the actor retires the run, so a
+      refused re-send is re-issued on each machine commit until it is
+      admitted, never on a timer. meerkat#1593 tracks replacing this with an
+      exact signal.
     - It is bounded by `MOB_STOP_FLOW_SETTLE_BUDGET` (10 s, the old window).
       Past it, `MobRuntimeError::MobStopFlowRunsUnsettled` names the
-      unsettled runs and the last refusal.
-    - Any other refusal is returned as is.
+      unsettled runs and the last refusal; that is also where a refusal from
+      another guard surfaces once teardown has settled runs.
+    - Without flow runs to settle, a refusal is returned as is.
     - `MobStopOutcome::ProceededWithoutInterrupt` and
       `ErrorEvent::MobStopProceededWithoutInterrupt` are no longer produced.
       The `Runtime not ready: attached` refusal they degraded came from
