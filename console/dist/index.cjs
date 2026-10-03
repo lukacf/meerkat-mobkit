@@ -5908,102 +5908,9 @@ function JumpToLatest({ onClick, working = false }) {
   ) });
 }
 
-// ../packages/console-components/src/conversation/approval-card.tsx
-var import_jsx_runtime8 = require("react/jsx-runtime");
-var labels = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
-function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }) {
-  const pending = request.status === "pending" && decision?.phase !== "settled";
-  const submitting = decision?.phase === "submitting";
-  const stale = resourceStatus !== "ready";
-  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": `gating-pending:${request.pendingId}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("header", { className: "cc-approval__header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: request.action }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval__status", role: "status", children: state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved" })
-    ] }),
-    request.rationale ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: request.rationale }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dl", { className: "cc-approval__scope", children: [
-      request.origin ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "Origin" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: request.origin.identity })
-      ] }) : null,
-      request.riskTier ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "Risk" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: request.riskTier })
-      ] }) : null,
-      request.deadlineAtMs !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "Deadline" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("time", { dateTime: new Date(request.deadlineAtMs).toISOString(), children: new Date(request.deadlineAtMs).toLocaleString() }) })
-      ] }) : null
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("details", { className: "cc-approval__details", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("summary", { children: "Complete request details" }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dl", { className: "cc-approval__scope", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "Request" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: request.pendingId }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "Action scope" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: request.actionId }) })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("pre", { children: JSON.stringify(request.raw, null, 2) })
-    ] }),
-    decision?.error ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { role: "alert", children: decision.error }) : null,
-    decision?.result?.next_pending_id ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("p", { children: [
-      "Escalated to ",
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: decision.result.next_pending_id })
-    ] }) : null,
-    readOnly ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: "Read-only access" }) : null,
-    resourceStatus === "forbidden" ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: "Approval access denied" }) : null,
-    pending ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": `gating-action:${request.pendingId}:${action}`, onClick: () => {
-      void onDecide(request.pendingId, action);
-    }, children: labels[action] }, action)) }) : null
-  ] });
-}
-function ApprovalAttention({ snapshot, onOpen }) {
-  if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
-  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
-  const ready = snapshot.status === "ready";
-  const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", "data-state": snapshot.status, "data-pending": ready && requests.length > 0, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
-      "button",
-      {
-        className: "cc-approval-attention__open",
-        type: "button",
-        "aria-label": `Needs you, ${status}`,
-        title: status,
-        onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingId : void 0),
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("svg", { className: "cc-approval-attention__icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "m4 5-2 9v5h20v-5l-2-9H4Z" }),
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "M2 14h6l2 3h4l2-3h6" })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__label", children: "Needs you" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__count", "aria-hidden": "true", children: ready ? requests.length : snapshot.status === "loading" ? "..." : "!" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("svg", { className: "cc-approval-attention__chevron", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("path", { d: "m6 4 4 4-4 4" }) })
-        ]
-      }
-    ),
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-approval-attention__status", role: "status", children: status })
-  ] });
-}
-
-// ../packages/console-components/src/conversation/conversation-approvals.tsx
-var import_jsx_runtime9 = require("react/jsx-runtime");
-function approvalInteractionIdsByTurn(turns) {
-  const latest = /* @__PURE__ */ new Map();
-  turns.forEach((ids, index2) => ids.forEach((id) => latest.set(id, index2)));
-  return turns.map((ids, index2) => [...new Set(ids)].filter((id) => latest.get(id) === index2));
-}
-function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }) {
-  if (!approvalSnapshot || !approvalIdentity) return null;
-  const requests = approvalSnapshot.requests.filter((request) => Boolean(request.origin?.interactionId) === Boolean(interactionIds) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_jsx_runtime9.Fragment, { children: requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ApprovalCard, { request, resourceStatus: approvalSnapshot.status, decision: approvalSnapshot.decisions[request.pendingId], readOnly: approvalSnapshot.readOnly || !onApprovalDecision, onDecide: onApprovalDecision ?? (() => {
-  }) }, request.pendingId)) });
-}
-
 // ../packages/console-components/src/conversation/presentation-policy.tsx
 var import_react3 = require("react");
-var import_jsx_runtime10 = require("react/jsx-runtime");
+var import_jsx_runtime8 = require("react/jsx-runtime");
 function explicitDisplayLabel(id, labels2) {
   return labels2?.get(id)?.trim() || id;
 }
@@ -6041,7 +5948,39 @@ function scopeState(key) {
   if (scopes.size > 100) scopes.delete(scopes.keys().next().value);
   return state;
 }
+var ROW_STATE_LIMIT = 2e3;
+function rememberRowState(store, key, value) {
+  store.delete(key);
+  store.set(key, value);
+  if (store.size > ROW_STATE_LIMIT) store.delete(store.keys().next().value);
+}
 var PresentationContext = (0, import_react3.createContext)(null);
+var RowScopeContext = (0, import_react3.createContext)(null);
+function ConversationRowStateScope({ rowId, children }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(RowScopeContext.Provider, { value: rowId, children });
+}
+function useRowState(part, initial) {
+  const context = (0, import_react3.useContext)(PresentationContext);
+  const row = (0, import_react3.useContext)(RowScopeContext);
+  const [, rerender] = (0, import_react3.useReducer)((count) => count + 1, 0);
+  const local = (0, import_react3.useRef)(null);
+  const store = context?.disclosures;
+  const key = store && row !== null ? JSON.stringify(["row", row, part]) : null;
+  let value;
+  if (store && key !== null) {
+    if (!store.has(key)) rememberRowState(store, key, initial());
+    value = store.get(key);
+  } else {
+    if (!local.current) local.current = { value: initial() };
+    value = local.current.value;
+  }
+  const set = (0, import_react3.useCallback)((next) => {
+    if (store && key !== null) rememberRowState(store, key, next);
+    else local.current = { value: next };
+    rerender();
+  }, [store, key]);
+  return [value, set];
+}
 var FoldedToolsContext = (0, import_react3.createContext)(false);
 function useInsideCompletedToolDisclosure() {
   return (0, import_react3.useContext)(FoldedToolsContext);
@@ -6059,10 +5998,16 @@ function ConversationPresentationProvider({ labels: labels2, viewportKey, autoFo
     }
   }, [viewportKey?.authority]);
   const value = (0, import_react3.useMemo)(() => ({ labels: labels2, disclosures, autoFold }), [labels2, disclosures, autoFold]);
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(PresentationContext.Provider, { value, children });
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(PresentationContext.Provider, { value, children });
 }
 function useConversationDisplayLabels() {
   return (0, import_react3.useContext)(PresentationContext)?.labels;
+}
+function RowDetails({ part, initiallyOpen = false, children, ...props }) {
+  const [open, setOpen] = useRowState(part, () => initiallyOpen);
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("details", { ...props, open, onToggle: (event) => {
+    if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
+  }, children });
 }
 function CompletedToolDisclosure({ blocks, children }) {
   const context = (0, import_react3.useContext)(PresentationContext);
@@ -6070,21 +6015,113 @@ function CompletedToolDisclosure({ blocks, children }) {
   const disclosures = context?.disclosures ?? local.current;
   const key = JSON.stringify(blocks.map((block) => block.toolCallId));
   const initiallyOpen = disclosures.get(key) ?? context?.autoFold === false;
+  if (context && !disclosures.has(key)) rememberRowState(disclosures, key, initiallyOpen);
   const [state, setState] = (0, import_react3.useState)(() => ({ disclosures, key, open: initiallyOpen }));
   const open = state.disclosures === disclosures && state.key === key ? state.open : initiallyOpen;
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("details", { className: "cc-completed-tools", open, onToggle: (event) => {
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("details", { className: "cc-completed-tools", open, onToggle: (event) => {
     const next = event.currentTarget.open;
     setState({ disclosures, key, open: next });
-    disclosures.delete(key);
-    disclosures.set(key, next);
-    if (disclosures.size > 100) disclosures.delete(disclosures.keys().next().value);
+    rememberRowState(disclosures, key, next);
   }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("summary", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("summary", { children: [
       blocks.length,
       " completed tool calls"
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(FoldedToolsContext.Provider, { value: true, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "cc-completed-tools__body", children }) })
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(FoldedToolsContext.Provider, { value: true, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-completed-tools__body", children }) })
   ] });
+}
+
+// ../packages/console-components/src/conversation/approval-card.tsx
+var import_jsx_runtime9 = require("react/jsx-runtime");
+var labels = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
+function ApprovalCard({ request, resourceStatus, decision, readOnly = false, onDecide }) {
+  const pending = request.status === "pending" && decision?.phase !== "settled";
+  const submitting = decision?.phase === "submitting";
+  const stale = resourceStatus !== "ready";
+  const state = submitting ? "submitting" : decision?.phase === "failed" ? "failed" : request.status === "expired" ? "expired" : !pending ? "settled" : stale ? "stale" : decision?.phase === "unavailable" ? "unavailable" : "pending";
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("article", { className: "cc-approval", "data-state": state, "data-testid": `gating-pending:${request.pendingId}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("header", { className: "cc-approval__header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: request.action }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-approval__status", role: "status", children: state === "pending" ? "Approval needed" : state === "submitting" ? "Submitting decision" : state === "stale" ? "Approval state may be out of date" : state === "failed" ? "Decision unconfirmed" : state === "unavailable" ? "Decision unavailable" : state === "expired" ? "Expired" : "Resolved" })
+    ] }),
+    request.rationale ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: request.rationale }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: "cc-approval__scope", children: [
+      request.origin ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "Origin" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: request.origin.identity })
+      ] }) : null,
+      request.riskTier ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "Risk" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: request.riskTier })
+      ] }) : null,
+      request.deadlineAtMs !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "Deadline" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("time", { dateTime: new Date(request.deadlineAtMs).toISOString(), children: new Date(request.deadlineAtMs).toLocaleString() }) })
+      ] }) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(RowDetails, { part: `approval-details:${request.pendingId}`, className: "cc-approval__details", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("summary", { children: "Complete request details" }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: "cc-approval__scope", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "Request" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: request.pendingId }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "Action scope" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: request.actionId }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("pre", { children: JSON.stringify(request.raw, null, 2) })
+    ] }),
+    decision?.error ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { role: "alert", children: decision.error }) : null,
+    decision?.result?.next_pending_id ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("p", { children: [
+      "Escalated to ",
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: decision.result.next_pending_id })
+    ] }) : null,
+    readOnly ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: "Read-only access" }) : null,
+    resourceStatus === "forbidden" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: "Approval access denied" }) : null,
+    pending ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-approval__actions", children: request.actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", disabled: readOnly || stale || submitting, "data-action": action, "data-testid": `gating-action:${request.pendingId}:${action}`, onClick: () => {
+      void onDecide(request.pendingId, action);
+    }, children: labels[action] }, action)) }) : null
+  ] });
+}
+function ApprovalAttention({ snapshot, onOpen }) {
+  if (snapshot.status === "forbidden" || snapshot.status === "unsupported") return null;
+  const requests = snapshot.requests.filter((request) => request.status === "pending" && snapshot.decisions[request.pendingId]?.phase !== "settled");
+  const ready = snapshot.status === "ready";
+  const status = ready ? `${requests.length} pending approval${requests.length === 1 ? "" : "s"}` : snapshot.status === "loading" ? "Checking approvals" : snapshot.status === "stale" ? "Approvals may be out of date" : "Approvals unavailable";
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "cc-approval-attention", "aria-label": "Needs you", "data-testid": "approval-attention", "data-state": snapshot.status, "data-pending": ready && requests.length > 0, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+      "button",
+      {
+        className: "cc-approval-attention__open",
+        type: "button",
+        "aria-label": `Needs you, ${status}`,
+        title: status,
+        onClick: () => onOpen(ready && requests.length === 1 ? requests[0].pendingId : void 0),
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("svg", { className: "cc-approval-attention__icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("path", { d: "m4 5-2 9v5h20v-5l-2-9H4Z" }),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("path", { d: "M2 14h6l2 3h4l2-3h6" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-approval-attention__label", children: "Needs you" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-approval-attention__count", "aria-hidden": "true", children: ready ? requests.length : snapshot.status === "loading" ? "..." : "!" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("svg", { className: "cc-approval-attention__chevron", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("path", { d: "m6 4 4 4-4 4" }) })
+        ]
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-approval-attention__status", role: "status", children: status })
+  ] });
+}
+
+// ../packages/console-components/src/conversation/conversation-approvals.tsx
+var import_jsx_runtime10 = require("react/jsx-runtime");
+function approvalInteractionIdsByTurn(turns) {
+  const latest = /* @__PURE__ */ new Map();
+  turns.forEach((ids, index2) => ids.forEach((id) => latest.set(id, index2)));
+  return turns.map((ids, index2) => [...new Set(ids)].filter((id) => latest.get(id) === index2));
+}
+function ConversationApprovals({ approvalSnapshot, approvalIdentity, onApprovalDecision, conversationId, interactionIds }) {
+  if (!approvalSnapshot || !approvalIdentity) return null;
+  const requests = approvalSnapshot.requests.filter((request) => Boolean(request.origin?.interactionId) === Boolean(interactionIds) && approvalMatchesConversation(request, { identity: approvalIdentity, conversationId, interactionIds }));
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(import_jsx_runtime10.Fragment, { children: requests.map((request) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ApprovalCard, { request, resourceStatus: approvalSnapshot.status, decision: approvalSnapshot.decisions[request.pendingId], readOnly: approvalSnapshot.readOnly || !onApprovalDecision, onDecide: onApprovalDecision ?? (() => {
+  }) }, request.pendingId)) });
 }
 
 // ../packages/console-components/src/conversation/conversation-pane.tsx
@@ -21520,12 +21557,13 @@ function fileChangeCopyText(block) {
 function alignmentAttr(alignment) {
   return alignment || "left";
 }
-function ThinkingBlock({ block, displayNormalization = true }) {
-  const initiallyOpen = (0, import_react7.useRef)(!(block.final && block.persisted));
+function ThinkingBlock({ block, index: index2, displayNormalization = true }) {
+  const [initiallyOpen] = useRowState(`thinking-initial:${index2}`, () => !(block.final && block.persisted));
+  const [open, setOpen] = useRowState(`thinking:${index2}`, () => initiallyOpen);
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
-  const collapsedByDefault = !initiallyOpen.current;
+  const collapsedByDefault = !initiallyOpen;
   return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(
     "details",
     {
@@ -21535,7 +21573,10 @@ function ThinkingBlock({ block, displayNormalization = true }) {
         block.persisted && "cc-rich-thinking--persisted",
         collapsedByDefault && "cc-rich-thinking--collapsed"
       ),
-      open: initiallyOpen.current,
+      open,
+      onToggle: (event) => {
+        if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
+      },
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("summary", { className: "cc-rich-thinking__label", children: block.label?.trim() ? block.label : "Thinking" }),
         /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("p", { className: "cc-rich-paragraph cc-rich-thinking__body", dangerouslySetInnerHTML: markdownHtml(block.text, displayNormalization) })
@@ -21710,7 +21751,7 @@ function renderBlock(block, index2, Icon2, displayNormalization = true, markdown
   if (block.type === "tool-call") {
     return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ToolCallBlock, { block }, `tool-call-${index2}`);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ThinkingBlock, { block, displayNormalization }) }, `thinking-${index2}`);
+  return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ThinkingBlock, { block, index: index2, displayNormalization }) }, `thinking-${index2}`);
 }
 var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function formatJsonIfPossible(text8) {
@@ -21839,7 +21880,7 @@ function toolAttentionKey(block) {
 function useToolDisclosure(blocks, initiallyOpen) {
   const keys2 = blocks.map(toolAttentionKey).filter((key) => key !== null);
   const signature = JSON.stringify(keys2);
-  const [state, setState] = (0, import_react7.useState)(() => ({ signature, keys: keys2, expanded: initiallyOpen }));
+  const [state, setState] = useRowState(`tool:${JSON.stringify(blocks.map((block) => block.toolCallId))}`, () => ({ signature, keys: keys2, expanded: initiallyOpen }));
   const expanded = state.expanded || state.signature !== signature && keys2.some((key) => !state.keys.includes(key));
   if (state.signature !== signature) setState({ signature, keys: keys2, expanded });
   const toggle = () => setState({ signature, keys: keys2, expanded: !expanded });
@@ -25198,7 +25239,7 @@ function QuoteContextChip({ record: record5, index: index2, records, onEdit, onR
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("button", { type: "button", onClick: cancel, disabled: saving, "aria-label": "Cancel quote edit", children: "Cancel" })
     ] })
   ] }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("details", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(RowDetails, { part: `quote:${record5.id}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("summary", { children: record5.label }),
       /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("blockquote", { children: record5.quote }),
       /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("small", { children: [
@@ -39110,7 +39151,7 @@ function EventRow({ message: m }) {
           m.source?.untrusted ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(UntrustedBadge, {}) : null,
           /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(MessageTime, { message: m })
         ] }),
-        payloadJson ? /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)("details", { className: "msg__event-details", children: [
+        payloadJson ? /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(RowDetails, { part: "event-details", className: "msg__event-details", children: [
           /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("summary", { children: "Event details" }),
           /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("pre", { children: payloadJson })
         ] }) : null
@@ -39136,6 +39177,14 @@ var MessageRow = import_react40.default.memo(function MessageRow2({
   markdownUrlPolicy
 }) {
   countRender("MessageRow");
+  return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationRowStateScope, { rowId: m.scrollRowId ?? m.id, children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(MessageRowBody, { message: m, suppressWorked, workGraphActions, markdownUrlPolicy }) });
+}, messageRowPropsEqual);
+function MessageRowBody({
+  message: m,
+  suppressWorked,
+  workGraphActions,
+  markdownUrlPolicy
+}) {
   if (m.kind === "event" || m.kind === "origin") {
     return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(EventRow, { message: m });
   }
@@ -39158,7 +39207,7 @@ var MessageRow = import_react40.default.memo(function MessageRow2({
       ] }) })
     ] })
   ] });
-}, messageRowPropsEqual);
+}
 var TranscriptTurn = import_react40.default.memo(function TranscriptTurn2({
   turn,
   turnIndex,
@@ -39208,7 +39257,7 @@ var TranscriptTurn = import_react40.default.memo(function TranscriptTurn2({
           ] }, m.scrollRowId ?? m.id));
           return /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(import_react40.default.Fragment, { children: run.tools.length >= 2 ? /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(CompletedToolDisclosure, { blocks: run.tools, children: rows }) : rows }, run.rows[0].scrollRowId ?? run.rows[0].id);
         }),
-        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractionIds })
+        /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationRowStateScope, { rowId: `approvals:${turn.id}`, children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(ConversationApprovals, { approvalSnapshot, approvalIdentity: identity, onApprovalDecision, conversationId, interactionIds: approvalInteractionIds }) })
       ]
     }
   );

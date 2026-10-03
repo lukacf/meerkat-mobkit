@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import type React from "react";
 import type { ConversationRichBlock, ConversationRichToolCallBlock } from "@console-core";
 import type { ConversationViewportKey } from "./scroll-controller";
 
@@ -44,18 +45,64 @@ export function groupRoutineToolRows<T>(rows: readonly T[], blocksFor: (row: T) 
   return groups;
 }
 
-const scopes = new Map<string, Map<string, boolean>>();
-function scopeState(key: string): Map<string, boolean> {
-  const state = scopes.get(key) ?? new Map<string, boolean>();
+const scopes = new Map<string, Map<string, unknown>>();
+function scopeState(key: string): Map<string, unknown> {
+  const state = scopes.get(key) ?? new Map<string, unknown>();
   scopes.delete(key); scopes.set(key, state);
   if (scopes.size > 100) scopes.delete(scopes.keys().next().value!);
   return state;
 }
-const PresentationContext = createContext<{ labels?: ConversationDisplayLabels; disclosures: Map<string, boolean>; autoFold: boolean } | null>(null);
+/// Reader UI state per pane: open disclosures, expanded cards. A row can
+/// unmount and mount again (a windowed transcript) without changing what it
+/// shows, because its parts keep their state here instead of in the DOM or
+/// in component state. Bounded, least recently used first out.
+const ROW_STATE_LIMIT = 2_000;
+function rememberRowState(store: Map<string, unknown>, key: string, value: unknown): void {
+  store.delete(key);
+  store.set(key, value);
+  if (store.size > ROW_STATE_LIMIT) store.delete(store.keys().next().value!);
+}
+const PresentationContext = createContext<{ labels?: ConversationDisplayLabels; disclosures: Map<string, unknown>; autoFold: boolean } | null>(null);
+const RowScopeContext = createContext<string | null>(null);
+
+/** Names the row whose parts call `useRowState`: its stable row id. */
+export function ConversationRowStateScope({ rowId, children }: { rowId: string; children: ReactNode }) {
+  return <RowScopeContext.Provider value={rowId}>{children}</RowScopeContext.Provider>;
+}
+
+/**
+ * State for one part of a rendered row, such as a disclosure. Inside a row
+ * scope and a presentation provider it lives in the pane's store, keyed by
+ * row id and `part`, and the first render records `initial()`, so the part
+ * shows the same thing when its row mounts again. Elsewhere it is
+ * component-local, as before.
+ */
+export function useRowState<T>(part: string, initial: () => T): [T, (next: T) => void] {
+  const context = useContext(PresentationContext);
+  const row = useContext(RowScopeContext);
+  const [, rerender] = useReducer((count: number) => count + 1, 0);
+  const local = useRef<{ value: T } | null>(null);
+  const store = context?.disclosures;
+  const key = store && row !== null ? JSON.stringify(["row", row, part]) : null;
+  let value: T;
+  if (store && key !== null) {
+    if (!store.has(key)) rememberRowState(store, key, initial());
+    value = store.get(key) as T;
+  } else {
+    if (!local.current) local.current = { value: initial() };
+    value = local.current.value;
+  }
+  const set = useCallback((next: T) => {
+    if (store && key !== null) rememberRowState(store, key, next);
+    else local.current = { value: next };
+    rerender();
+  }, [store, key]);
+  return [value, set];
+}
 const FoldedToolsContext = createContext(false);
 export function useInsideCompletedToolDisclosure() { return useContext(FoldedToolsContext); }
 export function ConversationPresentationProvider({ labels, viewportKey, autoFold = true, children }: { labels?: ConversationDisplayLabels; viewportKey?: ConversationViewportKey; autoFold?: boolean; children: ReactNode }) {
-  const local = useRef(new Map<string, boolean>());
+  const local = useRef(new Map<string, unknown>());
   const oldAuthority = useRef(viewportKey?.authority);
   const key = viewportKey ? JSON.stringify([viewportKey.authority, viewportKey.identity, viewportKey.conversation, viewportKey.pane]) : null;
   const disclosures = useMemo(() => key ? scopeState(key) : local.current, [key]);
@@ -72,20 +119,34 @@ export function ConversationPresentationProvider({ labels, viewportKey, autoFold
 }
 export function useConversationDisplayLabels() { return useContext(PresentationContext)?.labels; }
 
+/** A `<details>` whose open state is row state (see `useRowState`). */
+export function RowDetails({ part, initiallyOpen = false, children, ...props }: {
+  part: string;
+  initiallyOpen?: boolean;
+  children: ReactNode;
+} & Omit<React.DetailsHTMLAttributes<HTMLDetailsElement>, "open" | "onToggle" | "children">) {
+  const [open, setOpen] = useRowState(part, () => initiallyOpen);
+  return <details {...props} open={open} onToggle={(event) => {
+    if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
+  }}>{children}</details>;
+}
+
 /** A layout disclosure only: the full underlying records and copy actions remain. */
 export function CompletedToolDisclosure({ blocks, children }: { blocks: ConversationRichToolCallBlock[]; children: ReactNode }) {
   const context = useContext(PresentationContext);
-  const local = useRef(new Map<string, boolean>());
+  const local = useRef(new Map<string, unknown>());
   const disclosures = context?.disclosures ?? local.current;
   const key = JSON.stringify(blocks.map((block) => block.toolCallId));
-  const initiallyOpen = disclosures.get(key) ?? context?.autoFold === false;
+  const initiallyOpen = (disclosures.get(key) as boolean | undefined) ?? context?.autoFold === false;
+  // Whether it starts folded depends on the scroll mode when it first
+  // renders; record that, so mounting it again later shows the same.
+  if (context && !disclosures.has(key)) rememberRowState(disclosures, key, initiallyOpen);
   const [state, setState] = useState(() => ({ disclosures, key, open: initiallyOpen }));
   const open = state.disclosures === disclosures && state.key === key ? state.open : initiallyOpen;
   return <details className="cc-completed-tools" open={open} onToggle={(event) => {
     const next = event.currentTarget.open;
     setState({ disclosures, key, open: next });
-    disclosures.delete(key); disclosures.set(key, next);
-    if (disclosures.size > 100) disclosures.delete(disclosures.keys().next().value!);
+    rememberRowState(disclosures, key, next);
   }}>
     <summary>{blocks.length} completed tool calls</summary>
     <FoldedToolsContext.Provider value={true}><div className="cc-completed-tools__body">{children}</div></FoldedToolsContext.Provider>

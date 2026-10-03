@@ -20,6 +20,7 @@ import { CouncilCard } from "./council-card";
 import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
+import { RowDetails } from "./presentation-policy";
 
 const SYSTEM_TASK_PROMPT_STYLE = { whiteSpace: "pre-wrap" } as const;
 
@@ -171,7 +172,8 @@ export function ConversationMessageView({
       "cc-rich-thinking",
     ].join(" ");
     return (
-      <details
+      <RowDetails
+        part="system-task"
         aria-label={taskLabel}
         className={systemTaskClassName}
         data-task-kind={entry.taskKind}
@@ -188,7 +190,7 @@ export function ConversationMessageView({
             {entry.text || ""}
           </p>
         </div>
-      </details>
+      </RowDetails>
     );
   }
 
@@ -211,10 +213,10 @@ export function ConversationMessageView({
             {source.untrusted ? <UntrustedSourceBadge /> : null}
             <EntryTime iso={entry.createdAt} />
           </p>
-          <details className="cc-message__event-details">
+          <RowDetails part="event-details" className="cc-message__event-details">
             <summary>Event details</summary>
             <pre>{payloadJson(entry.runtimeEvent.payload)}</pre>
-          </details>
+          </RowDetails>
         </article>
       );
     }

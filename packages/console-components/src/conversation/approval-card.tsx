@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { ApprovalAction, ApprovalDecisionState, PendingApproval, PendingApprovalSnapshot } from "../../../console-core/src/pending-approvals";
+import { RowDetails } from "./presentation-policy";
 
 const labels: Record<ApprovalAction, string> = { approve: "Approve", reject: "Reject", escalate: "Escalate" };
 export interface ApprovalCardProps {
@@ -28,13 +29,13 @@ export function ApprovalCard({ request, resourceStatus, decision, readOnly = fal
         {request.riskTier ? <><dt>Risk</dt><dd>{request.riskTier}</dd></> : null}
         {request.deadlineAtMs !== undefined ? <><dt>Deadline</dt><dd><time dateTime={new Date(request.deadlineAtMs).toISOString()}>{new Date(request.deadlineAtMs).toLocaleString()}</time></dd></> : null}
       </dl>
-      <details className="cc-approval__details"><summary>Complete request details</summary>
+      <RowDetails part={`approval-details:${request.pendingId}`} className="cc-approval__details"><summary>Complete request details</summary>
         <dl className="cc-approval__scope">
           <dt>Request</dt><dd><code>{request.pendingId}</code></dd>
           <dt>Action scope</dt><dd><code>{request.actionId}</code></dd>
         </dl>
         <pre>{JSON.stringify(request.raw, null, 2)}</pre>
-      </details>
+      </RowDetails>
       {decision?.error ? <p role="alert">{decision.error}</p> : null}
       {decision?.result?.next_pending_id ? <p>Escalated to <code>{decision.result.next_pending_id}</code></p> : null}
       {readOnly ? <p>Read-only access</p> : null}
