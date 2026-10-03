@@ -153,6 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - The mob stop logs each member whose run starts the stop could not hold.
   - Live channel closes pass their typed cause to meerkat (`OpenAbandoned`
     for an open-failure cleanup, `ClientRequested` for `live/close`).
+  - A profile naming a Rust tool bundle that is not registered is refused
+    with the typed `MobRuntimeError::Mob(MobError::ToolBundleUnavailable {
+    bundle })` instead of an internal error string; match the variant.
 - Docs: `[profiles.*.tools] deny` (meerkat 0.8.51's per-profile tool deny
   list) is documented in the configuration reference, including both
   failure paths, and the `comms` row points at it.

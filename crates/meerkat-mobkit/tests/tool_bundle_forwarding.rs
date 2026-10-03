@@ -340,8 +340,14 @@ async fn a_profile_naming_an_unregistered_bundle_is_refused() {
         ))
         .await
         .expect_err("an unregistered bundle refuses the member build");
+    // meerkat 0.8.51 refuses it with the typed `ToolBundleUnavailable`.
     assert!(
-        format!("{error:?}").contains("tool bundle 'absent' is not registered"),
+        matches!(
+            &error,
+            meerkat_mobkit::MobRuntimeError::Mob(
+                meerkat_mob::MobError::ToolBundleUnavailable { bundle }
+            ) if bundle == "absent"
+        ),
         "{error:?}"
     );
     assert!(
