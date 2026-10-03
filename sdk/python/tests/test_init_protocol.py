@@ -17,6 +17,7 @@ import functools
 import json
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -317,3 +318,91 @@ async def test_init_in_progress_refusal_is_typed(tmp_path):
         assert raised.value.data["kind"] == "init_in_progress"
     finally:
         await runtime.shutdown()
+
+
+class _RecordingTransport(PersistentTransport):
+    """A real transport that records the request timeout each call passes."""
+
+    instances: list["_RecordingTransport"] = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.timeouts: list[tuple[str, float | None]] = []
+        _RecordingTransport.instances.append(self)
+
+    async def send_async(self, request, *, timeout=None):
+        self.timeouts.append((request.get("method"), timeout))
+        return await super().send_async(request, timeout=timeout)
+
+
+@pytest.fixture
+def recording_transport(monkeypatch):
+    _RecordingTransport.instances = []
+    monkeypatch.setattr(runtime_module, "PersistentTransport", _RecordingTransport)
+    return _RecordingTransport.instances
+
+
+def test_gateway_init_timeout_must_be_positive_and_finite():
+    builder = MobKit.builder()
+    assert builder._config.gateway_init_timeout == 60.0, "the default keeps the 60 s request timeout"
+    for bad in (0, -1, -0.5, float("inf"), float("-inf"), float("nan"), True, False, None, "5"):
+        with pytest.raises(ValueError):
+            builder.gateway_init_timeout(bad)
+    assert builder._config.gateway_init_timeout == 60.0, "a rejected value changes nothing"
+    assert builder.gateway_init_timeout(120)._config.gateway_init_timeout == 120.0
+    assert builder.gateway_init_timeout(2.5)._config.gateway_init_timeout == 2.5
+
+
+_LEGACY_SERVING = """
+    emit({"jsonrpc": "2.0", "id": init["id"], "result": {"http_base_url": "http://127.0.0.1:5"}})
+    for raw in sys.stdin:
+        message = json.loads(raw)
+        if "id" in message and message.get("method"):
+            emit({"jsonrpc": "2.0", "id": message["id"], "result": {"ok": True}})
+"""
+
+
+@pytest.mark.asyncio
+async def test_init_uses_the_default_gateway_init_timeout(tmp_path, recording_transport):
+    script = _gateway(tmp_path, "legacy_default", _LEGACY_SERVING)
+    runtime = _runtime(script)
+    try:
+        await runtime.connect()
+        (transport,) = recording_transport
+        assert ("mobkit/init", 60.0) in transport.timeouts
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gateway_init_timeout_reaches_only_the_init_request(tmp_path, recording_transport):
+    script = _gateway(tmp_path, "legacy_configured", _LEGACY_SERVING)
+    runtime = MobKitRuntime(MobKit.builder().gateway(str(script)).gateway_init_timeout(7.5)._config)
+    try:
+        await runtime.connect()
+        await runtime._rpc("mobkit/status")
+        (transport,) = recording_transport
+        assert ("mobkit/init", 7.5) in transport.timeouts
+        # An ordinary call keeps the transport's own request timeout.
+        assert ("mobkit/status", None) in transport.timeouts
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_short_gateway_init_timeout_ends_init_and_still_cleans_up(tmp_path, recording_transport):
+    script = _gateway(tmp_path, "silent_short", """
+        for raw in sys.stdin:  # hold the pipe open until the SDK closes it
+            pass
+    """)
+    runtime = MobKitRuntime(MobKit.builder().gateway(str(script)).gateway_init_timeout(0.5)._config)
+    started = time.monotonic()
+    with pytest.raises(InitOutcomeUnknownError) as raised:
+        await runtime.connect()
+    assert time.monotonic() - started < 30, "the configured timeout ends the wait, not the 60 s default"
+    assert "no answer" in raised.value.reason
+    assert not runtime.is_running
+    (transport,) = recording_transport
+    assert ("mobkit/init", 0.5) in transport.timeouts
+    # The existing failed-bootstrap cleanup still stopped the gateway.
+    assert not transport.is_running()
