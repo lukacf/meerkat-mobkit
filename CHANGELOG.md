@@ -615,6 +615,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: a member-kickoff notice no longer shows Meerkat's peer transport
+  projection. Meerkat 0.8.50 sends kickoff status (`mob.kickoff_*`) as peer
+  requests whose content is model-facing routing text (the peer spec with its
+  public key, and send_response coaching). Only `mob.kickoff_started` was
+  special-cased: the shared console-core adapter, in the markdown text mode
+  the shared host uses, showed that text verbatim for `mob.kickoff_failed`
+  and `mob.kickoff_cancelled`, and in legacy mode even for
+  `mob.kickoff_started`. The stock console in markdown mode did the same.
+  Every kickoff request, and every typed `lifecycle` notice (meerkat #1608),
+  now shows its typed summary (`Peer request: mob.kickoff_failed`); an
+  ordinary peer request still shows its authored content.
+
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled

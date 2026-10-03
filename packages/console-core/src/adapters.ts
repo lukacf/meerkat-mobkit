@@ -3200,7 +3200,13 @@ function typedSystemNoticeBlocksToRich(
         .join("\n")
         .trim();
       const peerImages = contentBlocks.filter((item) => item.type === "image");
-      const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
+      // A runtime notice's content is model-facing routing text, never an
+      // authored message: every member-kickoff request (`mob.kickoff_*`, which
+      // carries the full peer transport projection) and every typed lifecycle
+      // notice. Its typed summary describes the operation.
+      const runtimeNotice = kind === "lifecycle"
+        || (kind === "request" && intent.startsWith("mob.kickoff_"));
+      const displayBodySource = (runtimeNotice ? "" : contentText) || typedCommsStableBodyText(record) || bodyText;
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases,
@@ -3219,10 +3225,7 @@ function typedSystemNoticeBlocksToRich(
               : typeof textPart.content === "string" ? textPart.content : "";
           }).join("")
           : "";
-      // This typed runtime request's content is model-facing routing guidance,
-      // not an authored message. Its summary already describes the operation.
-      const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
-      const exactDisplayBody = (!runtimeKickoff && ownerContentText)
+      const exactDisplayBody = (!runtimeNotice && ownerContentText)
         || [record.summary, record.body, record.detail].filter((part): part is string => typeof part === "string").join("\n")
         || (typeof body === "string" ? body : "");
       const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
