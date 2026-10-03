@@ -475,6 +475,91 @@ identity plane to migrate on. See
 [roster and member lifecycle](/concepts/roster#role-migration) for the operator
 view of the refusal.
 
+## Child mob tool policy and bundles
+
+A child mob is a mob a member creates itself: the agent `mob_create` tool, and
+the implicit mob `delegate` helpers run in. Mobs the host creates, same-mob
+`fork_off` and `mob_spawn_member`, and temporary councils are not child mobs;
+their members keep their own bindings.
+
+### `child_application_tool_policy`
+
+Once the host serves application tool policies (the `application_tool_policies`
+init parameter, or `with_tool_consequence_policy_registry` in Rust), every
+child mob member needs an application tool policy the host chose. Without one
+a governed member could create a child mob whose members run outside the
+host's policy, so Meerkat refuses `mob_create` and `delegate` until one is
+configured. There is no implicit default.
+
+The refusal is a typed tool error, not a run failure: the member's turn goes
+on and the model sees `policy_denied` with code `child_tool_policy_required`
+and a message that says why (the host runs a tool-policy registry and no child
+application tool policy is configured) and names the three fixes below.
+
+The value is an `ApplicationToolPolicyBinding` object, a top-level
+`mobkit/init` parameter next to `application_tool_policies`:
+
+```json
+{
+  "application_tool_policies": ["{\"schema_version\":1,...}\n"],
+  "child_application_tool_policy": {
+    "kind": "provider",
+    "provider_id": "homecore",
+    "policy_id": "household-tools"
+  }
+}
+```
+
+| Value | Effect |
+|-------|--------|
+| `{"kind": "provider", "provider_id": ..., "policy_id": ...}` | Child members are built under that served policy. The policy's grants are per member identity, so it must grant the identities child members use (a delegate helper is the `member_id` the delegating member names). |
+| `{"kind": "unmanaged"}` | The explicit opt-out: child members run without the host's tool policy, as they did before 0.8.46. |
+| absent | No child policy. With application tool policies served, `mob_create` and `delegate` are refused; without them nothing changes. |
+
+`{"kind": "inherit"}` is refused: a child mob has no member to inherit from
+when it is created. The gateway checks the value at init and refuses the boot
+with `-32602` when it is malformed, `inherit`, or a provider binding whose
+provider or policy no `application_tool_policies` entry carries, so a binding
+that could never resolve does not surface later as a refused `delegate`.
+
+- Python: `MobKit.builder().child_application_tool_policy({"kind": "provider", "provider_id": "homecore", "policy_id": "household-tools"})`.
+- Rust: `MobBootstrapSpec::with_child_application_tool_policy(binding)` or
+  `UnifiedRuntimeBuilder::child_application_tool_policy(binding)`. A
+  conflicting binding from the two refuses the build with
+  `ConflictingConfiguration`.
+
+The binding is the host's choice and is never caller-settable; it persists
+with each child member, so a restored child keeps the policy it was built
+with.
+
+### Child-available tool bundles
+
+Host Rust tool bundles are host-only by default: agent-created child mobs do
+not receive them. Register a bundle as child-available to supply it to child
+members:
+
+```rust
+use meerkat_mobkit::ChildToolBundleAvailability;
+
+let spec = spec
+    .register_tool_bundle("household", household_tools.clone())
+    .register_tool_bundle_with_availability(
+        "calendar",
+        calendar_tools.clone(),
+        ChildToolBundleAvailability::ChildAvailable,
+    );
+```
+
+`UnifiedRuntimeBuilder::register_tool_bundle_with_availability` takes the same
+arguments. When a child mob is created, every child-available bundle id is
+supplied to each inline profile of its definition and persisted with it;
+callers never name bundles, and naming `rust_bundles` in an agent's profile
+input is refused. The child profile's `deny` list still narrows the supplied
+bundle tools, and the child application tool policy governs them like any
+other tool. A bundle the host later stops registering is neither dropped nor
+granted: resuming a child member that was built with it refuses with
+`MobError::ToolBundleUnavailable { bundle }`.
+
 ## Mob profile tools (`[profiles.*.tools]`)
 
 The mob definition (`.mob("config/mob.toml")`, or the `mob_config` string of
@@ -509,7 +594,7 @@ schedule = true
 | `deny` | `[]` | Tool names a member built from this profile may not run. An enforcement declaration, like `read_only`: a denied tool stays listed to the model (the prompt-cache prefix does not change) and every call to it is refused with an `access_denied` tool error while the turn continues. Each name must be a tool the build composed or a name in a known vocabulary: Meerkat's built-in tool families, the mob operator and agent mob tools, the exposed `tool_names` of the profile's `mcp_servers`, and tool bundles. A known name the build does not mount is inert; a declared MCP server that maps no `tool_names` leaves its names to the call-time refusal. Any other name (a typo, a stale tool) fails the member build with `DeclaredToolUnknown`, the same way a `comms = false` profile fails. A call runs only when `read_only`, `deny` and any per-spawn tool access policy all allow it. |
 | `mcp` | `[]` | MCP server names this profile may use from the mob-wide default external-tools provider; an empty list means the full host surface. |
 | `mcp_servers` | `[]` | Declarative MCP server configs durable on the profile, so a revived member recomposes the same MCP tools that built it. |
-| `rust_bundles` | `[]` | Names of Rust tool bundles the host registers with `MobBootstrapSpec::register_tool_bundle` or `UnifiedRuntimeBuilder::register_tool_bundle`. They are wired on every spawn, resume (including revived members) and respawn. Dispatchers are not serializable; register them again on every boot. A name that is not registered refuses the member build. Agent-created child mobs do not receive host bundles. |
+| `rust_bundles` | `[]` | Names of Rust tool bundles the host registers with `MobBootstrapSpec::register_tool_bundle` or `UnifiedRuntimeBuilder::register_tool_bundle`. They are wired on every spawn, resume (including revived members) and respawn. Dispatchers are not serializable; register them again on every boot. A name that is not registered refuses the member build. Agent-created child mobs receive only the bundles registered as child-available; see [Child mob tool policy and bundles](#child-mob-tool-policy-and-bundles). |
 
 The `mob-communication` skill is preloaded for every member regardless of these
 flags. Agent-side spawns that inherit the parent's tool filter open every
