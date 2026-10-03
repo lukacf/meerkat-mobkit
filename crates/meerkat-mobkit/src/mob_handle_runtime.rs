@@ -63,34 +63,6 @@ pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
     error.contains("previous member cleanup ambiguous for member ")
 }
 
-/// meerkat's provisioner refuses `interrupt_member` while the member's runtime
-/// session is still mid-kickoff, surfacing as `Runtime not ready: attached`
-/// inside the mob machine's `Internal` error.
-///
-/// `attached` is a READINESS state, not a semantic verdict: the caller cannot
-/// make a member less attached, and the condition clears on its own once
-/// kickoff completes. Teardown that fails outright on it converts a
-/// millisecond-wide window into an operator-visible hard failure - the shape
-/// that reads as an intermittent `stop` flake.
-///
-/// Deliberately narrow. `Runtime not ready: running` is NOT in this class: it
-/// means a turn is genuinely in flight, and teardown already has a real answer
-/// for it (cancel the member's work, then retry the stop).
-pub(crate) fn is_runtime_attach_readiness_refusal(error: &str) -> bool {
-    error.contains("Runtime not ready: attached")
-}
-
-/// The session meerkat names in its refusal (`...must resolve through
-/// MeerkatMachine for {session}: ...`), when the text carries one.
-///
-/// Best-effort by construction: a report that names the subject is far more
-/// actionable, but this returns `None` rather than guessing when the refusal
-/// does not name one. Nothing infers a condition from the absence.
-pub(crate) fn runtime_attach_readiness_subject(error: &str) -> Option<String> {
-    let subject = error.split(" for ").nth(1)?.split(':').next()?.trim();
-    (!subject.is_empty()).then(|| subject.to_string())
-}
-
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")
@@ -4153,14 +4125,27 @@ impl SessionStoreBackedRuntimeStore {
             if commit.messages_before < durable_messages.len() {
                 continue;
             }
-            let parent_session = successor
+            let parent_session = match successor
                 .with_validated_transcript_rewrite_parent_projection(sealed, commit)
-                .map_err(|e| {
-                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                        "parent projection for durable-behind admission at generation {}: {e}",
-                        commit.rewrite_generation
-                    ))
-                })?;
+            {
+                Ok(parent_session) => parent_session,
+                // meerkat 0.8.51 bounds the history a session graph retains:
+                // an older rewrite keeps its commit and digests but not its
+                // body, so its parent cannot be projected. With no body it can
+                // never prove the durable row is its prefix; a later, retained
+                // commit still can.
+                Err(meerkat_core::TranscriptEditError::TranscriptRevisionRetired { .. }) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(meerkat_runtime::store::RuntimeStoreError::WriteFailed(
+                        format!(
+                            "parent projection for durable-behind admission at generation {}: {e}",
+                            commit.rewrite_generation
+                        ),
+                    ));
+                }
+            };
             let parent_messages = parent_session.messages();
             if parent_messages.len() < durable_messages.len() {
                 continue;
@@ -6370,6 +6355,24 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            // Forwarded exactly: the inner persistent service activates a
+            // durable instruction under the runtime turn boundary. The trait
+            // default refuses, so behind this wrapper activation would fail.
+            async fn activate_instruction_under_runtime_turn_boundary(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                request: meerkat_core::InstructionActivationRequest,
+                write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+            ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+                self.inner
+                    .activate_instruction_under_runtime_turn_boundary(
+                        session_id,
+                        request,
+                        write_fence,
+                    )
+                    .await
+            }
+
             // Forwarded exactly: the inner service observes the durable
             // source from authority, catalog and lifecycle rows without a
             // body read. Required since meerkat 0.8.47; a wrapper that
@@ -7541,6 +7544,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .append_system_notice_under_runtime_turn_boundary(session_id, record)
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: durable
+    // instruction activation under the runtime turn boundary.
+    async fn activate_instruction_under_runtime_turn_boundary(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        request: meerkat_core::InstructionActivationRequest,
+        write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+    ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+        self.inner
+            .activate_instruction_under_runtime_turn_boundary(session_id, request, write_fence)
             .await
     }
 
@@ -9828,6 +9844,8 @@ pub enum MobRuntimeError {
     /// A persistent mob storage path could not be proven to match the supplied
     /// composition. Raised before the mob actuates.
     CompositionProvenance(crate::mob_composition_manifest::MobCompositionProvenanceError),
+    /// A teardown stop did not settle the mob's flow runs within its budget.
+    MobStopFlowRunsUnsettled(Box<crate::unified_runtime::MobStopFlowRunsUnsettled>),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -9838,6 +9856,7 @@ impl std::fmt::Display for MobRuntimeError {
             Self::HostHumanInput(err) => write!(f, "{err}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
             Self::CompositionProvenance(err) => write!(f, "{err}"),
+            Self::MobStopFlowRunsUnsettled(err) => write!(f, "{err}"),
         }
     }
 }
@@ -22246,34 +22265,6 @@ image_generation = true
             for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
 
         assert!(is_recoverable_lifecycle_cleanup_error(error));
-    }
-
-    /// Field flake (mobkit CI, PR 324): ordinary teardown panicked because
-    /// `MobHandle::stop` refused while a member's runtime session was still
-    /// mid-kickoff. The classifier must recognize that exact production shape,
-    /// so teardown can wait the window out and then degrade instead of turning
-    /// a transient readiness state into an operator-visible failure.
-    #[test]
-    fn runtime_attach_readiness_refusal_matches_the_field_stop_failure() {
-        let error = "runtime-backed interrupt must resolve through MeerkatMachine for \
-            019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
-            failed: Runtime not ready: attached";
-
-        assert!(is_runtime_attach_readiness_refusal(error));
-    }
-
-    /// `running` is a DIFFERENT condition with a different remedy: a turn is
-    /// genuinely in flight, and teardown answers it by cancelling member work
-    /// and retrying the stop. Folding it into the attach-readiness class would
-    /// degrade a real busy-mob refusal into a shrug.
-    #[test]
-    fn runtime_attach_readiness_refusal_excludes_the_running_class() {
-        let error = "internal error: disposal completed but ArchiveSession failed: \
-            session error: agent error: Internal error: runtime cancel-before-retire failed \
-            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
-
-        assert!(!is_runtime_attach_readiness_refusal(error));
-        assert!(!is_runtime_attach_readiness_refusal("actor task dropped"));
     }
 
     #[test]

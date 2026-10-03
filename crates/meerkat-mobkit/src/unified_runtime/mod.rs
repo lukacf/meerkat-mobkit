@@ -42,6 +42,7 @@ pub mod lifecycle;
 pub mod live_compose;
 pub mod mob_events;
 pub mod mob_ops;
+pub(crate) mod mob_stop;
 pub mod module_ops;
 pub mod types;
 
@@ -56,11 +57,12 @@ pub use event_log::{
 };
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
+pub use mob_stop::{MOB_STOP_FLOW_SETTLE_BUDGET, MobStopFlowRunsUnsettled};
 pub use types::{
     CompactionPreservedHistoryFit, ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome,
-    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    MobTerminalShutdownOutcome, RediscoverReport, ShutdownDrainReport,
+    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
+    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
     UnifiedRuntimeShutdownReport,
 };
@@ -1811,7 +1813,7 @@ impl UnifiedRuntime {
         startup_error: UnifiedRuntimeBootstrapError,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
         match mob_runtime.handle().stop().await {
-            Ok(()) => Err(startup_error),
+            Ok(_report) => Err(startup_error),
             Err(err) => Err(UnifiedRuntimeBootstrapError::ModuleStartupRollbackFailed {
                 startup_error: Box::new(startup_error),
                 rollback_error: MobRuntimeError::from(err),
