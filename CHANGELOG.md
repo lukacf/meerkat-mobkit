@@ -615,6 +615,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `npm run embedded:freshness` fails when a generated console bundle contains
+  a module path outside the repository or an absolute local path. A
+  worktree whose `node_modules` is a symlink into another checkout bundled
+  paths such as `../../<other-worktree>/console/node_modules/...` into
+  `console/dist/index.cjs`, which passed the freshness check there and
+  reached main once (regenerated in 4e337578).
+
 - The stdio gateway no longer queues ordinary requests behind `mobkit/init`
   (#550). Before, a request that arrived during startup waited in a 64-slot
   queue that nothing drained until init finished. A startup provider callback
