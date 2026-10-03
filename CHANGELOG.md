@@ -787,7 +787,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   row insertion keep their immediate pass. This also stops a streamed commit
   from pinning a reader back to the live edge after a scroll whose event has
   not arrived yet (the console e2e chat-pane-older-history-demand-paging
-  flake). A native scroll that lands at the
+  flake). Scroll writes also keep snapping and browser scroll anchoring off:
+  returning to a conversation restored its reading position while the
+  pane's turn snapping was briefly re-enabled, and the browser snapped the
+  restored row 62 px away. A native scroll that lands at the
   live edge no longer measures every mounted row to capture an anchor that
   following discards. `npm run perf:typing:browser` now fails on more than
   0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs

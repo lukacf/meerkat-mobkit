@@ -522,6 +522,32 @@ describe("conversation scroll intent", () => {
     expect(screen.getByTestId("mode")).toHaveTextContent("reading-history");
   });
 
+  test("every scroll write, including a restore on a session change, runs with snapping and scroll anchoring off", () => {
+    // A session change re-runs the observer effect, whose cleanup restores
+    // the viewport's own scroll-snap-type and overflow-anchor before its
+    // setup turns them off again; a restore written in between snapped to a
+    // turn start 62 px away (console e2e real-stock-reading-intent).
+    const view = render(<Harness conversation="one" />);
+    const viewport = screen.getByTestId("viewport");
+    userScroll(viewport, 225);
+    view.rerender(<Harness conversation="two" />);
+    const writes: Array<{ top: number; snap: string; anchor: string }> = [];
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => descriptor.get!.call(viewport),
+      set: (top: number) => {
+        writes.push({ top, snap: viewport.style.scrollSnapType, anchor: viewport.style.overflowAnchor });
+        descriptor.set!.call(viewport, top);
+      },
+    });
+    // Back to the first conversation: its remembered anchor is restored.
+    view.rerender(<Harness conversation="one" />);
+    expect(writes.length).toBeGreaterThan(0);
+    for (const write of writes) expect(write).toMatchObject({ snap: "none", anchor: "none" });
+    expect(viewport.scrollTop).toBe(225);
+  });
+
   test("a scroll that lands at the live edge keeps following without measuring rows", () => {
     // A clamp after the content shrinks emits a native scroll the controller
     // did not write. Following keeps no anchor, so reading every mounted row

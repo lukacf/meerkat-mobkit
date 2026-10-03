@@ -142,6 +142,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     const session = sessionRef.current;
     if (!viewport || !session) return;
     const bounded = Math.max(0, Math.min(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight), top));
+    // This controller owns scroll position, so snapping and browser scroll
+    // anchoring stay off while it writes. On a session change the observer
+    // effect's cleanup restores them before its setup turns them off again,
+    // and a restore written in between snapped to the nearest turn start.
+    if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
+    if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
     session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
   }, []);
