@@ -790,7 +790,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   flake). Scroll writes also keep snapping and browser scroll anchoring off:
   returning to a conversation restored its reading position while the
   pane's turn snapping was briefly re-enabled, and the browser snapped the
-  restored row 62 px away. A native scroll that lands at the
+  restored row 62 px away. A change outside the rows, such as the
+  older-history control appearing above them, still schedules a pass: it
+  moves rows without resizing any, and the shift was left for the next
+  viewport resize to correct. A send now empties the composer in the
+  keystroke's own render, as intended; the composer applied the cleared
+  value in an effect, which painted the submitted text again and cleared it
+  20-35 ms later. A native scroll that lands at the
   live edge no longer measures every mounted row to capture an anchor that
   following discards. `npm run perf:typing:browser` now fails on more than
   0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs

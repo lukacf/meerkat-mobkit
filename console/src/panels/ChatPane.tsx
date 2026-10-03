@@ -1458,12 +1458,14 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
 }) {
   countRender("ComposerTextarea");
   const [value, setValue] = React.useState(initialValue);
-  const appliedExternalRef = React.useRef<number | null>(null);
-  React.useEffect(() => {
-    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
-    appliedExternalRef.current = externalValue.at;
+  // Applied while rendering, not in an effect: a send clears the composer in
+  // the keydown's own render. A passive effect committed the old text first
+  // and cleared it in a later task, 20-35 ms after the keystroke.
+  const [appliedExternal, setAppliedExternal] = React.useState<number | null>(null);
+  if (externalValue && appliedExternal !== externalValue.at) {
+    setAppliedExternal(externalValue.at);
     setValue(externalValue.value);
-  }, [externalValue]);
+  }
   return (
     <>
       {/* A fixed-size, strictly contained block: the textarea's per-keystroke

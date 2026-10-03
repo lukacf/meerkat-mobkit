@@ -6421,11 +6421,13 @@ function useConversationScrollController(options) {
     };
     observeRows();
     const touchesRows = (nodes) => Array.from(nodes).some((node2) => node2 instanceof Element && (node2.matches(ROW_SELECTOR) || node2.querySelector(ROW_SELECTOR) !== null));
+    const outsideRows = (node2) => !(node2 instanceof Element ? node2 : node2.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
       const rowsChanged = records.some((record5) => record5.type === "childList" && (touchesRows(record5.addedNodes) || touchesRows(record5.removedNodes)));
       if (rowsChanged) observeRows();
+      const moved = rowsChanged || records.some((record5) => outsideRows(record5.target));
       const session = sessionRef.current;
-      if (rowsChanged || !resize || !session || !steadySession(session)) notifyLayoutChange();
+      if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
     return () => {
@@ -39266,12 +39268,11 @@ var ComposerTextarea = import_react40.default.memo(function ComposerTextarea2({
 }) {
   countRender("ComposerTextarea");
   const [value, setValue] = import_react40.default.useState(initialValue);
-  const appliedExternalRef = import_react40.default.useRef(null);
-  import_react40.default.useEffect(() => {
-    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
-    appliedExternalRef.current = externalValue.at;
+  const [appliedExternal, setAppliedExternal] = import_react40.default.useState(null);
+  if (externalValue && appliedExternal !== externalValue.at) {
+    setAppliedExternal(externalValue.at);
     setValue(externalValue.value);
-  }, [externalValue]);
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime53.jsxs)(import_jsx_runtime53.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime53.jsx)("div", { className: "composer__input", children: /* @__PURE__ */ (0, import_jsx_runtime53.jsx)(
       "textarea",
