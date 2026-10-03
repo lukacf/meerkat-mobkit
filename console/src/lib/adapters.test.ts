@@ -4461,6 +4461,78 @@ function meerkat071KickoffNotice() {
   };
 }
 
+// Meerkat 0.8.52 sends member-kickoff status as a one-way typed lifecycle
+// notice: comms `kind: "lifecycle"`, the lifecycle kind as `intent`, no
+// request id, and model-facing notice text as content.
+const MEERKAT_LIFECYCLE_NOTICE_PROJECTION =
+  "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+  + " (display_name: incident-command-center/commander/incident-commander)\n"
+  + "Kind: mob.kickoff_started\n"
+  + "Params: {\n"
+  + "  \"peer\": \"incident-commander\",\n"
+  + "  \"role\": \"commander\"\n"
+  + "}\n"
+  + "\n"
+  + "This is a one-way status notice, not a request. There is nothing to answer:"
+  + " do not call send_response or send_message for it.";
+
+test("mapFramesToTimelineEntries renders a typed kickoff lifecycle notice by its summary", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "lifecycle-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-10-03T18:48:01.519Z"),
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "comms",
+            body: "Peer lifecycle: mob.kickoff_started",
+            blocks: [{
+              type: "comms",
+              kind: "lifecycle",
+              direction: "incoming",
+              peer: {
+                id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+                display_name: "incident-command-center/commander/incident-commander",
+              },
+              intent: "mob.kickoff_started",
+              summary: "Peer lifecycle: mob.kickoff_started",
+              payload: { peer: "incident-commander", role: "commander" },
+              content: [{ type: "text", text: MEERKAT_LIFECYCLE_NOTICE_PROJECTION }],
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const commsEntry = entries.find((entry) => entry.identity.id === "comms");
+  assert.ok(commsEntry, "typed lifecycle notice should render a comms entry");
+  const block = commsEntry && "blocks" in commsEntry && Array.isArray(commsEntry.blocks)
+    ? commsEntry.blocks[0]
+    : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.type === "tool-call" ? block.name : "", "peer_lifecycle");
+  assert.equal(block?.type === "tool-call" ? block.peerIntent : "", "mob.kickoff_started");
+  const peerBody = block?.type === "tool-call" ? block.peerBody || "" : "";
+  assert.equal(peerBody, "Peer lifecycle: mob.kickoff_started");
+  for (const marker of ["send_response", "nothing to answer", "Params:"]) {
+    assert.ok(
+      !peerBody.includes(marker),
+      `lifecycle body must not leak model-facing notice text "${marker}": ${peerBody}`,
+    );
+  }
+});
+
 test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport projection as the comms body", () => {
   const entries = mapFramesToTimelineEntries(
     {

@@ -25,13 +25,14 @@ test("explicit peer history works without an incidental startup lifecycle notice
 
 test("a legitimate startup notice and explicit message remain two distinct canonical rows", () => {
   const value = history(); value.messages.unshift({ role: "system_notice", blocks: [{
-    ...incoming(), kind: "request", content: [{ type: "text", text: "Peer request: mob.kickoff_started" }],
+    ...incoming(), kind: "lifecycle", intent: "mob.kickoff_started",
+    content: [{ type: "text", text: "Peer lifecycle: mob.kickoff_started" }],
   }] }); value.message_count++;
   assert.equal(assertPeerSetupHistory(value, expected)[0].count, 2);
 });
 
 test("peer setup requires exact body and canonical sender instead of any lifecycle notice", () => {
-  const missing = history(); missing.messages[0].blocks[0].content[0].text = "Peer request: mob.kickoff_started";
+  const missing = history(); missing.messages[0].blocks[0].content[0].text = "Peer lifecycle: mob.kickoff_started";
   assert.throws(() => assertPeerSetupHistory(missing, expected), /one explicit/);
   const foreign = history(); foreign.messages[0].blocks[0].peer.id = "foreign";
   assert.throws(() => assertPeerSetupHistory(foreign, expected), /canonical sender/);
