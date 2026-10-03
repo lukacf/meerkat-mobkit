@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildSignalGroupsForTest } from "./SignalsRail";
 import type { ConsoleFrame } from "../types";
+import { MEERKAT_1608_KICKOFF_NOTICES } from "../lib/fixtures/meerkat-1608-kickoff-notices";
 
 test("signals rail deduplicates live and history copies of the same visible reply", () => {
   const frames: ConsoleFrame[] = [
@@ -251,37 +252,21 @@ test("signals rail names a provider failure from meerkat's typed error_report", 
 });
 
 test("signals rail shows a typed kickoff lifecycle notice by its phase, never its notice text", () => {
+  // Meerkat #1608's serialized mob.kickoff_failed lifecycle notice.
+  const failedNotice = MEERKAT_1608_KICKOFF_NOTICES.find((message) => message.blocks[0].intent === "mob.kickoff_failed");
+  assert.ok(failedNotice);
   const frames: ConsoleFrame[] = [{
     id: "kickoff-failed",
     event: "system_notice",
     identity: "scribe",
     timestampMs: Date.now(),
     sourceKind: "session_history",
-    data: {
-      kind: "comms",
-      blocks: [{
-        type: "comms",
-        kind: "lifecycle",
-        direction: "incoming",
-        peer: {
-          id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
-          display_name: "incident-command-center/commander/incident-commander",
-        },
-        intent: "mob.kickoff_failed",
-        summary: "Peer lifecycle: mob.kickoff_failed",
-        payload: { peer: "incident-commander", role: "commander" },
-        content: [{
-          type: "text",
-          text: "Peer lifecycle notice from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c\nKind: mob.kickoff_failed\n"
-            + "This is a one-way status notice, not a request. There is nothing to answer: do not call send_response or send_message for it.",
-        }],
-      }],
-    },
+    data: structuredClone(failedNotice) as unknown as Record<string, unknown>,
   }];
   const groups = buildSignalGroupsForTest(frames);
   const failed = groups.find((group) => group.title === "Kickoff failed");
   assert.ok(failed, "a failed kickoff produces its typed signal");
-  assert.equal(failed?.detail, "Incident Commander (commander)");
+  assert.equal(failed?.detail, "Delivery Lead (delivery)");
   for (const group of groups) {
     for (const item of group.items) {
       assert.ok(
