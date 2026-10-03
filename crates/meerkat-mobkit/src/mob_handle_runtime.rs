@@ -6355,6 +6355,24 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            // Forwarded exactly: the inner persistent service activates a
+            // durable instruction under the runtime turn boundary. The trait
+            // default refuses, so behind this wrapper activation would fail.
+            async fn activate_instruction_under_runtime_turn_boundary(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                request: meerkat_core::InstructionActivationRequest,
+                write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+            ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+                self.inner
+                    .activate_instruction_under_runtime_turn_boundary(
+                        session_id,
+                        request,
+                        write_fence,
+                    )
+                    .await
+            }
+
             // Forwarded exactly: the inner service observes the durable
             // source from authority, catalog and lifecycle rows without a
             // body read. Required since meerkat 0.8.47; a wrapper that
@@ -7526,6 +7544,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .append_system_notice_under_runtime_turn_boundary(session_id, record)
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`: durable
+    // instruction activation under the runtime turn boundary.
+    async fn activate_instruction_under_runtime_turn_boundary(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        request: meerkat_core::InstructionActivationRequest,
+        write_fence: Option<Arc<dyn meerkat_runtime::RuntimeStoreWriteFence>>,
+    ) -> Result<meerkat_core::InstructionActivationMutation, SessionError> {
+        self.inner
+            .activate_instruction_under_runtime_turn_boundary(session_id, request, write_fence)
             .await
     }
 
