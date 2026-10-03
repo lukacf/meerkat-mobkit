@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
-const net = require("node:net");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { setTimeout: sleep } = require("node:timers/promises");
@@ -9,6 +8,7 @@ const { JSDOM } = require("jsdom");
 
 const { createConsoleApp } = require("./index.cjs");
 const { exampleBackendSpec } = require("./example-backend.cjs");
+const { LOOPBACK_ANY_PORT, awaitFixtureReady } = require("./fixture-ready.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -39,27 +39,6 @@ async function stopBackend(child) {
   await waitForExit(child);
 }
 
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("failed to reserve port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function waitForHttpOk(url, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
@@ -89,17 +68,13 @@ async function waitFor(check, timeoutMs = 20_000, intervalMs = 50) {
 }
 
 async function runSmoke() {
-  const port = await reservePort();
-  const addr = `127.0.0.1:${port}`;
-  const baseUrl = `http://${addr}`;
-
   const backendSpec = exampleBackendSpec(repoRoot, "library_mode_reference");
   const backend = spawn(
     backendSpec.command,
     backendSpec.args,
     {
       cwd: repoRoot,
-      env: { ...process.env, MOBKIT_REF_ADDR: addr },
+      env: { ...process.env, MOBKIT_REF_ADDR: LOOPBACK_ANY_PORT },
       stdio: ["ignore", "pipe", "pipe"],
     }
   );
@@ -108,7 +83,12 @@ async function runSmoke() {
     process.stderr.write(chunk);
   });
 
+  let baseUrl;
   try {
+    ({ baseUrl } = await awaitFixtureReady(backend, {
+      label: "reference app",
+      timeoutMs: backendSpec.prebuilt ? 60_000 : 300_000,
+    }));
     await waitForHttpOk(`${baseUrl}/healthz`);
 
     const dom = new JSDOM(

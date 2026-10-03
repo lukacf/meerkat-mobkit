@@ -8,6 +8,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen = options.listen;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let addr = listener.local_addr()?;
+    // Callers may pass `--listen 127.0.0.1:0` and read the bound address
+    // from this line (see console/fixture-ready.cjs).
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{addr}\"}}");
     if options.allow_host_deploy {
         eprintln!(
             "mobkit flow editor listening on http://{addr}/flow-editor (host deploy enabled)"

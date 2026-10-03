@@ -375,10 +375,14 @@ image_generation = {live_images}
         ));
     let addr = std::env::var("MOBKIT_FIXTURE_ADDR").unwrap_or_else(|_| "127.0.0.1:3211".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let bound = listener.local_addr()?;
     println!(
-        "console acceptance fixture listening on {addr}, mode={}",
+        "console acceptance fixture listening on {bound}, mode={}",
         if identity_mode { "identity" } else { "member" }
     );
+    // Harnesses pass a port-0 address and read the bound one from this line;
+    // see console/fixture-ready.cjs.
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{bound}\"}}");
     // This host adds fixture controls to the reference router, so it owns the
     // event drain normally provided by UnifiedRuntime::serve.
     let event_drain = runtime.clone().spawn_event_drain_task();

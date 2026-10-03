@@ -191,7 +191,11 @@ restart_policy = "always"
     let listen_addr =
         std::env::var("MOBKIT_MEMORY_E2E_ADDR").unwrap_or_else(|_| "127.0.0.1:3230".to_string());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    println!("memory e2e fixture listening on http://{listen_addr}");
+    let bound = listener.local_addr()?;
+    println!("memory e2e fixture listening on http://{bound}");
+    // Harnesses pass a port-0 address and read the bound one from this line;
+    // see console/fixture-ready.cjs.
+    println!("MOBKIT_FIXTURE_READY {{\"addr\":\"{bound}\"}}");
 
     let run_report = runtime
         .run(listener, decisions, async {

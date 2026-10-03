@@ -5585,6 +5585,178 @@ comms = true
         assert!(bridge.state.lock().await.pending.is_empty());
     }
 
+    #[test]
+    fn init_in_progress_refusal_is_typed_and_skips_notifications() {
+        let refusal = init_in_progress_refusal(&json!({
+            "jsonrpc": "2.0", "id": "r-1", "method": "mobkit/status", "params": {}
+        }))
+        .expect("a request gets an answer");
+        assert_eq!(refusal["id"], "r-1");
+        assert_eq!(
+            refusal["error"]["code"],
+            meerkat_mobkit::INIT_IN_PROGRESS_CODE
+        );
+        assert_eq!(
+            refusal["error"]["data"],
+            json!({ "kind": "init_in_progress", "method": "mobkit/status" })
+        );
+        assert!(init_in_progress_refusal(&json!({ "jsonrpc": "2.0", "method": "note" })).is_none());
+    }
+
+    #[test]
+    fn init_protocol_opt_in_needs_the_exact_name_and_an_init_id() {
+        assert_eq!(
+            init_protocol_request(
+                &json!({ "init_protocol": "accepted_then_settled", "init_id": "i-1" })
+            ),
+            InitProtocolRequest::AcceptedThenSettled {
+                init_id: "i-1".to_string()
+            }
+        );
+        for params in [
+            json!({}),
+            json!({ "init_protocol": "accepted_then_settled" }),
+            json!({ "init_protocol": "accepted_then_settled", "init_id": " " }),
+            json!({ "init_protocol": "accepted_then_settled", "init_id": 7 }),
+            json!({ "init_protocol": "some_future_protocol", "init_id": "i-1" }),
+        ] {
+            assert_eq!(
+                init_protocol_request(&params),
+                InitProtocolRequest::Legacy,
+                "{params}"
+            );
+        }
+    }
+
+    fn session(protocol: InitProtocolRequest) -> InitSession {
+        InitSession {
+            request_id: json!("init-req"),
+            protocol,
+            accepted: AtomicBool::new(false),
+            durable_phase_begun: AtomicBool::new(false),
+            settled: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn legacy_session_answers_the_request_and_never_settles() {
+        let legacy = session(InitProtocolRequest::Legacy);
+        legacy.accept();
+        assert!(!legacy.is_accepted(), "a legacy SDK never sees accepted");
+        assert!(legacy.progress_notification(InitPhase::Storage).is_none());
+        let ready = legacy.ready_line(json!({ "http_base_url": "http://x" }));
+        assert_eq!(ready["id"], "init-req");
+        assert_eq!(ready["result"]["http_base_url"], "http://x");
+        assert!(ready.get("method").is_none());
+        let failed = legacy.failed_line(-32602, "bad", None);
+        assert_eq!(failed["id"], "init-req");
+        assert_eq!(failed["error"]["code"], -32602);
+        assert!(failed["error"].get("durable_effects").is_none());
+    }
+
+    #[test]
+    fn accepted_session_settles_with_durable_effects_from_the_phase_marker() {
+        let opted_in = session(InitProtocolRequest::AcceptedThenSettled {
+            init_id: "init-9".to_string(),
+        });
+        let accepted = opted_in.accepted_response("init-9");
+        assert_eq!(accepted["id"], "init-req");
+        assert_eq!(accepted["result"]["init_state"], "accepted");
+        assert_eq!(accepted["result"]["init_id"], "init-9");
+        assert_eq!(
+            accepted["result"]["provider_callback_timeout_ms"],
+            PROVIDER_CALLBACK_TIMEOUT.as_millis() as u64
+        );
+        opted_in.accepted.store(true, Ordering::Release);
+
+        let progress = opted_in
+            .progress_notification(InitPhase::Prewarm)
+            .expect("progress");
+        assert_eq!(progress["method"], INIT_PROGRESS_METHOD);
+        assert_eq!(
+            progress["params"],
+            json!({ "init_id": "init-9", "phase": "prewarm" })
+        );
+
+        let before = opted_in.failed_line(-32602, "refused", None);
+        assert_eq!(before["method"], INIT_SETTLED_METHOD);
+        assert!(before.get("id").is_none());
+        assert_eq!(before["params"]["outcome"], "failed");
+        assert_eq!(before["params"]["durable_effects"], "none");
+
+        opted_in.durable_phase_begun.store(true, Ordering::Release);
+        let after = opted_in.failed_line(-32014, "storage", Some(json!({ "reason": "x" })));
+        assert_eq!(after["params"]["durable_effects"], "possible");
+        assert_eq!(after["params"]["data"]["reason"], "x");
+
+        let ready = opted_in.ready_line(json!({ "http_base_url": "http://y" }));
+        assert_eq!(ready["method"], INIT_SETTLED_METHOD);
+        assert_eq!(ready["params"]["outcome"], "ready");
+        assert_eq!(ready["params"]["init_id"], "init-9");
+        assert_eq!(ready["params"]["http_base_url"], "http://y");
+
+        opted_in.settled.store(true, Ordering::Release);
+        assert!(
+            opted_in.progress_notification(InitPhase::Serve).is_none(),
+            "no progress after the settlement"
+        );
+    }
+
+    #[test]
+    fn malformed_callback_response_id_reads_only_a_top_level_cb_id() {
+        for (line, expected) in [
+            (
+                r#"{"jsonrpc":"2.0","id":"cb-7","result":{"weight":NaN}}"#,
+                Some("cb-7"),
+            ),
+            (
+                r#"{"jsonrpc":"2.0","result":{"x":Infinity},"id" : "cb-12"}"#,
+                Some("cb-12"),
+            ),
+            (r#"{"jsonrpc":"2.0","id":"req-1","result":NaN}"#, None),
+            (r#"{"jsonrpc":"2.0","id":"cb-","result":NaN}"#, None),
+            (r#"{"jsonrpc":"2.0","id":"cb-4x","result":NaN}"#, None),
+            (
+                r#"{"method":"m","params":{"text":"{\"id\":\"cb-3\"}"},NaN}"#,
+                None,
+            ),
+            ("not json at all", None),
+        ] {
+            assert_eq!(
+                malformed_callback_response_id(line).as_deref(),
+                expected,
+                "line: {line}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_callback_response_fails_its_callback_at_once() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call("callback/roster_provider/roster", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        let request: Value = serde_json::from_str(
+            &stdout_rx
+                .recv()
+                .await
+                .expect("callback request")
+                .to_string(),
+        )
+        .expect("request json");
+        let id = request["id"].as_str().expect("callback id").to_string();
+        let reply = format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{{"weight":NaN}}}}"#);
+        assert!(serde_json::from_str::<Value>(&reply).is_err());
+
+        let recovered = malformed_callback_response_id(&reply).expect("recoverable cb id");
+        bridge.fail_malformed_callback_response(&recovered).await;
+
+        // No time passes: the callback fails now, not at its 130 s deadline.
+        let error = call.await.expect_err("malformed reply fails the callback");
+        assert!(error.contains("malformed callback response"), "{error}");
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn callback_blocked_stdout_times_out_without_enqueuing_or_leaking_pending() {
         let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
@@ -8357,6 +8529,34 @@ async fn write_gateway_stdout_line(line: &mut GatewayStdoutLine) -> bool {
         .is_ok()
 }
 
+/// The `cb-<n>` id of a stdin line that failed to parse, when the line is a
+/// callback response whose top-level `"id"` member is still readable. Only an
+/// unescaped `"id"` key counts, so a `cb-` string inside escaped content
+/// (a user message quoting JSON) does not match.
+fn malformed_callback_response_id(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = line[from..].find("\"id\"") {
+        let key = from + offset;
+        from = key + 4;
+        if key > 0 && bytes[key - 1] == b'\\' {
+            continue;
+        }
+        let rest = line[key + 4..].trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("\"cb-") else {
+            continue;
+        };
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with('"') {
+            return Some(format!("cb-{digits}"));
+        }
+    }
+    None
+}
+
 /// Shared handle for sending lines to stdout and receiving callback responses.
 #[derive(Clone)]
 struct StdioCallbackBridge {
@@ -8394,6 +8594,332 @@ const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
 const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 347_000;
+
+// -- mobkit/init: accepted, then settled (#550) ------------------------------
+//
+// An SDK that sends `init_protocol: "accepted_then_settled"` and an `init_id`
+// gets an `accepted` response as soon as the pre-durable gates pass, then
+// `mobkit/init_progress` notifications at each startup phase and exactly one
+// `mobkit/init_settled` notification (`ready` with the init result fields, or
+// `failed` with the error and `durable_effects`). An SDK that does not opt in
+// gets the single legacy response written when init finishes; it never sees
+// `accepted`.
+
+const INIT_PROTOCOL_ACCEPTED_THEN_SETTLED: &str = "accepted_then_settled";
+const INIT_PROGRESS_METHOD: &str = "mobkit/init_progress";
+const INIT_SETTLED_METHOD: &str = "mobkit/init_settled";
+
+/// A startup phase reported as `mobkit/init_progress`. Boundaries follow the
+/// native init order: storage open, preliminary owner publication, runtime
+/// prepare with module startup, the identity roster callback, owner
+/// registration, persisted-authority prewarm, activation, roster restore,
+/// schedules, serving setup, and failure cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InitPhase {
+    /// First touch of durable state (callback-job store, identity substrate,
+    /// stores). Everything before this phase is positive evidence for
+    /// `durable_effects: "none"`.
+    Storage,
+    /// Roster callback and persisted-owner publication before prepare.
+    OwnerPublication,
+    /// Runtime and storage prepare, including module startup.
+    Prepare,
+    /// Roster provider callback for identity bootstrap.
+    Roster,
+    RegisterOwners,
+    /// Persisted-authority convergence; deliberately unbounded.
+    Prewarm,
+    Activate,
+    Restore,
+    /// Schedule driver and the remaining runtime wiring.
+    Schedules,
+    /// HTTP, live and console setup before readiness.
+    Serve,
+    /// Failure cleanup (runtime shutdown, which can await external
+    /// lease-release callbacks) before `init_settled` reports the failure.
+    Cleanup,
+}
+
+impl From<meerkat_mobkit::UnifiedRuntimeBootstrapPhase> for InitPhase {
+    fn from(phase: meerkat_mobkit::UnifiedRuntimeBootstrapPhase) -> Self {
+        use meerkat_mobkit::UnifiedRuntimeBootstrapPhase as P;
+        match phase {
+            P::RegisterPersistedOwners => Self::RegisterOwners,
+            P::PrewarmPersistedAuthority => Self::Prewarm,
+            P::Activate => Self::Activate,
+            P::RestoreRoster => Self::Restore,
+            P::FailureCleanup => Self::Cleanup,
+            // A phase added upstream is still progress; report it under the
+            // nearest gateway phase rather than dropping the transition.
+            _ => Self::Activate,
+        }
+    }
+}
+
+/// How the SDK asked to run this init.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InitProtocolRequest {
+    Legacy,
+    AcceptedThenSettled { init_id: String },
+}
+
+/// Read the opt-in from the init params. Only the exact protocol name with a
+/// non-empty `init_id` opts in; anything else is the legacy protocol, so an
+/// unknown future protocol name never gets a response shape it did not ask for.
+fn init_protocol_request(params: &Value) -> InitProtocolRequest {
+    if params.get("init_protocol").and_then(Value::as_str)
+        != Some(INIT_PROTOCOL_ACCEPTED_THEN_SETTLED)
+    {
+        return InitProtocolRequest::Legacy;
+    }
+    match params.get("init_id").and_then(Value::as_str) {
+        Some(init_id) if !init_id.trim().is_empty() => InitProtocolRequest::AcceptedThenSettled {
+            init_id: init_id.to_string(),
+        },
+        _ => InitProtocolRequest::Legacy,
+    }
+}
+
+/// The one init this process runs. Set once, right after the init request is
+/// parsed; read by `fail_init` so every refusal site settles the same way.
+struct InitSession {
+    request_id: Value,
+    protocol: InitProtocolRequest,
+    accepted: AtomicBool,
+    /// False until the first operation that may write durable state begins
+    /// (`InitPhase::Storage`). `durable_effects` is "none" only while false.
+    durable_phase_begun: AtomicBool,
+    settled: AtomicBool,
+}
+
+static INIT_SESSION: std::sync::OnceLock<InitSession> = std::sync::OnceLock::new();
+
+fn init_session() -> Option<&'static InitSession> {
+    INIT_SESSION.get()
+}
+
+fn write_stdout_line_now(value: &Value) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(
+        stdout,
+        "{}",
+        serde_json::to_string(value)
+            .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+    );
+    let _ = stdout.flush();
+}
+
+impl InitSession {
+    fn init_id(&self) -> Option<&str> {
+        match &self.protocol {
+            InitProtocolRequest::AcceptedThenSettled { init_id } => Some(init_id),
+            InitProtocolRequest::Legacy => None,
+        }
+    }
+
+    fn is_accepted(&self) -> bool {
+        self.accepted.load(Ordering::Acquire)
+    }
+
+    fn durable_effects(&self) -> &'static str {
+        if self.durable_phase_begun.load(Ordering::Acquire) {
+            "possible"
+        } else {
+            "none"
+        }
+    }
+
+    /// The `accepted` response. Written synchronously so it precedes every
+    /// progress, callback and settlement line of this init.
+    fn accepted_response(&self, init_id: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "result": {
+                "init_state": "accepted",
+                "init_id": init_id,
+                "provider_callback_timeout_ms": PROVIDER_CALLBACK_TIMEOUT.as_millis() as u64,
+                "stdio_shutdown_handshake": true,
+                "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
+            }
+        })
+    }
+
+    fn accept(&self) {
+        let Some(init_id) = self.init_id() else {
+            return;
+        };
+        if self.accepted.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        write_stdout_line_now(&self.accepted_response(init_id));
+    }
+
+    fn progress_notification(&self, phase: InitPhase) -> Option<Value> {
+        let init_id = self.init_id()?;
+        if !self.is_accepted() || self.settled.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(json!({
+            "jsonrpc": "2.0",
+            "method": INIT_PROGRESS_METHOD,
+            "params": { "init_id": init_id, "phase": phase },
+        }))
+    }
+
+    /// The init result as the legacy response or the `ready` settlement.
+    fn ready_line(&self, result: Value) -> Value {
+        match self.init_id() {
+            Some(init_id) if self.is_accepted() => {
+                let mut params = result;
+                if let Some(object) = params.as_object_mut() {
+                    object.insert("init_id".to_string(), json!(init_id));
+                    object.insert("outcome".to_string(), json!("ready"));
+                }
+                json!({ "jsonrpc": "2.0", "method": INIT_SETTLED_METHOD, "params": params })
+            }
+            _ => json!({ "jsonrpc": "2.0", "id": self.request_id, "result": result }),
+        }
+    }
+
+    /// The init failure as the legacy error response or the `failed`
+    /// settlement. Once accepted, the request id has already been answered,
+    /// so the error travels in the settlement with `durable_effects`.
+    fn failed_line(&self, code: i64, message: &str, data: Option<Value>) -> Value {
+        match self.init_id() {
+            Some(init_id) if self.is_accepted() => {
+                let mut params = json!({
+                    "init_id": init_id,
+                    "outcome": "failed",
+                    "code": code,
+                    "message": message,
+                    "durable_effects": self.durable_effects(),
+                });
+                if let Some(data) = data {
+                    params["data"] = data;
+                }
+                json!({ "jsonrpc": "2.0", "method": INIT_SETTLED_METHOD, "params": params })
+            }
+            _ => {
+                let mut error = json!({ "code": code, "message": message });
+                if let Some(data) = data {
+                    error["data"] = data;
+                }
+                json!({ "jsonrpc": "2.0", "id": self.request_id, "error": error })
+            }
+        }
+    }
+}
+
+/// `-32098`, shared with the shutdown-in-progress refusals: the init stopped
+/// because the SDK asked the gateway to shut down before init settled.
+const INIT_STOPPED_FOR_SHUTDOWN_CODE: i64 = -32098;
+
+/// `mobkit/init_progress` emission. Like `accepted` and the settlement, each
+/// progress line is written synchronously by the task entering the phase, so
+/// the three keep their order (a `cleanup` phase always precedes the failed
+/// settlement it explains) and none is dropped under channel backpressure.
+/// Callback lines travel through the stdout writer queue independently; their
+/// order relative to progress carries no meaning.
+#[derive(Clone, Copy)]
+struct InitProgress;
+
+impl InitProgress {
+    fn enter(self, phase: InitPhase) {
+        let Some(session) = init_session() else {
+            return;
+        };
+        if phase == InitPhase::Storage {
+            session.durable_phase_begun.store(true, Ordering::Release);
+        }
+        if let Some(line) = session.progress_notification(phase) {
+            write_stdout_line_now(&line);
+        }
+    }
+}
+
+/// A `mobkit/shutdown` request arrived while init was still running. Stop at
+/// this phase boundary: shut the runtime down when one exists (which can
+/// await lease-release callbacks), settle the init `failed` only after that
+/// cleanup settled, then answer the shutdown request and exit.
+async fn abort_init_for_shutdown(
+    runtime: Option<&meerkat_mobkit::UnifiedRuntime>,
+    rpc_rx: &mut mpsc::Receiver<String>,
+    progress: InitProgress,
+) -> ! {
+    progress.enter(InitPhase::Cleanup);
+    let report = match runtime {
+        Some(runtime) => Some(runtime.shutdown().await),
+        None => None,
+    };
+    let cleanup_completed = report
+        .as_ref()
+        .is_none_or(UnifiedRuntimeShutdownReport::cleanup_completed);
+    if let Some(session) = init_session() {
+        if !cleanup_completed {
+            // Cleanup that did not complete may have left durable state.
+            session.durable_phase_begun.store(true, Ordering::Release);
+        }
+        session.settled.store(true, Ordering::Release);
+        write_stdout_line_now(&session.failed_line(
+            INIT_STOPPED_FOR_SHUTDOWN_CODE,
+            "init stopped: a gateway shutdown was requested before init settled",
+            Some(json!({
+                "reason": "shutdown_requested",
+                "cleanup_completed": cleanup_completed,
+            })),
+        ));
+    }
+    while let Some(line) = rpc_rx.recv().await {
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(request) = gateway_shutdown_request(&message) {
+            let response = match report.as_ref() {
+                Some(report) => gateway_shutdown_response(request.response_id, Some(report)),
+                // No runtime was built yet, so there is nothing to clean up.
+                None => json!({
+                    "jsonrpc": "2.0",
+                    "id": request.response_id,
+                    "result": { "shutdown": true, "runtime_cleanup_completed": true },
+                }),
+            };
+            write_stdout_line_now(&response);
+            break;
+        }
+        if let Some(id) = message.get("id") {
+            write_stdout_line_now(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": INIT_STOPPED_FOR_SHUTDOWN_CODE,
+                    "message": "gateway shutdown in progress"
+                },
+            }));
+        }
+    }
+    std::process::exit(0);
+}
+
+/// The immediate answer to an ordinary request that arrived before init
+/// settled; `None` for a notification (no id), which gets no answer.
+fn init_in_progress_refusal(message: &Value) -> Option<Value> {
+    let id = message.get("id")?;
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": meerkat_mobkit::INIT_IN_PROGRESS_CODE,
+            "message": format!(
+                "{method} refused: mobkit/init has not settled yet; ordinary requests are \
+                 served only after init settles (startup callbacks must not issue them)"
+            ),
+            "data": { "kind": "init_in_progress", "method": method },
+        },
+    }))
+}
 
 #[derive(Debug)]
 struct GatewayShutdownRequest {
@@ -8765,6 +9291,22 @@ impl StdioCallbackBridge {
     }
 
     /// Route an incoming callback response (has "id" starting with "cb-").
+    /// Fail one pending callback whose SDK reply could not be parsed (for
+    /// example a `NaN` token), instead of letting it wait out its deadline.
+    async fn fail_malformed_callback_response(&self, id: &str) {
+        if let Some(tx) = self.state.lock().await.pending.remove(id) {
+            let _ = tx.send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32700,
+                    "message": "malformed callback response: the SDK's reply was not valid JSON \
+                                (for example a NaN or Infinity number)",
+                },
+            }));
+        }
+    }
+
     async fn route_callback_response(&self, msg: Value) {
         let id = msg
             .get("id")
@@ -11541,6 +12083,13 @@ async fn run_persistent_inner(control_listen: Option<ControlListenAddr>) {
     }
 
     let params = init_raw.get("params").cloned().unwrap_or_else(|| json!({}));
+    let _ = INIT_SESSION.set(InitSession {
+        request_id: request_id.clone(),
+        protocol: init_protocol_request(&params),
+        accepted: AtomicBool::new(false),
+        durable_phase_begun: AtomicBool::new(false),
+        settled: AtomicBool::new(false),
+    });
 
     // 2. Parse init params
     let mob_config_param = params.get("mob_config").and_then(|v| v.as_str());
@@ -11684,12 +12233,18 @@ external_addressable = true
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<String>(64);
     let shutdown_requested = Arc::new(AtomicBool::new(false));
+    // False until init settles. Before that the dispatch loop is not running,
+    // so ordinary requests are refused at once (INIT_IN_PROGRESS_CODE) instead
+    // of queueing behind startup, where a provider callback awaiting one would
+    // wait on itself and a full queue would stall callback-response routing.
+    let dispatch_open = Arc::new(AtomicBool::new(false));
 
     let stdin_reader = tokio::spawn({
         let bridge = bridge.clone();
         let rpc_tx = rpc_tx.clone();
         let stdout_tx = stdout_tx.clone();
         let shutdown_requested = shutdown_requested.clone();
+        let dispatch_open = dispatch_open.clone();
         async move {
             let mut line = String::new();
             loop {
@@ -11717,7 +12272,23 @@ external_addressable = true
                 }
                 let msg: Value = match serde_json::from_str(trimmed) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(error) => {
+                        // Never skip silently: a reply the SDK meant for a
+                        // callback would leave that callback waiting out its
+                        // full deadline. Fail it now when its id is readable.
+                        // The line itself is not logged (it may carry data).
+                        let callback_id = malformed_callback_response_id(trimmed);
+                        tracing::warn!(
+                            %error,
+                            bytes = trimmed.len(),
+                            callback_id = callback_id.as_deref().unwrap_or("none"),
+                            "skipping a stdin line that is not valid JSON"
+                        );
+                        if let Some(id) = callback_id {
+                            bridge.fail_malformed_callback_response(&id).await;
+                        }
+                        continue;
+                    }
                 };
                 // Callback responses: "id" starts with "cb-" and no "method"
                 let is_callback_response = msg
@@ -11768,6 +12339,13 @@ external_addressable = true
                             let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
                         }
                     }
+                } else if !dispatch_open.load(Ordering::Acquire) {
+                    // Init has not settled: refuse at once, never queue.
+                    if let Some(response) = init_in_progress_refusal(&msg)
+                        && let Ok(line) = serde_json::to_string(&response)
+                    {
+                        let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
+                    }
                 } else {
                     // Queue RPC request for the dispatch loop
                     if rpc_tx.send(trimmed.to_string()).await.is_err() {
@@ -11783,25 +12361,35 @@ external_addressable = true
     // wait forever and skip graceful runtime shutdown entirely.
     drop(rpc_tx);
 
-    /// Helper: send a JSON-RPC error response for the init request and exit.
+    /// Helper: report the init failure and exit. Before acceptance (or for a
+    /// legacy SDK) that is the JSON-RPC error response; after acceptance it is
+    /// the `failed` `mobkit/init_settled` notification with `durable_effects`.
     /// Storage-refusal sites pass [`STORAGE_RESOLUTION_CODE`] so SDKs reify
     /// the fail-closed durability errors; everything else keeps the standard
     /// JSON-RPC codes.
     fn fail_init(request_id: &Value, code: i64, message: String) -> ! {
-        let error_response = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": { "code": code, "message": message }
-        });
-        let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(
-            stdout,
-            "{}",
-            serde_json::to_string(&error_response)
-                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
-        );
-        let _ = stdout.flush();
+        let line = match init_session() {
+            Some(session) => {
+                session.settled.store(true, Ordering::Release);
+                session.failed_line(code, &message, None)
+            }
+            None => json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": { "code": code, "message": message }
+            }),
+        };
+        write_stdout_line_now(&line);
         std::process::exit(1);
+    }
+
+    // Startup progress for an SDK that opted in to accepted-then-settled.
+    let init_progress = InitProgress;
+    // The callback transport is up and the cheap pre-durable gates above
+    // passed: answer an opted-in SDK now. Every later outcome, including the
+    // refusals below, arrives as `mobkit/init_settled`.
+    if let Some(session) = init_session() {
+        session.accept();
     }
 
     if (has_continuity_store || has_lease_provider || scratch_dir.is_some())
@@ -11871,6 +12459,10 @@ external_addressable = true
         gateway_options.host_config.as_ref(),
     ) {
         tracing::warn!("{warning}");
+    }
+    init_progress.enter(InitPhase::Storage);
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(None, &mut rpc_rx, init_progress).await;
     }
     // The detached callback-job store is the first thing that touches the
     // persistent state directory; it opens AFTER the listener is bound so a
@@ -12075,6 +12667,10 @@ external_addressable = true
         Arc::new(meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone()))
     });
 
+    init_progress.enter(InitPhase::OwnerPublication);
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(None, &mut rpc_rx, init_progress).await;
+    }
     // Publish persisted owner authority BEFORE the bootstrap spec is built.
     //
     // `MobRuntime::prepare` runs durable-tail recovery and commits runtime
@@ -13044,6 +13640,18 @@ external_addressable = true
         (spec, temp_dir, None, workgraph_service, None, None)
     };
 
+    // `customize_build` tools follow each identity member across meerkat-side
+    // rebuilds (restart restore, adoption, respawn, delivery-time repair)
+    // through one stable dispatcher per identity (#563).
+    let customizer_tool_registry =
+        has_agent_customizer.then(meerkat_mobkit::identity_first::CustomizerToolRegistry::new);
+    let mob_spec = match customizer_tool_registry.as_ref() {
+        Some(registry) => mob_spec.with_spawn_member_customizer(Arc::new(
+            meerkat_mobkit::identity_first::CustomizerToolsSpawnCustomizer::new(registry.clone()),
+        )),
+        None => mob_spec,
+    };
+
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
     // Uses notify_reliable to avoid silent drops under backpressure.
     let mob_spec = if has_session_builder {
@@ -13110,6 +13718,10 @@ external_addressable = true
             gateway_options.runtime_options.clone(),
             persistent_metadata,
         );
+    init_progress.enter(InitPhase::Prepare);
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(None, &mut rpc_rx, init_progress).await;
+    }
     let mut composition = meerkat_mobkit::gateway_composition::GatewayComposition::prepare(
         meerkat_mobkit::gateway_composition::GatewayCompatibilityProfile::StdioRpc,
         bootstrap_plan,
@@ -13117,22 +13729,16 @@ external_addressable = true
     .bootstrap()
     .await
     .unwrap_or_else(|e| {
-        let error_response = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
-        });
-        let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(
-            stdout,
-            "{}",
-            serde_json::to_string(&error_response)
-                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
-        );
-        let _ = stdout.flush();
-        std::process::exit(1);
+        fail_init(
+            &request_id,
+            -32603,
+            format!("Runtime bootstrap failed: {e}"),
+        )
     });
     let runtime = composition.runtime_mut();
+    runtime.set_bootstrap_phase_observer(Arc::new(move |phase| {
+        init_progress.enter(InitPhase::from(phase));
+    }));
 
     if persistent_state.is_some() {
         let console_log_path = match storage_layout.console_db() {
@@ -13272,6 +13878,8 @@ external_addressable = true
             .with_runtime_services(AgentRuntimeServices::new(mob_handle)),
         );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
+        irt.set_customizer_tool_registry(customizer_tool_registry.clone())
+            .await;
         // A member parked with a session repair hold names the exact
         // `rkat session repair-wholeblob` commands for the runtime store this
         // launch opened; an in-memory store has nothing to repair.
@@ -13624,6 +14232,10 @@ external_addressable = true
         };
         irt.set_agent_memory(agent_memory_injector).await;
 
+        init_progress.enter(InitPhase::Roster);
+        if shutdown_requested.load(Ordering::Acquire) {
+            abort_init_for_shutdown(Some(&*runtime), &mut rpc_rx, init_progress).await;
+        }
         // Bootstrap identities from the roster provider using the explicit
         // gateway mode (eager remains the compatibility default).
         let roster_specs = roster
@@ -13694,6 +14306,10 @@ external_addressable = true
         None
     };
 
+    init_progress.enter(InitPhase::Schedules);
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(Some(&*runtime), &mut rpc_rx, init_progress).await;
+    }
     // Run the schedule driver after identity-first restore, so legacy
     // resumable-session repair can see live member bridge-session bindings and
     // due occurrences do not race identity materialization.
@@ -13876,6 +14492,10 @@ external_addressable = true
                 ),
             ))
             .await;
+    }
+    init_progress.enter(InitPhase::Serve);
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(Some(runtime.as_ref()), &mut rpc_rx, init_progress).await;
     }
     // 6. The HTTP listener was bound at init, right behind the exposure gate
     // (see `http_binding` above); only serving it waits for the runtime.
@@ -14184,36 +14804,47 @@ external_addressable = true
     let identity_bootstrap = identity_ctx
         .as_ref()
         .map(|ctx| ctx.runtime.identity_bootstrap_status());
-    let init_response = json!({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "http_base_url": http_base_url,
-            // Proxy-facing base the launch advertised through
-            // runtime_options.http_public_base_url; null when none was
-            // declared. Never bound. Wire-additive.
-            "http_public_base_url": http_public_base_url,
-            "loaded_modules": loaded_modules,
-            "contract_version": MOBKIT_CONTRACT_VERSION,
-            "runtime_origin": runtime_origin,
-            "runtime_fingerprint": runtime_fingerprint,
-            "identity_bootstrap": identity_bootstrap,
-            // Private transport capability. SDKs use this to avoid sending
-            // the shutdown control method to older/custom gateways that may
-            // not implement normal JSON-RPC method-not-found semantics.
-            "stdio_shutdown_handshake": true,
-            // Complete, bounded host wait for the private shutdown request.
-            // SDKs keep callback admission and stdin alive for this horizon.
-            "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
-            // Dialable address of the cross-mob control listener when the
-            // gateway was launched with --control-listen (`tcp://ip:port`
-            // with the real kernel-assigned port for host:0 binds, or
-            // `uds:///path`); null otherwise. Peers put this address in
-            // their contact directories. Wire-additive: older SDKs ignore
-            // unknown result fields.
-            "control_listen_address": control_listen_address,
-        }
+    let init_result = json!({
+        "http_base_url": http_base_url,
+        // Proxy-facing base the launch advertised through
+        // runtime_options.http_public_base_url; null when none was
+        // declared. Never bound. Wire-additive.
+        "http_public_base_url": http_public_base_url,
+        "loaded_modules": loaded_modules,
+        "contract_version": MOBKIT_CONTRACT_VERSION,
+        "runtime_origin": runtime_origin,
+        "runtime_fingerprint": runtime_fingerprint,
+        "identity_bootstrap": identity_bootstrap,
+        // Private transport capability. SDKs use this to avoid sending
+        // the shutdown control method to older/custom gateways that may
+        // not implement normal JSON-RPC method-not-found semantics.
+        "stdio_shutdown_handshake": true,
+        // Complete, bounded host wait for the private shutdown request.
+        // SDKs keep callback admission and stdin alive for this horizon.
+        "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
+        // Dialable address of the cross-mob control listener when the
+        // gateway was launched with --control-listen (`tcp://ip:port`
+        // with the real kernel-assigned port for host:0 binds, or
+        // `uds:///path`); null otherwise. Peers put this address in
+        // their contact directories. Wire-additive: older SDKs ignore
+        // unknown result fields.
+        "control_listen_address": control_listen_address,
     });
+    if shutdown_requested.load(Ordering::Acquire) {
+        abort_init_for_shutdown(Some(runtime.as_ref()), &mut rpc_rx, init_progress).await;
+    }
+    // Ordinary requests are admitted from here on: the dispatch loop below
+    // drains them. Opened before readiness is reported, so a request the SDK
+    // sends right after the settlement is queued, not refused.
+    dispatch_open.store(true, Ordering::Release);
+    // A legacy SDK gets its single response; an accepted init settles `ready`.
+    let init_response = match init_session() {
+        Some(session) => {
+            session.settled.store(true, Ordering::Release);
+            session.ready_line(init_result)
+        }
+        None => json!({ "jsonrpc": "2.0", "id": request_id, "result": init_result }),
+    };
     let _ = stdout_tx
         .send(GatewayStdoutLine::plain(
             serde_json::to_string(&init_response)

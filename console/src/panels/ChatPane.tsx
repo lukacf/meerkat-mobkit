@@ -3,10 +3,10 @@ import { QuoteSelectionAction } from "../../../packages/console-components/src/c
 import { DeliveredContextMessage } from "../../../packages/console-components/src/conversation/delivered-context-message";
 import type { ConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import { JumpToLatest } from "../../../packages/console-components/src/conversation/jump-to-latest";
-import { approvalInteractionIdsByTurn, ConversationApprovals, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
+import { approvalInteractionIdsByTurn, ConversationApprovals, pendingApprovalTurns, type ConversationApprovalProps } from "../../../packages/console-components/src/conversation/conversation-approvals";
 import type { ConsoleQuoteSelection } from "../../../packages/console-components/src/conversation/context-selection";
 import type { MarkdownUrlPolicy } from "../../../packages/console-components/src/conversation/conversation-markdown";
-import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
+import { CompletedToolDisclosure, groupRoutineToolRows, ConversationPresentationProvider, ConversationRowStateScope, RowDetails, type ConversationDisplayLabels } from "../../../packages/console-components/src/conversation/presentation-policy";
 import React from "react";
 import type {
   ConversationTimelineEntry,
@@ -48,9 +48,21 @@ import {
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
 import { countRender } from "../lib/render-counts";
+import { useTurnWindow, type TurnWindow } from "./transcript-window";
+
+const NO_TURN_IDS: ReadonlySet<string> = new Set();
+
+/// Test-only switch for the windowed transcript's oracle runs (see
+/// typing-lag-browser's equivalence scenario); production never sets it.
+function transcriptWindowingDefault(): boolean {
+  return (globalThis as { __consoleTranscriptWindowing?: boolean }).__consoleTranscriptWindowing !== false;
+}
 import { Icon } from "../icon";
 
 interface ChatPaneProps extends ConversationApprovalProps {
+  /** Mount only the turns near the viewport (default). Off renders every
+   * revealed turn: the oracle the windowed transcript is checked against. */
+  windowed?: boolean;
   agent: ConsoleAgent | null;
   agentLabel: string;
   identity: string;
@@ -366,6 +378,118 @@ function isScaffoldUserText(text: string): boolean {
     || /^\[peer update\]/i.test(normalized);
 }
 
+/// Rows whose text contains `query` (case-insensitive), in transcript order:
+/// the in-app Find in transcript, over every loaded message whether or not
+/// its turn is mounted (the windowed transcript keeps far turns out of the DOM
+/// and out of reach of the browser's find-in-page).
+export function transcriptFindMatches(messages: readonly Msg[], query: string): string[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  const rows: string[] = [];
+  for (const message of messages) {
+    const text = message.kind === "event" || message.kind === "origin"
+      ? `${message.source?.sentence ?? ""} ${msgCopyText(message)}`
+      : msgCopyText(message);
+    if (text.toLocaleLowerCase().includes(needle)) rows.push(message.scrollRowId ?? message.id);
+  }
+  return rows;
+}
+
+const FIND_HIGHLIGHT = "transcript-find";
+
+/// Highlight every occurrence of `query` in a mounted row (CSS Custom
+/// Highlight API, so the row's DOM is untouched). False until the row is
+/// mounted.
+function highlightRow(body: HTMLElement, rowId: string, query: string): boolean {
+  const registry = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+  const row = [...body.querySelectorAll<HTMLElement>("[data-conversation-row-id]")]
+    .find((candidate) => candidate.dataset.conversationRowId === rowId);
+  if (!row) return false;
+  if (!registry || !HighlightCtor) return true;
+  const needle = query.trim().toLocaleLowerCase();
+  const ranges: Range[] = [];
+  const walker = body.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.textContent ?? "").toLocaleLowerCase();
+    for (let at = text.indexOf(needle); needle && at >= 0; at = text.indexOf(needle, at + needle.length)) {
+      const range = body.ownerDocument.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + needle.length);
+      ranges.push(range);
+    }
+  }
+  registry.set(FIND_HIGHLIGHT, new HighlightCtor(...ranges));
+  return true;
+}
+
+function clearFindHighlight() {
+  (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights?.delete(FIND_HIGHLIGHT);
+}
+
+function TranscriptFindBar({
+  identity,
+  messages,
+  bodyRef,
+  onJump,
+  onClose,
+}: {
+  identity: string;
+  messages: readonly Msg[];
+  bodyRef: React.RefObject<HTMLDivElement | null>;
+  onJump: (rowId: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const matches = React.useMemo(() => transcriptFindMatches(messages, query), [messages, query]);
+  // The newest match first: a transcript is read back from the live edge.
+  const [current, setCurrent] = React.useState(-1);
+  React.useEffect(() => { setCurrent(matches.length ? matches.length - 1 : -1); }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
+  const target = current >= 0 && current < matches.length ? matches[current] : null;
+  React.useEffect(() => {
+    if (!target) { clearFindHighlight(); return; }
+    onJump(target);
+    // The jump can mount (or reveal) the row a few frames later.
+    let frames = 0;
+    let handle = 0;
+    const tryHighlight = () => {
+      const body = bodyRef.current;
+      if (!body || highlightRow(body, target, query) || ++frames > 30) return;
+      handle = window.requestAnimationFrame(tryHighlight);
+    };
+    handle = window.requestAnimationFrame(tryHighlight);
+    return () => window.cancelAnimationFrame(handle);
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => clearFindHighlight, []);
+  const step = (delta: number) => {
+    if (!matches.length) return;
+    setCurrent((index) => ((index < 0 ? 0 : index) + delta + matches.length) % matches.length);
+  };
+  return (
+    <div className="conv__find" role="search" aria-label="Find in transcript">
+      <input
+        aria-label="Find in transcript"
+        autoFocus
+        data-testid={`chat-find:${identity}`}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
+          if (event.key === "Escape") { event.preventDefault(); onClose(); }
+        }}
+        placeholder="Find in transcript"
+        type="search"
+        value={query}
+      />
+      <span aria-live="polite" className="conv__find-count" data-testid={`chat-find-count:${identity}`}>
+        {query.trim() ? (matches.length ? `${current + 1} of ${matches.length}` : "No matches") : ""}
+      </span>
+      <button aria-label="Previous match" disabled={!matches.length} onClick={() => step(-1)} type="button">↑</button>
+      <button aria-label="Next match" disabled={!matches.length} onClick={() => step(1)} type="button">↓</button>
+      <button aria-label="Close find" onClick={onClose} type="button">×</button>
+    </div>
+  );
+}
+
 function transcriptCopyText(messages: Msg[]): string {
   return messages
     .map((message) => {
@@ -581,10 +705,69 @@ function sameSource(a: ConversationEntrySource | undefined, b: ConversationEntry
   return Boolean(a && b && a.kind === b.kind && a.label === b.label && a.detail === b.detail);
 }
 
+/// Flattened rows per transcript entry. Entries keep their object identity
+/// while unchanged (see deriveTimelineEntries), so a re-render reuses rows.
+const flattenedRows = new WeakMap<ConversationTimelineEntry, { options: ConversationEntrySourceOptions["resolvePeerLabel"]; rows: Msg[] }>();
+
+function entryRows(entry: ConversationTimelineEntry, options: ConversationEntrySourceOptions): Msg[] {
+  const cached = flattenedRows.get(entry);
+  if (cached && cached.options === options.resolvePeerLabel) return cached.rows;
+  const rows = conversationPresentationRows([entry]).flatMap((row) => flattenEntry(row, options));
+  flattenedRows.set(entry, { options: options.resolvePeerLabel, rows });
+  return rows;
+}
+
+/// Chat rows plus, per row, the range of entry indexes it was built from.
+interface ChatMessagesState {
+  entries: ConversationTimelineEntry[];
+  resolvePeerLabel: ConversationEntrySourceOptions["resolvePeerLabel"];
+  messages: Msg[];
+  spans: Array<{ start: number; end: number }>;
+}
+
 function buildChatMessages(
   entries: ConversationTimelineEntry[],
   options: ConversationEntrySourceOptions = {},
 ): Msg[] {
+  return extendChatMessages(null, entries, options).messages;
+}
+
+/// Build rows for `entries`, reusing `previous` rows built from the unchanged
+/// leading entries. Every pass below looks only at the previous row or at
+/// rows of one entry, so rebuilding from a row boundary that no later entry
+/// can merge into gives exactly the full build.
+function extendChatMessages(
+  previous: ChatMessagesState | null,
+  entries: ConversationTimelineEntry[],
+  options: ConversationEntrySourceOptions = {},
+): ChatMessagesState {
+  let startEntry = 0;
+  let cut = 0;
+  if (previous && previous.resolvePeerLabel === options.resolvePeerLabel) {
+    let same = 0;
+    const limit = Math.min(entries.length, previous.entries.length);
+    while (same < limit && entries[same] === previous.entries[same]) same += 1;
+    if (same === entries.length && same === previous.entries.length) return previous;
+    startEntry = Math.max(0, same - 1);
+    cut = previous.spans.findIndex((span) => span.end >= startEntry);
+    if (cut < 0) cut = previous.messages.length;
+    // A kept row must hold only earlier entries and must not be a tool group,
+    // which the next row could merge into.
+    while (cut > 0 && (previous.messages[cut - 1].kind === "tool" || previous.spans[cut - 1].end >= startEntry)) {
+      cut -= 1;
+      startEntry = Math.min(startEntry, previous.spans[cut].start);
+    }
+    // Run durations attach by entry id; a reused id must see every row again.
+    if (cut > 0) {
+      const rebuiltIds = new Set(entries.slice(startEntry).map((entry) => entry.id));
+      for (let index = 0; index < cut && cut > 0; index += 1) {
+        if (rebuiltIds.has(previous.messages[index].sourceEntryId ?? "")) cut = 0;
+      }
+      if (cut === 0) startEntry = 0;
+    }
+  }
+  const merged: Msg[] = previous && cut > 0 ? previous.messages.slice(0, cut) : [];
+  const spans = previous && cut > 0 ? previous.spans.slice(0, cut) : [];
   // Defensive cross-entry merge: the adapter already groups
   // consecutive same-name tool calls into one entry, but the
   // merge breaks if a non-tool entry slips between adjacent tool
@@ -592,76 +775,78 @@ function buildChatMessages(
   // bubble). Walk the flattened message list and fold neighbouring
   // tool messages whose blocks all share the same tool `name` —
   // and, for peer tools, the same direction.
-  const flat = conversationPresentationRows(entries).flatMap((entry) => flattenEntry(entry, options));
-  const merged: Msg[] = [];
-  for (const m of flat) {
-    const last = merged[merged.length - 1];
-    const lastBlocks = last?.blocks;
-    const mBlocks = m.blocks;
-    const sameName = !!(
-      last
-      && last.interactionId === m.interactionId
-      && last.kind === "tool"
-      && m.kind === "tool"
-      && Array.isArray(lastBlocks) && lastBlocks.length > 0
-      && Array.isArray(mBlocks) && mBlocks.length > 0
-      && lastBlocks.every((b) => b.type === "tool-call")
-      && mBlocks.every((b) => b.type === "tool-call")
-      && lastBlocks[0].type === "tool-call"
-      && mBlocks[0].type === "tool-call"
-      && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-      && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-    );
-    const peerCompatible = !sameName
-      ? false
-      : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
-        ? true
-        : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
-          === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
-    if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
-      last.blocks = [...lastBlocks, ...mBlocks];
-      last.id = `${last.id}+${m.id}`;
-    } else {
-      const canDedupeAdjacent =
-        last?.id === m.id && (
-          (m.kind === "user" && last.kind === "user")
-          || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
-        );
-      if (last && canDedupeAdjacent) {
-        const lastSignature = textSignatureForMsg(last);
-        const nextSignature = textSignatureForMsg(m);
-        if (lastSignature && lastSignature === nextSignature) {
-          continue;
+  for (let entryIndex = startEntry; entryIndex < entries.length; entryIndex += 1) {
+    for (const m of entryRows(entries[entryIndex], options)) {
+      const last = merged[merged.length - 1];
+      const lastBlocks = last?.blocks;
+      const mBlocks = m.blocks;
+      const sameName = !!(
+        last
+        && last.interactionId === m.interactionId
+        && last.kind === "tool"
+        && m.kind === "tool"
+        && Array.isArray(lastBlocks) && lastBlocks.length > 0
+        && Array.isArray(mBlocks) && mBlocks.length > 0
+        && lastBlocks.every((b) => b.type === "tool-call")
+        && mBlocks.every((b) => b.type === "tool-call")
+        && lastBlocks[0].type === "tool-call"
+        && mBlocks[0].type === "tool-call"
+        && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+        && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+      );
+      const peerCompatible = !sameName
+        ? false
+        : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
+          ? true
+          : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
+            === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
+      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+        last.blocks = [...lastBlocks, ...mBlocks];
+        last.id = `${last.id}+${m.id}`;
+        spans[spans.length - 1].end = entryIndex;
+      } else {
+        const canDedupeAdjacent =
+          last?.id === m.id && (
+            (m.kind === "user" && last.kind === "user")
+            || (m.kind === "agent" && last.kind === "agent" && last.who === m.who)
+          );
+        if (last && canDedupeAdjacent) {
+          const lastSignature = textSignatureForMsg(last);
+          const nextSignature = textSignatureForMsg(m);
+          if (lastSignature && lastSignature === nextSignature) {
+            continue;
+          }
         }
+        merged.push({ ...m });
+        spans.push({ start: entryIndex, end: entryIndex });
       }
-      merged.push({ ...m });
     }
   }
   // One header per owned run of assistant output. Another interaction or
   // run starts a reply even when the same assistant is still speaking.
-  for (let index = 1; index < merged.length; index += 1) {
+  for (let index = Math.max(1, cut); index < merged.length; index += 1) {
     const message = merged[index];
-    const previous = merged[index - 1];
+    const previousRow = merged[index - 1];
     if (
       message.showHeader
       && message.source?.kind === "assistant"
-      && previous.kind !== "user"
-      && sameSource(previous.source, message.source)
-      && previous.interactionId === message.interactionId
-      && previous.runId === message.runId
-      && previous.dayKey === message.dayKey
+      && previousRow.kind !== "user"
+      && sameSource(previousRow.source, message.source)
+      && previousRow.interactionId === message.interactionId
+      && previousRow.runId === message.runId
+      && previousRow.dayKey === message.dayKey
     ) {
       merged[index] = { ...message, showHeader: false };
     }
   }
-  const durations = new Map(entries.flatMap((entry) => (
+  const durations = new Map(entries.slice(startEntry).flatMap((entry) => (
     entry.kind === "message" && entry.runId && typeof entry.runDurationMs === "number"
       && Number.isFinite(entry.runDurationMs) && entry.runDurationMs >= 0
       ? [[entry.id, entry.runDurationMs] as const] : []
   )));
   // A streamed row is stamped when its first text arrives. Only the host's
   // completed-run evidence can supply a duration, once at the final text row.
-  for (let index = merged.length - 1; index >= 0; index -= 1) {
+  for (let index = merged.length - 1; index >= cut; index -= 1) {
     const message = merged[index];
     const duration = durations.get(message.sourceEntryId || "");
     if (duration === undefined || message.kind !== "agent"
@@ -674,11 +859,38 @@ function buildChatMessages(
       workedForCopyText: `Worked for ${workedFor}`,
     };
   }
-  return merged;
+  return { entries: entries.slice(), resolvePeerLabel: options.resolvePeerLabel, messages: merged, spans };
+}
+
+/// Reuse the previous turn object while its rows are the same row objects.
+/// What a turn renders, for the transcript window: a rebuilt turn object with
+/// the same key renders the same height. Cached per object.
+const turnContentKeys = new WeakMap<ChatTurn, string>();
+function turnContentKey(turn: ChatTurn): string {
+  let key = turnContentKeys.get(turn);
+  if (key === undefined) {
+    key = JSON.stringify(turn.messages);
+    turnContentKeys.set(turn, key);
+  }
+  return key;
+}
+
+function internTurns(next: ChatTurn[], previous: readonly ChatTurn[]): ChatTurn[] {
+  if (previous.length === 0) return next;
+  const byId = new Map(previous.map((turn) => [turn.id, turn]));
+  return next.map((turn) => {
+    const prior = byId.get(turn.id);
+    return prior
+      && prior.messages.length === turn.messages.length
+      && prior.messages.every((message, index) => message === turn.messages[index])
+      ? prior
+      : turn;
+  });
 }
 
 export const __chatPaneTest = {
   buildChatMessages,
+  extendChatMessages,
   buildChatTurns,
   chatTurnPreview,
   isScaffoldUserText,
@@ -1010,10 +1222,10 @@ function EventRow({ message: m }: { message: Msg }) {
           <MessageTime message={m} />
         </div>
         {payloadJson ? (
-          <details className="msg__event-details">
+          <RowDetails part="event-details" className="msg__event-details">
             <summary>Event details</summary>
             <pre>{payloadJson}</pre>
-          </details>
+          </RowDetails>
         ) : null}
       </div>
     </div>
@@ -1043,6 +1255,19 @@ const MessageRow = React.memo(function MessageRow({
   markdownUrlPolicy,
 }: MessageRowProps) {
   countRender("MessageRow");
+  // Row parts keep reader state (open disclosures) per pane under this id,
+  // so the row shows the same thing if it unmounts and mounts again.
+  return <ConversationRowStateScope rowId={m.scrollRowId ?? m.id}>
+    <MessageRowBody message={m} suppressWorked={suppressWorked} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+  </ConversationRowStateScope>;
+}, messageRowPropsEqual);
+
+function MessageRowBody({
+  message: m,
+  suppressWorked,
+  workGraphActions,
+  markdownUrlPolicy,
+}: MessageRowProps) {
   if (m.kind === "event" || m.kind === "origin") {
     return <EventRow message={m} />;
   }
@@ -1080,11 +1305,117 @@ const MessageRow = React.memo(function MessageRow({
       </div>
     </div>
   );
-}, messageRowPropsEqual);
+}
 
 /// The scrolling transcript. Memoised so composer keystrokes, which re-render
 /// the owning ChatPane, never touch a transcript row: only a change in the
 /// turns, phase, history state, or the stable handlers reaches it.
+/// One mounted turn. Memoised on referentially stable inputs, so a streamed
+/// token re-renders only the turn that holds the streaming row.
+const TranscriptTurn = React.memo(function TranscriptTurn({
+  turn,
+  turnIndex,
+  identity,
+  previousDay,
+  dayLabelNow,
+  suppressWorkedId,
+  workGraphActions,
+  markdownUrlPolicy,
+  approvalSnapshot,
+  onApprovalDecision,
+  conversationId,
+  approvalInteractionIds,
+  setSize,
+  parkedHeight,
+}: {
+  turn: ChatTurn;
+  turnIndex: number;
+  identity: string;
+  previousDay: string | null;
+  dayLabelNow: Date;
+  suppressWorkedId: string | null;
+  workGraphActions: WorkGraphCardActions | null;
+  markdownUrlPolicy?: MarkdownUrlPolicy;
+  approvalSnapshot?: ConversationApprovalProps["approvalSnapshot"];
+  onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
+  conversationId?: string;
+  approvalInteractionIds: string[];
+  /** Turns in the feed, or -1 while earlier turns can still load. */
+  setSize: number;
+  /** Set while parked outside the transcript window: in the DOM for
+   * find-in-page, laid out at this measured height. */
+  parkedHeight?: number;
+}) {
+  countRender("TranscriptTurn");
+  // Parked: hidden="until-found" (React renders `hidden` as a boolean, which
+  // the turn's own display would override) at its measured size, so the
+  // browser lays out and paints nothing inside it but find-in-page still
+  // finds and reveals it. Set before paint.
+  const turnRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const element = turnRef.current;
+    if (!element) return;
+    if (parkedHeight === undefined) {
+      element.removeAttribute("hidden");
+      element.style.removeProperty("contain-intrinsic-block-size");
+      element.style.removeProperty("flex-shrink");
+    } else {
+      // Size containment drops the flex item's automatic minimum size, so
+      // without this the transcript column would shrink it to nothing.
+      element.style.setProperty("flex-shrink", "0");
+      element.style.setProperty("contain-intrinsic-block-size", `${parkedHeight}px`);
+      element.setAttribute("hidden", "until-found");
+    }
+  }, [parkedHeight]);
+  // Day separators: before the first mounted row and at every local
+  // calendar-day change, so a bare HH:MM is never ambiguous.
+  let day = previousDay;
+  const daySeparator = (message: Msg): React.ReactNode => {
+    const next = message.dayKey ?? null;
+    if (!next || next === day) return null;
+    day = next;
+    const label = transcriptDayLabel(next, dayLabelNow);
+    return (
+      <div
+        aria-label={label}
+        className="conv__day"
+        data-testid={`chat-day:${identity}:${next}`}
+        key={`day:${next}:${message.renderKey ?? message.id}`}
+        role="separator"
+      >
+        <span>{label}</span>
+      </div>
+    );
+  };
+  return (
+    <div
+      aria-label={`Turn ${turnIndex + 1}`}
+      aria-posinset={turnIndex + 1}
+      aria-setsize={setSize}
+      className="conv-turn"
+      data-chat-turn-index={turnIndex}
+      data-conversation-turn-id={turn.id}
+      data-testid={`chat-turn:${identity}:${turnIndex}`}
+      // The WAI-ARIA feed pattern: each turn is an article that keyboard
+      // focus moves through (PageDown / PageUp), mounting turns as it goes.
+      ref={turnRef}
+      role="article"
+      tabIndex={-1}
+    >
+      {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
+        const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
+          {daySeparator(m)}
+          <MessageRow message={m} suppressWorked={m.id === suppressWorkedId} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+        </React.Fragment>);
+        return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
+      })}
+      <ConversationRowStateScope rowId={`approvals:${turn.id}`}>
+        <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractionIds} />
+      </ConversationRowStateScope>
+    </div>
+  );
+});
+
 const TranscriptView = React.memo(function TranscriptView({
   identity,
   agentLabel,
@@ -1106,6 +1437,9 @@ const TranscriptView = React.memo(function TranscriptView({
   approvalSnapshot,
   onApprovalDecision,
   conversationId,
+  turnWindow,
+  onTranscriptKeyDown,
+  onOpenFind,
 }: {
   identity: string;
   agentLabel: string;
@@ -1127,24 +1461,98 @@ const TranscriptView = React.memo(function TranscriptView({
   approvalSnapshot?: ConversationApprovalProps["approvalSnapshot"];
   onApprovalDecision?: ConversationApprovalProps["onApprovalDecision"];
   conversationId?: string;
+  /** Mounted turns and spacers for `turns.slice(windowStart)`. */
+  turnWindow: TurnWindow;
+  onTranscriptKeyDown: React.KeyboardEventHandler<HTMLDivElement>;
+  onOpenFind: () => void;
 }) {
   countRender("TranscriptView");
   const windowedTurns = React.useMemo(
     () => (windowStart > 0 ? turns.slice(windowStart) : turns),
     [turns, windowStart],
   );
-  const approvalInteractions = React.useMemo(() => approvalInteractionIdsByTurn(windowedTurns.map((turn) =>
-    turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : []))), [windowedTurns]);
+  // Per-turn inputs kept referentially stable so unchanged turns skip render.
+  const approvalIdsRef = React.useRef(new Map<string, string[]>());
+  const approvalInteractions = React.useMemo(() => {
+    const next = approvalInteractionIdsByTurn(windowedTurns.map((turn) =>
+      turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])));
+    const interned = new Map<string, string[]>();
+    const result = next.map((ids, offset) => {
+      const turnId = windowedTurns[offset].id;
+      const prior = approvalIdsRef.current.get(turnId);
+      const stable = prior && prior.length === ids.length && prior.every((id, index) => id === ids[index]) ? prior : ids;
+      interned.set(turnId, stable);
+      return stable;
+    });
+    approvalIdsRef.current = interned;
+    return result;
+  }, [windowedTurns]);
+  // Day separators sit before the first mounted row and at every local
+  // calendar-day change; each turn needs the day its predecessor ended on.
+  const previousDays = React.useMemo(() => {
+    let day: string | null = null;
+    return windowedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+  }, [windowedTurns]);
+  const todayKey = transcriptDayKey(new Date().toISOString());
+  const dayLabelNow = React.useMemo(() => new Date(), [todayKey]);
   // Serialised on click only: the whole transcript as text is the single most
   // expensive derivation in this pane and nobody reads it until they copy.
   const getTranscriptText = React.useCallback(() => transcriptCopyText(messages), [messages]);
-  return (
-    <div className="conv__body" onScroll={onScroll} ref={bodyRef} tabIndex={0} aria-label="Conversation transcript">
-      <CopyInlineButton
-        className="msg__copy--transcript"
-        label="Copy transcript"
-        getText={getTranscriptText}
+  // Earlier turns can still load (revealed or from the server): size unknown.
+  const setSize = windowStart > 0 || hasOlderHistory ? -1 : turns.length;
+  const renderTurn = (offset: number, parkedHeight?: number) => {
+    const turn = windowedTurns[offset];
+    return turn ? (
+      <TranscriptTurn
+        key={turn.id}
+        turn={turn}
+        turnIndex={windowStart + offset}
+        identity={identity}
+        previousDay={previousDays[offset]}
+        dayLabelNow={dayLabelNow}
+        suppressWorkedId={phase ? lastAgentMessageId : null}
+        workGraphActions={workGraphActions}
+        markdownUrlPolicy={markdownUrlPolicy}
+        approvalSnapshot={approvalSnapshot}
+        onApprovalDecision={onApprovalDecision}
+        conversationId={conversationId}
+        approvalInteractionIds={approvalInteractions[offset]}
+        setSize={setSize}
+        parkedHeight={parkedHeight}
       />
+    ) : null;
+  };
+  return (
+    <div
+      aria-busy={isLoadingHistory || loadingOlderHistory}
+      aria-label="Conversation transcript"
+      className="conv__body"
+      onKeyDown={onTranscriptKeyDown}
+      onScroll={onScroll}
+      ref={bodyRef}
+      role="feed"
+      tabIndex={0}
+    >
+      <div className="conv__tools">
+        <button
+          aria-label="Find in transcript"
+          className="msg__copy"
+          data-testid={`chat-find-open:${identity}`}
+          onClick={onOpenFind}
+          title="Find in transcript (Ctrl+Shift+F)"
+          type="button"
+        >
+          <Icon name="i-search" />
+        </button>
+        <CopyInlineButton
+          label="Copy transcript"
+          getText={getTranscriptText}
+        />
+      </div>
       {windowStart > 0 ? (
         <button
           className="conv__history"
@@ -1186,51 +1594,16 @@ const TranscriptView = React.memo(function TranscriptView({
           <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
         </div>
       )}
-      {(() => {
-        // Day separators: before the first mounted row and at every local
-        // calendar-day change, so a bare HH:MM is never ambiguous.
-        let previousDay: string | null = null;
-        const now = new Date();
-        const daySeparator = (message: Msg): React.ReactNode => {
-          const day = message.dayKey ?? null;
-          if (!day || day === previousDay) return null;
-          previousDay = day;
-          const label = transcriptDayLabel(day, now);
-          return (
-            <div
-              aria-label={label}
-              className="conv__day"
-              data-testid={`chat-day:${identity}:${day}`}
-              key={`day:${day}:${message.renderKey ?? message.id}`}
-              role="separator"
-            >
-              <span>{label}</span>
-            </div>
-          );
-        };
-        return windowedTurns.map((turn, offset) => {
-        const turnIndex = windowStart + offset;
-        return (
+      {turnWindow.slots.map((slot) => slot.kind === "spacer" ? (
+        // Stands for unmounted turns at their measured height (see transcript-window).
         <div
-          aria-label={`Turn ${turnIndex + 1}`}
-          className="conv-turn"
-          data-chat-turn-index={turnIndex}
-          data-conversation-turn-id={turn.id}
-          data-testid={`chat-turn:${identity}:${turnIndex}`}
-          key={turn.id}
-        >
-          {groupRoutineToolRows(turn.messages, (message) => message.kind === "tool" ? message.blocks : undefined).map((run) => {
-            const rows = run.rows.map((m) => <React.Fragment key={m.scrollRowId ?? m.id}>
-              {daySeparator(m)}
-              <MessageRow message={m} suppressWorked={Boolean(phase && m.id === lastAgentMessageId)} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
-            </React.Fragment>);
-            return <React.Fragment key={run.rows[0].scrollRowId ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</React.Fragment>;
-          })}
-          <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} interactionIds={approvalInteractions[offset]} />
-        </div>
-        );
-      });
-      })()}
+          aria-hidden="true"
+          className="conv__spacer"
+          data-conversation-spacer={`${windowStart + slot.from}-${windowStart + slot.to}`}
+          key={`spacer:${windowedTurns[slot.from].id}`}
+          style={{ height: slot.height, flex: "none" }}
+        />
+      ) : renderTurn(slot.index, slot.kind === "parked" ? slot.height : undefined))}
       <ConversationApprovals approvalSnapshot={approvalSnapshot} approvalIdentity={identity} onApprovalDecision={onApprovalDecision} conversationId={conversationId} />
       {liveSpeech && liveSpeech.length > 0 && (
         <div
@@ -1323,14 +1696,20 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
 }) {
   countRender("ComposerTextarea");
   const [value, setValue] = React.useState(initialValue);
-  const appliedExternalRef = React.useRef<number | null>(null);
-  React.useEffect(() => {
-    if (!externalValue || appliedExternalRef.current === externalValue.at) return;
-    appliedExternalRef.current = externalValue.at;
+  // Applied while rendering, not in an effect: a send clears the composer in
+  // the keydown's own render. A passive effect committed the old text first
+  // and cleared it in a later task, 20-35 ms after the keystroke.
+  const [appliedExternal, setAppliedExternal] = React.useState<number | null>(null);
+  if (externalValue && appliedExternal !== externalValue.at) {
+    setAppliedExternal(externalValue.at);
     setValue(externalValue.value);
-  }, [externalValue]);
+  }
   return (
     <>
+      {/* A fixed-size, strictly contained block: the textarea's per-keystroke
+          layout stops here instead of re-laying out the transcript beside it.
+          It must not be a flex item, which can never be a relayout boundary. */}
+      <div className="composer__input">
       <textarea
         placeholder={
           readOnly
@@ -1353,6 +1732,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
         rows={2}
         data-testid={`chat-composer:${identity}`}
       />
+      </div>
       <div className="composer__row">
         <span className="composer__chip mono">{agentRole || "agent"}</span>
         <span className="composer__spacer" />
@@ -1385,6 +1765,7 @@ const ComposerTextarea = React.memo(function ComposerTextarea({
 });
 
 export function ChatPane({
+  windowed = transcriptWindowingDefault(),
   agent,
   agentLabel,
   identity,
@@ -1435,6 +1816,8 @@ export function ChatPane({
 }: ChatPaneProps): React.JSX.Element {
   countRender("ChatPane");
   const [quoteError, setQuoteError] = React.useState<string | null>(null);
+  const quoteErrorRef = React.useRef(quoteError);
+  quoteErrorRef.current = quoteError;
   React.useEffect(() => { setQuoteError(null); }, [submittedRowId, identity, conversationId, viewportKey?.authority, viewportKey?.pane]);
   // The live composer value lives inside ComposerTextarea (below) so a
   // keystroke re-renders only that component. ChatPane keeps a ref to the
@@ -1461,7 +1844,9 @@ export function ChatPane({
   const [liveDraftTick, setLiveDraftTick] = React.useState(0);
   const onLiveChange = React.useCallback(
     (value: string) => {
-      setQuoteError(null);
+      // A same-value update still renders ChatPane when its fiber has
+      // leftover work, so a keystroke clears only an actual error.
+      if (quoteErrorRef.current !== null) setQuoteError(null);
       liveDraftRef.current = value;
       liveDraftRevisionRef.current += 1;
       if (publishDraftTimerRef.current !== null) {
@@ -1506,10 +1891,36 @@ export function ChatPane({
     () => uncommittedLiveSpeech(entries, liveSpeech, activeVoiceScope),
     [entries, liveSpeech, activeVoiceScope],
   );
-  const messages = React.useMemo(() => buildChatMessages(entries, {
-    resolvePeerLabel: peerLabels ? (alias) => peerLabels.get(alias) ?? null : null,
-  }), [entries, peerLabels]);
-  const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
+  // Hosts may pass a fresh decision handler every render; every mounted turn
+  // receives it, so forward through a stable function to keep turns memoised.
+  const onApprovalDecisionRef = React.useRef(onApprovalDecision);
+  onApprovalDecisionRef.current = onApprovalDecision;
+  const stableApprovalDecision = React.useCallback<NonNullable<ChatPaneProps["onApprovalDecision"]>>(
+    (pendingId, action) => onApprovalDecisionRef.current?.(pendingId, action),
+    [],
+  );
+  const presentationLabels = React.useMemo(
+    () => displayLabels ?? { peers: peerLabels ?? undefined },
+    [displayLabels, peerLabels],
+  );
+  const resolvePeerLabel = React.useMemo(
+    () => (peerLabels ? (alias: string) => peerLabels.get(alias) ?? null : null),
+    [peerLabels],
+  );
+  // Rows and turns are rebuilt only from the first changed entry, and keep
+  // their object identity otherwise, so a streamed token re-renders one row.
+  const chatMessagesRef = React.useRef<ChatMessagesState | null>(null);
+  const messages = React.useMemo(() => {
+    const next = extendChatMessages(chatMessagesRef.current, entries, { resolvePeerLabel });
+    chatMessagesRef.current = next;
+    return next.messages;
+  }, [entries, resolvePeerLabel]);
+  const turnsRef = React.useRef<ChatTurn[]>([]);
+  const turns = React.useMemo(() => {
+    const next = internTurns(buildChatTurns(messages), turnsRef.current);
+    turnsRef.current = next;
+    return next;
+  }, [messages]);
   // Transcript window: see TRANSCRIPT_WINDOW_TURNS. Keyed by identity so a
   // pane that navigates to another agent starts at that agent's tail again.
   const [revealedFrom, setRevealedFrom] = React.useState<
@@ -1526,6 +1937,29 @@ export function ChatPane({
     windowAnchor,
     (id) => turnIndexById.get(id) ?? -1,
   );
+  // Of the revealed turns, only those near the viewport are mounted.
+  const revealedTurns = React.useMemo(() => (windowStart > 0 ? turns.slice(windowStart) : turns), [turns, windowStart]);
+  // A turn renders by its content and the day it follows (the day separator).
+  const turnRenderKey = React.useMemo(() => {
+    let day: string | null = null;
+    const previous = revealedTurns.map((turn) => {
+      const before = day;
+      for (const message of turn.messages) if (message.dayKey) day = message.dayKey;
+      return before;
+    });
+    return (turn: ChatTurn, index: number) => `${previous[index] ?? ""}\u0000${turnContentKey(turn)}`;
+  }, [revealedTurns]);
+  // A pending approval blocks the agent until someone decides it, so its
+  // turn stays mounted however far away the reader is.
+  const actionableTurnIds = React.useMemo(() => {
+    if (!approvalSnapshot?.requests.length) return NO_TURN_IDS;
+    const indexes = pendingApprovalTurns(
+      revealedTurns.map((turn) => turn.messages.flatMap((message) => message.interactionId ? [message.interactionId] : [])),
+      { approvalSnapshot, approvalIdentity: identity, conversationId },
+    );
+    return indexes.length > 0 ? new Set(indexes.map((index) => revealedTurns[index].id)) : NO_TURN_IDS;
+  }, [approvalSnapshot, revealedTurns, identity, conversationId]);
+  const turnWindow = useTurnWindow(bodyRef, revealedTurns, windowed, turnRenderKey, actionableTurnIds);
   const revealScrollAnchorRef = React.useRef<(rowId: string) => boolean>(() => false);
   const scroll = useConversationScrollController({
     viewportRef: bodyRef, viewportKey, conversationId: identity, contentVersion: entries,
@@ -1583,7 +2017,9 @@ export function ChatPane({
   // turn window. Revealing a saved anchor is an explicit navigation request.
   revealScrollAnchorRef.current = (rowId) => {
     const index = turns.findIndex((turn) => turn.messages.some((message) => (message.scrollRowId ?? message.id) === rowId));
-    if (index < 0 || index >= windowStart) return false;
+    if (index < 0) return false;
+    // Revealed but outside the mounted window: mount it where it is.
+    if (index >= windowStart) return turnWindow.mount(index - windowStart);
     const turnId = index === 0 ? "" : turns[index]?.id ?? "";
     setRevealedFrom({ identity, turnId, mountedTurns: turns.length - index });
     return true;
@@ -1597,9 +2033,16 @@ export function ChatPane({
       return;
     }
 
-    const turnNodes = Array.from(
-      body.querySelectorAll<HTMLElement>("[data-chat-turn-index]"),
-    );
+    // Turns are the body's own children, stacked top to bottom, so their
+    // geometry is monotonic: binary-search the visible band and the target
+    // line instead of selector-scanning and measuring every mounted turn
+    // after each streamed token.
+    const turnNodes: HTMLElement[] = [];
+    for (const child of Array.from(body.children)) {
+      if (child instanceof HTMLElement && Number.isFinite(Number(child.dataset.chatTurnIndex ?? NaN))) {
+        turnNodes.push(child);
+      }
+    }
     if (turnNodes.length === 0) {
       setVisibleTurnIndexes([]);
       return;
@@ -1609,20 +2052,32 @@ export function ChatPane({
     const visibleTop = bodyRect.top;
     const visibleBottom = bodyRect.bottom;
     const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
-    let nextIndex = 0;
+    const rects = new Map<number, DOMRect>();
+    const rectAt = (position: number) => {
+      let rect = rects.get(position);
+      if (!rect) {
+        rect = turnNodes[position].getBoundingClientRect();
+        rects.set(position, rect);
+      }
+      return rect;
+    };
+    const firstWhere = (predicate: (position: number) => boolean) => {
+      let lo = 0;
+      let hi = turnNodes.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (predicate(mid)) hi = mid;
+        else lo = mid + 1;
+      }
+      return lo;
+    };
+    const indexAt = (position: number) => Number(turnNodes[position].dataset.chatTurnIndex);
+    const afterTarget = firstWhere((position) => rectAt(position).top > targetY);
+    const nextIndex = afterTarget > 0 ? indexAt(afterTarget - 1) : 0;
     const nextVisibleIndexes: number[] = [];
-    for (const turnNode of turnNodes) {
-      const rawIndex = Number(turnNode.dataset.chatTurnIndex);
-      if (!Number.isFinite(rawIndex)) {
-        continue;
-      }
-      const turnRect = turnNode.getBoundingClientRect();
-      if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
-        nextVisibleIndexes.push(rawIndex);
-      }
-      if (turnRect.top <= targetY) {
-        nextIndex = rawIndex;
-      }
+    for (let position = firstWhere((at) => rectAt(at).bottom >= visibleTop); position < turnNodes.length; position += 1) {
+      if (rectAt(position).top > visibleBottom) break;
+      nextVisibleIndexes.push(indexAt(position));
     }
     const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
     setVisibleTurnIndexes((current) => {
@@ -1640,9 +2095,11 @@ export function ChatPane({
     activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
   }, [updateActiveTurn]);
 
+  // Also when the transcript window mounts other turns: the visible turns
+  // are read from the mounted ones.
   React.useEffect(() => {
     scheduleActiveTurnUpdate();
-  }, [scheduleActiveTurnUpdate, scrollSignature]);
+  }, [scheduleActiveTurnUpdate, scrollSignature, turnWindow.slots]);
 
   React.useEffect(() => {
     updateActiveTurn();
@@ -1676,6 +2133,42 @@ export function ChatPane({
   windowStartRef.current = windowStart;
   const revealEarlierRef = React.useRef(revealEarlier);
   revealEarlierRef.current = revealEarlier;
+  // Feed keyboard navigation: PageDown / PageUp on a turn moves focus to the
+  // next or previous turn, revealing earlier turns at the top; Control+End
+  // leaves the feed for the composer.
+  // In-app Find in transcript (Ctrl+Shift+F in the pane): reaches turns
+  // the window keeps out of the DOM, which the browser's find cannot.
+  const [findOpen, setFindOpen] = React.useState(false);
+  const openFind = React.useCallback(() => setFindOpen(true), []);
+  const closeFind = React.useCallback(() => {
+    setFindOpen(false);
+    bodyRef.current?.focus();
+  }, []);
+  // A found row mounts (or is revealed) through the controller's jump.
+  const jumpToFoundRef = React.useRef<(rowId: string) => void>(() => {});
+  jumpToFoundRef.current = (rowId) => { scroll.jumpToRow(rowId); };
+  const jumpToFound = React.useCallback((rowId: string) => jumpToFoundRef.current(rowId), []);
+  const turnsRefForKeys = React.useRef(turns);
+  turnsRefForKeys.current = turns;
+  const turnWindowRef = React.useRef(turnWindow);
+  turnWindowRef.current = turnWindow;
+  const onTranscriptKeyDown = React.useCallback<React.KeyboardEventHandler<HTMLDivElement>>((event) => {
+    const target = event.target as HTMLElement;
+    if (!target.matches?.("[data-conversation-turn-id]") || event.altKey || event.metaKey || event.shiftKey) return;
+    if (event.ctrlKey && event.key === "End") {
+      event.preventDefault();
+      bodyRef.current?.parentElement?.querySelector<HTMLTextAreaElement>('textarea[data-testid^="chat-composer"]')?.focus();
+      return;
+    }
+    if (event.ctrlKey || (event.key !== "PageDown" && event.key !== "PageUp")) return;
+    const all = turnsRefForKeys.current;
+    const index = all.findIndex((turn) => turn.id === target.dataset.conversationTurnId);
+    const next = index + (event.key === "PageDown" ? 1 : -1);
+    if (index < 0 || next < 0 || next >= all.length) return;
+    event.preventDefault();
+    if (next < windowStartRef.current) revealEarlierRef.current();
+    turnWindowRef.current.focusTurn(all[next].id);
+  }, []);
   const onBodyScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
       if (event.currentTarget.scrollLeft !== 0) {
@@ -1716,6 +2209,9 @@ export function ChatPane({
       nav.style.top = `${Math.max(0, bodyBounds.top - paneBounds.top) + 16}px`;
       // The latest control has a permanent lower gutter, even while hidden.
       nav.style.bottom = `${Math.max(0, paneBounds.bottom - bodyBounds.bottom) + 64}px`;
+      // Turn previews cap their width to the pane. The pane is deliberately
+      // not a size container (see .conv__head-frame), so publish its width.
+      nav.style.setProperty("--conv-pane-inline-size", `${paneBounds.width}px`);
     };
     const observer = new ResizeObserver((entries) => {
       measureBand();
@@ -1740,8 +2236,10 @@ export function ChatPane({
     const body = bodyRef.current;
     if (!body) return;
     const measure = () => setTranscriptOverflows(body.scrollHeight > body.clientHeight + 1);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") { measure(); return; }
+    // Content changes on every streamed token. Reading scrollHeight here
+    // forced a layout of the whole transcript each time; a new observer's
+    // first callback runs after the frame's layout instead.
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
@@ -1973,8 +2471,18 @@ export function ChatPane({
   };
 
   return (
-    <ConversationPresentationProvider labels={displayLabels ?? { peers: peerLabels ?? undefined }} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
-    <div className="conv" data-testid={`chat-pane:${identity}`}>
+    <ConversationPresentationProvider labels={presentationLabels} viewportKey={viewportKey} autoFold={scroll.mode === "following-end"}>
+    <div
+      className="conv"
+      data-testid={`chat-pane:${identity}`}
+      onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          setFindOpen(true);
+        }
+      }}
+    >
+      <div className="conv__head-frame">
       <div className={`conv__head${headerVariant === "compact" ? " conv__head--compact" : ""}`}>
         <div className="conv__avatar">{initial}</div>
         <div className="conv__target">
@@ -1997,6 +2505,7 @@ export function ChatPane({
             </button>
           ))}
         </div>
+      </div>
       </div>
       {runStopNotice ? (
         <div className="conv__notice" role="status" data-testid={`run-stop-notice:${identity}`}>
@@ -2023,8 +2532,20 @@ export function ChatPane({
         markdownUrlPolicy={markdownUrlPolicy}
         conversationId={conversationId}
         approvalSnapshot={approvalSnapshot}
-        onApprovalDecision={onApprovalDecision}
+        onApprovalDecision={onApprovalDecision ? stableApprovalDecision : undefined}
+        turnWindow={turnWindow}
+        onTranscriptKeyDown={onTranscriptKeyDown}
+        onOpenFind={openFind}
       />
+      {findOpen ? (
+        <TranscriptFindBar
+          identity={identity}
+          messages={messages}
+          bodyRef={bodyRef}
+          onJump={jumpToFound}
+          onClose={closeFind}
+        />
+      ) : null}
       {turnRail}
       {scroll.revealingAnchor ? <div className="conv__history-status" role="status">Restoring earlier position...</div> : null}
       {scroll.missingAnchor ? <div className="conv__history-status" role="status">Earlier position is unavailable. Load older history to see more.</div> : null}

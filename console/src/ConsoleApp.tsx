@@ -27,6 +27,7 @@ import type {
   TopologyOperationReceipt,
 } from "@console-core";
 import {
+  collectConsoleDockPanelIds,
   createPendingApprovalResource,
   identityStateLabel,
   migrateConsoleWorkbenchTarget,
@@ -52,6 +53,7 @@ import {
   createUserEntry,
   createWorkGraphHydrationGate,
   appendOptimisticConversationEntry,
+  deriveTimelineEntries,
   framesContainWorkGraphCards,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
@@ -60,8 +62,10 @@ import {
   systemNoticeClearsBusyState,
   type MobKitDockTarget,
   type OptimisticUserMessage,
+  type TimelineDerivation,
 } from "./lib/adapters";
 import { errorMessage, jsonRpcErrorCode } from "./lib/errors";
+import { createSingleFlight } from "./lib/single-flight";
 import { sanitizeConversationEntries } from "./lib/conversation-visibility";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
@@ -177,8 +181,8 @@ import {
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
-import { PendingStack, type PendingItem } from "./panels/PendingStack";
-import { beginConsoleSendAttempt, classifyConsoleSendFailure, CONSOLE_ACCEPTANCE_NO_RECEIPT, createConsoleSendAttempt, describeConsoleAcceptanceCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
+import { PendingStack, type PendingCheckView, type PendingDeliveredNotice, type PendingItem } from "./panels/PendingStack";
+import { beginConsoleSendAttempt, classifyConsoleSendFailure, consoleCheckDelivered, consoleCheckNotFound, createConsoleSendAttempt, describeConsoleCheckFailure, finishConsoleSendAttempt, reconcileConsoleSendReceipt, recoverConsoleSendAttempt, type ConsoleFrozenSendEnvelope, type ConsoleSendAttempt, type ConsoleSendFailure } from "../../packages/console-core/src/send-attempt";
 import { createConsoleContextRecord, validateConsoleContexts, type ConsoleContextRecord } from "../../packages/console-core/src/context-record";
 import { QuoteContextChips } from "../../packages/console-components/src/conversation/context-chips";
 import { editConsoleContextQuote } from "../../packages/console-core/src/context-edit";
@@ -261,6 +265,11 @@ const MAX_IDENTITY_LOG_EVENTS = 5000;
 const IDENTITY_LOG_TRIM_SLACK = 500;
 /// Coalesced render flush cadence while the tab is hidden (no rAF there).
 const HIDDEN_TAB_FLUSH_MS = 250;
+/// Animation frames between renders while only streamed text has arrived.
+const STREAM_TEXT_FRAMES = 3;
+/// Why a render is requested: streamed text (paced), any other change (next
+/// animation frame), or a stream's completion (at once).
+type RenderCause = "text" | "frame" | "now";
 
 /// See `IdentityLogCore` (src/lib/identity-log.ts) for the frame store and
 /// its transcript-ordered view; this adds the console's paging and busy
@@ -584,6 +593,20 @@ const REFRESH_TRIGGER_EVENTS = new Set([
   "tool_execution_completed",
   "server_tool_content",
 ]);
+/// Periodic experience refreshes rebuild every agent record. Keep unchanged
+/// records (and the list, when nothing changed) so the roster, transcripts
+/// and panels memoised on them do not re-render or re-derive.
+function internAgents(current: ConsoleAgent[], next: ConsoleAgent[]): ConsoleAgent[] {
+  const byKey = new Map(current.map((agent) => [JSON.stringify(agent), agent]));
+  let changed = next.length !== current.length;
+  const interned = next.map((agent, index) => {
+    const prior = byKey.get(JSON.stringify(agent));
+    if (!prior || prior !== current[index]) changed = true;
+    return prior ?? agent;
+  });
+  return changed ? interned : current;
+}
+
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input",
   "interaction_started",
@@ -737,6 +760,10 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   );
 
   // --- Low-frequency React state (UI-driven) ---
+  /// Explicit Check state per identity and row id (view state, never saved).
+  const [pendingChecks, setPendingChecks] = React.useState<Record<string, Record<string, PendingCheckView>>>({});
+  /// "Delivered at <time>" notices for rows a Check found and cleared.
+  const [deliveredNotices, setDeliveredNotices] = React.useState<Record<string, PendingDeliveredNotice[]>>({});
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(
     null,
   );
@@ -755,6 +782,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     }
     return labels;
   }, [agents]);
+  const chatDisplayLabels = React.useMemo(() => ({ peers: peerLabels }), [peerLabels]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>(
     {},
   );
@@ -972,16 +1000,37 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // hidden the flush runs on a 250 ms timer instead (frames keep landing in
   // the refs either way), and a pending timer flush is brought forward the
   // moment the tab becomes visible.
-  const renderScheduledRef = React.useRef<{ kind: "raf" | "timeout"; id: number } | null>(null);
+  //
+  // Streamed text alone renders less often: on every STREAM_TEXT_FRAMES-th
+  // animation frame, counted in frames so it slows with the frame rate
+  // instead of fighting it, and as a transition, so a keystroke always
+  // preempts it. Any other frame commits on the next animation frame, and a
+  // stream's completion commits at once.
+  const renderScheduledRef = React.useRef<{ kind: "raf" | "timeout"; id: number; textOnly: boolean; frames: number } | null>(null);
   const liveFramesDirtyRef = React.useRef(false);
-  const flushScheduledRender = React.useCallback(() => {
+  const flushScheduledRender = React.useCallback((transition = false) => {
     renderScheduledRef.current = null;
-    if (liveFramesDirtyRef.current) {
-      liveFramesDirtyRef.current = false;
-      setLiveFrames(liveFramesRef.current);
-    }
-    setRenderTick((n) => n + 1);
+    countRender("LiveRenderFlush");
+    const commit = () => {
+      if (liveFramesDirtyRef.current) {
+        liveFramesDirtyRef.current = false;
+        setLiveFrames(liveFramesRef.current);
+      }
+      setRenderTick((n) => n + 1);
+    };
+    if (transition) React.startTransition(commit);
+    else commit();
   }, []);
+  const onScheduledFrame = React.useCallback(() => {
+    const pending = renderScheduledRef.current;
+    if (!pending || pending.kind !== "raf") return;
+    pending.frames += 1;
+    if (pending.textOnly && pending.frames < STREAM_TEXT_FRAMES) {
+      pending.id = window.requestAnimationFrame(onScheduledFrame);
+      return;
+    }
+    flushScheduledRender(pending.textOnly);
+  }, [flushScheduledRender]);
   const cancelScheduledRender = React.useCallback(() => {
     const pending = renderScheduledRef.current;
     if (!pending || typeof window === "undefined") return;
@@ -989,21 +1038,35 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     else window.clearTimeout(pending.id);
     renderScheduledRef.current = null;
   }, []);
-  const forceRender = React.useCallback(() => {
-    if (renderScheduledRef.current !== null) return;
+  const forceRender = React.useCallback((cause: RenderCause = "frame") => {
+    const pending = renderScheduledRef.current;
+    if (cause === "now") {
+      cancelScheduledRender();
+      flushScheduledRender();
+      return;
+    }
+    if (pending !== null) {
+      // Anything but streamed text ends the text cadence: next frame, urgent.
+      if (cause !== "text") pending.textOnly = false;
+      return;
+    }
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
       renderScheduledRef.current = {
         kind: "raf",
-        id: window.requestAnimationFrame(flushScheduledRender),
+        id: window.requestAnimationFrame(onScheduledFrame),
+        textOnly: cause === "text",
+        frames: 0,
       };
       return;
     }
     renderScheduledRef.current = {
       kind: "timeout",
-      id: window.setTimeout(flushScheduledRender, hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+      id: window.setTimeout(() => flushScheduledRender(), hidden ? HIDDEN_TAB_FLUSH_MS : 16),
+      textOnly: false,
+      frames: 0,
     };
-  }, [flushScheduledRender]);
+  }, [cancelScheduledRender, flushScheduledRender, onScheduledFrame]);
   React.useEffect(() => {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
@@ -1675,6 +1738,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         agent: ConsoleAgent | null;
         sortedFrames: ConsoleFrame[];
         conversationEntries: ConversationTimelineEntry[];
+        derivation: TimelineDerivation;
+        agentKey: string;
       }
     >
   >({});
@@ -1685,18 +1750,78 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   ): { sortedFrames: ConsoleFrame[]; conversationEntries: ConversationTimelineEntry[] } {
     const log = getOrCreateLog(identity);
     const cached = derivedTranscriptRef.current[identity];
+    // Roster refreshes replace agent objects without changing them; the
+    // derivation reads only the agent's plain fields, so key on its content
+    // and keep the object the cached derivation was built with.
+    const agentKey = agent ? JSON.stringify(agent) : "";
+    if (cached && cached.agentKey === agentKey) agent = cached.agent;
     if (cached && cached.version === log.version && cached.agent === agent) {
       return cached;
     }
     const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panelId);
-    const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
+    // Continues the previous derivation when only streamed text arrived, so a
+    // token costs O(token) instead of a pass over the whole identity log.
+    const derivation = deriveTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
       blobBaseUrl: baseUrl,
-    });
-    const next = { version: log.version, agent, sortedFrames, conversationEntries };
+    }, cached?.derivation);
+    const conversationEntries = derivation.entries;
+    const next = { version: log.version, agent, sortedFrames, conversationEntries, derivation, agentKey };
     derivedTranscriptRef.current[identity] = next;
     return next;
+  }
+
+  // Both scan the whole identity log; recompute only when it changed (or,
+  // for the phase, when its local or server inputs did), not every render.
+  const panelPhaseRef = React.useRef<Record<string, {
+    frames: ConsoleFrame[];
+    serverPhase: unknown;
+    phase: ReturnType<typeof resolvePanelResponsePhase>;
+  }>>({});
+  function panelPhaseFor(
+    panelKey: string,
+    sortedFrames: ConsoleFrame[],
+    inputs: Omit<Parameters<typeof resolvePanelResponsePhase>[0], "frames">,
+  ): ReturnType<typeof resolvePanelResponsePhase> {
+    // A local phase wins outright (resolvePanelResponsePhase's first branch).
+    if (inputs.hasLocalPhase) return inputs.localPhase ?? null;
+    const cached = panelPhaseRef.current[panelKey];
+    if (cached && cached.serverPhase === inputs.serverPhase && sortedFrames.length >= cached.frames.length) {
+      let same = true;
+      for (let i = 0; i < cached.frames.length && same; i++) same = sortedFrames[i] === cached.frames[i];
+      if (same) {
+        let phase = cached.phase;
+        let extendable = true;
+        for (let i = cached.frames.length; i < sortedFrames.length && extendable; i++) {
+          const frame = sortedFrames[i];
+          // Live text only: each one sets "generating", and none changes
+          // which earlier frames settled history covers.
+          extendable = frame.event === "text_delta" && frame.sourceKind !== "session_history";
+          if (extendable) phase = "generating";
+        }
+        if (extendable) {
+          if (sortedFrames.length !== cached.frames.length) {
+            panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase };
+          }
+          return phase;
+        }
+      }
+    }
+    const phase = resolvePanelResponsePhase({
+      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+      ...inputs,
+    });
+    panelPhaseRef.current[panelKey] = { frames: sortedFrames.slice(), serverPhase: inputs.serverPhase, phase };
+    return phase;
+  }
+  const activeRunIdRef = React.useRef<Record<string, { version: number; runId: string | null }>>({});
+  function activeRunIdFor(identity: string, version: number, sortedFrames: ConsoleFrame[]): string | null {
+    const cached = activeRunIdRef.current[identity];
+    if (cached && cached.version === version) return cached.runId;
+    const runId = activeRunIdFromFrames(sortedFrames);
+    activeRunIdRef.current[identity] = { version, runId };
+    return runId;
   }
 
   function framesVisibleInPanel(
@@ -1718,12 +1843,12 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // see tool calls (peer-comms send_*, etc.) in addition to interaction
   // lifecycle. The activity rail filters tool events out; this buffer
   // doesn't.
-  function commitLiveFrames(frames: ConsoleFrame[]): void {
+  function commitLiveFrames(frames: ConsoleFrame[], cause: RenderCause = "frame"): void {
     liveFramesRef.current = frames;
     // Published with the next scheduled render instead of per call, so a
     // frame burst commits the topology buffer once.
     liveFramesDirtyRef.current = true;
-    forceRender();
+    forceRender(cause);
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -1801,6 +1926,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     setContextDrafts({});
     setSubmittedFrames({});
     setSendingPanels(new Set());
+    setPendingChecks({});
+    setDeliveredNotices({});
   }, [sendScope]);
   persistentSendScopeRef.current = persistentSendScope;
   const scopedDraftKey = (panelKey: string) => `${sendScopeRef.current}:${panelKey}`;
@@ -2244,7 +2371,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         : [];
       const nextAgents = normalizeAgents(experienceJson, loadedModules);
       setExperience(experienceJson);
-      setAgents(nextAgents);
+      setAgents((current) => internAgents(current, nextAgents));
       setActiveActivityPresetId(
         (c) =>
           c ||
@@ -2353,6 +2480,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  // Same-key resend of an uncertain send is safe only against a durable
+  // dedupe store; older gateways (field absent) and in-memory stores are not.
+  const resendUncertain = experience?.send_dedupe?.durable === true;
+  const resendUncertainRef = React.useRef(false);
+  resendUncertainRef.current = resendUncertain;
   const [approvalSnapshot, setApprovalSnapshot] = React.useState<{
     owner: typeof consoleController;
     snapshot: PendingApprovalSnapshot;
@@ -2554,6 +2686,19 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
 
+  // Panel and experience refreshes are triggered by stream events. One run
+  // per kind at a time, with one trailing re-run for requests made mid-run.
+  const panelRefreshFlight = React.useMemo(() => createSingleFlight(), []);
+  // Only panels in the active tab are on screen; hidden tabs refresh when
+  // they become active instead of on every event.
+  const visiblePanelTargets = React.useMemo(() => {
+    const activeTab = dock.viewState.tabs.find((tab) => tab.id === dock.viewState.activeTabId);
+    const visible = new Set(collectConsoleDockPanelIds(activeTab?.layout));
+    return dock.viewState.panels
+      .filter((panel) => visible.has(panel.id))
+      .map((panel) => panel.target)
+      .filter(Boolean) as MobKitDockTarget[];
+  }, [dock.viewState.panels, dock.viewState.tabs, dock.viewState.activeTabId]);
   const accessScope = JSON.stringify([baseUrl, storageNamespace, experience?.runtime_id, experience?.access?.subject]);
   const accessScopeRef = React.useRef(accessScope);
   accessScopeRef.current = accessScope;
@@ -2563,7 +2708,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     accessRefreshVersion.current += 1;
     setAccessData({ scope: accessScope, loading: false, status: null, config: null, error: null });
   }, [accessScope, experience?.access?.can_administer]);
-  const refreshAccessData = React.useCallback(async () => {
+  const refreshAccessData = React.useCallback(() => panelRefreshFlight("access", async () => {
     if (accessScope !== accessScopeRef.current) return;
     const version = ++accessRefreshVersion.current;
     const isCurrent = () => version === accessRefreshVersion.current && accessScope === accessScopeRef.current;
@@ -2593,9 +2738,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, accessScope]);
+  }), [panelRefreshFlight, baseUrl, accessScope]);
 
-  const refreshMemoryData = React.useCallback(async () => {
+  const refreshMemoryData = React.useCallback(() => panelRefreshFlight("memory", async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records: MemoryPanelRecord[] = [];
@@ -2759,13 +2904,13 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, experience?.memory?.can_review_quarantine]);
+  }), [panelRefreshFlight, baseUrl, experience?.memory?.can_review_quarantine]);
 
   // Overlapping refreshes (debounced live signals, manual refresh, post-
   // mutation re-reads) can resolve out of order — sequence them so a stale
   // snapshot never overwrites a fresher one.
   const workGraphRefreshSequencerRef = React.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = React.useCallback(async () => {
+  const refreshWorkGraphData = React.useCallback(() => panelRefreshFlight("workgraph", async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -2829,7 +2974,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl]);
+  }), [panelRefreshFlight, baseUrl]);
 
   /// Filtered/paged panel/records query for the Records filter bar, the
   /// keyset load-more, and the lattice page-walk. Resolves null STRICTLY on
@@ -2950,7 +3095,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     [baseUrl, refreshAccessData, loadExperience, accessData, accessScope, experience?.access?.can_administer, frontendReadOnly, experience?.console_policy?.read_only],
   );
 
-  const refreshTopologyData = React.useCallback(async () => {
+  const refreshTopologyData = React.useCallback(() => panelRefreshFlight("topology", async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -2974,71 +3119,72 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setTopologyQueryResult(null);
       throw error;
     }
-  }, [consoleTransport]);
+  }), [panelRefreshFlight, consoleTransport]);
 
   const refreshPanelData = React.useCallback(async () => {
-    const openPanels = dock.viewState.panels
-      .map((p) => p.target)
-      .filter(Boolean) as MobKitDockTarget[];
+    const openPanels = visiblePanelTargets;
     const inspects = openPanels.filter(
       (t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> =>
         t.kind === "identity-inspect",
     );
-    if (inspects.length) {
-      const entries = await Promise.all(
-        inspects.map(async (t) => {
-          const r = await inspectIdentityViaHeadless(t.identity);
-          return [t.identity, normalizeConsoleInspectResult(r)] as const;
-        }),
-      );
-      setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
-    }
+    // Each kind refreshes independently, so one slow surface (topology on a
+    // loaded server) neither delays the others nor stacks up behind itself.
+    const refreshes: Promise<void>[] = inspects.map((t) => panelRefreshFlight(`inspect:${t.identity}`, async () => {
+      const r = await inspectIdentityViaHeadless(t.identity);
+      const result = normalizeConsoleInspectResult(r);
+      setInspectByIdentity((c) => ({ ...c, [t.identity]: result }));
+    }));
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
-      const routingTarget = controlWorkbenchTarget("routing");
-      const [routes, history] = await Promise.all([
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
-        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget),
-      ]);
-      setRoutingData(
-        buildRoutingSectionView({
-          routesResponse: routes,
-          historyResponse: history,
-        }),
-      );
+      refreshes.push(panelRefreshFlight("routing", async () => {
+        const routingTarget = controlWorkbenchTarget("routing");
+        const [routes, history] = await Promise.all([
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
+          executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget),
+        ]);
+        setRoutingData(
+          buildRoutingSectionView({
+            routesResponse: routes,
+            historyResponse: history,
+          }),
+        );
+      }));
     }
-    if (openPanels.some((t) => t.kind === "access")) {
-      await refreshAccessData();
-    }
-    if (openPanels.some((t) => t.kind === "memory")) {
-      await refreshMemoryData();
-    }
-    if (openPanels.some((t) => t.kind === "workgraph")) {
-      await refreshWorkGraphData();
-    }
-    if (openPanels.some((t) => t.kind === "topology")) {
-      await refreshTopologyData();
-    }
+    if (openPanels.some((t) => t.kind === "access")) refreshes.push(refreshAccessData());
+    if (openPanels.some((t) => t.kind === "memory")) refreshes.push(refreshMemoryData());
+    if (openPanels.some((t) => t.kind === "workgraph")) refreshes.push(refreshWorkGraphData());
+    if (openPanels.some((t) => t.kind === "topology")) refreshes.push(refreshTopologyData());
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
     ) {
-      const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 }) as { entries?: unknown[] };
-      setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      refreshes.push(panelRefreshFlight("gating-audit", async () => {
+        const audit = await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, controlWorkbenchTarget("gating"), { limit: 50 }) as { entries?: unknown[] };
+        setGatingData({ pending: [], audit: Array.isArray(audit?.entries) ? audit.entries : [] });
+      }));
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
+    await Promise.all(refreshes);
+  }, [baseUrl, visiblePanelTargets, hasMobControlSurface, panelRefreshFlight, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
 
+  const refreshPanelDataRef = React.useRef(refreshPanelData);
+  refreshPanelDataRef.current = refreshPanelData;
+  // Refresh visible panels when their layout or access owner changes.
+  const visiblePanelKey = JSON.stringify(visiblePanelTargets);
   React.useEffect(() => {
-    void refreshPanelData().catch(() => {});
-  }, [dock.viewState.panels, refreshPanelData]);
+    void refreshPanelDataRef.current().catch(() => {});
+  }, [visiblePanelKey, accessScope, experience?.access?.can_administer]);
 
   const scheduleExperienceRefresh = React.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
-    experienceTimerRef.current = window.setTimeout(async () => {
+    experienceTimerRef.current = window.setTimeout(() => {
       experienceTimerRef.current = null;
-      await loadExperience().catch(() => {});
-      await refreshPanelData().catch(() => {});
+      // Events keep arriving while a refresh is in flight; they coalesce
+      // into one trailing refresh instead of overlapping requests. The roster
+      // and each panel kind coalesce separately, so a slow panel (topology
+      // on a loaded server) never holds back the others.
+      void panelRefreshFlight("experience-events", () => loadExperience().then(() => {}, () => {}));
+      void refreshPanelDataRef.current().catch(() => {});
     }, 150);
-  }, [loadExperience, refreshPanelData]);
+  }, [loadExperience, panelRefreshFlight]);
 
   // =========================================================================
   // HISTORY REFRESH — server is the single source of truth
@@ -3211,9 +3357,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshMemoryDataRef = React.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
   const memoryPanelDockedRef = React.useRef(false);
-  memoryPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
-  );
+  memoryPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "memory");
   // Identities with a docked chat, read by the mount-scoped stream
   // subscription when it repairs after a replay gap.
   const dockedChatIdentitiesRef = React.useRef<string[]>([]);
@@ -3228,9 +3372,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
   const refreshWorkGraphDataRef = React.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
   const workGraphPanelDockedRef = React.useRef(false);
-  workGraphPanelDockedRef.current = dock.viewState.panels.some(
-    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "workgraph",
-  );
+  workGraphPanelDockedRef.current = visiblePanelTargets.some((target) => target.kind === "workgraph");
   const workGraphRefreshTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
@@ -3246,6 +3388,9 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         canonicalIdentity && canonicalIdentity !== incomingFrame.identity
           ? { ...incomingFrame, identity: canonicalIdentity }
           : incomingFrame;
+      const cause: RenderCause = frame.event === "text_delta" ? "text"
+        : frame.event === "text_complete" || HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame) ? "now"
+        : "frame";
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -3255,7 +3400,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // the activity rail filters out. Capped at 300; older frames roll
       // off naturally as live pulses age past their lifetime.
       if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
-        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300));
+        // A completion renders once, from forceRender below.
+        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300), cause === "now" ? "frame" : cause);
       }
 
       // Identity log (single canonical store)
@@ -3270,7 +3416,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         updatePhaseForIdentity(identity, frame);
       }
 
-      forceRender();
+      forceRender(cause);
 
       // Terminal events → reconcile server backfill (idempotent — keys
       // already seen via SSE are skipped). If hasServerLog is false,
@@ -3646,10 +3792,22 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       setActionError(errorMessage(error));
       return false;
     }
-    if (!await setPendingStack(identity, (previous) => [...previous, item])) return false;
-    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) return false;
+    // A row sent right away stays out of the pending stack while its send is
+    // in flight (PendingStack's ACCEPTANCE_NOTICE_GRACE_MS); name it before
+    // the saved draft first renders.
+    if (!shouldQueue) directSendIdsRef.current.add(item.id);
+    if (!await setPendingStack(identity, (previous) => [...previous, item])) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
+    if (!lifetimeRef.current.active || submittedScope !== sendScopeRef.current || submittedController !== sendControllerRef.current) {
+      directSendIdsRef.current.delete(item.id);
+      return false;
+    }
     clearSubmittedContexts();
-    if (!shouldQueue) void dispatchPendingAttempt(identity, item.id, "queue");
+    if (!shouldQueue) {
+      void dispatchPendingAttempt(identity, item.id, "queue").finally(() => directSendIdsRef.current.delete(item.id));
+    }
     // This acknowledges local persistence only. submittedRowId is set on server acceptance.
     return true;
   }
@@ -3660,6 +3818,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       ? (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
         false)
       : false;
+  const directSendIdsRef = React.useRef(new Set<string>());
   const pendingDrainOwnerRef = React.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   );
@@ -3680,7 +3839,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     return null;
   }
 
-  async function dispatchPendingAttempt(identity: string, id: string, handlingMode: "queue" | "steer", retryRejected = false) {
+  async function dispatchPendingAttempt(identity: string, id: string, handlingMode: "queue" | "steer", resend = false) {
     const generation = lifetimeRef.current.generation;
     const scope = sendScopeRef.current;
     const namespace = persistentSendScopeRef.current;
@@ -3690,10 +3849,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       if (namespace) pendingStackRef.current[identity] = loadPendingStack(identity);
       const item = getPendingStack(identity).find((candidate) => candidate.id === id);
       const target = findChatTargetFor(identity);
-      if (!item || (item.state !== "draft" && !(retryRejected && item.state === "definitely-rejected")) || item.scope !== scope || !target) return null;
+      const resendable = resend && (item?.state === "definitely-rejected" || (item?.state === "outcome-unknown" && resendUncertainRef.current));
+      if (!item || (item.state !== "draft" && !resendable) || item.scope !== scope || !target) return null;
       let attempting: PendingItem;
       try {
-        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, retryRejected }), checkResult: undefined };
+        attempting = { ...beginConsoleSendAttempt(item, { owner: pendingDrainOwnerRef.current, now: Date.now(), handlingMode, resend }), checkResult: undefined };
       } catch (error) { setActionError(errorMessage(error)); return null; }
       if (!commitPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? attempting : candidate))) return null;
       return { attempting, target };
@@ -3709,6 +3869,26 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     if (!consoleReadOnlyRef.current) void dispatchPendingAttempt(identity, id, "steer");
   }
 
+  function pendingRowNames(identity: string, destination: string) {
+    const agent = agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(destination))
+      ?? agentsRef.current.find((candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(identity));
+    const host = experience?.console_config?.brand?.label?.trim();
+    return { agent: agent?.label || destination, host: host || undefined };
+  }
+  function setPendingCheck(identity: string, id: string, view: PendingCheckView | null) {
+    setPendingChecks((current) => {
+      const rows = { ...(current[identity] ?? {}) };
+      if (view) rows[id] = view; else delete rows[id];
+      return { ...current, [identity]: rows };
+    });
+  }
+
+  /// Explicit Check: look for this exact message in the owner's recent
+  /// timeline. Every path ends visibly: found clears the row with a
+  /// "Delivered at" notice; not found and failures land on the row as plain
+  /// text and leave its state (and saved message) unchanged. A row that was
+  /// discarded or whose console scope changed is gone, so nothing is left to
+  /// answer on.
   async function onStackReconcile(identity: string, id: string) {
     const scope = sendScopeRef.current;
     const generation = lifetimeRef.current.generation;
@@ -3716,13 +3896,11 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     const active = () => lifetimeRef.current.active && generation === lifetimeRef.current.generation
       && scope === sendScopeRef.current && controller === sendControllerRef.current;
     const original = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!original?.envelopeJson) return;
-    // The check's own typed outcome lands on the row it checked (and the
-    // banner), so "Check acceptance" always answers with a named state.
-    const noteCheckResult = (message: string) => {
-      setActionError(message);
-      setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? { ...candidate, checkResult: message } : candidate));
-    };
+    if (!original) return;
+    const names = pendingRowNames(identity, original.destination);
+    const answer = (text: string) => { if (active()) setPendingCheck(identity, id, { phase: "result", text }); };
+    if (!original.envelopeJson) { answer("Couldn't check: this message was never sent."); return; }
+    setPendingCheck(identity, id, { phase: "checking" });
     let page: ConsoleTimelinePage;
     let canonicalIdentity: string;
     try {
@@ -3732,7 +3910,8 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       const owner = record?.identity && typeof record.identity === "object"
         ? record.identity as Record<string, unknown> : record;
       if (typeof owner?.identity !== "string" || !owner.identity.trim()) {
-        throw new Error("Owner inspection did not resolve this destination. The saved attempt was not resent.");
+        answer(`Couldn't check: ${names.agent} couldn't be found.`);
+        return;
       }
       canonicalIdentity = owner.identity;
       // The inspection supplies the alias correspondence. Timeline stores
@@ -3741,25 +3920,33 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       // the current scope and saved attempt when the query returns.
       page = (await consoleController.timeline.query({ identity: canonicalIdentity, mode: "recent", limit: 200 })).value;
     } catch (error) {
-      if (active()) noteCheckResult(describeConsoleAcceptanceCheckFailure(error).message);
+      answer(describeConsoleCheckFailure(error, names));
       return;
     }
     if (!active()) return;
     const item = getPendingStack(identity).find((candidate) => candidate.id === id);
-    if (!item || item.envelopeJson !== original.envelopeJson) return;
+    if (!item) return;
+    if (item.envelopeJson !== original.envelopeJson) { answer("This message changed while it was being checked. Check again."); return; }
     const resolution = { requestedIdentity: original.destination, canonicalIdentity };
     // The latest page can omit an older receipt already loaded from the
     // authorized stream or history. Search only the freshly resolved owner's
     // merged log, after its current query succeeded and the scope stayed live.
     const frames = [...page.frames, ...(identityLogRef.current[canonicalIdentity]?.events ?? [])];
-    const accepted = frames.map((frame) => reconcileConsoleSendReceipt(item, frame, resolution)).find(Boolean);
+    const receipt = frames.find((frame) => reconcileConsoleSendReceipt(item, frame, resolution));
+    const accepted = receipt ? reconcileConsoleSendReceipt(item, receipt, resolution) : null;
     const logChanged = reconcileServerLog(canonicalIdentity, page.frames, page.available);
     const metadataChanged = noteIdentityTimelinePage(canonicalIdentity, page, { mode: "recent" });
     if (logChanged || metadataChanged) forceRender();
-    if (!accepted) { noteCheckResult(CONSOLE_ACCEPTANCE_NO_RECEIPT.message); return; }
-    if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))) {
-      await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id));
+    if (!accepted) { answer(consoleCheckNotFound(names)); return; }
+    const delivered = consoleCheckDelivered((receipt as { timestampMs?: number }).timestampMs);
+    if (await setPendingStack(identity, (previous) => previous.map((candidate) => candidate.id === id ? finishConsoleSendAttempt(candidate, { state: "accepted", ...accepted.accepted! }) : candidate))
+      && await setPendingStack(identity, (previous) => previous.filter((candidate) => candidate.id !== id))) {
+      if (!active()) return;
+      setPendingCheck(identity, id, null);
+      setDeliveredNotices((current) => ({ ...current, [identity]: [...(current[identity] ?? []).filter((notice) => notice.id !== id), { id, text: delivered }] }));
+      return;
     }
+    answer(`${delivered} The saved copy couldn't be removed; discard it.`);
   }
   function updatePendingContexts(identity: string, id: string, update: (contexts: ConsoleContextRecord[]) => ConsoleContextRecord[]) {
     setPendingStack(identity, (previous) => previous.map((item) => item.id === id && item.state === "draft" ? { ...item, contexts: update(item.contexts) } : item));
@@ -4475,8 +4662,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       panelKey,
     );
     const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
-    const phase = resolvePanelResponsePhase({
-      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+    const phase = panelPhaseFor(panelKey, sortedFrames, {
       localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
       hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null,
@@ -4491,7 +4677,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
       agent?.affordances?.can_retire === true;
     // Offered only while the timeline names the in-flight run, and with the
     // same authority as force-cancel (the gateway authorizes it as retire).
-    const activeRunId = activeRunIdFromFrames(sortedFrames);
+    const activeRunId = activeRunIdFor(identity, identityLog.version, sortedFrames);
     const canStopRun =
       !consoleReadOnly && agent?.affordances?.can_retire === true && activeRunId !== null;
 
@@ -4504,7 +4690,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
     } catch { /* Queue reader reports preserved invalid bytes separately. */ }
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = <>
-      {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Queue saved for this account and runtime" : "Transient queue - messages and quotes are not saved after reload"}</small> : null}
+      {stackItems.length > 0 ? <small className="queue-storage-note" role="status">{persistentSendScopeRef.current ? "Saved in this browser until sent" : "Not saved: these messages are lost if you reload"}</small> : null}
       {pendingStorageErrorRef.current[identity] && <p role="alert">{pendingStorageErrorRef.current[identity]}</p>}
       {hasLegacyQueue && (
         <div className="queue-import" role="group" aria-label="Older queued messages" data-testid="legacy-queue-import">
@@ -4521,9 +4707,16 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
           >Import and send</button>
         </div>
       )}
-      {stackItems.length > 0 ? (
+      {stackItems.length > 0 || (deliveredNotices[identity]?.length ?? 0) > 0 ? (
         <PendingStack
           items={stackItems}
+          agentLabel={target.title || agent?.label || identity}
+          hostLabel={experience?.console_config?.brand?.label?.trim() || undefined}
+          resendUncertain={resendUncertain}
+          checks={pendingChecks[identity]}
+          delivered={deliveredNotices[identity]}
+          onDismissDelivered={(itemId) => setDeliveredNotices((current) => ({ ...current, [identity]: (current[identity] ?? []).filter((notice) => notice.id !== itemId) }))}
+          directSendIds={directSendIdsRef.current}
           agentBusy={agentBusy}
           reducedMotion={reducedMotion}
           onSteer={(itemId) => onStackSteer(identity, itemId)}
@@ -4568,7 +4761,7 @@ function ConsoleAppInstance({ baseUrl, transport, storageNamespace, markdownUrlP
         agent={agent}
         markdownUrlPolicy={markdownUrlPolicy}
         headerVariant="compact"
-        displayLabels={{ peers: peerLabels }}
+        displayLabels={chatDisplayLabels}
         approvalSnapshot={activeApprovals}
         onApprovalDecision={onGatingDecision}
         peerLabels={peerLabels}

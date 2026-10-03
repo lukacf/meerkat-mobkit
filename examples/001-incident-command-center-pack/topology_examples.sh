@@ -7,15 +7,10 @@ ARTIFACT_DIR="${INCIDENT_TOPOLOGY_ARTIFACT_DIR:-$ROOT/output/playwright}"
 RUST_LANE_ID="${RUST_LANE_ID:-incident-console}"
 CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/incident-topology-smoke.XXXXXX")"
-LISTEN_ADDR="$(python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-host, port = s.getsockname()
-s.close()
-print(f"{host}:{port}")
-PY
-)"
+# The server binds port 0 and announces its bound address on stdout
+# ("MOBKIT_FIXTURE_READY {...}"); start_server reads it back. Reserving a free
+# port here and binding it later raced every other process for that port.
+LISTEN_ADDR=""
 
 cleanup() {
   stop_server
@@ -25,25 +20,40 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
+# Print the server's bound address once it announces it in the log (read
+# from byte offset $2, where this start's output begins), then wait for the
+# console to answer there.
 wait_for_server() {
-  python3 - <<'PY' "$1" "$SERVER_PID" "${INCIDENT_TOPOLOGY_READY_TIMEOUT_SECONDS:-600}"
-import os, sys, time, urllib.request
-base_url = sys.argv[1]
-server_pid = int(sys.argv[2])
-ready_timeout_seconds = float(sys.argv[3])
+  python3 - <<'PY' "$1" "$2" "$SERVER_PID" "${INCIDENT_TOPOLOGY_READY_TIMEOUT_SECONDS:-600}"
+import json, os, sys, time, urllib.request
+log_path = sys.argv[1]
+offset = int(sys.argv[2])
+server_pid = int(sys.argv[3])
+ready_timeout_seconds = float(sys.argv[4])
 deadline = time.time() + ready_timeout_seconds
+prefix = "MOBKIT_FIXTURE_READY "
+addr = None
 while time.time() < deadline:
     try:
         os.kill(server_pid, 0)
     except ProcessLookupError:
         print("offline incident topology server exited before becoming ready", file=sys.stderr)
         sys.exit(2)
-    try:
-        with urllib.request.urlopen(base_url + "/console/experience", timeout=2) as response:
-            if response.status == 200:
-                sys.exit(0)
-    except Exception:
-        pass
+    if addr is None:
+        with open(log_path, "rb") as log:
+            log.seek(offset)
+            for line in log.read().decode("utf-8", "replace").splitlines():
+                if line.startswith(prefix):
+                    addr = json.loads(line[len(prefix):])["addr"]
+                    break
+    if addr is not None:
+        try:
+            with urllib.request.urlopen(f"http://{addr}/console/experience", timeout=2) as response:
+                if response.status == 200:
+                    print(addr)
+                    sys.exit(0)
+        except Exception:
+            pass
     time.sleep(0.25)
 print(
     f"timed out after {ready_timeout_seconds:g}s waiting for offline incident topology server",
@@ -64,12 +74,17 @@ stop_server() {
 
 start_server() {
   local phase="$1"
-  echo "[incident-topology] starting deterministic server (${phase}) at http://${LISTEN_ADDR}"
+  local log_offset
+  log_offset=0
+  if [[ -f "$STATE_DIR/server.log" ]]; then
+    log_offset="$(wc -c <"$STATE_DIR/server.log" | tr -d ' ')"
+  fi
+  echo "[incident-topology] starting deterministic server (${phase})"
   set -m
   (
     cd "$ROOT"
     INCIDENT_COMMAND_CENTER_OFFLINE=1 \
-    INCIDENT_COMMAND_CENTER_LISTEN_ADDR="$LISTEN_ADDR" \
+    INCIDENT_COMMAND_CENTER_LISTEN_ADDR="127.0.0.1:0" \
     INCIDENT_COMMAND_CENTER_STATE_DIR="$STATE_DIR/runtime" \
     INCIDENT_COMMAND_CENTER_MEMORY_DIR="$STATE_DIR/memory" \
     RUST_LANE_ID="$RUST_LANE_ID" \
@@ -79,10 +94,11 @@ start_server() {
   ) &
   SERVER_PID=$!
   set +m
-  if ! wait_for_server "http://${LISTEN_ADDR}"; then
+  if ! LISTEN_ADDR="$(wait_for_server "$STATE_DIR/server.log" "$log_offset")"; then
     sed -n '1,240p' "$STATE_DIR/server.log" >&2 || true
     return 1
   fi
+  echo "[incident-topology] server (${phase}) listening at http://${LISTEN_ADDR}"
 }
 
 echo "[incident-topology] building the stock embedded console"

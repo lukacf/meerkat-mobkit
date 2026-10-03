@@ -12,6 +12,7 @@ import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
 import type { ProviderCallbackContext } from "./types.js";
+import { TransportReaderFailedError } from "./errors.js";
 
 // -- Types ----------------------------------------------------------------
 
@@ -117,6 +118,90 @@ function sanitizeForJson(obj: unknown): unknown {
     return result;
   }
   return String(obj);
+}
+
+/** mobkit/init: accepted, then settled (#550). */
+export const INIT_PROTOCOL_ACCEPTED_THEN_SETTLED = "accepted_then_settled";
+const INIT_PROGRESS_METHOD = "mobkit/init_progress";
+const INIT_SETTLED_METHOD = "mobkit/init_settled";
+
+/**
+ * Correlates one accepted-then-settled `mobkit/init`. Registered before the
+ * init request is written, so no progress or settlement line arrives
+ * unclaimed.
+ */
+export class InitWatch {
+  /** The last `mobkit/init_progress` phase seen, for diagnostics. */
+  lastPhase: string | null = null;
+  private _settle!: (params: Record<string, unknown>) => void;
+  private _fail!: (error: Error) => void;
+  private _done = false;
+  private readonly _settlement: Promise<Record<string, unknown>>;
+
+  constructor(readonly initId: string) {
+    this._settlement = new Promise((resolve, reject) => {
+      this._settle = resolve;
+      this._fail = reject;
+    });
+    // A failure nobody awaits must not become an unhandled rejection.
+    this._settlement.catch(() => undefined);
+  }
+
+  /** @internal */
+  deliver(method: string, params: Record<string, unknown>): void {
+    if (method === INIT_PROGRESS_METHOD) {
+      if (typeof params.phase === "string") this.lastPhase = params.phase;
+    } else if (method === INIT_SETTLED_METHOD && !this._done) {
+      this._done = true;
+      this._settle(params);
+    }
+  }
+
+  /** @internal */
+  fail(error: Error): void {
+    if (this._done) return;
+    this._done = true;
+    this._fail(error);
+  }
+
+  /**
+   * Wait for `mobkit/init_settled`. `deadlineMs` is the caller's own cap
+   * (`null`: wait until the gateway settles, exits, or the reader fails);
+   * exceeding it rejects with `InitDeadlineExceeded`.
+   */
+  settlement(deadlineMs: number | null): Promise<Record<string, unknown>> {
+    if (deadlineMs === null) return this._settlement;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new InitDeadlineExceeded(deadlineMs)), deadlineMs);
+      this._settlement.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+}
+
+/** The caller's init deadline ran out before the init settled. */
+export class InitDeadlineExceeded extends Error {
+  constructor(readonly deadlineMs: number) {
+    super(`the init deadline of ${deadlineMs}ms ran out before init settled`);
+    this.name = "InitDeadlineExceeded";
+  }
+}
+
+function containsNonFinite(obj: unknown): boolean {
+  if (typeof obj === "number") return !Number.isFinite(obj);
+  if (Array.isArray(obj)) return obj.some(containsNonFinite);
+  if (typeof obj === "object" && obj !== null) {
+    return Object.values(obj as Record<string, unknown>).some(containsNonFinite);
+  }
+  return false;
 }
 
 function childHasExited(child: ChildProcess): boolean {
@@ -246,6 +331,11 @@ export class PersistentTransport {
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
+  // Set once the reader for the current gateway process has stopped; every
+  // waiter and every later request fails with it.
+  private _readerFailure: TransportReaderFailedError | null = null;
+  // The accepted-then-settled init in flight on this process, if any.
+  private _initWatch: InitWatch | null = null;
 
   constructor(
     readonly gatewayBin: string,
@@ -257,6 +347,18 @@ export class PersistentTransport {
 
   setCallbackHandler(handler: CallbackHandler): void {
     this._callbackHandler = handler;
+  }
+
+  /** Register the watch for `initId` before writing `mobkit/init`. */
+  openInitWatch(initId: string): InitWatch {
+    const watch = new InitWatch(initId);
+    this._initWatch = watch;
+    if (this._readerFailure !== null) watch.fail(this._readerFailure);
+    return watch;
+  }
+
+  closeInitWatch(watch: InitWatch): void {
+    if (this._initWatch === watch) this._initWatch = null;
   }
 
   start(): void {
@@ -271,6 +373,8 @@ export class PersistentTransport {
     // a child restart.
     this._supportsShutdownHandshake = false;
     this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
+    // A new process gets a new reader.
+    this._readerFailure = null;
     this._process = spawn(this.gatewayBin, ["--persistent"], {
       env: this._env,
       stdio: ["pipe", "pipe", this._stderrDisposition()],
@@ -281,37 +385,8 @@ export class PersistentTransport {
     // Background reader on stdout
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
-      rl.on("line", (line: string) => {
-        let msg: Record<string, unknown>;
-        try {
-          msg = JSON.parse(line) as Record<string, unknown>;
-        } catch {
-          return;
-        }
-
-        if ("method" in msg) {
-          this._handleCallback(msg);
-        } else if ("id" in msg) {
-          const msgId = String(msg.id);
-          const pending = this._pending.get(msgId);
-          if (pending) {
-            this._pending.delete(msgId);
-            pending.resolve(msg);
-          }
-        }
-      });
-
-      rl.on("close", () => {
-        // Process closed stdout — fail all pending requests
-        for (const [id, pending] of this._pending) {
-          this._pending.delete(id);
-          pending.resolve({
-            jsonrpc: "2.0",
-            id,
-            error: { code: -32099, message: "subprocess died" },
-          });
-        }
-      });
+      rl.on("line", (line: string) => this._handleLine(line));
+      rl.on("close", () => this._onReaderClosed("the gateway closed its stdout"));
     }
 
     child.on("error", () => {
@@ -323,11 +398,75 @@ export class PersistentTransport {
     });
   }
 
+  /** Handle one stdout line. A line that is not a JSON object is skipped. */
+  private _handleLine(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+    const msg = parsed as Record<string, unknown>;
+
+    if ("method" in msg) {
+      const method = String(msg.method);
+      if (!("id" in msg) && (method === INIT_PROGRESS_METHOD || method === INIT_SETTLED_METHOD)) {
+        const params = msg.params;
+        const watch = this._initWatch;
+        // Only the init this process is running; a late or foreign line is ignored.
+        if (
+          watch !== null &&
+          typeof params === "object" &&
+          params !== null &&
+          (params as Record<string, unknown>).init_id === watch.initId
+        ) {
+          watch.deliver(method, params as Record<string, unknown>);
+        }
+        return;
+      }
+      this._handleCallback(msg);
+    } else if ("id" in msg) {
+      const msgId = String(msg.id);
+      const pending = this._pending.get(msgId);
+      if (pending) {
+        this._pending.delete(msgId);
+        pending.resolve(msg);
+      }
+    }
+  }
+
+  /** No response can arrive any more: fail every waiter, typed. */
+  private _onReaderClosed(reason: string): void {
+    const failure = new TransportReaderFailedError(reason);
+    this._readerFailure = failure;
+    for (const [id, pending] of this._pending) {
+      this._pending.delete(id);
+      pending.reject(failure);
+    }
+    this._initWatch?.fail(failure);
+  }
+
   private _handleCallback(msg: Record<string, unknown>): void {
     const handler = this._callbackHandler;
-    if (!handler) return;
-
     const method = String(msg.method ?? "");
+    if (!handler) {
+      // Answer now: the gateway would otherwise wait out its full callback
+      // deadline for a response that never comes.
+      if (msg.id !== undefined) {
+        this._writeLine({
+          jsonrpc: "2.0",
+          id: String(msg.id),
+          error: {
+            code: -32000,
+            message: `no callback handler is registered for ${method}`,
+            data: { kind: "callback_handler_unavailable", method },
+          },
+        });
+      }
+      return;
+    }
+
     const params = (
       typeof msg.params === "object" && msg.params !== null
         ? msg.params
@@ -364,10 +503,25 @@ export class PersistentTransport {
         completed = true;
         clearTimeout(timer);
         if (callbackId === null) return; // Notification — no response
+        const sanitized = sanitizeForJson(result);
+        if (containsNonFinite(sanitized)) {
+          // JSON has no NaN or Infinity; JSON.stringify would silently turn
+          // them into null and change the provider's answer. Refuse it.
+          this._writeLine({
+            jsonrpc: "2.0",
+            id: callbackId,
+            error: {
+              code: -32000,
+              message: `${method} returned a non-finite number (NaN or Infinity), which JSON cannot carry`,
+              data: { kind: "non_finite_result" },
+            },
+          });
+          return;
+        }
         this._writeLine({
           jsonrpc: "2.0",
           id: callbackId,
-          result: sanitizeForJson(result),
+          result: sanitized,
         });
       })
       .catch((err: unknown) => {
@@ -438,6 +592,7 @@ export class PersistentTransport {
       throw new Error("persistent transport: subprocess is not running");
     }
     const msgId = String(request.id ?? "");
+    if (this._readerFailure !== null) throw this._readerFailure;
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {

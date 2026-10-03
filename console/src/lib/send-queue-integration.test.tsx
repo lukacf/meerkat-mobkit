@@ -6,7 +6,7 @@ import type { MobKitConsoleTransport } from "./headless";
 import { createConsoleSendAttempt, beginConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { consoleSendStorageKey, saveConsoleSendAttempts } from "./send-attempt-storage";
 import { createConsoleContextRecord } from "../../../packages/console-core/src/context-record";
-import { PendingStack, type PendingItem } from "../panels/PendingStack";
+import { ACCEPTANCE_NOTICE_GRACE_MS, PendingStack, type PendingItem } from "../panels/PendingStack";
 
 const identity = "identity:queue-agent";
 function seed(twoPanes = false) {
@@ -170,8 +170,8 @@ describe("stock durable queue integration", () => {
       return { available: true, frames: input.identity === canonical ? [receipt] : [] };
     });
     render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
-    await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    await waitFor(() => { expect(screen.queryByTestId(/^pending-item:/)).toBeNull(); expect(screen.getByTestId(/^pending-delivered:/)).toHaveTextContent(/^Delivered/); });
     expect(calls).toContain(`inspect:${identity}`);
     expect(calls.indexOf(`inspect:${identity}`)).toBeLessThan(calls.indexOf(`query:${canonical}`));
     expect(send).not.toHaveBeenCalled();
@@ -214,9 +214,9 @@ describe("stock durable queue integration", () => {
     const pane = within(await screen.findByTestId(`chat-pane:${identity}`));
     await pane.findByText("Already loaded reply", { selector: "p" });
     await waitFor(() => expect(receive).toBeTypeOf("function"));
-    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
-    if (hasReceipt) await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
-    else expect(await screen.findByTestId("pending-check:lost-receipt")).toHaveTextContent(/^No acceptance receipt: this agent's timeline has no record of this message\./);
+    fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    if (hasReceipt) await waitFor(() => { expect(screen.queryByTestId(/^pending-item:/)).toBeNull(); expect(screen.getByTestId(/^pending-delivered:/)).toHaveTextContent(/^Delivered/); });
+    else expect(await screen.findByTestId("pending-check:lost-receipt")).toHaveTextContent("Not found in Queue agent's recent messages.");
     await pane.findByText("Reply found by acceptance check", { selector: "p" });
     await act(async () => { receive?.({ event: "replay_unavailable", data: {} } as never); });
     await waitFor(() => expect(fake.queryTimeline).toHaveBeenCalledWith(expect.objectContaining({ identity, mode: "since", after: "console:3" })));
@@ -259,13 +259,13 @@ describe("stock durable queue integration", () => {
     fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
     const view = render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
     await within(await screen.findByTestId(`chat-pane:${identity}`)).findByText("Current authorized reply");
-    fireEvent.click(await screen.findByRole("button", { name: "Check acceptance" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check" }));
     await waitFor(() => expect(finishCheck).toBeTypeOf("function"));
     if (staleReason === "principal changed") {
       view.rerender(<ConsoleApp baseUrl="" storageNamespace="next-acceptance-principal" transport={fake} />);
       await within(await screen.findByTestId(`chat-pane:${identity}`)).findByText("Current authorized reply");
     } else {
-      fireEvent.click(screen.getByRole("button", { name: "Discard saved attempt" }));
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     }
     await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
     await act(async () => { finishCheck({ available: true, frames: [{ id: "stale-check-reply", event: "interaction_complete", identity,
@@ -292,7 +292,7 @@ describe("stock durable queue integration", () => {
     });
     fake.queryTimeline = vi.fn(async () => ({ available: true, frames: [] }));
     render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
-    const action = await screen.findByRole("button", { name: "Check acceptance" });
+    const action = await screen.findByRole("button", { name: "Check" });
     const previousQueries = vi.mocked(fake.queryTimeline).mock.calls.length;
     fireEvent.click(action);
     await waitFor(() => expect(fake.executeCommand).toHaveBeenCalled());
@@ -335,20 +335,21 @@ describe("stock durable queue integration", () => {
       let receive: ((frame: never) => void) | undefined;
       fake.subscribeTimeline = (_input, next) => { receive = next; return () => {}; };
       render(<ConsoleApp baseUrl="" storageNamespace={scope} transport={fake} />);
-      const action = await screen.findByRole("button", { name: "Check acceptance" });
+      const action = await screen.findByRole("button", { name: "Check" });
       await waitFor(() => expect(receive).toBeTypeOf("function"));
       // The current authorized stream loaded the receipt before 201 newer
       // events. The fresh server page truthfully omits that older receipt.
       await act(async () => { for (const frame of [receipt, ...newer]) receive?.(frame as never); });
       fireEvent.click(action);
       if (evidence === "exact receipt") {
-        await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
+        await waitFor(() => { expect(screen.queryByTestId(/^pending-item:/)).toBeNull(); expect(screen.getByTestId(/^pending-delivered:/)).toHaveTextContent(/^Delivered/); });
         expect(JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts).toEqual([]);
       } else {
         // The check answers on the row it checked, with a typed outcome.
-        expect(await screen.findByTestId("pending-check:older-receipt")).toHaveTextContent(evidence === "fresh query denied"
-          ? "Could not check acceptance: Fresh canonical query denied. The saved message is unchanged and was not resent."
-          : /^No acceptance receipt:/);
+        const check = await screen.findByTestId("pending-check:older-receipt");
+        await waitFor(() => expect(check).toHaveTextContent(evidence === "fresh query denied"
+          ? "Couldn't check: the server couldn't look up Queue agent's messages."
+          : "Not found in Queue agent's recent messages."));
         expect(screen.getByTestId("pending-stack")).toBeTruthy();
         const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey(scope, identity))!).attempts;
         expect(saved).toHaveLength(1);
@@ -464,7 +465,8 @@ describe("stock durable queue integration", () => {
     const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!);
     expect(saved.attempts[0].state).toBe("attempting");
     expect(JSON.parse(saved.attempts[0].envelopeJson).content).toBe("  byte exact\n🌳  ");
-    expect(screen.getByTestId("pending-stack")).toBeTruthy();
+    // Saved, but a send in flight stays out of the stack for the grace period.
+    expect(screen.queryByTestId("pending-stack")).toBeNull();
     await act(async () => { finish({ interaction_id: "accepted", identity, input_frame_id: "canonical-frame" } as never); });
     await waitFor(() => expect(screen.queryByTestId("pending-stack")).toBeNull());
   });
@@ -472,10 +474,10 @@ describe("stock durable queue integration", () => {
     const send = vi.fn(async () => { throw new Error("response lost"); });
     const props = { baseUrl: "", storageNamespace: "runtime/realm/principal", transport: transport(send) };
     const view = render(<ConsoleApp {...props} />); await compose("saved unknown");
-    await waitFor(() => expect(screen.getByText(/Acceptance unknown/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/We couldn't confirm/)).toBeTruthy());
     expect(send).toHaveBeenCalledTimes(1); view.unmount();
     render(<ConsoleApp {...props} />);
-    await waitFor(() => expect(screen.getByText(/Acceptance unknown/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/We couldn't confirm/)).toBeTruthy());
     expect(send).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId(/^pending-steer:/)).toBeNull();
     expect(screen.queryByTestId(/^pending-edit:/)).toBeNull();
@@ -484,9 +486,9 @@ describe("stock durable queue integration", () => {
     const send = vi.fn(async () => { throw new Error("response lost after dispatch"); });
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
     await compose("Keep this exact instruction");
-    await screen.findByText(/Acceptance unknown/);
+    await screen.findByText(/We couldn't confirm/);
     expect(screen.queryByTestId("console-action-error")).toBeNull();
-    expect(screen.getByRole("button", { name: "Check acceptance", exact: true })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check", exact: true })).toBeEnabled();
     const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!).attempts;
     expect(saved).toHaveLength(1);
     expect(saved[0].state).toBe("outcome-unknown");
@@ -508,17 +510,17 @@ describe("stock durable queue integration", () => {
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
     await compose("sent from off the home network");
     const row = await screen.findByTestId(/^pending-item:/);
-    await waitFor(() => expect(within(row).getByText("Not authorized")).toBeVisible());
+    await waitFor(() => expect(within(row).getByText("Not sent")).toBeVisible());
     expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent(
-      "Not authorized from this network (401). The gateway refused the request before accepting it, so nothing was sent.",
+      "You were signed out, or this network isn't allowed.",
     );
-    expect(screen.queryByText("Awaiting acceptance")).toBeNull();
+    expect(screen.queryByText("Sending")).toBeNull();
     expect(screen.queryByText(/Waiting for confirmation/)).toBeNull();
     expect(screen.queryByText("Agent busy")).toBeNull();
     expect(screen.getByText("Agent idle")).toBeVisible();
     // The saved message is kept for an explicit retry of the same envelope.
-    expect(within(row).getByRole("button", { name: "Retry same attempt" })).toBeEnabled();
-    expect(within(row).queryByRole("button", { name: "Check acceptance" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Send again" })).toBeEnabled();
+    expect(within(row).queryByRole("button", { name: "Check" })).toBeNull();
     const saved = savedAttempts();
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated", text: "sent from off the home network" });
@@ -536,7 +538,7 @@ describe("stock durable queue integration", () => {
     await waitFor(() => expect(screen.getByTestId("pending-stack")).toBeTruthy());
     fireEvent.click(screen.getByTestId(/^pending-steer:/));
     const row = await screen.findByTestId(/^pending-item:/);
-    await waitFor(() => expect(within(row).getByText("Not authorized")).toBeVisible());
+    await waitFor(() => expect(within(row).getByText("Not sent")).toBeVisible());
     const saved = savedAttempts();
     expect(saved[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated" });
     expect(JSON.parse(saved[0].envelopeJson).handling_mode).toBe("steer");
@@ -547,10 +549,12 @@ describe("stock durable queue integration", () => {
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={transport(send)} />);
     await compose("sent while the tunnel was down");
     const row = await screen.findByTestId(/^pending-item:/);
-    await waitFor(() => expect(within(row).getByText("Acceptance unknown")).toBeVisible());
-    expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent(/^The connection failed before the gateway answered \(Failed to fetch\)\. The message may already have been accepted/);
-    expect(within(row).getByRole("button", { name: "Check acceptance" })).toBeEnabled();
-    expect(within(row).queryByRole("button", { name: "Retry same attempt" })).toBeNull();
+    await waitFor(() => expect(within(row).getByText("Not confirmed")).toBeVisible());
+    expect(within(row).getByTestId(/^pending-explanation:/)).toHaveTextContent("Couldn't reach the server (offline or signed out).");
+    expect(within(row).getByRole("button", { name: "Check" })).toBeEnabled();
+    // Uncertain, and this gateway does not advertise durable send dedupe:
+    // no same-key resend is offered.
+    expect(within(row).queryByRole("button", { name: "Send again" })).toBeNull();
     expect(savedAttempts()[0]).toMatchObject({ state: "outcome-unknown", failureKind: "connection_failed" });
     expect(screen.getByText("Agent idle")).toBeVisible();
   });
@@ -563,9 +567,9 @@ describe("stock durable queue integration", () => {
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
     await compose("check me");
     const row = await screen.findByTestId(/^pending-item:/);
-    fireEvent.click(await within(row).findByRole("button", { name: "Check acceptance" }));
+    fireEvent.click(await within(row).findByRole("button", { name: "Check" }));
     expect(await within(row).findByTestId(/^pending-check:/)).toHaveTextContent(
-      "Could not check acceptance: not authorized from this network (401). The saved message is unchanged and was not resent.",
+      "Couldn't check: you were signed out. Sign in and check again.",
     );
     expect(send).toHaveBeenCalledTimes(1);
     expect(savedAttempts()[0].state).toBe("outcome-unknown");
@@ -592,7 +596,7 @@ describe("stock durable queue integration", () => {
     );
     expect(textarea.value).toBe("look at this from off the home network");
     expect(screen.getAllByRole("button", { name: "Remove attachment" })).toHaveLength(1);
-    expect(screen.queryByText("Awaiting acceptance")).toBeNull();
+    expect(screen.queryByText("Sending")).toBeNull();
   });
 
   it.each(["refused", "accepted"] as const)("settles a send answered (%s) after the console was remounted instead of leaving it awaiting acceptance", async (outcome) => {
@@ -606,22 +610,32 @@ describe("stock durable queue integration", () => {
     // A new transport remounts the console lifetime (and its controller).
     const newSend = vi.fn(async (input) => ({ interaction_id: "new", identity: input.identity }));
     view.rerender(<ConsoleApp baseUrl="" storageNamespace={scope} transport={transport(newSend)} />);
-    await screen.findByText("Awaiting acceptance");
+    // The remount clears the old lifetime's stack at once; the queue note
+    // returns only when the new lifetime has loaded the in-flight row. Wait
+    // on that transition, not on the display-only acceptance grace timer
+    // (which restarts with every stack mount; PendingStack.test.tsx covers
+    // it with fake timers).
+    expect(screen.queryByText("Saved in this browser until sent")).toBeNull();
+    await screen.findByText("Saved in this browser until sent");
+    expect(savedAttempts(scope)[0].state).toBe("attempting");
+    expect(screen.queryByText("Not sent")).toBeNull();
+    expect(screen.queryByText("Not confirmed")).toBeNull();
     await act(async () => {
       if (outcome === "refused") settleOld.reject(unauthenticated());
       else settleOld.resolve({ interaction_id: "late-receipt", identity, input_frame_id: "late-frame" } as never);
     });
     if (outcome === "refused") {
       await waitFor(() => expect(savedAttempts(scope)[0]).toMatchObject({ state: "definitely-rejected", failureKind: "unauthenticated" }));
-      expect(await screen.findByText("Not authorized")).toBeVisible();
+      expect(await screen.findByText("Not sent")).toBeVisible();
     } else {
       // The ended lifetime discards the late answer (its transport scope is
       // gone), so the attempt settles as a typed, reconcilable interruption.
       await waitFor(() => expect(savedAttempts(scope)[0]).toMatchObject({ state: "outcome-unknown", failureKind: "interrupted" }));
-      expect(await screen.findByText("Interrupted")).toBeVisible();
-      expect(screen.getByRole("button", { name: "Check acceptance" })).toBeEnabled();
+      expect(await screen.findByText("Not confirmed")).toBeVisible();
+      expect(screen.getByText("The page was reloaded while sending.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Check" })).toBeEnabled();
     }
-    expect(screen.queryByText("Awaiting acceptance")).toBeNull();
+    expect(screen.queryByText("Sending")).toBeNull();
     expect(newSend).not.toHaveBeenCalled();
   });
 
@@ -646,7 +660,10 @@ describe("stock durable queue integration", () => {
     const retained = JSON.parse(window.localStorage.getItem(key)!).attempts[0];
     expect(retained.envelopeJson).toBe(frozen.envelopeJson);
     expect(retained.idempotencyKey).toBe(frozen.idempotencyKey);
-    expect(screen.getByTestId(`pending-item:${retained.id}`)).toBeInTheDocument();
+    // The stack still holds the row (its queue note is derived from the
+    // stack itself); the row's own card may still be inside the display-only
+    // acceptance grace window, so do not wait on that timer.
+    expect(screen.getByText("Saved in this browser until sent")).toBeInTheDocument();
     expect(send).toHaveBeenCalledTimes(1);
   });
   it("clears a recovered queue storage failure before showing an unknown send outcome", async () => {
@@ -666,7 +683,7 @@ describe("stock durable queue integration", () => {
     expect(textarea.value).toBe("Keep the instruction through storage recovery");
     storageBlocked = false;
     await compose(textarea.value);
-    await screen.findByText(/Acceptance unknown/);
+    await screen.findByText(/We couldn't confirm/);
     expect(screen.queryByTestId("console-action-error")).toBeNull();
     const attempts = JSON.parse(window.localStorage.getItem(key)!).attempts;
     expect(attempts).toHaveLength(1);
@@ -736,7 +753,7 @@ describe("stock durable queue integration", () => {
     await waitFor(() => expect(screen.getByTestId("pending-stack")).toBeTruthy());
     expect(send).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId(/^pending-steer:/));
-    await waitFor(() => expect(screen.getByText(/Acceptance unknown/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/We couldn't confirm/)).toBeTruthy());
     expect(send).toHaveBeenCalledTimes(1);
     const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!);
     expect(JSON.parse(saved.attempts[0].envelopeJson).handling_mode).toBe("steer");
@@ -756,7 +773,7 @@ describe("stock durable queue integration", () => {
     saveConsoleSendAttempts(window.localStorage, attempt.scope, identity, [attempt]);
     const send = vi.fn(async (input) => ({ interaction_id: "duplicate", identity: input.identity }));
     render(<ConsoleApp baseUrl="" storageNamespace={attempt.scope} transport={transport(send)} />);
-    await waitFor(() => expect(screen.getByText(/Acceptance unknown/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/We couldn't confirm/)).toBeTruthy());
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -881,8 +898,8 @@ describe("stock durable queue integration", () => {
     const fake = transport(send); fake.capabilities = async () => { throw new Error("capability connection lost"); };
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
     await compose("uncertain capability request");
-    await screen.findByText(/Acceptance unknown/);
-    expect(screen.queryByRole("button", { name: "Retry same attempt" })).toBeNull();
+    await screen.findByText(/We couldn't confirm/);
+    expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -892,11 +909,11 @@ describe("stock durable queue integration", () => {
     fake.capabilities = async () => ({ version: "test", methods: ["mobkit/console/timeline", ...(canSend ? ["mobkit/console/send"] : [])] }) as never;
     render(<ConsoleApp baseUrl="" storageNamespace="runtime/realm/principal" transport={fake} />);
     await compose("retry after capability restoration");
-    await screen.findByRole("button", { name: "Retry same attempt" });
+    await screen.findByRole("button", { name: "Send again" });
     expect(send).not.toHaveBeenCalled();
     const saved = JSON.parse(window.localStorage.getItem(consoleSendStorageKey("runtime/realm/principal", identity))!).attempts[0];
     expect(saved.state).toBe("definitely-rejected");
-    canSend = true; fireEvent.click(screen.getByRole("button", { name: "Retry same attempt" }));
+    canSend = true; fireEvent.click(screen.getByRole("button", { name: "Send again" }));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     expect(send.mock.calls[0][0]).toMatchObject({ content: saved.text, idempotencyKey: saved.idempotencyKey, origin: saved.origin, handlingMode: "queue" });
   });
@@ -1016,7 +1033,11 @@ describe("pending recovery actions", () => {
     const props = { items: [item], agentBusy: true, onSteer: vi.fn(), onRetry: vi.fn(), onReconcile: vi.fn(),
       onRemoveContext: vi.fn(), onReorderContext: vi.fn(), onTrash: vi.fn(), onEdit: vi.fn(), onCommitEdit: vi.fn(),
       onCancelEdit: vi.fn(), onReorder: vi.fn(), onClearAll: vi.fn(), onToggleExpand: vi.fn() };
+    // A frozen attempting row is past its acceptance grace period here.
+    vi.useFakeTimers();
     render(<PendingStack {...props} />);
+    act(() => { vi.advanceTimersByTime(ACCEPTANCE_NOTICE_GRACE_MS); });
+    vi.useRealTimers();
     return { item, props };
   }
 
@@ -1027,8 +1048,10 @@ describe("pending recovery actions", () => {
     expect(row.querySelector(".stk-item__text")?.textContent).toBe(item.text);
     expect(screen.queryByTestId(`pending-steer:${item.id}`)).toBeNull();
     expect(screen.queryByTestId(`pending-edit:${item.id}`)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry same attempt" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Check acceptance", exact: true }));
+    // No same-key resend without a durable dedupe store (resendUncertain
+    // defaults to false), and never for a row still in flight.
+    expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Check", exact: true }));
     expect(props.onReconcile).toHaveBeenCalledExactlyOnceWith(item.id);
     expect(props.onSteer).not.toHaveBeenCalled();
     expect(props.onRetry).not.toHaveBeenCalled();
@@ -1037,7 +1060,7 @@ describe("pending recovery actions", () => {
     expect(expand).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(expand);
     expect(props.onToggleExpand).toHaveBeenCalledExactlyOnceWith(item.id);
-    fireEvent.click(screen.getByRole("button", { name: "Discard saved attempt", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard", exact: true }));
     expect(props.onTrash).toHaveBeenCalledExactlyOnceWith(item.id);
   });
 
@@ -1049,17 +1072,17 @@ describe("pending recovery actions", () => {
     expect(props.onSteer).toHaveBeenCalledExactlyOnceWith(item.id);
     expect(props.onEdit).toHaveBeenCalledExactlyOnceWith(item.id);
     expect(props.onTrash).toHaveBeenCalledExactlyOnceWith(item.id);
-    expect(screen.queryByRole("button", { name: "Check acceptance" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check" })).toBeNull();
   });
 
   it("offers only the original retry mode after definite rejection", () => {
     const { item, props } = renderAttempt("definitely-rejected");
-    fireEvent.click(screen.getByRole("button", { name: "Retry same attempt", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Send again", exact: true }));
     expect(props.onRetry).toHaveBeenCalledExactlyOnceWith(item.id);
     expect(screen.queryByTestId(`pending-steer:${item.id}`)).toBeNull();
     expect(screen.queryByTestId(`pending-edit:${item.id}`)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Check acceptance" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Discard saved attempt" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Check" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
   });
 });
 

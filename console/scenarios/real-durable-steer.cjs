@@ -6,6 +6,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { chromium } = require("playwright");
 const { startFixture, eventually, rpc } = require("../acceptance-runtime.cjs");
+const { geometry } = require("./real-conversation.cjs");
 
 const identity = "router:main";
 const evidenceDir = process.env.MOBKIT_BROWSER_EVIDENCE || path.join(__dirname, "../../output/playwright/console-acceptance");
@@ -171,6 +172,20 @@ async function durableSteer(host, persistedBackgroundJob = false) {
           workGraphTools,
         };
       }, notice);
+      if (!requireRunning) {
+        // The peer rows belong to earlier turns, which the windowed stock
+        // transcript mounts only near the viewport. Once the run settled,
+        // read the transcript through as a reader scrolling it does.
+        const positions = await geometry.readThrough(viewport(), (root, expected) => [...root.querySelectorAll("[data-conversation-row-id]")].filter((row) => !row.closest("[hidden]")).map((row) => ({
+          id: row.dataset.conversationRowId,
+          notice: row.textContent.includes(expected),
+          peers: [...row.querySelectorAll(".cc-tool-call--incoming .cc-tool-call__name")]
+            .map((peer) => ({ text: peer.textContent, title: peer.getAttribute("title"), displayed: peer.getBoundingClientRect().height > 0 })),
+        })), notice);
+        const rows = new Map(positions.flat().map((row) => [row.id, row]));
+        view.noticeRowIds = [...rows.values()].filter((row) => row.notice).map((row) => row.id);
+        view.incomingPeers = [...rows.values()].flatMap((row) => row.peers);
+      }
       result.lastNoticeProbe = { label, view, before };
       const after = requireRunning ? await state() : null;
       if (after && !inputStillRunning(after)) return { endedBeforeLiveObservation: after };
@@ -179,6 +194,7 @@ async function durableSteer(host, persistedBackgroundJob = false) {
         assert(!view.text.includes("boundary_append_applied") && !view.text.includes('"input_id"') && !view.text.includes('"append_count"'),
           "the transcript renders the instruction without raw transport envelopes");
         assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
+        if (view.noticeRowIds) assert.deepEqual(view.noticeRowIds, [result.noticeRowId], "no other row in the whole transcript repeats the durable notice");
         assert.equal(view.rows[0].id, result.noticeRowId, "the rendered row belongs to the exact runtime notice source");
         assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
         assert.doesNotMatch(view.rows[0].text, /Worked for/);
@@ -467,8 +483,11 @@ async function durableSteer(host, persistedBackgroundJob = false) {
     if (host === "stock") assert.equal(await composer().inputValue(), draft, "reload restores the unsent operator draft");
     await viewport().locator(`[data-conversation-row-id=${JSON.stringify(result.noticeRowId)}]`).scrollIntoViewIfNeeded();
     await capture("reloaded");
-    await viewport().locator(".cc-tool-call--incoming .cc-tool-call__name")
-      .filter({ hasText: "Received from domain:delivery" }).first().scrollIntoViewIfNeeded();
+    const peerLabel = viewport().locator(".cc-tool-call--incoming .cc-tool-call__name")
+      .filter({ hasText: "Received from domain:delivery" }).first();
+    // The peer delivery is in an early turn, mounted only near the start.
+    await geometry.mountEarlyRow(viewport(), peerLabel);
+    await peerLabel.scrollIntoViewIfNeeded();
     await capture("peer-label");
     const apiFailures = fixture.observations.filter(item => item.status >= 400 || (item.response && (() => { try { return Boolean(JSON.parse(item.response).error); } catch { return false; } })()));
     assert.deepEqual(apiFailures, [], "no unexpected actual API failures");

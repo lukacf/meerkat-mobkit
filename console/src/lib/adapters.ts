@@ -1,10 +1,10 @@
 import { operationFeedbackFromFrame } from "../../../packages/console-core/src/operation-feedback";
-import { assistantPresentationEntries, conversationPresentationRows } from "../../../packages/console-core/src/assistant-presentation";
+import { assistantPresenter, assistantToolOwnership, conversationPresentationRows, extendAssistantToolOwnership, type AssistantPresenterState } from "../../../packages/console-core/src/assistant-presentation";
 import { userMessageRenderKey } from "../../../packages/console-core/src/user-message-identity";
 import { realtimeMessageOrigin, isRealtimeHistoryMessage } from "../../../packages/console-core/src/realtime-message-identity";
 import { assistantMessageKey, assistantMessageRenderKey, hasAssistantMessageIdCarrier } from "../../../packages/console-core/src/assistant-message-identity";
-import { canonicalAssistantToolCounterparts, reconcileAssistantMessageFrames } from "../../../packages/console-core/src/assistant-message-projection";
-import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey } from "../../../packages/console-core/src/runtime-append-projection";
+import { canonicalAssistantToolCounterparts, isCanonicalAssistantMessage, reconcileAssistantMessageFrames } from "../../../packages/console-core/src/assistant-message-projection";
+import { reconcileAssistantHistoryPositions, reconcileRuntimeAppendFrames, runtimeAppendNoticeKey, runtimeSourceScope, runtimeSourceSequence } from "../../../packages/console-core/src/runtime-append-projection";
 import { toolCompletionFromFrame, unknownToolCompletion, type ToolCompletionEvidence } from "../../../packages/console-core/src/tool-completion";
 import { parseConsoleContextMessage } from "../../../packages/console-core/src/context-record";
 import {
@@ -676,18 +676,26 @@ function transcriptSourceOrder(left: ConsoleFrame, right: ConsoleFrame): number 
   return a !== null && b !== null && a !== b ? a - b : null;
 }
 
-function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
-  const interactionStartMs = new Map<string, number>();
-  for (const frame of frames) {
-    const interactionId = frame.interactionId?.trim();
-    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    if (!interactionId) continue;
-    const current = interactionStartMs.get(interactionId);
-    if (current === undefined || timestampMs < current) {
-      interactionStartMs.set(interactionId, timestampMs);
-    }
+function noteInteractionStart(interactionStartMs: Map<string, number>, frame: ConsoleFrame): void {
+  const interactionId = frame.interactionId?.trim();
+  const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+  if (!interactionId) return;
+  const current = interactionStartMs.get(interactionId);
+  if (current === undefined || timestampMs < current) {
+    interactionStartMs.set(interactionId, timestampMs);
   }
+}
 
+type IndexedFrame = { frame: ConsoleFrame; index: number };
+
+/// Effective transcript time: own timestamp, else its interaction's start.
+function transcriptFrameTime(interactionStartMs: Map<string, number>, frame: ConsoleFrame): number {
+  if (typeof frame.timestampMs === "number") return frame.timestampMs;
+  const interactionId = frame.interactionId?.trim() || "";
+  return (interactionId ? interactionStartMs.get(interactionId) : undefined) ?? Number.MAX_SAFE_INTEGER;
+}
+
+function transcriptFrameComparator(interactionStartMs: Map<string, number>): (left: IndexedFrame, right: IndexedFrame) => number {
   const transcriptGroupTimestamp = (frame: ConsoleFrame): number => {
     const interactionId = frame.interactionId?.trim() || "";
     const ownTimestamp =
@@ -698,9 +706,7 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
     return interactionStartMs.get(interactionId) ?? ownTimestamp;
   };
 
-  return frames
-    .map((frame, index) => ({ frame, index }))
-    .sort((left, right) => {
+  return (left, right) => {
       const leftInteraction = left.frame.interactionId?.trim() || "";
       const rightInteraction = right.frame.interactionId?.trim() || "";
       const leftGroupTs = transcriptGroupTimestamp(left.frame);
@@ -762,7 +768,15 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
         return leftCursor - rightCursor;
       }
       return left.index - right.index;
-    })
+    };
+}
+
+function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
+  const interactionStartMs = new Map<string, number>();
+  for (const frame of frames) noteInteractionStart(interactionStartMs, frame);
+  return frames
+    .map((frame, index) => ({ frame, index }))
+    .sort(transcriptFrameComparator(interactionStartMs))
     .map(({ frame }) => frame);
 }
 
@@ -4332,7 +4346,13 @@ function typedSystemNoticeBlocksToRich(
       // a pure-scaffold content block falls back to the parsed summary
       // (`Peer request: <intent>`) instead of leaking pubkey bytes and
       // protocol coaching into the chat preview.
-      const displayBodySource = stripPeerTransportScaffold(contentText)
+      // A runtime notice's content is model-facing routing text, never an
+      // authored message: every member-kickoff request (`mob.kickoff_*`, which
+      // carries the full peer transport projection) and every typed lifecycle
+      // notice. Its typed summary describes the operation.
+      const runtimeNotice = kind === "lifecycle"
+        || (kind === "request" && intent.startsWith("mob.kickoff_"));
+      const displayBodySource = (runtimeNotice ? "" : stripPeerTransportScaffold(contentText))
         || stripPeerTransportScaffold(typedCommsStableBodyText(record))
         || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
@@ -4353,10 +4373,7 @@ function typedSystemNoticeBlocksToRich(
               : typeof textPart.content === "string" ? textPart.content : "";
           }).join("")
           : "";
-      // This typed runtime request's content is model-facing routing guidance,
-      // not an authored message. Its summary already describes the operation.
-      const runtimeKickoff = kind === "request" && intent === "mob.kickoff_started";
-      const exactDisplayBody = (!runtimeKickoff && ownerContentText)
+      const exactDisplayBody = (!runtimeNotice && ownerContentText)
         || [record.summary, record.body, record.detail].filter((part): part is string => typeof part === "string").join("\n")
         || (typeof body === "string" ? body : "");
       const displayBody = textMode === "markdown" ? exactDisplayBody : normalizeStructuredCommsBodyText(
@@ -4664,14 +4681,20 @@ function renderSystemNoticeEntry(
   };
 }
 
-function attachCompletedRunDurations(entries: ConversationTimelineEntry[], frames: ConsoleFrame[]): void {
-  const ownerKey = (frame: ConsoleFrame): string | null => {
-    if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
-    return JSON.stringify([
-      frame.runtimeKey || "", frame.identity || "", frame.sessionId,
-      frame.runId, frame.interactionId || "",
-    ]);
-  };
+type RunTimingIndex = {
+  timings: Map<string, { start?: number; end?: number; invalid: boolean }>;
+  framesById: Map<string, ConsoleFrame>;
+};
+
+function runOwnerKey(frame: ConsoleFrame): string | null {
+  if (!frame.runId?.trim() || !frame.sessionId?.trim()) return null;
+  return JSON.stringify([
+    frame.runtimeKey || "", frame.identity || "", frame.sessionId,
+    frame.runId, frame.interactionId || "",
+  ]);
+}
+
+function completedRunTimings(frames: ConsoleFrame[]): RunTimingIndex {
   const timings = new Map<string, { start?: number; end?: number; invalid: boolean }>();
   const framesById = new Map(frames.map((frame) => [frame.id, frame]));
   for (const frame of frames) {
@@ -4683,7 +4706,7 @@ function attachCompletedRunDurations(entries: ConversationTimelineEntry[], frame
         && (data.type === "run_completed" || data.source_event_type === "run_completed")))
       && data.extraction_required !== true && !isSteerDeliveryTerminalFrame(frame);
     if (!started && !completed) continue;
-    const key = ownerKey(frame);
+    const key = runOwnerKey(frame);
     if (!key) continue;
     const timing = timings.get(key) || { invalid: false };
     const time = frame.timestampMs;
@@ -4693,43 +4716,330 @@ function attachCompletedRunDurations(entries: ConversationTimelineEntry[], frame
     else timing[field] = time;
     timings.set(key, timing);
   }
+  return { timings, framesById };
+}
+
+/// Completed-run durations per entry. Never mutates the entries. With
+/// `qualified`, an entry's run key and duration (or null when it has none)
+/// are remembered per entry object; valid while the index is unchanged.
+function completedRunDurations(
+  entries: ConversationTimelineEntry[],
+  { timings, framesById }: RunTimingIndex,
+  qualified?: WeakMap<ConversationTimelineEntry, { key: string; duration: number } | null>,
+): Map<ConversationTimelineEntry, number> {
   // Entry timestamps belong to their first source chunk, not completion.
   // Use that frame only for exact ownership; timing comes from named events.
+  const qualify = (entry: ConversationTimelineEntry): { key: string; duration: number } | null => {
+    // Pure conjunctive filters, cheapest first.
+    if (entry.kind !== "message" || !entry.runId) return null;
+    const frame = framesById.get(entry.id);
+    if (!frame || entry.runId !== frame.runId) return null;
+    const key = runOwnerKey(frame);
+    if (!key) return null;
+    const timing = timings.get(key);
+    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) return null;
+    if (describeConversationEntrySource(entry).kind !== "assistant") return null;
+    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
+    if (!conversationEntryVisibleText(textEntry).trim()) return null;
+    return { key, duration: timing.end - timing.start };
+  };
+  const durations = new Map<ConversationTimelineEntry, number>();
   const assigned = new Set<string>();
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry.kind !== "message" || describeConversationEntrySource(entry).kind !== "assistant") continue;
-    const textEntry = { ...entry, blocks: entry.blocks?.filter((block) => block.type !== "tool-call" && block.type !== "thinking") };
-    if (!conversationEntryVisibleText(textEntry).trim()) continue;
-    const frame = framesById.get(entry.id);
-    if (!frame || !entry.runId || entry.runId !== frame.runId) continue;
-    const key = ownerKey(frame);
-    if (!key || assigned.has(key)) continue;
-    const timing = timings.get(key);
-    if (!timing || timing.invalid || timing.start === undefined || timing.end === undefined || timing.end < timing.start) continue;
-    entry.runDurationMs = timing.end - timing.start;
-    assigned.add(key);
+    let run = qualified?.get(entry);
+    if (run === undefined) {
+      run = qualify(entry);
+      qualified?.set(entry, run);
+    }
+    if (!run || assigned.has(run.key)) continue;
+    durations.set(entry, run.duration);
+    assigned.add(run.key);
   }
+  return durations;
 }
+
+export type TimelineDerivationOptions = {
+  renderInteractionStartsAsUser?: boolean;
+  renderTextDeltas?: boolean;
+  suppressEmbeddedRunStartedPrompt?: boolean;
+  blobBaseUrl?: string;
+  textMode?: ConversationTextMode;
+};
 
 export function mapFramesToTimelineEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
-  options: {
-    renderInteractionStartsAsUser?: boolean;
-    renderTextDeltas?: boolean;
-    suppressEmbeddedRunStartedPrompt?: boolean;
-    blobBaseUrl?: string;
-    textMode?: ConversationTextMode;
-  } = {},
+  options: TimelineDerivationOptions = {},
 ): ConversationTimelineEntry[] {
+  return deriveTimelineEntries(agent, frames, options).entries;
+}
+
+/// A derived transcript plus what is needed to extend it cheaply. While an
+/// assistant reply streams, each render previously re-ran every global pass
+/// over the whole identity log (thousands of frames) for one new text chunk,
+/// which held the main thread for tens of milliseconds per token and made
+/// typing lag. `deriveTimelineEntries` instead continues the previous fold
+/// when the new frames are only appended live text deltas that provably
+/// cannot change any earlier decision; anything else derives from scratch.
+export interface TimelineDerivation {
+  readonly entries: ConversationTimelineEntry[];
+  /** @internal Single-use: extending moves it to the new derivation. */
+  resume: TimelineResume | null;
+}
+
+interface TimelineResume {
+  agent: ConsoleAgent | null;
+  options: TimelineDerivationOptions;
+  fold: TimelineFold;
+  /// The exact input frames folded so far (the caller's array is mutable).
+  frames: ConsoleFrame[];
+  interactionStartMs: Map<string, number>;
+  maxCursor: number;
+  maxSourceSequence: Map<string, number>;
+  /// Message keys with a canonical history row: their live chunks are replaced.
+  canonicalMessageKeys: Set<string>;
+  /// Owners of legacy history text, which reconciles legacy live chunks.
+  legacyHistoryOwners: Set<string>;
+  /// A compaction still open suppresses legacy content chunks.
+  compactionOpen: boolean;
+}
+
+/// Full versus continued derivations, and entries presented (rendered for
+/// display) by them, read by the real-browser benchmark as a
+/// runner-independent measure of per-token transcript work.
+export const timelineDerivationStats = { full: 0, extended: 0, presented: 0 };
+
+export function deriveTimelineEntries(
+  agent: ConsoleAgent | null,
+  frames: ConsoleFrame[],
+  options: TimelineDerivationOptions = {},
+  previous?: TimelineDerivation | null,
+): TimelineDerivation {
+  const extended = previous?.resume ? extendTimelineDerivation(previous, agent, frames, options) : null;
+  const next = extended ?? fullTimelineDerivation(agent, frames, options);
+  if (extended) timelineDerivationStats.extended += 1;
+  else timelineDerivationStats.full += 1;
+  if (!previous) return next;
+  const entries = internEntries(next.entries, previous.entries);
+  // The fold reuses its last render for unchanged entries next time; give it
+  // the interned objects so they are never compared structurally again.
+  next.resume?.fold.adoptRender(entries);
+  return { entries, resume: next.resume };
+}
+
+function fullTimelineDerivation(
+  agent: ConsoleAgent | null,
+  frames: ConsoleFrame[],
+  options: TimelineDerivationOptions,
+): TimelineDerivation {
+  const fold = createTimelineFold(agent, frames, options);
+  for (let i = 0; i < fold.orderedLength(); i++) fold.step(i);
+  const resume: TimelineResume = {
+    agent,
+    options: { ...options },
+    fold,
+    frames: frames.slice(),
+    interactionStartMs: new Map(),
+    maxCursor: -1,
+    maxSourceSequence: new Map(),
+    canonicalMessageKeys: new Set(),
+    legacyHistoryOwners: new Set(),
+    compactionOpen: false,
+  };
+  // Mirrors reconcileAssistantMessageFrames: a completion closes the open
+  // compactions of its context, in transcript order.
+  const openCompactions: ConsoleFrame[] = [];
+  const contextsConflict = (left: ConsoleFrame, right: ConsoleFrame) => (["runtimeKey", "identity", "sessionId"] as const)
+    .some((key) => Boolean(left[key] && right[key] && left[key] !== right[key]));
+  for (const frame of fold.sortedFrames) {
+    if (frame.sourceKind === "session_history") continue;
+    if (frame.event === "compaction_started") openCompactions.push(frame);
+    if (frame.event === "compaction_completed" || frame.event === "compaction_failed") {
+      for (let i = openCompactions.length - 1; i >= 0; i--) {
+        if (!contextsConflict(openCompactions[i], frame)) openCompactions.splice(i, 1);
+      }
+    }
+  }
+  resume.compactionOpen = openCompactions.length > 0;
+  for (const frame of frames) {
+    noteInteractionStart(resume.interactionStartMs, frame);
+    const cursor = cursorSeq(frame.cursor);
+    if (cursor !== null && cursor > resume.maxCursor) resume.maxCursor = cursor;
+    const scope = runtimeSourceScope(frame);
+    const sequence = runtimeSourceSequence(frame);
+    if (scope && sequence !== undefined) {
+      resume.maxSourceSequence.set(scope, Math.max(sequence, resume.maxSourceSequence.get(scope) ?? -1));
+    }
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey && isCanonicalAssistantMessage(frame)) resume.canonicalMessageKeys.add(messageKey);
+    if (frame.sourceKind === "session_history" && !hasAssistantMessageIdCarrier(frame)) {
+      resume.legacyHistoryOwners.add(assistantOwnerKey(frame));
+    }
+  }
+  return { entries: fold.finish(), resume };
+}
+
+function sameTimelineOptions(left: TimelineDerivationOptions, right: TimelineDerivationOptions): boolean {
+  return Boolean(left.renderInteractionStartsAsUser) === Boolean(right.renderInteractionStartsAsUser)
+    && (left.renderTextDeltas !== false) === (right.renderTextDeltas !== false)
+    && Boolean(left.suppressEmbeddedRunStartedPrompt) === Boolean(right.suppressEmbeddedRunStartedPrompt)
+    && left.blobBaseUrl === right.blobBaseUrl
+    && (left.textMode ?? "markdown") === (right.textMode ?? "markdown");
+}
+
+/// Continue `previous` with appended frames, or null when that could differ
+/// from deriving everything again. Each guard names the global pass whose
+/// output an appended live text delta could otherwise change.
+function extendTimelineDerivation(
+  previous: TimelineDerivation,
+  agent: ConsoleAgent | null,
+  frames: ConsoleFrame[],
+  options: TimelineDerivationOptions,
+): TimelineDerivation | null {
+  const resume = previous.resume!;
+  if (resume.agent !== agent || !sameTimelineOptions(resume.options, options)) return null;
+  const folded = resume.frames;
+  if (frames.length <= folded.length) return null;
+  for (let i = 0; i < folded.length; i++) if (frames[i] !== folded[i]) return null;
+  // Text chunks extending an open reply only; the fold must not be inside a
+  // reasoning block, whose blocks earlier renders already hold.
+  if (resume.fold.reasoningOpen()) return null;
+  const appended = frames.slice(folded.length);
+  const interactionStartMs = new Map(resume.interactionStartMs);
+  const maxSourceSequence = new Map(resume.maxSourceSequence);
+  let maxCursor = resume.maxCursor;
+  const compare = options.renderInteractionStartsAsUser ? transcriptFrameComparator(interactionStartMs) : null;
+  const sorted = resume.fold.sortedFrames;
+  for (let j = 0; j < appended.length; j++) {
+    const frame = appended[j];
+    if (frame.event !== "text_delta" || options.renderTextDeltas === false
+      || frame.sourceKind === "session_history" || isRealtimeHistoryMessage(frame)
+      || typeof frame.timestampMs !== "number") return null;
+    // Newest observation: no history snapshot can cover it, and cursor ties
+    // order it last.
+    const cursor = cursorSeq(frame.cursor);
+    if (cursor === null || cursor <= maxCursor) return null;
+    maxCursor = cursor;
+    // reconcileRuntimeAppendFrames orders by source sequence within a scope.
+    const scope = runtimeSourceScope(frame);
+    const sequence = runtimeSourceSequence(frame);
+    if (scope && sequence !== undefined) {
+      if (sequence <= (maxSourceSequence.get(scope) ?? -1)) return null;
+      maxSourceSequence.set(scope, sequence);
+    }
+    // reconcileAssistantMessageFrames replaces chunks of canonical messages
+    // and suppresses legacy chunks inside a compaction.
+    const messageKey = assistantMessageKey(frame);
+    if (messageKey && resume.canonicalMessageKeys.has(messageKey)) return null;
+    if (!hasAssistantMessageIdCarrier(frame)) {
+      if (resume.compactionOpen) return null;
+      // buildAssistantHistoryReconciliation joins legacy chunks to history.
+      if (resume.legacyHistoryOwners.has(assistantOwnerKey(frame))) return null;
+    }
+    // sortFramesForTranscript must place it after every folded frame.
+    if (compare) {
+      const interactionId = frame.interactionId?.trim();
+      const start = interactionId ? interactionStartMs.get(interactionId) : undefined;
+      if (start !== undefined && frame.timestampMs < start) return null;
+      noteInteractionStart(interactionStartMs, frame);
+      const time = frame.timestampMs;
+      const candidate = { frame, index: 1 };
+      for (let k = sorted.length - 1; k >= 0; k--) {
+        const prior = sorted[k];
+        if (transcriptFrameTime(interactionStartMs, prior) < time) break;
+        if (compare({ frame: prior, index: 0 }, candidate) >= 0) return null;
+      }
+      for (let k = 0; k < j; k++) {
+        if (compare({ frame: appended[k], index: 0 }, candidate) >= 0) return null;
+      }
+    }
+  }
+  const fold = resume.fold;
+  const end = fold.append(appended);
+  for (let i = end - appended.length; i < end; i++) fold.step(i);
+  previous.resume = null;
+  return {
+    entries: fold.finish(),
+    resume: { ...resume, frames: frames.slice(), interactionStartMs, maxCursor, maxSourceSequence },
+  };
+}
+
+/// Keep the previous entry object wherever the new one is structurally
+/// equal, so memoised rows downstream see unchanged identity.
+function internEntries(
+  next: ConversationTimelineEntry[],
+  previous: readonly ConversationTimelineEntry[],
+): ConversationTimelineEntry[] {
+  // A continued fold returns the previous objects for its unchanged prefix;
+  // only entries after it can have a structurally equal prior.
+  let same = 0;
+  while (same < next.length && same < previous.length && next[same] === previous[same]) same++;
+  if (same === next.length) return next;
+  const byId = new Map<string, ConversationTimelineEntry>();
+  for (let i = same; i < previous.length; i++) {
+    const entry = previous[i];
+    byId.set(`${entry.kind}:${entry.id}:${(entry as { renderKey?: string }).renderKey ?? ""}`, entry);
+  }
+  return next.map((entry, index) => {
+    if (index < same) return entry;
+    const prior = byId.get(`${entry.kind}:${entry.id}:${(entry as { renderKey?: string }).renderKey ?? ""}`);
+    return prior && structurallyEqual(prior, entry) ? prior : entry;
+  });
+}
+
+function structurallyEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return typeof left === "number" && typeof right === "number" && Number.isNaN(left) && Number.isNaN(right);
+  }
+  if (Array.isArray(left)) {
+    if (!Array.isArray(right) || left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (!structurallyEqual(left[i], right[i])) return false;
+    return true;
+  }
+  if (Array.isArray(right)) return false;
+  const leftProto = Object.getPrototypeOf(left);
+  if (leftProto !== Object.getPrototypeOf(right) || (leftProto !== Object.prototype && leftProto !== null)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+    if (!structurallyEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key])) return false;
+  }
+  return true;
+}
+
+/// The transcript fold over a fixed ordered frame list. `step(i)` folds
+/// `orderedFrames[i]`; `finish()` renders the entries so far without
+/// changing fold state, so the fold can continue with appended frames.
+interface TimelineFold {
+  /// Input frames in transcript sort order (before the reconcile passes).
+  readonly sortedFrames: ConsoleFrame[];
+  orderedLength(): number;
+  step(index: number): void;
+  finish(): ConversationTimelineEntry[];
+  /// Append frames that sort after every folded frame and that no global
+  /// pass reads (see `extendTimelineDerivation`), ready to `step`.
+  append(frames: ConsoleFrame[]): number;
+  reasoningOpen(): boolean;
+  /// Replace the last render with equal entries (same length and order).
+  adoptRender(entries: ConversationTimelineEntry[]): void;
+}
+
+function createTimelineFold(
+  agent: ConsoleAgent | null,
+  frames: ConsoleFrame[],
+  options: TimelineDerivationOptions,
+): TimelineFold {
   // Live streams keep store order so unscoped comms events do not jump
   // into active turns. Persisted interaction history asks for user prompts,
   // so restore the turn-local semantic order before rendering.
   const textMode = options.textMode ?? "markdown";
-  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(options.renderInteractionStartsAsUser
+  const sortedFrames = options.renderInteractionStartsAsUser
     ? sortFramesForTranscript(frames)
-    : frames)));
+    : frames.slice();
+  const orderedFrames = reconcileRuntimeAppendFrames(reconcileAssistantMessageFrames(reconcileAssistantHistoryPositions(sortedFrames)));
   const canonicalToolCounterparts = canonicalAssistantToolCounterparts(orderedFrames);
   const realtimeHistoryIds = new Set(orderedFrames.filter(isRealtimeHistoryMessage).map(frame => frame.id));
   const entries: ConversationTimelineEntry[] = [];
@@ -4899,10 +5209,9 @@ export function mapFramesToTimelineEntries(
     activeReasoning = undefined;
   }
 
-  function flushPendingText(final = true) {
-    if (!pendingText) return;
+  function pendingTextEntry(final: boolean): ConversationTimelineEntry {
     const blocks = messageTextBlocks(pendingText, textMode, !final);
-    entries.push({
+    return {
       kind: "message",
       id: pendingId,
       identity: agentIdentity(agent),
@@ -4912,13 +5221,18 @@ export function mapFramesToTimelineEntries(
       ...(streamedOwner?.runId ? { runId: streamedOwner.runId } : {}),
       ...(pendingCreatedAt ? { createdAt: pendingCreatedAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text: pendingText }),
-    });
+    };
+  }
+
+  function flushPendingText(final = true) {
+    if (!pendingText) return;
+    entries.push(pendingTextEntry(final));
     pendingText = "";
     pendingId = "";
     pendingCreatedAt = undefined;
   }
 
-  for (let i = 0; i < orderedFrames.length; i++) {
+  function step(i: number): void {
     const frame = orderedFrames[i];
     // Canonical frame identity must survive insertion of older history.
     const entryId = frame.id || `${frame.event || "frame"}:${i}`;
@@ -4950,12 +5264,12 @@ export function mapFramesToTimelineEntries(
           runId: frame.runId, interactionId: frame.interactionId,
           text: operationFeedback.detail, operationFeedback });
       }
-      continue;
+      return;
     }
 
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
-      if (!delta) continue;
+      if (!delta) return;
       const { scope } = reasoningScope(frame);
       if (activeReasoning?.scope !== scope) flushPendingReasoning(true);
       flushPendingText();
@@ -4963,7 +5277,7 @@ export function mapFramesToTimelineEntries(
       state.block.text += delta;
       delete state.block.final;
       activeReasoning = state;
-      continue;
+      return;
     }
 
     if (frame.event === "reasoning_complete") {
@@ -4979,12 +5293,12 @@ export function mapFramesToTimelineEntries(
         openReasoning.delete(scope);
         if (activeReasoning === state) activeReasoning = undefined;
       }
-      continue;
+      return;
     }
 
     if (frame.event === "text_delta") {
       if (options.renderTextDeltas === false) {
-        continue;
+        return;
       }
       flushPendingReasoning(true);
       if (!sameTextStreamOwner(streamedOwner, frame)) {
@@ -4993,7 +5307,7 @@ export function mapFramesToTimelineEntries(
         streamedOwner = frame;
       }
       const delta = assistantHistory.deltaOverrides.get(frame.id) ?? summarizeFrameData(frame.data);
-      if (!delta) continue;
+      if (!delta) return;
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
@@ -5001,7 +5315,7 @@ export function mapFramesToTimelineEntries(
       pendingText += delta;
       forgetCompletedStream(frame);
       appendOwnedStream(frame, delta);
-      continue;
+      return;
     }
 
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
@@ -5013,12 +5327,12 @@ export function mapFramesToTimelineEntries(
         const imageKey = imageEntryKey(imageEntry, Boolean(messageKey));
         const key = imageKey && messageKey ? JSON.stringify([frame.runtimeKey, frame.identity, messageKey, imageKey]) : imageKey;
         if (key && emittedImages.has(key)) {
-          continue;
+          return;
         }
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
       }
-      continue;
+      return;
     }
 
     // Council tool frames render as one inline card per council - never as
@@ -5030,12 +5344,12 @@ export function mapFramesToTimelineEntries(
     if (isCouncilToolFrame(frame)) {
       const councilCard = councilEntryFromFrame(frame, agentIdentity(agent), councilArgs);
       if (councilCard) {
-        if (emittedCouncilIds.has(councilCard.councilId)) continue;
+        if (emittedCouncilIds.has(councilCard.councilId)) return;
         emittedCouncilIds.add(councilCard.councilId);
         flushPendingReasoning(true);
         flushPendingText();
         entries.push(councilCard);
-        continue;
+        return;
       }
       const councilRecord = frame.data && typeof frame.data === "object"
         ? frame.data as Record<string, unknown>
@@ -5043,7 +5357,7 @@ export function mapFramesToTimelineEntries(
       // Suppress the request-side frames regardless: they carry no result to
       // fall back to, and leaving them would render a bare "council" tool row
       // beside the card built from the completion frame.
-      if (!councilRecord || councilRecord.result === undefined) continue;
+      if (!councilRecord || councilRecord.result === undefined) return;
     }
 
     // Only calls represented by a rendered card are replaced. Empty queries
@@ -5058,11 +5372,11 @@ export function mapFramesToTimelineEntries(
         }
       }
       if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT
-        || cardToolCallIds.has(parseToolCallId(frame) || "")) continue;
+        || cardToolCallIds.has(parseToolCallId(frame) || "")) return;
     }
 
     const toolCallId = parseToolCallId(frame);
-    if (canonicalToolCounterparts.has(frame)) continue;
+    if (canonicalToolCounterparts.has(frame)) return;
     if (
       toolCallId
       && (
@@ -5117,7 +5431,7 @@ export function mapFramesToTimelineEntries(
         }
         emittedToolCalls.add(toolCallId);
       }
-      continue;
+      return;
     }
 
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
@@ -5136,7 +5450,7 @@ export function mapFramesToTimelineEntries(
         if (key) emittedImages.add(key);
         entries.push(imageEntry);
       }
-      continue;
+      return;
     }
 
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
@@ -5161,7 +5475,7 @@ export function mapFramesToTimelineEntries(
       }
       const failureEntry = renderUserDeliveryFailureEntry(frame, entryId);
       if (failureEntry) entries.push(failureEntry);
-      continue;
+      return;
     }
 
     if (frame.event === "run_started") {
@@ -5186,7 +5500,7 @@ export function mapFramesToTimelineEntries(
           }
           entries.push(promptEntry);
         }
-        continue;
+        return;
       }
     }
 
@@ -5194,7 +5508,7 @@ export function mapFramesToTimelineEntries(
       flushPendingReasoning(true);
       flushPendingText();
       if (shouldSuppressDuplicateCommsNotice(frame, emittedCommsNotices)) {
-        continue;
+        return;
       }
       const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
         blobBaseUrl: options.blobBaseUrl,
@@ -5217,7 +5531,7 @@ export function mapFramesToTimelineEntries(
       if (noticeEntry) {
         entries.push(noticeEntry);
       }
-      continue;
+      return;
     }
 
     if (frame.sourceKind === "session_history" && (
@@ -5225,7 +5539,7 @@ export function mapFramesToTimelineEntries(
       || frame.event === "run_completed" || frame.event === "interaction_failed" || frame.event === "run_failed"
     )) {
       const suppressAssistantText = assistantHistory.consumedHistory.has(frame.id);
-      if (suppressAssistantText && !historyHasAssistantSiblings(frame)) continue;
+      if (suppressAssistantText && !historyHasAssistantSiblings(frame)) return;
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
         suppressAssistantText,
         consumeDuplicateReasoningBlock: (text) => assistantHistory.consumeReasoning(frame, text),
@@ -5254,12 +5568,12 @@ export function mapFramesToTimelineEntries(
         historyEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (historyEntry.kind === "message") historyEntry.runId = frame.runId?.trim() || undefined;
         if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(historyEntry, entries, realtimeHistoryIds)) {
-          continue;
+          return;
         }
         if (conversationEntryVisibleText(historyEntry)) flushPendingText();
         entries.push(historyEntry);
       }
-      continue;
+      return;
     }
 
     if (!frame.runId?.trim() && frame.event === "text_complete") {
@@ -5272,7 +5586,7 @@ export function mapFramesToTimelineEntries(
           && sameTextStreamOwner(streamedOwner, frame)
           && normalizeComparableText(pendingText) === normalizeComparableText(text)
         ) {
-          continue;
+          return;
         }
         const duplicateTerminalFollows = text
           && orderedFrames.slice(i + 1).some((later) => {
@@ -5288,7 +5602,7 @@ export function mapFramesToTimelineEntries(
             return normalizeComparableText(terminalFrameVisibleText(later)) === normalizeComparableText(text);
           });
         if (duplicateTerminalFollows) {
-          continue;
+          return;
         }
       }
     }
@@ -5318,15 +5632,15 @@ export function mapFramesToTimelineEntries(
         terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (terminalEntry.kind === "message") terminalEntry.runId = frame.runId?.trim() || undefined;
         if (!hasAssistantMessageIdCarrier(frame) && shouldSuppressRepeatedAssistantEntry(terminalEntry, entries, realtimeHistoryIds)) {
-          continue;
+          return;
         }
         entries.push(terminalEntry);
       }
-      continue;
+      return;
     }
 
     if (HIDDEN_EVENTS.has(frame.event)) {
-      continue;
+      return;
     }
 
     flushPendingReasoning(true);
@@ -5336,13 +5650,13 @@ export function mapFramesToTimelineEntries(
     const peerEntry = renderPeerEntry(frame, entryId);
     if (peerEntry) {
       entries.push(peerEntry);
-      continue;
+      return;
     }
 
     // Skip remaining tool lifecycle events (handled by tool blocks above)
     if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started"
       || frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || frame.event === "tool_execution_timed_out") {
-      continue;
+      return;
     }
 
     // Memory subsystem events render as clean meta lines — never raw JSON.
@@ -5360,7 +5674,7 @@ export function mapFramesToTimelineEntries(
             : {},
         ),
       });
-      continue;
+      return;
     }
 
     // Any other runtime event: typed record plus a plain-language line. The
@@ -5378,19 +5692,39 @@ export function mapFramesToTimelineEntries(
     });
   }
 
-  flushPendingReasoning(false);
-  flushPendingText(false);
-  attachCompletedRunDurations(entries, frames);
-  const renderKeys = new Map(orderedFrames.filter(frame => frame.event === "text_delta"
-    || frame.event === "text_complete" || frame.event === "assistant_message"
-    || frame.event === "reasoning_delta" || frame.event === "reasoning_complete")
-    .map(frame => [frame.id, assistantMessageRenderKey(frame)]));
-  const userRenderKeys = new Map(orderedFrames.map(frame => [frame.id, userMessageRenderKey(frame)]));
-  return assistantPresentationEntries(entries.filter((entry) => entry.kind !== "message"
-    || entry.blocks?.length !== 1
-    || entry.blocks[0].type !== "thinking"
-    || entry.blocks[0].text.trim()).map((entry) => {
+  // Per-frame lookup tables for rendering, extended in place by `append`.
+  const renderKeys = new Map<string, string | undefined>();
+  const userRenderKeys = new Map<string, string | undefined>();
+  const framesById = new Map<string, ConsoleFrame>();
+  const indexRenderKeys = (frame: ConsoleFrame) => {
+    if (frame.event === "text_delta" || frame.event === "text_complete" || frame.event === "assistant_message"
+      || frame.event === "reasoning_delta" || frame.event === "reasoning_complete") {
+      renderKeys.set(frame.id, assistantMessageRenderKey(frame));
+    }
+    userRenderKeys.set(frame.id, userMessageRenderKey(frame));
+    framesById.set(frame.id, frame);
+  };
+  orderedFrames.forEach(indexRenderKeys);
+  const runTimings = completedRunTimings(frames);
+  const toolOwnership = assistantToolOwnership(framesById.values());
+  // Rendering an entry depends on it, its run duration, and (through the
+  // presentation ordinals) the entries before it. The previous render keeps
+  // the presenter state after the committed entries it rendered, so a render
+  // that only grew the open text presents just that text: per token work no
+  // longer scales with the transcript.
+  type RenderCheckpoint = { count: number; state: AssistantPresenterState };
+  let lastRender: {
+    visible: ConversationTimelineEntry[];
+    durations: (number | undefined)[];
+    output: ConversationTimelineEntry[];
+    checkpoint: RenderCheckpoint | null;
+  } | null = null;
+  // The run index is fixed for this fold (appends are text only), so an
+  // entry object's duration eligibility never changes.
+  const qualifiedRuns = new WeakMap<ConversationTimelineEntry, { key: string; duration: number } | null>();
+  const renderEntry = (entry: ConversationTimelineEntry, runDurationMs: number | undefined): ConversationTimelineEntry => {
     if (entry.kind !== "message") return entry;
+    if (runDurationMs !== undefined) entry = { ...entry, runDurationMs };
     if (entry.identity.role === "user") {
       const userKey = userRenderKeys.get(entry.id);
       if (userKey) entry = { ...entry, renderKey: userKey };
@@ -5400,7 +5734,64 @@ export function mapFramesToTimelineEntries(
     return { ...entry, blocks: entry.blocks.map((block) => block.type === "markdown"
       ? { ...block, id: `${entry.renderKey ?? entry.id}:text:${textIndex++}` }
       : block) };
-  }), renderKeys, new Map(orderedFrames.map(frame => [frame.id, frame])));
+  };
+
+  function finish(): ConversationTimelineEntry[] {
+    // The trailing open text renders as streaming without being flushed, so
+    // folding can continue; reasoning needs no render-time flush.
+    const pending = pendingText ? pendingTextEntry(false) : null;
+    const rendered = pending ? [...entries, pending] : entries;
+    const durations = completedRunDurations(rendered, runTimings, qualifiedRuns);
+    const visible = rendered.filter((entry) => entry.kind !== "message"
+    || entry.blocks?.length !== 1
+    || entry.blocks[0].type !== "thinking"
+    || entry.blocks[0].text.trim());
+    const visibleDurations = visible.map((entry) => durations.get(entry));
+    // Committed entries come before the open text, which changes every token.
+    const committed = pending && visible.at(-1) === pending ? visible.length - 1 : visible.length;
+    const previous = lastRender;
+    let same = 0;
+    if (previous) {
+      while (same < visible.length && same < previous.visible.length
+        && visible[same] === previous.visible[same] && visibleDurations[same] === previous.durations[same]) same++;
+    }
+    const resume = previous?.checkpoint && previous.checkpoint.count <= same ? previous.checkpoint : null;
+    const start = resume?.count ?? 0;
+    const presenter = assistantPresenter(renderKeys, framesById, toolOwnership, resume?.state);
+    const output = previous && start > 0 ? previous.output.slice(0, start) : [];
+    let checkpoint = resume && resume.count === committed ? resume : null;
+    timelineDerivationStats.presented += visible.length - start;
+    for (let i = start; i < visible.length; i++) {
+      if (i === committed && !checkpoint) checkpoint = { count: i, state: presenter.snapshot() };
+      const entry = presenter.present(renderEntry(visible[i], visibleDurations[i]));
+      // An unchanged prefix keeps the previous output objects.
+      output.push(i < same && previous ? previous.output[i] : entry);
+    }
+    if (!checkpoint) checkpoint = { count: visible.length, state: presenter.snapshot() };
+    lastRender = { visible, durations: visibleDurations, output, checkpoint };
+    return output;
+  }
+
+  return {
+    sortedFrames,
+    orderedLength: () => orderedFrames.length,
+    step,
+    finish,
+    append(appended) {
+      for (const frame of appended) {
+        orderedFrames.push(frame);
+        sortedFrames.push(frame);
+        indexRenderKeys(frame);
+        runTimings.framesById.set(frame.id, frame);
+        extendAssistantToolOwnership(toolOwnership, frame);
+      }
+      return orderedFrames.length;
+    },
+    reasoningOpen: () => activeReasoning !== undefined,
+    adoptRender(adopted) {
+      if (lastRender && lastRender.output.length === adopted.length) lastRender.output = adopted;
+    },
+  };
 }
 
 /// Optimistic composer entries are typed as this console's own sends, the

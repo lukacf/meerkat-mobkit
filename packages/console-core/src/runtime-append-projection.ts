@@ -9,6 +9,9 @@ type ProjectedFrame = {
   scope: string | null;
   position?: Position;
   sequence?: number;
+  /** Where `sequence` is comparable: the session scope and, when the
+   * publisher stamps one, its stream epoch. */
+  sequenceScope: string | null;
   origin?: Origin;
   canonical?: boolean;
   observedThrough?: number;
@@ -155,6 +158,16 @@ function originOf(message: RecordValue | null): Origin | null {
 function scopeOf(frame: ConsoleFrame): string | null {
   return identifier(frame.runtimeKey) && identifier(frame.sessionId)
     ? JSON.stringify([frame.runtimeKey, frame.sessionId]) : null;
+}
+
+/** Source sequences number one stream lifetime: the publisher starts again at
+ * a process restart or member respawn and stamps `source_epoch` to say so.
+ * Only frames of one epoch are ordered by sequence; frames without an epoch
+ * (older stores) keep the session scope. */
+function sequenceScopeOf(frame: ConsoleFrame): string | null {
+  const scope = scopeOf(frame);
+  const epoch = record(frame.data)?.source_epoch;
+  return scope && identifier(epoch) ? JSON.stringify([frame.runtimeKey, frame.sessionId, epoch]) : scope;
 }
 
 function logicalKey(frame: ConsoleFrame, origin: Origin): string {
@@ -349,13 +362,15 @@ function comparePosition(left: Position, right: Position): number {
 }
 
 function projected(frame: ConsoleFrame): ProjectedFrame {
-  return { frame, scope: scopeOf(frame), position: canonicalPosition(frame), sequence: sourceSequence(frame) };
+  return { frame, scope: scopeOf(frame), position: canonicalPosition(frame), sequence: sourceSequence(frame), sequenceScope: sequenceScopeOf(frame) };
 }
 
 function newestObservation(nodes: ProjectedFrame[], sourceOrder: boolean): ProjectedFrame | undefined {
   if (sourceOrder) {
     const sequenced = nodes.filter(node => node.sequence !== undefined);
-    if (sequenced.length) {
+    // Sequences of different stream epochs are not comparable; observation
+    // order decides between them.
+    if (sequenced.length && new Set(sequenced.map(node => node.sequenceScope)).size === 1) {
       const attempts = new Set(sequenced.map(node => node.origin!.run_id));
       const latest = sequenced.reduce((latest, node) => Math.max(latest, node.sequence!), 0);
       // Compare the strongest source witnesses first. A legacy replay of an
@@ -403,11 +418,18 @@ function orderBySource(nodes: ProjectedFrame[]): ConsoleFrame[] {
     if (!node.position && key && node.frame.sourceKind === "console_event") node.position = canonicalCounterparts.get(key);
   }
   const scopes = new Map<string, number[]>();
+  const sequenceScopes = new Map<string, number[]>();
   nodes.forEach((node, index) => {
-    if (!node.scope) return;
-    const indices = scopes.get(node.scope) ?? [];
-    indices.push(index);
-    scopes.set(node.scope, indices);
+    if (node.scope) {
+      const indices = scopes.get(node.scope) ?? [];
+      indices.push(index);
+      scopes.set(node.scope, indices);
+    }
+    if (node.sequenceScope && node.sequence !== undefined) {
+      const indices = sequenceScopes.get(node.sequenceScope) ?? [];
+      indices.push(index);
+      sequenceScopes.set(node.sequenceScope, indices);
+    }
   });
   const edges = nodes.map(() => new Set<number>());
   const incoming = nodes.map(() => 0);
@@ -424,8 +446,9 @@ function orderBySource(nodes: ProjectedFrame[]): ConsoleFrame[] {
     const positioned = indices.filter(index => nodes[index].position)
       .sort((a, b) => comparePosition(nodes[a].position!, nodes[b].position!) || liveFirst(a, b));
     for (let index = 1; index < positioned.length; index++) connect(positioned[index - 1], positioned[index]);
-    const sequenced = indices.filter(index => nodes[index].sequence !== undefined)
-      .sort((a, b) => nodes[a].sequence! - nodes[b].sequence! || a - b);
+  }
+  for (const indices of sequenceScopes.values()) {
+    const sequenced = [...indices].sort((a, b) => nodes[a].sequence! - nodes[b].sequence! || a - b);
     for (let index = 1; index < sequenced.length; index++) connect(sequenced[index - 1], sequenced[index]);
   }
   // Min heap keeps unconnected source rows in their existing stable order and
@@ -526,7 +549,7 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
           timestampMs: Number.isFinite(timestamp) ? timestamp : frame.timestampMs,
           data: { message: { ...message, role: "system_notice" } },
         };
-        append({ frame: noticeFrame, scope, origin,
+        append({ frame: noticeFrame, scope, origin, sequenceScope: sequenceScopeOf(frame),
           position: [data.transcript_start + origin.append_ordinal], sequence: sourceSequence(frame),
           settled: Boolean(observed && snapshot.settled.has(attemptKey(scope, origin.run_id, origin.input_id))) });
       }
@@ -565,7 +588,7 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
       // old notice split and finalize the current assistant document.
       const before = nodes.findIndex(node => typeof node.frame.timestampMs === "number"
         && node.frame.timestampMs > frame.timestampMs!);
-      append({ frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough },
+      append({ frame, scope, origin, position: [offset], canonical: true, observedThrough: snapshot.observedThrough, sequenceScope: scope },
         before < 0 ? nodes.length : before);
     }
   }
@@ -581,7 +604,10 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
     // source order. Settlement or a delayed discard cannot erase that anchor.
     const liveTwin = newestObservation((canonical ? twins : eligible).filter(node => !node.canonical
       && node.origin!.run_id === winner.origin!.run_id), true);
-    if (liveTwin?.sequence !== undefined) winner.sequence = liveTwin.sequence;
+    if (liveTwin?.sequence !== undefined) {
+      winner.sequence = liveTwin.sequence;
+      winner.sequenceScope = liveTwin.sequenceScope;
+    }
     chosen.set(key, winner);
   }
   const emitted = new Set<string>();
@@ -596,3 +622,8 @@ export function reconcileRuntimeAppendFrames(frames: readonly ConsoleFrame[]): C
   }
   return orderBySource(reconciled);
 }
+
+/** Ordering inputs of `reconcileRuntimeAppendFrames`, for incremental callers
+ * that must prove an appended frame cannot reorder: the source-sequence scope
+ * and the source sequence that orders frames within it. */
+export { sequenceScopeOf as runtimeSourceScope, sourceSequence as runtimeSourceSequence };

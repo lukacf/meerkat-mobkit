@@ -348,23 +348,18 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
 
     // Quiesce before opening the measured window: the large turns' trailing
     // durable commits (multi-second, size-proportional, debug-build) and the
-    // console's one legitimate catch-up backfill must finish first. Probe the
-    // process CPU rate until it drops to idle level; a gateway that NEVER
-    // quiesces fails here — which is the defect this gate exists to catch.
-    let quiesce_deadline = Instant::now() + Duration::from_mins(4);
-    loop {
-        let probe_start = process_cpu_time();
-        sleep(Duration::from_secs(2)).await;
-        let probe_burn = process_cpu_time().saturating_sub(probe_start);
-        if probe_burn < Duration::from_millis(200) {
-            break;
-        }
-        assert!(
-            Instant::now() < quiesce_deadline,
-            "gateway never quiesced after seeding: still burning {probe_burn:?} \
-             per 2s probe (an idle-CPU hot loop)"
-        );
-    }
+    // console's catch-up backfill must finish first. Wait on the console's
+    // typed convergence signal: every session-history pass it owes has run,
+    // including a re-read of a session whose durable write epoch moved while
+    // the registration pass read it, and the refresh that waits for a queued
+    // burst to drain. A timed CPU probe could not see a pass scheduled after
+    // it. A gateway that never converges (an idle-CPU hot loop) fails here.
+    tokio::time::timeout(
+        Duration::from_mins(4),
+        aggregator.history_backfill_converged(),
+    )
+    .await
+    .expect("the console never converged after seeding: session-history backfill still owed");
 
     // The measured contract: a converged, idle gateway must consume ~zero
     // CPU regardless of member count or transcript size.

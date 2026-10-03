@@ -1,4 +1,4 @@
-import { CompletedToolDisclosure, groupRoutineToolRows } from "./presentation-policy";
+import { CompletedToolDisclosure, ConversationRowStateScope, groupRoutineToolRows } from "./presentation-policy";
 import type { MarkdownUrlPolicy } from "./conversation-markdown";
 import clsx from "clsx";
 import { Fragment } from "react";
@@ -108,15 +108,17 @@ export function ConversationMessageGroup({
       <>
         {group.entries.map((entry) => (
           <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
-            <ConversationMessageView
-              compact={compact}
-              entry={entry}
-              Icon={Icon}
-              onFlowRunMessageMember={onFlowRunMessageMember}
-              onFlowRunRestore={onFlowRunRestore}
-              workGraphActions={workGraphActions}
-              markdownUrlPolicy={markdownUrlPolicy}
-            />
+            <ConversationRowStateScope rowId={entry.renderKey ?? entry.id}>
+              <ConversationMessageView
+                compact={compact}
+                entry={entry}
+                Icon={Icon}
+                onFlowRunMessageMember={onFlowRunMessageMember}
+                onFlowRunRestore={onFlowRunRestore}
+                workGraphActions={workGraphActions}
+                markdownUrlPolicy={markdownUrlPolicy}
+              />
+            </ConversationRowStateScope>
           </div>
         ))}
       </>
@@ -149,7 +151,7 @@ export function ConversationMessageGroup({
       <div className="cc-message-group__body">
         {groupRoutineToolRows(group.entries, (entry) => entry.kind === "message" && !entry.taskKind && !entry.taskLabel && entry.variant === "rich" ? entry.blocks : undefined).map((run) => {
           const rows = run.rows.map((entry) => <div className="cc-conversation-row" data-conversation-row-id={entry.renderKey ?? entry.id} key={entry.renderKey ?? entry.id}>
-            <ConversationMessageView compact={compact} entry={entry} Icon={Icon} onFlowRunMessageMember={onFlowRunMessageMember} onFlowRunRestore={onFlowRunRestore} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} />
+            <ConversationRowStateScope rowId={entry.renderKey ?? entry.id}><ConversationMessageView compact={compact} entry={entry} Icon={Icon} onFlowRunMessageMember={onFlowRunMessageMember} onFlowRunRestore={onFlowRunRestore} workGraphActions={workGraphActions} markdownUrlPolicy={markdownUrlPolicy} /></ConversationRowStateScope>
           </div>);
           return <Fragment key={run.rows[0].renderKey ?? run.rows[0].id}>{run.tools.length >= 2 ? <CompletedToolDisclosure blocks={run.tools}>{rows}</CompletedToolDisclosure> : rows}</Fragment>;
         })}

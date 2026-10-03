@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ConsoleContextRecord } from "../../../console-core/src/context-record";
 import { editConsoleContextQuote } from "../../../console-core/src/context-edit";
+import { RowDetails } from "./presentation-policy";
 
 export interface QuoteContextChipsProps {
   records: readonly ConsoleContextRecord[];
@@ -55,11 +56,11 @@ function QuoteContextChip({ record, index, records, onEdit, onRemove, onReorder 
         <button type="button" onClick={cancel} disabled={saving} aria-label="Cancel quote edit">Cancel</button>
       </div>
     </div> : <>
-      <details>
+      <RowDetails part={`quote:${record.id}`}>
         <summary>{record.label}</summary>
         <blockquote>{record.quote}</blockquote>
         <small>User-provided snapshot{record.sourceRange ? "" : "; original source range unavailable"}</small>
-      </details>
+      </RowDetails>
       <div className="cc-context-chip__actions">
         {onReorder ? <>
           <button type="button" disabled={index === 0} onClick={() => onReorder(record.id, "up")} aria-label={`Move quote from ${record.label} earlier`} title="Move quote earlier"><QuoteActionIcon action="up" /></button>

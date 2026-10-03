@@ -536,6 +536,7 @@ fn identity_first_types_identity_status_full_roundtrip() {
         continuity_unrecoverable: Some(meerkat_mobkit::identity_first::ContinuityUnrecoverable {
             reason: "the only durable checkpoint is an intra-turn projection".to_string(),
         }),
+        customizer_tools_pending: None,
         session_repair_required: Some(
             meerkat_mobkit::identity_first::SessionRepairRequired::audited_endpoint_divergence(
                 meerkat_core::types::SessionId::new(),

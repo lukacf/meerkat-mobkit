@@ -37,11 +37,17 @@ EXPECTED_CAPABILITY_METHODS = [
 EXPECTED_CONTRACT_VERSION = "0.5.0"
 
 
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(1)
-        return int(sock.getsockname()[1])
+def _bind_listener() -> socket.socket:
+    """Bind and listen on a free loopback port, handed to the app as an open fd.
+
+    Picking a free port, closing it, and letting the app bind the number later
+    raced every other process on the host for that port.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    sock.set_inheritable(True)
+    return sock
 
 
 def _assert_eq(observed: Any, expected: Any, label: str) -> None:
@@ -49,7 +55,7 @@ def _assert_eq(observed: Any, expected: Any, label: str) -> None:
         raise AssertionError(f"{label}: observed={observed} expected={expected}")
 
 
-def _start_reference_app(gateway_bin: str, port: int) -> subprocess.Popen[str]:
+def _start_reference_app(gateway_bin: str, listener: socket.socket) -> subprocess.Popen[str]:
     app_dir = Path(__file__).resolve().parents[1] / "examples"
     env = {**os.environ, "MOBKIT_RPC_GATEWAY_BIN": gateway_bin}
     return subprocess.Popen(
@@ -60,14 +66,13 @@ def _start_reference_app(gateway_bin: str, port: int) -> subprocess.Popen[str]:
             "h2_reference_app:app",
             "--app-dir",
             str(app_dir),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
+            "--fd",
+            str(listener.fileno()),
             "--log-level",
             "warning",
         ],
         env=env,
+        pass_fds=(listener.fileno(),),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -145,14 +150,18 @@ def main() -> int:
         except Exception as exc:  # broad for per-check reporting
             checks.append({"name": name, "ok": False, "error": str(exc)})
 
-    port = _pick_free_port()
-    base_url = f"http://127.0.0.1:{port}"
+    listener = _bind_listener()
+    base_url = f"http://127.0.0.1:{listener.getsockname()[1]}"
     process: subprocess.Popen[str] | None = None
     client: httpx.Client | None = None
     startup_error: Exception | None = None
 
     try:
-        process = _start_reference_app(gateway_bin, port)
+        try:
+            process = _start_reference_app(gateway_bin, listener)
+        finally:
+            # The app holds its own copy of the listening socket.
+            listener.close()
         _wait_for_health(base_url, process)
         client = httpx.Client(base_url=base_url, timeout=5.0)
     except Exception as exc:  # broad for startup diagnostics

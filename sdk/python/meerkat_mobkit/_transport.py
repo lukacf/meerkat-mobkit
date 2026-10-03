@@ -13,6 +13,8 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
+from .errors import TransportReaderFailedError
+
 _log = logging.getLogger("meerkat_mobkit")
 
 # Provider operations are publicly required to finish within 120 seconds.
@@ -31,6 +33,60 @@ _MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647
 _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
 _GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown"
+
+# mobkit/init: accepted, then settled (#550). The SDK opts in with these
+# params; the gateway answers `accepted` at once, then sends progress
+# notifications and exactly one settlement carrying the same `init_id`.
+INIT_PROTOCOL_ACCEPTED_THEN_SETTLED = "accepted_then_settled"
+_INIT_PROGRESS_METHOD = "mobkit/init_progress"
+_INIT_SETTLED_METHOD = "mobkit/init_settled"
+
+
+class InitWatch:
+    """Correlates one accepted-then-settled ``mobkit/init``.
+
+    Registered before the init request is written, so a progress or
+    settlement notification can never arrive unclaimed. The reader thread
+    delivers into an asyncio future on the host loop, so waiting for the
+    settlement is cancellable and holds no thread.
+    """
+
+    def __init__(self, init_id: str, loop: asyncio.AbstractEventLoop):
+        self.init_id = init_id
+        #: The last ``mobkit/init_progress`` phase seen, for diagnostics.
+        self.last_phase: str | None = None
+        self._loop = loop
+        self._settlement: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+    def _resolve(self, settle: Callable[[asyncio.Future[dict[str, Any]]], None]) -> None:
+        def apply() -> None:
+            if not self._settlement.done():
+                settle(self._settlement)
+
+        try:
+            self._loop.call_soon_threadsafe(apply)
+        except RuntimeError:
+            # The host loop is closed; nobody is waiting any more.
+            pass
+
+    def _deliver(self, method: str, params: dict[str, Any]) -> None:
+        if method == _INIT_PROGRESS_METHOD:
+            phase = params.get("phase")
+            if isinstance(phase, str):
+                self.last_phase = phase
+        elif method == _INIT_SETTLED_METHOD:
+            self._resolve(lambda future: future.set_result(params))
+
+    def _fail(self, error: BaseException) -> None:
+        self._resolve(lambda future: future.set_exception(error))
+
+    async def settlement(self, deadline: float | None = None) -> dict[str, Any]:
+        """Wait for ``mobkit/init_settled``. ``deadline`` is the caller's own
+        cap in seconds (``None``: wait until the gateway settles, exits, or
+        the reader fails); exceeding it raises ``asyncio.TimeoutError``."""
+        if deadline is None:
+            return await asyncio.shield(self._settlement)
+        return await asyncio.wait_for(asyncio.shield(self._settlement), deadline)
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -51,6 +107,16 @@ def _sanitize_for_json(obj: Any) -> Any:
         return obj
     except (TypeError, ValueError):
         return str(obj)
+
+
+def _contains_non_finite(obj: Any) -> bool:
+    if isinstance(obj, float):
+        return not math.isfinite(obj)
+    if isinstance(obj, dict):
+        return any(_contains_non_finite(value) for value in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_non_finite(value) for value in obj)
+    return False
 
 
 class PersistentTransport:
@@ -82,7 +148,12 @@ class PersistentTransport:
         self._env = {**os.environ, **(env or {})}
         self._process: subprocess.Popen[bytes] | None = None
         self._timeout = timeout
-        self._write_lock = threading.Lock()      # protects stdin writes
+        # Serializes stdin writes line by line. Callback responses take
+        # priority: they wait only for the line being written, never behind
+        # queued requests, so a gateway callback is not held up by host RPCs.
+        self._write_cond = threading.Condition()
+        self._writing = False
+        self._priority_writers_waiting = 0
         self._pending_lock = threading.Lock()     # protects _pending and _results
         self._pending: dict[str, threading.Event] = {}
         self._results: dict[str, Any] = {}
@@ -92,9 +163,30 @@ class PersistentTransport:
         self._stderr_file = None
         self._supports_shutdown_handshake = False
         self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+        # Set once the reader for the current gateway process has stopped;
+        # every waiter and every later request fails with it.
+        self._reader_failure: TransportReaderFailedError | None = None
+        # The accepted-then-settled init in flight on this process, if any.
+        self._init_watch: InitWatch | None = None
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
+
+    def open_init_watch(self, init_id: str) -> InitWatch:
+        """Register the watch for ``init_id`` before writing ``mobkit/init``."""
+        loop = self._loop if self._loop is not None else asyncio.get_running_loop()
+        watch = InitWatch(init_id, loop)
+        with self._pending_lock:
+            self._init_watch = watch
+            failure = getattr(self, "_reader_failure", None)
+        if failure is not None:
+            watch._fail(failure)
+        return watch
+
+    def close_init_watch(self, watch: InitWatch) -> None:
+        with self._pending_lock:
+            if self._init_watch is watch:
+                self._init_watch = None
 
     @property
     def request_timeout(self) -> float:
@@ -108,6 +200,8 @@ class PersistentTransport:
         # child must negotiate them again through mobkit/init.
         self._supports_shutdown_handshake = False
         self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+        # A new process gets a new reader.
+        self._reader_failure = None
         # Capture event loop for async callback dispatch
         try:
             self._loop = asyncio.get_running_loop()
@@ -142,57 +236,122 @@ class PersistentTransport:
 
     def _reader_loop(self) -> None:
         assert self._process is not None and self._process.stdout is not None
-        while True:
-            line = self._process.stdout.readline()
-            if not line:
-                # Process closed stdout — store error for all pending callers and wake them
-                with self._pending_lock:
-                    for msg_id in self._pending:
-                        if msg_id not in self._results:
-                            self._results[msg_id] = {
-                                "error": {"code": -32099, "message": "subprocess died"}
-                            }
-                    for event in self._pending.values():
-                        event.set()
-                break
-            try:
-                msg = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError:
-                _log.warning("transport: non-JSON line from subprocess: %s", line[:200])
-                continue
+        reason = "the gateway closed its stdout"
+        try:
+            while True:
+                line = self._process.stdout.readline()
+                if not line:
+                    break
+                self._read_line(line)
+        except Exception as exc:  # noqa: BLE001 - every exit must fail waiters
+            reason = f"reader failed: {exc!r}"
+            _log.error("transport: reader stopped: %s", reason, exc_info=True)
+        finally:
+            self._fail_pending_after_reader_exit(reason)
 
-            if "method" in msg:
-                # Callback or notification FROM Rust
-                self._handle_callback(msg)
-            elif "id" in msg:
-                # Response to a pending request
-                msg_id = str(msg["id"])
-                with self._pending_lock:
-                    event = self._pending.get(msg_id)
-                    if event is not None:
-                        self._results[msg_id] = msg
+    def _read_line(self, line: bytes) -> None:
+        """Handle one stdout line. A bad line is skipped, never fatal."""
+        try:
+            msg = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            _log.warning("transport: skipping non-JSON line from subprocess: %r", line[:200])
+            return
+        if not isinstance(msg, dict):
+            _log.warning(
+                "transport: skipping JSON line that is not an object: %r", line[:200]
+            )
+            return
+
+        if "method" in msg:
+            method = msg.get("method")
+            if "id" not in msg and method in (_INIT_PROGRESS_METHOD, _INIT_SETTLED_METHOD):
+                self._deliver_init_event(method, msg.get("params"))
+                return
+            # Callback or notification FROM Rust
+            self._handle_callback(msg)
+        elif "id" in msg:
+            # Response to a pending request
+            msg_id = str(msg["id"])
+            with self._pending_lock:
+                event = self._pending.get(msg_id)
                 if event is not None:
-                    event.set()
-                else:
-                    # The caller may already have timed out and removed its
-                    # pending entry. Do not retain an unclaimable late result.
-                    _log.debug(
-                        "transport: dropping response for non-pending id=%s",
-                        msg_id,
-                    )
+                    self._results[msg_id] = msg
+            if event is not None:
+                event.set()
             else:
-                _log.warning(
-                    "transport: unrecognized message (no id or method): %s",
-                    str(msg)[:200],
+                # The caller may already have timed out and removed its
+                # pending entry. Do not retain an unclaimable late result.
+                _log.debug(
+                    "transport: dropping response for non-pending id=%s",
+                    msg_id,
                 )
+        else:
+            _log.warning(
+                "transport: unrecognized message (no id or method): %s",
+                str(msg)[:200],
+            )
+
+    def _deliver_init_event(self, method: str, params: Any) -> None:
+        if not isinstance(params, dict):
+            _log.warning("transport: %s without object params; ignored", method)
+            return
+        with self._pending_lock:
+            watch = self._init_watch
+        if watch is None or params.get("init_id") != watch.init_id:
+            # Not the init this process is running (a late or foreign line).
+            _log.debug("transport: %s for an init that is not in flight; ignored", method)
+            return
+        watch._deliver(method, params)
+
+    def _fail_pending_after_reader_exit(self, reason: str) -> None:
+        """No response can arrive any more: fail every waiter, typed.
+
+        A response that arrived before the reader stopped (for example a
+        fail-closed init error written just before the gateway exits) is
+        kept for its waiter.
+        """
+        failure = TransportReaderFailedError(reason)
+        with self._pending_lock:
+            self._reader_failure = failure
+            events = list(self._pending.values())
+            watch = getattr(self, "_init_watch", None)
+        for event in events:
+            event.set()
+        if watch is not None:
+            watch._fail(failure)
 
     def _handle_callback(self, msg: dict) -> None:
         """Dispatch callback in a separate thread so the reader loop is not blocked."""
         if self._callback_handler is None:
+            method = msg.get("method")
             _log.warning(
                 "transport: received callback but no handler registered: %s",
-                msg.get("method"),
+                method,
             )
+            callback_id = msg.get("id")
+            if callback_id is not None:
+                # Answer now: the gateway would otherwise wait out its full
+                # callback deadline for a response that never comes.
+                try:
+                    self._write_line(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": callback_id,
+                            "error": {
+                                "code": -32000,
+                                "message": f"no callback handler is registered for {method}",
+                                "data": {
+                                    "kind": "callback_handler_unavailable",
+                                    "method": method,
+                                },
+                            },
+                        },
+                        callback_response=True,
+                    )
+                except Exception:
+                    _log.error(
+                        "failed to send callback error response for id=%s", callback_id
+                    )
             return
         # Dispatch in a daemon thread to avoid blocking the reader loop
         t = threading.Thread(
@@ -241,7 +400,27 @@ class PersistentTransport:
             # Tools or other callback results may contain non-serializable objects;
             # sanitize them to strings to prevent json.dumps failures in _write_line.
             response = {"jsonrpc": "2.0", "id": callback_id, "result": _sanitize_for_json(result)}
-            self._write_line(response)
+            if _contains_non_finite(response["result"]):
+                # JSON has no NaN or Infinity. Sending the token would make
+                # the gateway drop the line and wait out its deadline;
+                # sending null would change the provider's answer. Refuse it.
+                self._write_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": callback_id,
+                        "error": {
+                            "code": -32000,
+                            "message": (
+                                f"{method} returned a non-finite number (NaN or "
+                                "Infinity), which JSON cannot carry"
+                            ),
+                            "data": {"kind": "non_finite_result"},
+                        },
+                    },
+                    callback_response=True,
+                )
+                return
+            self._write_line(response, callback_response=True)
         except Exception as exc:
             # Notifications: log only, don't try to send error response
             if callback_id is None:
@@ -254,16 +433,41 @@ class PersistentTransport:
                 "error": {"code": -32000, "message": str(exc)},
             }
             try:
-                self._write_line(error_response)
+                self._write_line(error_response, callback_response=True)
             except Exception:
                 _log.error("failed to send callback error response for id=%s", callback_id)
 
-    def _write_line(self, obj: dict) -> None:
-        with self._write_lock:
+    def _write_line(self, obj: dict, *, callback_response: bool = False) -> None:
+        """Write one JSON line to the gateway's stdin.
+
+        Lines never interleave. A callback response (``callback_response``)
+        waits only for the line currently being written; queued requests wait
+        until no callback response is waiting. One pipe cannot do better: a
+        line already being written must finish first.
+        """
+        # Strict JSON, encoded before taking a turn: the gateway cannot parse
+        # NaN/Infinity tokens, and a refusal must not hold the pipe.
+        data = (json.dumps(obj, allow_nan=False) + "\n").encode("utf-8")
+        with self._write_cond:
+            if callback_response:
+                self._priority_writers_waiting += 1
+            try:
+                while self._writing or (
+                    not callback_response and self._priority_writers_waiting
+                ):
+                    self._write_cond.wait()
+            finally:
+                if callback_response:
+                    self._priority_writers_waiting -= 1
+            self._writing = True
+        try:
             if self._process and self._process.stdin:
-                data = json.dumps(obj) + "\n"
-                self._process.stdin.write(data.encode("utf-8"))
+                self._process.stdin.write(data)
                 self._process.stdin.flush()
+        finally:
+            with self._write_cond:
+                self._writing = False
+                self._write_cond.notify_all()
 
     def send_sync(
         self,
@@ -323,6 +527,9 @@ class PersistentTransport:
         msg_id = str(raw_id)
         event = threading.Event()
         with self._pending_lock:
+            reader_failure = getattr(self, "_reader_failure", None)
+            if reader_failure is not None:
+                raise reader_failure
             if msg_id in self._pending:
                 raise ValueError(
                     f"persistent transport: request id {msg_id!r} is already "
@@ -343,7 +550,10 @@ class PersistentTransport:
         with self._pending_lock:
             self._pending.pop(msg_id, None)
             result = self._results.pop(msg_id, None)
+            failure = getattr(self, "_reader_failure", None)
         if result is None:
+            if failure is not None:
+                raise failure
             raise RuntimeError("persistent transport: subprocess closed stdout")
         return result
 

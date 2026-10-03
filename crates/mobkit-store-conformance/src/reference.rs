@@ -292,6 +292,17 @@ impl ContinuityStore for CompatRollbackContinuityStore {
             .retain(|_, snapshot| snapshot.identity != *identity);
         Ok(())
     }
+    /// `None`, stated: this in-memory compatibility reference keeps whole
+    /// snapshots only; the incremental profile runs against `LocalContinuityStore`.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

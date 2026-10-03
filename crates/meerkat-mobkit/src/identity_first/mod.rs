@@ -4,6 +4,7 @@ pub mod adapters;
 pub mod agent_memory;
 pub mod bridge;
 pub mod contracts;
+pub mod customizer_tools;
 pub mod gateway_bridges;
 pub mod local_lease;
 pub mod local_store;
@@ -31,6 +32,10 @@ pub use bridge::{
     SessionBridge,
 };
 pub use contracts::*;
+pub use customizer_tools::{
+    ComposedSpawnMemberCustomizer, CustomizerToolRegistry, CustomizerToolsSpawnCustomizer,
+    IdentityCustomizerTools,
+};
 pub use gateway_bridges::{
     CallbackBridge, GatewayAgentCustomizer, GatewayContinuityStore, GatewayLeaseProvider,
     GatewayRosterProvider, GatewayTopologyProvider,

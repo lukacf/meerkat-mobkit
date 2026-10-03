@@ -55,8 +55,8 @@ pub trait CallbackBridge: Send + Sync {
 
 /// Gateway-side `ContinuityStore` that delegates to Python/TypeScript via JSON-RPC.
 ///
-/// `as_incremental_sessions` keeps the trait's `None` default deliberately:
-/// the callback wire protocol carries only whole-snapshot verbs
+/// `as_incremental_sessions` returns `None`, stated explicitly (the trait has
+/// no default): the callback wire protocol carries only whole-snapshot verbs
 /// (`continuity/save_snapshot` and friends), so SDK-hosted stores cannot
 /// advertise the cursor-carrying session-delta capability
 /// ([`ContinuityIncrementalSessions`](super::contracts::ContinuityIncrementalSessions))
@@ -267,6 +267,17 @@ impl ContinuityStore for GatewayContinuityStore {
             Ok(_) => Ok(()),
             Err(e) => Err(parse_continuity_store_error(&e)),
         }
+    }
+    /// `None`, stated: the callback wire protocol carries only whole-snapshot
+    /// verbs (`continuity/save_snapshot` and friends), so an SDK-hosted store
+    /// cannot serve the cursor-carrying session-delta channel without new
+    /// callback methods. Launches persisting through it stay on the loudly
+    /// reported whole-blob path.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>>
+    {
+        None
     }
 }
 

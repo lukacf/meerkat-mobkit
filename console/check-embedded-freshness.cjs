@@ -73,7 +73,34 @@ function assertGitTracksFiles(files, label) {
   }
 }
 
+// esbuild names each bundled module by its path in comments and module keys.
+// Built from a worktree whose node_modules is a symlink into another
+// checkout, those paths leave the repo ("../../<other-worktree>/..."); an
+// absolute path leaks the builder's filesystem. Either one is also a build
+// no other checkout reproduces.
+const LOCAL_PATH_PATTERNS = [
+  { label: "a path outside the repository", pattern: /(?:^|["'\s(])(?:\.\.\/){2,}[^\s"']*/m },
+  { label: "an absolute local path", pattern: /(?:\/home\/|\/Users\/|\/tmp\/|\/private\/var\/|[A-Za-z]:\\\\Users\\\\)[^\s"']*/ },
+];
+
+function assertNoLocalPaths(directory, files, label) {
+  for (const file of files) {
+    const source = read(path.join(directory, file)).toString("utf8");
+    for (const { label: kind, pattern } of LOCAL_PATH_PATTERNS) {
+      const match = source.match(pattern);
+      if (match) {
+        process.stderr.write(
+          `${label}/${file} contains ${kind} (${match[0].trim()}); rebuild from a checkout with its own node_modules\n`,
+        );
+        process.exit(1);
+      }
+    }
+  }
+}
+
 assertDirectoryFiles(distDir, DIST_GENERATED_FILES, "console/dist");
+assertNoLocalPaths(distDir, DIST_GENERATED_FILES, "console/dist");
+assertNoLocalPaths(embeddedDir, EMBEDDED_GENERATED_FILES, "crates/meerkat-mobkit/console-dist");
 assertDirectoryFiles(embeddedDir, EMBEDDED_GENERATED_FILES, "crates/meerkat-mobkit/console-dist");
 assertRustEmbeddedAssets();
 assertGitTracksFiles(

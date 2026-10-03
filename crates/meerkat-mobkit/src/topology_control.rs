@@ -565,6 +565,36 @@ struct TopologyControllerInner {
     mutation: tokio::sync::Mutex<()>,
     persist_path: RwLock<Option<PathBuf>>,
     _lock_file: Option<std::fs::File>,
+    /// Concurrent topology reads share one snapshot computation (see
+    /// `TopologyRuntimeHandle::query`). Shared by every cloned handle.
+    query_flights: std::sync::Mutex<TopologyQueryFlights>,
+}
+
+type TopologyQueryFlight = futures::future::Shared<
+    futures::future::BoxFuture<'static, Result<TopologySnapshot, TopologyControlError>>,
+>;
+
+/// The snapshot computation now running and, while it runs, the one fresh
+/// computation every caller arriving meanwhile joins. A caller never shares a
+/// computation that started before it arrived, so a joined result is never
+/// older than the call; nothing is cached once a computation finishes.
+#[derive(Default)]
+struct TopologyQueryFlights {
+    seq: u64,
+    running: Option<(u64, TopologyQueryFlight)>,
+    next: Option<(u64, TopologyQueryFlight)>,
+}
+
+/// Durable topology intent as committed: an in-flight or interrupted mutation
+/// journal is not durable intent, so its pre-operation view stands until the
+/// operation commits. Read under one state lock, so a reader observes the
+/// state before or after a mutation, never a half-applied one.
+struct CommittedTopologyIntent {
+    revision: u64,
+    additions: BTreeSet<DesiredPeerEdge>,
+    suppressions: BTreeSet<DesiredPeerEdge>,
+    cross_additions: BTreeSet<TopologyEdge>,
+    cross_suppressions: BTreeSet<TopologyEdge>,
 }
 
 /// Shared durable topology intent and operation receipt store.
@@ -601,6 +631,7 @@ impl TopologyController {
                 mutation: tokio::sync::Mutex::new(()),
                 persist_path: RwLock::new(None),
                 _lock_file: None,
+                query_flights: std::sync::Mutex::new(TopologyQueryFlights::default()),
             }),
         })
     }
@@ -669,6 +700,7 @@ impl TopologyController {
                 mutation: tokio::sync::Mutex::new(()),
                 persist_path: RwLock::new(Some(path)),
                 _lock_file: Some(lock_file),
+                query_flights: std::sync::Mutex::new(TopologyQueryFlights::default()),
             }),
         })
     }
@@ -990,21 +1022,35 @@ impl TopologyController {
             .collect()
     }
 
-    async fn intent_snapshot(&self) -> (u64, BTreeSet<DesiredPeerEdge>, BTreeSet<DesiredPeerEdge>) {
+    async fn committed_intent(&self) -> CommittedTopologyIntent {
         let state = self.inner.state.read().await;
-        (
-            state.revision,
-            state.additions.clone(),
-            state.suppressions.clone(),
-        )
+        match state.pending.as_ref() {
+            Some(pending) => CommittedTopologyIntent {
+                revision: pending.rollback_revision,
+                additions: pending.rollback_additions.clone(),
+                suppressions: pending.rollback_suppressions.clone(),
+                cross_additions: pending.rollback_cross_additions.clone(),
+                cross_suppressions: pending.rollback_cross_suppressions.clone(),
+            },
+            None => CommittedTopologyIntent {
+                revision: state.revision,
+                additions: state.additions.clone(),
+                suppressions: state.suppressions.clone(),
+                cross_additions: state.cross_additions.clone(),
+                cross_suppressions: state.cross_suppressions.clone(),
+            },
+        }
     }
 
-    async fn cross_intent_snapshot(&self) -> (BTreeSet<TopologyEdge>, BTreeSet<TopologyEdge>) {
+    /// Typed check for a reader: whether an interrupted mutation journal or a
+    /// non-terminal audit record must be resolved before a snapshot.
+    async fn needs_recovery_or_reconcile(&self) -> bool {
         let state = self.inner.state.read().await;
-        (
-            state.cross_additions.clone(),
-            state.cross_suppressions.clone(),
-        )
+        state.pending.is_some()
+            || state
+                .operation_records
+                .iter()
+                .any(|record| !operation_record_status_is_terminal(record.status))
     }
 
     fn persist_candidate(&self, state: &TopologyIntentState) -> Result<(), TopologyControlError> {
@@ -1059,6 +1105,14 @@ impl TopologyController {
 
     pub(crate) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.mutation.lock().await
+    }
+
+    /// The mutation lock if no plan, apply or recovery holds it. A mutation
+    /// holds it from journal admission to commit or rollback, so a pending
+    /// journal observed while the lock is free belongs to an interrupted
+    /// operation.
+    fn try_mutation_guard(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.inner.mutation.try_lock().ok()
     }
 
     pub(crate) async fn prepare_pending_recovery(&self) -> Result<(), TopologyControlError> {
@@ -1415,13 +1469,90 @@ impl TopologyRuntimeHandle {
         report
     }
 
+    /// A read never takes the mutation lock to observe state: it reports the
+    /// committed intent (see `CommittedTopologyIntent`), so it neither waits
+    /// for a plan or apply nor makes them wait. Interrupted work is resolved
+    /// first, under the mutation lock, only when it exists and no mutation is
+    /// in flight. Concurrent reads share one snapshot computation, so N
+    /// callers cost at most two edge discoveries instead of N.
     pub async fn query(&self) -> Result<TopologySnapshot, TopologyControlError> {
-        let _admission = self.controller.mutation_guard().await;
+        self.recover_interrupted_for_read().await?;
+        self.coalesced_query().await
+    }
+
+    async fn recover_interrupted_for_read(&self) -> Result<(), TopologyControlError> {
+        if !self.controller.needs_recovery_or_reconcile().await {
+            return Ok(());
+        }
+        // A plan, apply or another reader's recovery holds the lock and owns
+        // its journal and records; this read serves the committed view.
+        let Some(_admission) = self.controller.try_mutation_guard() else {
+            return Ok(());
+        };
         self.controller
             .reconcile_operation_records_unlocked()
             .await?;
-        self.recover_pending_unlocked().await?;
-        self.query_unlocked().await
+        self.recover_pending_unlocked().await
+    }
+
+    async fn coalesced_query(&self) -> Result<TopologySnapshot, TopologyControlError> {
+        let flight = {
+            let mut flights = self
+                .controller
+                .inner
+                .query_flights
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((_, next)) = flights.next.as_ref() {
+                next.clone()
+            } else if let Some((_, running)) = flights.running.clone() {
+                let next = self.query_flight(&mut flights, Some(running));
+                flights.next = Some(next.clone());
+                next.1
+            } else {
+                let running = self.query_flight(&mut flights, None);
+                flights.running = Some(running.clone());
+                running.1
+            }
+        };
+        flight.await
+    }
+
+    /// One snapshot computation. A queued flight first awaits the running one
+    /// (driving it if its callers went away), and the running flight promotes
+    /// the queued one as it finishes, so at most one discovery runs at a time.
+    fn query_flight(
+        &self,
+        flights: &mut TopologyQueryFlights,
+        after: Option<TopologyQueryFlight>,
+    ) -> (u64, TopologyQueryFlight) {
+        use futures::FutureExt as _;
+        flights.seq = flights.seq.wrapping_add(1);
+        let id = flights.seq;
+        let handle = self.clone();
+        let flight = async move {
+            if let Some(after) = after {
+                let _ = after.await;
+            }
+            let result = handle.query_unlocked().await;
+            let mut flights = handle
+                .controller
+                .inner
+                .query_flights
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if flights
+                .running
+                .as_ref()
+                .is_some_and(|(running, _)| *running == id)
+            {
+                flights.running = flights.next.take();
+            }
+            result
+        }
+        .boxed()
+        .shared();
+        (id, flight)
     }
 
     async fn query_unlocked(&self) -> Result<TopologySnapshot, TopologyControlError> {
@@ -1439,7 +1570,13 @@ impl TopologyRuntimeHandle {
                 .collect::<BTreeSet<_>>(),
             None => BTreeSet::new(),
         };
-        let (revision, additions, suppressions) = self.controller.intent_snapshot().await;
+        let CommittedTopologyIntent {
+            revision,
+            additions,
+            suppressions,
+            cross_additions,
+            cross_suppressions,
+        } = self.controller.committed_intent().await;
         let mut all = declared.clone();
         all.extend(additions.iter().cloned());
         all.extend(suppressions.iter().cloned());
@@ -1461,7 +1598,6 @@ impl TopologyRuntimeHandle {
                 })
             })
             .collect::<Result<Vec<_>, TopologyControlError>>()?;
-        let (cross_additions, cross_suppressions) = self.controller.cross_intent_snapshot().await;
         let mut cross = cross_additions.clone();
         cross.extend(cross_suppressions.iter().cloned());
         edges.extend(
@@ -1523,7 +1659,9 @@ impl TopologyRuntimeHandle {
             .iter()
             .map(to_desired)
             .collect::<Result<BTreeSet<_>, _>>()?;
-        let (revision, additions, suppressions) = self.controller.intent_snapshot().await;
+        let intent = self.controller.committed_intent().await;
+        let revision = intent.revision;
+        let (additions, suppressions) = (&intent.additions, &intent.suppressions);
         let mut all = declared.clone();
         all.extend(actual.iter().cloned());
         all.extend(additions.iter().cloned());
@@ -1558,7 +1696,7 @@ impl TopologyRuntimeHandle {
             })
             .collect::<Vec<_>>();
         nodes.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
-        append_cross_intent(&self.controller, &authority, &mut edges).await;
+        append_cross_intent(&intent, &authority, &mut edges);
         edges.sort_by(|left, right| left.edge.cmp(&right.edge));
         Ok(TopologySnapshot {
             authority,
@@ -2442,12 +2580,13 @@ fn managed_peer_edge_from_desired(
         .map_err(|error| TopologyControlError::InvalidRequest(error.to_string()))
 }
 
-async fn append_cross_intent(
-    controller: &TopologyController,
+fn append_cross_intent(
+    intent: &CommittedTopologyIntent,
     authority: &str,
     edges: &mut Vec<TopologyEdgeSnapshot>,
 ) {
-    let (cross_additions, cross_suppressions) = controller.cross_intent_snapshot().await;
+    let (cross_additions, cross_suppressions) =
+        (&intent.cross_additions, &intent.cross_suppressions);
     let mut cross = cross_additions.clone();
     cross.extend(cross_suppressions.iter().cloned());
     edges.extend(

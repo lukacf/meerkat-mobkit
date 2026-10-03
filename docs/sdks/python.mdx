@@ -714,6 +714,43 @@ finally:
     await rt.shutdown()
 ```
 
+### Startup: no built-in total deadline
+
+`connect()` (and `build()`) runs `mobkit/init` as accepted-then-settled. The
+gateway accepts the init at once, reports each startup phase, and then
+settles it `ready` or `failed`. The SDK has **no built-in total deadline** for
+that wait. Startup legitimately includes provider callbacks (each bounded at
+130 s by the gateway) and native persisted-authority prewarm, which is
+deliberately unbounded and can run for minutes on a large roster. Any fixed
+SDK timer would sooner or later abort a healthy restore. The transport's 60 s request
+timeout still bounds the wait for the `accepted` answer, and for an older
+gateway's single init response.
+
+The wait ends only when one of these happens:
+
+- the init settles `ready` (connected);
+- the init settles `failed`. You get the typed error, for example
+  `StorageResolutionError`, with `err.data["durable_effects"]`: `"none"` when
+  nothing durable was touched, otherwise `"possible"`;
+- the gateway exits, or the transport reader fails. You get
+  `InitOutcomeUnknownError`;
+- your own deadline runs out. Set it with
+  `MobKit.builder().init_deadline(seconds)`, and running out also raises
+  `InitOutcomeUnknownError`;
+- your task is cancelled.
+
+`InitOutcomeUnknownError` carries `init_id`, `last_phase` (the last
+`mobkit/init_progress` phase seen, such as `"prewarm"` or `"restore"`) and
+`reason`. That makes a stuck or interrupted init diagnosable. The gateway may
+already have changed native state, so the SDK never retries it automatically
+and asks the gateway to shut down.
+
+Provider callbacks that run during startup (roster, topology, continuity,
+lease, session builder, customizer) must not call ordinary runtime RPCs on the
+same runtime. Ordinary dispatch starts only after init settles, and the
+gateway refuses an earlier request at once with `InitInProgressError`
+(`-32018`, exported as `INIT_IN_PROGRESS_CODE`).
+
 ## Gateway logging (stderr)
 
 The persistent gateway reports tracing lines, panic hooks, and storage
@@ -824,8 +861,29 @@ class MyCustomizer(AgentCustomizerProtocol):
 
 `draft` also carries `model`, `system_prompt`, `additional_instructions`,
 `labels`, `app_context`, and `provider_params`. A tool registered here rides
-the same `callback/call_tool` dispatch as `build_agent` tools, so resumed
-identities keep it.
+the same `callback/call_tool` dispatch as `build_agent` tools.
+
+Each identity member has one stable tool dispatcher for its whole life, and
+every `customize_build` publishes its tools into it. The tool list and the
+handler scope that serves it always change together. The tools therefore
+follow the member through every rebuild: a gateway restart, a member that is
+adopted instead of respawned, a respawn, and delivery-time repair. On a
+restart MobKit runs `customize_build` for each roster identity before the mob
+is restored, so every restored member starts with its tools. They are listed by
+`mobkit/identity/resolved_tools` before any turn, and a run that starts at
+activation (a queued input, a kickoff) sees them. The materialization that
+follows runs `customize_build` again and republishes. If that early call fails,
+the failure is logged for the identity and reported as
+`customizer_tools_pending` (with the reason) in its identity status. The member
+advertises no customizer tools until its materialization publishes them. A tool
+from an earlier build that the latest build no longer declares is refused,
+never routed to stale handlers.
+
+Customizer tools belong to roster identities only. Helpers, forks,
+flow-provisioned members, and members spawned under their own ids never get
+them; use profile tools or the session builder's per-spawn tools for those.
+A raw spawn that reuses a roster identity's member id does get that
+identity's current tools.
 
 ### Provider parameters (`provider_params`)
 
@@ -875,6 +933,8 @@ from meerkat_mobkit.errors import (
     CapabilityUnavailableError,  # Requested capability unavailable
     ContractMismatchError,       # SDK/runtime version mismatch
     StorageResolutionError,      # Fail-closed storage refusal at init (-32014)
+    InitOutcomeUnknownError,     # Init written, settlement never arrived (native state may have changed)
+    TransportReaderFailedError,  # The transport reader stopped; no response can arrive
 )
 ```
 

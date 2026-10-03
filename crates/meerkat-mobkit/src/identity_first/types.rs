@@ -771,6 +771,17 @@ pub enum ContinuityFailureKind {
 /// which resumes the same durable session and clears the hold. The hold is
 /// process-local (entry state, not durable): a gateway restart re-attempts
 /// the resume once and re-records it if the document is still refused.
+/// A restored member whose customizer tools are not published yet: the
+/// pre-activation `customize_build` for its identity failed, so meerkat
+/// restored it without them. It advertises no customizer tools until its
+/// materialization publishes them (#563). Process-local: cleared by the next
+/// successful publication, and absent after a restart that publishes early.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomizerToolsPending {
+    /// Why the early publication did not happen (the customizer error).
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRepairRequired {
     /// The durable session whose committed document needs the repair.
@@ -1544,6 +1555,11 @@ pub struct IdentityStatus {
     /// on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_repair_required: Option<SessionRepairRequired>,
+    /// Present while a restored member's customizer tools are unpublished
+    /// because its pre-activation `customize_build` failed (#563). Additive
+    /// and optional on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customizer_tools_pending: Option<CustomizerToolsPending>,
 }
 
 // ---------------------------------------------------------------------------

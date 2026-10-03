@@ -34,10 +34,10 @@ use super::types::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
     AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress, CompletionWait,
     ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityHealth,
-    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DeliveryErrorClass,
-    DeliveryErrorRecord, DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec,
-    FencingToken, HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode,
-    IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
+    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, CustomizerToolsPending,
+    DeliveryErrorClass, DeliveryErrorRecord, DispatchAdmission, DispatchInput, DurabilityPolicy,
+    DurableAgentSpec, FencingToken, HostRejectedBuildPark, IdentityBootstrapEntry,
+    IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
     IdentityRestoreProgress, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge,
     MemberHealthReport, MemberReloadDisposition, MemberReloadOutcome, NotAddressable,
     ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext, SendAdmission, SessionRepairRequired,
@@ -2577,6 +2577,13 @@ pub struct IdentityRuntime {
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     raw_member_alias_locks: RwLock<RawMemberAliasLockTable>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
+    /// Stable per-identity dispatchers for `customize_build` tools (#563).
+    /// Set whenever an agent customizer exists; the same registry backs the
+    /// mob's `CustomizerToolsSpawnCustomizer`.
+    customizer_tools: RwLock<Option<Arc<super::customizer_tools::CustomizerToolRegistry>>>,
+    /// Identities whose pre-activation `customize_build` failed: restored
+    /// without their customizer tools until materialization publishes.
+    customizer_tools_pending: std::sync::RwLock<BTreeMap<AgentIdentity, CustomizerToolsPending>>,
     agent_memory: RwLock<Option<AgentMemoryRuntimeInjector>>,
     lease_renewal_notify: Notify,
     /// Exact grants whose restore task failed before an IdentityEntry existed.
@@ -3047,6 +3054,8 @@ impl IdentityRuntime {
             lifecycle_locks: RwLock::new(BTreeMap::new()),
             raw_member_alias_locks: RwLock::new(RawMemberAliasLockTable::default()),
             customizer: RwLock::new(None),
+            customizer_tools: RwLock::new(None),
+            customizer_tools_pending: std::sync::RwLock::new(BTreeMap::new()),
             agent_memory: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
             pending_unactivated_lease_releases: RwLock::new(Vec::new()),
@@ -3699,6 +3708,100 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    /// Install the registry whose per-identity dispatchers carry
+    /// `customize_build` tools across meerkat-side rebuilds (#563). The same
+    /// registry must back the mob's `CustomizerToolsSpawnCustomizer`.
+    pub async fn set_customizer_tool_registry(
+        &self,
+        registry: Option<Arc<super::customizer_tools::CustomizerToolRegistry>>,
+    ) {
+        *self.customizer_tools.write().await = registry;
+    }
+
+    /// Publish one successful `customize_build` result for `identity` and
+    /// point the draft at the identity's stable dispatcher, so the spawn (or
+    /// the adopted occupant, which already holds it) serves the new tools.
+    async fn publish_customizer_tools(
+        &self,
+        identity: &AgentIdentity,
+        draft: &mut AgentBuildDraft,
+    ) {
+        let Some(registry) = self.customizer_tools.read().await.clone() else {
+            return;
+        };
+        let entry = registry.publish(identity, draft.local_external_tools.dispatcher());
+        draft.local_external_tools = super::types::LocalExternalToolOverlay::new(entry);
+        self.customizer_tools_pending
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(identity);
+    }
+
+    fn customizer_tools_pending_for(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<CustomizerToolsPending> {
+        self.customizer_tools_pending
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity)
+            .cloned()
+    }
+
+    /// Publish each roster identity's customizer tools BEFORE the mob is
+    /// lifted (#563). meerkat's restore at activation then builds every
+    /// restored member with its tools already present: its tool scope is
+    /// right from the first build, and a run that starts at activation (a
+    /// queued input, a kickoff, a peer message) sees them. The materialization
+    /// that follows runs `customize_build` again and republishes through the
+    /// same atomic swap. A failure here is logged per identity and recorded as
+    /// `IdentityStatus::customizer_tools_pending` until the materialization
+    /// publishes.
+    pub async fn prepublish_customizer_tools(
+        &self,
+        roster: &[DurableAgentSpec],
+        customizer: Option<&dyn AgentCustomizer>,
+    ) {
+        let Some(registry) = self.customizer_tools.read().await.clone() else {
+            return;
+        };
+        let installed = self.customizer.read().await.clone();
+        let Some(customizer) = customizer.or(installed.as_deref()) else {
+            return;
+        };
+        let active_peers: Vec<AgentIdentity> = self.entries.read().await.keys().cloned().collect();
+        let managed_edges = self.desired_peer_edges.read().await.clone();
+        let failed = super::customizer_tools::prepublish(
+            &registry,
+            roster,
+            customizer,
+            self.runtime_services(),
+            &active_peers,
+            &managed_edges,
+        )
+        .await;
+        let mut pending = self
+            .customizer_tools_pending
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for spec in roster {
+            pending.remove(&spec.identity);
+        }
+        pending.extend(failed);
+    }
+
+    /// Record identities whose customizer tools a pre-build publication could
+    /// not publish (see [`super::customizer_tools::prepublish`]).
+    pub fn record_customizer_tools_pending(
+        &self,
+        failed: BTreeMap<AgentIdentity, CustomizerToolsPending>,
+    ) {
+        self.customizer_tools_pending
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(failed);
     }
 
     pub async fn set_agent_memory(&self, injector: Option<AgentMemoryRuntimeInjector>) {
@@ -6281,6 +6384,13 @@ impl IdentityRuntime {
         // had slowed. One INFO per identity with the three step durations, and one
         // summary, so the next such regression names its step on the first launch.
         let loop_started = std::time::Instant::now();
+        // Register every roster identity's customizer-tool dispatcher before
+        // the mob is lifted, so meerkat's restart restore attaches it (#563).
+        if let Some(registry) = self.customizer_tools.read().await.clone() {
+            for spec in roster {
+                registry.ensure(&spec.identity);
+            }
+        }
         for spec in roster {
             let identity = &spec.identity;
             let identity_started = std::time::Instant::now();
@@ -7067,6 +7177,7 @@ impl IdentityRuntime {
             compaction_curator: Default::default(),
         };
         let installed_customizer = self.customizer.read().await.clone();
+        let mut customized = false;
         if let Some(customizer) = overrides.customizer.or(installed_customizer.as_deref()) {
             let customize = customizer.customize_build(&build_context, &spec, &mut draft);
             tokio::pin!(customize);
@@ -7097,6 +7208,10 @@ impl IdentityRuntime {
                         .unwrap_or_default(),
                 )));
             }
+            customized = true;
+        }
+        if customized {
+            self.publish_customizer_tools(identity, &mut draft).await;
         }
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
@@ -11286,6 +11401,7 @@ impl IdentityRuntime {
             continuity_health,
             continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
             session_repair_required: entry.session_repair_required.clone(),
+            customizer_tools_pending: self.customizer_tools_pending_for(identity),
         })
     }
 
@@ -12707,6 +12823,7 @@ impl IdentityRuntime {
                 managed_edges,
                 runtime_services: self.runtime_services(),
             };
+            let mut customized = false;
             if let Some(customizer) = self.customizer.read().await.clone() {
                 let customize = customizer.customize_build(&build_context, &spec, &mut draft);
                 tokio::pin!(customize);
@@ -12739,6 +12856,10 @@ impl IdentityRuntime {
                         "customizer after reset: {err}"
                     )));
                 }
+                customized = true;
+            }
+            if customized {
+                self.publish_customizer_tools(identity, &mut draft).await;
             }
         }
 
@@ -13598,6 +13719,7 @@ impl IdentityRuntime {
                 continuity_health,
                 continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
                 session_repair_required: entry.session_repair_required.clone(),
+                customizer_tools_pending: self.customizer_tools_pending_for(identity),
             };
             result.insert(identity.clone(), (entry.spec.clone(), status));
         }
@@ -15138,6 +15260,14 @@ mod reset_reprofile_tests {
             self.inner
                 .delete_continuity_record(identity, fencing_token)
                 .await
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>,
+        > {
+            None
         }
     }
 

@@ -35,6 +35,47 @@ export class TransportError extends MobKitError {
   }
 }
 
+/**
+ * The SDK stopped waiting for `mobkit/init` before it settled.
+ *
+ * Thrown when the init request was written but no settlement arrived: the
+ * acceptance was lost, the reader failed, the gateway exited, or the
+ * caller's init deadline ran out. The gateway may have changed native state
+ * (owner publication, identities, leases, continuity, schedules) before it
+ * stopped, so this is never reported as a refusal and never retried
+ * automatically. `initId` correlates with the gateway's progress
+ * notifications; `lastPhase` is the last `mobkit/init_progress` phase seen
+ * (`null` when none arrived); `reason` names what ended the wait.
+ */
+export class InitOutcomeUnknownError extends MobKitError {
+  constructor(
+    readonly initId: string,
+    readonly lastPhase: string | null,
+    readonly reason: string,
+  ) {
+    super(
+      `mobkit/init outcome unknown (init_id=${initId}, last phase: ${lastPhase ?? "none"}): ` +
+        `${reason}; native state may have changed`,
+    );
+    this.name = "InitOutcomeUnknownError";
+  }
+}
+
+/**
+ * The transport's reader stopped, so no response can arrive any more.
+ *
+ * Rejects every request still waiting when the gateway closes its stdout,
+ * and every later request on the same gateway process. `reason` names what
+ * ended the reader. A request written before the reader stopped may still
+ * have been executed by the gateway.
+ */
+export class TransportReaderFailedError extends TransportError {
+  constructor(readonly reason: string) {
+    super(`transport reader stopped: ${reason}`);
+    this.name = "TransportReaderFailedError";
+  }
+}
+
 // -- RPC errors -----------------------------------------------------------
 
 /** Raised when a JSON-RPC call returns an error response. */
@@ -75,6 +116,12 @@ export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
  * explicit ephemeral declaration).
  */
 export const STORAGE_RESOLUTION_CODE = -32014 as const;
+/**
+ * An ordinary request sent before `mobkit/init` settled: the stdio gateway
+ * refuses it at once instead of queueing it behind startup (a provider
+ * callback awaiting it during init would wait on itself).
+ */
+export const INIT_IN_PROGRESS_CODE = -32018 as const;
 /** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
 export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
 /** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
@@ -199,6 +246,24 @@ export class StorageResolutionError extends RpcError {
   ) {
     super(STORAGE_RESOLUTION_CODE, message, requestId, method, data);
     this.name = "StorageResolutionError";
+  }
+}
+
+/**
+ * An ordinary request reached the gateway before `mobkit/init` settled. The
+ * gateway serves ordinary requests only after init settles and refuses
+ * earlier ones at once; startup provider callbacks must not issue ordinary
+ * runtime RPCs on the runtime that is starting.
+ */
+export class InitInProgressError extends RpcError {
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(INIT_IN_PROGRESS_CODE, message, requestId, method, data);
+    this.name = "InitInProgressError";
   }
 }
 

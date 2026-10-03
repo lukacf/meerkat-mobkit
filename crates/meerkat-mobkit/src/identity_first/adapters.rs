@@ -738,6 +738,12 @@ impl ContinuitySessionStoreAdapter {
         }
     }
 
+    /// The concrete type of the continuity store this adapter persists to.
+    #[must_use]
+    pub fn continuity_store_type_name(&self) -> &'static str {
+        self.store.store_type_name()
+    }
+
     /// Whole-document passes this adapter has performed since construction
     /// (see `WholeDocumentPass`).
     ///
@@ -3695,6 +3701,14 @@ mod tests {
                 .delete_continuity_record(identity, fencing_token)
                 .await
         }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>,
+        > {
+            None
+        }
     }
 
     #[async_trait]
@@ -3768,6 +3782,14 @@ mod tests {
             _fencing_token: FencingToken,
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>,
+        > {
+            None
         }
     }
 
@@ -6769,6 +6791,14 @@ mod tests {
             self.inner
                 .delete_continuity_record(identity, fencing_token)
                 .await
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>,
+        > {
+            None
         }
     }
 

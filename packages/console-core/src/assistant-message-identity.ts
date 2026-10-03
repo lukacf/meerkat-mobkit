@@ -48,8 +48,50 @@ export interface AssistantHistorySnapshot {
   assistantMessageIds: ReadonlySet<string>;
 }
 
+type SnapshotMemo = {
+  event: string;
+  sourceKind: string | undefined;
+  sessionId: string | undefined;
+  cursor: string | undefined;
+  data: unknown;
+  ids: unknown;
+  idCount: number;
+  observedThrough: unknown;
+  dataSessionId: unknown;
+  complete: unknown;
+  snapshot: AssistantHistorySnapshot | undefined;
+};
+
+// Every snapshot lists every assistant message of its session, and every
+// transcript pass reads every snapshot frame, so parsing per call is
+// quadratic in history. Parse once per frame; the memo is revalidated against
+// every input the parse reads, so an in-place frame update is never stale.
+const snapshotMemo = new WeakMap<ConsoleFrame, SnapshotMemo>();
+
 /** Only a complete, correctly scoped history observation can establish absence. */
 export function assistantHistorySnapshot(frame: ConsoleFrame): AssistantHistorySnapshot | undefined {
+  if (frame.event !== "assistant_history_snapshot") return undefined;
+  const data = frame.data && typeof frame.data === "object" && !Array.isArray(frame.data)
+    ? frame.data as Record<string, unknown> : undefined;
+  const ids = data?.assistant_message_ids;
+  const idCount = Array.isArray(ids) ? ids.length : -1;
+  const memo = snapshotMemo.get(frame);
+  if (memo && memo.event === frame.event && memo.sourceKind === frame.sourceKind
+    && memo.sessionId === frame.sessionId && memo.cursor === frame.cursor && memo.data === frame.data
+    && memo.ids === ids && memo.idCount === idCount && memo.observedThrough === data?.observed_through
+    && memo.dataSessionId === data?.session_id && memo.complete === data?.complete) {
+    return memo.snapshot;
+  }
+  const snapshot = parseAssistantHistorySnapshot(frame);
+  snapshotMemo.set(frame, {
+    event: frame.event, sourceKind: frame.sourceKind, sessionId: frame.sessionId, cursor: frame.cursor,
+    data: frame.data, ids, idCount, observedThrough: data?.observed_through,
+    dataSessionId: data?.session_id, complete: data?.complete, snapshot,
+  });
+  return snapshot;
+}
+
+function parseAssistantHistorySnapshot(frame: ConsoleFrame): AssistantHistorySnapshot | undefined {
   if (frame.event !== "assistant_history_snapshot" || frame.sourceKind !== "session_history"
     || typeof frame.sessionId !== "string" || !frame.sessionId.trim()
     || !frame.data || typeof frame.data !== "object" || Array.isArray(frame.data)) return undefined;

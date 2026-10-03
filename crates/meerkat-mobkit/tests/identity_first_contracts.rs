@@ -97,6 +97,16 @@ impl ContinuityStore for MockContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 struct MockLeaseProvider;

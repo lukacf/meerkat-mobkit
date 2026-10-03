@@ -2693,9 +2693,22 @@ fn build_persistent_runtime_store(
 /// Correct only while this process is the sole writer of the underlying
 /// runtime store (the identity single-embodiment lease guard already enforces
 /// one live gateway per store; storage doctor tooling opens stores read-only).
-#[derive(Default)]
 pub(crate) struct SessionSnapshotWriteEpochs {
     epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Bumped after every advance: a typed transition for readers that wait
+    /// on durable progress (a backfill waiting for a member's queued inputs
+    /// to commit) instead of polling. Wakes on any session's write; waiters
+    /// compare their own session's epoch.
+    changes: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for SessionSnapshotWriteEpochs {
+    fn default() -> Self {
+        Self {
+            epochs: std::sync::Mutex::new(BTreeMap::new()),
+            changes: tokio::sync::watch::Sender::new(0),
+        }
+    }
 }
 
 impl SessionSnapshotWriteEpochs {
@@ -2703,11 +2716,18 @@ impl SessionSnapshotWriteEpochs {
     /// partially applied in an unknown store, so over-invalidation is the
     /// safe direction.
     fn advance(&self, runtime_id: &meerkat_runtime::LogicalRuntimeId) {
-        let mut epochs = self
-            .epochs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+        {
+            let mut epochs = self
+                .epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+        }
+        self.changes.send_modify(|generation| *generation += 1);
+    }
+
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     fn observe(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
@@ -2719,6 +2739,27 @@ impl SessionSnapshotWriteEpochs {
             .copied()
             .unwrap_or(0)
     }
+}
+
+/// See [`MobRuntime::session_drain_observation`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionDrainRead {
+    Observed(SessionDrainObservation),
+    /// The runtime answered that it cannot hold or progress the session.
+    Stalled,
+    /// A read did not answer within its bound.
+    NoAnswer,
+}
+
+/// See [`MobRuntime::session_drain_observation`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionDrainObservation {
+    /// A run input awaits its boundary commit.
+    pub(crate) commit_pending: bool,
+    /// Inputs that are not terminal yet.
+    pub(crate) active: Vec<uuid::Uuid>,
+    /// Watched inputs, no longer active, whose receipt is not finalized yet.
+    pub(crate) unfinalized: Vec<uuid::Uuid>,
 }
 
 /// Public handle to this process's per-session durable write-epoch witness
@@ -5224,6 +5265,20 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.inner.load_head_canonical_metadata(authority).await
     }
 
+    async fn load_current_head_canonical_metadata(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<serde_json::Map<String, serde_json::Value>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        // The inner store reads the current boundary's authority and metadata
+        // under one snapshot (meerkat 0.8.50).
+        self.inner
+            .load_current_head_canonical_metadata(runtime_id)
+            .await
+    }
+
     async fn discard_head_canonical_provisional_tail(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -6368,6 +6423,16 @@ macro_rules! delegate_mob_session_service {
                 self.inner.observe_live_durable_source(session_id).await
             }
 
+            // Forwarded exactly: a mob Stop or Shutdown awaits the inner
+            // service's activity watch to learn that an interrupted member's
+            // turn has ended. Required since meerkat 0.8.50.
+            async fn subscribe_session_activity(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<meerkat_mob::MemberSessionActivity, SessionError> {
+                self.inner.subscribe_session_activity(session_id).await
+            }
+
             #[cfg(feature = "openai-live")]
             async fn validate_live_bridge_member_eligibility(
                 &self,
@@ -6719,6 +6784,30 @@ macro_rules! delegate_mob_session_service {
                         session_id,
                         provisional,
                         final_event,
+                        bound,
+                    )
+                    .await
+            }
+
+            // Forwarded exactly: the inner persistent service commits a
+            // re-presented live transcript at the turn boundary. The trait
+            // default refuses (meerkat 0.8.50).
+            async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::types::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+                represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+                bound: std::time::Duration,
+            ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+                self.inner
+                    .commit_live_delegation_represented_transcript_at_turn_boundary(
+                        machine,
+                        session_id,
+                        provisional,
+                        final_event,
+                        represented,
                         bound,
                     )
                     .await
@@ -7454,6 +7543,15 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    // Forwarded exactly, as in `delegate_mob_session_service!`: a mob Stop
+    // awaits the inner service's activity watch for an interrupted turn.
+    async fn subscribe_session_activity(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<meerkat_mob::MemberSessionActivity, SessionError> {
+        self.inner.subscribe_session_activity(session_id).await
+    }
+
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,
@@ -7791,6 +7889,28 @@ impl MobSessionService for AfterCreateMobSessionService {
                 session_id,
                 provisional,
                 final_event,
+                bound,
+            )
+            .await
+    }
+
+    // Forwarded exactly, as in `delegate_mob_session_service!`.
+    async fn commit_live_delegation_represented_transcript_at_turn_boundary(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::types::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+        represented: Vec<meerkat_core::RepresentedLiveUserRow>,
+        bound: std::time::Duration,
+    ) -> Result<meerkat_core::LiveFinalTranscriptCommitAtTurnBoundary, SessionError> {
+        self.inner
+            .commit_live_delegation_represented_transcript_at_turn_boundary(
+                machine,
+                session_id,
+                provisional,
+                final_event,
+                represented,
                 bound,
             )
             .await
@@ -8181,6 +8301,12 @@ pub struct MobBootstrapSpec {
     /// gates what this provider exposes to that member, and an EMPTY allowlist
     /// means the full surface, not none.
     pub(crate) default_external_tools_provider: Option<meerkat_mob::ExternalToolsProvider>,
+    /// Named Rust tool bundles, forwarded to
+    /// `MobBuilder::register_tool_bundle` for the profiles'
+    /// `tools.rust_bundles`. They are registered on every build of this mob:
+    /// create, resume (including the members it revives) and respawn. Mobs
+    /// that agents create through the mob tools do not receive them.
+    pub(crate) tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8290,6 +8416,7 @@ impl MobBootstrapSpec {
             spawn_member_customizer: None,
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
+            tool_bundles: BTreeMap::new(),
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -8444,6 +8571,38 @@ impl MobBootstrapSpec {
         provider: meerkat_mob::ExternalToolsProvider,
     ) -> Self {
         self.default_external_tools_provider = Some(provider);
+        self
+    }
+
+    /// Register a named Rust tool bundle. A profile whose `tools.rust_bundles`
+    /// names it gets the dispatcher's tools on every spawn, resume, revival
+    /// and respawn; meerkat-mob owns that wiring. A profile naming a bundle
+    /// that is not registered is refused when its member is built. Agent-
+    /// created child mobs never receive host bundles.
+    ///
+    /// Registering the same name twice replaces the earlier dispatcher.
+    #[must_use]
+    pub fn register_tool_bundle(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    ) -> Self {
+        self.tool_bundles.insert(name.into(), dispatcher);
+        self
+    }
+
+    /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
+    /// slot, so this composes with one already installed (which runs first)
+    /// instead of replacing it.
+    pub fn with_spawn_member_customizer(
+        mut self,
+        customizer: Arc<dyn meerkat_mob::SpawnMemberCustomizer>,
+    ) -> Self {
+        self.spawn_member_customizer =
+            Some(crate::identity_first::ComposedSpawnMemberCustomizer::over(
+                self.spawn_member_customizer.take(),
+                customizer,
+            ));
         self
     }
 
@@ -10354,6 +10513,9 @@ impl MobRuntime {
         if let Some(provider) = spec.default_external_tools_provider.clone() {
             builder = builder.with_default_external_tools_provider(Some(provider));
         }
+        for (name, dispatcher) in &spec.tool_bundles {
+            builder = builder.register_tool_bundle(name.clone(), Arc::clone(dispatcher));
+        }
 
         // Apply-time WorkGraph attention overlays: the provisioner's
         // MobSessionRuntimeExecutor injects the scoped tool overlay before
@@ -10640,6 +10802,25 @@ impl MobRuntime {
         Some(epochs.observe(&session_id))
     }
 
+    /// A receiver that changes after every session-scoped durable write in
+    /// this process, when this runtime owns the write-epoch seam. `None`
+    /// means no such witness exists.
+    pub(crate) fn session_write_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.session_write_epochs.as_ref()?.subscribe())
+    }
+
+    /// Test seam: record a durable write for `session_id`, as the witnessed
+    /// store does, without composing a store under the fixture.
+    #[cfg(test)]
+    pub(crate) fn note_session_write_for_test(&self, session_id_str: &str) {
+        if let (Some(epochs), Ok(session_id)) = (
+            self.session_write_epochs.as_ref(),
+            meerkat_core::types::SessionId::parse(session_id_str),
+        ) {
+            epochs.advance(&meerkat_runtime::LogicalRuntimeId::for_session(&session_id));
+        }
+    }
+
     /// Converge each supplied session's durable runtime authority BEFORE the
     /// bounded explicit resume has to read it.
     ///
@@ -10807,6 +10988,106 @@ impl MobRuntime {
             SESSION_COMMIT_PENDING_READ_BOUND,
         )
         .await
+    }
+
+    /// Whether `session_id` has any non-terminal input: queued behind the
+    /// current run, staged, or applied and awaiting its boundary commit.
+    /// `None` when the runtime adapter does not answer within the bound
+    /// (inconclusive, never a guessed `false`).
+    pub async fn session_has_active_inputs(&self, session_id: &str) -> Option<bool> {
+        let runtime_adapter = self.session_service.as_ref()?.runtime_adapter()?;
+        let session_id = meerkat_core::types::SessionId::parse(session_id).ok()?;
+        bounded_commit_pending(
+            async {
+                meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
+                    runtime_adapter.as_ref(),
+                    &session_id,
+                )
+                .await
+                .map(|inputs| !inputs.is_empty())
+            },
+            SESSION_COMMIT_PENDING_READ_BOUND,
+        )
+        .await
+    }
+
+    /// What is still landing for `session_id`'s durable work, in one bounded
+    /// observation: whether a run input awaits its boundary commit, which
+    /// inputs are still active, and which of `watched` (inputs seen active
+    /// earlier) have no finalized terminal receipt yet. An input leaves the
+    /// active set once its boundary commits, but its receipt is finalized in
+    /// a later durable write.
+    ///
+    /// A runtime that answers with an error (no runtime holds the session any
+    /// more, it was given a new driver, or its durability is blocked) is
+    /// `Stalled`: this session's queue cannot drain through writes this
+    /// process will observe. Only a read that outlasts its bound is
+    /// `NoAnswer`.
+    pub(crate) async fn session_drain_observation(
+        &self,
+        session_id: &str,
+        watched: &[uuid::Uuid],
+    ) -> SessionDrainRead {
+        let Some(runtime_adapter) = self
+            .session_service
+            .as_ref()
+            .and_then(|service| service.runtime_adapter())
+        else {
+            return SessionDrainRead::Stalled;
+        };
+        let Ok(typed) = meerkat_core::types::SessionId::parse(session_id) else {
+            return SessionDrainRead::Stalled;
+        };
+        let commit_pending = match tokio::time::timeout(
+            SESSION_COMMIT_PENDING_READ_BOUND,
+            runtime_adapter.session_has_uncommitted_run_input(&typed),
+        )
+        .await
+        {
+            Ok(Ok(pending)) => pending,
+            Ok(Err(_)) => return SessionDrainRead::Stalled,
+            Err(_) => return SessionDrainRead::NoAnswer,
+        };
+        let active = match tokio::time::timeout(
+            SESSION_COMMIT_PENDING_READ_BOUND,
+            meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
+                runtime_adapter.as_ref(),
+                &typed,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(inputs)) => inputs.into_iter().map(|input| input.0).collect::<Vec<_>>(),
+            Ok(Err(_)) => return SessionDrainRead::Stalled,
+            Err(_) => return SessionDrainRead::NoAnswer,
+        };
+        let mut unfinalized = Vec::new();
+        for id in watched {
+            if active.contains(id) {
+                continue;
+            }
+            match tokio::time::timeout(
+                SESSION_COMMIT_PENDING_READ_BOUND,
+                meerkat_runtime::service_ext::SessionServiceRuntimeExt::input_terminal_completion(
+                    runtime_adapter.as_ref(),
+                    &typed,
+                    &meerkat_core::lifecycle::InputId(*id),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(None)) => unfinalized.push(*id),
+                // Finalized, or terminal with no receipt to wait for: an error
+                // here cannot later turn into a receipt this waiter needs.
+                Ok(Ok(Some(_)) | Err(_)) => {}
+                Err(_) => return SessionDrainRead::NoAnswer,
+            }
+        }
+        SessionDrainRead::Observed(SessionDrainObservation {
+            commit_pending,
+            active,
+            unfinalized,
+        })
     }
 
     #[allow(dead_code)]
@@ -14787,6 +15068,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // In-memory double: its sessions never report an active turn.
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         // In-memory double (meerkat 0.8.47): export visibility is its durable source.
         async fn observe_live_durable_source(
             &self,
@@ -15346,6 +15635,14 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn subscribe_session_activity(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_mob::MemberSessionActivity, meerkat_core::SessionError> {
+            self.record("subscribe_session_activity");
+            Ok(meerkat_mob::MemberSessionActivity::inactive())
+        }
+
         async fn observe_live_durable_source(
             &self,
             _session_id: &meerkat_core::SessionId,
@@ -15996,6 +16293,41 @@ comms = true
             probe.calls(),
             vec!["observe_live_durable_source", "observe_live_durable_source"],
             "each wrapper forwards exactly once and adds no read of its own"
+        );
+    }
+
+    /// meerkat 0.8.50 made `subscribe_session_activity` required: a mob Stop
+    /// or Shutdown awaits it to learn that an interrupted member's turn has
+    /// ended. Both production decorators must forward it exactly once.
+    #[tokio::test]
+    async fn wrappers_forward_the_session_activity_subscription_exactly() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&inner),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        for wrapper in [pre_build, after_create] {
+            let activity = wrapper
+                .subscribe_session_activity(&session_id)
+                .await
+                .expect("the inner subscription is forwarded");
+            assert!(!activity.is_active());
+        }
+        assert_eq!(
+            probe.calls(),
+            vec!["subscribe_session_activity", "subscribe_session_activity"],
+            "each wrapper forwards exactly once"
         );
     }
 

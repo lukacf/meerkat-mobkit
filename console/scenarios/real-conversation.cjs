@@ -59,15 +59,126 @@ async function anchorAt(viewport, row, offset = 100) {
   }, id);
 }
 
+const isOlderHistoryPage = (response) => {
+  if (!response.url().endsWith("/console/rpc")) return false;
+  const request = response.request().postDataJSON();
+  return request?.method === "mobkit/console/query_timeline" && Boolean(request.params?.before);
+};
+
+/// Scroll the transcript to its start once, as a reader does. That scroll is
+/// itself the stock pane's paging action (ChatPane onBodyScroll reveals
+/// earlier turns or requests the next older page), so this waits for what it
+/// started instead of racing it: history idle first, and when a page is due
+/// (every revealed turn shown, older history left) the response to exactly
+/// that request, then idle again. Returns the page response, or null.
+async function scrollToStart(viewport) {
+  const page = viewport.page();
+  const loading = viewport.getByRole("button", { name: "Loading history", exact: true });
+  const idle = () => eventually(async () => !(await loading.count()), "transcript history is idle");
+  await idle();
+  const loadOlder = viewport.getByRole("button", { name: "Load older history", exact: true });
+  const reveal = viewport.getByRole("button", { name: "Show earlier messages", exact: true });
+  const pageDue = !(await reveal.count()) && await loadOlder.count() > 0 && await loadOlder.first().isEnabled();
+  const responsePromise = pageDue ? page.waitForResponse(isOlderHistoryPage) : null;
+  await viewport.evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+  const response = responsePromise ? await responsePromise : null;
+  if (response) await idle();
+  await waitForMountedView(viewport);
+  return response;
+}
+
+/// The stock transcript mounts only the turns near the viewport, so an early
+/// row exists only once a reader scrolls back to it. Jump to the start in one
+/// step, as Home does, and wait for the row itself to mount there.
+async function mountEarlyRow(viewport, row) {
+  // A parked turn (hidden until found) keeps its rows in the DOM, unseen.
+  if (!await row.isVisible()) await scrollToStart(viewport);
+  await row.waitFor();
+}
+
+/// Wait until no spacer or parked turn (hidden until found) overlaps the
+/// viewport: the window has mounted every turn a reader can see here.
+async function waitForMountedView(viewport) {
+  await viewport.page().waitForFunction((node) => {
+    const view = node.getBoundingClientRect();
+    return [...node.querySelectorAll(":scope > [data-conversation-spacer], :scope > [data-conversation-turn-id][hidden]")].every((slot) => {
+      const rect = slot.getBoundingClientRect();
+      return rect.bottom <= view.top || rect.top >= view.bottom;
+    });
+  }, await viewport.elementHandle());
+}
+
+/// Read the whole transcript top to bottom, a viewport at a time, as a reader
+/// scrolling through it does, and return `collect(node, arg)` for each
+/// position. The stock transcript mounts only the turns near the viewport, so
+/// an inventory of every row has to read it through; callers dedupe by row id
+/// because neighbouring positions share rows, and skip rows of parked turns
+/// (hidden until found), which are in the DOM but not rendered. The position
+/// is restored after.
+async function readThrough(viewport, collect, arg) {
+  const start = await viewport.evaluate((node) => node.scrollTop);
+  const scrollTo = async (top) => {
+    const geometry = await viewport.evaluate((node, top) => {
+      node.scrollTop = top;
+      node.dispatchEvent(new Event("scroll"));
+      return { end: Math.max(0, node.scrollHeight - node.clientHeight), step: node.clientHeight };
+    }, top);
+    await waitForMountedView(viewport);
+    return geometry;
+  };
+  // Reaching the start may page older history; read only once nothing more
+  // arrives above, so no row is prepended behind the read.
+  while (await scrollToStart(viewport));
+  const results = [];
+  for (let top = 0; ;) {
+    const { end, step } = await scrollTo(top);
+    results.push(await viewport.evaluate(collect, arg));
+    if (top >= end) break;
+    top = Math.min(top + step, end);
+  }
+  await scrollTo(start);
+  return results;
+}
+
+/// Wait until the controller has finished restoring ("Restoring earlier
+/// position" gone) and the row's offset has held for `stableMs` of frames.
+/// Returning to an identity reloads its history and the host may page older
+/// history before the remembered row exists; rows can also reflow after the
+/// row first appears. A fixed two-frame settle could measure mid-restore. A
+/// real drift still settles at the wrong offset and fails.
+async function settleRow(viewport, id, { stableMs = 500, timeoutMs = 8_000 } = {}) {
+  await viewport.evaluate((node, { id, stableMs, timeoutMs }) => new Promise((resolve) => {
+    const started = performance.now();
+    let last = null;
+    let since = started;
+    const restoring = () => [...document.querySelectorAll('[role="status"]')]
+      .some(status => status.textContent.includes("Restoring earlier position"));
+    const tick = () => {
+      const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
+      const top = row && !restoring() ? row.getBoundingClientRect().top - node.getBoundingClientRect().top : null;
+      const now = performance.now();
+      if (top !== last) { last = top; since = now; }
+      if ((top !== null && now - since >= stableMs) || now - started >= timeoutMs) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }), { id, stableMs, timeoutMs });
+}
+
+
+
 async function measureAnchor(viewport, anchor, action, label) {
+  await settleRow(viewport, anchor.id);
   const before = await viewport.evaluate((node, id) => {
     const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
     return { top: row.getBoundingClientRect().top - node.getBoundingClientRect().top, height: node.clientHeight, rows: node.querySelectorAll("[data-conversation-row-id]").length, text: row.textContent.slice(0, 150) };
   }, anchor.id);
   await action(); await settle(viewport.page());
+  await settleRow(viewport, anchor.id);
   const after = await viewport.evaluate((node, id) => {
     const row = [...node.querySelectorAll("[data-conversation-row-id]")].find(item => item.dataset.conversationRowId === id);
     return { top: row?.getBoundingClientRect().top - node.getBoundingClientRect().top, height: node.clientHeight, rows: node.querySelectorAll("[data-conversation-row-id]").length,
+      statuses: [...document.querySelectorAll('[role="status"]')].map(status => status.textContent.trim()).filter(text => /earlier position/i.test(text)),
       ...(row ? {} : { retainedRows: [...node.querySelectorAll("[data-conversation-row-id]")].slice(0, 12).map(item => ({ id: item.dataset.conversationRowId, text: item.textContent.slice(0, 150) })) }) };
   }, anchor.id);
   const drift = Math.abs(after.top - before.top);
@@ -492,28 +603,32 @@ async function presentation(host) {
     const originalPrompt = reloadedViewport.getByText(originalInstruction, { exact: true });
     geometry.reloadPages = [];
     // The long stream can push the first turn outside the recent 200-frame
-    // seed. Recover it through the same bounded history action as a reader.
-    for (let index = 0; await originalPrompt.count() === 0 && index < 16; index += 1) {
-      const reveal = reloadedViewport.getByRole("button", { name: "Show earlier messages", exact: true });
-      if (await reveal.count()) await reveal.dispatchEvent("click");
-      await settle(page);
-      if (await originalPrompt.count()) break;
-      const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
-      await older.waitFor({ state: "attached", timeout: 5000 });
-      await eventually(() => older.isEnabled(), "reload history action is ready");
-      const responsePromise = page.waitForResponse(response => {
-        if (!response.url().endsWith("/console/rpc")) return false;
-        const request = response.request().postDataJSON();
-        return request?.method === "mobkit/console/query_timeline" && Boolean(request.params?.before);
-      });
-      await older.dispatchEvent("click");
-      const response = await responsePromise;
-      const body = await response.json();
-      assert.equal(response.status(), 200, "reload older-history request succeeds");
-      assert(Array.isArray(body.result?.frames), "reload receives an owner history page");
-      geometry.reloadPages.push({ request: response.request().postDataJSON().params, frameCount: body.result.frames.length, exhausted: body.result.exhausted === true });
-      await eventually(async () => !(await page.getByRole("button", { name: "Loading history", exact: true }).count()), "reload applies the older page");
-      await settle(page);
+    // seed. Recover it through the host's own history action, as a reader
+    // does. Stock pages by scrolling to the start (where its windowed
+    // transcript also mounts the first turn); the shared host has an explicit
+    // Load older history control and does not page on scroll.
+    const reveal = reloadedViewport.getByRole("button", { name: "Show earlier messages", exact: true });
+    for (let index = 0; index < 16; index += 1) {
+      let response = null;
+      if (host === "shared") {
+        if (await originalPrompt.count()) break;
+        const older = page.getByRole("button", { name: "Load older history", exact: true }).first();
+        await eventually(() => older.isEnabled(), "reload history action is ready");
+        const responsePromise = page.waitForResponse(isOlderHistoryPage);
+        await older.dispatchEvent("click");
+        response = await responsePromise;
+      } else {
+        response = await scrollToStart(reloadedViewport);
+      }
+      if (response) {
+        const body = await response.json();
+        assert.equal(response.status(), 200, "reload older-history request succeeds");
+        assert(Array.isArray(body.result?.frames), "reload receives an owner history page");
+        geometry.reloadPages.push({ request: response.request().postDataJSON().params, frameCount: body.result.frames.length, exhausted: body.result.exhausted === true });
+        if (host === "shared") await settle(page);
+      }
+      if (await originalPrompt.isVisible()) break;
+      if (host !== "shared" && !response && !(await reveal.count())) break;
     }
     await originalPrompt.waitFor();
     assert.equal(await originalPrompt.count(), 1, `${host} the original authored input remains rendered exactly once after history paging`);
@@ -611,7 +726,7 @@ async function readingIntent(host) {
     const firstPane = host === "shared" ? page.getByTestId("shared-pane-0") : page.getByTestId(/^pane:panel-/).first();
     const viewport = transcript(page, host);
     const anchorRow = viewport.locator("[data-conversation-row-id]").filter({ hasText: result.turns[1].instruction }).last();
-    await anchorRow.waitFor();
+    await mountEarlyRow(viewport, anchorRow);
     if (host === "stock") {
       result.headers = [];
       for (const size of [{ width: 1600, height: 1000 }, { width: 1440, height: 900 }, { width: 1024, height: 768 }]) {
@@ -856,6 +971,9 @@ async function layoutMutations(host) {
     const viewport = transcript(page, host);
     const anchorRow = viewport.locator("[data-conversation-row-id]").filter({ hasText: anchorText }).last();
     await anchorRow.waitFor();
+    // The image belongs to the turn just above the long anchor turn. The
+    // windowed stock transcript mounts it once the reader is near it.
+    await anchorAt(viewport, anchorRow, -10);
     const delayedImage = viewport.locator(`img[src*="${encodeURIComponent(result.image.blobId)}"]`).first();
     await delayedImage.waitFor({ state: "attached" });
     await delayedImage.scrollIntoViewIfNeeded();
@@ -1000,6 +1118,10 @@ async function olderHistory(host) {
         frames: frames.map(frame => ({ id: frame.id, cursor: frame.cursor, kind: frame.kind })) });
       return frames[0]?.cursor ?? before;
     };
+    // Frames the host had before any older page; a turn outside them is
+    // reachable only through prepended history. (Counting rows here would
+    // mean reading through the transcript, and reaching its top pages.)
+    const recentFrameIds = new Set(recentPages().flatMap((item) => item.response.result.frames.map((frame) => frame.id)));
     const anchorRow = viewport.locator("[data-conversation-row-id]").nth(2);
     const anchor = await anchorAt(viewport, anchorRow, -10);
     let boundary = seed.response.result.frames[0].cursor;
@@ -1035,7 +1157,19 @@ async function olderHistory(host) {
         `${host} reveal retained first messages`));
     }
     await settle(page);
-    const quotedSources = await viewport.locator("[data-quote-source]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-quote-source")));
+    // Reachable means a reader scrolling through finds it: the windowed stock
+    // transcript mounts only the turns near the viewport.
+    const positions = await readThrough(viewport, (node) => [...node.querySelectorAll("[data-conversation-row-id]")].filter((row) => !row.closest("[hidden]")).map((row) => ({
+      id: row.dataset.conversationRowId,
+      sources: [...(row.matches("[data-quote-source]") ? [row] : []), ...row.querySelectorAll("[data-quote-source]")]
+        .map((quote) => quote.getAttribute("data-quote-source")),
+    })));
+    for (const position of positions) {
+      const ids = position.map((row) => row.id);
+      assert.equal(new Set(ids).size, ids.length, "retained transcript has no duplicate canonical rows");
+    }
+    const renderedRows = new Map(positions.flat().map((row) => [row.id, row.sources]));
+    const quotedSources = [...renderedRows.values()].flat();
     for (let index = 0; index < expected.length; index += 1) {
       const turn = expected[index];
       assert.equal(ownerFrames.get(turn.inputFrameId)?.payload.content, turn.input,
@@ -1047,12 +1181,13 @@ async function olderHistory(host) {
       assert.equal(quotedSources.filter(source => source === turn.source).length, 1,
         `${host} reply checkpoint ${index} is reachable exactly once in the actual transcript`);
     }
-    const rowIds = await viewport.locator("[data-conversation-row-id]").evaluateAll(nodes => nodes.map(node => node.dataset.conversationRowId));
-    assert.equal(new Set(rowIds).size, rowIds.length, "retained transcript has no duplicate canonical rows");
+    const rowIds = [...renderedRows.keys()];
     result.completeHistory = { operatorMessages: expected.length, modelReplies: expected.length,
       ownerFrames: ownerFrames.size, renderedRows: rowIds.length, pages: result.pages.length };
-    assert(result.prepends.at(-1).after.rows >= result.prepends[0].before.rows + 10,
-      "multiple actual older messages prepend");
+    // Each of these turns is reachable exactly once (above), so its rows were
+    // prepended into the transcript.
+    const prependedTurns = expected.filter((turn) => !recentFrameIds.has(turn.inputFrameId)).length;
+    assert(prependedTurns * 2 >= 10, `multiple actual older messages prepend: ${prependedTurns} turns only in older pages`);
     if (host === "shared") {
       const rail = page.getByRole("navigation", { name: "Conversation turns" });
       const railIndexes = async () => rail.locator('[data-testid^="conversation-turn-rail:"]').evaluateAll(nodes =>
@@ -1118,7 +1253,7 @@ const scenarios = [
   ...["stock", "shared"].map(host => ({ id: `real-${host}-history-prepend`, family: "real-presentation", backend: "real", run: () => olderHistory(host) })),
   ...["stock", "shared"].map(host => ({ id: `real-${host}-recovery`, family: "real-transport", backend: "real", run: () => recovery(host) })),
 ];
-module.exports = { scenarios, geometry: { browserErrors, initializationCancellation, settle, timeline, completed, anchorAt, measureAnchor, open, transcript, conversationPane, seedReadingHistory } };
+module.exports = { scenarios, geometry: { browserErrors, initializationCancellation, settle, timeline, completed, anchorAt, measureAnchor, mountEarlyRow, readThrough, open, transcript, conversationPane, seedReadingHistory } };
 
 if (require.main === module) {
   assert(process.env.MOBKIT_EXAMPLE_BIN_DIR, "Use the coordinator prebuilt fixture; this lane must not run Cargo.");

@@ -17,6 +17,15 @@ describe("durable send attempts", () => {
     expect(() => beginConsoleSendAttempt(reloaded, { owner: "tab2", now: 21_000, handlingMode: "queue" })).toThrow(/Reconcile/);
     expect(() => beginConsoleSendAttempt(reloaded, { owner: "tab2", now: 21_000, handlingMode: "steer" })).toThrow(/Reconcile/);
   });
+  it("sends an uncertain attempt again only on an explicit resend, with the same frozen envelope and key", () => {
+    const attempted = beginConsoleSendAttempt(draft(), { owner: "tab1", now: 2, handlingMode: "queue" });
+    const unknown = finishConsoleSendAttempt(attempted, { state: "outcome-unknown", error: "lost" });
+    expect(() => beginConsoleSendAttempt(unknown, { owner: "tab2", now: 3, handlingMode: "queue", retryRejected: true })).toThrow(/Reconcile/);
+    const resent = beginConsoleSendAttempt(unknown, { owner: "tab2", now: 3, handlingMode: "queue", resend: true });
+    expect(resent.state).toBe("attempting");
+    expect(resent.envelopeJson).toBe(attempted.envelopeJson);
+    expect(JSON.parse(resent.envelopeJson!).idempotency_key).toBe("key");
+  });
   it("prevents promotion of an already attempted queue item", () => {
     const attempt = beginConsoleSendAttempt(draft(), { owner: "tab1", now: 2, handlingMode: "queue" });
     const rejected = finishConsoleSendAttempt(attempt, { state: "definitely-rejected", error: "denied" });

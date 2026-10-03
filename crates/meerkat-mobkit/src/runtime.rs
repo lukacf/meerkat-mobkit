@@ -6,9 +6,8 @@ use std::io::Write;
 use std::io::{BufRead, BufReader};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,6 +46,9 @@ mod gating;
 mod memory;
 pub mod metadata;
 mod module_boundary;
+mod module_process;
+#[cfg(all(test, unix))]
+mod module_process_tests;
 pub mod remote_host;
 mod routing;
 mod rpc;
@@ -1163,7 +1165,7 @@ pub struct MobkitRuntimeHandle {
     config: MobKitConfig,
     runtime_options: RuntimeOptions,
     loaded_modules: BTreeSet<String>,
-    live_children: BTreeMap<String, Child>,
+    live_children: BTreeMap<String, module_process::ModuleProcess>,
     pub lifecycle_events: Vec<LifecycleEvent>,
     pub supervisor_report: SupervisorReport,
     pub merged_events: Vec<EventEnvelope<UnifiedEvent>>,

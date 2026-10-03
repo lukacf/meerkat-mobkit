@@ -2442,9 +2442,24 @@ pub(crate) mod tests {
             .expect("create body")
             .clone()
             .expect("provider created");
-        // Meerkat 0.8.41 opens as a continuing conversation: no user-role
-        // startup input, the pending-context notice rides the instructions.
-        assert!(body["session"].get("input").is_none(), "{body}");
+        // Meerkat 0.8.50: an open whose context summary is not ready yet (a
+        // Late open) seeds the most recent committed turns verbatim as
+        // startup input, at most
+        // `meerkat_openai::public_live::LIVE_STARTUP_VERBATIM_ITEMS_MAX`
+        // provider items, starting at a user row. The pending-context notice
+        // still rides the instructions.
+        const LIVE_STARTUP_VERBATIM_ITEMS_MAX: usize = 4;
+        let input = body["session"]["input"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a Late open seeds the recent turns: {body}"));
+        assert!(
+            !input.is_empty() && input.len() <= LIVE_STARTUP_VERBATIM_ITEMS_MAX,
+            "the verbatim startup seed is bounded: {body}"
+        );
+        assert_eq!(
+            input[0]["role"], "user",
+            "the verbatim seed starts at a user row: {body}"
+        );
         assert!(
             !body
                 .to_string()

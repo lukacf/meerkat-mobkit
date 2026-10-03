@@ -2328,18 +2328,26 @@ impl ContinuityStore for LocalContinuityStore {
                 // The substrate's CURRENT checkpoint version for the session:
                 // the fence the next write cursor must advance past. The
                 // record's own stamp trails it whenever writes landed after
-                // the last checkpoint.
+                // the last checkpoint. The head-canonical arm exists only once
+                // the file carries the channel (the v2 DDL waits for the first
+                // delta write), so a v1 file's fence is its snapshots alone:
+                // reading the absent table failed the lookup for every member
+                // that had not run a turn before its last shutdown.
+                let sql = if inner.head_tables_available(connection)? {
+                    "SELECT MAX(v) FROM (\
+                         SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
+                             FROM session_snapshots WHERE session_id = ?1 \
+                         UNION ALL \
+                         SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
+                             FROM continuity_session_heads WHERE session_id = ?1)"
+                } else {
+                    "SELECT COALESCE(MAX(checkpoint_version), 0) \
+                         FROM session_snapshots WHERE session_id = ?1"
+                };
                 let fence_current: u64 = connection
-                    .query_row(
-                        "SELECT MAX(v) FROM (\
-                             SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
-                                 FROM session_snapshots WHERE session_id = ?1 \
-                             UNION ALL \
-                             SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
-                                 FROM continuity_session_heads WHERE session_id = ?1)",
-                        rusqlite::params![session_id.to_string()],
-                        |row| row.get(0),
-                    )
+                    .query_row(sql, rusqlite::params![session_id.to_string()], |row| {
+                        row.get(0)
+                    })
                     .map_err(|e| sqlite_err("fence query", e))?;
                 let fence_current = fence_current.max(cpv);
                 let record = ContinuityRecord {
@@ -3717,6 +3725,46 @@ mod tests {
             None,
             "a refused open must not stamp the ledger"
         );
+    }
+
+    /// A member that never ran a turn leaves a v1 file: the head-canonical
+    /// tables wait for the first delta write. Resolving its record by session
+    /// at the next boot must read the fence from the snapshots alone, not
+    /// fail on the absent table (which skipped the member's owner
+    /// pre-registration, so the restart never materialized it).
+    #[tokio::test]
+    async fn resolve_record_by_session_reads_the_fence_on_a_v1_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("domain:school").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            store
+                .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(1))
+                .await
+                .unwrap();
+        }
+        let probe = Connection::open(&path).expect("probe");
+        let heads: bool = probe
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' \
+                 AND name = 'continuity_session_heads')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!heads, "no delta write ran, so the file is still v1");
+
+        let reopened = LocalContinuityStore::open(&path).expect("reopen");
+        let (resolved, token, fence) = reopened
+            .resolve_record_by_session(&session_id)
+            .await
+            .expect("the fence lookup succeeds on a v1 file")
+            .expect("the record is found");
+        assert_eq!(resolved.identity, identity);
+        assert_eq!(token, FencingToken::new(1));
+        assert_eq!(fence, CheckpointVersion::new(0));
     }
 
     #[tokio::test]

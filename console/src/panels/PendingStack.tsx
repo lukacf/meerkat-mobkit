@@ -1,6 +1,6 @@
 import React from "react";
 import { QuoteContextChips } from "../../../packages/console-components/src/conversation/context-chips";
-import { consoleSendFailureLabel, type ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
+import { describeConsolePendingRow, type ConsoleSendAttempt } from "../../../packages/console-core/src/send-attempt";
 import { Icon } from "../icon";
 
 /// One row in the per-identity pending-message stack. Lives entirely
@@ -9,12 +9,66 @@ import { Icon } from "../icon";
 export interface PendingItem extends ConsoleSendAttempt {
   expanded?: boolean;
   editing?: boolean;
-  /** Typed outcome of the last explicit "Check acceptance" on this row. */
+  /** Written by consoles up to 0.8.44; never rendered (see PendingCheckView). */
   checkResult?: string;
   status?: "entering" | "promoting" | "trashing" | "draining" | null;
 }
 
+/// View state of an explicit Check on one row. It is not part of the saved
+/// attempt: a check proves nothing about the send unless it finds it, and
+/// then the row clears. Every check starts at `checking` and ends in a
+/// `result` (or the row clears), so a click always answers visibly.
+export type PendingCheckView = { phase: "checking" } | { phase: "result"; text: string };
+
+/// "Delivered at <time>" for a row a Check found and cleared.
+export interface PendingDeliveredNotice {
+  id: string;
+  text: string;
+}
+
 type DropWhere = "above" | "below";
+
+/// How long a normal send may stay in flight before its row appears.
+/// A send moves its row to `attempting` and, on the acceptance receipt, to
+/// `accepted` and out of the stack, usually within a fraction of a second;
+/// rendering the row in between flashed "Awaiting acceptance" on every
+/// message. A row still `attempting` (or `accepted` but not yet removed)
+/// this long after this view first saw it attempting shows the unchanged
+/// needs-acceptance UI. Display only: it never decides an outcome, and
+/// settled failures (`definitely-rejected`, `outcome-unknown`) render
+/// immediately.
+export const ACCEPTANCE_NOTICE_GRACE_MS = 2_000;
+
+/// Rows of a send still inside its acceptance grace window, keyed by item
+/// id and timed from when this view first saw the row `attempting`.
+/// A normal send first saves its row as a `draft` and dispatches it right
+/// after; `directSendIds` names those rows, so the saved draft does not
+/// flash "Queued" either. A draft queued behind a busy agent is not in the
+/// set and renders at once.
+export function acceptanceGraceDeadlines(
+  items: readonly PendingItem[],
+  firstSeenAttempting: Map<string, number>,
+  now: number,
+  directSendIds: ReadonlySet<string> = new Set(),
+): Map<string, number> {
+  const live = new Set(items.map((item) => item.id));
+  for (const id of [...firstSeenAttempting.keys()]) {
+    if (!live.has(id)) firstSeenAttempting.delete(id);
+  }
+  const deadlines = new Map<string, number>();
+  for (const item of items) {
+    const directDraft = item.state === "draft" && directSendIds.has(item.id);
+    if ((item.state === "attempting" || directDraft) && !firstSeenAttempting.has(item.id)) {
+      firstSeenAttempting.set(item.id, now);
+    }
+    if (item.state !== "attempting" && item.state !== "accepted" && !directDraft) continue;
+    const seen = firstSeenAttempting.get(item.id);
+    if (seen === undefined) continue;
+    const deadline = seen + ACCEPTANCE_NOTICE_GRACE_MS;
+    if (deadline > now) deadlines.set(item.id, deadline);
+  }
+  return deadlines;
+}
 
 interface DropTarget {
   id: string | null;
@@ -23,6 +77,23 @@ interface DropTarget {
 
 interface PendingStackProps {
   items: PendingItem[];
+  /** Destination agent's display name, for the row wording. */
+  agentLabel: string;
+  /** Embedding host's display name, if the console has one. */
+  hostLabel?: string;
+  /**
+   * The gateway keeps send dedupe records across restarts, so an uncertain
+   * row may be sent again with its original idempotency key. False or
+   * absent: uncertain rows offer Check and Discard only.
+   */
+  resendUncertain?: boolean;
+  /** Explicit Check state per row id. */
+  checks?: Readonly<Record<string, PendingCheckView>>;
+  /** Rows a Check found (and cleared) since this view mounted. */
+  delivered?: readonly PendingDeliveredNotice[];
+  onDismissDelivered?: (id: string) => void;
+  /** Rows the composer is sending right away (see acceptanceGraceDeadlines). */
+  directSendIds?: ReadonlySet<string>;
   agentBusy: boolean;
   reducedMotion?: boolean;
   onSteer: (id: string) => void;
@@ -94,6 +165,10 @@ function StackHead({
 
 interface StackItemProps {
   item: PendingItem;
+  agentLabel: string;
+  hostLabel?: string;
+  resendUncertain: boolean;
+  check?: PendingCheckView;
   isHead: boolean;
   dragging: boolean;
   dropHint: DropWhere | null;
@@ -126,6 +201,10 @@ function timeAgo(ts: number): string {
 
 function StackItem({
   item,
+  agentLabel,
+  hostLabel,
+  resendUncertain,
+  check,
   isHead,
   dragging,
   dropHint,
@@ -174,22 +253,17 @@ function StackItem({
   };
 
   const isDraft = item.state === "draft";
+  // Plain wording from the typed state and failure kind only; a stored
+  // error string (including untyped ones saved by older consoles) is never
+  // shown.
+  const copy = describeConsolePendingRow(item, { agent: agentLabel, host: hostLabel });
   const needsAcceptance = item.state === "outcome-unknown" || item.state === "attempting";
   const settledFailure = item.state === "outcome-unknown" || item.state === "definitely-rejected";
-  // A settled failure names its typed reason (label + the classified
-  // message); only a request still in flight reads "Awaiting acceptance".
-  const statusLabel = settledFailure ? consoleSendFailureLabel(item)
-    : item.state === "attempting" ? "Awaiting acceptance"
-    : item.state === "accepted" ? "Accepted" : "Queued";
-  const explanation = settledFailure && item.error
-    ? `${item.error}${item.state === "definitely-rejected" ? " Retry sends the same saved message." : ""}`
-    : item.state === "outcome-unknown"
-      ? "Your message may already have been accepted. Check its status before discarding it."
-      : item.state === "attempting"
-        ? "Waiting for confirmation. Checking acceptance will not send the message again."
-        : item.state === "definitely-rejected"
-          ? "This attempt was rejected. Retry sends the same saved message."
-          : undefined;
+  // A refused row was never admitted, so sending it again is always safe.
+  // An uncertain row may already be admitted: resending it is safe only
+  // when the gateway's dedupe record for its idempotency key is durable.
+  const canResend = item.state === "definitely-rejected" || (item.state === "outcome-unknown" && resendUncertain);
+  const checking = check?.phase === "checking";
   const previewId = React.useId();
 
   const cls = [
@@ -276,7 +350,7 @@ function StackItem({
         <div className="stk-item__body">
           <div className="stk-item__meta">
             {isHead && isDraft && <span className="stk-item__head-tag">Next</span>}
-            <span className="stk-item__state" role={needsAcceptance ? "status" : undefined}>{statusLabel}</span>
+            <span className="stk-item__state" role={needsAcceptance ? "status" : undefined}>{copy.label}</span>
             {item.contexts.length > 0 && <span>{item.contexts.length} {item.contexts.length === 1 ? "quote" : "quotes"}</span>}
             <span className="stk-item__age">{timeAgo(item.addedAt)}</span>
             {item.status === "promoting" && <span className="stk-item__sending">Sending...</span>}
@@ -294,15 +368,16 @@ function StackItem({
             onEdit={item.state === "draft" && !item.envelopeJson && onEditContext ? (contextId, quote) => onEditContext(item.id, contextId, quote) : undefined}
             onRemove={item.state === "draft" ? (contextId) => onRemoveContext(item.id, contextId) : undefined}
             onReorder={item.state === "draft" ? (contextId, direction) => onReorderContext(item.id, contextId, direction) : undefined} />}
-          {explanation && <p className="stk-item__explanation" data-testid={`pending-explanation:${item.id}`}>{explanation}</p>}
-          {item.checkResult && needsAcceptance && <p className="stk-item__explanation" role="status" data-testid={`pending-check:${item.id}`}>{item.checkResult}</p>}
+          {copy.title && <p className="stk-item__title" data-testid={`pending-title:${item.id}`}>{copy.title}</p>}
+          {copy.detail && <p className="stk-item__explanation" data-testid={`pending-explanation:${item.id}`}>{copy.detail}</p>}
+          {check && <p className="stk-item__explanation stk-item__check" role="status" data-testid={`pending-check:${item.id}`}>{check.phase === "checking" ? "Checking..." : check.text}</p>}
         </div>
       )}
 
       {!item.editing && (
         <div className="stk-item__actions">
-          {item.state === "definitely-rejected" && <button type="button" className="stk-btn stk-btn--primary" onClick={() => onRetry(item.id)}>Retry same attempt</button>}
-          {needsAcceptance && <button type="button" className="stk-btn stk-btn--primary" onClick={() => onReconcile(item.id)}>Check acceptance</button>}
+          {needsAcceptance && <button type="button" className="stk-btn stk-btn--primary" disabled={checking} onClick={() => onReconcile(item.id)}>Check</button>}
+          {canResend && <button type="button" className="stk-btn" disabled={checking} onClick={() => onRetry(item.id)}>Send again</button>}
           {longText && <button type="button" className="stk-btn stk-btn--expand" aria-expanded={Boolean(item.expanded)} aria-controls={previewId} onClick={() => onToggleExpand(item.id)}>{item.expanded ? "Hide saved message" : "Show saved message"}</button>}
           {isDraft && <button
             type="button"
@@ -324,16 +399,22 @@ function StackItem({
           >
             <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-compose" /></span>
           </button>}
-          <button
+          {isDraft ? <button
             type="button"
             className="stk-btn stk-btn--icon stk-btn--trash"
             onClick={() => onTrash(item.id)}
-            aria-label={item.state === "draft" ? "Remove from queue" : "Discard saved attempt"}
-            title={isDraft ? "Remove from queue" : "Discard saved attempt"}
+            aria-label="Remove from queue"
+            title="Remove from queue"
             data-testid={`pending-trash:${item.id}`}
           >
             <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-close" /></span>
-          </button>
+          </button> : <button
+            type="button"
+            className="stk-btn stk-btn--trash"
+            onClick={() => onTrash(item.id)}
+            title="Discard this message"
+            data-testid={`pending-trash:${item.id}`}
+          >Discard</button>}
         </div>
       )}
     </li>
@@ -342,6 +423,13 @@ function StackItem({
 
 export function PendingStack({
   items,
+  agentLabel,
+  hostLabel,
+  resendUncertain = false,
+  checks,
+  delivered,
+  onDismissDelivered,
+  directSendIds,
   agentBusy,
   reducedMotion,
   onSteer,
@@ -370,15 +458,30 @@ export function PendingStack({
   const [dropTarget, setDropTarget] = React.useState<DropTarget>({ id: null, where: null });
   const [collapsed, setCollapsed] = React.useState(false);
 
+  // A send in flight stays out of the stack for ACCEPTANCE_NOTICE_GRACE_MS
+  // (see there); one timer re-renders at the earliest deadline and is
+  // cleared on every change and on unmount.
+  const firstSeenAttempting = React.useRef(new Map<string, number>());
+  const [, revealTick] = React.useReducer((n: number) => n + 1, 0);
+  const graceDeadlines = acceptanceGraceDeadlines(items, firstSeenAttempting.current, Date.now(), directSendIds);
+  const nextReveal = graceDeadlines.size > 0 ? Math.min(...graceDeadlines.values()) : null;
+  React.useEffect(() => {
+    if (nextReveal === null) return undefined;
+    const timer = window.setTimeout(revealTick, Math.max(0, nextReveal - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [nextReveal]);
+  const visibleItems = graceDeadlines.size > 0 ? items.filter((item) => !graceDeadlines.has(item.id)) : items;
+
   // Auto-expand whenever the stack grows. Designer requirement: fresh
   // items pull the user's attention back to the queue.
   const lastCount = React.useRef(0);
   React.useEffect(() => {
-    if (items.length > lastCount.current) setCollapsed(false);
-    lastCount.current = items.length;
-  }, [items.length]);
+    if (visibleItems.length > lastCount.current) setCollapsed(false);
+    lastCount.current = visibleItems.length;
+  }, [visibleItems.length]);
 
-  if (items.length === 0) return null;
+  const notices = delivered ?? [];
+  if (visibleItems.length === 0 && notices.length === 0) return null;
 
   const onDragStart = (e: React.DragEvent<HTMLLIElement>, id: string) => {
     setDragId(id);
@@ -419,18 +522,30 @@ export function PendingStack({
       aria-label="Pending message queue"
       data-testid="pending-stack"
     >
-      <StackHead
-        count={items.length}
+      {visibleItems.length > 0 && <StackHead
+        count={visibleItems.length}
         agentBusy={agentBusy}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         onClear={onClearAll}
-      />
+      />}
+      {notices.length > 0 && <ul className="stack__delivered" aria-label="Delivered messages">
+        {notices.map((notice) => <li key={notice.id} className="stack__delivered-item" role="status" data-testid={`pending-delivered:${notice.id}`}>
+          {notice.text}
+          {onDismissDelivered && <button type="button" className="stk-btn stk-btn--icon" aria-label="Dismiss" onClick={() => onDismissDelivered(notice.id)}>
+            <span className="stk-btn__glyph" aria-hidden="true"><Icon name="i-close" /></span>
+          </button>}
+        </li>)}
+      </ul>}
       <ol className="stack__list" role="list">
-        {items.map((item, i) => (
+        {visibleItems.map((item, i) => (
           <StackItem
             key={item.id}
             item={item}
+            agentLabel={agentLabel}
+            hostLabel={hostLabel}
+            resendUncertain={resendUncertain}
+            check={checks?.[item.id]}
             isHead={i === 0}
             dragging={dragId === item.id}
             dropHint={dropTarget.id === item.id ? dropTarget.where : null}

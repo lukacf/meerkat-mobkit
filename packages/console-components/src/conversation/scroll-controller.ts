@@ -58,7 +58,9 @@ type Session = {
   requestedAnchor: string | null;
   awaitingAnchor: boolean;
   missingAnchor: boolean;
-  reveal?: { controller: AbortController; timer: number | null; frame: number | null };
+  /// `confirmed` holds the content version at which the host reported the
+  /// row available; the row is expected in the next content commit.
+  reveal?: { controller: AbortController; timer: number | null; frame: number | null; confirmed?: { version: unknown } };
 };
 
 function cancelReveal(session: Session): void {
@@ -79,6 +81,30 @@ function rowGeometry(viewport: HTMLElement): ConversationRowGeometry[] {
   });
 }
 
+/** Geometry of just these rows (absent or collapsed rows are omitted), with
+ * the same coordinates and filtering as `rowGeometry`. Holding an anchor
+ * steady needs only the anchor row; reading every mounted row on each
+ * streamed commit made every token pay for the whole transcript's rects. */
+function rowGeometryOf(viewport: HTMLElement, ids: readonly string[]): ConversationRowGeometry[] {
+  const top = viewport.getBoundingClientRect().top + viewport.clientTop;
+  const rows: ConversationRowGeometry[] = [];
+  for (const id of ids) {
+    const row = viewport.querySelector<HTMLElement>(`[data-conversation-row-id="${id.replace(/["\\]/g, "\\$&")}"]`);
+    if (!row || row.closest("details:not([open])")) continue;
+    const rect = row.getBoundingClientRect();
+    rows.push({ id, top: rect.top - top, bottom: rect.bottom - top });
+  }
+  return rows;
+}
+
+/** A session that changes position only when rows or the viewport resize:
+ * following the live edge, or holding an anchor, with no submission or
+ * reveal pending. */
+function steadySession(session: Session): boolean {
+  return !session.pendingSubmittedRow && !session.awaitingAnchor && !session.reveal
+    && (session.mode === "following-end" || session.anchor !== null);
+}
+
 /** Preserve intent across streaming and layout without moving an outer document. */
 export function useConversationScrollController(options: ConversationScrollControllerOptions) {
   const optionsRef = useRef(options);
@@ -87,6 +113,10 @@ export function useConversationScrollController(options: ConversationScrollContr
   const sessionRef = useRef<Session | null>(null);
   const frameRef = useRef<number | null>(null);
   const applyLayoutRef = useRef<() => void>(() => {});
+  /// True while a ResizeObserver delivers row and viewport size changes. Its
+  /// callbacks run after the frame's layout, so geometry read there is
+  /// already computed instead of forcing a layout from script.
+  const observingResizeRef = useRef(false);
   const [state, setState] = useState({ mode: "following-end" as ConversationScrollMode, awayFromEnd: false, missingAnchor: false, revealingAnchor: false });
   const key = options.viewportKey
     ? JSON.stringify([options.viewportKey.authority, options.viewportKey.identity, options.viewportKey.conversation, options.viewportKey.pane])
@@ -112,6 +142,12 @@ export function useConversationScrollController(options: ConversationScrollContr
     const session = sessionRef.current;
     if (!viewport || !session) return;
     const bounded = Math.max(0, Math.min(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight), top));
+    // This controller owns scroll position, so snapping and browser scroll
+    // anchoring stay off while it writes. On a session change the observer
+    // effect's cleanup restores them before its setup turns them off again,
+    // and a restore written in between snapped to the nearest turn start.
+    if (viewport.style.scrollSnapType !== "none") viewport.style.scrollSnapType = "none";
+    if (viewport.style.overflowAnchor !== "none") viewport.style.overflowAnchor = "none";
     session.expectedScrollTop = bounded;
     if (Math.abs(viewport.scrollTop - bounded) > 0.1) viewport.scrollTop = bounded;
   }, []);
@@ -120,36 +156,52 @@ export function useConversationScrollController(options: ConversationScrollContr
     const viewport = optionsRef.current.viewportRef.current;
     const session = sessionRef.current;
     if (!viewport || !session) return;
-    let rows = rowGeometry(viewport);
+    // Row geometry forces layout and reads every mounted row. Following the
+    // live edge needs none of it, and this runs on every commit, so measure
+    // only on the paths that use rows.
+    if (session.mode === "following-end" && !session.pendingSubmittedRow) {
+      writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
+      // Leaving the live edge (scroll, wheel, key, selection, jump) captures
+      // its own anchor, so none is kept while following.
+      session.anchor = null;
+      publish(false);
+      return;
+    }
     if (session.pendingSubmittedRow) {
       const resolveSubmitted = optionsRef.current.resolveSubmittedRowId;
       const submittedRowId = resolveSubmitted ? resolveSubmitted(session.pendingSubmittedRow) : session.pendingSubmittedRow;
-      const submitted = rows.find((row) => row.id === submittedRowId);
+      const [submitted] = submittedRowId ? rowGeometryOf(viewport, [submittedRowId]) : [];
       if (submitted) {
         cancelReveal(session);
         session.missingAnchor = false;
         session.mode = "anchoring-submitted-turn";
         session.pendingSubmittedRow = null;
         writeScroll(viewport.scrollTop + submitted.top - CONVERSATION_ANCHOR_OFFSET_PX);
-        rows = rowGeometry(viewport);
-        const actual = rows.find((row) => row.id === submitted.id)!;
+        const [actual] = rowGeometryOf(viewport, [submitted.id]);
         session.anchor = { rowId: actual.id, offset: actual.top, neighbors: [] };
       }
     }
     if (session.mode === "following-end") {
+      // Still waiting for the submitted row: follow the live edge. As on the
+      // ordinary following path, leaving it captures its own anchor.
       writeScroll(conversationScrollEnd(viewport.scrollHeight, viewport.clientHeight));
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      session.anchor = null;
       publish(false);
       return;
     }
     const anchor = session.anchor;
     let missing = session.missingAnchor;
     if (anchor) {
+      // Holding the anchor needs only its row (or a recorded neighbor). Every
+      // mounted row is read only when the anchor is gone, to reveal it or to
+      // fall back to the nearest survivor.
+      let rows = rowGeometryOf(viewport, [anchor.rowId, ...anchor.neighbors.map((neighbor) => neighbor.rowId)]);
       const found = rows.some((row) => row.id === anchor.rowId);
+      if (!found) rows = rowGeometry(viewport);
       if (!found && session.requestedAnchor !== anchor.rowId) {
         session.requestedAnchor = anchor.rowId;
         cancelReveal(session);
-        const reveal = { controller: new AbortController(), timer: null as number | null, frame: null as number | null };
+        const reveal: NonNullable<Session["reveal"]> = { controller: new AbortController(), timer: null, frame: null };
         session.reveal = reveal;
         const isCurrent = () => sessionRef.current === session && session.reveal === reveal && !reveal.controller.signal.aborted;
         const finish = () => {
@@ -168,8 +220,13 @@ export function useConversationScrollController(options: ConversationScrollContr
               reveal.timer = window.setTimeout(finish, Number.isFinite(timeout) ? Math.max(1, Math.min(timeout!, 60_000)) : 15_000);
               Promise.resolve(result).then((available) => {
                 if (!isCurrent()) return;
-                if (available) reveal.frame = window.requestAnimationFrame(finish);
-                else finish();
+                if (!available) { finish(); return; }
+                // The host has the row; its DOM arrives with its next content
+                // commit, which can land after the next animation frame.
+                // Restore when the row mounts, and give up only if a newer
+                // commit still lacks it (or the timeout above expires).
+                reveal.confirmed = { version: optionsRef.current.contentVersion };
+                applyLayoutRef.current();
               }, finish);
             }
           } else cancelReveal(session);
@@ -177,7 +234,9 @@ export function useConversationScrollController(options: ConversationScrollContr
           cancelReveal(session);
         }
       }
-      if (!found && session.awaitingAnchor) {
+      const promisedCommitLacksRow = !found && session.reveal?.confirmed !== undefined
+        && session.reveal.confirmed.version !== optionsRef.current.contentVersion;
+      if (!found && session.awaitingAnchor && !promisedCommitLacksRow) {
         // Publishing can render again before the host reveal lands. Keep the
         // requested anchor until the host has mounted the promised row.
         publish(false);
@@ -191,7 +250,7 @@ export function useConversationScrollController(options: ConversationScrollContr
       // chosen it becomes the new anchor, instead of repeating reveal requests.
       if (!found) session.anchor = captureConversationAnchor(rowGeometry(viewport));
     } else {
-      session.anchor = captureConversationAnchor(rows);
+      session.anchor = captureConversationAnchor(rowGeometry(viewport));
     }
     publish(missing);
   }, [publish, writeScroll]);
@@ -266,11 +325,16 @@ export function useConversationScrollController(options: ConversationScrollContr
       };
     }
     const session = sessionRef.current!;
+    const sessionChanged = session !== previous;
     if (options.submittedRowId && session.lastSubmittedRow !== options.submittedRowId) {
       session.lastSubmittedRow = options.submittedRowId;
       session.pendingSubmittedRow = options.submittedRowId;
     }
-    applyLayout();
+    // A steady session (following the live edge, or holding an anchor) only
+    // moves when a row or the viewport changes size, which the resize
+    // observer reports after layout. Applying it here on every commit read
+    // geometry with layout dirty: one forced layout per streamed token.
+    if (sessionChanged || !observingResizeRef.current || !steadySession(session)) applyLayout();
   });
 
   useLayoutEffect(() => {
@@ -301,7 +365,10 @@ export function useConversationScrollController(options: ConversationScrollContr
       session.requestedAnchor = null;
       cancelReveal(session);
       session.missingAnchor = false;
-      session.anchor = captureConversationAnchor(rowGeometry(viewport));
+      // Following keeps no anchor (see applyLayout), so a scroll that lands
+      // at the live edge, such as a clamp after the content shrinks, need not
+      // measure every mounted row.
+      session.anchor = session.mode === "following-end" ? null : captureConversationAnchor(rowGeometry(viewport));
       publish();
     };
     const canLeaveLiveEdge = (delta: number) => sessionRef.current?.mode !== "following-end"
@@ -341,7 +408,10 @@ export function useConversationScrollController(options: ConversationScrollContr
     viewport.addEventListener("load", notifyLayoutChange, true);
     viewport.ownerDocument.addEventListener("selectionchange", onSelection);
     window.addEventListener("resize", notifyLayoutChange);
-    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(notifyLayoutChange);
+    // Delivered after layout: apply at once, reading geometry layout already
+    // computed, and correcting the scroll position before this frame paints.
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => applyLayoutRef.current());
+    observingResizeRef.current = resize !== null;
     const observeRows = () => {
       resize?.disconnect();
       resize?.observe(viewport);
@@ -349,9 +419,24 @@ export function useConversationScrollController(options: ConversationScrollContr
       else viewport.querySelectorAll(ROW_SELECTOR).forEach((row) => resize?.observe(row));
     };
     observeRows();
+    // Re-observing every row is a scan of the whole transcript; streamed
+    // text mutates nodes inside a row, so only rows entering or leaving the
+    // DOM require it.
+    const touchesRows = (nodes: NodeList) => Array.from(nodes).some((node) => node instanceof Element
+      && (node.matches(ROW_SELECTOR) || node.querySelector(ROW_SELECTOR) !== null));
+    const outsideRows = (node: Node) => !(node instanceof Element ? node : node.parentElement)?.closest(ROW_SELECTOR);
     const mutation = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-      if (records.some((record) => record.type === "childList")) observeRows();
-      notifyLayoutChange();
+      const rowsChanged = records.some((record) => record.type === "childList"
+        && (touchesRows(record.addedNodes) || touchesRows(record.removedNodes)));
+      if (rowsChanged) observeRows();
+      // Text streaming inside a row resizes that row, which the resize
+      // observer reports after layout; a frame callback here would read
+      // geometry before layout instead. A change outside the rows, such as
+      // the older-history control appearing above them, moves rows without
+      // resizing any, so it still schedules a pass.
+      const moved = rowsChanged || records.some((record) => outsideRows(record.target));
+      const session = sessionRef.current;
+      if (moved || !resize || !session || !steadySession(session)) notifyLayoutChange();
     });
     mutation?.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden"] });
     return () => {
@@ -369,6 +454,7 @@ export function useConversationScrollController(options: ConversationScrollContr
       viewport.ownerDocument.removeEventListener("selectionchange", onSelection);
       window.removeEventListener("resize", notifyLayoutChange);
       resize?.disconnect();
+      observingResizeRef.current = false;
       mutation?.disconnect();
       viewport.style.overflowAnchor = previousOverflowAnchor;
       viewport.style.scrollSnapType = previousSnap;

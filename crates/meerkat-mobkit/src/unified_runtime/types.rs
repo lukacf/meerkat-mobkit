@@ -107,6 +107,12 @@ pub enum UnifiedRuntimeBuilderError {
     /// A live door (console voice or the external live channel) was
     /// registered but could not be composed.
     LiveCompose(super::live_compose::LiveComposeError),
+    /// `require_incremental_session_persistence(true)` was set, and the
+    /// session store does not advertise meerkat's incremental persistence:
+    /// it would write the whole session document at every turn boundary.
+    SessionStoreNotIncremental {
+        store_kind: String,
+    },
 }
 
 impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
@@ -140,6 +146,13 @@ impl Display for UnifiedRuntimeBuilderError {
             Self::StorageLayout(err) => write!(f, "{err}"),
             Self::StorageProvider(err) => write!(f, "{err}"),
             Self::LiveCompose(err) => write!(f, "{err}"),
+            Self::SessionStoreNotIncremental { store_kind } => write!(
+                f,
+                "require_incremental_session_persistence is set, but the session store \
+                 ({store_kind}) does not advertise incremental persistence; implement \
+                 ContinuityStore::as_incremental_sessions on the continuity store (or forward \
+                 it from the store your wrapper wraps)"
+            ),
         }
     }
 }

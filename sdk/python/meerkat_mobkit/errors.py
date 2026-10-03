@@ -20,6 +20,10 @@ CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
 # failure. The message carries the remediation (the storage doctor, or the
 # explicit ephemeral declaration).
 STORAGE_RESOLUTION_CODE: int = -32014
+# An ordinary request sent before mobkit/init settled: the stdio gateway
+# refuses it at once instead of queueing it behind startup (a provider
+# callback awaiting it during init would wait on itself).
+INIT_IN_PROGRESS_CODE: int = -32018
 # WorkGraph service not configured on the runtime.
 WORKGRAPH_UNAVAILABLE_CODE: int = -32041
 # WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
@@ -32,6 +36,45 @@ class MobKitError(Exception):
 
 class TransportError(MobKitError):
     """Raised when the transport layer fails (subprocess died, connection refused, etc.)."""
+
+
+class TransportReaderFailedError(TransportError):
+    """The transport's reader stopped, so no response can arrive any more.
+
+    Raised to every request still waiting when the gateway closes its stdout
+    or the reader thread fails, and to every later request on the same
+    gateway process. ``reason`` names what ended the reader. A request that
+    was written before the reader stopped may still have been executed by
+    the gateway.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"transport reader stopped: {reason}")
+
+
+class InitOutcomeUnknownError(MobKitError):
+    """The SDK stopped waiting for ``mobkit/init`` before it settled.
+
+    Raised when the init request was written but no settlement arrived: the
+    acceptance was lost, the reader failed, the gateway exited, or the
+    caller's init deadline ran out. The gateway may have changed native state
+    (owner publication, identities, leases, continuity, schedules) before it
+    stopped, so this is never reported as a refusal and never retried
+    automatically. ``init_id`` correlates with the gateway's progress
+    notifications; ``last_phase`` is the last ``mobkit/init_progress`` phase
+    seen (``None`` when none arrived); ``reason`` names what ended the wait.
+    """
+
+    def __init__(self, init_id: str, last_phase: str | None, reason: str):
+        self.init_id = init_id
+        self.last_phase = last_phase
+        self.reason = reason
+        phase = last_phase or "none"
+        super().__init__(
+            f"mobkit/init outcome unknown (init_id={init_id}, last phase: {phase}): "
+            f"{reason}; native state may have changed"
+        )
 
 
 class RpcError(MobKitError):
@@ -207,6 +250,32 @@ class StorageResolutionError(RpcError):
     ):
         super().__init__(
             STORAGE_RESOLUTION_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class InitInProgressError(RpcError):
+    """An ordinary request reached the gateway before ``mobkit/init`` settled.
+
+    The gateway serves ordinary requests only after init settles and refuses
+    earlier ones at once. A startup provider callback (roster, topology,
+    continuity, lease, session builder, customizer) must not issue ordinary
+    runtime RPCs on the runtime that is starting.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            INIT_IN_PROGRESS_CODE,
             message,
             request_id=request_id,
             method=method,

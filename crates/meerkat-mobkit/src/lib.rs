@@ -110,13 +110,14 @@ pub use console_aggregator::{
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted, ConsoleLogError,
     ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleRuntimeRegistration,
-    ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelinePage,
-    ConsoleTimelineQuery, ConsoleTimelineQueryError, ConsoleTimelineQueryResult,
-    ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleTurnOrigin, ConsoleVisibility,
-    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
-    InMemoryConsoleLogStore, MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect,
-    ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect, SendState, SendTransition,
-    SourceIngestionEffect, SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+    ConsoleSendDedupeDurability, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode,
+    ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineQueryError,
+    ConsoleTimelineQueryResult, ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery,
+    ConsoleTurnOrigin, ConsoleVisibility, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, InMemoryConsoleLogStore,
+    MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
+    ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
+    SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
 };
 pub use console_config::{
     ConsoleActionsUiConfig, ConsoleAgentBadgeConfig, ConsoleAgentListConfig,
@@ -204,11 +205,11 @@ pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
-    CAPABILITY_UNAVAILABLE_CODE, CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext,
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE,
-    MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION, STORAGE_RESOLUTION_CODE,
-    SerializedRpcResponseDelivery, handle_console_ingress_json, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, handle_unified_rpc_json_arc,
+    CAPABILITY_UNAVAILABLE_CODE, CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, INIT_IN_PROGRESS_CODE,
+    IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION,
+    STORAGE_RESOLUTION_CODE, SerializedRpcResponseDelivery, handle_console_ingress_json,
+    handle_mobkit_rpc_json, handle_unified_rpc_json, handle_unified_rpc_json_arc,
     handle_unified_rpc_json_with_live_arc_delivery,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
@@ -290,11 +291,12 @@ pub use unified_runtime::{
     EventLogConfig, EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome,
     IdentityBootstrapMode, MemberTurnAdmission, MobStopOutcome, PersistedEvent, PostReconcileHook,
     PostSpawnHook, PreSpawnContext, PreSpawnHook, RediscoverReport, ShutdownDrainReport,
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport, discovery_spec_to_spawn_spec,
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBootstrapPhase,
+    UnifiedRuntimeBootstrapPhaseObserver, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    discovery_spec_to_spawn_spec,
 };
 pub use workgraph_realm::{
     AttentionTargetRealm, MigratedMemberBinding, WorkGraphRealmMigrationMode,

@@ -17,13 +17,32 @@ MODE="${1:-smoke}"
 # braces for prebuilt-binary runs documented from this script.
 export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
 
-pick_port() {
-  python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print("%s:%d" % s.getsockname())
-s.close()
+# Print the bound address the server announces in its log
+# ("MOBKIT_FIXTURE_READY {...}") after binding port 0. Reserving a free port
+# first and binding it later raced every other process on the host for it.
+bound_addr() {
+  python3 - "$1" "$2" <<'PY'
+import json, os, sys, time
+log_path, server_pid = sys.argv[1], int(sys.argv[2])
+prefix = "MOBKIT_FIXTURE_READY "
+deadline = time.time() + 600
+while time.time() < deadline:
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as log:
+            for line in log:
+                if line.startswith(prefix):
+                    print(json.loads(line[len(prefix):])["addr"])
+                    sys.exit(0)
+    except FileNotFoundError:
+        pass
+    try:
+        os.kill(server_pid, 0)
+    except ProcessLookupError:
+        print("access control server exited before announcing its address", file=sys.stderr)
+        sys.exit(2)
+    time.sleep(0.25)
+print("timed out waiting for the access control server's address", file=sys.stderr)
+sys.exit(1)
 PY
 }
 
@@ -89,13 +108,14 @@ if [[ "$MODE" == "--serve" ]]; then
   exit 0
 fi
 
-LISTEN_ADDR="$(pick_port)"
-echo "[access-control-pack] starting example server at http://${LISTEN_ADDR}"
+echo "[access-control-pack] starting example server"
 set -m
-(cd "$ROOT" && ACCESS_CONTROL_LISTEN_ADDR="$LISTEN_ADDR" \
+(cd "$ROOT" && ACCESS_CONTROL_LISTEN_ADDR="127.0.0.1:0" \
   cargo run -p meerkat-mobkit --example access_control_console > "$WORK_DIR/server.log" 2>&1) &
 SERVER_PID=$!
 set +m
+LISTEN_ADDR="$(bound_addr "$WORK_DIR/server.log" "$SERVER_PID")"
+echo "[access-control-pack] example server listening at http://${LISTEN_ADDR}"
 wait_for_server "http://${LISTEN_ADDR}"
 echo "[access-control-pack] running HTTP smoke"
 node "$PACK_DIR/smoke.mjs" "http://${LISTEN_ADDR}"

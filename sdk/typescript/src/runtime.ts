@@ -16,6 +16,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import type { MobKitBuilderConfig } from "./builder.js";
 import {
@@ -29,6 +30,7 @@ import {
   LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   STORAGE_RESOLUTION_CODE,
+  INIT_IN_PROGRESS_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
@@ -39,7 +41,10 @@ import {
   NotConnectedError,
   RpcError,
   StorageResolutionError,
+  InitInProgressError,
   TransportError,
+  TransportReaderFailedError,
+  InitOutcomeUnknownError,
   PostAdmissionObservationError,
   TurnFailedError,
   TurnNotDeliveredError,
@@ -51,7 +56,13 @@ import {
   WorkGraphConflictError,
   isRpcError,
 } from "./errors.js";
-import { PersistentTransport, buildJsonRpcRequest } from "./transport.js";
+import {
+  INIT_PROTOCOL_ACCEPTED_THEN_SETTLED,
+  InitDeadlineExceeded,
+  type InitWatch,
+  PersistentTransport,
+  buildJsonRpcRequest,
+} from "./transport.js";
 import { parseSseStream, type SseEvent } from "./sse.js";
 import {
   EventStream,
@@ -674,6 +685,45 @@ function textOfTurn(
   return null;
 }
 
+/** The typed SDK error for a JSON-RPC error payload. */
+function rpcErrorFromPayload(
+  err: Record<string, unknown>,
+  rid: string,
+  method: string,
+): Error {
+  const code = Number(err.code ?? -1);
+  const message = String(err.message ?? String(err));
+  if (code === CAPABILITY_UNAVAILABLE_CODE) {
+    return new CapabilityUnavailableError(message, rid, method, err.data);
+  }
+  if (code === LEASE_LOST_CODE) {
+    return new LeaseLostError(message, rid, method, err.data);
+  }
+  if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
+    return new MemoryBackendUnavailableError(message, rid, method, err.data);
+  }
+  if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
+    return new ConsoleTimelineReplayUnavailableError(message, rid, method, err.data);
+  }
+  if (code === STORAGE_RESOLUTION_CODE) {
+    return new StorageResolutionError(message, rid, method, err.data);
+  }
+  if (code === INIT_IN_PROGRESS_CODE) {
+    return new InitInProgressError(message, rid, method, err.data);
+  }
+  if (code === WORKGRAPH_UNAVAILABLE_CODE) {
+    return new WorkGraphUnavailableError(message, rid, method, err.data);
+  }
+  if (code === WORKGRAPH_CONFLICT_CODE) {
+    return new WorkGraphConflictError(message, rid, method, err.data);
+  }
+  const rpcError = new RpcError(code, message, rid, method, err.data);
+  if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
+    return MobEventsStaleError.fromRpcError(rpcError);
+  }
+  return rpcError;
+}
+
 /**
  * Running MobKit runtime instance.
  *
@@ -812,10 +862,7 @@ export class MobKitRuntime {
       }
 
       try {
-        const initResult = await this._rpcUnchecked(
-          "mobkit/init",
-          this._buildInitParams(),
-        );
+        const initResult = await this._runInit(this._transport);
         if (
           typeof initResult === "object" &&
           initResult !== null &&
@@ -840,7 +887,7 @@ export class MobKitRuntime {
         // fail-closed init refusals (the typed StorageResolutionError)
         // write the error response and then exit, so the process being
         // dead does not make the structured error a transport failure.
-        if (isRpcError(err)) {
+        if (isRpcError(err) || err instanceof InitOutcomeUnknownError) {
           throw err;
         }
         if (this._transport !== null && !this._transport.isRunning()) {
@@ -858,6 +905,107 @@ export class MobKitRuntime {
           "RPC calls will fail with NotConnectedError",
       );
     }
+  }
+
+  /**
+   * Run `mobkit/init` as accepted-then-settled (#550).
+   *
+   * The init id is generated and its watch registered before the request is
+   * written. A gateway that supports the protocol answers `accepted` at once;
+   * readiness comes only from the correlated `ready` settlement, and a
+   * `failed` settlement throws the typed error with `data.durable_effects`.
+   * An older gateway answers once with the final result, which is used as
+   * before. Losing the answer, the reader or the gateway after the request
+   * was written throws `InitOutcomeUnknownError`: the gateway may have
+   * changed native state, so it is never reported as a refusal.
+   */
+  private async _runInit(transport: PersistentTransport): Promise<unknown> {
+    const initId = `init-${randomUUID()}`;
+    const params = this._buildInitParams();
+    params.init_protocol = INIT_PROTOCOL_ACCEPTED_THEN_SETTLED;
+    params.init_id = initId;
+    const watch = transport.openInitWatch(initId);
+    try {
+      return await this._initWithWatch(transport, watch, params);
+    } finally {
+      transport.closeInitWatch(watch);
+    }
+  }
+
+  private async _initWithWatch(
+    transport: PersistentTransport,
+    watch: InitWatch,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const initId = watch.initId;
+    const method = "mobkit/init";
+    const rid = nextRequestId(method);
+    const request = buildJsonRpcRequest(rid, method, params);
+    let response: Record<string, unknown>;
+    try {
+      response = (await transport.sendAsync(
+        request as unknown as Record<string, unknown>,
+      )) as Record<string, unknown>;
+    } catch (err) {
+      const reason = err instanceof TransportReaderFailedError
+        ? err.message
+        : `no answer to mobkit/init: ${err instanceof Error ? err.message : String(err)}`;
+      throw new InitOutcomeUnknownError(initId, watch.lastPhase, reason);
+    }
+    if ("error" in response) {
+      // Refused before acceptance (or by an older gateway): typed, and
+      // nothing past the pre-durable gates ran.
+      throw rpcErrorFromPayload(response.error as Record<string, unknown>, rid, method);
+    }
+    const result = response.result as Record<string, unknown> | null | undefined;
+    if (!(typeof result === "object" && result !== null && result.init_state === "accepted")) {
+      // An older gateway: its single response is the final init result.
+      return result;
+    }
+    if (result.init_id !== initId) {
+      throw new InitOutcomeUnknownError(
+        initId,
+        watch.lastPhase,
+        `the gateway accepted a different init_id (${JSON.stringify(result.init_id)})`,
+      );
+    }
+    let settled: Record<string, unknown>;
+    try {
+      settled = await watch.settlement(this._config.initDeadlineMs);
+    } catch (err) {
+      if (err instanceof TransportReaderFailedError || err instanceof InitDeadlineExceeded) {
+        throw new InitOutcomeUnknownError(initId, watch.lastPhase, err.message);
+      }
+      throw err;
+    }
+    if (settled.outcome === "ready") {
+      const ready: Record<string, unknown> = { ...settled };
+      delete ready.init_id;
+      delete ready.outcome;
+      return ready;
+    }
+    if (settled.outcome === "failed") {
+      const data = settled.data;
+      const errorData: Record<string, unknown> =
+        typeof data === "object" && data !== null && !Array.isArray(data)
+          ? { ...(data as Record<string, unknown>) }
+          : data === undefined || data === null ? {} : { detail: data };
+      errorData.durable_effects = settled.durable_effects ?? "possible";
+      throw rpcErrorFromPayload(
+        {
+          code: settled.code ?? -32603,
+          message: settled.message ?? "mobkit/init failed",
+          data: errorData,
+        },
+        rid,
+        method,
+      );
+    }
+    throw new InitOutcomeUnknownError(
+      initId,
+      watch.lastPhase,
+      `unrecognized mobkit/init settlement outcome ${JSON.stringify(settled.outcome)}`,
+    );
   }
 
   private _buildInitParams(): Record<string, unknown> {
@@ -1008,35 +1156,7 @@ export class MobKitRuntime {
     )) as Record<string, unknown>;
 
     if ("error" in response) {
-      const err = response.error as Record<string, unknown>;
-      const code = Number(err.code ?? -1);
-      const message = String(err.message ?? String(err));
-      if (code === CAPABILITY_UNAVAILABLE_CODE) {
-        throw new CapabilityUnavailableError(message, rid, method, err.data);
-      }
-      if (code === LEASE_LOST_CODE) {
-        throw new LeaseLostError(message, rid, method, err.data);
-      }
-      if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
-        throw new MemoryBackendUnavailableError(message, rid, method, err.data);
-      }
-      if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
-        throw new ConsoleTimelineReplayUnavailableError(message, rid, method, err.data);
-      }
-      if (code === STORAGE_RESOLUTION_CODE) {
-        throw new StorageResolutionError(message, rid, method, err.data);
-      }
-      if (code === WORKGRAPH_UNAVAILABLE_CODE) {
-        throw new WorkGraphUnavailableError(message, rid, method, err.data);
-      }
-      if (code === WORKGRAPH_CONFLICT_CODE) {
-        throw new WorkGraphConflictError(message, rid, method, err.data);
-      }
-      const rpcError = new RpcError(code, message, rid, method, err.data);
-      if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
-        throw MobEventsStaleError.fromRpcError(rpcError);
-      }
-      throw rpcError;
+      throw rpcErrorFromPayload(response.error as Record<string, unknown>, rid, method);
     }
     return response.result;
   }

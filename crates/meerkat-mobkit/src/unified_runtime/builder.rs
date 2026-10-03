@@ -79,6 +79,11 @@ pub struct UnifiedRuntimeBuilder {
     max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
 
+    /// Refuse to build when the session store would persist whole session
+    /// documents per turn (see
+    /// [`require_incremental_session_persistence`](Self::require_incremental_session_persistence)).
+    require_incremental_session_persistence: bool,
+
     // --- Identity-first external path ---
     continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
     lease_provider: Option<Arc<dyn crate::identity_first::contracts::LeaseProvider>>,
@@ -88,6 +93,8 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
+    /// Named Rust tool bundles added to the resolved or supplied mob spec.
+    tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -252,6 +259,20 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Opt in to strict session persistence: `build()` refuses with
+    /// [`UnifiedRuntimeBuilderError::SessionStoreNotIncremental`] when the
+    /// session store does not advertise meerkat's incremental persistence,
+    /// instead of starting on the whole-blob fallback (one warning, then the
+    /// whole session document written at every turn boundary).
+    ///
+    /// For an identity-first launch this means the continuity store must
+    /// serve [`ContinuityStore::as_incremental_sessions`](crate::identity_first::contracts::ContinuityStore::as_incremental_sessions).
+    /// Off by default.
+    pub fn require_incremental_session_persistence(mut self, required: bool) -> Self {
+        self.require_incremental_session_persistence = required;
+        self
+    }
+
     /// Set an external `LeaseProvider` for the identity-first path.
     ///
     /// Supply [`continuity_store`](Self::continuity_store) with it; see
@@ -348,6 +369,20 @@ impl UnifiedRuntimeBuilder {
     /// Set the managed topology provider for identity-first bootstrap and refresh.
     pub fn topology_provider(mut self, provider: Arc<dyn TopologyProvider>) -> Self {
         self.topology_provider = Some(provider);
+        self
+    }
+
+    /// Register a named Rust tool bundle for profiles' `tools.rust_bundles`.
+    /// It is added to the mob spec this builder resolves or is given; see
+    /// [`MobBootstrapSpec::register_tool_bundle`]. A name that the supplied
+    /// spec already registers is refused at build.
+    #[must_use]
+    pub fn register_tool_bundle(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    ) -> Self {
+        self.tool_bundles.insert(name.into(), dispatcher);
         self
     }
 
@@ -980,6 +1015,16 @@ impl UnifiedRuntimeBuilder {
         if let Some(store) = continuity_session_store.as_ref() {
             self.custom_session_store = Some(store.clone());
         }
+        // Strict mode: the default SQLite session store is incremental, so
+        // only a custom or continuity-backed store can fail this.
+        if self.require_incremental_session_persistence
+            && let Some(store) = self.custom_session_store.as_ref()
+            && Arc::clone(store).as_incremental().is_none()
+        {
+            return Err(UnifiedRuntimeBuilderError::SessionStoreNotIncremental {
+                store_kind: self.custom_session_store_kind(),
+            });
+        }
 
         // Legacy mob_spec path takes precedence — must be consumed before
         // resolve_mob_spec (which borrows &self for the definition path).
@@ -1029,6 +1074,18 @@ impl UnifiedRuntimeBuilder {
                 })
             });
             summary.slots.extend(provider_census);
+        }
+
+        for (name, dispatcher) in std::mem::take(&mut self.tool_bundles) {
+            if mob_spec.tool_bundles.contains_key(&name) {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    format!(
+                        "tool bundle '{name}' is registered on both the builder and the supplied \
+                     MobBootstrapSpec"
+                    ),
+                ));
+            }
+            mob_spec.tool_bundles.insert(name, dispatcher);
         }
 
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
@@ -1120,6 +1177,20 @@ impl UnifiedRuntimeBuilder {
                     self.agent_memory_config.clone().unwrap_or_default(),
                 )));
         }
+        // Identity-first `customize_build` tools follow each member across
+        // meerkat-side rebuilds through one stable dispatcher per identity
+        // (#563). Composed into the single customizer slot, never replacing.
+        let customizer_tool_registry = (wants_identity_first && agent_customizer.is_some())
+            .then(crate::identity_first::CustomizerToolRegistry::new);
+        if let Some(registry) = customizer_tool_registry.as_ref() {
+            mob_spec.spawn_member_customizer =
+                Some(crate::identity_first::ComposedSpawnMemberCustomizer::over(
+                    mob_spec.spawn_member_customizer.take(),
+                    Arc::new(crate::identity_first::CustomizerToolsSpawnCustomizer::new(
+                        registry.clone(),
+                    )),
+                ));
+        }
 
         // The structural-events subscription cursor lives in the
         // persistent metadata adapter. For ephemeral builds this can be
@@ -1163,6 +1234,47 @@ impl UnifiedRuntimeBuilder {
         // attaches - their decorators read the slot per call).
         let dispatch_taint_slot = mob_spec.dispatch_taint_slot();
         let live_plan = self.live_plan(&mut mob_spec)?;
+        // A persistent mob can be restored while `bootstrap` builds it (a log
+        // that was left Running revives every member inside meerkat's own
+        // resume), before any identity activation step. Publish each roster
+        // identity's customizer tools first, so those builds carry them (#563).
+        let early_customizer_tools_pending = match (
+            customizer_tool_registry.as_ref(),
+            self.roster_provider.as_ref(),
+            agent_customizer.as_ref(),
+            storage_layout.as_ref(),
+        ) {
+            (Some(registry), Some(roster_provider), Some(customizer), Some(_)) => {
+                match roster_provider
+                    .roster(&RosterContext {
+                        mob_definition: Some(mob_spec.definition.clone()),
+                        previous_identities: Vec::new(),
+                    })
+                    .await
+                {
+                    Ok(roster) => {
+                        crate::identity_first::customizer_tools::prepublish(
+                            registry,
+                            &roster,
+                            customizer.as_ref(),
+                            AgentRuntimeServices::empty(),
+                            &[],
+                            &[],
+                        )
+                        .await
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "roster provider failed before the mob build; customizer tools are \
+                             published by each identity's materialization instead"
+                        );
+                        BTreeMap::new()
+                    }
+                }
+            }
+            _ => BTreeMap::new(),
+        };
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -1306,6 +1418,10 @@ impl UnifiedRuntimeBuilder {
             identity_runtime
                 .set_agent_customizer(agent_customizer.clone())
                 .await;
+            identity_runtime
+                .set_customizer_tool_registry(customizer_tool_registry.clone())
+                .await;
+            identity_runtime.record_customizer_tools_pending(early_customizer_tools_pending);
             identity_runtime
                 .set_agent_memory(agent_memory_injector.clone())
                 .await;
@@ -1619,11 +1735,13 @@ impl UnifiedRuntimeBuilder {
     /// H2 probe warning names the concrete store the builder composed
     /// (`build()` installs a `ContinuitySessionStoreAdapter` there when a
     /// continuity store is configured).
-    fn custom_session_store_kind(&self) -> &'static str {
-        if self.continuity_store.is_some() {
-            "ContinuitySessionStoreAdapter"
-        } else {
-            "custom session store"
+    fn custom_session_store_kind(&self) -> String {
+        match self.continuity_store.as_ref() {
+            Some(store) => format!(
+                "ContinuitySessionStoreAdapter over {}",
+                store.store_type_name()
+            ),
+            None => "custom session store".to_string(),
         }
     }
 
@@ -1946,7 +2064,7 @@ impl UnifiedRuntimeBuilder {
             let session_store_kind = if self.custom_session_store.is_some() {
                 self.custom_session_store_kind()
             } else {
-                "SqliteSessionStore"
+                "SqliteSessionStore".to_string()
             };
             let session_store: Arc<dyn meerkat::SessionStore> =
                 if let Some(ref store) = self.custom_session_store {
@@ -1972,7 +2090,7 @@ impl UnifiedRuntimeBuilder {
                 state_path.clone(),
                 max_sessions,
                 session_store,
-                session_store_kind,
+                &session_store_kind,
                 self.blob_injection()?,
                 self.ephemeral_blobs,
                 self.ephemeral_runtime_store,
@@ -2013,7 +2131,7 @@ impl UnifiedRuntimeBuilder {
                 scratch_dir.clone(),
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.custom_session_store_kind(),
+                &self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
                 self.workgraph_store.clone(),
@@ -2036,7 +2154,7 @@ impl UnifiedRuntimeBuilder {
                 store_path,
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.custom_session_store_kind(),
+                &self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
                 self.workgraph_store.clone(),

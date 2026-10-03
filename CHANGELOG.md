@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `ContinuityStore::as_incremental_sessions` no longer has a default. Every
+  continuity store now states whether it serves MobKit's session-delta
+  channel: a decorator forwards its inner store's channel, and a
+  whole-snapshot store returns `None` and says why.
+  - The default `None` let wrappers around incremental-capable stores, and
+    native stores that never considered the channel, silently fall back to
+    writing the whole session document at every turn boundary. One OB3
+    coordinator was rewritten in full, at 286 MB, 44 times a day.
+  - Implementors without the method must add it.
+- `UnifiedRuntimeBuilderError` gains
+  `SessionStoreNotIncremental { store_kind }` (see Added). Exhaustive matches
+  must handle it.
+
 - `StorageSlotSummary.declaration: DurabilityDeclaration` is replaced by
   `durability: StorageSlotDurability`. Match `Declared(declaration)` or
   `Unverified { domain, class }`; use the enum's accessors to inspect the
@@ -321,6 +334,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The console renders typed operation refusals and outcome-audit failures as
   distinct, safe notices while preserving the actual tool result.
+- `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
+  `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
+  host Rust tool bundles to meerkat-mob's `MobBuilder::register_tool_bundle`,
+  so a profile's `tools.rust_bundles` reaches its members on spawn, resume
+  (including the members resume revives) and respawn. A profile naming an
+  unregistered bundle is refused when its member is built. Registering one
+  name on both the builder and a supplied spec is refused as conflicting
+  configuration. Agent-created child mobs do not receive host bundles.
+- `mobkit/init` can run as accepted-then-settled (#550), so startup is no
+  longer cut off by the SDK's 60 s request timeout. Both SDKs opt in by
+  default.
+  - The SDK sends `init_protocol: "accepted_then_settled"` and an `init_id` it
+    is already listening for. After the cheap pre-durable gates pass, the
+    gateway answers `accepted` at once. It then emits
+    `mobkit/init_progress {init_id, phase}` at each startup phase: `storage`,
+    `owner_publication`, `prepare`, `roster`, `register_owners`, `prewarm`,
+    `activate`, `restore`, `schedules`, `serve`, and `cleanup` on failure.
+    Finally it emits exactly one `mobkit/init_settled`, either
+    `{outcome: "ready", ...init result}` or
+    `{outcome: "failed", code, message, data, durable_effects}`.
+  - `durable_effects` is `"none"` only when init failed before the `storage`
+    phase, and `"possible"` otherwise, including when cleanup fails.
+  - A gateway shutdown requested during init stops at the next phase
+    boundary, runs runtime cleanup, settles `failed`
+    (`data.reason: "shutdown_requested"`), and only then answers the shutdown
+    request.
+  - A client that does not opt in gets the single legacy response unchanged
+    and never sees `accepted`. A new SDK talking to an older gateway uses that
+    gateway's single response as before.
+  - The SDKs have no built-in total deadline for an accepted init, because
+    persisted-authority prewarm on a large roster is deliberately unbounded.
+    The wait ends on the settlement, the gateway exiting, a reader failure,
+    or the caller's deadline (Python `MobKitBuilder.init_deadline(seconds)`,
+    TypeScript `initDeadline(ms)`).
+  - A `failed` settlement raises the same typed error as before, with
+    `data.durable_effects`.
+  - Once the init request is written, losing the answer, the reader or the
+    gateway raises the new `InitOutcomeUnknownError(init_id, last_phase,
+    reason)`, never a refusal, and is never retried automatically.
+  - New Rust API: `UnifiedRuntime::set_bootstrap_phase_observer` with
+    `UnifiedRuntimeBootstrapPhase` (`#[non_exhaustive]`), which reports
+    owner registration, prewarm, activation, roster restore and failure
+    cleanup.
+  - Startup provider callbacks must not issue ordinary RPCs on the same
+    gateway, because ordinary dispatch starts only after init settles.
+- `mobkit_store_conformance::chapters::continuity_wrapper_preserves_incremental_channel`
+  takes an incremental-capable substrate and the embedder's own wrapping
+  function. It fails when the wrapped store, or the
+  `ContinuitySessionStoreAdapter` over it, loses the session-delta channel.
+- `UnifiedRuntimeBuilder::require_incremental_session_persistence(true)`
+  turns on opt-in strict mode. `build()` then refuses with
+  `SessionStoreNotIncremental` instead of starting on the whole-blob fallback.
+- `ContinuityStore::store_type_name()` is defaulted to the concrete type
+  name, and `ContinuitySessionStoreAdapter::continuity_store_type_name()`
+  exposes it. The startup warning for a whole-blob session store now names
+  the continuity store behind the adapter and says how to fix it.
+
+- `ConsoleSendDedupeDurability` (`Durable` | `ProcessLifetime`) and
+  `ConsoleLogStore::send_dedupe_durability()`, a defaulted trait method that
+  returns `ProcessLifetime` unless a store vouches for durability.
+  `SqliteConsoleLogStore::open` reports `Durable`;
+  `SqliteConsoleLogStore::in_memory` and `InMemoryConsoleLogStore` report
+  `ProcessLifetime`. `MobKitConsoleAggregator::send_dedupe_durability()`
+  reads it from the store in use, and `GET /console/experience` exposes it
+  as `send_dedupe: { durable: bool }` (absent without a console
+  aggregator). Custom stores that persist dedupe records across restarts
+  should override the method.
 
 - Typed wait outcomes in both SDKs: `send_and_wait_outcome`,
   `dispatch_and_wait_outcome` and `dispatch_text_and_wait_outcome` (Python)
@@ -537,6 +617,421 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Console: a member-kickoff notice no longer shows Meerkat's peer transport
+  projection. Meerkat 0.8.50 sends kickoff status (`mob.kickoff_*`) as peer
+  requests whose content is model-facing routing text (the peer spec with its
+  public key, and send_response coaching). Only `mob.kickoff_started` was
+  special-cased: the shared console-core adapter, in the markdown text mode
+  the shared host uses, showed that text verbatim for `mob.kickoff_failed`
+  and `mob.kickoff_cancelled`, and in legacy mode even for
+  `mob.kickoff_started`. The stock console in markdown mode did the same.
+  Every kickoff request, and every typed `lifecycle` notice (meerkat #1608),
+  now shows its typed summary (`Peer request: mob.kickoff_failed`); an
+  ordinary peer request still shows its authored content.
+
+- The console aggregator no longer re-reads a large session's whole history
+  twice after registration (#570). Registration's recovery pass could land
+  while a member was idle between runs of a queued burst and read the
+  complete document (4.4 s here) as its later inputs and their commits kept
+  landing. The epoch it recorded was then stale, and a discovery tick re-read
+  the whole document (5.4 s) once the fresh watermark expired: in
+  `idle_cpu_gate`, about half the time inside its measured idle window.
+  - The refresh gate now reads `Draining`, not settled, while a member that
+    is idle on the session still has active inputs or a pending commit. That
+    pass skips its read, and the refresh is re-driven by the transition that
+    drains the session: the waiter wakes on the session's durable writes (a
+    new change channel on the write-epoch witness, not a timer) and fires
+    once no commit is pending, no input is active, and every input it saw
+    active has a finalized receipt. A refresh that lands while a run is open
+    on the session still restores positive frames and arms the same
+    re-drive, so the settled refresh follows the run's end, not a tick.
+  - No exit path leaves that waiter armed: it also wakes on the mob's
+    lifecycle changes and refreshes at once, from what is durable, when the
+    member is no longer bound to the session and live in a running mob (a
+    stop, retire or destroy with inputs still active), when the runtime no
+    longer holds or can progress the session, or when either change source
+    closes. A restarted gateway re-runs registration's recovery pass.
+  - A completed pass whose session write epoch moved during its read
+    re-reads once at once, instead of waiting for a tick and watermark
+    expiry. It runs only because the epoch moved, so it cannot loop.
+  - `MobKitConsoleAggregator::history_backfill_converged` resolves once no
+    session-history backfill is running, queued or armed to re-run.
+    `idle_cpu_gate` waits on it instead of a 2 s CPU probe that could not see
+    a pass scheduled after it. The large session is now read once (one full
+    read, converged after about 7 s), and the measured idle window stays
+    near 15 ms. Verifying only the new suffix of a history is #573.
+
+- `npm run embedded:freshness` fails when a generated console bundle contains
+  a module path outside the repository or an absolute local path. A
+  worktree whose `node_modules` is a symlink into another checkout bundled
+  paths such as `../../<other-worktree>/console/node_modules/...` into
+  `console/dist/index.cjs`, which passed the freshness check there and
+  reached main once (regenerated in 4e337578).
+
+- The stdio gateway no longer queues ordinary requests behind `mobkit/init`
+  (#550). Before, a request that arrived during startup waited in a 64-slot
+  queue that nothing drained until init finished. A startup provider callback
+  that awaited such a request waited on itself until its 130 s deadline, and
+  a full queue stalled the stdin reader, so callback responses stopped being
+  routed. An ordinary request sent before init settles now gets an immediate
+  typed refusal: `-32018`, `data.kind: "init_in_progress"`, exported as
+  `INIT_IN_PROGRESS_CODE` and raised as `InitInProgressError` in both SDKs.
+  `mobkit/shutdown` and callback responses are still admitted. Startup
+  callbacks must not issue ordinary RPCs on the runtime that is starting.
+- Python SDK: a callback response is no longer written behind host requests
+  queued for the gateway's stdin. Writes stay whole lines, and a callback
+  response now waits only for the line currently being written (#550).
+
+- SDK transports (Python and TypeScript) no longer leave a request or a
+  gateway callback waiting out its deadline because one stdout or stdin line
+  was bad (#550):
+  - The Python reader skips a line that is not UTF-8 or not a JSON object.
+    Before, such a line ended the reader thread, so every waiter hung to its
+    timeout and every gateway callback to its 130 s deadline. The TypeScript
+    reader skips a line that is not a JSON object instead of throwing from its
+    listener.
+  - Any reader exit now fails every waiter with the typed
+    `TransportReaderFailedError` (a `TransportError` with a `reason`), and later
+    requests to the same gateway process fail at once. Before, a gateway that
+    closed its stdout answered waiters with an untyped `-32099 "subprocess
+    died"` RPC error. A response that arrived before the exit (such as a
+    fail-closed `mobkit/init` refusal) still reaches its waiter.
+  - A callback result containing NaN or Infinity is answered with a typed
+    error (`data.kind: "non_finite_result"`). Before, Python wrote a `NaN`
+    token the gateway could not parse, so the callback waited out its deadline,
+    and TypeScript silently sent `null`. The Python transport writes strict
+    JSON only (`allow_nan=False`).
+  - A callback request that arrives with no registered handler is answered at
+    once with a typed error (`data.kind: "callback_handler_unavailable"`)
+    instead of no reply.
+  - The gateway logs a stdin line that is not valid JSON (its length and any
+    callback id, never its content). When it is a reply to a pending callback,
+    that callback now fails at once with "malformed callback response" instead
+    of waiting out its 130 s deadline.
+- Module subprocesses are now reaped on every path that stops owning them.
+  - A module that closes stdout without exiting no longer blocks module start
+    until it exits; the start fails with `EmptyOutput` and the module is
+    killed and reaped.
+  - A bootstrap that fails after starting modules (for example on a
+    malformed memory state) now kills and reaps those modules instead of
+    leaking them.
+  - A cleanup failure after a failed start, an aborted respawn's replacement
+    and dropping a `MobkitRuntimeHandle` without `shutdown()` all kill and
+    reap the process when its owner is released.
+  - `RuntimeShutdownReport::orphan_processes` still counts children whose
+    synchronous termination failed; those children are now also reaped as
+    the shutdown releases them.
+  - On Linux and macOS the first event line is read on the calling thread
+    within the start timeout and the module's stdout is closed afterwards.
+    No reader thread is left blocked on a pipe that a descendant still
+    holds; such a descendant now gets EPIPE.
+  - Behavior change: dropping the runtime handle now terminates its live
+    module processes; previously they kept running.
+
+- Identity members no longer lose their `customize_build` tools on a
+  restart, an adoption, a respawn or a delivery-time repair (#563). Before,
+  those tools reached a member only as the per-spawn overlay of the one
+  spawn that ran the customizer, and meerkat never persists that overlay.
+  The failure modes were:
+  - a restart restore rebuilt the member without the tools;
+  - when the next materialization's spawn hit "member already exists", every
+    adopt branch discarded the new tools;
+  - delivery-time repair respawned with role and labels only.
+
+  The host's handlers stayed registered, but the live agent stopped
+  advertising the tools (`mobkit/identity/resolved_tools`). Now each identity
+  member carries one stable, dynamic dispatcher for its whole life:
+  - Every successful `customize_build` publishes into it, swapping the tool
+    list and its handler scope together. A tool from an earlier build is
+    refused typed, never routed to a stale scope.
+  - A new `CustomizerToolsSpawnCustomizer` attaches it to every meerkat-side
+    build of a registered identity. MobKit installs it whenever an agent
+    customizer exists, and composes it with the memory customizer in meerkat's
+    single slot.
+  - An adopted occupant picks up the current tools without a respawn.
+  - On a restart, `customize_build` runs for every roster identity before the
+    mob is restored (before activation, or before the mob build when meerkat
+    restores members inside it). Restored members therefore start with their
+    tools, `mobkit/identity/resolved_tools` lists them before the first turn,
+    and runs that start at activation see them. The materialization still runs
+    `customize_build` and republishes. An early failure is logged per identity
+    and reported as the new optional
+    `IdentityStatus::customizer_tools_pending` (`{reason}`) until the
+    materialization publishes.
+  - Members that are not roster identities (helpers, forks, flow-provisioned
+    and raw-spawned members under their own ids) get no customizer tools.
+  - New public types: `identity_first::{CustomizerToolRegistry,
+    IdentityCustomizerTools, CustomizerToolsSpawnCustomizer,
+    ComposedSpawnMemberCustomizer}`,
+    `IdentityRuntime::set_customizer_tool_registry`, and
+    `MobBootstrapSpec::with_spawn_member_customizer`, which composes instead of
+    replacing.
+
+- An identity member that had not run a turn before a shutdown is
+  materialized again at the next boot. The local continuity store creates its
+  head-canonical tables only at the first delta write, but its per-session
+  record lookup always read them. On such a file the lookup failed, MobKit
+  skipped the member's owner pre-registration, and the member stayed
+  unmaterialized with no live session (`mobkit/identity/resolved_tools`
+  answered "session not found").
+
+- Console: queued rows that did not go through now say what happened in
+  plain words. A refused row reads "Not sent: this message never reached
+  <agent>." with Send again and Discard; a row whose answer was lost reads
+  "We couldn't confirm <agent> got this." with Check, Send again and Discard.
+  Transport failures read "Couldn't reach <host> (offline or signed out)",
+  where <host> is `console_config.brand.label` (else "the server"). Rows
+  saved by 0.8.43 and earlier, which carry only a raw error string, are
+  reworded the same way on load.
+
+- Console: Check always ends in a visible result. The row shows "Checking..."
+  at once, then "Delivered at <time>" (the row clears and a dismissible
+  notice stays), "Not found in <agent>'s recent messages." (the row keeps its
+  options and its saved state), or a plain "Couldn't check: ..." error. Before,
+  some paths (an unresolved owner, a lock or scope miss) ended with no change
+  on screen.
+
+- Console: an uncertain row offers Send again only when the gateway
+  advertises `send_dedupe.durable: true`. Send again resends the saved
+  message with its original idempotency key, so the gateway returns the
+  original acceptance if the first send did arrive instead of delivering it
+  twice. Send dedupe records have no expiry or cap, but a gateway without a
+  storage layout keeps them in memory, where a restart between the two
+  sends could admit the message twice; such gateways (and older ones that
+  omit the field) get Check and Discard only. Refused rows keep Send again
+  either way, since nothing was admitted.
+
+- Console: typing while a reply streams after a send no longer measures the
+  whole transcript on every streamed token. After a send the conversation
+  holds the submitted turn in place, and in that mode every content commit
+  read every mounted row's rect (about 1,200 element rect reads per token
+  with 200 turns mounted), forcing layout over the transcript while the
+  operator typed the next message. Holding an anchor now measures only the
+  anchor row (and its recorded neighbors); every row is read only when the
+  anchor is gone. Against the real gateway in an OB3-style nested iframe with
+  300 turns and 4x CPU throttling, main-thread time per keystroke while the
+  reply streams drops from 29-31 ms to 13-15 ms (p95 52-58 ms to 36-37 ms).
+  `npm run perf:typing:browser` adds a send-then-type scenario and fails on
+  more than 40 element rect reads per streamed token (13 now, 1,207 before).
+
+- Console: after a gateway restart, a streamed reply no longer re-derives the
+  whole transcript on every token. Agent console events carry the member
+  stream's `source_sequence`, which Meerkat numbers from the start again in
+  each process. The transcript projection ordered sequences across the whole
+  session, so the restarted sequences (1, 2, 3, ... under a stored history
+  numbered into the thousands) could never be proven to append, the
+  incremental derivation fell back to a full derivation per token
+  (about 12 ms per token at 300 turns), and live frames from before and after
+  the restart could be interleaved. The gateway now stamps each agent event
+  with `source_epoch` (this process and the member's generation and fence),
+  and the projection orders sequences only within one epoch; across epochs
+  arrival order decides. Frames without an epoch keep the session-wide
+  ordering. `npm run perf:typing:browser` adds a restarted-session run that
+  fails on full derivations per streamed token (0.00 now, 0.88 before).
+
+- Console: a streamed token no longer forces a synchronous layout of the
+  transcript. Two reads ran with layout dirty on every content commit: the
+  scroll controller measured its anchor row in the commit's layout effect,
+  and the chat pane re-read the transcript's scroll height to decide whether
+  the turn rail is needed. Both now read geometry in `ResizeObserver`
+  callbacks, which run after the frame's layout and before it paints, so a
+  steady session (following the live edge or holding an anchor) still
+  corrects its position in the same frame. Submissions, reveals, restores and
+  row insertion keep their immediate pass. This also stops a streamed commit
+  from pinning a reader back to the live edge after a scroll whose event has
+  not arrived yet (the console e2e chat-pane-older-history-demand-paging
+  flake). Scroll writes also keep snapping and browser scroll anchoring off:
+  returning to a conversation restored its reading position while the
+  pane's turn snapping was briefly re-enabled, and the browser snapped the
+  restored row 62 px away. A change outside the rows, such as the
+  older-history control appearing above them, still schedules a pass: it
+  moves rows without resizing any, and the shift was left for the next
+  viewport resize to correct. A send now empties the composer in the
+  keystroke's own render, as intended; the composer applied the cleared
+  value in an effect, which painted the submitted text again and cleared it
+  20-35 ms later. A native scroll that lands at the
+  live edge no longer measures every mounted row to capture an anchor that
+  following discards. `npm run perf:typing:browser` now fails on more than
+  0.02 script-forced layouts per streamed token (0.00 now, 0.96 before; needs
+  `--trace`, and `--trace-invalidations` names the source) and lowers the
+  rect-read limit to 12 per token (about 9 now, 13 before).
+
+- Console: a streaming reply no longer re-parses its whole Markdown source on
+  every token. While a reply streams, its document renders as closed blocks,
+  each parsed once, plus the open tail. A boundary is a blank line outside a
+  fenced code or HTML block, followed by an unindented line that does not
+  continue a list, so the blocks before it cannot change. Only the tail is
+  parsed again as text arrives (about 160 characters per token in the typing
+  harness, where the whole reply was parsed before), and closing a block
+  changes no rendered node. A completed reply keeps that rendering, so its
+  nodes and any selection survive completion; tests assert it is
+  DOM-identical to a whole parse. A source with link-reference or footnote
+  definitions, which resolve across blocks, renders as a whole parse on
+  completion. `npm run perf:typing:browser` fails on more than 500 Markdown
+  source characters parsed per streamed token.
+
+- Console: a streamed token no longer presents the whole transcript again.
+  The continued (incremental) transcript derivation still rendered every
+  entry on each token: run durations, the visibility filter, per-entry
+  render keys and assistant presentation all ran over the full history.
+  Rendering now resumes from the presentation state after the committed
+  entries, so a token that only grows the open reply presents just that
+  reply; per-entry run-duration eligibility is cached, and interning skips
+  the unchanged prefix. Derivation time per token in the typing harness
+  drops from about 1.5 ms to about 0.2 ms at 300 turns, and the equivalence
+  oracle and seeded fuzz still prove it equal to a full derivation.
+  `npm run perf:typing:browser` fails on more than 4 transcript entries
+  presented per streamed token (about 2 now, one per derivation).
+
+- Console: two per-render scans of the whole history no longer run on every
+  streamed token. Day separators formatted their full date with locale date
+  formatting each time the streaming turn rendered; a day key's label is now
+  formatted once. The active run (for Stop) was found by replaying every
+  frame of the identity log; it is now read back from the end, stopping at
+  the latest `run_started` that names its run, which gives the same answer
+  (a seeded test compares it with the replay) at the cost of the current
+  run instead of the whole log. `npm run perf:typing:browser` reports
+  active-run frames read per token and fails on more than 0.05 day-label
+  formats per streamed token.
+
+- Console: streamed text renders on every third animation frame instead of
+  every frame, as a React transition. A frame that only adds streamed text
+  waits for the third animation frame (counted in frames, so the pace slows
+  with the frame rate instead of fighting it) and commits as a transition,
+  which a keystroke always preempts. Any other frame still renders on the
+  next animation frame, and a stream's completion (`text_complete`, a run or
+  interaction terminal, or a terminal turn) renders at once. In the typing
+  harness the console renders about 19 times per second while a reply
+  streams instead of about once per token, and main-thread time per streamed
+  token falls by about a third. `npm run perf:typing:browser` fails on more
+  than 25 console renders per second while streaming.
+
+- Console: Find in transcript searches every loaded message, including turns
+  the windowed transcript keeps out of the DOM where the browser's
+  find-in-page cannot reach. Open it from the search button beside Copy
+  transcript or with Control+Shift+F in a chat pane; Enter and Shift+Enter
+  step through matching rows (newest first), each brought into view (and
+  revealed when it is behind Show earlier messages) and highlighted with
+  the CSS Custom Highlight API, with a live "n of m" count; Escape closes it.
+
+- Console: browser find-in-page and keyboard and screen-reader navigation
+  still reach the windowed transcript. Measured turns within 20 turns of the
+  mounted window stay in the DOM, parked as `hidden="until-found"` at their
+  measured size: the browser lays out and paints nothing inside them, but
+  find-in-page finds their text and reveals the turn, and the window keeps a
+  revealed turn mounted. The transcript is now a WAI-ARIA feed (`role=feed`,
+  `aria-busy` while history loads) of turn articles with `aria-posinset` and
+  `aria-setsize`; PageDown and PageUp on a turn move focus to the next or
+  previous turn, mounting it (and revealing earlier turns at the top), and
+  Control+End moves to the composer. The parked band adds no measurable
+  CPU per key at the live edge. The browser equivalence run checks that
+  parked turns carry their full text, that the path find takes on a match
+  keeps the geometry, and that keyboard focus reaches every loaded turn in
+  order.
+
+- Console: the transcript mounts only the turns near the viewport. Every
+  revealed turn used to stay mounted, so an operator who scrolled back kept
+  the whole loaded history in the DOM (about 16,000 elements at 300 turns),
+  and every keystroke and streamed token paid a frame lifecycle over all of
+  it. Turns farther than 1.5 viewports from the viewport are replaced by a
+  spacer whose height is the sum of their measured heights and the gaps
+  between them, so scroll height, scroll position and everything visible
+  are unchanged. Heights are measured (ResizeObserver, after layout) and
+  never estimated: a turn not measured at the current width with its current
+  content stays mounted. The newest turn, a selection's turns and the turn
+  holding keyboard focus stay mounted, and a rail jump or a restored anchor
+  mounts its turn. A turn holding a pending approval stays mounted wherever
+  the reader is: the request blocks the agent, so windowing must never hide
+  its card. In the typing harness the transcript mounts about 1,100
+  elements after a full fill (16,000 before), and CPU per key falls to about
+  1.6-2.5 ms idle and 2.5-4 ms while a reply streams. `npm run
+  perf:typing:browser` fails above 3,000 mounted elements and adds an
+  equivalence run: the same history windowed and unwindowed
+  (`windowed=false`) must match in scroll height, visible rows and their
+  offsets, turn rail and pixels (exactly: the compared pages render local
+  fonts, without LCD text or subpixel glyph positions) at 17 scroll
+  positions including after a resize, and a selection, a focused control, an opened tool call and a rail
+  jump must survive.
+
+- Console: a transcript row keeps what the reader opened if it unmounts and
+  mounts again. Disclosure state lived in the DOM or in component state, so
+  a remounted row reset it: event payloads, thinking blocks, tool calls,
+  approval details and flow-run cards. Rows now name a scope by their stable
+  row id (`ConversationRowStateScope`), and their parts keep that state in
+  the pane's presentation store through `useRowState` and `RowDetails`.
+  The first render records its initial value, so a thinking block that was
+  open while it streamed stays open. The store is per pane, bounded at 2,000
+  entries and cleared with the pane's authority, like completed-tool
+  disclosures. Nothing changes for a row that stays mounted; this prepares
+  the windowed transcript (#544). A flow-run card still applies its status
+  default when the run's status changes, but no longer resets the reader's
+  choice when it mounts again.
+
+- Console and example acceptance fixtures no longer race other processes for
+  their port. Harnesses reserved a free port, closed it and handed the number
+  to the fixture, which bound it later; anything on the host could take it in
+  between (CI saw `AddrInUse`, OS error 98, at console fixture startup).
+  Fixtures and the flow editor now bind the port-0 address the harness passes
+  and print `MOBKIT_FIXTURE_READY {"addr":"..."}` with the address they
+  actually bound, which the harnesses (`console/fixture-ready.cjs` and the
+  example scripts) wait for. The flow editor smokes no longer use fixed
+  ports, and the Python reference flow hands uvicorn an already-listening
+  socket. A source guard fails if a harness reintroduces a reserve-then-bind
+  helper.
+
+- Console: typing in the chat composer no longer lags with a long history,
+  idle or while a reply streams. In Chromium against the real gateway with
+  300 turns mounted (nested iframe, as OB3 embeds it), keystroke-to-next-paint
+  p95 drops from 18-20 ms to 4-5 ms; with a full 5000-event identity log and
+  a reply streaming it drops from 97-269 ms to 20-25 ms. Each keystroke
+  re-laid out every mounted transcript row: the textarea was a flex item,
+  which Blink never treats as a relayout boundary, and the pane root was a
+  size container, which re-lays out its whole subtree on every pass. The
+  composer input now sits in a fixed-size, strictly contained block and the
+  compact-header query container wraps only the header. While a reply
+  streamed, every token re-derived the whole identity log (about 30 ms at
+  5000 events), re-parsed every history snapshot's growing id list, rebuilt
+  every row and re-scanned the log for the panel phase, and the scroll
+  controller and turn rail measured every mounted row. Transcript derivation
+  now continues incrementally for appended live text (proven equal to a full
+  derivation over every adapter suite and a fuzz corpus); unchanged entries,
+  rows and turns keep their identity so only the streaming turn re-renders;
+  the panel phase extends incrementally; and geometry is read only where it
+  is used. Periodic experience refreshes no longer replace unchanged agent
+  records, which re-derived every docked transcript each time.
+  `npm run perf:typing:browser` drives Chromium in CI and fails on
+  runner-independent work counts (layout objects per idle keystroke, full
+  derivations and turn renders per streamed token), reporting wall-clock
+  p95 as advisory; the jsdom benchmark could not see layout or paint.
+
+- Console: a failed send's typed `message_delivery_failed` frame is now
+  committed before its input frame turns `delivery_failed`, so any client
+  that observes the status (a stream subscriber or a timeline query) can
+  already read why. The status used to commit first, which also made
+  `console_send_selected_skills_member_lane_admission_refusal_surfaces_typed`
+  intermittently miss the failure frame.
+
+- Console: panel data refreshes no longer pile up on a slow server. Every
+  tool or lifecycle event from any agent refreshed the roster and every
+  docked panel kind, including panels in hidden tabs, with no limit on
+  requests in flight. With a topology panel docked and a 60 s
+  `mobkit/topology/query`, the browser queued 28 topology queries a minute
+  and every other console request waited behind them at the per-origin
+  connection limit (p95 53 s). Each panel kind and the event-driven roster
+  refresh now keep at most one request in flight and coalesce later events
+  into one trailing refresh, and only panels in the active tab refresh
+  (hidden tabs refresh when shown). Other requests stay at p95 45-55 ms.
+
+- Console: returning to a conversation restores the remembered reading
+  position even when the host's history arrives after the next frame. A
+  host's asynchronous `revealAnchor(true)` was followed by one re-check on
+  the next animation frame; when the host's rows committed later than that,
+  the controller declared the position unavailable, replaced the anchor and
+  left the view at the top of the transcript ("Earlier position is
+  unavailable"). A confirmed reveal now restores when the row actually
+  mounts and reports the position unavailable only if a newer content commit
+  still lacks it, or on the existing timeout.
+
 - `*_and_wait` / `*AndWait` custody follow-up. Python: an SDK warning raised
   after admission (the untracked-wait, truncated-output or no-own-output
   warning) that a caller escalated with `filterwarnings("error")` now carries
@@ -544,6 +1039,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behaviour is unchanged and nothing is replayed. TypeScript: a tracked
   `WaitEndedError` now carries the top-level `ticket` as well as `admission`.
   The docs name the one exception: a thrown value that cannot carry fields.
+- `mobkit/topology/query` no longer serializes behind the topology mutation
+  lock. In OB3 production (MobKit 0.8.43) queries arriving about once a second
+  with a roughly 0.8 s edge discovery queued behind each other, with p50 67 s
+  and p95 119 s, almost all of it waiting before the provider ran: every read
+  took the exclusive mutation lock and ran reconcile and recovery under it. A
+  read now takes no mutation lock. It reports the committed intent under one
+  state read: while a mutation's write-ahead journal is pending, the journal's
+  pre-operation view, so a read sees the state before or after an apply and
+  never a half-applied one. Concurrent reads share one snapshot computation:
+  a caller arriving while one runs joins the single fresh computation that
+  follows it, so N concurrent queries cost at most two edge discoveries and a
+  result is never older than its call. Nothing is cached by time.
+  Reconcile and recovery run only when an interrupted journal or a
+  non-terminal audit record exists and no plan, apply or recovery holds the
+  mutation lock. A read no longer delays an apply. The same-process bilateral
+  coordinator query still takes its coordinator and runtime locks.
 
 - Console access uses the server's action catalog and current administrator
   state. Stale previews and mutation responses cannot replace another account's

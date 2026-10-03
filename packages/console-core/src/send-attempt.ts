@@ -104,11 +104,20 @@ export function validateConsoleSendAttempt(value: ConsoleSendAttempt): void {
 
 export function beginConsoleSendAttempt(
   attempt: ConsoleSendAttempt,
-  options: { owner: string; now: number; handlingMode: "queue" | "steer"; retryRejected?: boolean },
+  options: {
+    owner: string; now: number; handlingMode: "queue" | "steer"; retryRejected?: boolean;
+    /** Explicit "Send again" of a settled attempt, including an uncertain
+     * one. The frozen envelope (and so its idempotency key) is reused, so the
+     * server replays an acceptance it already recorded or admits the message
+     * once; it can never create a second message. */
+    resend?: boolean;
+  },
 ): ConsoleSendAttempt {
   validateConsoleSendAttempt(attempt);
   if (!nonemptyString(options.owner) || !Number.isFinite(options.now)) throw new Error("The browser send lease is invalid.");
-  if (attempt.state !== "draft" && !(attempt.state === "definitely-rejected" && options.retryRejected)) {
+  const resendable = (attempt.state === "definitely-rejected" && (options.retryRejected || options.resend))
+    || (attempt.state === "outcome-unknown" && options.resend);
+  if (attempt.state !== "draft" && !resendable) {
     throw new Error("This send may already have been accepted. Reconcile it before taking another action.");
   }
   const envelope: ConsoleFrozenSendEnvelope = {
@@ -129,7 +138,7 @@ export function recoverConsoleSendAttempt(attempt: ConsoleSendAttempt, now: numb
   validateConsoleSendAttempt(attempt);
   if (attempt.state === "attempting" && (!attempt.lease || attempt.lease.expiresAt <= now)) {
     return { ...attempt, state: "outcome-unknown", lease: undefined,
-      error: "Acceptance is unknown. Check the conversation before explicitly discarding this attempt." };
+      error: "The page closed before the answer arrived, so delivery is unconfirmed." };
   }
   return attempt;
 }
@@ -326,4 +335,109 @@ export function describeConsoleAcceptanceCheckFailure(error: unknown): ConsoleAc
       return { kind: failure.kind, message: `Could not check acceptance${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${detail}. ${unchanged}` };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plain-language row copy (MobKit 0.8.45). Rows are worded from the typed
+// state and failure kind only, never from a stored error string, so rows
+// saved by older consoles (untyped `error`, no `failureKind`) read the same.
+// ---------------------------------------------------------------------------
+
+/** Names the row copy uses: the destination agent and the embedding host. */
+export interface ConsolePendingRowNames {
+  agent: string;
+  /** The embedding host's display name (console branding), if it has one. */
+  host?: string;
+}
+
+export interface ConsolePendingRowCopy {
+  /** Short state tag shown beside the age. */
+  label: string;
+  /** The row's headline sentence. */
+  title?: string;
+  /** What happened, when the typed failure kind says. */
+  detail?: string;
+}
+
+const NEUTRAL_HOST = "the server";
+function hostOf(names: ConsolePendingRowNames): string {
+  return names.host?.trim() || NEUTRAL_HOST;
+}
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** "Couldn't reach <host> (offline or signed out)." */
+export function consoleCannotReachHost(names: ConsolePendingRowNames): string {
+  return `Couldn't reach ${hostOf(names)} (offline or signed out).`;
+}
+
+export function describeConsolePendingRow(
+  attempt: Pick<ConsoleSendAttempt, "state" | "failureKind">,
+  names: ConsolePendingRowNames,
+): ConsolePendingRowCopy {
+  const host = hostOf(names);
+  if (attempt.state === "draft") return { label: "Queued" };
+  if (attempt.state === "attempting") {
+    return { label: "Sending", title: "Sending...", detail: `Waiting for ${host} to confirm.` };
+  }
+  if (attempt.state === "accepted") return { label: "Delivered" };
+  if (attempt.state === "definitely-rejected") {
+    const detail = (() => {
+      switch (attempt.failureKind) {
+        case "unauthenticated": return "You were signed out, or this network isn't allowed.";
+        case "access_denied": return `You don't have permission to message ${names.agent}.`;
+        case "read_only": return "This console is read-only.";
+        case "capability_unavailable": return "Sending isn't available here.";
+        default: return `${capitalize(host)} refused it.`;
+      }
+    })();
+    return { label: "Not sent", title: `Not sent: this message never reached ${names.agent}.`, detail };
+  }
+  const detail = (() => {
+    switch (attempt.failureKind) {
+      case "connection_failed": return consoleCannotReachHost(names);
+      case "timeout": return `${capitalize(host)} didn't answer in time.`;
+      case "invalid_response": return `Got an unreadable answer from ${host}.`;
+      case "gateway_error": return `${capitalize(host)} had a problem.`;
+      case "rate_limited": return `${names.agent} was busy.`;
+      case "refused": return `${capitalize(host)} reported a problem with this message.`;
+      case "interrupted": return "The page was reloaded while sending.";
+      default: return "It may or may not have arrived.";
+    }
+  })();
+  return { label: "Not confirmed", title: `We couldn't confirm ${names.agent} got this.`, detail };
+}
+
+/** A Check that ran and did not find the message: the row stays uncertain. */
+export function consoleCheckNotFound(names: ConsolePendingRowNames): string {
+  return `Not found in ${names.agent}'s recent messages.`;
+}
+
+/** A Check found the message: "Delivered at 14:03." */
+export function consoleCheckDelivered(timestampMs: number | undefined): string {
+  if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return "Delivered.";
+  return `Delivered at ${new Date(timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+}
+
+/** A Check that could not run, worded from the typed failure. A browser
+ * fetch failure (`TypeError`, e.g. "Failed to fetch") means the host was not
+ * reached. */
+export function describeConsoleCheckFailure(error: unknown, names: ConsolePendingRowNames): string {
+  const host = hostOf(names);
+  const fetchFailed = error instanceof TypeError
+    || (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TypeError");
+  const kind = fetchFailed ? "connection_failed" : classifyConsoleSendFailure(error).kind;
+  const reason = (() => {
+    switch (kind) {
+      case "connection_failed": return `couldn't reach ${host} (offline or signed out).`;
+      case "unauthenticated": return "you were signed out. Sign in and check again.";
+      case "access_denied": return `you don't have access to ${names.agent}'s messages.`;
+      case "timeout": return `${host} didn't answer in time.`;
+      case "gateway_error": return `${host} had a problem.`;
+      case "invalid_response": return `got an unreadable answer from ${host}.`;
+      default: return `${host} couldn't look up ${names.agent}'s messages.`;
+    }
+  })();
+  return `Couldn't check: ${reason}`;
 }

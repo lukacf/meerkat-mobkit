@@ -415,3 +415,46 @@ for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const)
     assert.equal(currentEntries.at(-1)?.id, answer.id, "later live text remains after the mid-run notice");
   });
 }
+
+// Meerkat 0.8.50 sends member-kickoff status as peer requests whose content
+// is the full peer transport projection (peer_spec, pubkey, send_response
+// coaching), and #1608 moves it to one-way lifecycle notices. That content is
+// model-facing; no surface or text mode may show it. An ordinary peer
+// request's content is authored text and still shows.
+const KICKOFF_PROJECTION = "Peer request from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+  + " (display_name: mob/commander/incident-commander) (id: 964020b4-c9b6-4c31-ba6c-30598279b388)\n"
+  + "Intent: INTENT\nParams: {\"peer\":\"incident-commander\",\"peer_spec\":{\"pubkey\":[20,129]}}\n"
+  + "Request ID: 964020b4-c9b6-4c31-ba6c-30598279b388\n\n"
+  + "This is a correlated peer request. Reply with send_response with arguments"
+  + " {\"in_reply_to\":\"964020b4-c9b6-4c31-ba6c-30598279b388\",\"status\":\"completed\"}."
+  + " Do not answer this request with send_message.";
+
+function typedCommsNotice(kind: string, intent: string, content: string): ConsoleFrame {
+  const summary = `${kind === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`;
+  return frame("notice", "system_notice", { message: { role: "system_notice", kind: "comms", body: summary, blocks: [{
+    type: "comms", kind, direction: "incoming",
+    peer: { id: "6f6114cd-2cf7-590f-a172-0e36feacd12c", display_name: "mob/commander/incident-commander" },
+    ...(kind === "request" ? { request_id: "964020b4-c9b6-4c31-ba6c-30598279b388" } : {}),
+    intent, summary, payload: { peer: "incident-commander" },
+    content: [{ type: "text", text: content }],
+  }] } }, { sourceKind: "session_history" });
+}
+
+for (const [surface, mapper] of [["stock", stock], ["shared", shared]] as const) {
+  for (const textMode of ["legacy", "markdown"] as const) {
+    test(`${surface} ${textMode}: kickoff notices never show the peer transport projection`, () => {
+      for (const [kind, intent] of [
+        ["request", "mob.kickoff_started"], ["request", "mob.kickoff_failed"], ["request", "mob.kickoff_cancelled"],
+        ["lifecycle", "mob.kickoff_started"],
+      ] as const) {
+        const rendered = JSON.stringify(mapper(null, [typedCommsNotice(kind, intent, KICKOFF_PROJECTION.replace("INTENT", intent))], { textMode }));
+        assert.ok(!/send_response|pubkey|Do not answer this request|Peer request from peer_id/.test(rendered),
+          `${surface} ${textMode} ${kind} ${intent} shows model-facing transport text`);
+        assert.ok(rendered.includes(`${kind === "lifecycle" ? "Peer lifecycle" : "Peer request"}: ${intent}`),
+          `${surface} ${textMode} ${kind} ${intent} shows its typed summary`);
+      }
+      const authored = JSON.stringify(mapper(null, [typedCommsNotice("request", "review.document", "Please review the release notes.")], { textMode }));
+      assert.ok(authored.includes("Please review the release notes."), `${surface} ${textMode}: an ordinary request's authored content still shows`);
+    });
+  }
+}

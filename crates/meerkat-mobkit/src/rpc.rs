@@ -408,6 +408,15 @@ pub const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: i64 = -32013;
 /// `StorageResolutionError` in the Python and TypeScript SDKs.
 pub const STORAGE_RESOLUTION_CODE: i64 = -32014;
 
+/// JSON-RPC error code the stdio gateway returns, at once, for an ordinary
+/// request that arrives before `mobkit/init` has settled. Ordinary dispatch
+/// starts only after init settles, so the request is refused rather than
+/// queued behind startup: a provider callback that awaited it during init
+/// would otherwise wait on itself. `mobkit/shutdown` and callback responses
+/// are not refused. Keep in sync with `InitInProgressError` in the Python and
+/// TypeScript SDKs.
+pub const INIT_IN_PROGRESS_CODE: i64 = -32018;
+
 /// JSON-RPC error code returned by every `mobkit/workgraph/*` method when
 /// the runtime has no WorkGraph service configured
 /// (`data.kind = "workgraph_unavailable"`). Single source of truth — keep

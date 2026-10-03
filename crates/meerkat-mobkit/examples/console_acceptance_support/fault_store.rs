@@ -67,6 +67,9 @@ fn repeated_frame(cursor: Option<&ConsoleCursor>) -> ConsoleFrame {
 
 #[async_trait::async_trait]
 impl ConsoleLogStore for FaultStore {
+    fn send_dedupe_durability(&self) -> meerkat_mobkit::ConsoleSendDedupeDurability {
+        self.inner.send_dedupe_durability()
+    }
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
         self.inner.append_if_absent(frame).await
     }

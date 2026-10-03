@@ -298,6 +298,16 @@ impl ContinuityStore for TransientBrokenContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -916,6 +926,16 @@ impl ContinuityStore for CountingContinuityStore {
             .delete_continuity_record(identity, fencing_token)
             .await
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 /// Returns one continuity snapshot only after the caller releases a gate.
@@ -1041,6 +1061,16 @@ impl ContinuityStore for GatedStaleResolveContinuityStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -1226,6 +1256,16 @@ impl ContinuityStore for IdentityScopedVersionStore {
             .retain(|(head_identity, _), _| head_identity != identity);
         Ok(())
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[async_trait]
@@ -1330,6 +1370,16 @@ impl ContinuityStore for FaultyContinuityStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -1447,6 +1497,16 @@ impl ContinuityStore for ResolveProbeStore {
         self.inner
             .delete_continuity_record(identity, fencing_token)
             .await
+    }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
     }
 }
 
@@ -4730,6 +4790,16 @@ impl ContinuityStore for RollbackFailingContinuityStore {
             .delete_continuity_record(identity, fencing_token)
             .await
     }
+    /// Test double: deliberately whole-snapshot only.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+        >,
+    > {
+        None
+    }
 }
 
 #[tokio::test]
@@ -6004,6 +6074,16 @@ async fn identity_first_runtime_lazy_snapshot_missing_record_stays_materializabl
             _fencing_token: FencingToken,
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
+        }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<
+                dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+            >,
+        > {
+            None
         }
     }
 
@@ -9672,6 +9752,16 @@ async fn identity_first_runtime_restore_flow_broken_fails_loudly() {
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
         }
+        /// Test double: deliberately whole-snapshot only.
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<
+            std::sync::Arc<
+                dyn meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions,
+            >,
+        > {
+            None
+        }
     }
 
     let store = Arc::new(BrokenStore);
@@ -10271,20 +10361,37 @@ async fn identity_first_runtime_background_renewal_refreshes_idle_active_lease()
         .clone()
         .spawn_lease_renewal_task_with_poll_interval(Duration::from_millis(10));
 
-    tokio::time::sleep(Duration::from_millis(45)).await;
+    // Wait on the renewal's own transition, not on a wall-clock margin
+    // (#564): the first event this identity publishes must be the rotated
+    // lease. The timeout only guards against a hang.
+    let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+        .await
+        .expect("background renewal published within the hang guard")
+        .expect("identity event stream open");
     task.abort();
-
-    let status = runtime.status(&identity).await.unwrap();
-    let renewed = status.lease.unwrap().fencing_token;
+    let IdentityEvent::LeaseUpdated {
+        fencing_token: renewed,
+        ..
+    } = event
+    else {
+        panic!("the first identity event must be the renewed lease, got {event:?}");
+    };
     assert!(
         renewed > grant.fencing_token,
         "idle background renewal should rotate the expired lease"
     );
     assert!(lease.renew_calls() >= 1);
-    assert!(matches!(
-        events.try_recv().unwrap(),
-        IdentityEvent::LeaseUpdated { fencing_token, .. } if fencing_token == renewed
-    ));
+    // The status holds that lease, or a later rotation if the task renewed
+    // again before it was aborted.
+    let status = runtime.status(&identity).await.unwrap();
+    let current = status
+        .lease
+        .expect("an active identity reports its lease after renewal")
+        .fencing_token;
+    assert!(
+        current >= renewed,
+        "status lease {current} predates the renewal {renewed}"
+    );
 }
 
 #[tokio::test]
