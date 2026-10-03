@@ -3069,6 +3069,61 @@ span.cc-conversation-turn-preview__file-icon::after {
   gap: 6px;
   margin-top: 7px;
 }
+.cc-member-kickoff {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--_cc-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--_cc-foreground) 3%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cc-member-kickoff__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--_cc-foreground-muted);
+}
+.cc-member-kickoff__kind {
+  color: var(--_cc-foreground-muted);
+  font-size: 12px;
+}
+.cc-member-kickoff__member {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cc-member-kickoff__role {
+  color: var(--_cc-foreground-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cc-member-kickoff__phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--_cc-foreground-muted);
+  font-size: 12px;
+}
+.cc-member-kickoff__phase[data-phase=started] {
+  color: var(--_cc-positive);
+}
+.cc-member-kickoff__phase[data-phase=failed] {
+  color: var(--_cc-negative);
+}
+.cc-member-kickoff__phase-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
 .cc-background-job {
   border: 1px solid var(--_cc-border-soft);
   border-radius: 10px;

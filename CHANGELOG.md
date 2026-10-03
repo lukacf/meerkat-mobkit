@@ -128,6 +128,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Console: member-kickoff status renders as a typed status card instead of a
+  peer request. Meerkat sends kickoff status (`mob.kickoff_pending`,
+  `_starting`, `_started`, `_callback_pending`, `_failed`, `_cancelled`) as
+  one-way comms `lifecycle` notices (meerkat #1608); older sessions keep the
+  `request` form. Both forms render, by their intent, as one compact row:
+  the member, its role and the phase (Pending, Starting, Started, Waiting for
+  callback, Failed, Cancelled). The signals rail labels them "Kickoff
+  <phase>", and a failed kickoff reads as a warning there. A lifecycle
+  notice's content is model-facing notice text and is never shown: any other
+  lifecycle notice renders by its summary (`Peer lifecycle: <kind>`). The
+  shared host previously showed that text verbatim.
+
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
   Any other peer's or scheduled turn can satisfy the identity-wide wait used
