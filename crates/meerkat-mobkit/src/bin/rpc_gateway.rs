@@ -6212,7 +6212,7 @@ comms = true
         }
 
         assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
-        let mob_quiesce_window = Duration::from_secs(10);
+        let mob_quiesce_window = meerkat_mobkit::MOB_STOP_FLOW_SETTLE_BUDGET;
         let scheduler_overhead = Duration::from_secs(10);
         assert_eq!(
             meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,

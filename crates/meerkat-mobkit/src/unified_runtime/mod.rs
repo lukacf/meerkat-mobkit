@@ -42,6 +42,7 @@ pub mod lifecycle;
 pub mod live_compose;
 pub mod mob_events;
 pub mod mob_ops;
+pub(crate) mod mob_stop;
 pub mod module_ops;
 pub mod types;
 
@@ -56,6 +57,7 @@ pub use event_log::{
 };
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
+pub use mob_stop::{MOB_STOP_FLOW_SETTLE_BUDGET, MobStopFlowRunsUnsettled};
 pub use types::{
     CompactionPreservedHistoryFit, ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome,
     MobTerminalShutdownOutcome, RediscoverReport, ShutdownDrainReport,

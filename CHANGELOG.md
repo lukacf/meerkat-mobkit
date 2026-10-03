@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust source)
 
+- `MobRuntimeError` gains `MobStopFlowRunsUnsettled(Box<MobStopFlowRunsUnsettled>)`
+  (see Changed). Exhaustive matches must handle it.
+
 - `UnifiedRuntimeShutdownReport` gains `mob_terminal_shutdown:
   MobTerminalShutdownOutcome` (see Changed). Code constructing the report
   must set it; `MobTerminalShutdownOutcome` is `#[non_exhaustive]`.
@@ -162,6 +165,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     resume); the sweep no longer loses sight of a member that stays
     `Retiring`.
   - The mob stop logs each member whose run starts the stop could not hold.
+  - The teardown mob stop (`UnifiedRuntime::shutdown`,
+    `stop_mob_for_teardown`) drops its 10 s retry loop. That loop re-sent
+    Stop every 250 ms and cancelled every member's work on a refusal.
+    - Most stops are now one Stop call.
+    - When an active flow run refuses the Stop (meerkat's `no_active_runs`
+      guard), teardown cancels each non-terminal run, awaits its terminal
+      event on the mob event ledger, and stops the mob.
+    - It re-issues the Stop only after a machine commit, at most once per
+      settled run plus once: a run's terminal event lands before the actor
+      retires the run. meerkat#1593 tracks removing this step.
+    - It is bounded by `MOB_STOP_FLOW_SETTLE_BUDGET` (10 s, the old window).
+      Past it, `MobRuntimeError::MobStopFlowRunsUnsettled` names the
+      unsettled runs and the last refusal.
+    - Any other refusal is returned as is.
+    - `MobStopOutcome::ProceededWithoutInterrupt` and
+      `ErrorEvent::MobStopProceededWithoutInterrupt` are no longer produced.
+      The `Runtime not ready: attached` refusal they degraded came from
+      meerkat's old stop interrupt path. Both stay for wire and SDK
+      compatibility.
   - Live channel closes pass their typed cause to meerkat (`OpenAbandoned`
     for an open-failure cleanup, `ClientRequested` for `live/close`).
   - A profile naming a Rust tool bundle that is not registered is refused
