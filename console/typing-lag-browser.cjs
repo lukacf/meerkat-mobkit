@@ -620,12 +620,16 @@ function decodePng(buffer) {
 }
 
 /// Pixels that differ at all, the largest channel difference, and pixels
-/// that differ by more than `visible` levels in any channel. Two identical
-/// unwindowed pages differ by about ten pixels at one level (renderer
-/// noise), so one level is tolerated. Every equivalence run measures that
-/// noise floor again (noiseFloor) and fails if it exceeds the tolerance, so
-/// the tolerance cannot silently hide a growing difference.
+/// that differ by more than `visible` levels in any channel. One level is
+/// tolerated for renderer noise. Every equivalence run measures that noise
+/// floor again (noiseFloor) and fails if it exceeds the tolerance, so the
+/// tolerance cannot silently hide a growing difference. With the console's
+/// web fonts blocked (openFilled) and text rastered as below, identical
+/// pages measure 0 pixels here; with LCD text and subpixel glyph positions,
+/// Chromium rasterised text differently around scrolling, about ten pixels
+/// at one level.
 const NOISE_FLOOR_MAX_PIXELS = 100;
+const PIXEL_STABLE_TEXT = ["--disable-lcd-text", "--disable-font-subpixel-positioning"];
 function differingPixels(left, right, visible = 1) {
   const a = decodePng(left), b = decodePng(right);
   if (a.width !== b.width || a.height !== b.height) return { any: Infinity, visible: Infinity, maxDelta: 255 };
@@ -642,6 +646,10 @@ function differingPixels(left, right, visible = 1) {
 
 async function openFilled(browser, baseUrl, turns, windowed) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: DPR });
+  // The console's web fonts come from the network, and each page swapped
+  // them in (or kept the fallback) on its own timing; every compared page
+  // renders the same local fonts instead.
+  await context.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (route) => route.abort());
   const page = await context.newPage();
   if (!windowed) await page.addInitScript(() => { globalThis.__consoleTranscriptWindowing = false; });
   // The same wall clock on every page: time labels ("Today", clock times)
@@ -698,7 +706,9 @@ async function noiseFloor(left, right, turns, clipOf, positions) {
     worst = { any: Math.max(worst.any, diff.any), maxDelta: Math.max(worst.maxDelta, diff.maxDelta) };
     total += diff.any;
     if (diff.visible > 0 || diff.any > NOISE_FLOOR_MAX_PIXELS) {
-      failures.push(`turns=${turns} scrollTop=${y}: two identical unwindowed pages differ (${diff.any} pixels, max channel delta ${diff.maxDelta}); the renderer noise floor grew past the equivalence tolerance`);
+      await fs.writeFile(path.join(outDir, `noise-${turns}-${y}-a.png`), a);
+      await fs.writeFile(path.join(outDir, `noise-${turns}-${y}-b.png`), b);
+      failures.push(`turns=${turns} scrollTop=${y}: two identical unwindowed pages differ (${diff.any} pixels, max channel delta ${diff.maxDelta}); the renderer noise floor grew past the equivalence tolerance (screenshots in ${outDir})`);
     }
   }
   process.stdout.write(`[typing-lag-browser] noise floor turns=${turns}: identical pages differ by ${total} pixels over ${positions.length} positions (at most ${worst.any} per position), max channel delta ${worst.maxDelta}\n`);
@@ -962,7 +972,7 @@ async function main() {
   await buildHarness();
   const server = await serve();
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch({ headless: !HEADED });
+  const browser = await chromium.launch({ headless: !HEADED, args: EQUIVALENCE ? PIXEL_STABLE_TEXT : [] });
   if (EQUIVALENCE) {
     try {
       const failures = [];
