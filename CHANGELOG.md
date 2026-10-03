@@ -211,6 +211,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   notice's content is model-facing notice text and is never shown: any other
   lifecycle notice renders by its summary (`Peer lifecycle: <kind>`). The
   shared host previously showed that text verbatim.
+- **Upgrade action for hosts that serve application tool policies:** a
+  member's `delegate` and agent `mob_create` are refused until the host
+  chooses a child application tool policy (see Added). MobKit now hands its
+  tool-policy registry to the agent mob tools, which it never did before, so
+  meerkat 0.8.51's child policy applies: without a child policy, a governed
+  member's delegate helpers and the members of the mobs it created ran
+  outside the host's policy. There is no implicit default. The refusal is
+  the typed tool error `policy_denied` with code
+  `child_tool_policy_required`; the member's turn goes on, and the message
+  says why and names the fixes (the `child_application_tool_policy` init
+  parameter, `with_child_application_tool_policy`, or an explicit
+  `{"kind":"unmanaged"}`). Same-mob `fork_off`, `mob_spawn_member` and
+  councils are unaffected, and hosts without application tool policies see
+  no change.
 
 - Python and TypeScript SDKs: `*_and_wait` / `*AndWait` never pass off
   another turn's output as attributed and never lose an admitted delivery.
@@ -435,6 +449,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses it. Ordinary RPCs and provider callback deadlines keep their own
   timeouts, and `init_deadline(seconds)` still bounds the wait for an
   accepted init to settle.
+- `child_application_tool_policy`, the application tool policy members of
+  child mobs (agent `mob_create`, and the implicit mob `delegate` helpers run
+  in) are built with, as an `ApplicationToolPolicyBinding`:
+  `{"kind":"provider","provider_id":...,"policy_id":...}` or the explicit
+  opt-out `{"kind":"unmanaged"}`.
+  - `mobkit/init` top-level parameter, next to `application_tool_policies`.
+    The gateway refuses the boot (`-32602`) for a malformed value,
+    `{"kind":"inherit"}`, or a provider binding whose provider or policy no
+    served policy carries.
+  - Python `MobKitBuilder.child_application_tool_policy(binding)`.
+  - Rust `MobBootstrapSpec::with_child_application_tool_policy` (and
+    `with_optional_child_application_tool_policy`) and
+    `UnifiedRuntimeBuilder::child_application_tool_policy`; two different
+    bindings refuse the build with `ConflictingConfiguration`.
+  - `member_tool_policy::child_application_tool_policy_from_init_params` and
+    `validate_child_application_tool_policy`.
+- Child-available host tool bundles:
+  `MobBootstrapSpec::register_tool_bundle_with_availability` and
+  `UnifiedRuntimeBuilder::register_tool_bundle_with_availability` take a
+  `ChildToolBundleAvailability` (re-exported from MobKit).
+  `register_tool_bundle` keeps registering `HostOnly` bundles, which child
+  mobs never receive; a `ChildAvailable` bundle is supplied to every child
+  member, still narrowed by the child profile's `deny` list and governed by
+  the child application tool policy. Documented under "Child mob tool policy
+  and bundles" in the configuration reference.
 
 - `MobBootstrapSpec::register_tool_bundle(name, dispatcher)` and
   `UnifiedRuntimeBuilder::register_tool_bundle(name, dispatcher)` forward
@@ -443,7 +482,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (including the members resume revives) and respawn. A profile naming an
   unregistered bundle is refused when its member is built. Registering one
   name on both the builder and a supplied spec is refused as conflicting
-  configuration. Agent-created child mobs do not receive host bundles.
+  configuration. Agent-created child mobs receive only the bundles
+  registered as child-available (see above).
 - `mobkit/init` can run as accepted-then-settled (#550), so startup is no
   longer cut off by the SDK's 60 s request timeout. Both SDKs opt in by
   default.

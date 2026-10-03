@@ -2398,7 +2398,82 @@ fn mob_spawn_tool_def_with_idle_retire_secs(
     patched
 }
 
+/// What [`install_agent_mob_tools`] was given, so a spec can reinstall the
+/// agent mob-tool state with its final child policy before bootstrap.
+#[derive(Clone)]
+pub(crate) struct AgentMobToolsInstall {
+    slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
+    session_service: Arc<dyn MobSessionService>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
+    default_llm_client_slot: SharedDefaultLlmClientSlot,
+    council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+}
+
+/// The host application tool policy for child mobs (agent `mob_create` and
+/// delegate's implicit mob), applied to the agent mob-tool state.
+#[derive(Clone, Default)]
+pub(crate) struct AgentMobChildPolicy {
+    registry: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
+    binding: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    bundles: meerkat_mob_mcp::ChildToolBundles,
+    has_child_bundles: bool,
+}
+
+impl AgentMobChildPolicy {
+    /// Whether there is anything to forward: without a registry, a binding or
+    /// a child-available bundle, the installed state already matches.
+    fn is_empty(&self) -> bool {
+        self.registry.is_none() && self.binding.is_none() && !self.has_child_bundles
+    }
+}
+
+/// Install the agent mob tools with no child policy yet; the spec applies its
+/// final child policy at bootstrap (see `MobBootstrapSpec::apply_agent_mob_child_policy`).
 fn install_agent_mob_tools(
+    definition: &MobDefinition,
+    slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
+    session_service: Arc<dyn MobSessionService>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
+    default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
+    council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+) -> (
+    Arc<meerkat_mob_mcp::MobMcpState>,
+    ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
+    SharedConsoleSpawnSinkSlot,
+    SharedIdentityRuntimeSlot,
+    AgentMobToolsInstall,
+) {
+    let (state, overrides, llm_slot, console_spawn_sink, identity_runtime) =
+        install_agent_mob_tools_with(
+            definition,
+            Arc::clone(&slot),
+            Arc::clone(&session_service),
+            workgraph_service.clone(),
+            default_llm_client_slot,
+            council_store.clone(),
+            AgentMobChildPolicy::default(),
+            None,
+        );
+    let install = AgentMobToolsInstall {
+        slot,
+        session_service,
+        workgraph_service,
+        default_llm_client_slot: Arc::clone(&llm_slot),
+        council_store,
+    };
+    (
+        state,
+        overrides,
+        llm_slot,
+        console_spawn_sink,
+        identity_runtime,
+        install,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_agent_mob_tools_with(
     definition: &MobDefinition,
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
     session_service: Arc<dyn MobSessionService>,
@@ -2412,6 +2487,8 @@ fn install_agent_mob_tools(
     // `TemporaryCouncilStore::list_unfinished` able to see anything after a
     // reboot, which is the whole point of the recovery path.
     council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
+    child_policy: AgentMobChildPolicy,
+    existing_slots: Option<(SharedConsoleSpawnSinkSlot, SharedIdentityRuntimeSlot)>,
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
@@ -2430,6 +2507,16 @@ fn install_agent_mob_tools(
     if let Some(council_store) = council_store {
         state = state.with_temporary_council_store(council_store);
     }
+    // The host's application tool policy for child mobs (agent `mob_create`
+    // and delegate's implicit mob): the registry, the binding every child
+    // member is built with, and the bundles the host makes available to them.
+    if let Some(registry) = child_policy.registry {
+        state = state.with_tool_consequence_policy_registry(registry);
+    }
+    if let Some(binding) = child_policy.binding {
+        state = state.with_child_application_tool_policy(binding);
+    }
+    state = state.with_child_tool_bundles(child_policy.bundles);
     if let Some(base_store) = state.realm_profile_store().cloned()
         && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
     {
@@ -2456,8 +2543,13 @@ fn install_agent_mob_tools(
             &state,
             definition.id.to_string(),
         ));
-    let console_spawn_sink = new_console_spawn_sink_slot();
-    let identity_runtime = Arc::new(std::sync::RwLock::new(None));
+    // A reinstall keeps the slots already handed out.
+    let (console_spawn_sink, identity_runtime) = existing_slots.unwrap_or_else(|| {
+        (
+            new_console_spawn_sink_slot(),
+            Arc::new(std::sync::RwLock::new(None)),
+        )
+    });
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
@@ -8321,8 +8413,21 @@ pub struct MobBootstrapSpec {
     /// `MobBuilder::register_tool_bundle` for the profiles'
     /// `tools.rust_bundles`. They are registered on every build of this mob:
     /// create, resume (including the members it revives) and respawn. Mobs
-    /// that agents create through the mob tools do not receive them.
+    /// that agents create through the mob tools receive only the ones marked
+    /// child-available in [`Self::child_tool_bundle_availability`].
     pub(crate) tool_bundles: BTreeMap<String, Arc<dyn meerkat_core::AgentToolDispatcher>>,
+    /// Which registered bundles the host supplies to child mobs (agent
+    /// `mob_create` and delegate's implicit mob). Absent means host-only.
+    pub(crate) child_tool_bundle_availability:
+        BTreeMap<String, meerkat_mob_mcp::ChildToolBundleAvailability>,
+    /// The application tool policy every child mob member is built with,
+    /// forwarded to the agent mob-tool state with the registry. With a
+    /// registry installed and no child policy, meerkat refuses agent
+    /// `mob_create` and delegate with a typed tool error until one is set.
+    pub(crate) child_application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    /// What the agent mob tools were installed with, so bootstrap can
+    /// reinstall them with the final child policy.
+    pub(crate) agent_mob_tools_install: Option<AgentMobToolsInstall>,
     /// Realm-scoped WorkGraph service, forwarded to
     /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
     /// apply-time attention overlay injection, and to the agent mob-tool
@@ -8433,6 +8538,9 @@ impl MobBootstrapSpec {
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
             tool_bundles: BTreeMap::new(),
+            child_tool_bundle_availability: BTreeMap::new(),
+            child_application_tool_policy: None,
+            agent_mob_tools_install: None,
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
@@ -8501,6 +8609,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &self.definition,
             mob_tools_slot,
@@ -8516,6 +8625,7 @@ impl MobBootstrapSpec {
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         self.identity_runtime_slot = Some(identity_runtime_slot);
+        self.agent_mob_tools_install = Some(agent_mob_tools_install);
         self
     }
 
@@ -8593,18 +8703,129 @@ impl MobBootstrapSpec {
     /// Register a named Rust tool bundle. A profile whose `tools.rust_bundles`
     /// names it gets the dispatcher's tools on every spawn, resume, revival
     /// and respawn; meerkat-mob owns that wiring. A profile naming a bundle
-    /// that is not registered is refused when its member is built. Agent-
-    /// created child mobs never receive host bundles.
+    /// that is not registered is refused when its member is built. The bundle
+    /// is host-only: agent-created child mobs never receive it (see
+    /// [`Self::register_tool_bundle_with_availability`]).
     ///
     /// Registering the same name twice replaces the earlier dispatcher.
     #[must_use]
     pub fn register_tool_bundle(
-        mut self,
+        self,
         name: impl Into<String>,
         dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
     ) -> Self {
-        self.tool_bundles.insert(name.into(), dispatcher);
+        self.register_tool_bundle_with_availability(
+            name,
+            dispatcher,
+            meerkat_mob_mcp::ChildToolBundleAvailability::HostOnly,
+        )
+    }
+
+    /// Register a named Rust tool bundle with its availability to child mobs
+    /// (agent `mob_create` and delegate's implicit mob). A
+    /// [`meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable`] bundle
+    /// is supplied by the host to every inline profile of a child mob when the
+    /// mob is created; agents never name bundles themselves, and can narrow
+    /// what a child member may call with its profile's deny list.
+    ///
+    /// Registering the same name twice replaces the earlier registration.
+    #[must_use]
+    pub fn register_tool_bundle_with_availability(
+        mut self,
+        name: impl Into<String>,
+        dispatcher: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        availability: meerkat_mob_mcp::ChildToolBundleAvailability,
+    ) -> Self {
+        let name = name.into();
+        self.tool_bundles.insert(name.clone(), dispatcher);
+        self.child_tool_bundle_availability
+            .insert(name, availability);
         self
+    }
+
+    /// The application tool policy every child mob member (agent
+    /// `mob_create`, delegate's implicit mob) is built with. An explicit
+    /// `ApplicationToolPolicyBinding::Unmanaged` is a valid opt-out. With a
+    /// consequence-policy registry installed and no child policy, agent
+    /// `mob_create` and delegate are refused with a typed tool error
+    /// (`child_tool_policy_required`) until one is set.
+    #[must_use]
+    pub fn with_child_application_tool_policy(
+        mut self,
+        binding: meerkat_core::ApplicationToolPolicyBinding,
+    ) -> Self {
+        self.child_application_tool_policy = Some(binding);
+        self
+    }
+
+    /// [`Self::with_child_application_tool_policy`] when one was configured.
+    #[must_use]
+    pub fn with_optional_child_application_tool_policy(
+        mut self,
+        binding: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    ) -> Self {
+        if binding.is_some() {
+            self.child_application_tool_policy = binding;
+        }
+        self
+    }
+
+    /// The child policy the agent mob-tool state forwards.
+    fn agent_mob_child_policy(&self) -> AgentMobChildPolicy {
+        let mut bundles = meerkat_mob_mcp::ChildToolBundles::new();
+        let mut has_child_bundles = false;
+        for (name, dispatcher) in &self.tool_bundles {
+            let availability = self
+                .child_tool_bundle_availability
+                .get(name)
+                .copied()
+                .unwrap_or_default();
+            has_child_bundles |=
+                availability == meerkat_mob_mcp::ChildToolBundleAvailability::ChildAvailable;
+            bundles = bundles.register(name.clone(), Arc::clone(dispatcher), availability);
+        }
+        AgentMobChildPolicy {
+            registry: self.tool_consequence_policy_registry.clone(),
+            binding: self.child_application_tool_policy.clone(),
+            bundles,
+            has_child_bundles,
+        }
+    }
+
+    /// Reinstall the agent mob tools with the final child policy. The
+    /// constructors install them before a host can set the registry, the
+    /// child policy or a child-available bundle, so bootstrap applies those
+    /// here, once, before anything uses the state. Nothing has run yet, the
+    /// shared state is side-effect free, and the slots already handed out
+    /// are kept; the council store and session service are the ones the
+    /// tools were first installed with.
+    fn apply_agent_mob_child_policy(&mut self) {
+        let child_policy = self.agent_mob_child_policy();
+        if child_policy.is_empty() {
+            return;
+        }
+        let Some(install) = self.agent_mob_tools_install.clone() else {
+            return;
+        };
+        let existing_slots = match (&self.console_spawn_sink_slot, &self.identity_runtime_slot) {
+            (Some(sink), Some(identity)) => Some((Arc::clone(sink), Arc::clone(identity))),
+            _ => None,
+        };
+        let (state, overrides, _llm_slot, console_spawn_sink, identity_runtime) =
+            install_agent_mob_tools_with(
+                &self.definition,
+                install.slot,
+                install.session_service,
+                install.workgraph_service,
+                Some(install.default_llm_client_slot),
+                install.council_store,
+                child_policy,
+                existing_slots,
+            );
+        self.agent_mob_mcp_state = Some(state);
+        self.implicit_delegate_retirement_overrides = Some(overrides);
+        self.console_spawn_sink_slot = Some(console_spawn_sink);
+        self.identity_runtime_slot = Some(identity_runtime);
     }
 
     /// Add a [`meerkat_mob::SpawnMemberCustomizer`]. meerkat-mob has a single
@@ -8984,6 +9205,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -9000,6 +9222,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = effective_runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
@@ -9455,6 +9678,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -9482,6 +9706,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = workgraph_service;
@@ -9796,6 +10021,7 @@ impl MobBootstrapSpec {
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
             identity_runtime_slot,
+            agent_mob_tools_install,
         ) = install_agent_mob_tools(
             &spec.definition,
             mob_tools_slot,
@@ -9822,6 +10048,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
+        spec.agent_mob_tools_install = Some(agent_mob_tools_install);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.runtime_authority_prewarm = Some(runtime_store);
         spec.live_compose_inputs = live_compose_inputs;
@@ -10336,6 +10563,9 @@ impl MobRuntime {
         // is the one ingress where explicit resume intent is normalized before
         // the definition reaches meerkat-mob.
         let raw_definition = spec.definition.clone();
+        // Before anything reads the agent mob-tool state: child mobs get the
+        // host's final application tool policy and child bundles.
+        spec.apply_agent_mob_child_policy();
         auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
