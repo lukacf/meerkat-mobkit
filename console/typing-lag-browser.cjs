@@ -63,6 +63,9 @@ const TRACE = Boolean(arg("trace", false));
 // not enforced; MOBKIT_TYPING_LAG_ENFORCE_TIMING=1 or --enforce-timing makes
 // them failures (local perf work). Structural limits always fail.
 const ENFORCE_TIMING = process.env.MOBKIT_TYPING_LAG_ENFORCE_TIMING === "1" || Boolean(arg("enforce-timing", false));
+// Transcript entries presented per streamed token. Every entry was presented
+// again on each token; a continued derivation presents only the open text.
+const MAX_PRESENTED_ENTRIES_PER_TOKEN = arg("max-presented-entries-per-token", null) === null ? null : Number(arg("max-presented-entries-per-token"));
 const MAX_FULL_DERIVATIONS_PER_TOKEN = arg("max-full-derivations-per-token", null) === null ? null : Number(arg("max-full-derivations-per-token"));
 const MAX_TURN_RENDERS_PER_TOKEN = arg("max-turn-renders-per-token", null) === null ? null : Number(arg("max-turn-renders-per-token"));
 // Element rect reads per streamed token. Each read forces layout; holding a
@@ -349,10 +352,13 @@ function workDelta(before, after, keystrokes) {
   const tokens = after.streamed - before.streamed;
   const per = (value, n) => (n > 0 ? value / n : 0);
   const full = after.derivations && before.derivations ? after.derivations.full - before.derivations.full : null;
+  const presented = after.derivations?.presented !== undefined && before.derivations?.presented !== undefined
+    ? after.derivations.presented - before.derivations.presented : null;
   return {
     tokens,
     fullDerivations: full,
     fullDerivationsPerToken: full === null ? null : per(full, tokens),
+    presentedEntriesPerToken: presented === null ? null : per(presented, tokens),
     turnRendersPerToken: per(renders("TranscriptTurn"), tokens),
     rowRendersPerToken: per(renders("MessageRow"), tokens),
     markdownCharsPerToken: per(renders("MarkdownSourceChars"), tokens),
@@ -578,7 +584,7 @@ async function main() {
             `p50=${fmt(m.latency.p50)} p95=${fmt(m.latency.p95)} max=${fmt(m.latency.max)} ms ` +
             `event-timing>=16ms ${m.eventTimingOver16}/${KEYS} longtasks=${m.longtasks.n} (max ${fmt(m.longtasks.max)} ms)` +
             (m.breakdown ? ` layout-objects<=${m.breakdown.maxLayoutObjects}` : "") +
-            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)} markdown-chars/token=${fmt2(m.work.markdownCharsPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
+            (m.work.tokens ? ` tokens=${m.work.tokens} full-derivations/token=${m.work.fullDerivationsPerToken === null ? "n/a" : fmt2(m.work.fullDerivationsPerToken)} presented-entries/token=${m.work.presentedEntriesPerToken === null ? "n/a" : fmt2(m.work.presentedEntriesPerToken)} turn-renders/token=${fmt2(m.work.turnRendersPerToken)} row-renders/token=${fmt2(m.work.rowRendersPerToken)} rect-reads/token=${fmt2(m.work.rectReadsPerToken)} markdown-chars/token=${fmt2(m.work.markdownCharsPerToken)}${m.breakdown ? ` forced-layouts/token=${fmt2(m.work.forcedLayoutsPerToken)}` : ""}` : ` transcript-renders/key=${fmt2(m.work.transcriptRendersPerKeystroke)}`) +
             (b ? ` | per key: script ${fmt(b.scripting)} style ${fmt(b.style)} layout ${fmt(b.layout)} paint ${fmt(b.paint)} composite ${fmt(b.composite)} other ${fmt(b.other)} ms` : "") +
             "\n",
         );
@@ -630,12 +636,18 @@ async function main() {
           failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.rectReadsPerToken)} element rect reads per token > ${MAX_RECT_READS_PER_TOKEN}; each streamed token is measuring the transcript`);
         }
       }
-      if (streamingScenario && (MAX_FULL_DERIVATIONS_PER_TOKEN !== null || MAX_TURN_RENDERS_PER_TOKEN !== null)) {
+      if (streamingScenario && (MAX_FULL_DERIVATIONS_PER_TOKEN !== null || MAX_TURN_RENDERS_PER_TOKEN !== null || MAX_PRESENTED_ENTRIES_PER_TOKEN !== null)) {
         if (m.work.tokens < 20) failures.push(`turns=${r.turns} ${scenario}: only ${m.work.tokens} tokens streamed`);
         if (MAX_FULL_DERIVATIONS_PER_TOKEN !== null) {
           if (m.work.fullDerivationsPerToken === null) failures.push(`turns=${r.turns} ${scenario}: derivation counters unavailable`);
           else if (m.work.fullDerivationsPerToken > MAX_FULL_DERIVATIONS_PER_TOKEN) {
             failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.fullDerivationsPerToken)} full transcript derivations per token > ${MAX_FULL_DERIVATIONS_PER_TOKEN}; streamed text is re-deriving the whole log`);
+          }
+        }
+        if (MAX_PRESENTED_ENTRIES_PER_TOKEN !== null) {
+          if (m.work.presentedEntriesPerToken === null) failures.push(`turns=${r.turns} ${scenario}: presented-entry counters unavailable`);
+          else if (m.work.presentedEntriesPerToken > MAX_PRESENTED_ENTRIES_PER_TOKEN) {
+            failures.push(`turns=${r.turns} ${scenario}: ${fmt2(m.work.presentedEntriesPerToken)} transcript entries presented per token > ${MAX_PRESENTED_ENTRIES_PER_TOKEN}; streamed text is presenting the whole transcript again`);
           }
         }
         if (MAX_TURN_RENDERS_PER_TOKEN !== null && m.work.turnRendersPerToken > MAX_TURN_RENDERS_PER_TOKEN) {

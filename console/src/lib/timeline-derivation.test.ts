@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RealisticTimeline, assistantReply, type WireFrame } from "../perf/realistic-transcript";
-import { deriveTimelineEntries, type TimelineDerivation, type TimelineDerivationOptions } from "./adapters";
+import { deriveTimelineEntries, timelineDerivationStats, type TimelineDerivation, type TimelineDerivationOptions } from "./adapters";
 import { createIdentityLogCore, pushFrame, sortedEvents } from "./identity-log";
 import { parseSseFrames } from "./network";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
@@ -88,6 +88,28 @@ test("without stream epochs a restarted sequence still derives correctly, but on
   const { deltas, extended } = streamOver(timeline, strip(timeline.recent(2_000).frames), strip(timeline.streamReply(assistantReply(5), 12)));
   assert.ok(deltas > 20);
   assert.equal(extended, 0);
+});
+
+test("a streamed text chunk presents only the open reply, not the transcript", () => {
+  const timeline = new RealisticTimeline(40);
+  const log = createIdentityLogCore();
+  for (const frame of consoleFrames(timeline.recent(2_000).frames)) pushFrame(log, frame.id, frame);
+  let derivation: TimelineDerivation = deriveTimelineEntries(agent, sortedEvents(log), options);
+  const settled = derivation.entries.length;
+  let chunks = 0;
+  let presented = 0;
+  for (const frame of consoleFrames(timeline.streamReply(assistantReply(3) + assistantReply(4), 9))) {
+    pushFrame(log, frame.id, frame);
+    const before = timelineDerivationStats.presented;
+    derivation = deriveTimelineEntries(agent, sortedEvents(log), options, derivation);
+    if (frame.event !== "text_delta") continue;
+    chunks += 1;
+    presented += timelineDerivationStats.presented - before;
+  }
+  // Each chunk re-presented all of the settled transcript before.
+  assert.ok(settled > 100, `${settled} settled entries`);
+  assert.ok(chunks > 50, `stream has ${chunks} chunks`);
+  assert.ok(presented / chunks <= 1.05, `${(presented / chunks).toFixed(2)} entries presented per chunk`);
 });
 
 test("an unchanged entry keeps its object identity across derivations", () => {

@@ -144,7 +144,7 @@ declare global {
       /** Live frames delivered by streamReply so far. */
       streamed: number;
       /** Full and continued transcript derivations (absent on older trees). */
-      derivations(): { full: number; extended: number } | null;
+      derivations(): { full: number; extended: number; presented?: number } | null;
     };
   }
 }
@@ -157,7 +157,7 @@ window.__perf = {
   push: (frame) => live?.(frame),
   streamed: 0,
   derivations: () => {
-    const stats = (adapters as unknown as { timelineDerivationStats?: { full: number; extended: number } }).timelineDerivationStats;
+    const stats = (adapters as unknown as { timelineDerivationStats?: { full: number; extended: number; presented?: number } }).timelineDerivationStats;
     return stats ? { ...stats } : null;
   },
   streamReply: (everyMs, chunkChars = 12) => {

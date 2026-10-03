@@ -61,9 +61,39 @@ export function assistantPresentationEntries(
   sourceFrames: ReadonlyMap<string, ConsoleFrame> = new Map(),
   ownership: AssistantToolOwnership = assistantToolOwnership(sourceFrames.values()),
 ): ConversationTimelineEntry[] {
+  const presenter = assistantPresenter(occurrenceKeys, sourceFrames, ownership);
+  return entries.map(entry => presenter.present(entry));
+}
+
+/** Presentation ordinals after some entries: per owner, per lane. */
+export type AssistantPresenterState = ReadonlyMap<string, ReadonlyMap<string, number>>;
+
+/** Presents entries in order. Ordinals carry across entries; a presenter
+ * created from a snapshot continues as if it had presented the entries
+ * before it, without presenting them again. */
+export interface AssistantPresenter {
+  present(entry: ConversationTimelineEntry): ConversationTimelineEntry;
+  snapshot(): AssistantPresenterState;
+}
+
+export function assistantPresenter(
+  occurrenceKeys: ReadonlyMap<string, string | undefined>,
+  sourceFrames: ReadonlyMap<string, ConsoleFrame>,
+  ownership: AssistantToolOwnership,
+  from?: AssistantPresenterState,
+): AssistantPresenter {
   const ordinals = new Map<string, Map<string, number>>();
   const { scopedLiveTools, canonicalOwners } = ownership;
-  return entries.map(entry => {
+  // A snapshot is never written: copy an owner's counters on first use.
+  const countersFor = (owner: string) => {
+    let counters = ordinals.get(owner);
+    if (!counters) {
+      counters = new Map(from?.get(owner) ?? []);
+      ordinals.set(owner, counters);
+    }
+    return counters;
+  };
+  const present = (entry: ConversationTimelineEntry): ConversationTimelineEntry => {
     const occurrence = entry.kind === "message" && entry.identity.role === "assistant"
       ? occurrenceKeys.get(entry.id) : undefined;
     if (entry.kind !== "message" || entry.identity.role !== "assistant") return entry;
@@ -81,8 +111,7 @@ export function assistantPresentationEntries(
       return owned ? `tool:${key}` : undefined;
     };
     if (!occurrence && !entry.blocks?.some(block => toolKey(block))) return entry;
-    const counters = ordinals.get(occurrence ?? entry.id) ?? new Map<string, number>();
-    ordinals.set(occurrence ?? entry.id, counters);
+    const counters = countersFor(occurrence ?? entry.id);
     const nextKey = (lane: string) => {
       const ordinal = counters.get(lane) ?? 0;
       counters.set(lane, ordinal + 1);
@@ -114,7 +143,15 @@ export function assistantPresentationEntries(
     const onlyScopedTools = segments.every(segment => segment.lane === "tool" && segment.blocks.every(block => toolKey(block)));
     return { ...entry, assistantOccurrenceKey: onlyScopedTools ? undefined : occurrence, renderKey: presentationRows[0].renderKey,
       blocks: presentationRows.flatMap(row => row.blocks), presentationRows };
-  });
+  };
+  return {
+    present,
+    snapshot() {
+      const state = new Map<string, ReadonlyMap<string, number>>(from ?? []);
+      for (const [owner, counters] of ordinals) state.set(owner, new Map(counters));
+      return state;
+    },
+  };
 }
 
 /** Expand only at the rendering boundary. Quotes still identify the source frame. */
