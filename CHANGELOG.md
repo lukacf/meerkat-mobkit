@@ -627,6 +627,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now shows its typed summary (`Peer request: mob.kickoff_failed`); an
   ordinary peer request still shows its authored content.
 
+- The console aggregator no longer re-reads a large session's whole history
+  twice after registration (#570). Registration's recovery pass could land
+  while a member was idle between runs of a queued burst and read the
+  complete document (4.4 s here) as its later inputs and their commits kept
+  landing. The epoch it recorded was then stale, and a discovery tick re-read
+  the whole document (5.4 s) once the fresh watermark expired: in
+  `idle_cpu_gate`, about half the time inside its measured idle window.
+  - The refresh gate now reads `Draining`, not settled, while a member that
+    is idle on the session still has active inputs or a pending commit. That
+    pass skips its read, and the refresh is re-driven by the transition that
+    drains the session: the waiter wakes on the session's durable writes (a
+    new change channel on the write-epoch witness, not a timer) and fires
+    once no commit is pending, no input is active, and every input it saw
+    active has a finalized receipt. A refresh that lands while a run is open
+    on the session still restores positive frames and arms the same
+    re-drive, so the settled refresh follows the run's end, not a tick.
+  - No exit path leaves that waiter armed: it also wakes on the mob's
+    lifecycle changes and refreshes at once, from what is durable, when the
+    member is no longer bound to the session and live in a running mob (a
+    stop, retire or destroy with inputs still active), when the runtime no
+    longer holds or can progress the session, or when either change source
+    closes. A restarted gateway re-runs registration's recovery pass.
+  - A completed pass whose session write epoch moved during its read
+    re-reads once at once, instead of waiting for a tick and watermark
+    expiry. It runs only because the epoch moved, so it cannot loop.
+  - `MobKitConsoleAggregator::history_backfill_converged` resolves once no
+    session-history backfill is running, queued or armed to re-run.
+    `idle_cpu_gate` waits on it instead of a 2 s CPU probe that could not see
+    a pass scheduled after it. The large session is now read once (one full
+    read, converged after about 7 s), and the measured idle window stays
+    near 15 ms. Verifying only the new suffix of a history is #573.
+
 - `npm run embedded:freshness` fails when a generated console bundle contains
   a module path outside the repository or an absolute local path. A
   worktree whose `node_modules` is a symlink into another checkout bundled
