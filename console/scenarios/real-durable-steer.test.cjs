@@ -20,15 +20,19 @@ const history = () => ({ session_id: "session", has_more: false, message_count: 
 
 test("explicit peer history works without an incidental startup lifecycle notice", () => {
   assert.deepEqual(assertPeerSetupHistory(history(), expected), [{ id: expected.senderId,
-    displayName: expected.displayName, label: "domain:delivery", count: 1 }]);
+    displayName: expected.displayName, label: "domain:delivery", count: 1, kickoffs: [] }]);
 });
 
-test("a legitimate startup notice and explicit message remain two distinct canonical rows", () => {
-  const value = history(); value.messages.unshift({ role: "system_notice", blocks: [{
-    ...incoming(), kind: "lifecycle", intent: "mob.kickoff_started",
-    content: [{ type: "text", text: "Peer lifecycle: mob.kickoff_started" }],
-  }] }); value.message_count++;
-  assert.equal(assertPeerSetupHistory(value, expected)[0].count, 2);
+test("a startup kickoff notice renders as a kickoff card, apart from the explicit peer row", () => {
+  for (const kind of ["lifecycle", "request"]) {
+    const value = history(); value.messages.unshift({ role: "system_notice", blocks: [{
+      ...incoming(), kind, intent: "mob.kickoff_started",
+      content: [{ type: "text", text: "Peer lifecycle: mob.kickoff_started" }],
+    }] }); value.message_count++;
+    const [peer] = assertPeerSetupHistory(value, expected);
+    assert.equal(peer.count, 1, `${kind}: one incoming peer row`);
+    assert.deepEqual(peer.kickoffs, ["started"], `${kind}: one kickoff card`);
+  }
 });
 
 test("peer setup requires exact body and canonical sender instead of any lifecycle notice", () => {

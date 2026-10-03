@@ -36,7 +36,12 @@ function assertPeerSetupHistory(history, expected) {
   assert.equal(assistantText(replies[0]), expected.acknowledgement, "exact peer acknowledgement");
   const fromSender = incoming.filter(block => block.peer?.id === expected.senderId);
   for (const block of fromSender) assert.equal(block.peer.display_name, expected.displayName, "canonical sender display metadata");
-  return [{ id: expected.senderId, displayName: expected.displayName, label: "domain:delivery", count: fromSender.length }];
+  // A member-kickoff status (meerkat #1608, typed lifecycle or the older
+  // request form) renders as a kickoff card, not an incoming peer row.
+  const kickoffPhase = block => /^mob\.kickoff_([a-z_]+)$/.exec(block.intent || "")?.[1] || null;
+  const peerRows = fromSender.filter(block => kickoffPhase(block) === null);
+  const kickoffs = incoming.map(kickoffPhase).filter(Boolean).sort();
+  return [{ id: expected.senderId, displayName: expected.displayName, label: "domain:delivery", count: peerRows.length, kickoffs }];
 }
 
 function expectedNavigationCancellation(request) {
@@ -181,10 +186,12 @@ async function durableSteer(host, persistedBackgroundJob = false) {
           notice: row.textContent.includes(expected),
           peers: [...row.querySelectorAll(".cc-tool-call--incoming .cc-tool-call__name")]
             .map((peer) => ({ text: peer.textContent, title: peer.getAttribute("title"), displayed: peer.getBoundingClientRect().height > 0 })),
+          kickoffs: [...row.querySelectorAll(".cc-member-kickoff")].map((card) => card.getAttribute("data-phase")),
         })), notice);
         const rows = new Map(positions.flat().map((row) => [row.id, row]));
         view.noticeRowIds = [...rows.values()].filter((row) => row.notice).map((row) => row.id);
         view.incomingPeers = [...rows.values()].flatMap((row) => row.peers);
+        view.kickoffs = [...rows.values()].flatMap((row) => row.kickoffs).sort();
       }
       result.lastNoticeProbe = { label, view, before };
       const after = requireRunning ? await state() : null;
@@ -195,6 +202,10 @@ async function durableSteer(host, persistedBackgroundJob = false) {
           "the transcript renders the instruction without raw transport envelopes");
         assert.equal(view.rows.length, 1, "one stable rendered row owns the durable notice");
         if (view.noticeRowIds) assert.deepEqual(view.noticeRowIds, [result.noticeRowId], "no other row in the whole transcript repeats the durable notice");
+        if (view.kickoffs) {
+          assert.deepEqual(view.kickoffs, result.expectedPeers.flatMap(peer => peer.kickoffs),
+            "each canonical member-kickoff notice renders as one kickoff card with its phase");
+        }
         assert.equal(view.rows[0].id, result.noticeRowId, "the rendered row belongs to the exact runtime notice source");
         assert.equal(view.rows[0].workFooters, 0, "the typed System notice has no assistant work-duration footer");
         assert.doesNotMatch(view.rows[0].text, /Worked for/);
