@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use meerkat_core::{AgentExecutionSnapshot, TurnPhase};
-use meerkat_mob::{AgentIdentity, MobMemberStatus};
+use meerkat_mob::{
+    AgentIdentity, MobMemberStatus, RetirementSettlement, RetirementSettlementWatch,
+};
 use meerkat_mob_mcp::MobMcpState;
 
 use crate::mob_handle_runtime::{
@@ -59,9 +61,14 @@ async fn run_implicit_delegate_retirement(
     let primary_mob_id = runtime.handle().mob_id().to_string();
     let session_service = state.session_service();
     let mut idle_since: BTreeMap<(String, String), Instant> = BTreeMap::new();
+    // A retirement that outlives `retire`'s wait stays owned by the mob
+    // (meerkat 0.8.51): its settlement is awaited here, off the sweep, and
+    // reported. Dropping the set with this task aborts the waits.
+    let mut settlements = tokio::task::JoinSet::new();
 
     loop {
         tokio::time::sleep(sweep_interval).await;
+        while settlements.try_join_next().is_some() {}
         let mut seen = BTreeSet::new();
         // Opt-ins for members of implicit delegation mobs, as held before
         // this pass looked at any roster. Their mobs are not on the primary
@@ -235,12 +242,24 @@ async fn run_implicit_delegate_retirement(
                         );
                     }
                     Err(error) => {
-                        tracing::debug!(
+                        tracing::warn!(
                             mob_id = %mob_id,
                             agent_identity = %identity,
                             error = %error,
-                            "implicit delegate idle retirement failed"
+                            "implicit delegate idle retirement did not complete"
                         );
+                        // A retirement that durably started is owned by the
+                        // mob until it settles: report how it settles instead
+                        // of losing sight of a member that stays Retiring.
+                        if let Some(watch) =
+                            handle.retirement_settlement(&AgentIdentity::from(identity.as_str()))
+                        {
+                            settlements.spawn(report_idle_retirement_settlement(
+                                mob_id.to_string(),
+                                identity.clone(),
+                                watch,
+                            ));
+                        }
                     }
                 }
                 idle_since.remove(&key);
@@ -258,6 +277,41 @@ async fn run_implicit_delegate_retirement(
                 }
             }
         }
+    }
+}
+
+/// Await how an idle retirement that outlived `retire`'s wait settles, and
+/// report it. A stuck retirement stays owned by the mob, so it is reported
+/// with the stage it failed at and is re-driven with
+/// `MobHandle::redrive_retirement` (or on mob resume); the sweep does not
+/// retry it.
+async fn report_idle_retirement_settlement(
+    mob_id: String,
+    identity: String,
+    mut watch: RetirementSettlementWatch,
+) {
+    match watch.settled().await {
+        Some(RetirementSettlement::Retired) => tracing::info!(
+            mob_id = %mob_id,
+            agent_identity = %identity,
+            "idle spawned member retired after the retire call returned"
+        ),
+        Some(RetirementSettlement::Stuck { stage, cause }) => tracing::warn!(
+            mob_id = %mob_id,
+            agent_identity = %identity,
+            stage = %stage.as_str(),
+            cause = %cause,
+            "idle spawned member retirement is stuck; it stays owned by the mob until \
+             re-driven (MobHandle::redrive_retirement or a mob resume)"
+        ),
+        Some(RetirementSettlement::NotStarted { cause }) => tracing::warn!(
+            mob_id = %mob_id,
+            agent_identity = %identity,
+            cause = %cause,
+            "idle spawned member retirement did not start"
+        ),
+        // The actor stopped before the retirement settled.
+        Some(_) | None => {}
     }
 }
 

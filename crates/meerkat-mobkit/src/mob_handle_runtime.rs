@@ -4194,14 +4194,27 @@ impl SessionStoreBackedRuntimeStore {
             if commit.messages_before < durable_messages.len() {
                 continue;
             }
-            let parent_session = successor
+            let parent_session = match successor
                 .with_validated_transcript_rewrite_parent_projection(sealed, commit)
-                .map_err(|e| {
-                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                        "parent projection for durable-behind admission at generation {}: {e}",
-                        commit.rewrite_generation
-                    ))
-                })?;
+            {
+                Ok(parent_session) => parent_session,
+                // meerkat 0.8.51 bounds the history a session graph retains:
+                // an older rewrite keeps its commit and digests but not its
+                // body, so its parent cannot be projected. With no body it can
+                // never prove the durable row is its prefix; a later, retained
+                // commit still can.
+                Err(meerkat_core::TranscriptEditError::TranscriptRevisionRetired { .. }) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(meerkat_runtime::store::RuntimeStoreError::WriteFailed(
+                        format!(
+                            "parent projection for durable-behind admission at generation {}: {e}",
+                            commit.rewrite_generation
+                        ),
+                    ));
+                }
+            };
             let parent_messages = parent_session.messages();
             if parent_messages.len() < durable_messages.len() {
                 continue;

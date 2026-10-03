@@ -6042,6 +6042,7 @@ comms = true
                     grant_count: 1,
                 },
                 retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+                mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
             }
         }
         fn diagnostics(report: &UnifiedRuntimeShutdownReport) -> Value {
@@ -6160,6 +6161,7 @@ comms = true
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
             retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+            mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
         };
         let response = gateway_shutdown_response(json!("shutdown"), Some(&report));
         assert_eq!(response["result"]["shutdown"], true);
@@ -6199,6 +6201,7 @@ comms = true
                     grant_count: 1,
                 },
                 retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
+                mob_terminal_shutdown: meerkat_mobkit::MobTerminalShutdownOutcome::AlreadyShutDown,
             }
         }
 

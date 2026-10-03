@@ -1809,6 +1809,13 @@
           "description": "Enable comms tools (peer messaging).\n\nMust be `true` for every profile that spawns a member. A member's\nidentity, roster entry, wiring, peer messaging, and supervisor bridge\nare keyed on its comms name, and the facade composes comms tools\nwhenever that name is set, so `build_agent_config` rejects\n`comms = false` instead of silently ignoring it. The serde default is\n`false`, which means omitting the key is rejected too. A member that\nmust not message peers keeps comms on and uses [`Self::read_only`] or a\nper-spawn `tool_access_policy` deny list.",
           "type": "boolean"
         },
+        "deny": {
+          "description": "Tool names members of this profile may not execute, although their\nfamilies are enabled (for example `mob = true` with the topology\ntools `mob_wire`, `mob_unwire`, `mob_spawn_member` denied, so peers\ncannot rewire themselves).\n\nAn enforcement declaration like [`Self::read_only`]: it conjoins with\nthe per-spawn tool access policy (a spawn cannot widen it) and is\nrecomputed from the current definition on every build, including a\nresume. Each name must be a tool the member's build composed or a name\nin a tool vocabulary: the built-in families' tools (whether compiled or\nenabled or not), the mob operator tools (`spawn_member`,\n`wire_members`, ...), the agent mob tools (`mob_spawn_member`,\n`mob_wire`, `mob_create`, ...), and the exposed names this profile's\n[`Self::mcp_servers`] map. A known name the member does not mount is\ninert. While the profile declares an MCP server that maps no tool\nnames, any other name is deferred to the execution gate (logged at\nbuild); otherwise it fails the member's build with a typed error naming\nthe vocabularies. To validate an MCP tool name at build, map it in the\nserver's `tool_names`. Denied tools stay listed and the execution gate\nrefuses every call by name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "image_generation": {
           "default": false,
           "description": "Enable assistant image generation tools.",
